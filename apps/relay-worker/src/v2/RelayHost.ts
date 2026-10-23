@@ -3,6 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 import type {
   RelayControlEvent,
   RelayDeviceStatusResult,
+  RelayHookMintResult,
+  RelayHookStatusResult,
   RelayJoinResult,
   RelayPipeId,
   RelayDeviceId,
@@ -15,27 +17,45 @@ import {
   RELAY_CLOSE_CODE_PEER_UNAVAILABLE,
   RELAY_CLOSE_CODE_RELAY_BUSY,
   RELAY_CLOSE_CODE_REPLACED,
+  RELAY_ERROR_BAD_HOST_SECRET,
+  RELAY_ERROR_HOOKS_OFF,
+  RELAY_ERROR_STALE_REVISION,
+  RELAY_ERROR_UNKNOWN_HOST,
   RELAY_HEARTBEAT_PING_FRAME,
   RELAY_HEARTBEAT_PONG_FRAME,
   RELAY_RAW_CONTROL_PREFIX,
 } from "@threadlines/contracts/relay";
+import { hookDeliveryAad, sealHookDelivery } from "@threadlines/shared/relayHookSeal";
+import { decodePublicKey } from "@threadlines/shared/relaySecure";
 
 import { randomDigits, sha256Base64Url } from "../crypto.ts";
+import { log, loggedPath } from "../log.ts";
 import { createJsonResponse, parseBearerToken, parseRelayTokenProtocol } from "../protocol.ts";
 import { RELAY_WEBSOCKET_PROTOCOL } from "../protocol.ts";
 import { codeShardName } from "./codeShardCore.ts";
-import { hostLimitsFromEnv, type RelayV2Env } from "./env.ts";
+import { hostLimitsFromEnv, publicRelayOrigin, type RelayV2Env } from "./env.ts";
+import {
+  type HookDeliveryInput,
+  type HookDeliveryOutcome,
+  hookMac,
+  hookPayload,
+  hookUrl,
+  isHookId,
+  newHookId,
+  parseKeptHeaders,
+} from "./hooks.ts";
 import {
   AWAKE_WINDOW_MS,
   HostCore,
   HostCoreError,
   HostCoreErrorWithEffects,
+  type HookAdmission,
   type HostEffect,
   type JoinInput,
   type PendingUsage,
 } from "./hostCore.ts";
 import { RELAY_LEDGER_NAME } from "./RelayLedger.ts";
-import { base64UrlField, joinErrorStatus, parseJoinBody } from "./http.ts";
+import { base64UrlField, hostErrorStatus, joinErrorStatus, parseJoinBody } from "./http.ts";
 
 /** A host that has not sent a lease frame for this long counts as offline (it leases every 60 s). */
 const HOST_LEASE_MS = 150_000;
@@ -46,6 +66,8 @@ const PIPE_ATTACH_TIMEOUT_MS = 10_000;
 const LEDGER_BUSY_CACHE_MS = 60_000;
 const MAX_BUFFERED_PIPE_FRAMES = 200;
 const CODE_CLAIM_ATTEMPTS = 8;
+/** Whole deliveries replayed on one (re)connect, in sealed bytes; the rest are announced and fetched. */
+const HOOK_REPLAY_INLINE_BYTES = 4 * 1024 * 1024;
 
 type SocketRole = "control" | "device" | "host-pipe" | "watch";
 
@@ -158,11 +180,25 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const method = request.method;
     try {
       if (!this.core.host()) {
-        return json({ error: "This computer is not registered with the relay." }, 404);
+        return json(
+          {
+            error: "This computer is not registered with the relay.",
+            code: RELAY_ERROR_UNKNOWN_HOST,
+          },
+          404,
+        );
       }
       const [section, id, action] = rest;
       if (section === "control" && rest.length === 1) {
         return await this.handleControl(request);
+      }
+      if (section === "hooks" && rest.length === 1) {
+        if (method === "POST") return await this.handleMintHook(request);
+        if (method === "PUT") return await this.handleSetHooks(request);
+        if (method === "GET") return await this.handleHookStatus(request);
+      }
+      if (section === "hooks" && id === "deliveries" && action && rest.length === 3) {
+        if (method === "GET") return await this.handleGetHookDelivery(request, action);
       }
       if (section === "invites" && method === "POST" && rest.length === 1) {
         return await this.handleCreateInvite(request);
@@ -204,16 +240,10 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         if (error instanceof HostCoreErrorWithEffects) {
           await this.applyEffects(error.effects);
         }
-        const status =
-          error.code === "forbidden"
-            ? 403
-            : error.code === "not-found"
-              ? 404
-              : joinErrorStatus(error.code);
-        return json({ error: error.message, code: error.code }, status);
+        return json({ error: error.message, code: error.code }, hostErrorStatus(error.code));
       }
       log("error", "relay host request failed", {
-        path: url.pathname,
+        path: loggedPath(url.pathname),
         error: error instanceof Error ? error.message : String(error),
       });
       return json({ error: "Relay request failed." }, 500);
@@ -229,8 +259,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
 
   private async handleControl(request: Request): Promise<Response> {
     if (!isWebSocketUpgrade(request)) return json({ error: "Expected WebSocket upgrade." }, 400);
-    if (!(await this.requireHostSecret(request, true)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request, true))) return badHostSecret();
 
     for (const socket of this.ctx.getWebSockets("control")) {
       socket.close(RELAY_CLOSE_CODE_REPLACED, "Replaced by a newer host connection.");
@@ -250,12 +279,126 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       devices: this.core.devices(now),
       usage: this.core.usage(now, this.pendingUsage()),
     } satisfies RelayControlEvent);
+    // Every delivery the host hasn't acknowledged comes again, oldest first.
+    for (const event of this.core.hookReplay(now, HOOK_REPLAY_INLINE_BYTES)) {
+      this.send(server, event);
+    }
     return upgradeResponse(client, request);
   }
 
+  // ----- event task hooks ------------------------------------------------------
+
+  /**
+   * A webhook delivery whose address, size and body the worker already
+   * checked and read (hookRoute.ts). Admits it (hook active, allowances,
+   * queue room), seals it to the host's hook key, stores it, and pushes it
+   * to the host if connected.
+   */
+  async deliverHook(input: HookDeliveryInput): Promise<HookDeliveryOutcome> {
+    const host = this.core.host();
+    if (!host || host.host_id !== input.hostId) return { status: 404 };
+    const now = Date.now();
+    const admission = this.core.admitHookDelivery({
+      hookId: input.hookId,
+      now,
+      pending: this.pendingUsage(),
+    });
+    if (!admission.ok) return hookRefusal(admission);
+
+    const deliveryId = crypto.randomUUID();
+    const sealed = await sealHookDelivery({
+      publicKey: admission.publicKey,
+      aad: hookDeliveryAad(input.hostId, input.hookId, deliveryId),
+      payload: hookPayload({
+        method: input.method,
+        query: input.query,
+        headers: new Headers(input.headers.map(([name, value]) => [name, value])),
+        keptHeaders: admission.keptHeaders,
+        body: input.body,
+        receivedAt: new Date(now).toISOString(),
+      }),
+    });
+    const stored = this.core.storeHookDelivery({
+      deliveryId,
+      hookId: input.hookId,
+      sealed,
+      now,
+      pending: this.pendingUsage(),
+    });
+    if (!stored.result.ok) return hookRefusal(stored.result);
+    await this.applyEffects(stored.effects);
+    await this.scheduleDeadlines();
+    return { status: 202 };
+  }
+
+  /** `POST /v2/hosts/{h}/hooks`: a new active hook and its full public address. */
+  private async handleMintHook(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const pathKey = this.env.HOOK_PATH_KEY?.trim();
+    if (!pathKey) {
+      return json({ error: "This relay doesn't take events.", code: RELAY_ERROR_HOOKS_OFF }, 503);
+    }
+    const body = (await readJson(request)) as Record<string, unknown> | null;
+    const revision = hookRevisionField(body?.revision);
+    const publicKey = await hookPublicKeyField(body?.publicKey);
+    const keptHeaders = parseKeptHeaders(body?.keptHeaders);
+    if (revision === null || publicKey === null || keptHeaders === null) {
+      return json({ error: "Missing or invalid hook fields." }, 400);
+    }
+    const hookId = newHookId();
+    const minted = this.core.mintHook({
+      hookId,
+      revision,
+      publicKey,
+      keptHeaders,
+      now: Date.now(),
+    });
+    if (!minted.applied) {
+      return json(
+        { error: "A newer hook change was already applied.", code: RELAY_ERROR_STALE_REVISION },
+        409,
+      );
+    }
+    const hostId = this.core.host()!.host_id;
+    const url = hookUrl(
+      publicRelayOrigin(request, this.env),
+      hostId,
+      hookId,
+      await hookMac(pathKey, hostId, hookId),
+    );
+    return json({ hookId, url } as RelayHookMintResult, 201);
+  }
+
+  /** `PUT /v2/hosts/{h}/hooks`: the host's whole wanted state, applied only if newer. */
+  private async handleSetHooks(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const body = (await readJson(request)) as Record<string, unknown> | null;
+    const revision = hookRevisionField(body?.revision);
+    const publicKey = await hookPublicKeyField(body?.publicKey);
+    const active = parseActiveHooks(body?.active);
+    if (revision === null || publicKey === null || active === null) {
+      return json({ error: "Missing or invalid hook fields." }, 400);
+    }
+    const result = this.core.setHooks({ revision, publicKey, active, now: Date.now() });
+    await this.scheduleDeadlines();
+    return json(result);
+  }
+
+  /** `GET /v2/hosts/{h}/hooks`: lets a host whose control socket was refused check it still exists. */
+  private async handleHookStatus(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    return json({ revision: this.core.hookRevision() } satisfies RelayHookStatusResult);
+  }
+
+  /** `GET /v2/hosts/{h}/hooks/deliveries/{id}`: a delivery too large for the control socket. */
+  private async handleGetHookDelivery(request: Request, deliveryId: string): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const delivery = this.core.hookDelivery(deliveryId);
+    return delivery ? json(delivery) : json({ error: "Not found." }, 404);
+  }
+
   private async handleCreateInvite(request: Request): Promise<Response> {
-    if (!(await this.requireHostSecret(request)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
     const body = (await readJson(request)) as {
       hostLabel?: unknown;
       claimTokenHash?: unknown;
@@ -296,8 +439,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   private async handleCancelInvite(request: Request, inviteId: string): Promise<Response> {
-    if (!(await this.requireHostSecret(request)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
     const outcome = this.core.cancelInvite(inviteId, Date.now());
     await this.applyEffects(outcome.effects);
     return json({ ok: true });
@@ -345,8 +487,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   private async handleHostNonce(request: Request, requestId: string): Promise<Response> {
-    if (!(await this.requireHostSecret(request)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
     const body = (await readJson(request)) as {
       hostNonce?: unknown;
       hostPublicKey?: unknown;
@@ -431,8 +572,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     requestId: string,
     action: "approve" | "deny",
   ): Promise<Response> {
-    if (!(await this.requireHostSecret(request)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
     const body = (await readJson(request)) as { deviceLabel?: unknown } | null;
     const deviceLabel =
       typeof body?.deviceLabel === "string" && body.deviceLabel.trim()
@@ -450,8 +590,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   private async handleRevoke(request: Request, deviceId: string): Promise<Response> {
-    if (!(await this.requireHostSecret(request)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
     const outcome = this.core.revokeDevice(deviceId, Date.now());
     await this.applyEffects(outcome.effects);
     return json(outcome.result);
@@ -556,8 +695,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
 
   private async handlePipe(request: Request, pipeId: string): Promise<Response> {
     if (!isWebSocketUpgrade(request)) return json({ error: "Expected WebSocket upgrade." }, 400);
-    if (!(await this.requireHostSecret(request, true)))
-      return json({ error: "Invalid host secret." }, 401);
+    if (!(await this.requireHostSecret(request, true))) return badHostSecret();
     const reservation = [...this.reservations.values()].find((entry) => entry.pipeId === pipeId);
     if (!reservation) return json({ error: "That pipe is no longer wanted." }, 410);
 
@@ -582,12 +720,19 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const now = Date.now();
 
     if (attachment.role === "control") {
+      const parsed = parseControlMessage(message);
+      if (parsed?.type === "hook.ack") {
+        // Acknowledgements have their own budget (at most one a second from
+        // the host); an extra one is dropped and the deliveries come again.
+        if (await this.allowHookAck()) this.handleHookAck(parsed);
+        return;
+      }
       // A host sends a lease a minute and the odd refusal; anything more is a flood.
       if (!(await this.allowControlMessage())) {
         ws.close(1008, "Too many control messages.");
         return;
       }
-      await this.handleControlMessage(ws, attachment, message, now);
+      if (parsed) this.handleControlMessage(ws, attachment, parsed, now);
       return;
     }
     if (attachment.role === "watch") {
@@ -642,19 +787,20 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
   }
 
-  private async handleControlMessage(
+  private handleHookAck(parsed: ControlMessage): void {
+    const ids = parsed.deliveryIds;
+    if (!Array.isArray(ids) || ids.length > 100) return;
+    this.core.ackHookDeliveries(
+      ids.filter((id): id is string => typeof id === "string" && id.length <= 100),
+    );
+  }
+
+  private handleControlMessage(
     ws: WebSocket,
     attachment: SocketAttachment,
-    message: string | ArrayBuffer,
+    parsed: ControlMessage,
     now: number,
-  ): Promise<void> {
-    if (typeof message !== "string") return;
-    let parsed: { type?: unknown; hostLabel?: unknown; pipeId?: unknown; reason?: unknown };
-    try {
-      parsed = JSON.parse(message) as typeof parsed;
-    } catch {
-      return;
-    }
+  ): void {
     if (parsed.type === "lease") {
       // Re-read: the copy passed in predates awaits, and writing it back would
       // undo anything saved since (like the ledger's latest answer).
@@ -1003,6 +1149,16 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
   }
 
+  private async allowHookAck(): Promise<boolean> {
+    try {
+      return (
+        await this.env.HOOK_ACK_RATE_LIMITER.limit({ key: `hooks:${this.core.host()?.host_id}` })
+      ).success;
+    } catch {
+      return true;
+    }
+  }
+
   private async allowMessage(key: string): Promise<boolean> {
     try {
       return (await this.env.RELAY_MESSAGE_RATE_LIMITER.limit({ key })).success;
@@ -1018,6 +1174,62 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const prefix = role === "device" || role === "host-pipe" ? RELAY_RAW_CONTROL_PREFIX : "";
     ws.send(`${prefix}${JSON.stringify(event)}`);
   }
+}
+
+interface ControlMessage {
+  readonly type?: unknown;
+  readonly hostLabel?: unknown;
+  readonly pipeId?: unknown;
+  readonly reason?: unknown;
+  readonly deliveryIds?: unknown;
+}
+
+function parseControlMessage(message: string | ArrayBuffer): ControlMessage | null {
+  if (typeof message !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(message);
+    return typeof parsed === "object" && parsed !== null ? (parsed as ControlMessage) : null;
+  } catch {
+    return null;
+  }
+}
+
+function badHostSecret(): Response {
+  return json({ error: "Invalid host secret.", code: RELAY_ERROR_BAD_HOST_SECRET }, 401);
+}
+
+function hookRefusal(refusal: Extract<HookAdmission, { ok: false }>): HookDeliveryOutcome {
+  return refusal.status === 404
+    ? { status: 404 }
+    : {
+        status: 429,
+        reason: refusal.reason === "daily-limit" ? "daily-limit" : "queue-full",
+        retryAfterSeconds: refusal.retryAfterSeconds ?? 60,
+      };
+}
+
+function hookRevisionField(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
+/** A P-256 public key (raw point, base64url) that actually imports. */
+async function hookPublicKeyField(value: unknown): Promise<string | null> {
+  const text = base64UrlField(value, 200);
+  return text && (await decodePublicKey(text)) ? text : null;
+}
+
+function parseActiveHooks(
+  value: unknown,
+): Array<{ readonly hookId: string; readonly keptHeaders: string[] }> | null {
+  if (!Array.isArray(value) || value.length > 500) return null;
+  const hooks: Array<{ readonly hookId: string; readonly keptHeaders: string[] }> = [];
+  for (const item of value) {
+    const entry = item as { hookId?: unknown; keptHeaders?: unknown } | null;
+    const keptHeaders = parseKeptHeaders(entry?.keptHeaders);
+    if (!isHookId(entry?.hookId) || keptHeaders === null) return null;
+    hooks.push({ hookId: entry.hookId, keptHeaders });
+  }
+  return hooks;
 }
 
 function readAttachment(ws: WebSocket): SocketAttachment | null {
@@ -1053,11 +1265,4 @@ async function readJson(request: Request): Promise<unknown> {
   } catch {
     return null;
   }
-}
-
-function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>) {
-  const entry = JSON.stringify({ level, message, timestamp: new Date().toISOString(), ...data });
-  if (level === "error") console.error(entry);
-  else if (level === "warn") console.warn(entry);
-  else console.log(entry);
 }

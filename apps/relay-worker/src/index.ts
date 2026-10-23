@@ -26,7 +26,8 @@ import {
   RELAY_WEBSOCKET_PROTOCOL,
 } from "./protocol.ts";
 import { generateToken, sha256Base64Url } from "./crypto.ts";
-import type { RelayV2Env } from "./v2/env.ts";
+import { log, loggedPath } from "./log.ts";
+import { publicRelayOrigin, type RelayV2Env } from "./v2/env.ts";
 import { routeV2 } from "./v2/routing.ts";
 
 export { RelayHost } from "./v2/RelayHost.ts";
@@ -622,7 +623,7 @@ export default {
       }
     } catch (error) {
       log("error", "relay v2 request failed", {
-        path: url.pathname,
+        path: loggedPath(url.pathname),
         method: request.method,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -723,7 +724,7 @@ export default {
       return withCors(request, env, createJsonResponse({ error: "Not found." }, { status: 404 }));
     } catch (error) {
       log("error", "relay request failed", {
-        path: url.pathname,
+        path: loggedPath(url.pathname),
         method: request.method,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -742,7 +743,7 @@ async function createRelaySession(request: Request, env: ThreadlinesRelayEnv): P
   const sessionId = crypto.randomUUID();
   const desktopToken = generateToken();
   const deviceToken = generateToken();
-  const publicRelayOrigin = resolvePublicRelayOrigin(request, env);
+  const relayOrigin = publicRelayOrigin(request, env);
   const stub = env.RELAY_SESSION.getByName(sessionId);
 
   await stub.initialize({
@@ -753,14 +754,9 @@ async function createRelaySession(request: Request, env: ThreadlinesRelayEnv): P
     expiresAt,
   });
 
-  const desktopSocketUrl = buildSocketUrl(publicRelayOrigin, sessionId, "desktop");
-  const deviceSocketUrl = buildSocketUrl(publicRelayOrigin, sessionId, "device");
-  const pairingUrl = buildPairingUrl(
-    resolveAppOrigin(env),
-    publicRelayOrigin,
-    sessionId,
-    deviceToken,
-  );
+  const desktopSocketUrl = buildSocketUrl(relayOrigin, sessionId, "desktop");
+  const deviceSocketUrl = buildSocketUrl(relayOrigin, sessionId, "device");
+  const pairingUrl = buildPairingUrl(resolveAppOrigin(env), relayOrigin, sessionId, deviceToken);
 
   return createJsonResponse(
     {
@@ -792,12 +788,8 @@ function readSocketAttachment(ws: WebSocket): SocketAttachment | null {
   }
 }
 
-function buildSocketUrl(
-  publicRelayOrigin: string,
-  sessionId: string,
-  role: RelayConnectionRole,
-): string {
-  const url = new URL(`/v1/sessions/${encodeURIComponent(sessionId)}/connect`, publicRelayOrigin);
+function buildSocketUrl(relayOrigin: string, sessionId: string, role: RelayConnectionRole): string {
+  const url = new URL(`/v1/sessions/${encodeURIComponent(sessionId)}/connect`, relayOrigin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("role", role);
   return url.toString();
@@ -814,10 +806,6 @@ function buildPairingUrl(
   url.searchParams.set("session", sessionId);
   url.hash = `token=${encodeURIComponent(deviceToken)}`;
   return url.toString();
-}
-
-function resolvePublicRelayOrigin(request: Request, env: ThreadlinesRelayEnv): string {
-  return env.THREADLINES_RELAY_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
 }
 
 function resolveAppOrigin(env: ThreadlinesRelayEnv): string {
@@ -878,20 +866,4 @@ function resolveSessionTtlSeconds(env: ThreadlinesRelayEnv): number {
 function isSessionCreationEnabled(env: ThreadlinesRelayEnv): boolean {
   const configured = env.THREADLINES_RELAY_SESSION_CREATION_ENABLED?.trim().toLowerCase();
   return configured !== "false" && configured !== "0" && configured !== "off";
-}
-
-function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>) {
-  const entry = JSON.stringify({
-    level,
-    message,
-    timestamp: new Date().toISOString(),
-    ...data,
-  });
-  if (level === "error") {
-    console.error(entry);
-  } else if (level === "warn") {
-    console.warn(entry);
-  } else {
-    console.log(entry);
-  }
 }

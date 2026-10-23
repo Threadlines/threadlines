@@ -3,6 +3,7 @@ import { generateToken, sha256Base64Url } from "../crypto.ts";
 import { createJsonResponse } from "../protocol.ts";
 import { codeShardName } from "./codeShardCore.ts";
 import { isRelayV2Enabled, type RelayV2Env } from "./env.ts";
+import { routeHook } from "./hookRoute.ts";
 import { joinErrorStatus, parseJoinBody } from "./http.ts";
 import { RELAY_LEDGER_NAME } from "./RelayLedger.ts";
 
@@ -39,6 +40,10 @@ export async function routeV2(
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/v2/")) {
     return null;
+  }
+  // Event deliveries come from other services' servers: no CORS, own checks.
+  if (url.pathname.startsWith("/v2/hooks/")) {
+    return routeHook(request, env);
   }
   const origin = request.headers.get("Origin");
   if (request.method === "OPTIONS") {

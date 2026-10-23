@@ -7,7 +7,9 @@
   "observability": {
     "enabled": true,
     "logs": {
-      "invocation_logs": true,
+      // Off: invocation logs record whole URLs, and an event task's address
+      // carries its mac (src/log.ts loggedPath cuts it from our own logs).
+      "invocation_logs": false,
       "head_sampling_rate": 1,
     },
   },
@@ -24,6 +26,9 @@
     "THREADLINES_RELAY_HOST_DAILY_AWAKE_SECONDS": "86400",
     "THREADLINES_RELAY_DAILY_MESSAGE_BUDGET": "1200000",
     "THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY": "20",
+    // Event tasks: deliveries each computer accepts per UTC day. The address
+    // mac key is a secret: `wrangler secret put HOOK_PATH_KEY`.
+    "THREADLINES_RELAY_HOST_DAILY_HOOKS": "1000",
   },
   "ratelimits": [
     {
@@ -55,6 +60,34 @@
       "namespace_id": "2026100302",
       "simple": {
         "limit": 10,
+        "period": 60,
+      },
+    },
+    // Event task deliveries, checked at the edge before any Durable Object:
+    // per client IP, then per hook (hostId|hookId).
+    {
+      "name": "HOOK_IP_RATE_LIMITER",
+      "namespace_id": "2026102301",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
+    {
+      "name": "HOOK_RATE_LIMITER",
+      "namespace_id": "2026102302",
+      "simple": {
+        "limit": 60,
+        "period": 60,
+      },
+    },
+    // A host's hook.ack frames (it sends at most one a second), kept apart
+    // from the 10-a-minute control limiter.
+    {
+      "name": "HOOK_ACK_RATE_LIMITER",
+      "namespace_id": "2026102303",
+      "simple": {
+        "limit": 120,
         "period": 60,
       },
     },

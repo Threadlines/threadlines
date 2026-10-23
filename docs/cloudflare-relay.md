@@ -22,7 +22,11 @@ skips the relay altogether.
 - `apps/server/src/relay/`: the host side (`RelayHost.ts`), which registers the
   server with the relay, checks and approves joins, issues device sessions, and
   serves each device's encrypted connection (`securePipe.ts`) over a relay
-  pipe or the direct endpoint (`directRoute.ts`, `directRoutes.ts`).
+  pipe or the direct endpoint (`directRoute.ts`, `directRoutes.ts`). Event
+  task hooks (`RelayHooks.ts`, `RelayHooksLive.ts`) ride on the same
+  registration and control socket.
+- `apps/relay-worker/src/v2/hookRoute.ts`, `hooks.ts`: event task addresses
+  at the edge; `hostCore.ts` keeps hooks and waiting deliveries.
 - `apps/web/src/relayDevice.ts` and `environments/runtime/relayJoins.ts`: the
   joiner side (typing a code, claiming a QR invite, waiting for Allow).
   `rpc/secureRelaySocket.ts` is the device end of every encrypted connection.
@@ -109,6 +113,49 @@ The relay answers `{"_tag":"Ping"}` with `{"_tag":"Pong"}` at the edge
 (`setWebSocketAutoResponse`), so client heartbeats don't wake the Durable
 Object or count against the allowance.
 
+## Event task hooks
+
+Event tasks (docs/design/event-tasks.md) start when another service sends a
+webhook. The relay gives each one a public address and holds what arrives
+until the computer takes it.
+
+Addresses look like `/v2/hooks/{hostId}/{hookId}/{mac}`. The host mints one
+with `POST /v2/hosts/{h}/hooks` (host secret); `hookId` is 16 random bytes and
+the mac is `base64url(HMAC-SHA256(HOOK_PATH_KEY, "v1|" + hostId + "|" +
+hookId))`. A delivery (`POST`, `PUT` or `PATCH`; `GET` gets `405`) passes, in
+order: a per-IP limit (`HOOK_IP_RATE_LIMITER`, 120 a minute), the mac (a
+wrong one gets the same `404` as any unknown path), a per-hook limit
+(`HOOK_RATE_LIMITER`, 60 a minute), a `Content-Length` of at most 1 MiB
+(`411`/`413`), and the body itself, read by the worker within 10 seconds and
+the same cap (`408`/`413`). Nothing touches a Durable Object before all of
+these pass, so a slow sender never holds one. The host's object then checks
+the hook is still active (`404`) and today's allowance and its queue (`429`
+with `Retry-After`), and the answer is `202 {"accepted":true}`.
+
+Each delivery keeps its method, query string, body, and a few headers (the
+always-kept ones in `packages/shared/src/webhookTasks.ts` plus the ones the
+hook names; never `cookie`, `authorization`, `cf-*` or `x-forwarded-*`). It is
+sealed to the computer's hook key (P-256 ECDH, HKDF, AES-256-GCM, bound to
+host, hook and delivery ids; `packages/shared/src/relayHookSeal.ts`) before
+it is stored, so waiting events can't be read in relay storage. The relay
+itself still sees each request while handling it.
+
+Handing over: a sealed delivery up to 600 KiB goes out on the control socket
+as `hook.delivery`; a larger one is announced as `hook.pending` and fetched
+with `GET /v2/hosts/{h}/hooks/deliveries/{id}`. The computer answers
+`hook.ack` (at most one a second, its own limiter `HOOK_ACK_RATE_LIMITER`
+rather than the control one) once it stored them, and the relay deletes
+them. Every (re)connect replays what wasn't acknowledged, oldest first (whole
+up to 4 MiB, announced after that). Deliveries wait 24 hours at most.
+
+The host changes its hooks only with revisions: `POST .../hooks` mints one,
+`PUT .../hooks` sets the whole wanted list (others retired; a retired hook's
+row is kept 25 hours), and `GET .../hooks` returns the last revision applied.
+A call whose revision isn't newer than the last applied one is ignored
+(`409` for a mint, `{"applied":false}` for a `PUT`). A host the relay
+doesn't know gets `404` with code `unknown-host`, a wrong secret `401` with
+`bad-host-secret`; the server then registers again and mints its hooks anew.
+
 ## Limits (Workers Free)
 
 The relay stays on Workers Free, which has a hard daily ceiling. Each host gets
@@ -126,6 +173,9 @@ a share of it:
 - `THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY` (20): new hosts per IP.
 - `JOIN_RATE_LIMITER`: 10 join attempts per IP per minute.
 - At most 50 devices per host.
+- `THREADLINES_RELAY_HOST_DAILY_HOOKS` (1,000): event deliveries per host per
+  UTC day. Each also counts as one message above. At most 500 deliveries or
+  50 MiB wait per host, and a host keeps at most 500 hooks.
 
 Usage is tallied on each socket's attachment (so it survives hibernation) and
 committed to storage at most once a minute, or when a device disconnects.
@@ -182,6 +232,22 @@ vp run '@threadlines/relay-worker#typecheck'
 vp run '@threadlines/relay-worker#dev'        # local relay; point THREADLINES_RELAY_URL at it
 vp run '@threadlines/relay-worker#deploy'
 ```
+
+Event tasks need the address key as a Worker secret, a long random value
+that never changes once addresses are out (changing it voids every address):
+
+```sh
+openssl rand -base64 32 | wrangler secret put HOOK_PATH_KEY
+```
+
+Without it the relay refuses to mint (`503`, code `hooks-off`) and answers
+every hook address with `404`. For `wrangler dev`, put a throwaway
+`HOOK_PATH_KEY=...` in `apps/relay-worker/.dev.vars`.
+
+Invocation logs are off in `wrangler.jsonc`: they record whole URLs, and a
+hook address is the only credential of a task without a signature check.
+Every relay log line goes through `loggedPath()` (`src/log.ts`), which cuts
+`/v2/hooks/...` to `/v2/hooks/…`.
 
 Deploying v2 the first time applies the `v2` Durable Object migration
 (`RelayHost`, `RelayCodeShard`, `RelayLedger`). Deploy the relay before

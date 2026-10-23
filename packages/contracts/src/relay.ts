@@ -244,6 +244,29 @@ export const RelayHookStateResult = Schema.Struct({
 });
 export type RelayHookStateResult = typeof RelayHookStateResult.Type;
 
+/**
+ * `GET /v2/hosts/{h}/hooks`: the last revision the relay applied. The host
+ * asks after its control socket was refused, to tell a relay that forgot it
+ * (`unknown-host`, `bad-host-secret`) from one it can't reach.
+ */
+export const RelayHookStatusResult = Schema.Struct({
+  revision: Schema.Int,
+});
+export type RelayHookStatusResult = typeof RelayHookStatusResult.Type;
+
+/**
+ * Error codes on host-secret routes. `unknown-host` and `bad-host-secret`
+ * mean the relay no longer knows this computer: register again.
+ */
+export const RELAY_ERROR_UNKNOWN_HOST = "unknown-host" as const;
+export const RELAY_ERROR_BAD_HOST_SECRET = "bad-host-secret" as const;
+/** A hook call whose revision the relay has already passed. */
+export const RELAY_ERROR_STALE_REVISION = "stale-revision" as const;
+/** The relay has no hook path key, so it doesn't take events. */
+export const RELAY_ERROR_HOOKS_OFF = "hooks-off" as const;
+/** The host has as many hooks as the relay keeps for one computer. */
+export const RELAY_ERROR_TOO_MANY_HOOKS = "too-many-hooks" as const;
+
 /** One delivery as the relay holds it; `sealed` is relayHookSeal's envelope. */
 export const RelayHookDelivery = Schema.Struct({
   deliveryId: RelayHookDeliveryId,
@@ -424,6 +447,9 @@ export const RelayUsageToday = Schema.Struct({
   awakeSecondsLimit: Schema.Number,
   limited: Schema.Boolean,
   resetsAt: IsoDateTime,
+  /** Event task deliveries accepted today, and the daily cap ("Events today"). Newer relays only. */
+  hooks: Schema.optionalKey(Schema.Number),
+  hookLimit: Schema.optionalKey(Schema.Number),
 });
 export type RelayUsageToday = typeof RelayUsageToday.Type;
 
