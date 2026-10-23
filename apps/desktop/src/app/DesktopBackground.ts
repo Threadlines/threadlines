@@ -4,7 +4,8 @@
  * running on Windows and Linux").
  *
  * - Keep this computer awake for scheduled tasks: while this computer's
- *   server has an active task with a schedule, an Electron power-save
+ *   server has an active task that runs on its own (a schedule, or an event
+ *   task waiting for events), an Electron power-save
  *   blocker (`prevent-app-suspension`) stops idle sleep. Closing a laptop's
  *   lid still sleeps it.
  * - Keep running in the background (Windows and Linux): closing the window

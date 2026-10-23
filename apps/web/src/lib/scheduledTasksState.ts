@@ -189,11 +189,13 @@ export function useScheduledTaskRequestsForThread(
 
 /**
  * Active tasks that run again on their own on this computer (not manual,
- * not a one-time task that ran): what keeps it awake for them.
+ * not a one-time task that ran; an event task runs whenever an event comes):
+ * what keeps it awake for them.
  */
 export function countActiveScheduledTasks(snapshot: ScheduledTasksSnapshot | undefined): number {
   return (snapshot?.tasks ?? []).filter(
-    (task) => task.status === "active" && task.nextRunAt !== null,
+    (task) =>
+      task.status === "active" && (task.nextRunAt !== null || task.cadence.kind === "webhook"),
   ).length;
 }
 

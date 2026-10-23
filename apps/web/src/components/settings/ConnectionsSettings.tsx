@@ -1382,16 +1382,25 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   );
 
   const relayUsage = relayAccess?.usage ?? null;
+  // Event tasks' events through the relay today (docs/design/event-tasks.md).
+  const relayEventsLine =
+    relayUsage?.hooks !== undefined && relayUsage.hooks > 0
+      ? `Events today: ${relayUsage.hooks.toLocaleString()}${
+          relayUsage.hookLimit !== undefined ? ` of ${relayUsage.hookLimit.toLocaleString()}` : ""
+        }`
+      : null;
+  const relayUseLine =
+    relayUsage && (relayUsage.messages > 0 || visibleDeviceSessions.length > 0)
+      ? relayUsage.limited
+        ? `Today's relay allowance is used up. It resets at midnight UTC.`
+        : `Relay use today: ${Math.min(100, Math.ceil((relayUsage.messages / Math.max(relayUsage.messageLimit, 1)) * 100))}% of the free daily allowance`
+      : null;
   const relayStatusLine =
     relayAccess?.status === "unsupported" || relayAccess?.status === "disabled"
       ? (relayAccess.error ?? "Device codes are off on this relay.")
       : relayAccess?.status === "offline"
         ? (relayAccess.error ?? "Can't reach the relay right now.")
-        : relayUsage && (relayUsage.messages > 0 || visibleDeviceSessions.length > 0)
-          ? relayUsage.limited
-            ? `Today's relay allowance is used up. It resets at midnight UTC.`
-            : `Relay use today: ${Math.min(100, Math.ceil((relayUsage.messages / Math.max(relayUsage.messageLimit, 1)) * 100))}% of the free daily allowance`
-          : null;
+        : [relayUseLine, relayEventsLine].filter((line) => line !== null).join(" · ") || null;
 
   const devicesSection = (
     <SettingsSection
