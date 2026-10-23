@@ -1,5 +1,5 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
-import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import {
@@ -1550,7 +1550,10 @@ export default function Sidebar() {
         // A page with a list of its own (General chats, Computers, Settings)
         // on a wide screen; on a phone, only one whose list is in the sheet.
         <>
-          <PageListBody />
+          {/* Holds the list's place while its code loads, so the footer stays put. */}
+          <Suspense fallback={<div className="min-h-0 flex-1" />}>
+            <PageListBody />
+          </Suspense>
           {destinationList?.ownFooter ? null : (
             <>
               <SidebarSeparator />

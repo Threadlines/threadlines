@@ -1,11 +1,10 @@
 /**
- * The Scheduled page's pure parts (docs/design/fleet.md, Part 6): which
- * computers it lists, its search params, how runs and times read, and the
- * task form's state, checks and the draft it saves.
+ * The Scheduled page's pure parts (docs/design/fleet.md, Part 6): how runs
+ * and times read, and the task form's state, checks and the draft it saves.
+ * Which computers it lists and its search params are in scheduledShell.logic.ts.
  */
 import {
   type EnvironmentId,
-  type ExecutionEnvironmentDescriptor,
   type GitHubEventPreset,
   type GitHubEventTrigger,
   type ModelSelection,
@@ -44,95 +43,11 @@ import {
 } from "@threadlines/shared/webhookTasks";
 import * as Result from "effect/Result";
 
-import type { SavedEnvironmentConnectionState } from "../../environments/runtime/catalog";
-import type { ScheduledTaskEnvironment } from "../../lib/scheduledTasksState";
 import { viewerTimeZone } from "../../lib/timeZones";
-import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 
 // ---------------------------------------------------------------------------
-// Which computers run scheduled tasks
+// Where the page is (its search params are in scheduledShell.logic.ts)
 // ---------------------------------------------------------------------------
-
-interface ScheduledTaskComputer {
-  readonly connectionState: SavedEnvironmentConnectionState;
-  readonly descriptor: Pick<ExecutionEnvironmentDescriptor, "capabilities" | "label"> | null;
-}
-
-/**
- * This computer and every connected saved computer whose server reports the
- * `scheduledTasks` capability, this one first and the rest by name, each
- * saying whether it runs event tasks (`eventTasks`). An absent capability (an
- * older Threadlines) is a no.
- */
-export function scheduledTaskEnvironmentsOf(input: {
-  readonly primaryEnvironmentId: EnvironmentId | null;
-  readonly primaryDescriptor: Pick<ExecutionEnvironmentDescriptor, "capabilities" | "label"> | null;
-  readonly runtimeById: Readonly<Record<EnvironmentId, ScheduledTaskComputer>>;
-  readonly savedLabelOf: (environmentId: EnvironmentId) => string | null;
-}): ScheduledTaskEnvironment[] {
-  const environments: ScheduledTaskEnvironment[] = [];
-  const seen = new Set<EnvironmentId>();
-  const { primaryEnvironmentId, primaryDescriptor } = input;
-  if (primaryEnvironmentId && primaryDescriptor?.capabilities.scheduledTasks === true) {
-    seen.add(primaryEnvironmentId);
-    environments.push({
-      environmentId: primaryEnvironmentId,
-      isPrimary: true,
-      eventTasks: primaryDescriptor.capabilities.eventTasks === true,
-      label: resolveEnvironmentOptionLabel({
-        isPrimary: true,
-        environmentId: primaryEnvironmentId,
-        runtimeLabel: primaryDescriptor.label,
-      }),
-    });
-  }
-  const others: ScheduledTaskEnvironment[] = [];
-  for (const environmentId of Object.keys(input.runtimeById) as EnvironmentId[]) {
-    if (seen.has(environmentId)) continue;
-    const runtime = input.runtimeById[environmentId];
-    if (!runtime || runtime.connectionState !== "connected") continue;
-    if (runtime.descriptor?.capabilities.scheduledTasks !== true) continue;
-    seen.add(environmentId);
-    others.push({
-      environmentId,
-      isPrimary: false,
-      eventTasks: runtime.descriptor.capabilities.eventTasks === true,
-      label: resolveEnvironmentOptionLabel({
-        isPrimary: false,
-        environmentId,
-        runtimeLabel: runtime.descriptor.label,
-        savedLabel: input.savedLabelOf(environmentId),
-      }),
-    });
-  }
-  return [...environments, ...others.toSorted((a, b) => a.label.localeCompare(b.label))];
-}
-
-// ---------------------------------------------------------------------------
-// Where the page is
-// ---------------------------------------------------------------------------
-
-export type ScheduledView = "new" | "edit";
-
-export interface ScheduledSearch {
-  /** The computer whose task is open. */
-  readonly environment?: string;
-  readonly task?: string;
-  /** The form: a new task, or the open task being edited. */
-  readonly view?: ScheduledView;
-}
-
-export function parseScheduledSearch(search: Record<string, unknown>): ScheduledSearch {
-  const text = (value: unknown) =>
-    typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-  const environment = text(search.environment);
-  const task = text(search.task);
-  const view = search.view === "new" || search.view === "edit" ? search.view : undefined;
-  return {
-    ...(environment !== undefined && task !== undefined ? { environment, task } : {}),
-    ...(view !== undefined ? { view } : {}),
-  };
-}
 
 /** A task, with the computer it lives on. */
 export interface ScheduledTaskRef {

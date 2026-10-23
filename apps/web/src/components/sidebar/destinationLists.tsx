@@ -1,14 +1,32 @@
 import type { ComponentType } from "react";
 
-import { GeneralChatsList } from "../chats/GeneralChatsList";
-import { FleetComputersList } from "../fleet/FleetComputersList";
-import { ScheduledTasksList } from "../scheduled/ScheduledTasksList";
+import { lazyWithPreload } from "../../lib/lazyWithPreload";
 import { SettingsDestinationList } from "../settings/SettingsSidebarNav";
 import type { NavigationDestinationId } from "./navigationRail.logic";
 
+// The pages' own lists are chunks of their own: a launch shows the threads,
+// so startup never waits for them, and the shell fetches them once it has
+// painted (preloadDestinationLists) so the first switch is instant.
+const GeneralChatsList = lazyWithPreload(() =>
+  import("../chats/GeneralChatsList").then((module) => module.GeneralChatsList),
+);
+const FleetComputersList = lazyWithPreload(() =>
+  import("../fleet/FleetComputersList").then((module) => module.FleetComputersList),
+);
+const ScheduledTasksList = lazyWithPreload(() =>
+  import("../scheduled/ScheduledTasksList").then((module) => module.ScheduledTasksList),
+);
+
+/** Fetches every page's list ahead of its first showing. */
+export function preloadDestinationLists(): void {
+  void GeneralChatsList.preload();
+  void FleetComputersList.preload();
+  void ScheduledTasksList.preload();
+}
+
 /** What the list beside the rail shows while a destination is on screen. */
 export interface DestinationList {
-  /** The thread inbox, or a page's own list. */
+  /** The thread inbox, or a page's own list (rendered under a Suspense boundary). */
   readonly body: "inbox" | ComponentType;
   /** It ends in a footer of its own; otherwise the shared one (update notices, version) does. */
   readonly ownFooter?: boolean;
@@ -27,10 +45,10 @@ export interface DestinationList {
  */
 export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList | null> = {
   threads: { body: "inbox" },
-  chats: { body: GeneralChatsList, inPhoneSheet: true },
+  chats: { body: GeneralChatsList.Component, inPhoneSheet: true },
   "pull-requests": null,
-  fleet: { body: FleetComputersList, inPhoneSheet: true },
-  scheduled: { body: ScheduledTasksList, inPhoneSheet: true },
+  fleet: { body: FleetComputersList.Component, inPhoneSheet: true },
+  scheduled: { body: ScheduledTasksList.Component, inPhoneSheet: true },
   usage: null,
   settings: { body: SettingsDestinationList, ownFooter: true },
 };

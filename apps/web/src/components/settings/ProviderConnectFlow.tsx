@@ -1,18 +1,18 @@
 "use client";
 
 import type { EnvironmentId, ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
-import type { Terminal } from "@xterm/xterm";
 import { CheckIcon, ChevronDownIcon, CopyIcon, ExternalLinkIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { lazyWithPreload } from "../../lib/lazyWithPreload";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { createXtermSurface } from "../terminal/xtermSurface";
 import {
   isProviderConnectFlowActive,
+  PROVIDER_CONNECT_TERMINAL_CLASS,
   providerConnectStatusLine,
 } from "./providerConnectFlow.logic";
 import { useIsCommunityAgent } from "./communityAgents";
@@ -20,81 +20,9 @@ import { ProviderAuthQuestionForm } from "./ProviderAuthQuestionForm";
 import type { ProviderConnectFlowState } from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
-interface ProviderConnectTerminalProps {
-  readonly bufferRef: { current: string };
-  readonly writeRef: { current: ((data: string) => void) | null };
-  /** Typing, sent to the run on the computer that runs it. */
-  readonly onInput: (data: string) => void;
-  readonly onResize: (cols: number, rows: number) => void;
-}
-
-/**
- * The real interactive terminal behind "Show details". Mounted only while
- * expanded; it replays the buffered output the panel has seen so far, then
- * receives live chunks through `writeRef`.
- */
-function ProviderConnectTerminal({
-  bufferRef,
-  writeRef,
-  onInput,
-  onResize,
-}: ProviderConnectTerminalProps) {
-  const mountRef = useRef<HTMLDivElement>(null);
-  // Read through refs: a new callback (the computer reconnected) must not
-  // rebuild the terminal and lose what it shows.
-  const onInputRef = useRef(onInput);
-  const onResizeRef = useRef(onResize);
-  useEffect(() => {
-    onInputRef.current = onInput;
-    onResizeRef.current = onResize;
-  }, [onInput, onResize]);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    const { terminal, fitAddon } = createXtermSurface({ mount, fontSize: 11, scrollback: 2_000 });
-    let disposed = false;
-
-    if (bufferRef.current.length > 0) {
-      terminal.write(bufferRef.current);
-    }
-    writeRef.current = (data: string) => {
-      if (!disposed) terminal.write(data);
-    };
-
-    const dataSubscription = terminal.onData((data) => onInputRef.current(data));
-
-    const pushSize = (activeTerminal: Terminal) => {
-      onResizeRef.current(activeTerminal.cols, activeTerminal.rows);
-    };
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (disposed) return;
-      fitAddon.fit();
-      pushSize(terminal);
-    });
-    resizeObserver.observe(mount);
-    pushSize(terminal);
-    terminal.focus();
-
-    return () => {
-      disposed = true;
-      writeRef.current = null;
-      resizeObserver.disconnect();
-      dataSubscription.dispose();
-      terminal.dispose();
-    };
-  }, [bufferRef, writeRef]);
-
-  return (
-    <div
-      ref={mountRef}
-      className="h-56 w-full overflow-hidden rounded-sm bg-background"
-      data-agent-row-toggle-ignore
-    />
-  );
-}
+const ProviderConnectTerminal = lazyWithPreload(() =>
+  import("./ProviderConnectTerminal").then((module) => module.ProviderConnectTerminal),
+);
 
 export interface ProviderConnectFlowProps {
   readonly instanceId: ProviderInstanceId;
@@ -599,12 +527,14 @@ export function ProviderConnectFlow({
           ) : null}
 
           {showTerminal && !isBrowserFlow ? (
-            <ProviderConnectTerminal
-              bufferRef={outputBufferRef}
-              writeRef={terminalWriteRef}
-              onInput={writeTerminal}
-              onResize={resizeTerminal}
-            />
+            <Suspense fallback={<div className={PROVIDER_CONNECT_TERMINAL_CLASS} />}>
+              <ProviderConnectTerminal.Component
+                bufferRef={outputBufferRef}
+                writeRef={terminalWriteRef}
+                onInput={writeTerminal}
+                onResize={resizeTerminal}
+              />
+            </Suspense>
           ) : null}
 
           {isActive && state.question ? (

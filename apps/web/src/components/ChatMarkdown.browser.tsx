@@ -776,10 +776,17 @@ describe("ChatMarkdown", () => {
     ].join("\n");
     const screen = await render(<ChatMarkdown text={text} cwd="/repo" />);
     try {
-      await vi.waitFor(() => {
-        expect(document.querySelectorAll(".chat-markdown-math .katex")).toHaveLength(2);
-        expect(document.querySelector(".chat-markdown-math-display .katex-display")).not.toBeNull();
-      });
+      // KaTeX is a chunk of its own: its first load on a busy CI runner can
+      // outlast waitFor's one second.
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll(".chat-markdown-math .katex")).toHaveLength(2);
+          expect(
+            document.querySelector(".chat-markdown-math-display .katex-display"),
+          ).not.toBeNull();
+        },
+        { timeout: 10_000 },
+      );
       // The drawn formula keeps its TeX for screen readers and copying.
       expect(document.querySelector(".chat-markdown-math annotation")?.textContent).toBe(
         "O(n \\log n)",

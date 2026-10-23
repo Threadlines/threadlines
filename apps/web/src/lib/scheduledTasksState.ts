@@ -18,7 +18,7 @@ import type {
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 
-import { scheduledTaskEnvironmentsOf } from "../components/scheduled/scheduled.logic";
+import { scheduledTaskEnvironmentsOf } from "../components/scheduled/scheduledShell.logic";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { useStore } from "../store";
 import {

@@ -282,6 +282,10 @@ export function isProviderConnectFlowActive(status: ProviderAuthStatus): boolean
 /** Milliseconds of "still running" after which the terminal opens itself. */
 export const PROVIDER_CONNECT_TERMINAL_AUTO_EXPAND_MS = 15_000;
 
+/** The terminal's box, shared with the empty box that holds its place while xterm loads. */
+export const PROVIDER_CONNECT_TERMINAL_CLASS =
+  "h-56 w-full overflow-hidden rounded-sm bg-background";
+
 /**
  * A flow that is still running after ~15s is almost always waiting for the
  * user to paste a code or pick a menu entry, so the terminal opens itself —

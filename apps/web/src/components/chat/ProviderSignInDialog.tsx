@@ -12,23 +12,18 @@
  * Mounted once at the root.
  */
 import type { EnvironmentId, ProviderInstanceId } from "@threadlines/contracts";
-import {
-  BROWSER_SIGN_IN_DRIVERS,
-  GUIDED_SIGN_IN_DRIVERS,
-} from "@threadlines/shared/providerAuthCommands";
+import { Suspense } from "react";
 import { create } from "zustand";
 
-import { ProviderConnectFlow } from "../settings/ProviderConnectFlow";
-import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
+import { lazyWithPreload } from "../../lib/lazyWithPreload";
+import { Dialog } from "../ui/dialog";
+
+const ProviderSignInDialogContent = lazyWithPreload(() =>
+  import("./ProviderSignInDialogContent").then((module) => module.ProviderSignInDialogContent),
+);
+
+/** Fetches the window's body ahead of its first open. */
+export const preloadProviderSignInDialog = ProviderSignInDialogContent.preload;
 
 /** The sign-in a window shows: which agent, on which computer. */
 export interface ProviderSignInDialogTarget {
@@ -44,7 +39,7 @@ export interface ProviderSignInDialogTarget {
   readonly driver: string | null;
 }
 
-interface ProviderSignInDialogRequest extends ProviderSignInDialogTarget {
+export interface ProviderSignInDialogRequest extends ProviderSignInDialogTarget {
   /** Each ask starts fresh, even for the same agent twice. */
   readonly id: number;
 }
@@ -76,59 +71,11 @@ export function ProviderSignInDialogHost() {
         if (!open) closeProviderSignInDialog();
       }}
     >
-      {request ? <ProviderSignInDialogContent key={request.id} request={request} /> : null}
+      {request ? (
+        <Suspense fallback={null}>
+          <ProviderSignInDialogContent.Component key={request.id} request={request} />
+        </Suspense>
+      ) : null}
     </Dialog>
-  );
-}
-
-function ProviderSignInDialogContent({
-  request,
-}: {
-  readonly request: ProviderSignInDialogRequest;
-}) {
-  const { displayName, computerLabel, driver } = request;
-  const browserSignIn =
-    driver !== null && (BROWSER_SIGN_IN_DRIVERS.has(driver) || GUIDED_SIGN_IN_DRIVERS.has(driver));
-  return (
-    <DialogPopup className="max-w-lg" data-testid="provider-sign-in-dialog">
-      <DialogHeader>
-        <DialogTitle>
-          {computerLabel
-            ? `Sign in to ${displayName} on ${computerLabel}`
-            : `Sign in to ${displayName}`}
-        </DialogTitle>
-        <DialogDescription>
-          {computerLabel
-            ? `${displayName} runs on ${computerLabel}, so that's where it signs in. Follow the steps here.`
-            : `${displayName} runs on another computer, so that's where it signs in. Follow the steps here.`}
-        </DialogDescription>
-      </DialogHeader>
-      <DialogPanel>
-        <ProviderConnectFlow
-          instanceId={request.instanceId}
-          environmentId={request.environmentId}
-          flow="login"
-          displayName={displayName}
-          actionLabel="Sign in"
-          command=""
-          surface={browserSignIn ? "browser" : "terminal"}
-          // Pi asks for the address in its own question.
-          acceptsRedirect={driver === null || !GUIDED_SIGN_IN_DRIVERS.has(driver)}
-          // That computer's terminal output is the only view of what its
-          // command printed: show it from the start.
-          autoShowTerminal
-          // "Your own terminal" would be on a computer the user isn't at.
-          offerCommandFallback={false}
-          autoStart={request.start}
-          startErrorInline
-          onSucceeded={() => closeProviderSignInDialog(request.id)}
-        />
-      </DialogPanel>
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={() => closeProviderSignInDialog()}>
-          Close
-        </Button>
-      </DialogFooter>
-    </DialogPopup>
   );
 }

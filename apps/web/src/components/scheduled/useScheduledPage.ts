@@ -28,11 +28,8 @@ import { buildRoomAgentLabels } from "../../rooms";
 import { deriveAccessLevel, runtimeModeConfig } from "../../runtimeModeOptions";
 import { selectEnvironmentState, selectProjectsAcrossEnvironments, useStore } from "../../store";
 import { getPickerModelName } from "../chat/providerIconUtils";
-import {
-  parseScheduledSearch,
-  type ScheduledSearch,
-  type ScheduledTaskRef,
-} from "./scheduled.logic";
+import type { ScheduledTaskRef } from "./scheduled.logic";
+import { parseScheduledSearch, type ScheduledSearch } from "./scheduledShell.logic";
 
 /** Where the Scheduled page is, from its search params (the list beside the rail reads it too). */
 export function useScheduledSearch(): ScheduledSearch {
