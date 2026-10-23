@@ -3,20 +3,18 @@
  * agent: the Providers settings page and the setup screen.
  *
  * Starting an update is one RPC; progress then arrives on the provider
- * snapshot's `updateState`, so this hook only tracks the gap between the click
- * and the server's first word, plus the Windows "Claude is still running"
- * recovery that stops the processes holding the binary.
+ * snapshot's `updateState`, and the run's notice reports it wherever the user
+ * goes (`ProviderUpdateProgress`). This hook only tracks the gap between the
+ * click and the server's first word, plus the Windows "Claude is still
+ * running" recovery that stops the processes holding the binary.
  *
  * @module useProviderUpdateRunner
  */
-import {
-  PROVIDER_DISPLAY_NAMES,
-  type ProviderInstanceId,
-  type ServerProvider,
-} from "@threadlines/contracts";
+import { type ProviderInstanceId, type ServerProvider } from "@threadlines/contracts";
 import { useCallback, useMemo, useState } from "react";
 
 import { ensureLocalApi } from "../../localApi";
+import { trackProviderUpdates } from "../../providerUpdateRunStore";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -87,6 +85,7 @@ export function useProviderUpdateRunner(
     // A community agent is updated to the listing the user was shown, named
     // by its digest; the server refuses if the registry has moved on.
     const recipeDigest = candidate.community?.updateCandidate?.recipeDigest;
+    const tracking = trackProviderUpdates([group]);
     try {
       await ensureLocalApi().server.updateProvider({
         provider: candidate.driver,
@@ -94,16 +93,8 @@ export function useProviderUpdateRunner(
         ...(recipeDigest ? { recipeDigest } : {}),
       });
     } catch (error) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not update ${candidate.community ? (candidate.displayName ?? "the agent") : (PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)}`,
-          description:
-            error instanceof Error
-              ? error.message
-              : "The provider update command could not be started.",
-        }),
-      );
+      // The run's notice reports it, as it would any other failed update.
+      tracking.reportStartFailure(group, error);
     } finally {
       setStartingGroups((previous) => withoutMember(previous, group));
     }

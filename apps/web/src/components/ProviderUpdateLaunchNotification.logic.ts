@@ -2,8 +2,6 @@ import {
   ACP_REGISTRY_DRIVER_KIND,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderUpdateStatus,
 } from "@threadlines/contracts";
@@ -15,56 +13,11 @@ export type ProviderUpdateCandidate = ServerProvider & {
   };
 };
 
-export type ProviderUpdateToastType = "warning" | "loading" | "error" | "success";
-export type ProviderUpdateToastPhase = "initial" | "running" | "failed" | "unchanged" | "succeeded";
-
-export interface ProviderUpdateToastView {
-  readonly phase: ProviderUpdateToastPhase;
-  readonly type: ProviderUpdateToastType;
+/** What the launch prompt says before anything runs. */
+export interface ProviderUpdatePromptView {
   readonly title: string;
   readonly description: string;
-  readonly dismissAfterVisibleMs?: number;
 }
-
-export type ProviderUpdateSidebarPillTone = "loading" | "warning" | "error" | "success";
-export type ProviderUpdateSidebarPillItemTone =
-  | "queued"
-  | "running"
-  | "warning"
-  | "error"
-  | "success";
-
-type ProviderUpdateSidebarPillItemStatus = Exclude<ServerProviderUpdateStatus, "idle">;
-
-export interface ProviderUpdateSidebarPillItem {
-  readonly key: string;
-  readonly label: string;
-  readonly status: ProviderUpdateSidebarPillItemStatus;
-  readonly statusLabel: string;
-  readonly tone: ProviderUpdateSidebarPillItemTone;
-  /** Failure/unchanged detail shown inline under the row. */
-  readonly message?: string;
-}
-
-export interface ProviderUpdateSidebarPillView {
-  readonly key: string;
-  readonly tone: ProviderUpdateSidebarPillTone;
-  readonly title: string;
-  /** Worst-state chip beside the title ("1 failed", "2 updating", "v1.2.0"). */
-  readonly statusChipLabel: string;
-  readonly statusChipTone: ProviderUpdateSidebarPillItemTone;
-  readonly description: string;
-  readonly items: readonly ProviderUpdateSidebarPillItem[];
-  readonly dismissible?: boolean;
-  readonly dismissAfterVisibleMs?: number;
-}
-
-interface ProviderUpdateSidebarPillOptions {
-  readonly visibleAfterIso?: string;
-  readonly dismissedKeys?: ReadonlySet<string>;
-}
-
-const PROVIDER_UPDATE_SUCCESS_VISIBLE_MS = 3_000;
 
 function formatVersion(value: string): string {
   return value.startsWith("v") ? value : `v${value}`;
@@ -112,51 +65,6 @@ function dedupeProvidersByDriver<T extends ServerProvider>(providers: ReadonlyAr
   }
 
   return [...latestProviderByGroup.values()];
-}
-
-function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
-  const latestProviderByInstanceId = new Map<ProviderInstanceId, T>();
-
-  for (const provider of providers) {
-    const current = latestProviderByInstanceId.get(provider.instanceId);
-    if (!current || provider.checkedAt.localeCompare(current.checkedAt) >= 0) {
-      latestProviderByInstanceId.set(provider.instanceId, provider);
-    }
-  }
-
-  return [...latestProviderByInstanceId.values()];
-}
-
-function getProviderUpdatedTitle(provider: Pick<ServerProvider, "driver" | "version">): string {
-  const providerName = getProviderDisplayName(provider);
-  return provider.version
-    ? `${providerName} updated: ${formatVersion(provider.version)}`
-    : `${providerName} updated`;
-}
-
-function getProviderUpdatedDescription(providerCount: number): string {
-  return providerCount === 1
-    ? "New sessions will use the updated provider."
-    : "New sessions will use the updated providers.";
-}
-
-function getProviderFailedUpdateTitle(
-  provider: Pick<ServerProvider, "driver" | "versionAdvisory">,
-): string {
-  const providerName = getProviderDisplayName(provider);
-  const attemptedVersion = provider.versionAdvisory?.latestVersion;
-  return attemptedVersion
-    ? `${providerName} ${formatVersion(attemptedVersion)} update failed`
-    : `${providerName} update failed`;
-}
-
-/** "Claude v1.2.0" — the provider plus the version the update attempted. */
-function getProviderAttemptedVersionTitle(
-  provider: Pick<ServerProvider, "driver" | "versionAdvisory">,
-): string {
-  const providerName = getProviderDisplayName(provider);
-  const attemptedVersion = provider.versionAdvisory?.latestVersion;
-  return attemptedVersion ? `${providerName} ${formatVersion(attemptedVersion)}` : providerName;
 }
 
 /** The agent's name: a community agent's own, the driver's for the rest. */
@@ -301,435 +209,375 @@ export function formatProviderUpdateList(providers: ReadonlyArray<ProviderUpdate
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
-export function getProviderUpdateInitialToastView(input: {
+export function getProviderUpdatePromptView(input: {
   readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
   readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
-}): ProviderUpdateToastView {
-  const hasMultipleProviders = input.updateProviders.length > 1;
+}): ProviderUpdatePromptView {
+  const single = input.updateProviders.length === 1 ? input.updateProviders[0]! : null;
   return {
-    phase: "initial",
-    type: "warning",
-    title: getProviderUpdateInitialToastTitle(input.updateProviders),
+    title: single
+      ? `${getProviderDisplayName(single)} ${formatVersion(single.versionAdvisory.latestVersion)} is available`
+      : "Updates available",
     description:
-      input.oneClickProviders.length > 0
-        ? hasMultipleProviders
-          ? `${formatProviderUpdateList(input.updateProviders)} can be updated.`
-          : "Install the update now or review provider settings."
-        : `${formatProviderUpdateList(input.updateProviders)} can be updated from provider settings.`,
+      input.oneClickProviders.length === 0
+        ? `${formatProviderUpdateList(input.updateProviders)} can be updated from Settings.`
+        : single
+          ? "Install it now, or see the details in Settings."
+          : `${formatProviderUpdateList(input.updateProviders)} are ready to install.`,
   };
-}
-
-export function getProviderUpdateRunningToastView(providerCount: number): ProviderUpdateToastView {
-  return {
-    phase: "running",
-    type: "loading",
-    title: providerCount === 1 ? "Updating provider" : "Updating providers",
-    description:
-      providerCount === 1
-        ? "Running provider update command."
-        : "Progress is shown in the sidebar.",
-  };
-}
-
-export function getProviderUpdateRejectedToastView(
-  providerCount: number,
-  message: string,
-): ProviderUpdateToastView {
-  return {
-    phase: "failed",
-    type: "error",
-    title: providerCount === 1 ? "Provider update failed" : "Provider updates failed",
-    description: message,
-  };
-}
-
-export function getProviderUpdateProgressToastView(input: {
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly providerCount: number;
-}): ProviderUpdateToastView {
-  const providers = dedupeProvidersByDriver(input.providers);
-  const failedProviders = providers.filter((provider) => provider.updateState?.status === "failed");
-  if (failedProviders.length > 0) {
-    return {
-      phase: "failed",
-      type: "error",
-      title: failedProviders.length === 1 ? "Provider update failed" : "Provider updates failed",
-      description: getFailedProviderUpdateDescription(failedProviders),
-    };
-  }
-
-  const unchangedProviders = providers.filter(
-    (provider) => provider.updateState?.status === "unchanged",
-  );
-  if (unchangedProviders.length > 0) {
-    return {
-      phase: "unchanged",
-      type: "warning",
-      title:
-        unchangedProviders.length === 1
-          ? "Provider still needs an update"
-          : "Providers still need updates",
-      description: `${formatProviderList(unchangedProviders)} ${
-        unchangedProviders.length === 1 ? "still appears" : "still appear"
-      } outdated. Check provider settings for details.`,
-    };
-  }
-
-  if (providers.some(isProviderUpdateActive)) {
-    return getProviderUpdateRunningToastView(input.providerCount);
-  }
-
-  const hasCompleteProviderSnapshots = providers.length >= input.providerCount;
-  const allProvidersUpdated =
-    hasCompleteProviderSnapshots &&
-    providers.every(
-      (provider) =>
-        provider.updateState?.status === "succeeded" || !isProviderUpdateCandidate(provider),
-    );
-  if (allProvidersUpdated) {
-    return {
-      phase: "succeeded",
-      type: "success",
-      title: input.providerCount === 1 ? "Provider updated" : "Provider updates finished",
-      description: getProviderUpdatedDescription(input.providerCount),
-      dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS,
-    };
-  }
-
-  return getProviderUpdateRunningToastView(input.providerCount);
-}
-
-export function getSingleProviderUpdateProgressToastView(
-  provider: ServerProvider,
-): ProviderUpdateToastView {
-  const view = getProviderUpdateProgressToastView({
-    providers: [provider],
-    providerCount: 1,
-  });
-  const providerName = getProviderDisplayName(provider);
-
-  switch (view.phase) {
-    case "running":
-      return {
-        ...view,
-        title: `Updating ${providerName}`,
-      };
-    case "failed":
-      return {
-        ...view,
-        title: getProviderFailedUpdateTitle(provider),
-      };
-    case "unchanged":
-      return {
-        ...view,
-        title: `${providerName} still needs an update`,
-      };
-    case "succeeded":
-      return {
-        ...view,
-        title: getProviderUpdatedTitle(provider),
-      };
-    default:
-      return view;
-  }
-}
-
-export function collectUpdatedProviderSnapshots(input: {
-  readonly results: ReadonlyArray<
-    PromiseSettledResult<{ readonly providers: ReadonlyArray<ServerProvider> }>
-  >;
-  readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
-}): ServerProvider[] {
-  const matchedProviders: ServerProvider[] = [];
-
-  for (const result of input.results) {
-    if (result.status !== "fulfilled") {
-      continue;
-    }
-    for (const provider of result.value.providers) {
-      if (input.providerInstanceIds.has(provider.instanceId)) {
-        matchedProviders.push(provider);
-      }
-    }
-  }
-
-  return dedupeProvidersByInstanceId(matchedProviders);
-}
-
-export function firstRejectedProviderUpdateMessage(
-  results: ReadonlyArray<PromiseSettledResult<unknown>>,
-): string | null {
-  const rejected = results.find((result) => result.status === "rejected");
-  if (!rejected) {
-    return null;
-  }
-  return rejected.reason instanceof Error ? rejected.reason.message : "Provider update failed.";
-}
-
-function getUpdateFinishedAt(provider: ServerProvider): string | null {
-  return provider.updateState?.finishedAt ?? null;
-}
-
-function isRecentTerminalProvider(
-  provider: ServerProvider,
-  visibleAfterIso: string | undefined,
-): boolean {
-  const status = provider.updateState?.status;
-  if (status !== "failed" && status !== "unchanged" && status !== "succeeded") {
-    return false;
-  }
-  if (visibleAfterIso === undefined) {
-    return true;
-  }
-  const finishedAt = getUpdateFinishedAt(provider);
-  return finishedAt !== null && finishedAt >= visibleAfterIso;
-}
-
-function isProviderUpdateSidebarItemStatus(
-  status: ServerProviderUpdateStatus | undefined,
-): status is ProviderUpdateSidebarPillItemStatus {
-  return (
-    status === "queued" ||
-    status === "running" ||
-    status === "succeeded" ||
-    status === "failed" ||
-    status === "unchanged"
-  );
-}
-
-function getProviderUpdateSidebarItemTone(
-  status: ProviderUpdateSidebarPillItemStatus,
-): ProviderUpdateSidebarPillItemTone {
-  switch (status) {
-    case "queued":
-      return "queued";
-    case "running":
-      return "running";
-    case "succeeded":
-      return "success";
-    case "failed":
-      return "error";
-    case "unchanged":
-      return "warning";
-  }
 }
 
 /**
- * A provider with no CLI on the machine has no update to run, so a
- * maintenance command against it is an install. The runner writes both to the
- * same state, and this is where the sidebar tells them apart.
+ * One agent in an update run. `baseline` is its update state when it joined:
+ * a finished state other than that one, or any finished state after it was
+ * seen updating, is this run's result for it, so an old result never counts.
  */
-function isProviderInstallState(provider: Pick<ServerProvider, "installed">): boolean {
-  return !provider.installed;
-}
-
-function getProviderUpdateSidebarStatusLabel(
-  provider: Pick<ServerProvider, "version" | "installed">,
-  status: ProviderUpdateSidebarPillItemStatus,
-): string {
-  const isInstalling = isProviderInstallState(provider);
-  switch (status) {
-    case "queued":
-      return "Queued";
-    case "running":
-      return isInstalling ? "Installing" : "Updating";
-    case "succeeded":
-      return provider.version ? formatVersion(provider.version) : "Updated";
-    case "failed":
-      return "Failed";
-    case "unchanged":
-      return isInstalling ? "Not installed" : "Needs update";
-  }
-}
-
-function collectProviderUpdateSidebarItems(
-  providers: ReadonlyArray<ServerProvider>,
-): ProviderUpdateSidebarPillItem[] {
-  return providers.flatMap((provider) => {
-    const status = provider.updateState?.status;
-    if (!isProviderUpdateSidebarItemStatus(status)) {
-      return [];
-    }
-    const message = provider.updateState?.message;
-    return [
-      {
-        // Providers are deduped by driver, so the driver is a stable row
-        // identity that survives status transitions within an update batch.
-        key: providerUpdateGroupKey(provider),
-        label: getProviderDisplayName(provider),
-        status,
-        statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
-        tone: getProviderUpdateSidebarItemTone(status),
-        ...((status === "failed" || status === "unchanged") && message ? { message } : {}),
-      },
-    ];
-  });
-}
-
-function formatProviderUpdateSidebarItemDescription(
-  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
-): string {
-  return items.map((item) => `${item.label} ${item.statusLabel.toLowerCase()}.`).join(" ");
-}
-
-function formatCountLabel(count: number, singular: string, plural: string): string {
-  return `${count} ${count === 1 ? singular : plural}`;
+export interface ProviderUpdateRunMember {
+  readonly key: string;
+  /** Which request this is: a late answer to an earlier one must not settle it. */
+  readonly attempt: number;
+  readonly baseline: string;
+  readonly seenActive: boolean;
+  /** Its program was missing when it joined, so the run installs it. */
+  readonly installing: boolean;
+  /** Its version when it joined, so "updated to" is only said of a real change. */
+  readonly fromVersion: string | null;
+  /**
+   * The update request failed before the server reported on it. `uncertain`
+   * when the connection dropped first: the server may still be running it.
+   */
+  readonly startFailure: { readonly message: string; readonly uncertain: boolean } | null;
 }
 
 /**
- * Chip beside the card title. Single-provider cards echo the row's status
- * ("Updating", "v1.2.0", "Failed"); multi-provider cards surface the worst
- * state so a failure is visible even while other updates are still running.
+ * Agents updating together on one computer, from the first one to start until
+ * the last one finishes. Anything can start an update (the launch notice,
+ * Settings, setup, another window or device), so a run is built from what the
+ * server reports, plus the agents a caller says it just asked for.
  */
-function getProviderUpdateSidebarChip(items: ReadonlyArray<ProviderUpdateSidebarPillItem>): {
+export interface ProviderUpdateRun {
+  readonly environmentId: string;
+  readonly members: readonly ProviderUpdateRunMember[];
+}
+
+export type ProviderUpdateProgressStatus = Exclude<ServerProviderUpdateStatus, "idle">;
+
+/** One agent's row in the progress notice. */
+export interface ProviderUpdateProgressItem {
+  readonly key: string;
   readonly label: string;
-  readonly tone: ProviderUpdateSidebarPillItemTone;
-} {
-  if (items.length === 1) {
-    const item = items[0]!;
-    return { label: item.statusLabel, tone: item.tone };
-  }
-
-  const failedCount = items.filter((item) => item.status === "failed").length;
-  if (failedCount > 0) {
-    return { label: formatCountLabel(failedCount, "failed", "failed"), tone: "error" };
-  }
-
-  const unchangedCount = items.filter((item) => item.status === "unchanged").length;
-  if (unchangedCount > 0) {
-    return {
-      label: formatCountLabel(unchangedCount, "needs update", "need update"),
-      tone: "warning",
-    };
-  }
-
-  const activeCount = items.filter(
-    (item) => item.status === "running" || item.status === "queued",
-  ).length;
-  if (activeCount > 0) {
-    return { label: formatCountLabel(activeCount, "updating", "updating"), tone: "running" };
-  }
-
-  const succeededCount = items.filter((item) => item.status === "succeeded").length;
-  return { label: formatCountLabel(succeededCount, "updated", "updated"), tone: "success" };
+  readonly status: ProviderUpdateProgressStatus;
+  /** "Waiting", "Updating", "v2.1.230", "Failed", "Not updated". */
+  readonly statusLabel: string;
+  /** The server's explanation for a failed or unfinished update. */
+  readonly message: string | null;
 }
 
-export function getProviderUpdateSidebarPillView(
+export interface ProviderUpdateRunView {
+  readonly phase: "running" | "succeeded" | "failed" | "unchanged";
+  readonly title: string;
+  /** One line under the title; a run of several agents shows its rows instead. */
+  readonly detail: string | null;
+  readonly items: readonly ProviderUpdateProgressItem[];
+}
+
+function updateStateKey(state: ServerProvider["updateState"]): string {
+  return state ? `${state.status}|${state.startedAt ?? ""}|${state.finishedAt ?? ""}` : "idle";
+}
+
+function moreRelevantForProgress(current: ServerProvider, candidate: ServerProvider) {
+  const currentActive = isProviderUpdateActive(current);
+  if (currentActive !== isProviderUpdateActive(candidate)) {
+    return currentActive ? current : candidate;
+  }
+  const currentFinished = current.updateState?.finishedAt ?? "";
+  const candidateFinished = candidate.updateState?.finishedAt ?? "";
+  if (currentFinished !== candidateFinished) {
+    return currentFinished > candidateFinished ? current : candidate;
+  }
+  if ((current.updateState === undefined) !== (candidate.updateState === undefined)) {
+    return current.updateState ? current : candidate;
+  }
+  return chooseRepresentativeProvider(current, candidate);
+}
+
+/**
+ * The instance whose update state speaks for each update group. The server
+ * records an update on the instance it ran against, which needn't be the
+ * group's default one, so an instance that is updating wins, then the one
+ * that finished last.
+ */
+export function selectProviderUpdateGroups(
   providers: ReadonlyArray<ServerProvider>,
-  options?: ProviderUpdateSidebarPillOptions,
-): ProviderUpdateSidebarPillView | null {
-  const dedupedProviders = dedupeProvidersByDriver(providers);
-  const activeProviders = dedupedProviders.filter(isProviderUpdateActive);
-  if (activeProviders.length > 0) {
-    const visibleProviders = dedupedProviders.filter(
-      (provider) =>
-        isProviderUpdateActive(provider) ||
-        isRecentTerminalProvider(provider, options?.visibleAfterIso),
-    );
-    const items = collectProviderUpdateSidebarItems(visibleProviders);
-    const chip = getProviderUpdateSidebarChip(items);
+): ReadonlyMap<string, ServerProvider> {
+  const byGroup = new Map<string, ServerProvider>();
+  for (const provider of providers) {
+    const key = providerUpdateGroupKey(provider);
+    const current = byGroup.get(key);
+    byGroup.set(key, current ? moreRelevantForProgress(current, provider) : provider);
+  }
+  return byGroup;
+}
+
+let nextRunAttempt = 1;
+
+function newRunMember(key: string, provider: ServerProvider | undefined): ProviderUpdateRunMember {
+  return {
+    key,
+    attempt: nextRunAttempt++,
+    baseline: updateStateKey(provider?.updateState),
+    seenActive: provider ? isProviderUpdateActive(provider) : false,
+    installing: provider ? !provider.installed : false,
+    fromVersion: provider?.version ?? null,
+    startFailure: null,
+  };
+}
+
+function isRunMemberDone(member: ProviderUpdateRunMember, provider: ServerProvider | undefined) {
+  if (!member.seenActive && member.startFailure !== null) return true;
+  // Removed while it ran: nothing more will come.
+  if (!provider) return true;
+  const state = provider.updateState;
+  if (state && isProviderUpdateActive(provider)) return false;
+  // Seen updating, then no state at all: the server lost track of it (a restart, say).
+  if (!state) return member.seenActive;
+  return member.seenActive || updateStateKey(state) !== member.baseline;
+}
+
+/**
+ * The run after a new provider snapshot: agents now updating join it (opening
+ * one if none is open), and members are marked once seen updating. Returns the
+ * same run when nothing changed. A run on another computer is dropped.
+ */
+export function advanceProviderUpdateRun(
+  run: ProviderUpdateRun | null,
+  environmentId: string,
+  providers: ReadonlyArray<ServerProvider>,
+): ProviderUpdateRun | null {
+  const current = run?.environmentId === environmentId ? run : null;
+  const groups = selectProviderUpdateGroups(providers);
+  let changed = current !== run;
+  const members = (current?.members ?? []).map((member) => {
+    const provider = groups.get(member.key);
+    if (member.seenActive || !provider || !isProviderUpdateActive(provider)) return member;
+    changed = true;
+    return { ...member, seenActive: true };
+  });
+  for (const [key, provider] of groups) {
+    if (isProviderUpdateActive(provider) && !members.some((member) => member.key === key)) {
+      members.push(newRunMember(key, provider));
+      changed = true;
+    }
+  }
+  if (members.length === 0) return null;
+  return changed ? { environmentId, members } : current;
+}
+
+/**
+ * Puts agents a caller just asked to update into the run, before the server
+ * reports on them, so even an update that finishes between two snapshots is
+ * seen. An agent whose earlier attempt in this run already finished starts
+ * over; one asked for again before the server reported on it gets a new
+ * attempt, so only the latest request's failure can settle it.
+ */
+export function joinProviderUpdateRun(
+  run: ProviderUpdateRun | null,
+  environmentId: string,
+  providers: ReadonlyArray<ServerProvider>,
+  keys: ReadonlyArray<string>,
+): ProviderUpdateRun {
+  const groups = selectProviderUpdateGroups(providers);
+  const members = [...(run?.environmentId === environmentId ? run.members : [])];
+  for (const key of keys) {
+    const provider = groups.get(key);
+    const index = members.findIndex((member) => member.key === key);
+    const member = index === -1 ? null : members[index]!;
+    if (!member) {
+      members.push(newRunMember(key, provider));
+    } else if (isRunMemberDone(member, provider)) {
+      members[index] = newRunMember(key, provider);
+    } else if (!member.seenActive) {
+      members[index] = { ...member, attempt: nextRunAttempt++ };
+    }
+  }
+  return { environmentId, members };
+}
+
+/**
+ * Records that request `attempt` to update `key` on `environmentId` failed
+ * before the server reported on it. Ignored once the server has (it knows
+ * better), and for any other computer or a later request.
+ */
+export function failProviderUpdateRunStart(
+  run: ProviderUpdateRun | null,
+  input: {
+    readonly environmentId: string;
+    readonly key: string;
+    readonly attempt: number;
+    readonly message: string;
+    readonly uncertain: boolean;
+  },
+): ProviderUpdateRun | null {
+  const matches = (member: ProviderUpdateRunMember) =>
+    member.key === input.key && member.attempt === input.attempt && !member.seenActive;
+  if (run?.environmentId !== input.environmentId || !run.members.some(matches)) return run;
+  return {
+    ...run,
+    members: run.members.map((member) =>
+      matches(member)
+        ? { ...member, startFailure: { message: input.message, uncertain: input.uncertain } }
+        : member,
+    ),
+  };
+}
+
+function describeRunMember(
+  member: ProviderUpdateRunMember,
+  provider: ServerProvider | undefined,
+): ProviderUpdateProgressItem & { readonly done: boolean } {
+  const label = provider ? getProviderDisplayName(provider) : member.key;
+  const done = isRunMemberDone(member, provider);
+  const state = provider?.updateState;
+  const startFailure = !member.seenActive ? member.startFailure : null;
+  const status: ProviderUpdateProgressStatus = !done
+    ? state?.status === "running"
+      ? "running"
+      : "queued"
+    : startFailure
+      ? startFailure.uncertain
+        ? "unchanged"
+        : "failed"
+      : state && state.status !== "queued" && state.status !== "running" && state.status !== "idle"
+        ? state.status
+        : "unchanged";
+  const message =
+    status === "failed" || status === "unchanged"
+      ? (startFailure?.message ?? state?.message ?? null)
+      : null;
+  const statusLabel = startFailure?.uncertain
+    ? "Unconfirmed"
+    : status === "queued"
+      ? "Waiting"
+      : status === "running"
+        ? member.installing
+          ? "Installing"
+          : "Updating"
+        : status === "succeeded"
+          ? provider?.version
+            ? formatVersion(provider.version)
+            : member.installing
+              ? "Installed"
+              : "Updated"
+          : status === "failed"
+            ? "Failed"
+            : member.installing
+              ? "Not installed"
+              : "Not updated";
+  return { key: member.key, label, status, statusLabel, message, done };
+}
+
+function nameAgents(labels: ReadonlyArray<string>): string {
+  if (labels.length === 1) return labels[0]!;
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.length} agents`;
+}
+
+/** What the progress notice says about a run. */
+export function describeProviderUpdateRun(
+  run: ProviderUpdateRun,
+  providers: ReadonlyArray<ServerProvider>,
+): ProviderUpdateRunView {
+  const groups = selectProviderUpdateGroups(providers);
+  const described = run.members.map((member) => ({
+    member,
+    provider: groups.get(member.key),
+    item: describeRunMember(member, groups.get(member.key)),
+  }));
+  const items = described.map(({ item: { done: _done, ...item } }) => item);
+  const activeCount = described.filter(({ item }) => !item.done).length;
+  const allInstalling = run.members.every((member) => member.installing);
+  const single = described.length === 1 ? described[0]! : null;
+
+  if (activeCount > 0) {
+    const running = single?.provider?.updateState?.status === "running";
+    const target = single?.provider?.versionAdvisory?.latestVersion ?? null;
     return {
-      // Keyed by batch membership only: status transitions within the batch
-      // morph the card in place instead of re-keying (and re-animating) it.
-      key: `updating:${visibleProviders.map(providerUpdateGroupKey).toSorted().join("|")}`,
-      tone: "loading",
-      title: items.length === 1 ? getProviderDisplayName(activeProviders[0]!) : "Provider updates",
-      statusChipLabel: chip.label,
-      statusChipTone: chip.tone,
-      description:
-        items.length > 1
-          ? formatProviderUpdateSidebarItemDescription(items)
-          : `${formatProviderList(activeProviders)} ${
-              activeProviders.every(isProviderInstallState) ? "install" : "update"
-            } in progress.`,
+      phase: "running",
+      title: `${allInstalling ? "Installing" : "Updating"} ${nameAgents(items.map((item) => item.label))}`,
+      detail: !single
+        ? null
+        : !running
+          ? "Waiting for another update to finish."
+          : target && !single.member.installing
+            ? `Getting ${formatVersion(target)}.`
+            : "This can take a minute.",
       items,
     };
   }
 
-  const recentTerminalProviders = dedupedProviders.filter((provider) =>
-    isRecentTerminalProvider(provider, options?.visibleAfterIso),
-  );
-  const items = collectProviderUpdateSidebarItems(recentTerminalProviders);
-  if (items.length === 0) {
-    return null;
+  const failed = described.filter(({ item }) => item.status === "failed");
+  const unchanged = described.filter(({ item }) => item.status === "unchanged");
+  const singleMessage = single?.item.message ?? null;
+  if (failed.length > 0) {
+    const only = failed.length === 1 ? failed[0]! : null;
+    return {
+      phase: "failed",
+      title: only
+        ? `${only.item.label} didn't ${only.member.installing ? "install" : "update"}`
+        : `${failed.length} agents didn't update`,
+      detail: single ? (singleMessage ?? "The update stopped before it finished.") : null,
+      items,
+    };
   }
-
-  const key = `done:${recentTerminalProviders
-    .map(
-      (provider) =>
-        `${providerUpdateGroupKey(provider)}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
-    )
-    .toSorted()
-    .join("|")}`;
-  if (options?.dismissedKeys?.has(key)) {
-    return null;
+  if (unchanged.length > 0) {
+    const only = unchanged.length === 1 ? unchanged[0]! : null;
+    const unconfirmed = only?.member.seenActive === false && only.member.startFailure?.uncertain;
+    return {
+      phase: "unchanged",
+      title: only
+        ? unconfirmed
+          ? `Couldn't confirm ${only.item.label}'s update`
+          : only.member.installing
+            ? `${only.item.label} isn't installed yet`
+            : `${only.item.label} still needs an update`
+        : `${unchanged.length} agents still need an update`,
+      detail: single
+        ? unconfirmed
+          ? `${singleMessage ?? "Lost the connection."} It may still finish; Settings shows where it stands.`
+          : (singleMessage ?? "The update finished without a new version.")
+        : null,
+      items,
+    };
   }
-
-  const failedProviders = recentTerminalProviders.filter(
-    (provider) => provider.updateState?.status === "failed",
+  // "Updated to" only for a version that changed; the server's success alone
+  // doesn't prove one did.
+  const changed = described.every(
+    ({ member, provider }) =>
+      member.installing || (provider?.version != null && provider.version !== member.fromVersion),
   );
-  const unchangedProviders = recentTerminalProviders.filter(
-    (provider) => provider.updateState?.status === "unchanged",
-  );
-  const succeededProviders = recentTerminalProviders.filter(
-    (provider) => provider.updateState?.status === "succeeded",
-  );
-  const tone =
-    failedProviders.length > 0 ? "error" : unchangedProviders.length > 0 ? "warning" : "success";
-  const chip = getProviderUpdateSidebarChip(items);
-
-  // The chip already carries the status word, so single-provider titles are
-  // identity only ("Claude v1.2.0" + [Failed]) and never truncate on it.
-  const title =
-    items.length > 1
-      ? "Provider updates"
-      : tone === "error"
-        ? getProviderAttemptedVersionTitle(failedProviders[0]!)
-        : tone === "warning"
-          ? getProviderDisplayName(unchangedProviders[0]!)
-          : `${getProviderDisplayName(succeededProviders[0]!)} updated`;
-  const description =
-    tone === "error"
-      ? getFailedProviderUpdateDescription(failedProviders)
-      : tone === "warning"
-        ? `${formatProviderList(unchangedProviders)} ${
-            unchangedProviders.length === 1 ? "still appears" : "still appear"
-          } outdated. Review provider settings for details.`
-        : getProviderUpdatedDescription(succeededProviders.length);
-
+  const singleVersion = single?.provider?.version ?? null;
   return {
-    key,
-    tone,
-    title,
-    statusChipLabel: chip.label,
-    statusChipTone: chip.tone,
-    description,
+    phase: "succeeded",
+    title: single
+      ? single.member.installing
+        ? `${single.item.label} installed`
+        : changed && singleVersion
+          ? `${single.item.label} updated to ${formatVersion(singleVersion)}`
+          : `${single.item.label} update finished`
+      : changed
+        ? `${nameAgents(items.map((item) => item.label))} ${allInstalling ? "installed" : "updated"}`
+        : "Updates finished",
+    detail: single
+      ? single.member.installing
+        ? "It's ready to use."
+        : changed
+          ? "New chats use the new version."
+          : singleVersion
+            ? `It's on ${formatVersion(singleVersion)}.`
+            : null
+      : changed
+        ? "New chats use the new versions."
+        : null,
     items,
-    // Fully-successful batches auto-hide; anything needing attention sticks
-    // around until explicitly dismissed.
-    ...(tone === "success"
-      ? { dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS }
-      : { dismissible: true }),
   };
-}
-
-function getProviderUpdateInitialToastTitle(
-  providers: ReadonlyArray<ProviderUpdateCandidate>,
-): string {
-  if (providers.length === 1) {
-    const provider = providers[0]!;
-    const providerName = getProviderDisplayName(provider);
-    return `Update Available: ${providerName} ${formatVersion(provider.versionAdvisory.latestVersion)}`;
-  }
-  return "Updates available";
-}
-
-function getFailedProviderUpdateDescription(providers: ReadonlyArray<ServerProvider>): string {
-  if (providers.length === 1) {
-    const provider = providers[0]!;
-    if (provider.updateState?.message) {
-      return provider.updateState.message;
-    }
-  }
-  return `${formatProviderList(providers)} failed to update. Check provider settings for details.`;
 }
