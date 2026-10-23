@@ -10,6 +10,7 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalResolveInterruptedInput,
+  TerminalResolvePortInUseInput,
   TerminalEvent,
   TerminalCwdError,
   TerminalError,
@@ -17,6 +18,7 @@ import {
   TerminalLineBusyError,
   TerminalNotRunningError,
   TerminalOpenInput,
+  TerminalPortStillInUseError,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
@@ -37,6 +39,7 @@ export {
   TerminalHistoryError,
   TerminalLineBusyError,
   TerminalNotRunningError,
+  TerminalPortStillInUseError,
   TerminalSessionLookupError,
 };
 
@@ -207,6 +210,17 @@ export interface TerminalManagerShape {
   readonly resolveInterrupted: (
     input: TerminalResolveInterruptedInput,
     viewerId?: string,
+  ) => Effect.Effect<void, TerminalError>;
+
+  /**
+   * Settle a tab's `portInUse` on every device: dismiss it, or stop the
+   * terminal tab holding the port (Ctrl+C there) and wait a few seconds for
+   * the port to come free. Stopping does nothing when another tab no longer
+   * holds the port, and fails with `TerminalPortStillInUseError` when it
+   * still does afterwards.
+   */
+  readonly resolvePortInUse: (
+    input: TerminalResolvePortInUseInput,
   ) => Effect.Effect<void, TerminalError>;
 
   /**

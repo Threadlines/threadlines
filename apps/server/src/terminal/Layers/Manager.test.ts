@@ -25,6 +25,7 @@ import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { expect } from "vite-plus/test";
 
+import type { ListeningPortRow, ProcessRow } from "../../diagnostics/ProcessDiagnostics.ts";
 import type {
   TerminalCommandRunInput,
   TerminalCommandRunUpdate,
@@ -224,6 +225,10 @@ interface CreateManagerOptions {
   persistDebounceMs?: number;
   /** Histories go here instead of a folder that goes with the manager's scope. */
   logsDir?: string;
+  listeningPortReader?: (
+    ports: ReadonlyArray<number>,
+  ) => Effect.Effect<ReadonlyArray<ListeningPortRow>, Error>;
+  freshProcessRowsReader?: () => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
 }
 
 // Fake pids must never reach the real process table — the default control
@@ -232,6 +237,7 @@ const noopProcessTree: TerminalProcessTreeControl = {
   listDescendants: () => [],
   listTerminalProcesses: () => [],
   signal: () => {},
+  interruptGroup: () => {},
   isAlive: () => false,
 };
 
@@ -277,6 +283,10 @@ const createManager = (
           ? { historyCharLimit: options.historyCharLimit }
           : {}),
         processTree: options.processTree ?? noopProcessTree,
+        // Fake pids must never reach the real port or process tables either.
+        listeningPortReader: options.listeningPortReader ?? (() => Effect.succeed([])),
+        freshProcessRowsReader: options.freshProcessRowsReader ?? (() => Effect.succeed([])),
+        serverPid: 100,
         ...(options.maxRetainedInactiveSessions !== undefined
           ? { maxRetainedInactiveSessions: options.maxRetainedInactiveSessions }
           : {}),
@@ -326,6 +336,55 @@ const activityAfter = (
     index >= 0 && events.slice(index + 1).some((event) => event.type === "activity" && later(event))
   );
 };
+
+const processRow = (pid: number, ppid: number, command: string, pgid = pid): ProcessRow => ({
+  pid,
+  ppid,
+  pgid,
+  status: "S",
+  cpuPercent: 0,
+  rssBytes: 0,
+  elapsed: "00:01",
+  command,
+});
+
+// Tab "server" (shell 9000, spawned first) runs `npm run dev`, a job of its
+// own whose node listens on port 3000; the default tab (shell 9001) is free.
+const PORT_HOLDER_ROWS = [
+  processRow(100, 1, "node threadlines"),
+  processRow(9000, 100, "/bin/zsh -il"),
+  processRow(7001, 9000, "npm run dev"),
+  processRow(7002, 7001, "node /repo/node_modules/.bin/vite", 7001),
+  processRow(9001, 100, "/bin/zsh -il"),
+];
+const HOLDER_LISTENING: ListeningPortRow = { port: 3000, pid: 7002, command: "node" };
+const PORT_TAKEN = "Error: listen EADDRINUSE: address already in use :::3000\n";
+
+/** Both tabs open, and the default tab's port notice as every device last heard it. */
+const setUpPortTaken = (options: CreateManagerOptions = {}) =>
+  Effect.gen(function* () {
+    const fixture = yield* createManager(5, {
+      listeningPortReader: () => Effect.succeed([HOLDER_LISTENING]),
+      freshProcessRowsReader: () => Effect.succeed(PORT_HOLDER_ROWS),
+      ...options,
+    });
+    const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+    const unsubscribe = yield* fixture.manager.subscribeMetadata((event) =>
+      Ref.update(streamed, (events) => [...events, event]),
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+    yield* fixture.manager.open(openInput({ terminalId: "server" }));
+    yield* fixture.manager.open(openInput());
+    const notice = Ref.get(streamed).pipe(
+      Effect.map((events) => {
+        const last = events.findLast(
+          (event): event is Extract<TerminalStreamEvent, { type: "tabs" }> => event.type === "tabs",
+        );
+        return last?.tabs.find((tab) => tab.terminalId === DEFAULT_TERMINAL_ID)?.portInUse ?? null;
+      }),
+    );
+    return { ...fixture, notice };
+  });
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (it) => {
   const itEffectSkipOnWindows = process.platform === "win32" ? it.effect.skip : it.effect;
@@ -1433,6 +1492,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
             signals.push({ pid, signal });
             if (signal === "SIGKILL") alive.delete(pid);
           },
+          interruptGroup: () => {},
           isAlive: (pid) => alive.has(pid),
         },
       });
@@ -2732,6 +2792,155 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(events).toContainEqual(
         expect.objectContaining({ type: "output", data: "this thread\n" }),
       );
+    }),
+  );
+
+  it.effect(
+    "names the tab and job holding a taken port on every device, until a line is entered",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, notice } = yield* setUpPortTaken();
+        ptyAdapter.processes[1]?.emitData(`\u001b[31m${PORT_TAKEN}\u001b[39m`);
+
+        yield* waitFor(Effect.map(notice, (value) => value !== null));
+        expect(yield* notice).toMatchObject({
+          port: 3000,
+          holders: [
+            {
+              kind: "terminal",
+              threadId: "thread-1",
+              terminalId: "server",
+              name: "node",
+              command: "npm run dev",
+            },
+          ],
+          canStop: true,
+        });
+
+        yield* manager.write({ threadId: "thread-1", data: "npm run dev\r" });
+        yield* waitFor(Effect.map(notice, (value) => value === null));
+      }),
+  );
+
+  it.effect("never brings a port notice back after Clear, and drops it once the port is free", () =>
+    Effect.gen(function* () {
+      const lookupStarted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const ports = { rows: [HOLDER_LISTENING] as ReadonlyArray<ListeningPortRow> };
+      let lookups = 0;
+      const { manager, ptyAdapter, notice } = yield* setUpPortTaken({
+        listeningPortReader: () =>
+          Effect.gen(function* () {
+            lookups += 1;
+            if (lookups === 1) {
+              yield* Deferred.succeed(lookupStarted, undefined);
+              yield* Deferred.await(release);
+            }
+            return ports.rows;
+          }),
+      });
+      ptyAdapter.processes[1]?.emitData(PORT_TAKEN);
+      yield* Deferred.await(lookupStarted);
+      // Cleared while the port was being looked up: that answer is old news.
+      yield* manager.clear({ threadId: "thread-1" });
+      yield* Deferred.succeed(release, undefined);
+      yield* Effect.sleep(Duration.millis(50));
+      expect(yield* notice).toBeNull();
+
+      // The next command finds it taken again.
+      yield* manager.write({ threadId: "thread-1", data: "npm start\r" });
+      ptyAdapter.processes[1]?.emitData(PORT_TAKEN);
+      yield* waitFor(Effect.map(notice, (value) => value !== null));
+      // The holder's shell ends, and nothing listens any more.
+      ports.rows = [];
+      ptyAdapter.processes[0]?.emitExit({ exitCode: 1, signal: 0 });
+      yield* waitFor(Effect.map(notice, (value) => value === null));
+    }),
+  );
+
+  it.effect("stops only the job a port notice showed, and only on a click on that notice", () =>
+    Effect.gen(function* () {
+      const interrupted: number[] = [];
+      const ports = { rows: [HOLDER_LISTENING] as ReadonlyArray<ListeningPortRow> };
+      const { manager, ptyAdapter, notice } = yield* setUpPortTaken({
+        listeningPortReader: () => Effect.sync(() => ports.rows),
+        processTree: {
+          ...noopProcessTree,
+          interruptGroup: (pgid) => {
+            interrupted.push(pgid);
+            ports.rows = [];
+          },
+        },
+      });
+      ptyAdapter.processes[1]?.emitData(PORT_TAKEN);
+      yield* waitFor(Effect.map(notice, (value) => value !== null));
+      const shown = yield* notice;
+
+      yield* manager.resolvePortInUse({ threadId: "thread-1", noticeId: "older", stop: true });
+      expect(interrupted).toEqual([]);
+
+      yield* manager.resolvePortInUse({
+        threadId: "thread-1",
+        noticeId: shown?.id ?? "",
+        stop: true,
+      });
+      expect(interrupted).toEqual([7001]);
+      yield* waitFor(Effect.map(notice, (value) => value === null));
+    }),
+  );
+
+  it.effect("knows a quick ssh command's port error is another computer's", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, notice } = yield* setUpPortTaken({
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+      });
+      const shell = ptyAdapter.processes[1];
+      const prompt = "\u001b]633;D\u0007PS C:\\repo> ";
+      shell?.emitData(prompt);
+      // The error and the command's end arrive together: by then the
+      // process table has no ssh in it, only the line typed for it.
+      yield* manager.write({ threadId: "thread-1", data: "ssh web-1 npm start\r" });
+      shell?.emitData(`${PORT_TAKEN}${prompt}`);
+      yield* Effect.sleep(Duration.millis(100));
+      expect(yield* notice).toBeNull();
+
+      yield* manager.write({ threadId: "thread-1", data: "npm start\r" });
+      shell?.emitData(`${PORT_TAKEN}${prompt}`);
+      yield* waitFor(Effect.map(notice, (value) => value !== null));
+    }),
+  );
+
+  it.effect("never stops a job for a notice Clear took away while Stop was checking", () =>
+    Effect.gen(function* () {
+      const interrupted: number[] = [];
+      const checking = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let stopping = false;
+      const { manager, ptyAdapter, notice } = yield* setUpPortTaken({
+        listeningPortReader: () =>
+          Effect.gen(function* () {
+            if (stopping) {
+              yield* Deferred.succeed(checking, undefined);
+              yield* Deferred.await(release);
+            }
+            return [HOLDER_LISTENING];
+          }),
+        processTree: { ...noopProcessTree, interruptGroup: (pgid) => interrupted.push(pgid) },
+      });
+      ptyAdapter.processes[1]?.emitData(PORT_TAKEN);
+      yield* waitFor(Effect.map(notice, (value) => value !== null));
+      const shown = yield* notice;
+
+      stopping = true;
+      const stop = yield* manager
+        .resolvePortInUse({ threadId: "thread-1", noticeId: shown?.id ?? "", stop: true })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(checking);
+      yield* manager.clear({ threadId: "thread-1" });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(stop);
+      expect(interrupted).toEqual([]);
     }),
   );
 });

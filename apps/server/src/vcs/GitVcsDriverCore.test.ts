@@ -1139,6 +1139,25 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           assert.equal(remoteRef?.remoteName, "origin");
         }),
     );
+
+    it.effect("puts the branch named exactly what was searched for on the first page", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        for (const branch of ["dev-tools", "feature/dev", "dev"]) {
+          yield* git(cwd, ["branch", branch]);
+        }
+
+        const refs = yield* driver.listRefs({ cwd, query: "dev", limit: 1, refresh: true });
+
+        assert.deepStrictEqual(
+          refs.refs.map((ref) => ref.name),
+          ["dev"],
+        );
+        assert.equal(refs.totalCount, 3);
+      }),
+    );
   });
 
   describe("worktree operations", () => {

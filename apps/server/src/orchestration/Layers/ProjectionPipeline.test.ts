@@ -3833,53 +3833,57 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
-  it.effect("remembers which user messages the user typed, and how they sent them", () =>
-    Effect.gen(function* () {
-      const engine = yield* OrchestrationEngineService;
-      const query = yield* ProjectionSnapshotQuery;
-      const threadId = yield* createClaudeThread(engine, "composer");
+  it.effect(
+    "remembers which user messages the user typed, how they sent them, and from where",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const query = yield* ProjectionSnapshotQuery;
+        const threadId = yield* createClaudeThread(engine, "composer");
+        const phone = { kind: "phone", name: "iPhone", os: "iOS" } as const;
 
-      for (const [key, composer] of [
-        ["typed", "typed"],
-        ["plain", "plain"],
-        ["automation", undefined],
-      ] as const) {
-        yield* engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make(`cmd-composer-${key}`),
-          threadId,
-          message: {
-            messageId: MessageId.make(`message-composer-${key}`),
-            role: "user",
-            text: `sent ${key}`,
-            attachments: [],
-          },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          ...(composer !== undefined ? { composer } : {}),
-          createdAt: "2026-05-01T00:00:01.000Z",
-        });
-      }
+        for (const [key, composer, sentFrom] of [
+          ["typed", "typed", phone],
+          ["plain", "plain", undefined],
+          ["automation", undefined, undefined],
+        ] as const) {
+          yield* engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-composer-${key}`),
+            threadId,
+            message: {
+              messageId: MessageId.make(`message-composer-${key}`),
+              role: "user",
+              text: `sent ${key}`,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            ...(composer !== undefined ? { composer } : {}),
+            ...(sentFrom !== undefined ? { sentFrom } : {}),
+            createdAt: "2026-05-01T00:00:01.000Z",
+          });
+        }
 
-      const composersOf = (threads: ReadonlyArray<OrchestrationThread>) =>
-        Object.fromEntries(
-          (threads.find((thread) => thread.id === threadId)?.messages ?? []).map((message) => [
-            message.id,
-            message.composer ?? null,
-          ]),
+        const composersOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+          Object.fromEntries(
+            (threads.find((thread) => thread.id === threadId)?.messages ?? []).map((message) => [
+              message.id,
+              [message.composer ?? null, message.sentFrom ?? null],
+            ]),
+          );
+        const expected: ReturnType<typeof composersOf> = {
+          "message-composer-typed": ["typed", phone],
+          "message-composer-plain": ["plain", null],
+          "message-composer-automation": [null, null],
+        };
+        assert.deepEqual(
+          composersOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
+          expected,
         );
-      const expected: ReturnType<typeof composersOf> = {
-        "message-composer-typed": "typed",
-        "message-composer-plain": "plain",
-        "message-composer-automation": null,
-      };
-      assert.deepEqual(
-        composersOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
-        expected,
-      );
-      assert.deepEqual(composersOf((yield* query.getSnapshot()).threads), expected);
-      assert.deepEqual(composersOf((yield* query.getCommandReadModel()).threads), expected);
-    }),
+        assert.deepEqual(composersOf((yield* query.getSnapshot()).threads), expected);
+        assert.deepEqual(composersOf((yield* query.getCommandReadModel()).threads), expected);
+      }),
   );
 });
 

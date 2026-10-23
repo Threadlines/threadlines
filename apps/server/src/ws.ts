@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
+  type AuthClientMetadata,
   AuthSessionId,
   type ClientOrchestrationCommand,
   CommandId,
@@ -70,6 +71,8 @@ import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import { messageSentFromClient, withMessageSentFrom } from "./orchestration/messageSentFrom.ts";
+import { RealtimeVoiceDevices } from "./orchestration/Services/RealtimeVoiceDevices.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
@@ -140,6 +143,7 @@ import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
 import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
+import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
@@ -362,6 +366,8 @@ const makeWsRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
+    /** The device this connection signs in as; its messages are stamped with it. */
+    readonly client: AuthClientMetadata;
   },
   /** This connection, as a terminal viewer (who controls a tab's size and replies). */
   viewerId: string,
@@ -369,6 +375,8 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const sentFrom = messageSentFromClient(currentSession.client);
+      const realtimeVoiceDevices = yield* Effect.serviceOption(RealtimeVoiceDevices);
       // Access management is owner-only. Everything else stays open to client
       // sessions: a paired device is meant to use projects, turns, terminals.
       const requireOwner = (method: string) =>
@@ -377,6 +385,7 @@ const makeWsRpcLayer = (
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
       const outsideAgents = yield* OutsideAgentSignIn;
+      const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
       const threadMoves = yield* ThreadMoves;
@@ -738,7 +747,10 @@ const makeWsRpcLayer = (
        */
       const dispatchClientCommand = (command: ClientOrchestrationCommand) =>
         Effect.gen(function* () {
-          const normalizedCommand = yield* normalizeDispatchCommand(command);
+          const normalizedCommand = withMessageSentFrom(
+            yield* normalizeDispatchCommand(command),
+            sentFrom,
+          );
           // Where the event log stood before an archive, so the threads
           // that archive took with it (a parent's settled children) can
           // be read back from what it wrote.
@@ -2425,6 +2437,12 @@ const makeWsRpcLayer = (
             terminalManager.resolveInterrupted(input, viewerId),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.terminalResolvePortInUse]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.terminalResolvePortInUse,
+            terminalManager.resolvePortInUse(input),
+            { "rpc.aggregate": "terminal" },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
@@ -2487,7 +2505,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.realtimeAppendAudio]: (input) =>
           observeRpcEffect(
             WS_METHODS.realtimeAppendAudio,
-            providerService.realtimeAppendAudio!(input).pipe(
+            // Who is speaking, for the transcript of it (RealtimeVoiceDevices).
+            (Option.isSome(realtimeVoiceDevices)
+              ? realtimeVoiceDevices.value.noteSpeaker(input.threadId, sentFrom)
+              : Effect.void
+            ).pipe(
+              Effect.andThen(providerService.realtimeAppendAudio!(input)),
               Effect.mapError(
                 (error) =>
                   new ProviderRealtimeError({
@@ -2636,6 +2659,20 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.relaySubmitJoin, relayHost.submitJoin(input), {
             "rpc.aggregate": "auth",
           }),
+        // Phone alerts: the calling phone's own registration; any client's view.
+        [WS_METHODS.pushRegister]: (input) =>
+          observeRpcEffect(WS_METHODS.pushRegister, pushAlerts.register(currentSessionId, input), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.pushUnregister]: (_input) =>
+          observeRpcEffect(WS_METHODS.pushUnregister, pushAlerts.unregister(currentSessionId), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.pushSendTest]: (_input) =>
+          observeRpcEffect(WS_METHODS.pushSendTest, pushAlerts.sendTest(currentSessionId), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.presenceSetViewing]: (input) => pushAlerts.setViewing(viewerId, input.threadId),
         [WS_METHODS.relayDirectRoutes]: (_input) =>
           observeRpcEffect(
             WS_METHODS.relayDirectRoutes,
@@ -2963,6 +3000,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
+    const pushAlerts = yield* PushAlerts;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3045,7 +3083,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           () =>
             sessions
               .markDisconnected(session.sessionId)
-              .pipe(Effect.andThen(terminalManager.releaseViewer(viewerId))),
+              .pipe(
+                Effect.andThen(terminalManager.releaseViewer(viewerId)),
+                Effect.andThen(pushAlerts.releaseViewer(viewerId)),
+              ),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
     );

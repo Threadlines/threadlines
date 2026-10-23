@@ -80,6 +80,7 @@ import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeS
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { RealtimeVoiceDevicesLive } from "./orchestration/Layers/RealtimeVoiceDevices.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
@@ -148,6 +149,7 @@ import {
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { outsideAgentSignInRouteLayer } from "./outsideAgents/oauthHttp.ts";
 import { OutsideAgentConnectionsLive } from "./outsideAgents/OutsideAgentConnectionsLive.ts";
+import { PushAlertsLive } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, RelayHostLive } from "./relay/RelayHost.ts";
 import { RelayDeviceRepositoryLive } from "./relay/RelayDeviceRepository.ts";
 import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
@@ -322,11 +324,17 @@ const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSou
 );
 
 const ReactorLayerLive = Layer.empty.pipe(
+  // Phone alerts (docs/design/push-alerts.md) read the event log, threads and
+  // the scheduler's waiting changes from the layers below, and send through
+  // the relay; started with the other reactors.
+  Layer.provideMerge(PushAlertsLive),
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   // Both reactors above take these (optionally), so they come after them.
   Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  // Ingestion reads who spoke; the WebSocket route notes it.
+  Layer.provideMerge(RealtimeVoiceDevicesLive),
   Layer.provideMerge(ScheduledTasksLayerLive),
   Layer.provideMerge(ProjectSetupsLayerLive),
   Layer.provideMerge(ComputerLinksLayerLive),

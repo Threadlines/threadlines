@@ -240,6 +240,14 @@ export const ProviderSendTurnInput = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   /** See ProviderTypedInput. */
   typed: Schema.optional(ProviderTypedInput),
+  /**
+   * A line for the agent about the device the user sent this from (see
+   * MessageSentFrom), kept out of `input` and `typed`. A driver with a way to
+   * send it apart from the user's words does so, and drops it rather than
+   * change how those words are handled; for every other driver the provider
+   * service puts it in front of `input` first.
+   */
+  deviceNote: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1_000))),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   /** When the message that starts this turn reached the server; turn latency counts from here. */
@@ -273,6 +281,8 @@ export const ProviderSteerTurnInput = Schema.Struct({
   skills: Schema.optional(ChatSkillReferenceList),
   /** See ProviderTypedInput. */
   typed: Schema.optional(ProviderTypedInput),
+  /** See ProviderSendTurnInput.deviceNote. */
+  deviceNote: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1_000))),
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 

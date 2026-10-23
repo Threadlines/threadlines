@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -15,6 +15,7 @@ export function ChromeIconButton({
   tooltip,
   size,
   selected = false,
+  expanded,
   glide = false,
   disabled = false,
   side,
@@ -29,6 +30,8 @@ export function ChromeIconButton({
   readonly tooltip: ReactNode;
   readonly size: "rail" | "titlebar";
   readonly selected?: boolean;
+  /** For a button that also shows and hides something: whether it is showing. */
+  readonly expanded?: boolean | undefined;
   /**
    * Selection is drawn by a highlight its container slides between buttons
    * (the rail), so a selected button paints no fill of its own.
@@ -46,7 +49,7 @@ export function ChromeIconButton({
    * words change in place. Others keep the size they opened at.
    */
   readonly tooltipFollowsContent?: boolean;
-  readonly onClick: () => void;
+  readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
   readonly children: ReactNode;
   readonly testId?: string;
   readonly className?: string;
@@ -64,6 +67,7 @@ export function ChromeIconButton({
             type="button"
             aria-label={label}
             aria-current={selected ? "page" : undefined}
+            aria-expanded={expanded}
             aria-disabled={disabled ? true : undefined}
             data-testid={testId}
             data-selected={selected ? "" : undefined}
@@ -78,8 +82,8 @@ export function ChromeIconButton({
                   : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground active:bg-sidebar-accent/80",
               className,
             )}
-            onClick={() => {
-              if (!disabled) onClick();
+            onClick={(event) => {
+              if (!disabled) onClick(event);
             }}
           />
         }

@@ -1,15 +1,15 @@
 "use client";
 
-import type { ToastManagerAddOptions } from "@base-ui/react/toast";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
-import type { ThreadToastData } from "./toast";
+import type { NoticeAddOptions, ThreadToastData } from "./toast";
 
 export type StackedThreadToastOptions = {
   type: "error" | "warning" | "success" | "info" | "loading";
   title: ReactNode;
   description?: ReactNode;
-  timeout?: number;
+  /** Only 0, "stay until closed"; a custom duration goes in `data.dismissAfterVisibleMs`. */
+  timeout?: 0;
   priority?: "low" | "high";
   actionProps?: ComponentPropsWithoutRef<"button">;
   /** Merged into `data`; `actionLayout` is always forced to `"stacked-end"` by the helper. */
@@ -18,11 +18,10 @@ export type StackedThreadToastOptions = {
 };
 
 /**
- * Thread toast using the stacked body + bottom action row (copy for errors, CTA on its own row).
+ * Thread toast using the stacked body: title and reason on their own lines,
+ * copy beside close for errors, buttons in a row underneath.
  */
-export function stackedThreadToast(
-  options: StackedThreadToastOptions,
-): ToastManagerAddOptions<ThreadToastData> {
+export function stackedThreadToast(options: StackedThreadToastOptions): NoticeAddOptions {
   const { type, title, description, timeout, priority, actionProps, actionVariant, data } = options;
 
   // Helper-owned `actionLayout` must win over any caller-provided `data`, so spread
@@ -35,7 +34,7 @@ export function stackedThreadToast(
     mergedData.actionVariant = actionVariant;
   }
 
-  const payload: ToastManagerAddOptions<ThreadToastData> = {
+  const payload: NoticeAddOptions = {
     type,
     title,
     data: mergedData,

@@ -12,6 +12,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type TerminalEvent,
+  type TerminalPortInUse,
   type TerminalSessionSnapshot,
   type TerminalTab,
   type ThreadId,
@@ -45,6 +46,8 @@ import {
 } from "./browser/openInBrowserPanel";
 import { createXtermSurface, terminalThemeFromApp } from "./terminal/xtermSurface";
 import { TerminalFindBar } from "./terminal/TerminalFindBar";
+import { TerminalNotice } from "./terminal/TerminalNotice";
+import { TerminalPortNotice } from "./terminal/TerminalPortNotice";
 import { controlCodeFor, TerminalKeyRow } from "./terminal/TerminalKeyRow";
 import { type TerminalStripTab, TerminalTabStrip } from "./terminal/TerminalTabStrip";
 import { copyTextWithToast } from "./chat/copyTextWithToast";
@@ -428,6 +431,8 @@ interface TerminalViewportProps {
   launchCwd: string | null;
   /** The command a restart stopped in this tab, offered to run again. */
   interruptedCommand: string | null;
+  /** A port this tab's command found taken, and who holds it. */
+  portInUse: TerminalPortInUse | null;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   stream: TerminalThreadStreamState;
@@ -457,6 +462,7 @@ export function TerminalViewport({
   cwd,
   launchCwd,
   interruptedCommand,
+  portInUse,
   worktreePath,
   runtimeEnv,
   stream,
@@ -1274,6 +1280,11 @@ export function TerminalViewport({
     [environmentId, terminalId, threadId, threadRef],
   );
 
+  const reportPortStopFailure = useCallback((message: string) => {
+    const terminal = terminalRef.current;
+    if (terminal) writeSystemMessage(terminal, message);
+  }, []);
+
   const ended = session !== null && (session.status === "exited" || session.status === "error");
   const movedFrom =
     session !== null &&
@@ -1340,6 +1351,14 @@ export function TerminalViewport({
               }
             />
           ) : null}
+          {portInUse !== null ? (
+            <TerminalPortNotice
+              threadRef={threadRef}
+              terminalId={terminalId}
+              portInUse={portInUse}
+              onStopFailed={reportPortStopFailure}
+            />
+          ) : null}
           {movedFrom !== null ? (
             <TerminalNotice
               message={`Started in ${folderName(movedFrom)}. The thread is now in ${folderName(cwd)}.`}
@@ -1385,29 +1404,6 @@ function fitIfShown(fitAddon: FitAddon, box: HTMLElement | null): boolean {
   if (!box || box.clientWidth === 0 || box.clientHeight === 0) return false;
   fitAddon.fit();
   return true;
-}
-
-/** A line above a tab's output about the tab itself, with what to do about it. */
-function TerminalNotice({
-  message,
-  title,
-  actions,
-}: {
-  message: ReactNode;
-  title?: string;
-  actions: ReactNode;
-}) {
-  return (
-    <div
-      className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground"
-      data-terminal-notice="true"
-    >
-      <span className="min-w-0 flex-1 truncate" title={title}>
-        {message}
-      </span>
-      {actions}
-    </div>
-  );
 }
 
 interface ThreadTerminalDrawerProps {
@@ -1807,6 +1803,7 @@ export default function ThreadTerminalDrawer({
         cwd={cwd}
         launchCwd={tab?.cwd ?? null}
         interruptedCommand={tab?.interruptedCommand ?? null}
+        portInUse={tab?.portInUse ?? null}
         {...(worktreePath !== undefined ? { worktreePath } : {})}
         {...(runtimeEnv ? { runtimeEnv } : {})}
         stream={stream}

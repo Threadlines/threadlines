@@ -19,6 +19,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -53,6 +54,7 @@ import {
   wsRequests,
   DEFAULT_VIEWPORT,
   PHONE_VIEWPORT,
+  markThreadDoneInTest,
   isoAt,
   createMockEnvironmentApi,
   createSnapshotForTargetUser,
@@ -1201,6 +1203,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
   });
 
   it("reveals the folded tail in increments and folds it back", async () => {
+    // Short enough that fewer than ten rows fit: the fold rests at ten.
     const extraThreadIds = Array.from(
       { length: 17 },
       (_, index) => `thread-quiet-${index}` as ThreadId,
@@ -1212,7 +1215,10 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         targetText: "live fold target",
       }),
     );
-    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "short", height: 560 },
+      snapshot,
+    });
 
     const expectRows = async (count: number, revealLabel: string | null) => {
       await vi.waitFor(
@@ -1241,6 +1247,77 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
 
       await page.getByTestId("inbox-live-show-fewer").click();
       await expectRows(10, "Show 5 more");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("fills a tall column with quiet rows before folding the rest", async () => {
+    const extraThreadIds = Array.from(
+      { length: 39 },
+      (_, index) => `thread-quiet-${index}` as ThreadId,
+    );
+    const snapshot = extraThreadIds.reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-live-fill" as MessageId,
+        targetText: "live fill target",
+      }),
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      // Two wrapped threads park the Wrapped shelf under the list.
+      const doneAt = new Date().toISOString();
+      for (const threadId of extraThreadIds.slice(0, 2)) {
+        markThreadDoneInTest(
+          scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId)),
+          doneAt,
+        );
+      }
+
+      let tallCount = 0;
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-testid="inbox-wrapped-shelf"]')).not.toBeNull();
+          const rows = [...document.querySelectorAll<HTMLElement>("[data-inbox-live-row]")];
+          expect(rows.length).toBeGreaterThan(10);
+          const fold = document.querySelector<HTMLElement>('[data-testid="inbox-live-show-more"]');
+          expect(fold).not.toBeNull();
+          // Everything shown fits above the shelf, with less than another
+          // row's room to spare: the fold line sits at the column's foot.
+          const viewport = fold!.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')!;
+          const content = viewport.querySelector<HTMLElement>('[data-slot="sidebar-content"]')!;
+          const spare = viewport.clientHeight - content.offsetHeight;
+          expect(spare).toBeGreaterThanOrEqual(0);
+          expect(spare).toBeLessThan(rows[0]!.offsetHeight);
+          tallCount = rows.length;
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Open a quiet thread past the first ten, then shrink the window: the
+      // fold falls back to ten, but never takes the thread being read.
+      const shownRows = document.querySelectorAll<HTMLElement>('[data-testid^="thread-row-"]');
+      const deepTestId = shownRows[shownRows.length - 1]!.dataset.testid!;
+      await page.getByTestId(deepTestId).click();
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector(`[data-testid="${deepTestId}"]`)?.getAttribute("data-active"),
+          ).toBe("true");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await mounted.setViewport({ ...DEFAULT_VIEWPORT, name: "short", height: 560 });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll("[data-inbox-live-row]").length).toBeLessThan(tallCount);
+          expect(document.querySelector(`[data-testid="${deepTestId}"]`)).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

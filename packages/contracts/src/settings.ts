@@ -242,6 +242,23 @@ export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
 /**
+ * Where a new worktree starts when nobody picks a branch for it: the
+ * repository's default branch, the branch the project folder has checked
+ * out, or the branch named in `branch` (a project without it uses its
+ * default branch). Settings › Threads › New worktrees from.
+ */
+export const NewWorktreeBaseFrom = Schema.Literals(["default", "current", "named"]);
+export type NewWorktreeBaseFrom = typeof NewWorktreeBaseFrom.Type;
+
+export const NewWorktreeBaseSettings = Schema.Struct({
+  from: NewWorktreeBaseFrom.pipe(
+    Schema.withDecodingDefault(Effect.succeed("default" as const satisfies NewWorktreeBaseFrom)),
+  ),
+  branch: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type NewWorktreeBaseSettings = typeof NewWorktreeBaseSettings.Type;
+
+/**
  * A binary path that falls back to `fallback` when empty. `retiredDefaults`
  * are earlier defaults that saved settings still hold; they decode to the
  * current default too.
@@ -854,6 +871,7 @@ export const ServerSettings = Schema.Struct({
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
+  newWorktreeBase: NewWorktreeBaseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Speech-to-text model used by composer dictation. The model files are
   // downloaded on demand and shared by every client of this server.
   dictationModel: DictationModelId.pipe(
@@ -951,6 +969,16 @@ export const ServerSettings = Schema.Struct({
    */
   claudeWorkflowSize: ClaudeWorkflowSize.pipe(
     Schema.withDecodingDefault(Effect.succeed("default" as const)),
+  ),
+  /**
+   * Claude suggests the user's next message after a turn, but skips it while
+   * it warns that usage runs fast (ahead of pace for the week, or close to
+   * the five-hour limit). On keeps them coming then, at a little usage each,
+   * for every Claude account. Read when a Claude session starts and before
+   * each turn, so a change applies from the next message. Never chosen: off.
+   */
+  claudeSuggestionsWhenUsageRunsFast: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   /**
    * Command requests: agents may ask the user to run a shell command with
@@ -1096,6 +1124,12 @@ export const ServerSettingsPatch = Schema.Struct({
   usageAnalyticsEnabled: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  newWorktreeBase: Schema.optionalKey(
+    Schema.Struct({
+      from: Schema.optionalKey(NewWorktreeBaseFrom),
+      branch: Schema.optionalKey(TrimmedString),
+    }),
+  ),
   dictationModel: Schema.optionalKey(DictationModelId),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
@@ -1138,6 +1172,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
+  claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's

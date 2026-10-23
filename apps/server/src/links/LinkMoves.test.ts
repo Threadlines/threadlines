@@ -100,6 +100,7 @@ const movingThread = (): OrchestrationThread =>
         id: MessageId.make("m1"),
         role: "user",
         text: "Make it faster",
+        sentFrom: { kind: "phone", name: "iPhone", os: "iOS" },
         turnId: null,
         streaming: false,
         createdAt: "2026-10-22T10:00:00.000Z",
@@ -285,8 +286,10 @@ describe("LinkMoves", () => {
         ["Make it faster", "Done: it caches now."],
       );
       assert.notEqual(command.messages[0]?.messageId, "m1");
-      // Its answer keeps the agent that wrote it, not the one it moves on with.
+      // Its answer keeps the agent that wrote it, not the one it moves on with,
+      // and its question the device it was sent from.
       assert.equal(command.messages[1]?.agentModels?.primary?.modelSelection.model, "fake-model");
+      assert.deepEqual(command.messages[0]?.sentFrom, { kind: "phone", name: "iPhone", os: "iOS" });
       const worktree = command.worktreePath!;
       assert.equal(run(worktree, "rev-parse", "HEAD"), checkout.headSha);
       const read = (name: string) => fs.readFileSync(path.join(worktree, name), "utf8");

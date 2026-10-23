@@ -717,6 +717,28 @@ export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 export const MessageComposer = Schema.Literals(["typed", "plain"]);
 export type MessageComposer = typeof MessageComposer.Type;
 
+export const MessageDeviceKind = Schema.Literals(["computer", "phone", "tablet"]);
+export type MessageDeviceKind = typeof MessageDeviceKind.Type;
+
+/**
+ * The device a person sent a user message from: the session it came in on,
+ * as this server recorded that session when it signed the device in (its
+ * kind, name and OS are what the device's pairing request or browser said,
+ * so they describe the device; they prove nothing). Set by the server on
+ * messages a client app sends for its user, never taken from the message
+ * itself; absent on messages an agent, another thread or automation wrote, on
+ * messages from a device of unknown kind, and on messages recorded before it
+ * was kept. The agent is told when it matters (messageSentFromNote).
+ */
+export const MessageSentFrom = Schema.Struct({
+  kind: MessageDeviceKind,
+  /** The device's name from its sign-in ("iPhone", "Will's Desktop"). */
+  name: Schema.optional(TrimmedNonEmptyString),
+  /** Its operating system, when its sign-in told ("iOS", "Windows"). */
+  os: Schema.optional(TrimmedNonEmptyString),
+});
+export type MessageSentFrom = typeof MessageSentFrom.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   eventSequence: Schema.optional(NonNegativeInt),
@@ -755,6 +777,8 @@ export const OrchestrationMessage = Schema.Struct({
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See MessageComposer. Absent on every message an agent or automation wrote. */
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom. Written with the message and kept. */
+  sentFrom: Schema.optional(MessageSentFrom),
   /**
    * The agents the message names, as they were when it was written, keyed by
    * agent (`primary` or a participant id): an assistant message's author, the
@@ -1526,6 +1550,8 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   fromThread: Schema.optional(ThreadMessageOrigin),
   /** See MessageComposer: kept so the message is written with it when sent. */
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom: kept so the message is written with it when sent. */
+  sentFrom: Schema.optional(MessageSentFrom),
   /**
    * Queued by a scheduled task's run (docs/design/fleet.md, Part 6). When it
    * starts its turn it may lower the thread's access but never raise it, and
@@ -2550,6 +2576,8 @@ const ThreadForkCommand = Schema.Struct({
   workspaceMode: ThreadForkWorkspaceMode,
   includeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom (server only: set from the connection's sign-in). */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -2812,6 +2840,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   fromOutside: Schema.optional(OutsideTurnOrigin),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom (server only: set from the connection's sign-in). */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 
@@ -2845,6 +2875,8 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom (server only: set from the connection's sign-in). */
+  sentFrom: Schema.optional(MessageSentFrom),
   /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
@@ -2930,7 +2962,7 @@ const ThreadTurnInterruptCommand = Schema.Struct({
  * Ask a room agent something while another agent holds the thread. It
  * answers read-only, in its own locked-down runtime (a side answer).
  */
-const ThreadSideTurnStartCommand = Schema.Struct({
+const ClientThreadSideTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.side-turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -2946,6 +2978,12 @@ const ThreadSideTurnStartCommand = Schema.Struct({
   /** Reasoning or other options picked for this agent and not sent yet. */
   modelSelection: Schema.optional(ModelSelection),
   createdAt: IsoDateTime,
+});
+
+const ThreadSideTurnStartCommand = Schema.Struct({
+  ...ClientThreadSideTurnStartCommand.fields,
+  /** See MessageSentFrom (server only: set from the connection's sign-in). */
+  sentFrom: Schema.optional(MessageSentFrom),
 });
 
 /** Stop a side answer. A side answer that is no longer running is left alone. */
@@ -3027,13 +3065,22 @@ const ThreadApprovalRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadUserInputRespondCommand = Schema.Struct({
+const ClientThreadUserInputRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.user-input.respond"),
   commandId: CommandId,
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
   createdAt: IsoDateTime,
+});
+
+const ThreadUserInputRespondCommand = Schema.Struct({
+  ...ClientThreadUserInputRespondCommand.fields,
+  /**
+   * See MessageSentFrom (server only: set from the connection's sign-in). An
+   * answer sent back as a message (`responseMode: "message"`) is written with it.
+   */
+  sentFrom: Schema.optional(MessageSentFrom),
 });
 
 /**
@@ -3243,7 +3290,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadFollowUpSubmitCommand,
   ThreadFollowUpUnqueueCommand,
   ClientThreadTurnInterruptCommand,
-  ThreadSideTurnStartCommand,
+  ClientThreadSideTurnStartCommand,
   ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
@@ -3251,7 +3298,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
-  ThreadUserInputRespondCommand,
+  ClientThreadUserInputRespondCommand,
   ThreadAgentInviteRespondCommand,
   ThreadChildRequestRespondCommand,
   ThreadParentAttachmentSetCommand,
@@ -3321,6 +3368,8 @@ const ThreadMessageUserRecordCommand = Schema.Struct({
   messageId: MessageId,
   text: Schema.String,
   turnId: Schema.optional(TurnId),
+  /** See MessageSentFrom: the device a spoken message came from (RealtimeVoiceDevices). */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 
@@ -3507,6 +3556,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
   }),
   /** See MessageComposer. */
   composer: Schema.optional(MessageComposer),
+  /** See MessageSentFrom. */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 
@@ -3906,6 +3957,8 @@ export const ThreadImportMessage = Schema.Struct({
    * Kept for who wrote it only: the connection is that computer's, not this one's.
    */
   fromOutside: Schema.optional(OutsideAgentRef),
+  /** The device it was sent from, as stamped where it was written (OrchestrationMessage.sentFrom). */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;
@@ -4511,6 +4564,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See OrchestrationMessage.composer. */
   composer: Schema.optional(MessageComposer),
+  /** See OrchestrationMessage.sentFrom. */
+  sentFrom: Schema.optional(MessageSentFrom),
   /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
@@ -4580,6 +4635,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   /** See OrchestrationMessage.composer. */
   composer: Schema.optional(MessageComposer),
+  /** See OrchestrationMessage.sentFrom. */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 
@@ -4643,6 +4700,8 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  /** See ThreadUserInputRespondCommand.sentFrom. */
+  sentFrom: Schema.optional(MessageSentFrom),
   createdAt: IsoDateTime,
 });
 

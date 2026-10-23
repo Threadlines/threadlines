@@ -13,6 +13,7 @@ import {
   type DesktopCliCommandStatus,
   type DesktopUpdateChannel,
   type DesktopUpdateState,
+  type EnvironmentApi,
   type LocalApi,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
@@ -56,7 +57,12 @@ import {
   resetPrimaryEnvironmentDescriptorForTests,
   writePrimaryEnvironmentDescriptor,
 } from "../../environments/primary";
+import {
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
+import { useStore } from "../../store";
 import { useTerminalStateStore } from "../../terminalStateStore";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
@@ -73,7 +79,6 @@ import {
 } from "../../environments/links/computerLinks";
 import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
 import { OutsideAgentsHost } from "../outsideAgents/OutsideAgentsHost";
-import { useStore } from "../../store";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import {
   closeConnectComputerDialog,
@@ -3870,6 +3875,90 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
     await vi.waitFor(() => {
       expect(updateSettings).toHaveBeenLastCalledWith({ newThreadModelSelection: null });
     });
+  });
+
+  it("picks the branch new worktrees start from among every project's branches", async () => {
+    const environmentId = createBaseServerConfig().environment.environmentId;
+    const project = (id: string, title: string) => ({
+      id: ProjectId.make(id),
+      kind: "workspace" as const,
+      title,
+      workspaceRoot: `/repo/${title}`,
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: "2026-10-23T00:00:00.000Z",
+      updatedAt: "2026-10-23T00:00:00.000Z",
+    });
+    useStore.getState().syncServerShellSnapshot(
+      {
+        snapshotSequence: 1,
+        projects: [project("project-api", "api"), project("project-web", "web")],
+        threads: [],
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+      environmentId,
+    );
+    const ref = (name: string, remoteName?: string) => ({
+      name,
+      current: false,
+      isDefault: name === "main",
+      worktreePath: null,
+      ...(remoteName ? { isRemote: true, remoteName } : {}),
+    });
+    const refsByCwd: Record<string, ReturnType<typeof ref>[]> = {
+      "/repo/api": [ref("main"), ref("develop"), ref("threadlines/abcd1234")],
+      // Only a remote copy here: it counts as the same branch.
+      "/repo/web": [ref("main"), ref("origin/develop", "origin"), ref("release/2.0")],
+    };
+    __setEnvironmentApiOverrideForTests(environmentId, {
+      vcs: {
+        listRefs: async ({ cwd }: { cwd: string }) => {
+          const refs = refsByCwd[cwd] ?? [];
+          return {
+            isRepo: true,
+            hasPrimaryRemote: true,
+            nextCursor: null,
+            totalCount: refs.length,
+            refs,
+          };
+        },
+      },
+    } as unknown as EnvironmentApi);
+
+    try {
+      const updateSettings = await mountWith({});
+      await page.getByRole("combobox", { name: "New worktrees start from" }).click();
+      await page.getByRole("option", { name: "Another branch" }).click();
+      await vi.waitFor(() => {
+        expect(updateSettings).toHaveBeenCalledWith({
+          newWorktreeBase: { from: "named", branch: "" },
+        });
+      });
+
+      // The picker opens by itself, listing each branch once with the
+      // projects that have it, and no throwaway thread branches.
+      const develop = page.getByRole("option", { name: /^develop/ });
+      await expect.element(develop).toBeInTheDocument();
+      // Shared branches first, each with its projects; the closed "New
+      // worktrees from" menu keeps its own options in the page.
+      expect(
+        page
+          .getByRole("option")
+          .elements()
+          .map((option) => option.textContent)
+          .filter((text) => !text?.endsWith(" branch")),
+      ).toEqual(["mainapi, web", "developapi, web", "release/2.0web"]);
+
+      await develop.click();
+      await vi.waitFor(() => {
+        expect(updateSettings).toHaveBeenLastCalledWith({
+          newWorktreeBase: { from: "named", branch: "develop" },
+        });
+      });
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
+    }
   });
 
   it("lists the room's agents, renames and removes them", async () => {

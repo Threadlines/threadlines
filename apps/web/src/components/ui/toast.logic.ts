@@ -10,6 +10,113 @@ export function shouldHideCollapsedToastContent(
   return visibleToastIndex > 0;
 }
 
+/**
+ * How many live notices the stack draws at once; Base UI holds back the rest
+ * (marking them `limited`) until a slot frees up.
+ */
+export const NOTICE_STACK_LIMIT = 3;
+
+/** How long a notice stays on screen when its caller doesn't say. */
+export const NOTICE_VISIBLE_MS = 5_000;
+/** Errors and warnings get longer: they usually have a reason to read. */
+export const ATTENTION_NOTICE_VISIBLE_MS = 10_000;
+/** A reason this long runs past two lines, more than anyone reads in ten seconds. */
+const STICKY_REASON_MIN_CHARS = 100;
+
+type NoticeForStack = {
+  type?: string | undefined;
+  limited?: boolean | undefined;
+  transitionStatus?: "starting" | "ending" | undefined;
+};
+
+function isAttentionNotice(type: string | undefined): boolean {
+  return type === "error" || type === "warning";
+}
+
+/**
+ * The notices the stack draws, front first: the ones Base UI hasn't held back,
+ * with errors, warnings and work in progress ahead of everything else (newest
+ * first within each group), so a "Path copied" never lands on top of an error.
+ * Closing notices stay, so their exit animation can finish.
+ */
+export function selectStackNotices<TNotice extends NoticeForStack>(
+  newestFirst: readonly TNotice[],
+): TNotice[] {
+  const drawn = newestFirst.filter(
+    (notice) => notice.transitionStatus === "ending" || !notice.limited,
+  );
+  const inFront = (notice: TNotice) => isAttentionNotice(notice.type) || notice.type === "loading";
+  return [...drawn.filter(inFront), ...drawn.filter((notice) => !inFront(notice))];
+}
+
+/**
+ * How long a notice stays once it is on screen, or null when it stays until
+ * closed. The clock only runs while the notice is drawn, the window is in
+ * front, and the pointer or focus isn't on the stack.
+ *
+ * Work in progress never times out. A caller's `dismissAfterVisibleMs` wins,
+ * then an explicit `timeout: 0`. Otherwise errors and warnings stay until
+ * closed when they offer a next step (any button) or carry a long reason, and
+ * get ten seconds when short; everything else gets five.
+ */
+export function resolveNoticeVisibleMs(
+  notice: {
+    readonly type?: string | undefined;
+    readonly timeout?: number | undefined;
+    readonly description?: unknown;
+    readonly data?: { readonly dismissAfterVisibleMs?: number | undefined } | undefined;
+  },
+  hasNextStep: boolean,
+): number | null {
+  if (notice.type === "loading") return null;
+  const requested = notice.data?.dismissAfterVisibleMs;
+  if (requested !== undefined && requested > 0) return requested;
+  if (notice.timeout === 0) return null;
+  if (isAttentionNotice(notice.type)) {
+    const hasLongReason =
+      typeof notice.description === "string" &&
+      notice.description.length >= STICKY_REASON_MIN_CHARS;
+    return hasNextStep || hasLongReason ? null : ATTENTION_NOTICE_VISIBLE_MS;
+  }
+  return NOTICE_VISIBLE_MS;
+}
+
+/**
+ * How long a notice for another thread stays while that thread isn't open:
+ * as long as a short notice of its kind, even one that would otherwise stay
+ * until closed, so it can't hold one of the stack's slots indefinitely. Work
+ * in progress still never times out. Back on its thread, the usual rule
+ * applies again.
+ */
+export function resolveHiddenNoticeVisibleMs(notice: {
+  readonly type?: string | undefined;
+  readonly data?: { readonly dismissAfterVisibleMs?: number | undefined } | undefined;
+}): number | null {
+  if (notice.type === "loading") return null;
+  const requested = notice.data?.dismissAfterVisibleMs;
+  if (requested !== undefined && requested > 0) return requested;
+  return isAttentionNotice(notice.type) ? ATTENTION_NOTICE_VISIBLE_MS : NOTICE_VISIBLE_MS;
+}
+
+/**
+ * Whether a notice draws its title and reason on separate lines. Errors and
+ * warnings always do when they have a reason, so the reason is never cut to
+ * one line; so does anything built with `stackedThreadToast`, and anything
+ * pointing at another thread. The rest fit title and detail on one line.
+ */
+export function shouldStackNoticeBody(notice: {
+  readonly type?: string | undefined;
+  readonly hasDescription: boolean;
+  readonly requestsStackedLayout: boolean;
+  readonly pointsAtAnotherThread: boolean;
+}): boolean {
+  return (
+    notice.requestsStackedLayout ||
+    notice.pointsAtAnotherThread ||
+    (isAttentionNotice(notice.type) && notice.hasDescription)
+  );
+}
+
 type ToastWithHeight = {
   height?: number | null | undefined;
 };
@@ -89,6 +196,18 @@ function normalizeToastHeight(height: number | null | undefined): number {
   return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : 0;
 }
 
+/** True unless `activeThreadRef` is the same thread as `threadRef`. */
+export function isAnotherThread(
+  threadRef: ScopedThreadRef,
+  activeThreadRef: ScopedThreadRef | null,
+): boolean {
+  return (
+    activeThreadRef === null ||
+    threadRef.environmentId !== activeThreadRef.environmentId ||
+    threadRef.threadId !== activeThreadRef.threadId
+  );
+}
+
 export function shouldRenderThreadScopedToast(
   data:
     | {
@@ -99,11 +218,7 @@ export function shouldRenderThreadScopedToast(
   activeThreadRef: ScopedThreadRef | null,
 ): boolean {
   if (data?.threadRef) {
-    return (
-      activeThreadRef !== null &&
-      data.threadRef.environmentId === activeThreadRef.environmentId &&
-      data.threadRef.threadId === activeThreadRef.threadId
-    );
+    return !isAnotherThread(data.threadRef, activeThreadRef);
   }
 
   const toastThreadId = data?.threadId;

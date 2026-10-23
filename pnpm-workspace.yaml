@@ -54,6 +54,8 @@ overrides:
   effect: "catalog:"
   fast-uri: 3.1.8
   js-yaml@4: 4.3.2
+  # Keep remark-math's nested KaTeX on the fixed version used by chat.
+  "micromark-extension-math>katex": 0.19.0
   nanoid@3: 3.3.18
   postcss: 8.5.23
   sharp: 0.35.5

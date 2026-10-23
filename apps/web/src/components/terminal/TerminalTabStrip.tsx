@@ -32,8 +32,9 @@ export function describeTerminalExit(exit: {
  * the active tab lifted onto the terminal's own background, the rest plain.
  * Tabs split side by side sit together; a dot marks a tab with something
  * running, followed by what runs; a tab whose shell failed says how it
- * ended. The ✕ (kill) shows on hover, always on touch screens. `+` opens a
- * new tab. Too many tabs scroll.
+ * ended. The ✕ (kill) shows on hover, always on touch screens, and its room
+ * is always kept, as the browser panel's tabs do, so a tab never changes
+ * width under the pointer. `+` opens a new tab. Too many tabs scroll.
  */
 export function TerminalTabStrip({
   groups,
@@ -121,7 +122,7 @@ function TerminalTabButton({
         role="presentation"
         className={cn(
           "group/terminal-tab relative flex max-w-64 shrink-0 items-center rounded-t-md text-xs",
-          "pr-6 pl-2 can-hover:pr-2 can-hover:hover:pr-6",
+          "pr-6 pl-2",
           active
             ? "bg-background text-foreground"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",

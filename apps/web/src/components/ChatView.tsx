@@ -140,6 +140,7 @@ import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadDetailLoaded,
+  selectThreadExistsByRef,
   selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
@@ -232,7 +233,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
   type DraftThreadEnvMode,
@@ -1380,7 +1381,17 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [pendingServerThreadEnvMode, setPendingServerThreadEnvMode] =
     useState<DraftThreadEnvMode | null>(null);
-  const [pendingServerThreadBranch, setPendingServerThreadBranch] = useState<string | null>();
+  // The base an empty server thread's new worktree starts from, before it is
+  // sent; `fromSetting` while it is the one "New worktrees from" gave.
+  const [pendingServerThreadBase, setPendingServerThreadBase] = useState<{
+    readonly branch: string | null;
+    readonly fromSetting: boolean;
+  }>();
+  const onPendingServerThreadBaseChange = useCallback(
+    (branch: string | null, options?: { readonly fromSetting?: boolean }) =>
+      setPendingServerThreadBase({ branch, fromSetting: options?.fromSetting === true }),
+    [],
+  );
   const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useLocalStorage(
     LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
     {},
@@ -4963,8 +4974,8 @@ export default function ChatView(props: ChatViewProps) {
       ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
       : derivedEnvMode;
   const activeThreadBranch =
-    canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
-      ? pendingServerThreadBranch
+    canOverrideServerThreadEnvMode && pendingServerThreadBase !== undefined
+      ? pendingServerThreadBase.branch
       : (activeThread?.branch ?? null);
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
@@ -4973,7 +4984,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     setPendingServerThreadEnvMode(null);
-    setPendingServerThreadBranch(undefined);
+    setPendingServerThreadBase(undefined);
   }, [activeThread?.id]);
 
   useEffect(() => {
@@ -4981,7 +4992,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     setPendingServerThreadEnvMode(null);
-    setPendingServerThreadBranch(undefined);
+    setPendingServerThreadBase(undefined);
   }, [canOverrideServerThreadEnvMode]);
 
   useEffect(() => {
@@ -5732,6 +5743,9 @@ export default function ChatView(props: ChatViewProps) {
           },
     );
     const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
+    const draftIdForSend = draftId;
+    const threadTitleForSend =
+      isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title;
     const optimisticMessage: ChatMessage = {
       id: messageIdForSend,
       role: "user",
@@ -6024,12 +6038,36 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError(threadIdForSend, dispatchFailureMessage);
       // The thread error banner only helps if the user is still looking at
       // this thread when the retry budget runs out (large uploads can take
-      // minutes to exhaust it); the toast makes the failure visible anywhere.
+      // minutes to exhaust it); the toast makes the failure visible anywhere,
+      // and names the thread with a way back while another one is open.
       toastManager.add(
         stackedThreadToast({
           type: "error",
           title: "Message failed to send",
           description: dispatchFailureMessage,
+          data: {
+            aboutThread: {
+              threadRef: threadRefForSend,
+              title: threadTitleForSend,
+              // Resolved on click: a draft that has since become a real
+              // thread opens as that thread.
+              open: () => {
+                const draftStillOpen =
+                  draftIdForSend !== null &&
+                  !selectThreadExistsByRef(useStore.getState(), threadRefForSend) &&
+                  useComposerDraftStore.getState().getDraftSession(draftIdForSend) !== null;
+                void (draftStillOpen
+                  ? navigate({
+                      to: "/draft/$draftId",
+                      params: buildDraftThreadRouteParams(draftIdForSend),
+                    })
+                  : navigate({
+                      to: "/$environmentId/$threadId",
+                      params: buildThreadRouteParams(threadRefForSend),
+                    }));
+              },
+            },
+          },
         }),
       );
     });
@@ -7726,21 +7764,23 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
+      // A new worktree starts from the computer's "New worktrees from"
+      // branch, which the branch selector fills in, not from the branch of
+      // the checkout the thread was on (for a worktree, often a throwaway
+      // `threadlines/...` name). Going back to the checkout drops that base.
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
+        setPendingServerThreadBase(
+          mode === "worktree" ? { branch: null, fromSetting: false } : undefined,
+        );
         scheduleComposerFocus();
         return;
       }
       if (isLocalDraftThread) {
-        // Leaving an existing worktree for a new one also drops its branch as
-        // the base: that branch is the previous thread's work (often a
-        // throwaway `threadlines/...` name), not what "new worktree" means.
-        // The branch selector refills the base from the default branch.
         setDraftThreadContext(composerDraftTarget, {
           envMode: mode,
-          ...(mode === "worktree" && draftThread?.worktreePath
-            ? { worktreePath: null, branch: null }
-            : {}),
+          branch: null,
+          ...(mode === "worktree" ? { worktreePath: null } : {}),
         });
       }
       scheduleComposerFocus();
@@ -7748,7 +7788,6 @@ export default function ChatView(props: ChatViewProps) {
     [
       canOverrideServerThreadEnvMode,
       composerDraftTarget,
-      draftThread?.worktreePath,
       isLocalDraftThread,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
@@ -8337,7 +8376,9 @@ export default function ChatView(props: ChatViewProps) {
                 {...(canOverrideServerThreadEnvMode
                   ? {
                       activeThreadBranchOverride: activeThreadBranch,
-                      onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+                      activeThreadBranchOverrideFromSetting:
+                        pendingServerThreadBase?.fromSetting === true,
+                      onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
                     }
                   : {})}
                 envLocked={envLocked}

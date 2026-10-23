@@ -4,6 +4,7 @@ import { Dialog as CommandDialogPrimitive } from "@base-ui/react/dialog";
 import { SearchIcon } from "lucide-react";
 import type * as React from "react";
 import { cn } from "~/lib/utils";
+import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 import {
   Autocomplete,
   AutocompleteCollection,
@@ -35,6 +36,7 @@ function CommandDialogBackdrop({ className, ...props }: CommandDialogPrimitive.B
       )}
       data-slot="command-dialog-backdrop"
       {...props}
+      render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
     />
   );
 }

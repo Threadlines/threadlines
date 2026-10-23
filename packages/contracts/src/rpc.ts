@@ -86,6 +86,12 @@ import {
   WsOwnerRequiredError,
 } from "./relayAccess.ts";
 import {
+  PresenceSetViewingInput,
+  PushAlertsError,
+  PushRegisterInput,
+  PushSendTestResult,
+} from "./pushAlerts.ts";
+import {
   PreviewAutomationHostSchema,
   PreviewAutomationHostMessageSchema,
   PreviewAutomationProgressSchema,
@@ -356,6 +362,7 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalResolveInterruptedInput,
+  TerminalResolvePortInUseInput,
   TerminalError,
   TerminalOpenInput,
   TerminalResizeInput,
@@ -513,6 +520,7 @@ export const WS_METHODS = {
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
   terminalResolveInterrupted: "terminal.resolveInterrupted",
+  terminalResolvePortInUse: "terminal.resolvePortInUse",
 
   // Provider sign-in methods (settings-owned, ephemeral PTY)
   providerAuthStart: "providerAuth.start",
@@ -630,6 +638,13 @@ export const WS_METHODS = {
   relayRespondToJoinRequest: "relay.respondToJoinRequest",
   relaySubmitJoin: "relay.submitJoin",
   relayDirectRoutes: "relay.directRoutes",
+
+  // Phone alerts (docs/design/push-alerts.md). A paired phone's own session.
+  pushRegister: "push.register",
+  pushUnregister: "push.unregister",
+  pushSendTest: "push.sendTest",
+  /** Every client: the thread on screen, so it gets no alerts meanwhile. */
+  presenceSetViewing: "presence.setViewing",
 
   // Computer links (docs/design/fleet.md). Owner and client sessions alike.
   linksList: "links.list",
@@ -1622,6 +1637,11 @@ export const WsTerminalResolveInterruptedRpc = Rpc.make(WS_METHODS.terminalResol
   error: TerminalError,
 });
 
+export const WsTerminalResolvePortInUseRpc = Rpc.make(WS_METHODS.terminalResolvePortInUse, {
+  payload: TerminalResolvePortInUseInput,
+  error: TerminalError,
+});
+
 export const WsOrchestrationDispatchCommandRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.dispatchCommand,
   {
@@ -1853,6 +1873,26 @@ export const WsRelaySubmitJoinRpc = Rpc.make(WS_METHODS.relaySubmitJoin, {
   payload: RelaySubmitJoinInput,
   success: RelaySubmitJoinResult,
   error: RelayAccessError,
+});
+
+export const WsPushRegisterRpc = Rpc.make(WS_METHODS.pushRegister, {
+  payload: PushRegisterInput,
+  error: PushAlertsError,
+});
+
+export const WsPushUnregisterRpc = Rpc.make(WS_METHODS.pushUnregister, {
+  payload: Schema.Struct({}),
+  error: PushAlertsError,
+});
+
+export const WsPushSendTestRpc = Rpc.make(WS_METHODS.pushSendTest, {
+  payload: Schema.Struct({}),
+  success: PushSendTestResult,
+  error: PushAlertsError,
+});
+
+export const WsPresenceSetViewingRpc = Rpc.make(WS_METHODS.presenceSetViewing, {
+  payload: PresenceSetViewingInput,
 });
 
 export const WsLinksListRpc = Rpc.make(WS_METHODS.linksList, {
@@ -2312,6 +2352,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
   WsTerminalResolveInterruptedRpc,
+  WsTerminalResolvePortInUseRpc,
   WsSubscribeTerminalEventsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthWriteRpc,
@@ -2336,6 +2377,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsRelayCancelInviteRpc,
   WsRelayRespondToJoinRequestRpc,
   WsRelaySubmitJoinRpc,
+  WsPushRegisterRpc,
+  WsPushUnregisterRpc,
+  WsPushSendTestRpc,
+  WsPresenceSetViewingRpc,
   WsRelayDirectRoutesRpc,
   WsLinksListRpc,
   WsLinksSubscribeRpc,

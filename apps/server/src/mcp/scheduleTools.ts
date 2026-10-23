@@ -115,6 +115,9 @@ const changesSchedules = <T extends Tool.Any>(tool: T): T =>
 export const ScheduleListTool = Tool.make("schedule_list", {
   description:
     "This project's scheduled tasks on this computer: each one's id, name, schedule, status (active, paused, done for a one-time task that ran, or error with why), next run, last run and its instructions, and the date and time now on this computer. Scheduled tasks start threads at set times while Threadlines is running on this computer.",
+  // No `parameters`: Tool.make's default lists as an empty object. An empty
+  // `Schema.Struct({})` lists as "object or array", and Claude then rejects
+  // the whole room endpoint's tool list.
   success: ScheduleListResult,
   dependencies,
 })

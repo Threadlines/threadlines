@@ -152,7 +152,9 @@ async function getCompressedStaticData(
 }
 
 function staticCacheControl(filePath: string): string {
-  if (filePath.endsWith("index.html")) return "no-cache";
+  // The alerts service worker (push-sw.js) is checked on every visit, so a
+  // fixed one reaches phones at once.
+  if (filePath.endsWith("index.html") || filePath.endsWith("push-sw.js")) return "no-cache";
   if (STATIC_IMMUTABLE_ASSET_PATTERN.test(filePath)) {
     return "public, max-age=31536000, immutable";
   }

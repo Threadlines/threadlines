@@ -19,7 +19,7 @@ import {
   SquarePenIcon,
   WaypointsIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
@@ -58,6 +58,11 @@ import {
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
+import {
+  DESTINATION_LISTS,
+  destinationHasList,
+  resolveShownDestinationList,
+} from "./destinationLists";
 import { usePendingLinkRequests } from "./linkedComputers";
 import { useListNewThreadStore } from "./listNewThreadStore";
 import { RailUpdateButton } from "./RailUpdateButton";
@@ -96,17 +101,26 @@ export interface NavigationDestination {
   readonly shortLabel: string;
   readonly icon: LucideIcon;
   readonly selected: boolean;
+  /**
+   * The selected destination's list beside the rail, which its button shows
+   * and hides: whether it is showing. Undefined for the others, and on a phone.
+   */
+  readonly listOpen: boolean | undefined;
   /** Threads waiting on the user: an amber count on the icon. */
   readonly needsYou: number;
   /**
    * General chats only: a result nobody has looked at yet (a finished turn, a
-   * ready plan). A blue dot beside the count, since chats have no list here
-   * to show it.
+   * ready plan). A blue dot beside the count, unless `ownListShowing`.
    */
   readonly unread: boolean;
-  /** Threads at work: a blue dot and count under the icon, while `showWorking`. */
+  /** Threads at work: a blue dot and count under the icon, unless `ownListShowing`. */
   readonly working: number;
-  readonly showWorking: boolean;
+  /**
+   * Its own list is beside the rail (or in a phone's sheet), saying what is
+   * working and unread, so the icon leaves those to it. What waits on the
+   * user stays on the icon.
+   */
+  readonly ownListShowing: boolean;
   readonly shortcutLabel: string | null;
   /** A short mono line in the tooltip ("3 working", "1.2M today"). */
   readonly detail: string | null;
@@ -291,13 +305,17 @@ function joinDetails(...parts: Array<string | null>): string | null {
 
 /**
  * Every destination with what the rail says about it, and what choosing one
- * does. `listOpen` is whether the thread list beside the rail is showing: the
- * Threads icon carries the working count only while the list is hidden, since
- * the list says it otherwise.
+ * does. `listOpen` is whether the list beside the rail is showing: the Threads
+ * and General Chats icons carry their work unless that list is their own,
+ * which says it otherwise.
+ *
+ * `select` takes the click's place in a run of quick clicks (its `detail`: 1
+ * for a single click, 2 for a double-click's second, 0 from a key). Choosing
+ * the destination already on screen shows or hides its list beside the rail.
  */
 export function useNavigationDestinations(options: { readonly listOpen: boolean }): {
   readonly destinations: readonly NavigationDestination[];
-  readonly select: (id: NavigationDestinationId) => void;
+  readonly select: (id: NavigationDestinationId, clickCount?: number) => void;
 } {
   const navigate = useNavigate();
   const router = useRouter();
@@ -320,11 +338,13 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     describeActiveScheduledTasks(state.byEnvironment),
   );
   const shortcutContext = useRouteShortcutContext();
+  const { isMobile, toggleSidebar } = useSidebar();
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
     const shortcutOptions = { platform, context: shortcutContext };
     const workingEverywhere = attention.threads.working + attention.chats.working;
+    const shownList = options.listOpen ? resolveShownDestinationList(selected, isMobile) : null;
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
       if (id === "pull-requests" && !hasPullRequests) return [];
@@ -339,11 +359,12 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           shortLabel: NAVIGATION_DESTINATION_SHORT_LABELS[id],
           icon: DESTINATION_ICONS[id],
           selected: selected === id,
+          listOpen:
+            selected === id && !isMobile && destinationHasList(id) ? options.listOpen : undefined,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
           unread: id === "chats" && attention.chatsUnread,
           working: counts?.working ?? 0,
-          // General chats have no list beside the rail, so their work always shows.
-          showWorking: id === "chats" || (id === "threads" && !options.listOpen),
+          ownListShowing: shownList !== null && shownList === DESTINATION_LISTS[id],
           shortcutLabel: command
             ? shortcutLabelForCommand(keybindings, command, shortcutOptions)
             : // Settings opens from the desktop app's own menu shortcut.
@@ -375,6 +396,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     attention,
     hasPullRequests,
     hasScheduledTasks,
+    isMobile,
     keybindings,
     options.listOpen,
     pullRequestsNeedingYou,
@@ -384,16 +406,23 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     usageTokens,
   ]);
 
-  const { open, setOpen, isMobile } = useSidebar();
+  // Whether a click in the current run of quick clicks went somewhere.
+  const runNavigatedRef = useRef(false);
   const select = useCallback(
-    (id: NavigationDestinationId) => {
+    (id: NavigationDestinationId, clickCount = 1) => {
+      if (clickCount <= 1) runNavigatedRef.current = false;
+      if (id === selected && !isMobile && destinationHasList(id)) {
+        // Already there: the button shows or hides the list, as the title
+        // row's toggle does. A double-click that came here is one choice, so
+        // its second click leaves the list as the first left it.
+        if (!runNavigatedRef.current) toggleSidebar();
+        return;
+      }
+      // On a phone the threads are the sheet itself, which choosing closed.
+      if (id === "threads" && selected === "threads") return;
+      runNavigatedRef.current = true;
       switch (id) {
         case "threads": {
-          if (selected === "threads") {
-            // Already there: the button's job is to show the list.
-            if (!isMobile && !open) setOpen(true);
-            return;
-          }
           if (lastThreadsViewHref !== null) {
             void router.navigate({ href: lastThreadsViewHref });
             return;
@@ -421,7 +450,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           return;
       }
     },
-    [isMobile, navigate, open, router, selected, setOpen],
+    [isMobile, navigate, router, selected, toggleSidebar],
   );
 
   return { destinations, select };
@@ -502,15 +531,17 @@ function DestinationButton({
   readonly glide?: boolean;
   /** On a phone: its short name under the icon, since a finger can't hover for the tooltip. */
   readonly named?: boolean;
-  readonly onSelect: (id: NavigationDestinationId) => void;
+  /** With the click's place in a run of quick clicks, as `select` takes it. */
+  readonly onSelect: (id: NavigationDestinationId, clickCount: number) => void;
 }) {
   const Icon = destination.icon;
-  const working = destination.showWorking ? destination.working : 0;
+  const working = destination.ownListShowing ? 0 : destination.working;
+  const unread = destination.unread && !destination.ownListShowing;
   // The corner marks are drawn for the eye; the name says them for a reader.
   const label = [
     destination.label,
     destination.needsYou > 0 ? describeNeedsYou(destination.needsYou) : null,
-    destination.unread ? "unread" : null,
+    unread ? "unread" : null,
   ]
     .filter((part): part is string => part !== null)
     .join(", ");
@@ -521,13 +552,14 @@ function DestinationButton({
         label={label}
         tooltip={<DestinationTooltip destination={destination} />}
         selected={destination.selected}
+        expanded={destination.listOpen}
         glide={glide}
         side={side}
         testId={`rail-${destination.id}`}
-        onClick={() => onSelect(destination.id)}
+        onClick={(event) => onSelect(destination.id, event.detail)}
       >
         <Icon aria-hidden="true" />
-        <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
+        <CornerMarks needsYou={destination.needsYou} unread={unread} />
       </ChromeIconButton>
       {named ? (
         // The button already says its full name to a screen reader.
@@ -695,8 +727,7 @@ export function NavigationRail() {
  */
 export function SidebarDestinationRow() {
   const { setOpenMobile } = useSidebar();
-  // The list is the sheet itself here, so the Threads icon never carries the
-  // working count it would show beside a hidden list.
+  // The row is in the sheet, so its list is showing.
   const { destinations, select } = useNavigationDestinations({ listOpen: true });
   const onSelect = useCallback(
     (id: NavigationDestinationId) => {

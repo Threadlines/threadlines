@@ -56,3 +56,17 @@ export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList 
 export function destinationHasList(id: NavigationDestinationId): boolean {
   return DESTINATION_LISTS[id] !== null;
 }
+
+/**
+ * The list beside the rail while `selected` is on screen: the destination's
+ * own on a wide screen, the threads in a phone's sheet unless the page's list
+ * belongs there. Null where the page has none.
+ */
+export function resolveShownDestinationList(
+  selected: NavigationDestinationId,
+  isMobile: boolean,
+): DestinationList | null {
+  return isMobile && DESTINATION_LISTS[selected]?.inPhoneSheet !== true
+    ? DESTINATION_LISTS.threads
+    : DESTINATION_LISTS[selected];
+}

@@ -20,6 +20,7 @@ import {
   stripGitRemoteCredentials,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseRepositoryWebUrlFromRemoteUrl,
+  resolveNewWorktreeBaseBranch,
   sanitizeBranchFragment,
   WORKTREE_BRANCH_PREFIX,
   worktreeFolderNameForBranch,
@@ -366,6 +367,63 @@ describe("worktreeFolderNameForBranch", () => {
   it("flattens real branch names into one folder", () => {
     expect(worktreeFolderNameForBranch("fix/login-timeout")).toBe("fix-login-timeout");
     expect(worktreeFolderNameForBranch("main")).toBe("main");
+  });
+});
+
+describe("resolveNewWorktreeBaseBranch", () => {
+  const refs = [
+    { name: "threadlines/2d841c42", isDefault: false },
+    { name: "origin/main", isDefault: true, isRemote: true, remoteName: "origin" },
+    { name: "main", isDefault: true },
+    { name: "develop", isDefault: false },
+    { name: "upstream/release", isDefault: false, isRemote: true, remoteName: "upstream" },
+    { name: "origin/release", isDefault: false, isRemote: true, remoteName: "origin" },
+  ];
+  const resolve = (base: { from: "default" | "current" | "named"; branch?: string }) =>
+    resolveNewWorktreeBaseBranch({
+      base: { branch: "", ...base },
+      refs,
+      currentBranch: "threadlines/2d841c42",
+    });
+
+  it("starts from the local default branch, not the checkout's current branch", () => {
+    expect(resolve({ from: "default" })).toBe("main");
+    expect(resolve({ from: "current" })).toBe("threadlines/2d841c42");
+  });
+
+  it("starts from the named branch, a remote's copy when there is no local one", () => {
+    expect(resolve({ from: "named", branch: "develop" })).toBe("develop");
+    expect(resolve({ from: "named", branch: "release" })).toBe("origin/release");
+    expect(resolve({ from: "named", branch: "upstream/release" })).toBe("upstream/release");
+  });
+
+  it("uses the default branch when the setting's branch isn't there", () => {
+    expect(resolve({ from: "named", branch: "trunk" })).toBe("main");
+    expect(resolve({ from: "named" })).toBe("main");
+    expect(
+      resolveNewWorktreeBaseBranch({
+        base: { from: "current", branch: "" },
+        refs,
+        currentBranch: null,
+      }),
+    ).toBe("main");
+  });
+
+  it("falls back to the current branch when no default branch is known", () => {
+    expect(
+      resolveNewWorktreeBaseBranch({
+        base: { from: "named", branch: "trunk" },
+        refs: [{ name: "feature/x", isDefault: false }],
+        currentBranch: "feature/x",
+      }),
+    ).toBe("feature/x");
+    expect(
+      resolveNewWorktreeBaseBranch({
+        base: { from: "default", branch: "" },
+        refs: [],
+        currentBranch: null,
+      }),
+    ).toBeNull();
   });
 });
 

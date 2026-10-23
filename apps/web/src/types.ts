@@ -1,5 +1,6 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
+  MessageSentFrom,
   OrchestrationAgentPage,
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
@@ -126,6 +127,8 @@ export interface ChatMessage {
   fromOutside?: OutsideAgentRef | undefined;
   /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
+  /** See OrchestrationMessage.sentFrom: the device the user sent it from. */
+  sentFrom?: MessageSentFrom | undefined;
   /**
    * See OrchestrationMessage.imported: brought over when the thread moved
    * here from another computer. Outside this computer's turns, so it never

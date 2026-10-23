@@ -12,6 +12,7 @@ import {
   ChatSkillReferenceList,
   MessageAgentModel,
   MessageComposer,
+  MessageSentFrom,
   NonNegativeInt,
   RoomAgentMessageKind,
   RoomAgentRef,
@@ -57,6 +58,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
     composer: Schema.NullOr(MessageComposer),
+    sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
   }),
 );
 
@@ -89,6 +91,7 @@ function toProjectionThreadMessage(
     ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
+    ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
   };
 }
 
@@ -125,6 +128,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           invite,
           agent_models,
           composer,
+          sent_from,
           is_streaming,
           created_at,
           updated_at
@@ -166,6 +170,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.invite !== undefined ? JSON.stringify(row.invite) : null},
           ${row.agentModels !== undefined ? JSON.stringify(row.agentModels) : null},
           ${row.composer ?? null},
+          ${row.sentFrom !== undefined ? JSON.stringify(row.sentFrom) : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -203,6 +208,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           -- The model stamps belong to the write that created the message.
           agent_models = COALESCE(projection_thread_messages.agent_models, excluded.agent_models),
           composer = COALESCE(projection_thread_messages.composer, excluded.composer),
+          sent_from = COALESCE(projection_thread_messages.sent_from, excluded.sent_from),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -238,6 +244,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           invite,
           agent_models AS "agentModels",
           composer,
+          sent_from AS "sentFrom",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -275,6 +282,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           invite,
           agent_models AS "agentModels",
           composer,
+          sent_from AS "sentFrom",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

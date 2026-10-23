@@ -11,7 +11,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => undefined,
 }));
 
-import { ToastProvider, toastManager } from "./toast";
+import { Dialog, DialogPopup, DialogTitle } from "./dialog";
+import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
 
 /**
  * Every interactive overlay in this app -- menu, popover, dialog, tooltip,
@@ -71,6 +72,145 @@ describe("toast layering", () => {
       const card = viewport.firstElementChild as HTMLElement;
       expect(getComputedStyle(card).position).toBe("absolute");
       expect(getComputedStyle(viewport).position).toBe("fixed");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("rises above a dialog's dimmed backdrop while the dialog is open", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <Dialog open>
+          <DialogPopup>
+            <DialogTitle>Add provider instance</DialogTitle>
+          </DialogPopup>
+        </Dialog>
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({ type: "error", title: "Could not add provider instance", timeout: 0 });
+      const viewport = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-slot='toast-viewport']");
+        expect(found?.firstElementChild).toBeTruthy();
+        return found!;
+      });
+      const backdrop = document.querySelector<HTMLElement>("[data-slot='dialog-backdrop']");
+      expect(backdrop).not.toBeNull();
+
+      const zIndexOf = (element: HTMLElement) =>
+        Number.parseInt(getComputedStyle(element).zIndex, 10);
+      expect(zIndexOf(viewport)).toBeGreaterThan(zIndexOf(backdrop!));
+
+      await mounted.rerender(
+        <ToastProvider>
+          <Dialog open={false}>
+            <DialogPopup>
+              <DialogTitle>Add provider instance</DialogTitle>
+            </DialogPopup>
+          </Dialog>
+        </ToastProvider>,
+      );
+      await vi.waitFor(() => expect(zIndexOf(viewport)).toBeLessThan(APP_OVERLAY_LAYER));
+    } finally {
+      toastManager.close();
+      await mounted.unmount();
+    }
+  });
+});
+
+describe("notice reasons and clocks", () => {
+  afterEach(() => {
+    toastManager.close();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  it("shows an error's whole reason instead of one cut-off line", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Clone failed",
+          description:
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled. Check that you are signed in to GitHub, that the repository exists, and that this computer can reach github.com over HTTPS.",
+        }),
+      );
+      const description = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-slot='toast-description']");
+        expect(found).not.toBeNull();
+        return found!;
+      });
+
+      expect(getComputedStyle(description).whiteSpace).not.toBe("nowrap");
+      const lineHeight = Number.parseFloat(getComputedStyle(description).lineHeight);
+      expect(description.getBoundingClientRect().height).toBeGreaterThan(lineHeight * 1.5);
+      // Every line is on screen: nothing clamped or scrolled out of view.
+      expect(description.scrollHeight).toBeLessThanOrEqual(description.clientHeight + 1);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("starts a notice's clock only once it gets a slot in the stack", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+    const drawnTitles = () =>
+      Array.from(document.querySelectorAll("[data-slot='toast-title']"), (el) => el.textContent);
+
+    try {
+      for (const title of ["Oldest", "Second", "Third", "Newest"]) {
+        toastManager.add({ type: "success", title });
+      }
+      await vi.waitFor(() => expect(drawnTitles()).toEqual(["Newest", "Third", "Second"]));
+
+      // The three drawn notices run out; the held-back one only now appears,
+      // with its full five seconds still ahead of it.
+      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.waitFor(() => expect(drawnTitles()).toContain("Oldest"));
+      await vi.advanceTimersByTimeAsync(4_000);
+      const oldest = Array.from(document.querySelectorAll("[data-slot='toast-title']")).find(
+        (el) => el.textContent === "Oldest",
+      );
+      expect(oldest).toBeDefined();
+      expect(oldest!.closest("[data-ending-style]")).toBeNull();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("holds every clock while the pointer is on the stack", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({ type: "success", title: "Path copied" });
+      const root = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-slot='toast-viewport'] > *");
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      root.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      root.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+      await vi.waitFor(() => expect(root.hasAttribute("data-expanded")).toBe(true));
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(root.isConnected).toBe(true);
+      expect(root.hasAttribute("data-ending-style")).toBe(false);
     } finally {
       await mounted.unmount();
     }

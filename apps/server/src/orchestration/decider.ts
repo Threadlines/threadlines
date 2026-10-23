@@ -429,6 +429,7 @@ function decideFollowUpSubmit(
                 : {}),
               ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
               ...(command.composer !== undefined ? { composer: command.composer } : {}),
+              ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
               ...(command.scheduledTaskId !== undefined
                 ? { scheduledTaskId: command.scheduledTaskId }
                 : {}),
@@ -466,6 +467,7 @@ function decideFollowUpSubmit(
           // Steering goes to the agent at work.
           ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           createdAt: command.createdAt,
         },
       },
@@ -905,6 +907,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments ?? [],
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -1458,6 +1461,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           participantId: command.participantId,
           sideTurnId: command.sideTurnId,
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           agentModels: messageAgentModels(thread, [
             { participantId: command.participantId, modelSelection: answerModel },
           ]),
@@ -2375,6 +2379,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }
             : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
           // must not restamp it.
@@ -2959,6 +2964,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ...(fromThread !== undefined ? { fromThread } : {}),
             // Only the user's own queued message carries it.
             ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
+            ...(!agentQueued && queued.sentFrom !== undefined ? { sentFrom: queued.sentFrom } : {}),
             createdAt: command.createdAt,
           },
         ],
@@ -3240,6 +3246,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           requestId: command.requestId,
           answers: command.answers,
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -3603,6 +3610,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.text,
           attachments: [],
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           turnId: command.turnId ?? null,
           streaming: false,
           createdAt: command.createdAt,
@@ -3713,6 +3721,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
+          ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           ...(isNewMessage(acceptingThread, command.message.messageId)
             ? {
                 agentModels: messageAgentModels(acceptingThread, [

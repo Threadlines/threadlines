@@ -5,6 +5,7 @@ export * from "./desktopBootstrap.ts";
 export * from "./remoteAccess.ts";
 export * from "./relay.ts";
 export * from "./relayAccess.ts";
+export * from "./pushAlerts.ts";
 export * from "./ipc.ts";
 export * from "./previewAutomation.ts";
 export * from "./previewTunnel.ts";

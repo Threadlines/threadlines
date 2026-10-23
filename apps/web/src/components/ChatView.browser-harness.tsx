@@ -3341,6 +3341,7 @@ export function registerChatViewSuiteHooks(): void {
       doneThreadOverlays: {},
       inboxProjectScopeKeys: [],
       collapsedInboxGroups: {},
+      inboxWrappedOpen: false,
       sidebarListOpen: true,
     });
     useTerminalStateStore.persist.clearStorage();

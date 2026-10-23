@@ -23,6 +23,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette, preloadCommandPaletteDialog } from "../components/CommandPalette";
 import { preloadDestinationLists } from "../components/sidebar/destinationLists";
+import { PushAlertsRuntime } from "../pushAlerts/PushAlertsRuntime";
 import { BrowserHostLayer } from "../components/browser/BrowserHostLayer";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
@@ -227,6 +228,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
+        <PushAlertsRuntime />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {isElectron ? <BrowserProfileReconciler /> : null}

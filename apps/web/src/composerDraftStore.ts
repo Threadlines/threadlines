@@ -300,6 +300,7 @@ const PersistedDraftThreadState = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
+  branchFromSetting: Schema.optionalKey(Schema.Boolean),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
   room: Schema.optionalKey(DraftRoomSchema),
@@ -409,6 +410,12 @@ export interface DraftSessionState {
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   branch: string | null;
+  /**
+   * The branch is the base the computer's "New worktrees from" setting gave a
+   * new worktree, not one the user picked: it follows the setting until they
+   * pick one.
+   */
+  branchFromSetting?: true;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
   /**
@@ -514,6 +521,8 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     options: {
       branch?: string | null;
+      /** With `branch`: it came from the "New worktrees from" setting. */
+      branchFromSetting?: boolean;
       worktreePath?: string | null;
       projectRef?: ScopedProjectRef;
       /** The sidebar project the draft now belongs to, when `projectRef` moves it to another. */
@@ -1662,6 +1671,12 @@ function createDraftThreadState(
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
     branch: nextBranch,
+    // A kept branch stays the setting's until the user picks one.
+    ...(options?.branch === undefined &&
+    nextBranch !== null &&
+    existingThread?.branchFromSetting === true
+      ? { branchFromSetting: true as const }
+      : {}),
     worktreePath: nextWorktreePath,
     envMode:
       options?.envMode ??
@@ -1865,6 +1880,9 @@ function normalizePersistedDraftThreads(
             ? candidateDraftThread.interactionMode
             : DEFAULT_INTERACTION_MODE,
         branch: typeof branch === "string" ? branch : null,
+        ...(candidateDraftThread.branchFromSetting === true && typeof branch === "string"
+          ? { branchFromSetting: true }
+          : {}),
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         ...normalizeDraftRoom(candidateDraftThread.room),
@@ -2541,6 +2559,9 @@ function toHydratedDraftThreadState(
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
     branch: persistedDraftThread.branch,
+    ...(persistedDraftThread.branchFromSetting === true && persistedDraftThread.branch !== null
+      ? { branchFromSetting: true as const }
+      : {}),
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
     ...(persistedDraftThread.room !== undefined ? { room: persistedDraftThread.room } : {}),
@@ -2841,6 +2862,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   ? null
                   : existing.branch
                 : (options.branch ?? null);
+            const nextBranchFromSetting =
+              nextBranch !== null &&
+              (options.branch === undefined
+                ? existing.branchFromSetting === true
+                : options.branchFromSetting === true);
             const nextDraftThread: DraftThreadState = {
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
@@ -2853,6 +2879,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
               branch: nextBranch,
+              ...(nextBranchFromSetting ? { branchFromSetting: true as const } : {}),
               worktreePath: nextWorktreePath,
               envMode:
                 options.envMode ??
@@ -2872,6 +2899,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
               nextDraftThread.branch === existing.branch &&
+              nextDraftThread.branchFromSetting === existing.branchFromSetting &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&
               nextDraftThread.room === existing.room &&

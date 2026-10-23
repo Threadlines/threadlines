@@ -18,7 +18,7 @@ Revision history:
   written:
   - `packages/contracts/src/outsideAgents.ts`;
   - the origin fields in `orchestration.ts`;
-  - migration 087;
+  - migration 089;
   - `apps/server/src/outsideAgents/OutsideAgentConnections.ts` and
     `connectTools.ts`.
     Builders work against them.
@@ -339,7 +339,7 @@ which Claude Code builds on.
   resources, which is correct. The client uses the URL the user added, and
   Settings shows `127.0.0.1`.
 
-## Storage (migration 087)
+## Storage (migration 089)
 
 - **`outside_agent_connections`:**
   - `connection_id`, `client_id_hash`, `client_name`, `software_id`,
@@ -677,7 +677,7 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
 
 ## Build order (`feat/outside-agents`, off main; a PR when Will asks)
 
-1. **Done (rev 4):** contracts, the Normalizer refusal, migration 087, the
+1. **Done (rev 4):** contracts, the Normalizer refusal, migration 089, the
    connection service contract and the tool schemas, plus placeholder RPC
    handlers so the base typechecks.
 2. **In parallel, each in its own worktree:**
@@ -688,7 +688,7 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
    - **Then the `threadlines` command and desktop install,** once the first
      wave is merged.
 3. **Server:**
-   - migration 087;
+   - migration 089;
    - the OAuth endpoints and waiting page (Fetch Metadata, limits, quiet
      period);
    - the connection store and token;

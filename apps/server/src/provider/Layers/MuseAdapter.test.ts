@@ -232,6 +232,26 @@ const shellApproval = (input: {
 });
 
 describe("MuseAdapter", () => {
+  it.effect("sends the device note as a part of its own, outside the words Muse shows", () =>
+    Effect.gen(function* () {
+      const { hosts, adapter, threadId, start } = yield* setup();
+      yield* start();
+      yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("message-from-phone"),
+        input: "hi",
+        deviceNote: "Sent from their phone.",
+      });
+      const turnStart = hosts[0]!.calls.find((call) => call.method === "turn/start")!;
+      const parts = turnStart.params.input as ReadonlyArray<{ type: string; text?: string }>;
+      expect(parts.slice(-2)).toEqual([
+        { type: "text", text: "Sent from their phone." },
+        { type: "text", text: "hi" },
+      ]);
+      expect(turnStart.params.displayText).toBe("hi");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("streams a turn's text and settles it on Muse's terminal", () =>
     Effect.gen(function* () {
       const { hosts, events, nextEvent, start, send } = yield* setup();

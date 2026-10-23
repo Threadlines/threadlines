@@ -915,7 +915,12 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   );
 
   return (
-    <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
+    // The column measures each kind of row to fill its height.
+    <li
+      className={ROW_ITEM_CLASS_NAME}
+      data-thread-item
+      data-inbox-live-row={family ? "family" : "plain"}
+    >
       {/* Swiped right it pins (or unpins); swiped left it wraps up, when the
           Wrap up button would. */}
       <SwipeableRow
@@ -1362,7 +1367,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
   const showAction = isDone || canMarkDone;
 
   return (
-    <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
+    <li className={ROW_ITEM_CLASS_NAME} data-thread-item data-inbox-child-row="local">
       {/* The same action as its button: Reopen once wrapped (swiped right),
           Wrap up while it can be (swiped left). */}
       <SwipeableRow
@@ -1515,7 +1520,7 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   const isStart = child.threadId === null;
   const tone = child.isDone ? undefined : child.status?.colorClass;
   return (
-    <li className={ROW_ITEM_CLASS_NAME}>
+    <li className={ROW_ITEM_CLASS_NAME} data-inbox-child-row="remote">
       <Tooltip>
         <TooltipTrigger
           render={
@@ -1905,6 +1910,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     <li
       className={ROW_ITEM_CLASS_NAME}
       data-thread-item
+      data-inbox-done-row
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >

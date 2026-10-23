@@ -367,6 +367,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.fromThread ? { fromThread: message.fromThread } : {}),
     ...(message.fromOutside ? { fromOutside: message.fromOutside } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
+    ...(message.sentFrom ? { sentFrom: message.sentFrom } : {}),
     ...(message.imported ? { imported: true as const } : {}),
   };
 }
@@ -1928,6 +1929,10 @@ function upsertThreadMessage(
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
       ? { agentModels: message.agentModels }
       : {}),
+    // Stamped by the server; an optimistic copy has none.
+    ...(existingMessage.sentFrom === undefined && message.sentFrom !== undefined
+      ? { sentFrom: message.sentFrom }
+      : {}),
   };
   const nextMessages = messages.slice();
   nextMessages[existingIndex] = nextMessage;
@@ -2747,6 +2752,7 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }
             : {}),
+          ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
           turnId: event.payload.turnId,
           streaming: false,
           createdAt: event.payload.createdAt,
@@ -2818,6 +2824,7 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }
             : {}),
+          ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
           ...(event.payload.imported ? { imported: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,

@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageAgentModel,
+  type MessageSentFrom,
   type MessageId,
   type OrchestrationAgentRequest,
   type OrchestrationAwaitedBackgroundTask,
@@ -113,7 +114,9 @@ import {
   ReplyIcon,
   PencilIcon,
   SplitIcon,
+  SmartphoneIcon,
   SquarePenIcon,
+  TabletIcon,
   TerminalIcon,
   Undo2Icon,
 } from "lucide-react";
@@ -2548,6 +2551,24 @@ function useRunMessageFold(rowId: string, foldable: boolean) {
   return { folded, setOpened, foldRef, messageRef };
 }
 
+/**
+ * Beside the time on a message the user sent from a phone or a tablet, the
+ * device it came from (see MessageSentFrom). Computers show nothing: they are
+ * where most messages come from.
+ */
+function MessageSentFromGlyph({ sentFrom }: { sentFrom: MessageSentFrom | undefined }) {
+  if (sentFrom === undefined || sentFrom.kind === "computer") {
+    return null;
+  }
+  const label = `Sent from ${sentFrom.name ?? (sentFrom.kind === "phone" ? "a phone" : "a tablet")}`;
+  const Icon = sentFrom.kind === "phone" ? SmartphoneIcon : TabletIcon;
+  return (
+    <span role="img" aria-label={label} title={label} className="inline-flex">
+      <Icon aria-hidden className="size-3" />
+    </span>
+  );
+}
+
 function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
@@ -2668,7 +2689,8 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
                     {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
                   </div>
                 </div>
-                <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                <p className="flex items-center gap-1 text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                  <MessageSentFromGlyph sentFrom={row.message.sentFrom} />
                   {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
                 </p>
               </>

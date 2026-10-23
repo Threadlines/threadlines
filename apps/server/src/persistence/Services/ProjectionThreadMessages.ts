@@ -19,6 +19,7 @@ import {
   IsoDateTime,
   MessageAgentModel,
   MessageComposer,
+  MessageSentFrom,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
@@ -73,6 +74,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   /** See OrchestrationMessage.composer. Written with the message and kept. */
   composer: Schema.optional(MessageComposer),
+  /** See OrchestrationMessage.sentFrom. Written with the message and kept. */
+  sentFrom: Schema.optional(MessageSentFrom),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

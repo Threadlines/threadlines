@@ -2456,9 +2456,12 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             const effort = reasoningEffortFor(selection);
             const host = yield* requireHost(ctx, "turn/start");
             const turnId = TurnId.make(host.host.mintCommandId());
+            // The device note is a part of its own, so Muse shows only the
+            // user's words as theirs (displayText).
             const preface = [
               ...(ctx.instructionsPending ? [instructionsFor(ctx)] : []),
               ...(plan ? [MUSE_PLAN_MODE_INSTRUCTION] : []),
+              ...(input.deviceNote !== undefined ? [input.deviceNote] : []),
             ];
             const userText = ctx.pendingSeed
               ? withContextSeedPreamble(ctx.pendingSeed, content.text)
@@ -2516,6 +2519,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         const result = yield* sessionCommand(ctx, "turn/steer", {
           expectedTurnId: live.turnId,
           input: [
+            // A part of its own, like a turn's (sendTurn).
+            ...(input.deviceNote !== undefined ? [{ type: "text", text: input.deviceNote }] : []),
             ...(content.text ? [{ type: "text", text: content.text }] : []),
             ...content.parts,
           ],
@@ -2844,6 +2849,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         nativeThreadFork: "supported",
         conversationRollback: "none",
       },
+      // A preface part of its own (sendTurn).
+      sendsDeviceNote: true,
       startSession,
       sendTurn,
       steerTurn,

@@ -1041,6 +1041,7 @@ jobs:
 
           gh "${args[@]}"
 
+      # npm-package.yml starts the Docker image build once npm has the version.
       - name: Publish npm package for stable release
         if: ${{ needs.preflight.outputs.channel == 'stable' }}
         env:

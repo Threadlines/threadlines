@@ -16,6 +16,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       restart: (input) => rpcClient.terminal.restart(input as never),
       close: (input) => rpcClient.terminal.close(input as never),
       resolveInterrupted: (input) => rpcClient.terminal.resolveInterrupted(input as never),
+      resolvePortInUse: (input) => rpcClient.terminal.resolvePortInUse(input as never),
       onEvent: (input, callback) => rpcClient.terminal.onEvent(input, callback),
     },
     realtime: {

@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   AgentPageReadError,
+  ApprovalRequestId,
   CommandRunError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
@@ -17,6 +18,7 @@ import {
   ExternalLauncherError,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
+  type ClientOrchestrationCommand,
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
@@ -25,6 +27,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ResolvedKeybindingRule,
+  SideTurnId,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -88,6 +91,7 @@ import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommand
 import { OutsideAgentConnections } from "./outsideAgents/OutsideAgentConnections.ts";
 import { OutsideAgentRequests } from "./outsideAgents/OutsideAgentRequests.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
+import { PushAlerts, type PushAlertsShape } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import {
@@ -523,6 +527,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
     relayHost?: Partial<RelayHostShape>;
+    pushAlerts?: Partial<PushAlertsShape>;
     relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
     computerLinks?: Partial<ComputerLinksShape>;
     scheduledTasks?: Partial<ScheduledTasksShape>;
@@ -825,6 +830,11 @@ const buildAppUnderTest = (options?: {
             directRoutes: () => Effect.succeed([]),
             isRevokedDevice: () => Effect.succeed(false),
             ...options?.layers?.relayHost,
+          }),
+          Layer.mock(PushAlerts)({
+            setViewing: () => Effect.void,
+            releaseViewer: () => Effect.void,
+            ...options?.layers?.pushAlerts,
           }),
           Layer.mock(RelayDeviceRepository)({
             getDevice: () => Effect.succeed(Option.none()),
@@ -5228,6 +5238,130 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ],
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "stamps a message with the device its connection signed in as, never one it claims",
+    () =>
+      Effect.gen(function* () {
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        yield* buildAppUnderTest({
+          config: { host: "0.0.0.0" },
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+
+        const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+        const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: HttpBody.text(JSON.stringify({ label: "Julius iPhone" }), "application/json"),
+        });
+        const pairing = (yield* pairingResponse.json) as { readonly credential: string };
+        const phoneBootstrap = yield* bootstrapBrowserSession(pairing.credential, {
+          headers: {
+            "user-agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+          },
+        });
+        const phoneCookie = phoneBootstrap.cookie?.split(";")[0] ?? "";
+
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-sent-from");
+        const message = (id: string) => ({
+          messageId: MessageId.make(`message-${id}`),
+          role: "user" as const,
+          text: "how is it going?",
+          attachments: [],
+        });
+        // What a client might try to say about itself: dropped.
+        const claimed = { sentFrom: { kind: "phone", name: "Not a phone" } };
+        const baseUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const dispatchAs = (cookie: string, commands: ReadonlyArray<unknown>) =>
+          Effect.scoped(
+            withWsRpcClient(appendSessionCookieToWsUrl(baseUrl, cookie), (client) =>
+              Effect.forEach(
+                commands,
+                (command) =>
+                  client[ORCHESTRATION_WS_METHODS.dispatchCommand](
+                    command as ClientOrchestrationCommand,
+                  ),
+                { discard: true },
+              ),
+            ),
+          );
+
+        yield* dispatchAs(ownerCookie, [
+          {
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-desk-start"),
+            threadId,
+            message: message("desk-start"),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            ...claimed,
+            createdAt,
+          },
+        ]);
+        yield* dispatchAs(phoneCookie, [
+          {
+            type: "thread.follow-up.submit",
+            commandId: CommandId.make("cmd-phone-steer"),
+            threadId,
+            turnId: TurnId.make("turn-sent-from"),
+            message: message("phone-steer"),
+            createdAt,
+          },
+          {
+            type: "thread.side-turn.start",
+            commandId: CommandId.make("cmd-phone-side"),
+            threadId,
+            sideTurnId: SideTurnId.make("side-sent-from"),
+            participantId: null,
+            message: { messageId: MessageId.make("message-phone-side"), role: "user", text: "?" },
+            createdAt,
+          },
+          // An answer to the agent's question, sent back as a message.
+          {
+            type: "thread.user-input.respond",
+            commandId: CommandId.make("cmd-phone-answer"),
+            threadId,
+            requestId: ApprovalRequestId.make("request-sent-from"),
+            answers: { scope: "Just the docs" },
+            createdAt,
+          },
+          // Writes no message: nothing to stamp.
+          {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make("cmd-phone-stop"),
+            threadId,
+            createdAt,
+          },
+        ]);
+
+        const phone = { kind: "phone", name: "Julius iPhone", os: "iOS" };
+        assert.deepEqual(
+          dispatchedCommands.map((command): [string, unknown] => [
+            command.type,
+            "sentFrom" in command ? command.sentFrom : undefined,
+          ]),
+          [
+            // The test client's user agent is no browser: a computer with no name.
+            ["thread.turn.start", { kind: "computer" }],
+            ["thread.follow-up.submit", phone],
+            ["thread.side-turn.start", phone],
+            ["thread.user-input.respond", phone],
+            ["thread.turn.interrupt", undefined],
+          ],
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("records setup-script failures without aborting bootstrap turn start", () =>

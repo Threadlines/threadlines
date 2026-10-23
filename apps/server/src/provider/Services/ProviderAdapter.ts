@@ -164,6 +164,12 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
+  /**
+   * `sendTurn` and `steerTurn` send their input's `deviceNote` their own way.
+   * Absent: the provider service puts the note in front of `input` before the
+   * adapter sees it (`withDeviceNoteInFront`).
+   */
+  readonly sendsDeviceNote?: true;
 
   /**
    * Start a provider-backed session.
