@@ -434,6 +434,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["Start in"]
         : []),
+      ...(settings.newWorktreeBase.from !== DEFAULT_UNIFIED_SETTINGS.newWorktreeBase.from
+        ? ["New worktrees from"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -510,6 +513,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.terminalScreenReaderMode,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
+      settings.newWorktreeBase.from,
       settings.diffChangesOnly,
       settings.diffIgnoreWhitespace,
       settings.diffWordWrap,
@@ -550,6 +554,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       sourceControlPanelDefaultOpen: DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      newWorktreeBase: DEFAULT_UNIFIED_SETTINGS.newWorktreeBase,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,

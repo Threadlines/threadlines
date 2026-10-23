@@ -23,7 +23,10 @@ import { nextRoomAgentName } from "@threadlines/shared/threadParticipants";
 
 import { getPickerModelName } from "./components/chat/providerIconUtils";
 import { type DraftId, type DraftRoom, useComposerDraftStore } from "./composerDraftStore";
-import { readPrimaryEnvironmentDescriptor } from "./environments/primary/context";
+import {
+  readPrimaryEnvironmentDescriptor,
+  usePrimaryEnvironmentId,
+} from "./environments/primary/context";
 import { waitForSetUpProject } from "./environments/projectSetups/projectSetups";
 import { useSavedEnvironmentRuntimeStore } from "./environments/runtime";
 import type { NewThreadPlacement } from "./lib/chatThreadActions";
@@ -36,7 +39,7 @@ import {
   type ProviderInstanceEntry,
 } from "./providerInstances";
 import { roomModelName } from "./rooms";
-import { getServerConfig, onServerConfigUpdated } from "./rpc/serverState";
+import { getServerConfig, onServerConfigUpdated, useServerConfig } from "./rpc/serverState";
 
 /** How long a new thread waits for its computer's settings before going without. */
 export const NEW_THREAD_SETTINGS_WAIT_MS = 3_000;
@@ -130,6 +133,19 @@ export function readComputerConfig(environmentId: EnvironmentId): ServerConfig |
     return appConfig;
   }
   return useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.serverConfig ?? null;
+}
+
+/** {@link readComputerConfig}, kept current for a render. */
+export function useComputerConfig(environmentId: EnvironmentId): ServerConfig | null {
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const appConfig = useServerConfig();
+  const savedConfig = useSavedEnvironmentRuntimeStore(
+    (state) => state.byId[environmentId]?.serverConfig ?? null,
+  );
+  return environmentId === primaryEnvironmentId ||
+    appConfig?.environment.environmentId === environmentId
+    ? appConfig
+    : savedConfig;
 }
 
 /**

@@ -143,6 +143,7 @@ function toAuthenticatedSession(session: VerifiedSession): AuthenticatedSession 
     subject: session.subject,
     method: session.method,
     role: session.role,
+    client: session.client,
     ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
   };
 }
@@ -221,6 +222,7 @@ export const makeServerAuth = Effect.gen(function* () {
           subject: TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT,
           method: session.method,
           role: session.role,
+          client: session.client,
           expiresAt: session.expiresAt,
         })),
         Effect.mapError(

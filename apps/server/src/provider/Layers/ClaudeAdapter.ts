@@ -816,6 +816,13 @@ export interface ClaudeAdapterLiveOptions {
    * next message without a restart. Absent: Claude's own default.
    */
   readonly workflowSize?: Effect.Effect<ClaudeWorkflowSize>;
+  /**
+   * The installed CLI's version, as the provider's last check found it. A
+   * cold session's first send goes before the CLI reports its own; the
+   * device note (ProviderSendTurnInput.deviceNote) goes on its own only to a
+   * version known to take it, so it asks this until then.
+   */
+  readonly installedCliVersion?: Effect.Effect<string | undefined>;
 }
 
 /**
@@ -2684,7 +2691,8 @@ function isAppendOnlyUserMessage(message: SDKUserMessage): boolean {
 type ClaudeUserMessagesInput = Pick<
   ProviderSendTurnInput | ProviderSteerTurnInput,
   "messageId" | "input" | "attachments" | "typed"
->;
+> &
+  Pick<ProviderSendTurnInput, "deviceNote">;
 
 interface ClaudeUserMessagesDependencies {
   readonly fileSystem: FileSystem.FileSystem;
@@ -2694,6 +2702,9 @@ interface ClaudeUserMessagesDependencies {
   /** The CLI, when known. One older than append-only messages gets the
    *  single message it always got whenever context leads the user's words. */
   readonly cliVersion?: string | undefined;
+  /** The CLI's version as far as anything knows it (its own report, else the
+   *  installed one). Only the device note waits for it to be known. */
+  readonly knownCliVersion?: string | undefined;
 }
 
 /**
@@ -2704,6 +2715,9 @@ interface ClaudeUserMessagesDependencies {
  * a handoff seed) then goes first, on its own unmarked message that only
  * appends to the transcript, so nobody else's words ever carry the user's
  * authority. Words the user did not type go as written (`deliverAsWritten`).
+ * The device note (ProviderSendTurnInput.deviceNote) goes with that context;
+ * when it could only go by taking the mark off the user's words, it is left
+ * out instead.
  */
 const buildUserMessagesEffect = (
   input: ClaudeUserMessagesInput,
@@ -2723,15 +2737,37 @@ const composeUserMessagesEffect = Effect.fn("composeUserMessagesEffect")(functio
   const leadingContext =
     (dependencies.seedPreamble?.trim().length ?? 0) > 0 || (typed?.context?.trim().length ?? 0) > 0;
   const appendOnlySupported = supportsClaudeAppendOnly(dependencies.cliVersion);
+  // The device note goes on its own only to a CLI known to take it.
+  const deviceNoteApart =
+    input.deviceNote !== undefined &&
+    dependencies.knownCliVersion !== undefined &&
+    supportsClaudeAppendOnly(dependencies.knownCliVersion) &&
+    appendOnlySupported &&
+    dependencies.method !== "turn/steer"
+      ? input.deviceNote
+      : undefined;
+  const withDeviceNoteInText = (turn: ClaudeUserMessagesInput) =>
+    turn.deviceNote !== undefined
+      ? { ...turn, input: withContextSeedPreamble(turn.deviceNote, turn.input) }
+      : turn;
+  if (typed === undefined) {
+    // No words marked as the user's: a note that can't go apart leads them.
+    if (deviceNoteApart === undefined) {
+      return [yield* buildUserMessageEffect(withDeviceNoteInText(input), dependencies)];
+    }
+    return [
+      buildUserMessage({ sdkContent: [{ type: "text", text: deviceNoteApart }], appendOnly: true }),
+      yield* buildUserMessageEffect(input, dependencies),
+    ];
+  }
   // A steer keeps its context and words together: how the CLI treats an
   // append-only message in the middle of a running turn is unverified.
-  if (
-    typed === undefined ||
-    (leadingContext && (!appendOnlySupported || dependencies.method === "turn/steer"))
-  ) {
-    return [yield* buildUserMessageEffect(input, dependencies)];
+  if (leadingContext && (!appendOnlySupported || dependencies.method === "turn/steer")) {
+    // The words already lose their mark to the context: the note costs nothing.
+    return [yield* buildUserMessageEffect(withDeviceNoteInText(input), dependencies)];
   }
-  const context = [dependencies.seedPreamble, typed.context]
+  // Otherwise a note that can't go apart is left out: the words keep their mark.
+  const context = [dependencies.seedPreamble, deviceNoteApart, typed.context]
     .filter((part): part is string => part !== undefined && part.trim().length > 0)
     .join("\n\n");
   const typedMessage = yield* buildUserMessageEffect(
@@ -9550,10 +9586,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* releaseBackgroundCommands(context);
 
     const seedPreamble = context.pendingContextSeedText;
+    const knownCliVersion =
+      context.cliVersion ??
+      (input.deviceNote !== undefined && options?.installedCliVersion !== undefined
+        ? yield* options.installedCliVersion
+        : undefined);
     const messages = yield* buildUserMessagesEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       cliVersion: context.cliVersion,
+      knownCliVersion,
       ...(seedPreamble !== undefined ? { seedPreamble } : {}),
     });
     // Consume the handoff seed once; subsequent turns continue natively.
@@ -10221,6 +10263,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   return {
     provider: PROVIDER,
+    // With the server's other context, apart from the user's words (composeUserMessagesEffect).
+    sendsDeviceNote: true,
     capabilities: {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",

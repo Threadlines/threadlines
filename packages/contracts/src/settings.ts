@@ -242,6 +242,23 @@ export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
 /**
+ * Where a new worktree starts when nobody picks a branch for it: the
+ * repository's default branch, the branch the project folder has checked
+ * out, or the branch named in `branch` (a project without it uses its
+ * default branch). Settings › Threads › New worktrees from.
+ */
+export const NewWorktreeBaseFrom = Schema.Literals(["default", "current", "named"]);
+export type NewWorktreeBaseFrom = typeof NewWorktreeBaseFrom.Type;
+
+export const NewWorktreeBaseSettings = Schema.Struct({
+  from: NewWorktreeBaseFrom.pipe(
+    Schema.withDecodingDefault(Effect.succeed("default" as const satisfies NewWorktreeBaseFrom)),
+  ),
+  branch: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type NewWorktreeBaseSettings = typeof NewWorktreeBaseSettings.Type;
+
+/**
  * A binary path that falls back to `fallback` when empty. `retiredDefaults`
  * are earlier defaults that saved settings still hold; they decode to the
  * current default too.
@@ -854,6 +871,7 @@ export const ServerSettings = Schema.Struct({
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
+  newWorktreeBase: NewWorktreeBaseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Speech-to-text model used by composer dictation. The model files are
   // downloaded on demand and shared by every client of this server.
   dictationModel: DictationModelId.pipe(
@@ -1096,6 +1114,12 @@ export const ServerSettingsPatch = Schema.Struct({
   usageAnalyticsEnabled: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  newWorktreeBase: Schema.optionalKey(
+    Schema.Struct({
+      from: Schema.optionalKey(NewWorktreeBaseFrom),
+      branch: Schema.optionalKey(TrimmedString),
+    }),
+  ),
   dictationModel: Schema.optionalKey(DictationModelId),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),

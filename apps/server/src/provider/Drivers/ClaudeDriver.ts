@@ -584,6 +584,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.map((settings) => settings.claudeWorkflowSize),
           Effect.orElseSucceed(() => "default" as const),
         ),
+        installedCliVersion: snapshot.getSnapshot.pipe(
+          Effect.map((provider) => provider.version ?? undefined),
+        ),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);

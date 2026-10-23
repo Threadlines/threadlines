@@ -9,6 +9,7 @@ import {
   CommandRunId,
   EnvironmentId,
   ModelSelection,
+  type MessageSentFrom,
   type OrchestrationCommand,
   type OrchestrationSession,
   type OrchestrationThread,
@@ -1495,12 +1496,13 @@ describe("ProviderCommandReactor", () => {
     expect(refused).toMatchObject({ tone: "error", payload: { detail: issue } });
   });
 
-  /** Sends a user message as a turn, written the way `composer` says. */
+  /** Sends a user message as a turn, written the way `composer` says, from `sentFrom`. */
   const startTurnAs = (
     harness: Awaited<ReturnType<typeof createHarness>>,
     id: string,
     text: string,
     composer: "typed" | "plain" | undefined,
+    sentFrom?: MessageSentFrom,
   ) =>
     Effect.runPromise(
       harness.engine.dispatch({
@@ -1516,6 +1518,7 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         ...(composer !== undefined ? { composer } : {}),
+        ...(sentFrom !== undefined ? { sentFrom } : {}),
         createdAt: "2026-01-01T00:00:00.000Z",
       }),
     );
@@ -1559,6 +1562,88 @@ describe("ProviderCommandReactor", () => {
     expect(sent.typed?.text).toBe("ultracode the second question");
     expect(sent.typed?.context).toContain("prior context");
     expect(sent.typed?.context).not.toContain("ultracode the second question");
+  });
+
+  it("tells the agent about a phone on every turn, and about the computer once back from it", async () => {
+    const harness = await createHarness();
+    const reply = async (id: string) => {
+      for (const command of [
+        {
+          type: "thread.message.assistant.delta" as const,
+          commandId: CommandId.make(`cmd-reply-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          messageId: asMessageId(`reply-${id}`),
+          delta: "On it.",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          type: "thread.message.assistant.complete" as const,
+          commandId: CommandId.make(`cmd-reply-done-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          messageId: asMessageId(`reply-${id}`),
+          completesTurn: true,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ]) {
+        await Effect.runPromise(harness.engine.dispatch(command));
+      }
+    };
+    const mac: MessageSentFrom = { kind: "computer", os: "macOS" };
+    const phone: MessageSentFrom = { kind: "phone", name: "iPhone", os: "iOS" };
+    const turns: ReadonlyArray<
+      readonly [string, MessageSentFrom | undefined, "answered" | "unanswered"]
+    > = [
+      ["at the desk", mac, "answered"],
+      ["from the couch", phone, "answered"],
+      ["still out", phone, "answered"],
+      // Its send failed: the agent never heard it.
+      ["back at the desk", mac, "unanswered"],
+      ["really back", mac, "answered"],
+      ["still at the desk", mac, "answered"],
+      ["/compact before I go", phone, "answered"],
+      ["one more thing", phone, "answered"],
+      // A slash command says nothing about where the user is.
+      ["/review", mac, "answered"],
+      ["home now", mac, "answered"],
+      ["on the train", phone, "answered"],
+      ["quick check", mac, "unanswered"],
+      // Automation's answer is its own, not the failed send's before it.
+      ["scheduled run", undefined, "answered"],
+      ["at my desk", mac, "answered"],
+    ];
+    for (const [index, [text, sentFrom, answered]] of turns.entries()) {
+      await startTurnAs(harness, `device-${index}`, text, "typed", sentFrom);
+      await waitFor(() => harness.sendTurn.mock.calls.length === index + 1);
+      if (answered === "answered") await reply(String(index));
+    }
+
+    const sent = harness.sendTurn.mock.calls.map(
+      ([request]) => request as SentTurn & { readonly deviceNote?: string },
+    );
+    const phoneNote =
+      'The user sent this message from their phone ("iPhone", iOS), so they may be away from the computer you work on and reading on a small screen.';
+    const backNote = "The user sent this message from a computer (macOS).";
+    expect(sent.map((request) => request.deviceNote)).toEqual([
+      undefined,
+      phoneNote,
+      // Every turn from the phone says so, so a compacted conversation keeps it.
+      phoneNote,
+      backNote,
+      backNote,
+      undefined,
+      // A slash command only works as the first word.
+      undefined,
+      phoneNote,
+      undefined,
+      backNote,
+      phoneNote,
+      backNote,
+      undefined,
+      backNote,
+    ]);
+    // The note travels apart: the provider service or the driver places it.
+    expect(sent[1]?.input).toBe("from the couch");
+    expect(sent[1]?.typed).toEqual({ text: "from the couch" });
   });
 
   it("marks no words as typed in a message sent as plain text or written by no one", async () => {
@@ -4133,6 +4218,7 @@ describe("ProviderCommandReactor", () => {
         text: string;
         delivery?: "steer" | "queue";
         composer?: "typed" | "plain";
+        sentFrom?: MessageSentFrom;
       },
     ) =>
       Effect.runPromise(
@@ -4144,6 +4230,7 @@ describe("ProviderCommandReactor", () => {
           message: { messageId: input.messageId, role: "user", text: input.text, attachments: [] },
           ...(input.delivery ? { delivery: input.delivery } : {}),
           ...(input.composer ? { composer: input.composer } : {}),
+          ...(input.sentFrom ? { sentFrom: input.sentFrom } : {}),
           interactionMode: "plan",
           createdAt: "2026-01-01T00:00:02.000Z",
         }),
@@ -4677,6 +4764,121 @@ describe("ProviderCommandReactor", () => {
       ]);
     });
 
+    it("tells the running turn when a steer comes from another kind of device", async () => {
+      const harness = await createHarness();
+      const phone: MessageSentFrom = { kind: "phone", name: "iPhone", os: "iOS" };
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      for (const [id, text] of [
+        ["steer-from-phone", "also the docs"],
+        ["steer-from-phone-again", "and the tests"],
+      ] as const) {
+        await submit(harness, {
+          messageId: asMessageId(id),
+          text,
+          composer: "typed",
+          sentFrom: phone,
+        });
+        // Accepted into the thread, so the next steer knows the turn heard it.
+        await waitFor(
+          async () =>
+            (await readThread(harness))?.messages.find((entry) => entry.id === id)?.sentFrom
+              ?.kind === "phone",
+        );
+      }
+
+      const [first, second] = harness.steerTurn.mock.calls.map(([request]) => request);
+      // The note travels apart; the user's words stay as they typed them.
+      expect(first).toMatchObject({
+        input: "also the docs",
+        typed: { text: "also the docs" },
+        deviceNote: expect.stringContaining("from their phone"),
+      });
+      expect(second?.typed).toEqual({ text: "and the tests" });
+      expect(second).not.toHaveProperty("deviceNote");
+    });
+
+    it("still says the user is back at a computer when only a steer said so", async () => {
+      const harness = await createHarness();
+      const at = "2026-01-01T00:00:00.000Z";
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-from-phone"),
+          threadId,
+          message: {
+            messageId: asMessageId("turn-from-phone"),
+            role: "user",
+            text: "look into the flaky test",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          sentFrom: { kind: "phone", os: "iOS" },
+          createdAt: at,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      // Back at the desk mid-turn: a driver may leave a typed steer's note out.
+      await submit(harness, {
+        messageId: asMessageId("steer-from-desk"),
+        text: "I'm at my desk now",
+        composer: "typed",
+        sentFrom: { kind: "computer", os: "macOS" },
+      });
+      await waitFor(
+        async () =>
+          (await readThread(harness))?.messages.some((entry) => entry.id === "steer-from-desk") ===
+          true,
+      );
+      for (const command of [
+        {
+          type: "thread.message.assistant.delta" as const,
+          commandId: CommandId.make("cmd-steer-reply"),
+          threadId,
+          messageId: asMessageId("steer-reply"),
+          delta: "Found it.",
+          turnId,
+          createdAt: at,
+        },
+        {
+          type: "thread.message.assistant.complete" as const,
+          commandId: CommandId.make("cmd-steer-reply-done"),
+          threadId,
+          messageId: asMessageId("steer-reply"),
+          turnId,
+          completesTurn: true,
+          createdAt: at,
+        },
+      ]) {
+        await Effect.runPromise(harness.engine.dispatch(command));
+      }
+      await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-from-desk"),
+          threadId,
+          message: {
+            messageId: asMessageId("turn-from-desk"),
+            role: "user",
+            text: "now fix it",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          sentFrom: { kind: "computer", os: "macOS" },
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+        input: "now fix it",
+        deviceNote: "The user sent this message from a computer (macOS).",
+      });
+    });
+
     it("still sends a typed steer as the user's words when it waits for the next turn", async () => {
       const harness = await createHarness({ activeTurnSteering: "unsupported" });
       const messageId = asMessageId("typed-steer-requeued");
@@ -5056,7 +5258,11 @@ describe("ProviderCommandReactor", () => {
    *  provider thread id, then dispatches the fork. */
   async function dispatchNativeForkScenario(
     harness: Awaited<ReturnType<typeof createHarness>>,
-    options?: { readonly stopSourceSessionFirst?: boolean },
+    options?: {
+      readonly stopSourceSessionFirst?: boolean;
+      /** Where the source's question and the fork's instruction were sent from. */
+      readonly sentFrom?: { readonly source: MessageSentFrom; readonly fork: MessageSentFrom };
+    },
   ) {
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -5073,6 +5279,7 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
+        ...(options?.sentFrom ? { sentFrom: options.sentFrom.source } : {}),
         createdAt: now,
       }),
     );
@@ -5179,6 +5386,7 @@ describe("ProviderCommandReactor", () => {
         },
         providerContext: "Carried fork context.",
         providerAttachments: [],
+        ...(options?.sentFrom ? { sentFrom: options.sentFrom.fork } : {}),
         createdAt: "2026-01-01T00:00:01.000Z",
       }),
     );
@@ -5221,6 +5429,23 @@ describe("ProviderCommandReactor", () => {
       seedMode: "provider-native",
       sourceProviderThreadId: "codex-source-thread",
       lastTurnId: asTurnId("codex-turn-3"),
+    });
+  });
+
+  it("tells a native fork the user is at a computer when its source last heard from the phone", async () => {
+    const harness = await createHarness({ nativeThreadFork: "supported" });
+
+    // The answer forked from is part of the conversation the fork carries on.
+    const { sendTurnInput } = await dispatchNativeForkScenario(harness, {
+      sentFrom: {
+        source: { kind: "phone", name: "iPhone", os: "iOS" },
+        fork: { kind: "computer", os: "macOS" },
+      },
+    });
+
+    expect(sendTurnInput).toMatchObject({
+      input: "Now build the second version.",
+      deviceNote: "The user sent this message from a computer (macOS).",
     });
   });
 
@@ -7393,6 +7618,8 @@ describe("ProviderCommandReactor", () => {
           threadId: ThreadId.make("thread-1"),
           requestId,
           answers,
+          // Answered on the phone: the answer it becomes says so.
+          sentFrom: { kind: "phone", os: "iOS" },
           createdAt: now,
         }),
       );
@@ -7414,7 +7641,11 @@ describe("ProviderCommandReactor", () => {
       expect(harness.respondToUserInput).not.toHaveBeenCalled();
       const thread = (await harness.readModel()).threads[0];
       expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
-        expect.objectContaining({ text: answerText, turnId: asTurnId("turn-1") }),
+        expect.objectContaining({
+          text: answerText,
+          turnId: asTurnId("turn-1"),
+          sentFrom: { kind: "phone", os: "iOS" },
+        }),
       ]);
       expect(
         thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
@@ -7435,7 +7666,10 @@ describe("ProviderCommandReactor", () => {
         await answerQuestion(harness, "cmd-answer-finished-question-again");
 
         expect(harness.sendTurn).toHaveBeenCalledTimes(1);
-        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ input: answerText });
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+          input: answerText,
+          deviceNote: expect.stringContaining("from their phone (iOS)"),
+        });
         expect(harness.steerTurn).not.toHaveBeenCalled();
         expect(harness.respondToUserInput).not.toHaveBeenCalled();
         const thread = (await harness.readModel()).threads[0];

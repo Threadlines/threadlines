@@ -683,9 +683,11 @@ export function buildWindowsListeningPortQueryCommand(
     "}",
     "}",
     "@($connections | ForEach-Object {",
-    "$pid = [int]$_.OwningProcess;",
-    "$process = $processesByPid[$pid];",
-    "[pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcess = $pid; Name = if ($process) { $process.Name } else { '' }; CommandLine = if ($process -and $process.CommandLine) { $process.CommandLine } elseif ($process) { $process.Name } else { '' } }",
+    // Not `$pid`: PowerShell variables ignore case, and `$PID` is its own,
+    // read-only, so assigning it stops the script.
+    "$owningPid = [int]$_.OwningProcess;",
+    "$process = $processesByPid[$owningPid];",
+    "[pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcess = $owningPid; Name = if ($process) { $process.Name } else { '' }; CommandLine = if ($process -and $process.CommandLine) { $process.CommandLine } elseif ($process) { $process.Name } else { '' } }",
     "}) | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 }
@@ -745,9 +747,31 @@ function readWindowsNetstatListeningPortRows(
   );
 }
 
+/**
+ * Parses `ss -ltnp` (Linux, iproute2): the local address is the fourth
+ * column, and each process listening there is a `("name",pid=N,fd=M)` in the
+ * last one. Without the right to see a process, ss leaves it out.
+ */
+export function parseSsListeningPortRows(output: string): ReadonlyArray<ListeningPortRow> {
+  const rows: ListeningPortRow[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts[0] !== "LISTEN" || parts.length < 5) continue;
+    const portMatch = /:(\d+)$/.exec(parts[3] ?? "");
+    const port = portMatch?.[1] ? parsePositiveInt(portMatch[1]) : null;
+    if (port === null) continue;
+    for (const user of line.matchAll(/\("([^"]*)",pid=(\d+),/g)) {
+      const pid = parsePositiveInt(user[2] ?? "");
+      if (pid !== null) rows.push({ port, pid, command: user[1] || `PID ${pid}` });
+    }
+  }
+  return rows;
+}
+
 function readPosixListeningPortRows(
   ports: ReadonlyArray<number>,
   options?: { readonly all?: boolean },
+  platform: NodeJS.Platform = process.platform,
 ): Effect.Effect<
   ReadonlyArray<ListeningPortRow>,
   ProcessDiagnosticsError,
@@ -755,26 +779,40 @@ function readPosixListeningPortRows(
 > {
   const safePorts = uniquePositivePorts(ports);
   if (safePorts.length === 0 && options?.all !== true) return Effect.succeed([]);
-  return runProcess({
+  const wanted = (rows: ReadonlyArray<ListeningPortRow>) =>
+    options?.all === true ? rows : rows.filter((row) => safePorts.includes(row.port));
+  // lsof exits non-zero when it finds nothing, and also when some processes
+  // can't be read while it still lists the others: what it printed counts.
+  const readLsof = runProcess({
     command: "lsof",
     args: ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"],
     errorMessage: "Failed to query local listening ports.",
-  }).pipe(
-    Effect.flatMap((result) =>
-      result.exitCode !== 0
-        ? Effect.succeed([])
-        : Effect.succeed(
-            options?.all === true
-              ? parsePosixLsofListeningPortRows(result.stdout)
-              : parsePosixLsofListeningPortRows(result.stdout).filter((row) =>
-                  safePorts.includes(row.port),
-                ),
-          ),
+  }).pipe(Effect.map((result) => wanted(parsePosixLsofListeningPortRows(result.stdout))));
+  if (platform !== "linux") return readLsof;
+  // Many Linux installs have no lsof; ss comes with the system.
+  return readLsof.pipe(
+    Effect.catch(() =>
+      runProcess({
+        command: "ss",
+        args: ["-ltnp"],
+        errorMessage: "Failed to query local listening ports with ss.",
+      }).pipe(
+        Effect.flatMap((result) =>
+          result.exitCode !== 0
+            ? Effect.fail(toProcessDiagnosticsError(result.stderr.trim() || "ss failed."))
+            : Effect.succeed(wanted(parseSsListeningPortRows(result.stdout))),
+        ),
+      ),
     ),
   );
 }
 
-function readListeningPortRows(
+/**
+ * The processes listening for TCP connections on `ports` (every port with
+ * `all`): lsof on macOS and Linux (ss when Linux has no lsof), netstat on
+ * Windows (PowerShell when netstat fails).
+ */
+export function readListeningPortRows(
   ports: ReadonlyArray<number>,
   options?: { readonly all?: boolean },
   platform = process.platform,
@@ -785,7 +823,35 @@ function readListeningPortRows(
 > {
   return platform === "win32"
     ? readWindowsListeningPortRows(ports, options)
-    : readPosixListeningPortRows(ports, options);
+    : readPosixListeningPortRows(ports, options, platform);
+}
+
+/**
+ * The program a Windows process runs ("node.exe"), from `tasklist`: netstat
+ * names no process, and the server's own process query covers only its
+ * descendants. Null when it has ended or can't be read.
+ */
+export function readWindowsProcessName(
+  pid: number,
+): Effect.Effect<string | null, never, ChildProcessSpawner.ChildProcessSpawner> {
+  if (!Number.isInteger(pid) || pid <= 0) return Effect.succeed(null);
+  return runProcess({
+    command: "tasklist.exe",
+    args: ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+    errorMessage: "Failed to read the process name.",
+  }).pipe(
+    Effect.map((result) => parseTasklistProcessName(result.stdout, pid)),
+    Effect.catch(() => Effect.succeed(null)),
+  );
+}
+
+/** The image name of `pid` in `tasklist /FO CSV /NH` output. */
+export function parseTasklistProcessName(output: string, pid: number): string | null {
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^"([^"]+)","(\d+)"/.exec(line.trim());
+    if (match && Number(match[2]) === pid) return match[1] ?? null;
+  }
+  return null;
 }
 
 export const readProcessRows = (platform = process.platform) =>

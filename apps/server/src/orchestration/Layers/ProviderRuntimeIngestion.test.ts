@@ -49,6 +49,8 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { RealtimeVoiceDevicesLive } from "./RealtimeVoiceDevices.ts";
+import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
 
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -238,7 +240,8 @@ describe("ProviderRuntimeIngestion", () => {
     | OrchestrationEngineService
     | ProviderRuntimeIngestionService
     | ProjectionSnapshotQuery
-    | McpAppCallRepository,
+    | McpAppCallRepository
+    | RealtimeVoiceDevices,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -299,6 +302,7 @@ describe("ProviderRuntimeIngestion", () => {
         }),
       ),
       Layer.provideMerge(McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive))),
+      Layer.provideMerge(RealtimeVoiceDevicesLive),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -312,6 +316,7 @@ describe("ProviderRuntimeIngestion", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     const mcpAppCalls = await runtime.runPromise(Effect.service(McpAppCallRepository));
+    const voiceDevices = await runtime.runPromise(Effect.service(RealtimeVoiceDevices));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -384,6 +389,7 @@ describe("ProviderRuntimeIngestion", () => {
       interruptedThreadIds: provider.interruptedThreadIds,
       adoptedPages,
       mcpAppCalls,
+      voiceDevices,
       drain,
     };
   }
@@ -417,6 +423,13 @@ describe("ProviderRuntimeIngestion", () => {
 
   it("records finished user realtime transcripts as user messages", async () => {
     const harness = await createHarness();
+    // The phone speaks first; the computer takes over before the phone's
+    // words come back as a transcript (the WebSocket route notes each as
+    // their audio arrives).
+    const phone = { kind: "phone" as const, name: "iPhone", os: "iOS" };
+    const computer = { kind: "computer" as const, os: "macOS" };
+    await Effect.runPromise(harness.voiceDevices.noteSpeaker(asThreadId("thread-1"), phone));
+    await Effect.runPromise(harness.voiceDevices.noteSpeaker(asThreadId("thread-1"), computer));
 
     harness.emit({
       type: "thread.realtime.transcript.done",
@@ -440,6 +453,26 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestMessage) => entry.role === "user",
     );
     expect(message?.id).toBe("user:realtime:thread-1:evt-realtime-user-done");
+    expect(message?.sentFrom).toEqual(phone);
+
+    harness.emit({
+      type: "thread.realtime.transcript.done",
+      eventId: asEventId("evt-realtime-user-done-2"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { role: "user", text: "Run it again from here." },
+    });
+    const after = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) => message.text === "Run it again from here.",
+      ),
+    );
+    expect(
+      after.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.text === "Run it again from here.",
+      )?.sentFrom,
+    ).toEqual(computer);
   });
 
   it("turns a side answer into its own answer message, and leaves the working turn alone", async () => {

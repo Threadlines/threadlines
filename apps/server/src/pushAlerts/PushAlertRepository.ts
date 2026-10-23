@@ -1,5 +1,5 @@
 /**
- * Storage for phone alerts (migration 087): each paired phone's sealing keys,
+ * Storage for phone alerts (migration 088): each paired phone's sealing keys,
  * how far through the event log alerts were looked for, the alerts, and their
  * deliveries. Times are ISO strings (UTC), so they compare as text.
  */

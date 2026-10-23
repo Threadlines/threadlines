@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
+  type AuthClientMetadata,
   AuthSessionId,
   type ClientOrchestrationCommand,
   CommandId,
@@ -70,6 +71,8 @@ import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import { messageSentFromClient, withMessageSentFrom } from "./orchestration/messageSentFrom.ts";
+import { RealtimeVoiceDevices } from "./orchestration/Services/RealtimeVoiceDevices.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
@@ -362,6 +365,8 @@ const makeWsRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
+    /** The device this connection signs in as; its messages are stamped with it. */
+    readonly client: AuthClientMetadata;
   },
   /** This connection, as a terminal viewer (who controls a tab's size and replies). */
   viewerId: string,
@@ -369,6 +374,8 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const sentFrom = messageSentFromClient(currentSession.client);
+      const realtimeVoiceDevices = yield* Effect.serviceOption(RealtimeVoiceDevices);
       // Access management is owner-only. Everything else stays open to client
       // sessions: a paired device is meant to use projects, turns, terminals.
       const requireOwner = (method: string) =>
@@ -738,7 +745,10 @@ const makeWsRpcLayer = (
        */
       const dispatchClientCommand = (command: ClientOrchestrationCommand) =>
         Effect.gen(function* () {
-          const normalizedCommand = yield* normalizeDispatchCommand(command);
+          const normalizedCommand = withMessageSentFrom(
+            yield* normalizeDispatchCommand(command),
+            sentFrom,
+          );
           // Where the event log stood before an archive, so the threads
           // that archive took with it (a parent's settled children) can
           // be read back from what it wrote.
@@ -2425,6 +2435,12 @@ const makeWsRpcLayer = (
             terminalManager.resolveInterrupted(input, viewerId),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.terminalResolvePortInUse]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.terminalResolvePortInUse,
+            terminalManager.resolvePortInUse(input),
+            { "rpc.aggregate": "terminal" },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
@@ -2487,7 +2503,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.realtimeAppendAudio]: (input) =>
           observeRpcEffect(
             WS_METHODS.realtimeAppendAudio,
-            providerService.realtimeAppendAudio!(input).pipe(
+            // Who is speaking, for the transcript of it (RealtimeVoiceDevices).
+            (Option.isSome(realtimeVoiceDevices)
+              ? realtimeVoiceDevices.value.noteSpeaker(input.threadId, sentFrom)
+              : Effect.void
+            ).pipe(
+              Effect.andThen(providerService.realtimeAppendAudio!(input)),
               Effect.mapError(
                 (error) =>
                   new ProviderRealtimeError({

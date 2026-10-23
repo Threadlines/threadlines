@@ -44,6 +44,8 @@ import {
   sortInboxThreads,
   summarizeChildThreads,
   windowInboxDoneRows,
+  labelWrappedRowsByDay,
+  resolveInboxLiveFoldLimit,
   windowInboxThreads,
   type InboxFamilyEntry,
   type ThreadStatusPill,
@@ -1613,10 +1615,19 @@ describe("child thread families", () => {
       ],
       { active: "wrapped-open-child" },
     ).done;
-    expect(windowInboxDoneRows(done, 2).map((row) => row.entry.threadKey)).toEqual([
+    expect(
+      windowInboxDoneRows(done, 2, "wrapped-open-child").map((row) => row.entry.threadKey),
+    ).toEqual(["x", "y", "wrapped-parent"]);
+
+    // A wrapped thread open in the chat past the shelf's limit stays too.
+    const doneWithOpenRow = sections(
+      [entry("x", { done: true }), entry("y", { done: true }), entry("z", { done: true })],
+      { active: "z" },
+    ).done;
+    expect(windowInboxDoneRows(doneWithOpenRow, 2, "z").map((row) => row.entry.threadKey)).toEqual([
       "x",
       "y",
-      "wrapped-parent",
+      "z",
     ]);
   });
 
@@ -2278,5 +2289,87 @@ describe("unread finished work", () => {
       "unread",
       "plan-ready",
     ]);
+  });
+});
+
+describe("labelWrappedRowsByDay", () => {
+  it("labels the first row of each day group by the viewer's calendar", () => {
+    const todayStartMs = new Date(2026, 9, 23).getTime();
+    const at = (month: number, day: number, hour: number) =>
+      new Date(2026, month, day, hour).toISOString();
+    const rows = [
+      at(9, 23, 9),
+      at(9, 23, 0),
+      at(9, 22, 23),
+      at(9, 21, 12),
+      // Six days back still counts as the last seven, today included.
+      at(9, 17, 0),
+      at(9, 16, 23),
+      // 29 days back is the last of the thirty; the day before is older.
+      at(8, 24, 0),
+      at(8, 23, 23),
+      null,
+    ];
+    expect(labelWrappedRowsByDay(rows, (row) => row, todayStartMs)).toEqual([
+      "today",
+      null,
+      "yesterday",
+      "week",
+      null,
+      "month",
+      null,
+      "older",
+      null,
+    ]);
+  });
+});
+
+describe("resolveInboxLiveFoldLimit", () => {
+  const quiet = (costPx: number, groupKey: string | null = null) => ({
+    pinned: false,
+    alwaysShown: false,
+    costPx,
+    childrenPx: 0,
+    groupKey,
+  });
+
+  it("fills the room row by row, charging what is drawn anyway first", () => {
+    const rows = [
+      { ...quiet(48), pinned: true },
+      quiet(48),
+      quiet(70), // a family's row with its summary line
+      { ...quiet(48), alwaysShown: true }, // working: drawn past the fold too
+      ...Array.from({ length: 20 }, () => quiet(48)),
+    ];
+    const resolve = (roomPx: number | null) =>
+      resolveInboxLiveFoldLimit({ rows, roomPx, groupHeaderPx: 0, reservedPx: 0, minimum: 2 });
+    // The pin and the working row take 96px; 48 + 70 fit in 220, the next
+    // quiet row does not. The working row's seat comes free.
+    expect(resolve(220)).toBe(3);
+    // Room for everything folds nothing.
+    expect(resolve(5_000)).toBe(23);
+    // A short column, or one not measured yet, keeps the minimum.
+    expect(resolve(100)).toBe(2);
+    expect(resolve(null)).toBe(2);
+  });
+
+  it("charges a group's header only once one of its rows shows", () => {
+    const rows = [quiet(48, "a"), quiet(48, "a"), quiet(48, "b"), quiet(0, "c"), quiet(48, "d")];
+    const resolve = (roomPx: number) =>
+      resolveInboxLiveFoldLimit({ rows, roomPx, groupHeaderPx: 20, reservedPx: 30, minimum: 0 });
+    // 30 kept + header a + two rows = 146; group b's header and row need 68 more.
+    expect(resolve(146)).toBe(2);
+    expect(resolve(214)).toBe(3);
+    // A folded group's rows cost nothing but its header still shows.
+    expect(resolve(234)).toBe(4);
+  });
+
+  it("never folds away a family for the children it opened", () => {
+    // The family's row fits at 200; its open children run past the room,
+    // so the quiet row after it folds, not the family.
+    const rows = [quiet(48), quiet(48), { ...quiet(70), childrenPx: 104 }, quiet(48)];
+    expect(
+      resolveInboxLiveFoldLimit({ rows, roomPx: 200, groupHeaderPx: 0, reservedPx: 0, minimum: 0 }),
+    ).toBe(3);
   });
 });

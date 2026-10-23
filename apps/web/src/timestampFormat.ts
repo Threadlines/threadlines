@@ -222,3 +222,13 @@ export function uses12HourClock(timestampFormat: TimestampFormat): boolean {
   const options = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
   return options.hour12 ?? (options.hourCycle === "h11" || options.hourCycle === "h12");
 }
+
+/**
+ * Local midnight `daysBack` calendar days before the day `nowMs` falls in
+ * (negative looks ahead). Calendar days, not 24-hour steps, so a daylight
+ * saving change never lands it at 11pm or 1am.
+ */
+export function startOfLocalDayMs(nowMs: number, daysBack = 0): number {
+  const now = new Date(nowMs);
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack).getTime();
+}
