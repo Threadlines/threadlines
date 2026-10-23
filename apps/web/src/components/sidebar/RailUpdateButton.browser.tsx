@@ -79,8 +79,12 @@ describe("RailUpdateButton", () => {
     await mountButton();
 
     await expect.element(dot()).not.toHaveAttribute("data-tone");
+    await button().hover();
+    await expect.element(page.getByText("Not checked yet · click to check")).toBeVisible();
     await button().click();
     await vi.waitFor(() => expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1));
+    // The card stays up through the click and shows the answer.
+    await expect.element(page.getByText(/^Checked .+ · click to check$/u)).toBeVisible();
   });
 
   it("marks an available update and downloads it in one click", async () => {

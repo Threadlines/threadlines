@@ -18,6 +18,7 @@ export function ChromeIconButton({
   glide = false,
   disabled = false,
   side,
+  keepTooltipOnClick = false,
   onClick,
   children,
   testId,
@@ -34,6 +35,11 @@ export function ChromeIconButton({
   readonly glide?: boolean;
   readonly disabled?: boolean;
   readonly side: "right" | "bottom";
+  /**
+   * Keep the tooltip up through a click, for a button whose tooltip reports
+   * what the click started. Others close it: the click took the user on.
+   */
+  readonly keepTooltipOnClick?: boolean;
   readonly onClick: () => void;
   readonly children: ReactNode;
   readonly testId?: string;
@@ -46,6 +52,7 @@ export function ChromeIconButton({
         // read by hovering, often across several buttons in a row.
         delay={0}
         closeDelay={0}
+        closeOnClick={!keepTooltipOnClick}
         render={
           <button
             type="button"

@@ -93,6 +93,10 @@ export function RailUpdateButton() {
       testId="rail-update"
       side="right"
       tooltip={<ChromeTooltip label={label} detail={detail} />}
+      // Its card says what the click started ("Checking for updates…", then
+      // the answer), so it stays up while the pointer does. Restarting opens
+      // its confirmation instead.
+      keepTooltipOnClick={kind !== "install"}
       // Mid-check and mid-download the click does nothing, but the button
       // keeps full color: the ring and the turning icon are the point then.
       onClick={() => {
