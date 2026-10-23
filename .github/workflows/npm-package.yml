@@ -129,6 +129,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      version: ${{ steps.npm_publish.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,5 +167,40 @@ jobs:
           node scripts/apply-web-brand-assets.ts "$brand" release/npm-server/dist/client
 
       - name: Publish to npm
+        id: npm_publish
         working-directory: release/npm-server
-        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
+        run: |
+          npm publish --access public --tag "${{ inputs.dist_tag }}"
+          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+  docker:
+    name: Start the Docker image build
+    needs: publish
+    # The Docker image installs this npm version, so it builds once npm has
+    # it. docker-image.yml can't listen for the GitHub release instead:
+    # release.yml publishes the release with GITHUB_TOKEN, and GitHub doesn't
+    # start workflows from that token's release events. A workflow_dispatch
+    # like this one is exempt.
+    if: ${{ inputs.dist_tag == 'latest' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch docker-image.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Docker images only build from plain stable versions; skipping '${VERSION}'."
+            exit 0
+          fi
+          gh workflow run docker-image.yml \
+            --ref "$REF" \
+            -f version="$VERSION" \
+            -f tag_latest=true
+          echo "Dispatched the Docker image build for ${VERSION} from ${REF}."

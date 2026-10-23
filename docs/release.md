@@ -256,6 +256,21 @@ After the first package exists, configure npm Trusted Publishing for
 dry-run or publish future versions. Stable builds should use the `latest`
 dist-tag; nightly builds should use the `nightly` dist-tag.
 
+## Docker Image
+
+The self-host image `ghcr.io/threadlines/threadlines` wraps the published npm
+package (see `docker/README.md`). After a `latest` npm publish, the npm Package
+workflow starts the **Docker Image** workflow, which builds and smoke-tests the
+image for that version and moves `:latest` to it. To rebuild a version by hand,
+run **Docker Image** with that version, and untick "Also move the :latest tag"
+unless it's the newest stable release.
+
+The image can't build when the GitHub release publishes: release.yml publishes
+it with `GITHUB_TOKEN`, and GitHub doesn't start workflows from that token's
+`release` events, so a `release: published` trigger never fires. Only
+`workflow_dispatch` and `repository_dispatch` are exempt, which is why the npm
+Package workflow dispatches the Docker Image workflow directly.
+
 ## Windows Publisher Name
 
 There are two different Windows publisher surfaces:
