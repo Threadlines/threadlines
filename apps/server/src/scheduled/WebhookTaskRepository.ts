@@ -185,6 +185,13 @@ export const WEBHOOK_BODY_EXCERPT_BYTES = 16 * 1024;
 export const WEBHOOK_SEEN_KEEP_MS = 7 * 24 * 60 * 60_000;
 /** A retired hook, or secret generation, is forgotten this long after retiring. */
 export const WEBHOOK_RETIRED_KEEP_MS = 25 * 60 * 60_000;
+/**
+ * A retired secret generation is forgotten this long after retiring: an
+ * event received up to 24 hours after (the grace it still verifies in) may
+ * wait up to 24 hours more (the longest late limit) and is checked again
+ * when it runs, so the secret outlives both, with an hour to spare.
+ */
+export const WEBHOOK_SECRET_KEEP_MS = 49 * 60 * 60_000;
 
 interface TaskWebhookDbRow {
   readonly taskId: string;
@@ -425,6 +432,8 @@ export interface WebhookTaskRepositoryShape {
   readonly listEvents: (input: {
     readonly taskId: ScheduledTaskId;
     readonly before?: string | undefined;
+    /** With `before`: the previous page's last event; ties at its time after it come next. */
+    readonly beforeEventId?: string | undefined;
     readonly limit: number;
   }) => Effect.Effect<ReadonlyArray<WebhookEventRow>, WebhookTaskRepositoryError>;
   /** Moves an event on; only while it is still in the queue. True when it changed. */
@@ -445,6 +454,11 @@ export interface WebhookTaskRepositoryShape {
     readonly now: string;
   }) => Effect.Effect<void, WebhookTaskRepositoryError>;
   readonly deleteEvent: (eventId: string) => Effect.Effect<void, WebhookTaskRepositoryError>;
+  /** When each task's event log last changed (an event stored, or moved on). */
+  readonly eventsChangedAt: Effect.Effect<
+    ReadonlyMap<ScheduledTaskId, string>,
+    WebhookTaskRepositoryError
+  >;
   /** Events waiting for room, other than `except`. */
   readonly countWaiting: (input: {
     readonly taskId: ScheduledTaskId;
@@ -490,7 +504,7 @@ export interface WebhookTaskRepositoryShape {
   /**
    * Forgets what event tasks no longer need: finished events past the log's
    * limits, old bodies cut to an excerpt, old duplicate records, hooks
-   * retired over 25 hours ago. Returns secret generations retired over 25
+   * retired over 25 hours ago. Returns secret generations retired over 49
    * hours ago, deleted here, whose stored secrets go too.
    */
   readonly prune: (
@@ -857,16 +871,32 @@ const make = Effect.gen(function* () {
       wrap("tasksWithQueued"),
     );
 
+  /**
+   * Newest first, by receive time and then arrival. A page after the one
+   * ending at `beforeEventId` goes on with that event's later-arrived
+   * neighbours at the same time (an event pruned since: the next time).
+   */
   const listEvents: WebhookTaskRepositoryShape["listEvents"] = (input) =>
     (input.before === undefined
       ? findEvents("WHERE e.task_id = ? ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?", [
           input.taskId,
           input.limit,
         ])
-      : findEvents(
-          "WHERE e.task_id = ? AND e.received_at < ? ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?",
-          [input.taskId, input.before, input.limit],
-        )
+      : input.beforeEventId === undefined
+        ? findEvents(
+            "WHERE e.task_id = ? AND e.received_at < ? ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?",
+            [input.taskId, input.before, input.limit],
+          )
+        : findEvents(
+            `WHERE e.task_id = ? AND (
+               e.received_at < ?
+               OR (e.received_at = ? AND e.rowid < (
+                 SELECT rowid FROM webhook_events WHERE event_id = ? AND task_id = e.task_id
+               ))
+             )
+             ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?`,
+            [input.taskId, input.before, input.before, input.beforeEventId, input.limit],
+          )
     ).pipe(wrap("listEvents"));
 
   const updateEvent: WebhookTaskRepositoryShape["updateEvent"] = (input) =>
@@ -907,6 +937,21 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
       wrap("deleteEvent"),
     );
+
+  const eventsChangedAt: WebhookTaskRepositoryShape["eventsChangedAt"] = sql<{
+    readonly taskId: string;
+    readonly changedAt: string;
+  }>`
+    SELECT task_id AS "taskId", MAX(updated_at) AS "changedAt"
+    FROM webhook_events
+    GROUP BY task_id
+  `.pipe(
+    Effect.map(
+      (rows): ReadonlyMap<ScheduledTaskId, string> =>
+        new Map(rows.map((row) => [ScheduledTaskId.make(row.taskId), row.changedAt])),
+    ),
+    wrap("eventsChangedAt"),
+  );
 
   const countWaiting: WebhookTaskRepositoryShape["countWaiting"] = (input) =>
     sql<{ readonly count: number }>`
@@ -1029,12 +1074,13 @@ const make = Effect.gen(function* () {
       yield* sql`
         DELETE FROM webhook_hooks WHERE retired_at IS NOT NULL AND retired_at < ${retiredBefore}
       `;
+      const secretsRetiredBefore = iso(WEBHOOK_SECRET_KEEP_MS);
       const secrets = yield* selectSecrets("WHERE retired_at IS NOT NULL AND retired_at < ?", [
-        retiredBefore,
+        secretsRetiredBefore,
       ]);
       yield* sql`
         DELETE FROM webhook_secrets
-        WHERE retired_at IS NOT NULL AND retired_at < ${retiredBefore}
+        WHERE retired_at IS NOT NULL AND retired_at < ${secretsRetiredBefore}
       `;
       return secrets;
     }).pipe(sql.withTransaction, wrap("prune"));
@@ -1065,6 +1111,7 @@ const make = Effect.gen(function* () {
     failRunEvent,
     deleteEvent,
     countWaiting,
+    eventsChangedAt,
     touchLastEvent,
     isDuplicate,
     getSubject,

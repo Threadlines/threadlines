@@ -443,14 +443,21 @@ const toRun = (row: ScheduledRunRow): ScheduledRun => ({
 const webhookState = (
   address: TaskWebhookRow | undefined,
   signingSecretSet: boolean,
-  githubProblem: string | null = null,
+  extra: { readonly githubProblem: string | null; readonly eventsChangedAt: string | null } = {
+    githubProblem: null,
+    eventsChangedAt: null,
+  },
 ): ScheduledTaskWebhookState => ({
   address: address?.relayUrl != null ? "ready" : "waiting_for_relay",
   addressChanged: address?.addressChanged ?? false,
   github: address?.githubHookId != null,
   signingSecretSet,
   lastEventAt: address?.lastEventAt ?? null,
-  ...(githubProblem !== null ? { githubProblem } : {}),
+  ...(extra.githubProblem !== null ? { githubProblem: extra.githubProblem } : {}),
+  // The address row changes with every change to the address (and a few
+  // others): reason enough to read it again.
+  ...(address !== undefined ? { addressVersion: address.updatedAt } : {}),
+  ...(extra.eventsChangedAt !== null ? { eventsChangedAt: extra.eventsChangedAt } : {}),
 });
 
 const toRequest = (row: ScheduledTaskRequestRow): ScheduledTaskRequest => ({
@@ -607,14 +614,18 @@ const make = Effect.gen(function* () {
 
   /** Each event task's address and connection, by task. */
   const webhookStates = Effect.gen(function* () {
-    const [addresses, withSecret, problems] = yield* Effect.all([
+    const [addresses, withSecret, problems, eventsChanged] = yield* Effect.all([
       webhooks.listTaskWebhooks,
       webhooks.tasksWithSecret,
       hooks.githubProblems,
+      webhooks.eventsChangedAt,
     ]);
     const byTask = new Map(addresses.map((address) => [address.taskId, address]));
     return (taskId: ScheduledTaskId) =>
-      webhookState(byTask.get(taskId), withSecret.has(taskId), problems.get(taskId) ?? null);
+      webhookState(byTask.get(taskId), withSecret.has(taskId), {
+        githubProblem: problems.get(taskId) ?? null,
+        eventsChangedAt: eventsChanged.get(taskId) ?? null,
+      });
   });
 
   const snapshot: ScheduledTasksShape["snapshot"] = Effect.gen(function* () {
@@ -2197,6 +2208,14 @@ const make = Effect.gen(function* () {
     // waited for room, and what the previous process left received.
     yield* events.drainAll;
     yield* events.prune;
+    // GitHub updates that failed (gh signed out, say), every 5 minutes.
+    yield* hooks.retryGitHubUpdates.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("event tasks: couldn't retry GitHub updates", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
   });
 
   /** Events that can end, start or take back a run in a thread that has one. */
@@ -2293,6 +2312,8 @@ const make = Effect.gen(function* () {
   const webhookAddress: ScheduledTasksShape["webhookAddress"] = (input) =>
     Effect.gen(function* () {
       yield* requireEventTask(input.id);
+      // The task's detail is open: a look at its GitHub webhook, in the background.
+      yield* hooks.checkGitHubHookSoon(input.id);
       return yield* hooks
         .address(input.id)
         .pipe(Effect.mapError(eventTaskError("read the address")));

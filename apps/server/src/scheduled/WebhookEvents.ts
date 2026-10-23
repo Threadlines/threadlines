@@ -308,12 +308,15 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
       Effect.gen(function* () {
         const described = describeEvent(input);
         const key = input.source === "replay" ? null : webhookDedupeKey(input.headers);
-        return yield* webhooks.insertEvent({
+        const stored = yield* webhooks.insertEvent({
           ...input,
           ...described,
           dedupeHash: key === null ? null : sha256(key),
           now: yield* nowIso,
         });
+        // Clients showing the task's events read them again.
+        if (stored) yield* deps.changed;
+        return stored;
       });
 
     // -------------------------------------------------------------------------
@@ -904,6 +907,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
         const rows = yield* webhooks.listEvents({
           taskId: input.id,
           before: input.before,
+          beforeEventId: input.beforeEventId,
           limit: limit + 1,
         });
         const now = yield* nowMillis;

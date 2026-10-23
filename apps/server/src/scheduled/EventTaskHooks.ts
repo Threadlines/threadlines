@@ -93,8 +93,15 @@ export const githubRepositoryOf = (remoteUrl: string): string | null => {
   return match?.[1] ?? null;
 };
 
-/** A GitHub CLI failure in plain words, for the repository `repository`. */
-const githubProblem = (error: GitHubCliError, repository: string): string => {
+/**
+ * A GitHub CLI failure in plain words, for the repository `repository`, when
+ * adding a webhook there or changing one.
+ */
+const githubProblem = (
+  error: GitHubCliError,
+  repository: string,
+  action: "add" | "change" = "add",
+): string => {
   const detail = error.detail;
   if (/not available on PATH/i.test(detail)) {
     return "GitHub CLI (gh) isn't installed on this computer.";
@@ -103,7 +110,9 @@ const githubProblem = (error: GitHubCliError, repository: string): string => {
     return "GitHub CLI isn't signed in on this computer.";
   }
   if (/HTTP 40[34]/.test(detail)) {
-    return `Your GitHub account can't add webhooks to ${repository}. Ask an admin, or add it by hand.`;
+    return action === "add"
+      ? `Your GitHub account can't add webhooks to ${repository}. Ask an admin, or add it by hand.`
+      : `Your GitHub account can't change webhooks on ${repository}.`;
   }
   if (/HTTP 422/.test(detail) && /already exists/i.test(detail)) {
     return `${repository} already has a webhook with this address.`;
@@ -115,6 +124,9 @@ const githubProblem = (error: GitHubCliError, repository: string): string => {
   return line ? `GitHub didn't take it: ${line}` : "GitHub couldn't be reached. Try again.";
 };
 
+const removedOnGitHub = (repository: string) =>
+  `The webhook on ${repository} was removed on GitHub. Add it again.`;
+
 /** Why a webhook couldn't be removed from `repository`, in plain words. */
 const githubRemovalProblem = (error: GitHubCliError, repository: string): string =>
   /HTTP 403/.test(error.detail)
@@ -122,6 +134,36 @@ const githubRemovalProblem = (error: GitHubCliError, repository: string): string
     : githubProblem(error, repository);
 
 const isGone = (error: GitHubCliError) => /HTTP 404/.test(error.detail);
+
+/** How often a failed GitHub update is tried again, and a task's webhook looked at. */
+export const GITHUB_RECHECK_MS = 5 * 60_000;
+
+/**
+ * What GitHub says about a webhook (`gh api repos/{o}/{r}/hooks/{id}`), as a
+ * problem in plain words; null when it is on and its last delivery (if any)
+ * went through.
+ */
+export const githubHookHealth = (stdout: string, repository: string): string | null => {
+  let hook: unknown;
+  try {
+    hook = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (typeof hook !== "object" || hook === null) return null;
+  if ("active" in hook && hook.active === false) {
+    return `The webhook on ${repository} is turned off on GitHub. Turn it on in the repository's webhook settings.`;
+  }
+  const last = "last_response" in hook ? hook.last_response : null;
+  if (typeof last !== "object" || last === null || !("code" in last)) return null;
+  const code = last.code;
+  if (typeof code !== "number" || (code >= 200 && code < 300)) return null;
+  const message =
+    "message" in last && typeof last.message === "string" && last.message.trim().length > 0
+      ? last.message.trim()
+      : "no answer";
+  return `GitHub's last delivery to this task failed: ${message} (${code}).`;
+};
 
 /**
  * `onChange` tells clients the tasks changed: addresses and connections also
@@ -141,6 +183,33 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
 
     /** One hook change at a time, so the wanted list sent is never an older one. */
     const hookLock = yield* Semaphore.make(1);
+    /** Why the last update of a task's GitHub webhook failed, until one works. */
+    const updateProblems = new Map<ScheduledTaskId, string>();
+    /** What the last look at a task's GitHub webhook found wrong, until one finds it well. */
+    const healthProblems = new Map<ScheduledTaskId, string>();
+    const lastHealthChecks = new Map<ScheduledTaskId, number>();
+    let lastUpdateRetry = 0;
+
+    /** Records (or, with null, clears) a task's problem; clients hear when it changed. */
+    const setProblem = (
+      problems: Map<ScheduledTaskId, string>,
+      taskId: ScheduledTaskId,
+      problem: string | null,
+    ) =>
+      Effect.suspend(() => {
+        if ((problems.get(taskId) ?? null) === problem) return Effect.void;
+        if (problem === null) problems.delete(taskId);
+        else problems.set(taskId, problem);
+        return onChange;
+      });
+
+    /** The task's GitHub connection ended: what was wrong with it no longer applies. */
+    const forgetProblems = (taskId: ScheduledTaskId) =>
+      Effect.all([
+        setProblem(updateProblems, taskId, null),
+        setProblem(healthProblems, taskId, null),
+      ]).pipe(Effect.asVoid);
+
     /** One GitHub update at a time. */
     const githubLock = yield* Semaphore.make(1);
 
@@ -485,6 +554,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
           if (trigger === null || trigger.repository !== repository) {
             // No longer a GitHub task, or for another repository: its webhook goes.
             yield* removeHookLocked({ taskId, repository, hookId: githubHookId });
+            yield* forgetProblems(taskId);
             return yield* clearGitHub(taskId, githubHookId);
           }
           const relayUrl = row.relayUrl;
@@ -498,7 +568,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
             row.githubSecretGeneration === secret.generation &&
             !row.addressChanged
           ) {
-            return;
+            return yield* setProblem(updateProblems, taskId, null);
           }
           const patched = yield* gh({
             cwd: yield* githubCwd(taskId),
@@ -517,12 +587,24 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
               yield* Effect.logInfo("event tasks: a GitHub webhook was removed on GitHub", {
                 taskId,
               });
+              yield* setProblem(updateProblems, taskId, null);
+              yield* setProblem(healthProblems, taskId, removedOnGitHub(repository));
               return yield* clearGitHub(taskId, githubHookId);
             }
-            return yield* Effect.logWarning("event tasks: couldn't update a GitHub webhook", {
+            // GitHub still has the old settings: said on the task, and tried
+            // again on the scheduler's tick and at reconcile.
+            const why = githubProblem(patched.failure, repository, "change");
+            // The next try comes 5 minutes on.
+            lastUpdateRetry = yield* Clock.currentTimeMillis;
+            yield* Effect.logWarning("event tasks: couldn't update a GitHub webhook", {
               taskId,
-              detail: githubProblem(patched.failure, repository),
+              detail: why,
             });
+            return yield* setProblem(
+              updateProblems,
+              taskId,
+              `Threadlines couldn't update the webhook on ${repository}. ${why}`,
+            );
           }
           const now = yield* nowIso;
           // What GitHub has now, whatever changed here meanwhile.
@@ -544,6 +626,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
             now,
           });
           yield* webhooks.retireSecrets({ taskId, below: secret.generation, now });
+          yield* setProblem(updateProblems, taskId, null);
           yield* onChange;
         }),
       ).pipe(
@@ -607,7 +690,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
             });
           }
           const now = yield* nowIso;
-          yield* webhooks.updateTaskWebhook({
+          const recorded = yield* webhooks.updateTaskWebhook({
             taskId,
             set: {
               githubHookId: hookId,
@@ -616,8 +699,15 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
               githubEvents: events,
               githubSecretGeneration: secret.generation,
             },
+            where: { githubHookId: row.githubHookId },
             now,
           });
+          if (!recorded) {
+            // The task was deleted (or stopped being an event task) while
+            // GitHub added it: the new webhook goes, or waits to.
+            yield* removeHookLocked({ taskId, repository: trigger.repository, hookId });
+            return;
+          }
           yield* webhooks.updateTaskWebhook({
             taskId,
             set: { addressChanged: false },
@@ -625,6 +715,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
             now,
           });
           yield* webhooks.retireSecrets({ taskId, below: secret.generation, now });
+          yield* forgetProblems(taskId);
         }),
       );
 
@@ -650,6 +741,7 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
                   ),
             ),
           );
+          yield* forgetProblems(taskId);
           yield* clearGitHub(taskId, githubHookId);
         }),
       );
@@ -662,9 +754,12 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
       const githubHookId = row.githubHookId;
       const repository = row.githubRepository;
       return githubHookId === null || repository === null
-        ? Effect.void
+        ? forgetProblems(row.taskId)
         : withGitHub(
-            removeHookLocked({ taskId: row.taskId, repository, hookId: githubHookId }),
+            Effect.andThen(
+              forgetProblems(row.taskId),
+              removeHookLocked({ taskId: row.taskId, repository, hookId: githubHookId }),
+            ),
           ).pipe(
             Effect.asVoid,
             Effect.catchCause((cause) =>
@@ -676,7 +771,11 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
           );
     };
 
-    /** Each task's webhook still waiting for removal from GitHub, in plain words. */
+    /**
+     * What is wrong with each task's GitHub webhook, in plain words: an old
+     * one that couldn't be removed, an update GitHub didn't take, or what the
+     * last look at it found. One each, the first of those.
+     */
     const githubProblems = webhooks.listGitHubRemovals.pipe(
       Effect.map((removals) => {
         const byTask = new Map<ScheduledTaskId, string>();
@@ -687,9 +786,81 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
             `Threadlines couldn't remove its old webhook from ${removal.repository}. ${removal.reason}`,
           );
         }
+        for (const problems of [updateProblems, healthProblems]) {
+          for (const [taskId, problem] of problems) {
+            if (!byTask.has(taskId)) byTask.set(taskId, problem);
+          }
+        }
         return byTask;
       }),
     );
+
+    /**
+     * Looks at a connected task's webhook on GitHub: removed there (the
+     * connection ends), turned off, or its last delivery failing is said on
+     * the task; a healthy one clears that. A look `gh` can't make changes
+     * nothing.
+     */
+    const checkGitHubHook = (taskId: ScheduledTaskId) =>
+      withGitHub(
+        Effect.gen(function* () {
+          const found = yield* webhooks.getTaskWebhook(taskId);
+          if (Option.isNone(found)) return;
+          const githubHookId = found.value.githubHookId;
+          const repository = found.value.githubRepository;
+          if (githubHookId === null || repository === null) return;
+          const looked = yield* gh({
+            cwd: yield* githubCwd(taskId),
+            args: ["api", `repos/${repository}/hooks/${githubHookId}`],
+          }).pipe(Effect.result);
+          if (looked._tag === "Failure") {
+            if (!isGone(looked.failure)) {
+              return yield* Effect.logInfo("event tasks: couldn't look at a GitHub webhook", {
+                taskId,
+                detail: githubProblem(looked.failure, repository, "change"),
+              });
+            }
+            yield* setProblem(updateProblems, taskId, null);
+            yield* setProblem(healthProblems, taskId, removedOnGitHub(repository));
+            return yield* clearGitHub(taskId, githubHookId);
+          }
+          yield* setProblem(
+            healthProblems,
+            taskId,
+            githubHookHealth(looked.success.stdout, repository),
+          );
+        }),
+      );
+
+    /**
+     * Looks at a task's webhook on GitHub in the background (when its detail
+     * opens), at most every 5 minutes per task.
+     */
+    const checkGitHubHookSoon = (taskId: ScheduledTaskId) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const last = lastHealthChecks.get(taskId);
+        if (last !== undefined && now - last < GITHUB_RECHECK_MS) return;
+        lastHealthChecks.set(taskId, now);
+        yield* checkGitHubHook(taskId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("event tasks: couldn't look at a GitHub webhook", {
+              taskId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkDetach,
+        );
+      });
+
+    /** GitHub updates that failed, tried again at most every 5 minutes (the scheduler's tick). */
+    const retryGitHubUpdates = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      if (updateProblems.size === 0 || now - lastUpdateRetry < GITHUB_RECHECK_MS) return;
+      lastUpdateRetry = now;
+      // A copy: each sync may clear its own entry.
+      for (const taskId of Array.from(updateProblems.keys())) yield* syncGitHub(taskId);
+    });
 
     // ---------------------------------------------------------------------------
     // Addresses over time
@@ -893,6 +1064,8 @@ export const makeEventTaskHooks = (onChange: Effect.Effect<void>) =>
       disconnectGitHub,
       removeGitHubHook,
       githubProblems,
+      checkGitHubHookSoon,
+      retryGitHubUpdates,
       syncGitHub,
       githubCwd,
       start,

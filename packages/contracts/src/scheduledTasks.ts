@@ -284,6 +284,14 @@ export const ScheduledTaskWebhookState = Schema.Struct({
    * in plain words. It keeps trying; absent once it's gone.
    */
   githubProblem: Schema.optionalKey(Schema.String),
+  /**
+   * Changes whenever the task's address may have (a rotation, a new relay
+   * address, on this computer or another client): a client reads the address
+   * again when it does. Not secret, and nothing to show.
+   */
+  addressVersion: Schema.optionalKey(Schema.String),
+  /** When the task's event log last changed: an event stored, or one moved on. */
+  eventsChangedAt: Schema.optionalKey(IsoDateTime),
 });
 export type ScheduledTaskWebhookState = typeof ScheduledTaskWebhookState.Type;
 
@@ -496,6 +504,11 @@ export const ScheduledTaskListWebhookEventsInput = Schema.Struct({
   id: ScheduledTaskId,
   /** Pages back from this receive time. */
   before: Schema.optional(IsoDateTime),
+  /**
+   * With `before`: the last event of the previous page, so events that
+   * share its receive time and come after it are on this page, not skipped.
+   */
+  beforeEventId: Schema.optional(TrimmedNonEmptyString),
   limit: Schema.optional(PositiveInt),
 });
 export type ScheduledTaskListWebhookEventsInput = typeof ScheduledTaskListWebhookEventsInput.Type;

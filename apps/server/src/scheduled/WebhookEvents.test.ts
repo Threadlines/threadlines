@@ -11,6 +11,7 @@ import {
   RelayHookDeliveryId,
   RelayHookId,
   type ScheduledTaskId,
+  type ScheduledTaskListWebhookEventsResult,
   type ScheduledTaskWebhookCadence,
   TurnId,
 } from "@threadlines/contracts";
@@ -1267,13 +1268,13 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         assert.equal(sent[2]?.status, "waiting");
         assert.isTrue(sent[2]?.verified);
         // The task starts checking a signature while it waits.
+        yield* service.setWebhookSigningSecret({ id: task.id, secret: "secret-a" });
         yield* service.update({
           id: task.id,
           cadence: anyCadence({
             signature: { header: "X-Signature", encoding: "hex", prefix: "sha256=" },
           }),
         });
-        yield* service.setWebhookSigningSecret({ id: task.id, secret: "secret-a" });
         const runs = yield* computer.runs(task.id);
         yield* finishRunTurn(computer, task.id, runs[0]!.slotUtc);
         yield* service.tick;
@@ -1370,6 +1371,245 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
       yield* eventually(
         Effect.sync(() => seen.at(-1) === "ready"),
         "clients heard of it",
+      );
+    }),
+  );
+
+  it.effect("a replaced secret is kept while an event signed with it can still be waiting", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(
+        draft({
+          name: "Deploys",
+          cadence: anyCadence({
+            signature: { header: "X-Signature", encoding: "hex", prefix: "sha256=" },
+            maxLateMinutes: 1440,
+          }),
+        }),
+      );
+      yield* service.setWebhookSigningSecret({ id: task.id, secret: "secret-a" });
+      // Replaced at 08:00: the old one still verifies events for a day.
+      yield* service.setWebhookSigningSecret({ id: task.id, secret: "secret-b" });
+      let sent = 0;
+      const sendSigned = (secret: string) =>
+        Effect.gen(function* () {
+          sent += 1;
+          const body = JSON.stringify({ deploy: sent });
+          yield* sendLocal(service, task.id, {
+            headers: {
+              "content-type": "application/json",
+              "x-signature": `sha256=${hmacHex(secret, body)}`,
+            },
+            body,
+          });
+          yield* service.tick;
+        });
+      // 23 hours on: two runs take the room, and one signed with the old secret waits.
+      yield* setClock("2026-10-21T07:00:00.000Z");
+      yield* sendSigned("secret-b");
+      yield* sendSigned("secret-b");
+      yield* sendSigned("secret-a");
+      const waiting = (yield* eventsOf(computer, task.id))[2]!;
+      assert.equal(waiting.status, "waiting");
+      // It still waits past 25 hours after the replacement, when pruning runs.
+      yield* setClock("2026-10-21T10:00:00.000Z");
+      yield* service.tick;
+      const runs = yield* computer.runs(task.id);
+      yield* finishRunTurn(computer, task.id, runs[0]!.slotUtc);
+      yield* service.tick;
+      const ran = Option.getOrThrow(yield* computer.webhooks.getEvent(waiting.eventId));
+      assert.equal(ran.status, "ran");
+      assert.isTrue(ran.verified);
+    }),
+  );
+
+  it.effect("a webhook GitHub added for a task deleted meanwhile is removed, not lost", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Triage", cadence: githubCadence() }));
+      const held = yield* Deferred.make<void>();
+      computer.github.state.before = (args) =>
+        args.includes("POST") ? Deferred.await(held) : Effect.void;
+      const connecting = yield* service
+        .connectGitHub({ id: task.id })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* eventually(
+        Effect.sync(() => computer.github.calls.some((call) => call.args.includes("POST"))),
+        "GitHub is adding the webhook",
+      );
+      yield* service.remove({ id: task.id, archiveRunThreads: false });
+      yield* Deferred.succeed(held, undefined);
+      assert.equal((yield* Fiber.join(connecting)).detail, "That task was deleted.");
+      assert.deepEqual(computer.github.calls.at(-1)?.args, [
+        "api",
+        "-X",
+        "DELETE",
+        "repos/acme/app/hooks/42",
+      ]);
+      assert.deepEqual(yield* computer.webhooks.listGitHubRemovals, []);
+    }),
+  );
+
+  it.effect("an update GitHub didn't take is said on the task and tried again on the tick", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Triage", cadence: githubCadence() }));
+      yield* service.connectGitHub({ id: task.id });
+      const before = (yield* service.getTask(task.id))?.webhook?.addressVersion;
+      const respond = computer.github.state.respond;
+      computer.github.state.respond = (args) =>
+        args.includes("PATCH")
+          ? { fail: "GitHub CLI is not authenticated. Run `gh auth login` and retry." }
+          : respond(args);
+      yield* setClock("2026-10-20T08:00:01.000Z");
+      const rotated = yield* service.rotateWebhookAddress({ id: task.id });
+      const stuck = (yield* service.getTask(task.id))!.webhook!;
+      assert.equal(
+        stuck.githubProblem,
+        "Threadlines couldn't update the webhook on acme/app. GitHub CLI isn't signed in on this computer.",
+      );
+      // Another client sees the address changed and reads it again.
+      assert.notEqual(stuck.addressVersion, before);
+
+      computer.github.state.respond = respond;
+      yield* service.tick;
+      assert.isDefined((yield* service.getTask(task.id))?.webhook?.githubProblem);
+      yield* setClock("2026-10-20T08:06:00.000Z");
+      yield* service.tick;
+      assert.isUndefined((yield* service.getTask(task.id))?.webhook?.githubProblem);
+      const patched = computer.github.calls.findLast((call) => call.args.includes("PATCH"));
+      assert.equal(JSON.parse(patched?.stdin ?? "{}").config.url, rotated.relayUrl);
+    }),
+  );
+
+  it.effect("opening a connected task looks at its GitHub webhook: failing, removed, or well", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Triage", cadence: githubCadence() }));
+      yield* service.connectGitHub({ id: task.id });
+      const respond = computer.github.state.respond;
+      let hook: { readonly stdout: string } | { readonly fail: string } = {
+        stdout: JSON.stringify({
+          active: true,
+          last_response: { code: 502, status: "failed", message: "Bad Gateway" },
+        }),
+      };
+      computer.github.state.respond = (args) =>
+        args.length === 2 && args[1] === "repos/acme/app/hooks/42" ? hook : respond(args);
+      const looks = () =>
+        computer.github.calls.filter((call) => call.args[1] === "repos/acme/app/hooks/42").length;
+      const problem = service
+        .getTask(task.id)
+        .pipe(Effect.map((current) => current?.webhook?.githubProblem));
+
+      yield* service.webhookAddress({ id: task.id });
+      yield* eventually(
+        problem.pipe(
+          Effect.map(
+            (text) => text === "GitHub's last delivery to this task failed: Bad Gateway (502).",
+          ),
+        ),
+        "the failing delivery was said",
+      );
+      // Well again, but looked at no more than every 5 minutes.
+      hook = {
+        stdout: JSON.stringify({ active: true, last_response: { code: 200, message: "OK" } }),
+      };
+      yield* service.webhookAddress({ id: task.id });
+      assert.equal(looks(), 1);
+      yield* setClock("2026-10-20T08:06:00.000Z");
+      yield* service.webhookAddress({ id: task.id });
+      yield* eventually(problem.pipe(Effect.map((text) => text === undefined)), "it cleared");
+
+      // Removed on GitHub: the connection ends, and the task says to add it again.
+      hook = { fail: "gh: Not Found (HTTP 404)" };
+      yield* setClock("2026-10-20T08:12:00.000Z");
+      yield* service.webhookAddress({ id: task.id });
+      yield* eventually(
+        problem.pipe(
+          Effect.map(
+            (text) => text === "The webhook on acme/app was removed on GitHub. Add it again.",
+          ),
+        ),
+        "the removal was said",
+      );
+      assert.isFalse((yield* service.getTask(task.id))?.webhook?.github);
+      const again = yield* service.connectGitHub({ id: task.id });
+      assert.isTrue(again.webhook?.github);
+      assert.isUndefined(again.webhook?.githubProblem);
+    }),
+  );
+
+  it.effect("events that share a receive time page back without one lost", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Deploys", cadence: anyCadence() }));
+      const ids = ["e-1", "e-2", "e-3", "e-4", "e-5"];
+      for (const eventId of ids) {
+        yield* computer.webhooks.insertEvent({
+          eventId,
+          taskId: task.id,
+          receivedAt: "2026-10-20T07:00:00.000Z",
+          source: "relay",
+          replayOf: null,
+          method: "POST",
+          query: "",
+          headers: {},
+          body: new TextEncoder().encode("{}"),
+          verified: null,
+          signatureChecked: null,
+          eventName: null,
+          subject: null,
+          sender: null,
+          summary: null,
+          dedupeHash: null,
+          now: "2026-10-20T07:00:00.000Z",
+        });
+      }
+      const seen: Array<string> = [];
+      let cursor: { readonly before: string; readonly beforeEventId: string } | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const result: ScheduledTaskListWebhookEventsResult = yield* service.listWebhookEvents({
+          id: task.id,
+          limit: 2,
+          ...cursor,
+        });
+        seen.push(...result.events.map((event) => event.eventId));
+        const last = result.events.at(-1);
+        if (!result.hasMore || last === undefined) break;
+        cursor = { before: last.receivedAt, beforeEventId: last.eventId };
+      }
+      assert.deepEqual(seen, ids.toReversed());
+    }),
+  );
+
+  it.effect("a task's event log says when it changed, rejected events included", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Deploys", cadence: anyCadence() }));
+      assert.isUndefined(task.webhook?.eventsChangedAt);
+      yield* service.update({ id: task.id, status: "paused" });
+      yield* sendPlain(computer, service, task.id, 1);
+      const first = (yield* service.getTask(task.id))!.webhook!;
+      assert.equal(first.eventsChangedAt, "2026-10-20T08:00:00.000Z");
+      assert.isNull(first.lastEventAt);
+      yield* setClock("2026-10-20T08:01:00.000Z");
+      yield* sendPlain(computer, service, task.id, 1);
+      assert.equal(
+        (yield* service.getTask(task.id))?.webhook?.eventsChangedAt,
+        "2026-10-20T08:01:00.000Z",
       );
     }),
   );
