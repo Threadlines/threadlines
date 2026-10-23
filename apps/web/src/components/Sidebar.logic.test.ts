@@ -458,8 +458,8 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
-  it("shows starting from the orchestration starting status even if the legacy status lags", () => {
-    expect(
+  it("says starting only while the agent's program starts up, even if the legacy status lags", () => {
+    const starting = (launchingInstanceId?: ProviderInstanceId) =>
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
@@ -467,10 +467,16 @@ describe("resolveThreadStatusPill", () => {
             ...baseThread.session,
             status: "ready",
             orchestrationStatus: "starting",
+            ...(launchingInstanceId !== undefined ? { launchingInstanceId } : {}),
           },
         },
-      }),
-    ).toMatchObject({ label: "Starting", pulse: true });
+      });
+    expect(starting(ProviderInstanceId.make("codex"))).toMatchObject({
+      label: "Starting",
+      pulse: true,
+    });
+    // A message to an agent that is already up is work like any other.
+    expect(starting()).toMatchObject({ label: "Working", pulse: true });
   });
 
   it("does not infer working from a recent user message when the provider is ready", () => {

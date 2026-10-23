@@ -32,6 +32,7 @@ import { cn } from "../../lib/utils";
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunTaskName } from "../../lib/scheduledTasksState";
+import { isThreadSessionStarting } from "../../lib/threadSort";
 import { selectProjectByRef, useStore } from "../../store";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import {
@@ -387,14 +388,16 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
   // In a room, an agent answering on the side while the others are idle: its
   // own name, and a clock from when it was asked.
   const isAnswering = status?.label === "Answering";
-  // A follow-up flips the pill to "Starting" before the new turn's row lands
-  // in the projection, so for a beat `latestTurn` is still the previous,
-  // finished turn -- its clock must not run under the new label. That is the
-  // only stale window: once work is under way the pill and the timestamps
-  // describe the same turn, and mid-turn session wobbles (tool waits,
-  // reconnects) must not blank the timer, so "Working" trusts them as-is.
+  // A follow-up starts its session before the new turn's row lands in the
+  // projection, so for a beat `latestTurn` is still the previous, finished
+  // turn -- its clock must not run under the new label, which is "Working"
+  // unless the agent's program is starting up. That is the only stale
+  // window: once work is under way the pill and the timestamps describe the
+  // same turn, and mid-turn session wobbles (tool waits, reconnects) must not
+  // blank the timer, so a running turn is trusted as-is.
   const inFlightTurn =
-    status?.label === "Starting" && thread.latestTurn?.state !== "running"
+    (status?.label === "Starting" || (isInFlight && isThreadSessionStarting(thread))) &&
+    thread.latestTurn?.state !== "running"
       ? null
       : thread.latestTurn;
   const inFlightStartedAt = inFlightTurn

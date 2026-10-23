@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -655,6 +656,46 @@ describe("a thread another computer asked to start", () => {
 });
 
 describe("InboxThreadRow background wait", () => {
+  /** A message getting going, before its turn's row lands: the latest turn
+   *  is still the previous one. */
+  const startingThread = (launching: boolean): SidebarThreadSummary => ({
+    ...THREAD,
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "completed",
+      requestedAt: "2026-09-01T09:00:00.000Z",
+      startedAt: "2026-09-01T09:00:01.000Z",
+      completedAt: "2026-09-01T09:05:00.000Z",
+      assistantMessageId: null,
+    },
+    session: {
+      provider: ProviderDriverKind.make("codex"),
+      status: "connecting",
+      orchestrationStatus: "starting",
+      ...(launching ? { launchingInstanceId: ProviderInstanceId.make("codex") } : {}),
+      createdAt: "2026-09-01T09:00:00.000Z",
+      updatedAt: "2026-09-01T10:00:00.000Z",
+    },
+  });
+  const rowMetaText = () =>
+    document.querySelector(`[data-testid="thread-meta-${THREAD_ID}"]`)?.textContent ?? "";
+
+  it("says working for a message to an agent already up, without the previous turn's clock", async () => {
+    renderRow(null, [], startingThread(false));
+    await expect
+      .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+      .toMatchTextContent(/working/);
+    expect(rowMetaText()).not.toMatch(/starting|·/);
+  });
+
+  it("says starting while the agent's program starts up", async () => {
+    renderRow(null, [], startingThread(true));
+    await expect
+      .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+      .toMatchTextContent(/starting/);
+    expect(rowMetaText()).not.toMatch(/·/);
+  });
+
   it("names the agents a settled thread waits on, and lists every task on hover", async () => {
     const thread: SidebarThreadSummary = {
       ...THREAD,
