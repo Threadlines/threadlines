@@ -736,14 +736,19 @@ describe("ChatMarkdown", () => {
     const screen = await render(<ChatMarkdown text={openFence} cwd="/repo/project" isStreaming />);
 
     try {
-      await vi.waitFor(() => {
-        const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
-        expect(pre).not.toBeNull();
-        expect(pre!.querySelector('span[style*="color"]')).not.toBeNull();
-        // The one-shot HTML carries the theme background inline; the streamed
-        // block does not, so this is still the open fence being tokenized.
-        expect(pre!.style.backgroundColor).toBe("");
-      });
+      // The highlighter and its TypeScript grammar are chunks of their own:
+      // their first load on a busy CI runner can outlast waitFor's one second.
+      await vi.waitFor(
+        () => {
+          const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
+          expect(pre).not.toBeNull();
+          expect(pre!.querySelector('span[style*="color"]')).not.toBeNull();
+          // The one-shot HTML carries the theme background inline; the streamed
+          // block does not, so this is still the open fence being tokenized.
+          expect(pre!.style.backgroundColor).toBe("");
+        },
+        { timeout: 10_000 },
+      );
 
       await screen.rerender(
         <ChatMarkdown text={`${openFence}\n\`\`\``} cwd="/repo/project" isStreaming={false} />,
