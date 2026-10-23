@@ -96,6 +96,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       projectSetup: true,
       stallReports: true,
       terminalTabLists: true,
+      signInAddressReplay: true,
     },
   };
 

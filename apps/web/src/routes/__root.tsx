@@ -33,6 +33,7 @@ import { ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import { ConnectComputerDialogHost } from "../components/settings/connections/JoinComputerDialog";
 import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
+import { ProviderSignInDialogHost } from "../components/chat/ProviderSignInDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
@@ -227,6 +228,7 @@ function RootRouteView() {
         <ThreadRenameDialogHost />
         <ConnectComputerDialogHost />
         <ExpandedImageViewerHost />
+        <ProviderSignInDialogHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}

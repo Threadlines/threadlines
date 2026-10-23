@@ -5,6 +5,7 @@ import type {
   ProviderAuthQuestionOption,
   ProviderAuthStatus,
 } from "@threadlines/contracts";
+import { signInScanTail } from "@threadlines/shared/signInRedirect";
 
 /**
  * Everything the sign-in panel renders, derived only from the server's
@@ -161,34 +162,6 @@ function urlScanText(raw: string): string {
 }
 
 /**
- * One whole code at a given index: an OSC string with its end, a CSI
- * sequence, or a two-character escape (never `ESC ]`, which starts an OSC).
- */
-const ESCAPE_CODE_AT =
-  // oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
-  /\u001B(?:\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\^_])/uy;
-/** The longest code kept whole across the cut: a link's target is one address. */
-const OPEN_CODE_MAX_CHARS = 16_384;
-
-/**
- * The raw output the scan keeps for the next chunk: the last
- * `URL_SCAN_TAIL_CHARS`, unless that cut lands inside a code. Then the tail
- * starts at the code instead, so a link's target is never split from its
- * code and run into the text after it.
- */
-function nextUrlScanTail(raw: string): string {
-  const cut = raw.length - URL_SCAN_TAIL_CHARS;
-  if (cut <= 0) return raw;
-  const codeStart = raw.lastIndexOf("\u001B", cut - 1);
-  if (codeStart === -1) return raw.slice(cut);
-  ESCAPE_CODE_AT.lastIndex = codeStart;
-  // An unfinished code runs to the end of the output so far.
-  const codeEnd = ESCAPE_CODE_AT.test(raw) ? ESCAPE_CODE_AT.lastIndex : raw.length;
-  if (codeEnd <= cut) return raw.slice(cut);
-  return raw.length - codeStart <= OPEN_CODE_MAX_CHARS ? raw.slice(codeStart) : raw.slice(codeEnd);
-}
-
-/**
  * Track the newest visible line across chunk boundaries: a chunk without a
  * newline continues the current line, one with newlines replaces it.
  */
@@ -233,7 +206,7 @@ export function applyProviderAuthEvent(
         lastLine,
         openLine,
         signInUrl,
-        urlScanTail: signInUrl === null ? nextUrlScanTail(scanned) : "",
+        urlScanTail: signInUrl === null ? signInScanTail(scanned, URL_SCAN_TAIL_CHARS) : "",
       };
     }
     case "status":
@@ -286,17 +259,20 @@ export function applyProviderAuthEvent(
  * agent already opened it on this very computer (Grok). A terminal
  * command's page may need the server's computer (a local callback), so it
  * opens only when the server says the command leaves it to the client,
- * never on a guess.
+ * never on a guess, or, away from that computer, when its callback can be
+ * pasted back (`finishesByPaste`): the command opened it on a screen the
+ * user isn't at.
  */
 export function shouldOpenPrintedPage(input: {
   readonly surface: ProviderConnectFlowState["surface"];
   readonly opensPageItself: boolean | null;
   readonly onServerComputer: boolean;
+  readonly finishesByPaste: boolean;
 }): boolean {
   if (input.surface === "browser") {
     return !(input.opensPageItself === true && input.onServerComputer);
   }
-  return input.opensPageItself === false;
+  return input.opensPageItself === false || (!input.onServerComputer && input.finishesByPaste);
 }
 
 export function isProviderConnectFlowActive(status: ProviderAuthStatus): boolean {

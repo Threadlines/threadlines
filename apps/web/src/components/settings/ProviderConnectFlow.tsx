@@ -1,11 +1,10 @@
 "use client";
 
-import type { ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
+import type { EnvironmentId, ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
 import type { Terminal } from "@xterm/xterm";
 import { CheckIcon, ChevronDownIcon, CopyIcon, ExternalLinkIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
-import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
@@ -22,9 +21,11 @@ import type { ProviderConnectFlowState } from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
 interface ProviderConnectTerminalProps {
-  readonly instanceId: ProviderInstanceId;
   readonly bufferRef: { current: string };
   readonly writeRef: { current: ((data: string) => void) | null };
+  /** Typing, sent to the run on the computer that runs it. */
+  readonly onInput: (data: string) => void;
+  readonly onResize: (cols: number, rows: number) => void;
 }
 
 /**
@@ -33,17 +34,25 @@ interface ProviderConnectTerminalProps {
  * receives live chunks through `writeRef`.
  */
 function ProviderConnectTerminal({
-  instanceId,
   bufferRef,
   writeRef,
+  onInput,
+  onResize,
 }: ProviderConnectTerminalProps) {
   const mountRef = useRef<HTMLDivElement>(null);
+  // Read through refs: a new callback (the computer reconnected) must not
+  // rebuild the terminal and lose what it shows.
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
+  useEffect(() => {
+    onInputRef.current = onInput;
+    onResizeRef.current = onResize;
+  }, [onInput, onResize]);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
-    const client = getPrimaryEnvironmentConnection().client;
     const { terminal, fitAddon } = createXtermSurface({ mount, fontSize: 11, scrollback: 2_000 });
     let disposed = false;
 
@@ -54,16 +63,10 @@ function ProviderConnectTerminal({
       if (!disposed) terminal.write(data);
     };
 
-    const dataSubscription = terminal.onData((data) => {
-      void client.providerAuth.write({ instanceId, data }).catch(() => {
-        // The panel's status line already reports a dead session.
-      });
-    });
+    const dataSubscription = terminal.onData((data) => onInputRef.current(data));
 
     const pushSize = (activeTerminal: Terminal) => {
-      void client.providerAuth
-        .resize({ instanceId, cols: activeTerminal.cols, rows: activeTerminal.rows })
-        .catch(() => {});
+      onResizeRef.current(activeTerminal.cols, activeTerminal.rows);
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -82,7 +85,7 @@ function ProviderConnectTerminal({
       dataSubscription.dispose();
       terminal.dispose();
     };
-  }, [bufferRef, instanceId, writeRef]);
+  }, [bufferRef, writeRef]);
 
   return (
     <div
@@ -95,6 +98,8 @@ function ProviderConnectTerminal({
 
 export interface ProviderConnectFlowProps {
   readonly instanceId: ProviderInstanceId;
+  /** The computer that runs the provider; null (the default) is the app's own backend. */
+  readonly environmentId?: EnvironmentId | null | undefined;
   readonly flow: ProviderAuthFlow;
   readonly displayName: string;
   /** Label for the idle button, e.g. "Sign in" / "Reconnect" / "Generate token". */
@@ -147,6 +152,23 @@ export interface ProviderConnectFlowProps {
         readonly runningHint: string;
       }
     | undefined;
+  /**
+   * Offer the command for the user's own terminal. Off where that terminal
+   * would be on another computer than the one the user is at.
+   */
+  readonly offerCommandFallback?: boolean;
+  /** Fired once per run that ends in `succeeded`. */
+  readonly onSucceeded?: (() => void) | undefined;
+  /**
+   * Start the run as the panel appears: the user already asked for it on
+   * the surface that opened this one (the composer's Sign in).
+   */
+  readonly autoStart?: boolean;
+  /**
+   * Say why a run couldn't start in the panel itself, not in a toast: a
+   * toast sits under the window this panel is in.
+   */
+  readonly startErrorInline?: boolean;
 }
 
 /**
@@ -337,6 +359,7 @@ function ProviderPageRequest(props: {
  */
 export function ProviderConnectFlow({
   instanceId,
+  environmentId = null,
   flow,
   displayName,
   actionLabel,
@@ -349,6 +372,10 @@ export function ProviderConnectFlow({
   surface = "terminal",
   acceptsRedirect = true,
   terminalFallback,
+  offerCommandFallback = true,
+  onSucceeded,
+  autoStart = false,
+  startErrorInline = false,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -376,10 +403,17 @@ export function ProviderConnectFlow({
     submitRedirect,
     answerPageRequest,
     answerQuestion,
+    writeTerminal,
+    resizeTerminal,
+    startError,
+    takesPastedAddress,
   } = useProviderConnectFlow({
     instanceId,
+    environmentId,
     flow,
+    onSucceeded,
     onStartError: (error) => {
+      if (startErrorInline) return;
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -397,7 +431,7 @@ export function ProviderConnectFlow({
   const terminalFallbackRun = terminalFallback !== undefined && !isBrowserFlow;
   // A community agent's links wait for a click: Threadlines hasn't tested
   // the agent, and the address is the agent's own.
-  const isCommunityAgent = useIsCommunityAgent(instanceId);
+  const isCommunityAgent = useIsCommunityAgent(instanceId, environmentId);
 
   useEffect(() => {
     if (isBrowserFlow) return;
@@ -427,6 +461,15 @@ export function ProviderConnectFlow({
     setShowTerminal(false);
     start(options);
   };
+
+  // Once per panel, even when the effect runs twice.
+  const autoStartedRef = useRef(false);
+  const startOnOpen = useEffectEvent(() => startFlow());
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    startOnOpen();
+  }, [autoStart]);
 
   // Cancel and Dismiss both clear the server-side session too, so a finished
   // run doesn't replay a stale success/failure panel on the next visit.
@@ -479,6 +522,11 @@ export function ProviderConnectFlow({
       )}
       {statusRow && description && !panelOpen ? (
         <p className="text-xs text-muted-foreground">{description}</p>
+      ) : null}
+      {startErrorInline && startError && !isActive && !isStarting ? (
+        <p role="alert" className="text-xs text-destructive">
+          {`${displayName} sign-in couldn't start. ${startError}`}
+        </p>
       ) : null}
 
       {panelOpen ? (
@@ -552,9 +600,10 @@ export function ProviderConnectFlow({
 
           {showTerminal && !isBrowserFlow ? (
             <ProviderConnectTerminal
-              instanceId={instanceId}
               bufferRef={outputBufferRef}
               writeRef={terminalWriteRef}
+              onInput={writeTerminal}
+              onResize={resizeTerminal}
             />
           ) : null}
 
@@ -574,7 +623,7 @@ export function ProviderConnectFlow({
             )
           ) : null}
 
-          {isBrowserFlow && acceptsRedirect && !isCommunityAgent && isActive && state.signInUrl ? (
+          {takesPastedAddress && (!isBrowserFlow || acceptsRedirect) && !isCommunityAgent ? (
             <BrowserRedirectField onSubmit={submitRedirect} />
           ) : null}
         </div>
@@ -582,7 +631,9 @@ export function ProviderConnectFlow({
 
       {/* A community agent's login command lives in Threadlines' own tools
           folder: there is nothing to copy into another terminal. */}
-      {isCommunityAgent || (isBrowserFlow && terminalFallback === undefined) ? null : (
+      {!offerCommandFallback ||
+      isCommunityAgent ||
+      (isBrowserFlow && terminalFallback === undefined) ? null : (
         <details
           className="group"
           open={showFallback}

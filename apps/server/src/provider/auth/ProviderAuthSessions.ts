@@ -58,6 +58,11 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import {
+  matchPrintedRedirect,
+  PrintedRedirects,
+  replayLoopbackRedirect,
+} from "./loopbackRedirect.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
 import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
 import { resolveMuseBinary } from "../muse/MuseBinary.ts";
@@ -292,6 +297,10 @@ interface SessionState {
   scrollback: string;
   /** Raw output kept solely for token capture; independent of flush timing. */
   captureBuffer: string;
+  /** The loopback redirects of the sign-in pages this run printed. */
+  readonly printedRedirects: PrintedRedirects;
+  /** The `state`s of the redirects this run already replayed: each goes once. */
+  readonly replayedRedirectStates: Set<string>;
   flushFiber: Fiber.Fiber<void, never> | null;
   tokenCaptured: boolean;
 }
@@ -384,6 +393,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     Effect.gen(function* () {
       if (data.length === 0) return;
       session.scrollback = `${session.scrollback}${data}`.slice(-scrollbackChars);
+      session.printedRedirects.push(data);
       const createdAt = yield* nowIso;
       yield* publish(instanceId, { type: "output", instanceId, createdAt, data });
     });
@@ -670,6 +680,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         buffer: "",
         scrollback: "",
         captureBuffer: "",
+        printedRedirects: new PrintedRedirects(),
+        replayedRedirectStates: new Set(),
         flushFiber: null,
         tokenCaptured: false,
       };
@@ -988,6 +1000,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           buffer: "",
           scrollback: "",
           captureBuffer: "",
+          printedRedirects: new PrintedRedirects(),
+          replayedRedirectStates: new Set(),
           flushFiber: null,
           tokenCaptured: false,
         };
@@ -1068,6 +1082,34 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       }
     });
 
+  /**
+   * Finishes a terminal sign-in whose page waits on a loopback redirect
+   * (`codex login`): a page this run printed names it, and only such a
+   * redirect, each once, is replayed to the listener on this computer.
+   */
+  const completeTerminalRedirect = (
+    instanceId: ProviderInstanceId,
+    session: SessionState,
+    raw: string,
+  ) =>
+    Effect.gen(function* () {
+      const rejected = (detail: string) =>
+        new ProviderAuthError({ instanceId: String(instanceId), reason: "inputRejected", detail });
+      const matched = matchPrintedRedirect(raw, session.printedRedirects.all);
+      if (typeof matched === "string") return yield* rejected(matched);
+      if (session.replayedRedirectStates.has(matched.redirect.state)) {
+        return yield* rejected("This sign-in already received its address.");
+      }
+      session.replayedRedirectStates.add(matched.redirect.state);
+      const status = yield* Effect.tryPromise({
+        try: () => replayLoopbackRedirect(matched.url),
+        catch: () => rejected("The sign-in stopped listening. Start sign-in again."),
+      });
+      if (status >= 400) {
+        return yield* rejected("The sign-in didn't accept that address.");
+      }
+    });
+
   const shape: ProviderAuthSessionsShape = {
     start,
     write: (input) =>
@@ -1101,6 +1143,11 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           return;
         }
         const process = yield* requireRunning(instanceId);
+        if (input.redirect === true && session) {
+          // A terminal command's page ended on this computer's loopback, in a
+          // browser on another device: replay it here, never type it in.
+          return yield* completeTerminalRedirect(instanceId, session, input.data);
+        }
         yield* Effect.sync(() => process.write(input.data));
       }),
     resize: (input) =>

@@ -74,6 +74,10 @@ import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
 import { ThreadsSettingsPanel } from "./ThreadsSettings";
+import {
+  __setProviderAuthClientForTests,
+  type ProviderAuthClient,
+} from "../../environments/providerComputer";
 import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 
 /**
@@ -1057,6 +1061,11 @@ describe("GeneralSettingsPanel observability", () => {
     useUiStateStore.setState({ defaultAdvertisedEndpointKey: null });
     authAccessHarness.reset();
     providerAuthHarness.reset();
+    // Settings signs in on this app's own computer.
+    __setProviderAuthClientForTests(
+      null,
+      providerAuthHarness.client as unknown as ProviderAuthClient,
+    );
     relayAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
     savedComputersHarness.reset();
@@ -4595,6 +4604,11 @@ describe("ProviderSettingsPanel community agents", () => {
     resetServerStateForTests();
     await __resetLocalApiForTests();
     providerAuthHarness.reset();
+    // Settings signs in on this app's own computer.
+    __setProviderAuthClientForTests(
+      null,
+      providerAuthHarness.client as unknown as ProviderAuthClient,
+    );
     document.body.innerHTML = "";
   });
 

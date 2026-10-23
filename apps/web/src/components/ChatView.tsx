@@ -309,8 +309,7 @@ import {
 import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
 import { useNoAgentReady } from "./setup/firstRunGateState";
-import { toProviderSignInFlowView } from "./chat/providerSignIn";
-import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
+import { useThreadProviderSignIn } from "./chat/useThreadProviderSignIn";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import { useThreadMoveNotice } from "./chat/threadMoveNotice";
@@ -392,6 +391,7 @@ import {
   useServerConfig,
   useServerKeybindings,
 } from "~/rpc/serverState";
+import { isAppBackendEnvironment } from "../environments/providerComputer";
 import { refreshProviderStatus } from "../environments/providerStatusRefresh";
 import {
   selectOptimisticThreadMessages,
@@ -671,6 +671,8 @@ function ForkThreadDialog(props: {
   readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
   readonly keybindings?: ResolvedKeybindingsConfig;
   readonly terminalOpen: boolean;
+  /** Settings shows the computer the thread runs on. */
+  readonly providerSettingsShown: boolean;
   readonly disabled: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onInstructionChange: (instruction: string) => void;
@@ -756,6 +758,7 @@ function ForkThreadDialog(props: {
               {...(props.keybindings ? { keybindings: props.keybindings } : {})}
               modelOptionsByInstance={props.modelOptionsByInstance}
               terminalOpen={props.terminalOpen}
+              providerSettingsShown={props.providerSettingsShown}
               side="top"
               triggerVariant="outline"
               triggerClassName="w-full max-w-none"
@@ -3005,9 +3008,11 @@ export default function ChatView(props: ChatViewProps) {
     providerSendPreflight?.instanceId ?? activeProviderStatus?.instanceId ?? null;
   const hasHeldSendRef = useRef(false);
   hasHeldSendRef.current = providerSendPreflight !== null;
-  const composerSignInController = useProviderConnectFlow({
+  const composerSignInView = useThreadProviderSignIn({
     instanceId: composerSignInInstanceId,
-    flow: "login",
+    // The thread's agent signs in on the computer the thread runs on.
+    environmentId: threadComputerEnvironmentId,
+    providerLabel: providerSendPreflight?.providerLabel ?? activeProviderLabel,
     // A held message is waiting on exactly this: re-probe and, if the provider
     // agrees, send it. Without this the user would sign in and then still have
     // to click "I've signed in".
@@ -3017,14 +3022,6 @@ export default function ChatView(props: ChatViewProps) {
       }
     },
   });
-  const composerSignInView = useMemo(
-    () =>
-      toProviderSignInFlowView({
-        instanceId: composerSignInInstanceId,
-        controller: composerSignInController,
-      }),
-    [composerSignInController, composerSignInInstanceId],
-  );
   useEffect(() => {
     // The notice belongs to the send it interrupted, so it must not follow the
     // user into another thread.
@@ -8019,6 +8016,10 @@ export default function ChatView(props: ChatViewProps) {
         modelOptionsByInstance={modelOptionsByInstance}
         keybindings={keybindings}
         terminalOpen={Boolean(terminalState.terminalOpen)}
+        providerSettingsShown={
+          threadComputerEnvironmentId === null ||
+          isAppBackendEnvironment(threadComputerEnvironmentId)
+        }
         disabled={isSendBusy || isConnecting || activeEnvironmentUnavailable}
         onOpenChange={(open) => {
           if (!open) {

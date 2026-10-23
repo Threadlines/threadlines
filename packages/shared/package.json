@@ -207,6 +207,10 @@
       "types": "./src/providerAuthCommands.ts",
       "import": "./src/providerAuthCommands.ts"
     },
+    "./signInRedirect": {
+      "types": "./src/signInRedirect.ts",
+      "import": "./src/signInRedirect.ts"
+    },
     "./antigravitySignIn": {
       "types": "./src/antigravitySignIn.ts",
       "import": "./src/antigravitySignIn.ts"

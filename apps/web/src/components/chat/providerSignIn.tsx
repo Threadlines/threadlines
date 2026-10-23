@@ -13,14 +13,19 @@
  * question the agent asks (Pi's list of providers) hands off the same way
  * from the composer; the setup screen answers it in its own row.
  *
+ * An agent on a computer Settings doesn't show (a thread on another computer)
+ * signs in on that computer (`elsewhere`): there the hand-off is the sign-in
+ * window (`ProviderSignInDialog`), opened as the run starts.
+ *
  * @module providerSignIn
  */
-import type { ProviderInstanceId } from "@threadlines/contracts";
+import type { EnvironmentId, ProviderInstanceId } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
 import { LoaderIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { openProviderSignInDialog } from "./ProviderSignInDialog";
 import { useIsCommunityAgent } from "../settings/communityAgents";
 import { useSignInNextStep } from "../settings/useSignInNextStep";
 import {
@@ -30,25 +35,42 @@ import {
 import { Button } from "../ui/button";
 
 /**
+ * A sign-in that runs on a computer the app's Settings doesn't show. It
+ * finishes in the sign-in window, named for that computer and agent.
+ */
+export interface ProviderSignInElsewhere {
+  /** The computer that runs the agent; null is the app's own backend. */
+  readonly environmentId: EnvironmentId | null;
+  readonly displayName: string;
+  readonly computerLabel: string | null;
+  readonly driver: string | null;
+}
+
+/**
  * The slice of a `ProviderConnectFlowController` the chat surfaces read.
  * Declared structurally so a controller passes through unchanged and the
  * notice builders stay free of hooks.
  */
 export interface ProviderSignInFlowView {
   readonly instanceId: ProviderInstanceId | null;
+  /** Set when the agent signs in on a computer Settings doesn't show. */
+  readonly elsewhere: ProviderSignInElsewhere | null;
+  /** This app can reach the computer the sign-in runs on. */
+  readonly canReachComputer: boolean;
   readonly isActive: boolean;
   readonly isStarting: boolean;
   readonly hasRun: boolean;
   readonly hasFailed: boolean;
   /**
-   * True once the run needs what only Settings can show: the terminal, or
-   * (where this surface can't answer them) the agent's questions.
+   * True once the run needs what only the hand-off can show (Settings, or
+   * the sign-in window for `elsewhere`): the terminal, or (where this
+   * surface can't answer them) the agent's questions.
    */
-  readonly needsSettings: boolean;
+  readonly needsHandoff: boolean;
   /** The agent is waiting on the user: a question, or a device code to type. */
   readonly asking: boolean;
-  /** `asking`, on a surface that can't show it: the user continues in Settings. */
-  readonly waitingInSettings: boolean;
+  /** `asking`, on a surface that can't show it: the user continues in the hand-off. */
+  readonly waitingInHandoff: boolean;
   /** Last visible output line, already stripped of control sequences. */
   readonly lastLine: string;
   /** The server's plain-language failure reason, when it gave one. */
@@ -61,21 +83,29 @@ export function toProviderSignInFlowView(input: {
   readonly controller: ProviderConnectFlowController;
   /** The surface shows the agent's questions itself (the setup screen). */
   readonly answersQuestions?: boolean;
+  /** Set when the agent runs on a computer Settings doesn't show. */
+  readonly elsewhere?: ProviderSignInElsewhere | null | undefined;
 }): ProviderSignInFlowView {
   const { controller, instanceId } = input;
   const { question, pageRequest } = controller.state;
   const asking = controller.isActive && (question !== null || pageRequest?.code != null);
-  const waitingInSettings = controller.hasRun && asking && input.answersQuestions !== true;
+  const waitingInHandoff = controller.hasRun && asking && input.answersQuestions !== true;
   return {
     instanceId,
+    elsewhere: input.elsewhere ?? null,
+    canReachComputer: controller.canReachComputer,
     isActive: controller.isActive,
     isStarting: controller.isStarting,
     hasRun: controller.hasRun,
-    hasFailed: controller.hasRun && controller.state.status === "failed",
+    // A start that never reached the computer failed too, and says why.
+    hasFailed:
+      controller.hasRun &&
+      (controller.state.status === "failed" ||
+        (controller.startError !== null && !controller.isActive)),
     // A surface that shows the question needs no help while it waits on the user.
-    needsSettings: waitingInSettings || (controller.hasRun && controller.needsTerminal && !asking),
+    needsHandoff: waitingInHandoff || (controller.hasRun && controller.needsTerminal && !asking),
     asking,
-    waitingInSettings,
+    waitingInHandoff,
     lastLine: controller.state.lastLine,
     failureDetail: controller.startError ?? controller.state.detail,
     start: controller.start,
@@ -93,7 +123,10 @@ export function isProviderSignInInFlight(view: ProviderSignInFlowView): boolean 
  */
 export function providerSignInStatusText(view: ProviderSignInFlowView): string | null {
   if (view.asking) {
-    return view.waitingInSettings ? "Signing in… continue in Settings." : "Signing in…";
+    if (!view.waitingInHandoff) return "Signing in…";
+    return view.elsewhere
+      ? "Signing in… continue in the sign-in window."
+      : "Signing in… continue in Settings.";
   }
   if (isProviderSignInInFlight(view)) {
     return view.lastLine.trim().length > 0
@@ -107,23 +140,34 @@ export function providerSignInStatusText(view: ProviderSignInFlowView): string |
   return null;
 }
 
-/**
- * The primary action: start the flow, retry a failed one, or step aside for
- * the settings hand-off once the run needs a terminal.
- */
-export function ProviderSignInButton({
-  view,
-  label = "Sign in",
-  ariaLabel,
-  variant,
-  className,
-}: {
+interface ProviderSignInButtonProps {
   readonly view: ProviderSignInFlowView;
   readonly label?: string | undefined;
   readonly ariaLabel?: string | undefined;
   readonly variant?: "default" | "outline" | "ghost" | undefined;
   readonly className?: string | undefined;
-}): ReactNode {
+}
+
+/**
+ * The primary action: start the flow, retry a failed one, or step aside for
+ * the hand-off once the run needs more room than the row has.
+ */
+export function ProviderSignInButton(props: ProviderSignInButtonProps): ReactNode {
+  return props.view.elsewhere ? (
+    <ProviderSignInElsewhereButton {...props} elsewhere={props.view.elsewhere} />
+  ) : (
+    <ProviderSignInHereButton {...props} />
+  );
+}
+
+/** A sign-in on the computer the app's settings talk to, which Settings finishes. */
+function ProviderSignInHereButton({
+  view,
+  label = "Sign in",
+  ariaLabel,
+  variant,
+  className,
+}: ProviderSignInButtonProps): ReactNode {
   // Antigravity's and Grok's sign-in follow their method; a missing key or
   // project can only be fixed on the Account tab.
   const methodStep = useSignInNextStep(view.instanceId);
@@ -143,7 +187,7 @@ export function ProviderSignInButton({
   if (isCommunityAgent) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }
-  if (view.needsSettings && !view.hasFailed) {
+  if (view.needsHandoff && !view.hasFailed) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }
   if (isProviderSignInInFlight(view)) {
@@ -157,6 +201,46 @@ export function ProviderSignInButton({
       disabled={view.instanceId === null}
       aria-label={ariaLabel ?? buttonLabel}
       onClick={view.start}
+    >
+      {buttonLabel}
+    </Button>
+  );
+}
+
+/**
+ * A sign-in on another computer: the sign-in window starts it, and holds its
+ * page, the address to paste back, its questions and its terminal; a run
+ * already going reopens it. The window reads that computer's own account of
+ * the agent; this computer's settings say nothing about it.
+ */
+function ProviderSignInElsewhereButton({
+  view,
+  elsewhere,
+  label = "Sign in",
+  ariaLabel,
+  variant,
+  className,
+}: ProviderSignInButtonProps & { readonly elsewhere: ProviderSignInElsewhere }): ReactNode {
+  const instanceId = view.instanceId;
+  const inFlight = isProviderSignInInFlight(view);
+  const buttonLabel = inFlight ? "Continue" : label;
+  return (
+    <Button
+      size="xs"
+      variant={inFlight ? "outline" : (variant ?? "default")}
+      className={className}
+      disabled={instanceId === null}
+      aria-label={inFlight ? "Continue signing in" : (ariaLabel ?? buttonLabel)}
+      onClick={() => {
+        if (instanceId === null) return;
+        // Unreachable, the row says why (the start fails there at once); an
+        // empty window wouldn't.
+        if (!view.canReachComputer) {
+          view.start();
+          return;
+        }
+        openProviderSignInDialog({ instanceId, ...elsewhere, start: !inFlight });
+      }}
     >
       {buttonLabel}
     </Button>

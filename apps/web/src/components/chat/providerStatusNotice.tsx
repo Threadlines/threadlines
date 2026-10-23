@@ -15,6 +15,7 @@ import { Link } from "@tanstack/react-router";
 import { SettingsIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { isAppBackendEnvironment } from "../../environments/providerComputer";
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { useNoAgentReady } from "../setup/firstRunGateState";
@@ -161,6 +162,9 @@ export function useProviderStatusNotice(input: {
 }): ComposerNotice | null {
   const { activeTurnInProgress, environmentId, signIn, status, suppressed = false } = input;
   const offerSetup = useNoAgentReady();
+  // Settings and setup show the computer the app's settings talk to: for a
+  // thread on another one, a link there would show the wrong computer's agents.
+  const settingsShowComputer = environmentId === null || isAppBackendEnvironment(environmentId);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh({
     environmentId,
@@ -224,7 +228,7 @@ export function useProviderStatusNotice(input: {
       actions: (
         <>
           {actions.signIn && signIn ? <ProviderSignInButton view={signIn} /> : null}
-          {actions.openSettings ? (
+          {actions.openSettings && settingsShowComputer ? (
             <Button
               size="xs"
               variant="ghost"
@@ -235,7 +239,7 @@ export function useProviderStatusNotice(input: {
               Open Settings
             </Button>
           ) : null}
-          {offerSetup ? (
+          {offerSetup && settingsShowComputer ? (
             <Button size="xs" variant="ghost" className="h-6 px-1.5" render={<Link to="/setup" />}>
               Open setup
             </Button>
@@ -251,5 +255,14 @@ export function useProviderStatusNotice(input: {
         </>
       ),
     } satisfies ComposerNotice;
-  }, [isRefreshing, offerSetup, refreshError, refreshProvider, signIn, status, visible]);
+  }, [
+    isRefreshing,
+    offerSetup,
+    refreshError,
+    refreshProvider,
+    settingsShowComputer,
+    signIn,
+    status,
+    visible,
+  ]);
 }

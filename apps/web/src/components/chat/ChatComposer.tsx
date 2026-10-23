@@ -169,6 +169,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { isAppBackendEnvironment } from "../../environments/providerComputer";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ProviderUsageSignIn } from "./providerSignIn";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -4220,6 +4221,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       keybindings={keybindings}
                       modelOptionsByInstance={modelOptionsByInstance}
                       terminalOpen={terminalOpen}
+                      providerSettingsShown={isAppBackendEnvironment(environmentId)}
                       side="top"
                       open={isComposerModelPickerOpen}
                       {...(composerProviderState.modelPickerIconClassName
