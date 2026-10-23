@@ -12,10 +12,13 @@ export function isPageAttended(): boolean {
 /** Calls `listener` whenever {@link isPageAttended} may have changed. */
 export function onPageAttentionChange(listener: () => void): () => void {
   window.addEventListener("focus", listener);
+  // A window can lose focus while it stays visible (another app in front).
+  window.addEventListener("blur", listener);
   document.addEventListener("visibilitychange", listener);
   const stopWindowFocus = window.desktopBridge?.onWindowFocusChange?.(listener);
   return () => {
     window.removeEventListener("focus", listener);
+    window.removeEventListener("blur", listener);
     document.removeEventListener("visibilitychange", listener);
     stopWindowFocus?.();
   };
