@@ -214,6 +214,126 @@ describe("InboxThreadRow on a touch screen", () => {
   });
 });
 
+describe("InboxThreadRow swipes", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("wraps up on a swipe left and pins on a swipe right, and leaves scrolls, short swipes and mouse drags alone", async () => {
+    const onSwipeAction = vi.fn();
+    const handleThreadClick = vi.fn();
+    const handleThreadContextMenu = vi.fn(async () => undefined);
+    render(
+      <ThreadHoverCardProvider>
+        <ul style={{ width: "360px" }}>
+          <InboxThreadRow
+            thread={THREAD}
+            status={resolveThreadStatusPill({ thread: THREAD })}
+            projectLabel={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone
+            orderedThreadKeys={[]}
+            renamingThreadKey={null}
+            renamingTitle=""
+            setRenamingTitle={() => undefined}
+            renamingInputRef={{ current: null }}
+            renamingCommittedRef={{ current: false }}
+            handleThreadClick={handleThreadClick}
+            navigateToThread={() => undefined}
+            handleMultiSelectContextMenu={async () => undefined}
+            handleThreadContextMenu={handleThreadContextMenu}
+            clearSelection={() => undefined}
+            commitRename={async () => undefined}
+            cancelRename={() => undefined}
+            markThreadDone={() => undefined}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            onSwipeAction={onSwipeAction}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+    const row = page.getByTestId(`thread-row-${THREAD_ID}`);
+    await expect.element(row).toBeVisible();
+    const element = row.element();
+    const rect = element.getBoundingClientRect();
+    const x0 = rect.left + rect.width / 2;
+    const y0 = rect.top + 12;
+    const at = (x: number, y: number, pointerType: string) => ({
+      bubbles: true,
+      clientX: x,
+      clientY: y,
+      pointerId: 9,
+      pointerType,
+      isPrimary: true,
+      button: 0,
+    });
+    /** A finger (or mouse) drawn (dx, dy) across the row in ten steps, not yet lifted. */
+    const drag = (dx: number, dy: number, pointerType = "touch") => {
+      element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, pointerType)));
+      for (let step = 1; step <= 10; step += 1) {
+        element.dispatchEvent(
+          new PointerEvent(
+            "pointermove",
+            at(x0 + (dx * step) / 10, y0 + (dy * step) / 10, pointerType),
+          ),
+        );
+      }
+      return () => {
+        element.dispatchEvent(new PointerEvent("pointerup", at(x0 + dx, y0 + dy, pointerType)));
+      };
+    };
+    const swipeAction = () => document.querySelector("[data-testid='row-swipe-action']");
+
+    // Left, far enough: Wrap up shows under the row and is armed; letting go runs it.
+    let lift = drag(-220, 0);
+    await vi.waitFor(() => {
+      expect(swipeAction()?.textContent).toBe("Wrap up");
+      expect(swipeAction()?.getAttribute("data-armed")).toBe("true");
+    });
+    lift();
+    // The click a lift can end in is the swipe's, not a tap.
+    element.dispatchEvent(new MouseEvent("click", at(x0 - 220, y0, "touch")));
+    await vi.waitFor(() => {
+      expect(onSwipeAction).toHaveBeenCalledWith("wrap-up", expect.stringContaining(THREAD_ID));
+    });
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // A press during the slide-out still gets the swipe it follows: the owed
+    // action runs at once instead of being dropped.
+    drag(-220, 0)();
+    element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, "touch")));
+    expect(onSwipeAction).toHaveBeenCalledTimes(2);
+    element.dispatchEvent(new PointerEvent("pointerup", at(x0, y0, "touch")));
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // Right: Pin.
+    drag(220, 0)();
+    await vi.waitFor(() => {
+      expect(onSwipeAction).toHaveBeenLastCalledWith("pin", expect.stringContaining(THREAD_ID));
+    });
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // Mostly down is a scroll; a short swipe springs back; a mouse never swipes.
+    drag(40, 160)();
+    drag(-60, 0)();
+    drag(-220, 0, "mouse")();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(onSwipeAction).toHaveBeenCalledTimes(3);
+    expect(handleThreadClick).not.toHaveBeenCalled();
+    expect(handleThreadContextMenu).not.toHaveBeenCalled();
+
+    // A tap right after a swipe is a tap of its own: it opens the thread.
+    drag(-60, 0)();
+    element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, "touch")));
+    element.dispatchEvent(new PointerEvent("pointerup", at(x0, y0, "touch")));
+    element.dispatchEvent(new MouseEvent("click", at(x0, y0, "touch")));
+    expect(handleThreadClick).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("InboxThreadRow pull request badge", () => {
   it("names the pull request the open listing found for this branch", async () => {
     const { openPrLink } = renderRow(OPEN_PULL_REQUEST);

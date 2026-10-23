@@ -10,6 +10,7 @@ import {
   MonitorUpIcon,
   GitForkIcon,
   PinIcon,
+  PinOffIcon,
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
@@ -30,6 +31,7 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
 import { cn } from "../../lib/utils";
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
+import { SwipeableRow, type RowSwipeAction } from "./SwipeableRow";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunTaskName } from "../../lib/scheduledTasksState";
 import { isThreadSessionStarting } from "../../lib/threadSort";
@@ -79,6 +81,36 @@ import { describedAwaitedTasks, formatBackgroundWaitWord } from "../../session-l
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
+
+/**
+ * What a swipe on an inbox row asks for: the same actions, by the same names,
+ * as the row's menu, so a swipe and a menu pick behave alike.
+ */
+export type InboxRowSwipeAction = "pin" | "unpin" | "wrap-up" | "reopen" | "archive";
+
+/** Runs a row's swipe action, by thread key. Rows without it don't swipe. */
+type InboxRowSwipeHandler = (action: InboxRowSwipeAction, threadKey: string) => void;
+
+function rowSwipeAction(
+  onSwipeAction: InboxRowSwipeHandler | undefined,
+  threadKey: string,
+  action: InboxRowSwipeAction,
+): RowSwipeAction | null {
+  if (!onSwipeAction) return null;
+  const run = () => onSwipeAction(action, threadKey);
+  switch (action) {
+    case "pin":
+      return { label: "Pin", icon: PinIcon, leaves: false, run };
+    case "unpin":
+      return { label: "Unpin", icon: PinOffIcon, leaves: false, run };
+    case "wrap-up":
+      return { label: "Wrap up", icon: CheckIcon, leaves: true, run };
+    case "reopen":
+      return { label: "Reopen", icon: Undo2Icon, leaves: true, run };
+    case "archive":
+      return { label: "Archive", icon: ArchiveIcon, leaves: true, run };
+  }
+}
 
 export const ROW_SURFACE_CLASS_NAME =
   "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset [-webkit-touch-callout:none]";
@@ -682,6 +714,11 @@ export interface InboxThreadRowProps {
   remoteParent?: RemoteParentLine | null | undefined;
   /** See ThreadHoverCardPayload.lineage. */
   lineage?: ThreadHoverCardLineage | undefined;
+  /**
+   * Runs what a sideways swipe on the row asks for (touch only). Absent, the
+   * row doesn't swipe.
+   */
+  onSwipeAction?: InboxRowSwipeHandler | undefined;
 }
 
 /** See InboxThreadRowProps.remoteParent. */
@@ -738,6 +775,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     wrappedParentTitle = null,
     remoteParent = null,
     lineage,
+    onSwipeAction,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -911,242 +949,253 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
 
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
-      {/* The surface holds the row and its family's summary line, so the two
+      {/* Swiped right it pins (or unpins); swiped left it wraps up, when the
+          Wrap up button would. */}
+      <SwipeableRow
+        leading={rowSwipeAction(onSwipeAction, threadKey, isPinned ? "unpin" : "pin")}
+        trailing={canMarkDone ? rowSwipeAction(onSwipeAction, threadKey, "wrap-up") : null}
+        disabled={isRenaming}
+      >
+        {/* The surface holds the row and its family's summary line, so the two
           read, hover and highlight as one row. */}
-      <div className={resolveRowSurfaceTone({ isActive, isSelected })}>
-        <ThreadHoverCard thread={thread} status={status} lineage={lineage}>
-          <div
-            role="button"
-            tabIndex={0}
-            data-testid={`thread-row-${thread.id}`}
-            data-thread-key={threadKey}
-            data-active={isActive ? "true" : undefined}
-            className={cn(ROW_SURFACE_CLASS_NAME, "px-3 pt-1.5", family ? "pb-0" : "pb-2")}
-            onClick={handleRowClick}
-            onKeyDown={handleRowKeyDown}
-            {...touchHold}
-          >
-            {/* Line one: where the work lives, and what it is doing. */}
+        <div className={resolveRowSurfaceTone({ isActive, isSelected })}>
+          <ThreadHoverCard thread={thread} status={status} lineage={lineage}>
             <div
-              data-testid={`thread-detail-${thread.id}`}
-              className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/45"
+              role="button"
+              tabIndex={0}
+              data-testid={`thread-row-${thread.id}`}
+              data-thread-key={threadKey}
+              data-active={isActive ? "true" : undefined}
+              className={cn(ROW_SURFACE_CLASS_NAME, "px-3 pt-1.5", family ? "pb-0" : "pb-2")}
+              onClick={handleRowClick}
+              onKeyDown={handleRowKeyDown}
+              {...touchHold}
             >
-              {status ? (
-                <span
-                  aria-label={status.label}
-                  className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
-                />
-              ) : null}
-              {/* Pinned is persistent state, not activity: it stays visible even
-                while the status dot occupies the leading slot. */}
-              {isPinned ? (
-                <span
-                  aria-label="Pinned thread"
-                  className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
-                >
-                  <PinIcon className="size-2.5" />
-                </span>
-              ) : null}
-              {threadProject && showProjectMark ? (
-                <ProjectFavicon
-                  cwd={threadProject.cwd}
-                  environmentId={thread.environmentId}
-                  name={threadProject.name}
-                  className="size-3 shrink-0"
-                />
-              ) : null}
-              {scheduledRunLabel !== null ? (
-                // A scheduled task's run says which task, in the project name's place.
-                <span
-                  className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
-                  data-testid={`thread-scheduled-run-${thread.id}`}
-                >
-                  <CalendarClockIcon aria-hidden className="size-2.5 shrink-0" />
-                  <span className="min-w-0 truncate">{scheduledRunLabel}</span>
-                </span>
-              ) : remoteParent !== null ? (
-                // Started from another computer and standing on its own: the
-                // thread that started it, and where that thread runs.
-                <span
-                  className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
-                  data-testid={`thread-remote-parent-${thread.id}`}
-                >
-                  <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
-                  <span className="min-w-0 truncate">
-                    from {remoteParent.title} on {remoteParent.computerLabel}
-                  </span>
-                </span>
-              ) : wrappedParentTitle !== null ? (
-                // A child whose parent is wrapped says where it came from, in
-                // the project name's place.
-                <span
-                  className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
-                  data-testid={`thread-wrapped-parent-${thread.id}`}
-                >
-                  <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
-                  <span className="min-w-0 truncate">{wrappedParentTitle}</span>
-                </span>
-              ) : projectLabel ? (
-                <span
-                  className={cn(
-                    "min-w-0 truncate text-muted-foreground/60",
-                    // Takes only the width the status leaves (no basis of its
-                    // own), so it is gone before the agent's name gives up a
-                    // pixel. Its gap goes with it: the spacing before the name
-                    // is inside it, so a name shrunk to nothing leaves no double
-                    // gap.
-                    namesRoomAgent &&
-                      "-ml-1.5 flex-1 before:inline-block before:w-1.5 before:content-['']",
-                  )}
-                >
-                  {projectLabel}
-                </span>
-              ) : null}
-              {showBranch ? (
-                <span className="flex min-w-0 items-center gap-1">
-                  <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
-                  <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
-                </span>
-              ) : null}
-              <span
-                className={cn(ROW_META_SLOT_CLASS_NAME, namesRoomAgent && "min-w-0 flex-initial")}
+              {/* Line one: where the work lives, and what it is doing. */}
+              <div
+                data-testid={`thread-detail-${thread.id}`}
+                className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/45"
               >
+                {status ? (
+                  <span
+                    aria-label={status.label}
+                    className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+                  />
+                ) : null}
+                {/* Pinned is persistent state, not activity: it stays visible even
+                while the status dot occupies the leading slot. */}
+                {isPinned ? (
+                  <span
+                    aria-label="Pinned thread"
+                    className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
+                  >
+                    <PinIcon className="size-2.5" />
+                  </span>
+                ) : null}
+                {threadProject && showProjectMark ? (
+                  <ProjectFavicon
+                    cwd={threadProject.cwd}
+                    environmentId={thread.environmentId}
+                    name={threadProject.name}
+                    className="size-3 shrink-0"
+                  />
+                ) : null}
+                {scheduledRunLabel !== null ? (
+                  // A scheduled task's run says which task, in the project name's place.
+                  <span
+                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    data-testid={`thread-scheduled-run-${thread.id}`}
+                  >
+                    <CalendarClockIcon aria-hidden className="size-2.5 shrink-0" />
+                    <span className="min-w-0 truncate">{scheduledRunLabel}</span>
+                  </span>
+                ) : remoteParent !== null ? (
+                  // Started from another computer and standing on its own: the
+                  // thread that started it, and where that thread runs.
+                  <span
+                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    data-testid={`thread-remote-parent-${thread.id}`}
+                  >
+                    <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
+                    <span className="min-w-0 truncate">
+                      from {remoteParent.title} on {remoteParent.computerLabel}
+                    </span>
+                  </span>
+                ) : wrappedParentTitle !== null ? (
+                  // A child whose parent is wrapped says where it came from, in
+                  // the project name's place.
+                  <span
+                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    data-testid={`thread-wrapped-parent-${thread.id}`}
+                  >
+                    <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
+                    <span className="min-w-0 truncate">{wrappedParentTitle}</span>
+                  </span>
+                ) : projectLabel ? (
+                  <span
+                    className={cn(
+                      "min-w-0 truncate text-muted-foreground/60",
+                      // Takes only the width the status leaves (no basis of its
+                      // own), so it is gone before the agent's name gives up a
+                      // pixel. Its gap goes with it: the spacing before the name
+                      // is inside it, so a name shrunk to nothing leaves no double
+                      // gap.
+                      namesRoomAgent &&
+                        "-ml-1.5 flex-1 before:inline-block before:w-1.5 before:content-['']",
+                    )}
+                  >
+                    {projectLabel}
+                  </span>
+                ) : null}
+                {showBranch ? (
+                  <span className="flex min-w-0 items-center gap-1">
+                    <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
+                    <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
+                  </span>
+                ) : null}
                 <span
-                  data-testid={`thread-meta-${thread.id}`}
-                  className={cn(
-                    "shrink-0 font-mono text-[11px] leading-none tabular-nums",
-                    namesRoomAgent && "flex min-w-0 shrink items-baseline",
-                    hasStatusLabel
-                      ? (statusTone ?? "text-muted-foreground/50")
-                      : "text-muted-foreground/50",
-                  )}
+                  className={cn(ROW_META_SLOT_CLASS_NAME, namesRoomAgent && "min-w-0 flex-initial")}
                 >
-                  {jumpLabel ? (
-                    <ThreadJumpLabel label={jumpLabel} />
-                  ) : statusWord !== null ? (
-                    statusWord
-                  ) : checkBackAt !== null ? (
-                    <RowCheckBackStatus at={checkBackAt} />
-                  ) : isLive ? (
-                    <>
-                      {namesRoomAgent && roomAgentSelection ? (
-                        <>
-                          <RoomSlotAgentName selection={roomAgentSelection} role={roomAgentRole} />
-                          <MetaSeparator />
-                        </>
-                      ) : null}
-                      <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
-                    </>
-                  ) : (
-                    formatRelativeTimeLabel(
-                      thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                    )
-                  )}
-                </span>
-                {/* Wrap up is the only hover action; pin lives in the row's
+                  <span
+                    data-testid={`thread-meta-${thread.id}`}
+                    className={cn(
+                      "shrink-0 font-mono text-[11px] leading-none tabular-nums",
+                      namesRoomAgent && "flex min-w-0 shrink items-baseline",
+                      hasStatusLabel
+                        ? (statusTone ?? "text-muted-foreground/50")
+                        : "text-muted-foreground/50",
+                    )}
+                  >
+                    {jumpLabel ? (
+                      <ThreadJumpLabel label={jumpLabel} />
+                    ) : statusWord !== null ? (
+                      statusWord
+                    ) : checkBackAt !== null ? (
+                      <RowCheckBackStatus at={checkBackAt} />
+                    ) : isLive ? (
+                      <>
+                        {namesRoomAgent && roomAgentSelection ? (
+                          <>
+                            <RoomSlotAgentName
+                              selection={roomAgentSelection}
+                              role={roomAgentRole}
+                            />
+                            <MetaSeparator />
+                          </>
+                        ) : null}
+                        <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
+                      </>
+                    ) : (
+                      formatRelativeTimeLabel(
+                        thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                      )
+                    )}
+                  </span>
+                  {/* Wrap up is the only hover action; pin lives in the row's
                   context menu so a cursor sweeping the row can't hit it. The
                   wrapper only mounts alongside the button -- empty, it would
                   still paint its backdrop smear over the timestamp. */}
-                {canMarkDone ? (
-                  <RowFloatingActions isActive={isActive} isSelected={isSelected}>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <button
-                            type="button"
-                            data-thread-selection-safe
-                            data-testid={`thread-done-${thread.id}`}
-                            aria-label={`Wrap up ${thread.title}`}
-                            className={ROW_ACTION_BUTTON_CLASS_NAME}
-                            onPointerDown={stopPropagationOnPointerDown}
-                            onClick={handleMarkDoneClick}
-                          >
-                            <CheckIcon className="size-3.5" />
-                          </button>
-                        }
-                      />
-                      <TooltipPopup side="top">Wrap up</TooltipPopup>
-                    </Tooltip>
-                  </RowFloatingActions>
-                ) : null}
-              </span>
-            </div>
-            {/* Line two: which thread, and what it has produced. */}
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-              {isRenaming ? (
-                <input
-                  ref={handleRenameInputRef}
-                  className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
-                  value={renamingTitle}
-                  onChange={handleRenameInputChange}
-                  onKeyDown={handleRenameInputKeyDown}
-                  onBlur={handleRenameInputBlur}
-                  onClick={handleRenameInputClick}
-                />
-              ) : (
-                // No tooltip on the title: the hover card already carries the
-                // full one, and two popups racing the same hover is the bug.
-                <>
-                  {isRoom(thread) ? (
-                    <UsersRoundIcon
-                      aria-label="Room"
-                      className="size-3 shrink-0 text-muted-foreground/70"
-                    />
+                  {canMarkDone ? (
+                    <RowFloatingActions isActive={isActive} isSelected={isSelected}>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              type="button"
+                              data-thread-selection-safe
+                              data-testid={`thread-done-${thread.id}`}
+                              aria-label={`Wrap up ${thread.title}`}
+                              className={ROW_ACTION_BUTTON_CLASS_NAME}
+                              onPointerDown={stopPropagationOnPointerDown}
+                              onClick={handleMarkDoneClick}
+                            >
+                              <CheckIcon className="size-3.5" />
+                            </button>
+                          }
+                        />
+                        <TooltipPopup side="top">Wrap up</TooltipPopup>
+                      </Tooltip>
+                    </RowFloatingActions>
                   ) : null}
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate text-xs font-medium",
-                      isUnseen ? "text-foreground" : "text-foreground/90",
-                    )}
-                    data-testid={`thread-title-${thread.id}`}
-                  >
-                    {thread.title}
-                  </span>
-                </>
-              )}
-              <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                {terminalStatus ? (
-                  <span
-                    role="img"
-                    aria-label={terminalStatus.label}
-                    className={cn(
-                      "inline-flex items-center justify-center",
-                      terminalStatus.colorClass,
-                    )}
-                  >
-                    <TerminalIcon
-                      className={cn("size-3", terminalStatus.pulse && "animate-status-pulse")}
-                    />
-                  </span>
-                ) : null}
-                <ThreadEnvironmentBadge thread={thread} />
-                <ThreadPullRequestBadge
-                  pullRequests={pullRequests}
-                  provider={gitStatus.data?.sourceControlProvider}
-                  threadRef={threadRef}
-                  openPrLink={openPrLink}
-                />
-                {showDiffStat && diffStat ? (
-                  <span className="font-mono text-[10px] leading-none">
-                    <span className="text-success">+{formatDiffCount(diffStat.additions)}</span>
-                    <span className="ps-1 text-destructive">
-                      −{formatDiffCount(diffStat.deletions)}
+                </span>
+              </div>
+              {/* Line two: which thread, and what it has produced. */}
+              <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                {isRenaming ? (
+                  <input
+                    ref={handleRenameInputRef}
+                    className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
+                    value={renamingTitle}
+                    onChange={handleRenameInputChange}
+                    onKeyDown={handleRenameInputKeyDown}
+                    onBlur={handleRenameInputBlur}
+                    onClick={handleRenameInputClick}
+                  />
+                ) : (
+                  // No tooltip on the title: the hover card already carries the
+                  // full one, and two popups racing the same hover is the bug.
+                  <>
+                    {isRoom(thread) ? (
+                      <UsersRoundIcon
+                        aria-label="Room"
+                        className="size-3 shrink-0 text-muted-foreground/70"
+                      />
+                    ) : null}
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-xs font-medium",
+                        isUnseen ? "text-foreground" : "text-foreground/90",
+                      )}
+                      data-testid={`thread-title-${thread.id}`}
+                    >
+                      {thread.title}
                     </span>
-                  </span>
-                ) : null}
-                <ThreadProviderGlyph thread={thread} />
-              </span>
+                  </>
+                )}
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                  {terminalStatus ? (
+                    <span
+                      role="img"
+                      aria-label={terminalStatus.label}
+                      className={cn(
+                        "inline-flex items-center justify-center",
+                        terminalStatus.colorClass,
+                      )}
+                    >
+                      <TerminalIcon
+                        className={cn("size-3", terminalStatus.pulse && "animate-status-pulse")}
+                      />
+                    </span>
+                  ) : null}
+                  <ThreadEnvironmentBadge thread={thread} />
+                  <ThreadPullRequestBadge
+                    pullRequests={pullRequests}
+                    provider={gitStatus.data?.sourceControlProvider}
+                    threadRef={threadRef}
+                    openPrLink={openPrLink}
+                  />
+                  {showDiffStat && diffStat ? (
+                    <span className="font-mono text-[10px] leading-none">
+                      <span className="text-success">+{formatDiffCount(diffStat.additions)}</span>
+                      <span className="ps-1 text-destructive">
+                        −{formatDiffCount(diffStat.deletions)}
+                      </span>
+                    </span>
+                  ) : null}
+                  <ThreadProviderGlyph thread={thread} />
+                </span>
+              </div>
             </div>
-          </div>
-        </ThreadHoverCard>
-        {family ? (
-          <ChildFamilySummaryLine
-            threadId={thread.id}
-            family={family}
-            onToggle={handleToggleFamily}
-          />
-        ) : null}
-      </div>
+          </ThreadHoverCard>
+          {family ? (
+            <ChildFamilySummaryLine
+              threadId={thread.id}
+              family={family}
+              onToggle={handleToggleFamily}
+            />
+          ) : null}
+        </div>
+      </SwipeableRow>
     </li>
   );
 });
@@ -1183,6 +1232,8 @@ export interface InboxChildRowProps {
    * marks the row (the hover card names the computer).
    */
   computerLabel?: string | null | undefined;
+  /** See InboxThreadRowProps.onSwipeAction. */
+  onSwipeAction?: InboxRowSwipeHandler | undefined;
 }
 
 /**
@@ -1218,6 +1269,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
     reopenThread,
     lineage,
     computerLabel = null,
+    onSwipeAction,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -1320,120 +1372,130 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
 
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-thread-item>
-      <ThreadHoverCard thread={thread} status={shownStatus} lineage={lineage}>
-        <div
-          role="button"
-          tabIndex={0}
-          data-testid={`child-row-${thread.id}`}
-          data-thread-key={threadKey}
-          data-active={isActive ? "true" : undefined}
-          data-wrapped={isDone ? "true" : undefined}
-          className={cn(
-            ROW_SURFACE_CLASS_NAME,
-            "flex min-w-0 items-center gap-1.5 px-3 py-[5px] pointer-coarse:py-2",
-            resolveRowSurfaceTone({ isActive, isSelected }),
-          )}
-          onClick={handleRowClick}
-          onKeyDown={handleRowKeyDown}
-          {...touchHold}
-        >
-          {isDone ? (
-            <CheckIcon
-              aria-label="Wrapped"
-              className="size-2.5 shrink-0 text-muted-foreground/50"
-            />
-          ) : (
-            <span
-              aria-label={shownStatus?.label ?? "Idle"}
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                shownStatus?.dotClass ?? "bg-muted-foreground/45",
-              )}
-            />
-          )}
-          {isRenaming ? (
-            <input
-              ref={handleRenameInputRef}
-              className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
-              value={renamingTitle}
-              onChange={(event) => setRenamingTitle(event.target.value)}
-              onKeyDown={handleRenameInputKeyDown}
-              onBlur={handleRenameInputBlur}
-              onClick={(event) => event.stopPropagation()}
-            />
-          ) : (
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate text-xs leading-4",
-                isDone
-                  ? "text-muted-foreground/80"
-                  : needsYou
-                    ? "text-foreground"
-                    : "text-foreground/85",
-              )}
-              data-testid={`child-title-${thread.id}`}
-            >
-              {thread.title}
-            </span>
-          )}
-          <span className={ROW_META_SLOT_CLASS_NAME}>
-            {jumpLabel ? (
-              <span
-                data-testid={`child-meta-${thread.id}`}
-                className="shrink-0 font-mono text-[11px] leading-none tabular-nums"
-              >
-                <ThreadJumpLabel label={jumpLabel} />
-              </span>
+      {/* The same action as its button: Reopen once wrapped (swiped right),
+          Wrap up while it can be (swiped left). */}
+      <SwipeableRow
+        leading={isDone ? rowSwipeAction(onSwipeAction, threadKey, "reopen") : null}
+        trailing={
+          !isDone && canMarkDone ? rowSwipeAction(onSwipeAction, threadKey, "wrap-up") : null
+        }
+        disabled={isRenaming}
+      >
+        <ThreadHoverCard thread={thread} status={shownStatus} lineage={lineage}>
+          <div
+            role="button"
+            tabIndex={0}
+            data-testid={`child-row-${thread.id}`}
+            data-thread-key={threadKey}
+            data-active={isActive ? "true" : undefined}
+            data-wrapped={isDone ? "true" : undefined}
+            className={cn(
+              ROW_SURFACE_CLASS_NAME,
+              "flex min-w-0 items-center gap-1.5 px-3 py-[5px] pointer-coarse:py-2",
+              resolveRowSurfaceTone({ isActive, isSelected }),
+            )}
+            onClick={handleRowClick}
+            onKeyDown={handleRowKeyDown}
+            {...touchHold}
+          >
+            {isDone ? (
+              <CheckIcon
+                aria-label="Wrapped"
+                className="size-2.5 shrink-0 text-muted-foreground/50"
+              />
             ) : (
-              <ThreadStatusText
-                thread={thread}
-                status={shownStatus}
-                testId={`child-meta-${thread.id}`}
-                {...(isDone ? { resting: doneAt ? formatRelativeTimeLabel(doneAt) : null } : {})}
+              <span
+                aria-label={shownStatus?.label ?? "Idle"}
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  shownStatus?.dotClass ?? "bg-muted-foreground/45",
+                )}
               />
             )}
-            {showAction ? (
-              <RowFloatingActions isActive={isActive} isSelected={isSelected}>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid={
-                          isDone ? `child-reopen-${thread.id}` : `child-done-${thread.id}`
-                        }
-                        aria-label={`${isDone ? "Reopen" : "Wrap up"} ${thread.title}`}
-                        className={ROW_ACTION_BUTTON_CLASS_NAME}
-                        onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handleWrapClick}
-                      >
-                        {isDone ? (
-                          <Undo2Icon className="size-3.5" />
-                        ) : (
-                          <CheckIcon className="size-3.5" />
-                        )}
-                      </button>
-                    }
-                  />
-                  <TooltipPopup side="top">{isDone ? "Reopen" : "Wrap up"}</TooltipPopup>
-                </Tooltip>
-              </RowFloatingActions>
-            ) : null}
-          </span>
-          {computerLabel !== null ? (
-            <span
-              role="img"
-              aria-label={`On ${computerLabel}`}
-              data-testid={`child-computer-${thread.id}`}
-              className="inline-flex shrink-0 items-center"
-            >
-              <MonitorIcon aria-hidden className="size-3 text-muted-foreground/45" />
+            {isRenaming ? (
+              <input
+                ref={handleRenameInputRef}
+                className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-base outline-none sm:text-xs"
+                value={renamingTitle}
+                onChange={(event) => setRenamingTitle(event.target.value)}
+                onKeyDown={handleRenameInputKeyDown}
+                onBlur={handleRenameInputBlur}
+                onClick={(event) => event.stopPropagation()}
+              />
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-xs leading-4",
+                  isDone
+                    ? "text-muted-foreground/80"
+                    : needsYou
+                      ? "text-foreground"
+                      : "text-foreground/85",
+                )}
+                data-testid={`child-title-${thread.id}`}
+              >
+                {thread.title}
+              </span>
+            )}
+            <span className={ROW_META_SLOT_CLASS_NAME}>
+              {jumpLabel ? (
+                <span
+                  data-testid={`child-meta-${thread.id}`}
+                  className="shrink-0 font-mono text-[11px] leading-none tabular-nums"
+                >
+                  <ThreadJumpLabel label={jumpLabel} />
+                </span>
+              ) : (
+                <ThreadStatusText
+                  thread={thread}
+                  status={shownStatus}
+                  testId={`child-meta-${thread.id}`}
+                  {...(isDone ? { resting: doneAt ? formatRelativeTimeLabel(doneAt) : null } : {})}
+                />
+              )}
+              {showAction ? (
+                <RowFloatingActions isActive={isActive} isSelected={isSelected}>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          data-thread-selection-safe
+                          data-testid={
+                            isDone ? `child-reopen-${thread.id}` : `child-done-${thread.id}`
+                          }
+                          aria-label={`${isDone ? "Reopen" : "Wrap up"} ${thread.title}`}
+                          className={ROW_ACTION_BUTTON_CLASS_NAME}
+                          onPointerDown={stopPropagationOnPointerDown}
+                          onClick={handleWrapClick}
+                        >
+                          {isDone ? (
+                            <Undo2Icon className="size-3.5" />
+                          ) : (
+                            <CheckIcon className="size-3.5" />
+                          )}
+                        </button>
+                      }
+                    />
+                    <TooltipPopup side="top">{isDone ? "Reopen" : "Wrap up"}</TooltipPopup>
+                  </Tooltip>
+                </RowFloatingActions>
+              ) : null}
             </span>
-          ) : null}
-          <ThreadProviderGlyph thread={thread} />
-        </div>
-      </ThreadHoverCard>
+            {computerLabel !== null ? (
+              <span
+                role="img"
+                aria-label={`On ${computerLabel}`}
+                data-testid={`child-computer-${thread.id}`}
+                className="inline-flex shrink-0 items-center"
+              >
+                <MonitorIcon aria-hidden className="size-3 text-muted-foreground/45" />
+              </span>
+            ) : null}
+            <ThreadProviderGlyph thread={thread} />
+          </div>
+        </ThreadHoverCard>
+      </SwipeableRow>
     </li>
   );
 });
@@ -1700,6 +1762,8 @@ export interface InboxDoneRowProps {
   childCount?: number | undefined;
   /** See ThreadHoverCardPayload.lineage. */
   lineage?: ThreadHoverCardLineage | undefined;
+  /** See InboxThreadRowProps.onSwipeAction. */
+  onSwipeAction?: InboxRowSwipeHandler | undefined;
 }
 
 /**
@@ -1726,6 +1790,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     openPrLink,
     childCount = 0,
     lineage,
+    onSwipeAction,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -1846,177 +1911,187 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
-      {/* Same card the live rows carry: a wrapped thread's detail is no less
+      {/* Its two buttons as swipes: right reopens it, left archives it (asking
+          first when Settings says to, as the menu does). */}
+      <SwipeableRow
+        leading={rowSwipeAction(onSwipeAction, threadKey, "reopen")}
+        trailing={rowSwipeAction(onSwipeAction, threadKey, "archive")}
+      >
+        {/* Same card the live rows carry: a wrapped thread's detail is no less
           worth a hover, and status={null} reads as its idle state. */}
-      <ThreadHoverCard thread={thread} status={null} lineage={lineage}>
-        <div
-          role="button"
-          tabIndex={0}
-          data-testid={`done-row-${thread.id}`}
-          data-thread-key={threadKey}
-          className={cn(
-            ROW_SURFACE_CLASS_NAME,
-            "flex items-center gap-2 px-3 py-1.5",
-            resolveRowSurfaceTone({ isActive, isSelected: false }),
-          )}
-          onClick={handleClick}
-          onKeyDown={handleKeyDown}
-          {...touchHold}
-        >
-          {/* The project leads the row as an icon, not a name: a one-line row
+        <ThreadHoverCard thread={thread} status={null} lineage={lineage}>
+          <div
+            role="button"
+            tabIndex={0}
+            data-testid={`done-row-${thread.id}`}
+            data-thread-key={threadKey}
+            className={cn(
+              ROW_SURFACE_CLASS_NAME,
+              "flex items-center gap-2 px-3 py-1.5",
+              resolveRowSurfaceTone({ isActive, isSelected: false }),
+            )}
+            onClick={handleClick}
+            onKeyDown={handleKeyDown}
+            {...touchHold}
+          >
+            {/* The project leads the row as an icon, not a name: a one-line row
               has one thing worth reading whole, and spelling out the project
               on every row cost the title half its width to repeat what a glyph
               says at a glance. The name still lives in the hover card, and in
               the accessible label here. */}
-          {projectLabel && threadProject ? (
-            <span
-              role="img"
-              aria-label={projectLabel}
-              className="inline-flex shrink-0 items-center opacity-70"
-            >
-              <ProjectFavicon
-                cwd={threadProject.cwd}
-                environmentId={thread.environmentId}
-                name={threadProject.name}
-                className="size-3.5 shrink-0"
-              />
-            </span>
-          ) : null}
-          {scheduledRunLabel !== null ? (
-            <span
-              role="img"
-              aria-label={scheduledRunLabel}
-              data-testid={`done-scheduled-run-${thread.id}`}
-              className="inline-flex shrink-0 items-center text-muted-foreground/60"
-            >
-              <CalendarClockIcon aria-hidden className="size-3" />
-            </span>
-          ) : null}
-          <span
-            className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
-            data-testid={`done-title-${thread.id}`}
-          >
-            {thread.title}
-          </span>
-          <span className={ROW_META_SLOT_CLASS_NAME}>
-            {/* It had threads of its own: they wrapped inside it, and the
-                fork says how many. */}
-            {childCount > 0 ? (
+            {projectLabel && threadProject ? (
               <span
                 role="img"
-                aria-label={`${formatChildThreadCount(childCount)} started here`}
-                data-testid={`done-children-${thread.id}`}
-                className="inline-flex shrink-0 items-center gap-[3px] font-mono text-[10px] leading-none text-muted-foreground/55"
+                aria-label={projectLabel}
+                className="inline-flex shrink-0 items-center opacity-70"
               >
-                <GitForkIcon aria-hidden className="size-2.5" />
-                {childCount}
-              </span>
-            ) : null}
-            <ThreadEnvironmentBadge thread={thread} />
-            {/* A wrapped thread's checkout has usually moved on, so the badge
-                answers from the listings rather than from a git status this
-                row never subscribes to. */}
-            <ThreadPullRequestBadge
-              pullRequests={threadPullRequestList(listPullRequest, linkedPullRequests)}
-              provider={null}
-              threadRef={threadRef}
-              openPrLink={openPrLink}
-            />
-            {terminalStatus ? (
-              <span
-                role="img"
-                aria-label={terminalStatus.label}
-                className={cn("inline-flex items-center justify-center", terminalStatus.colorClass)}
-              >
-                <TerminalIcon
-                  className={cn("size-3", terminalStatus.pulse && "animate-status-pulse")}
+                <ProjectFavicon
+                  cwd={threadProject.cwd}
+                  environmentId={thread.environmentId}
+                  name={threadProject.name}
+                  className="size-3.5 shrink-0"
                 />
               </span>
             ) : null}
-            {/* A thread that moved away says so instead of when it wrapped. */}
+            {scheduledRunLabel !== null ? (
+              <span
+                role="img"
+                aria-label={scheduledRunLabel}
+                data-testid={`done-scheduled-run-${thread.id}`}
+                className="inline-flex shrink-0 items-center text-muted-foreground/60"
+              >
+                <CalendarClockIcon aria-hidden className="size-3" />
+              </span>
+            ) : null}
             <span
-              className={cn(
-                "shrink-0 font-mono text-[11px] tabular-nums",
-                thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
-              )}
+              className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+              data-testid={`done-title-${thread.id}`}
             >
-              {thread.moveStatus ?? (doneAt ? formatRelativeTimeLabel(doneAt) : null)}
+              {thread.title}
             </span>
-            {isConfirmingArchive ? (
-              <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>
-                <button
-                  ref={handleConfirmArchiveRef}
-                  type="button"
-                  data-thread-selection-safe
-                  data-testid={`thread-archive-confirm-${thread.id}`}
-                  aria-label={`Confirm archive ${thread.title}`}
-                  className="relative inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
-                  onPointerDown={stopPropagationOnPointerDown}
-                  onClick={handleConfirmArchiveClick}
+            <span className={ROW_META_SLOT_CLASS_NAME}>
+              {/* It had threads of its own: they wrapped inside it, and the
+                fork says how many. */}
+              {childCount > 0 ? (
+                <span
+                  role="img"
+                  aria-label={`${formatChildThreadCount(childCount)} started here`}
+                  data-testid={`done-children-${thread.id}`}
+                  className="inline-flex shrink-0 items-center gap-[3px] font-mono text-[10px] leading-none text-muted-foreground/55"
                 >
-                  Confirm
-                </button>
-              </RowFloatingActions>
-            ) : (
-              // A done thread is settled by definition, so archive is always
-              // available here -- the "running" guard the live rows needed is
-              // exactly the state that keeps a thread out of this list.
-              <RowFloatingActions isActive={isActive} isSelected={false}>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-thread-selection-safe
-                        data-testid={`done-reopen-${thread.id}`}
-                        aria-label={`Reopen ${thread.title}`}
-                        className={ROW_ACTION_BUTTON_CLASS_NAME}
-                        onPointerDown={stopPropagationOnPointerDown}
-                        onClick={handleReopenClick}
-                      >
-                        <Undo2Icon className="size-3.5" />
-                      </button>
-                    }
+                  <GitForkIcon aria-hidden className="size-2.5" />
+                  {childCount}
+                </span>
+              ) : null}
+              <ThreadEnvironmentBadge thread={thread} />
+              {/* A wrapped thread's checkout has usually moved on, so the badge
+                answers from the listings rather than from a git status this
+                row never subscribes to. */}
+              <ThreadPullRequestBadge
+                pullRequests={threadPullRequestList(listPullRequest, linkedPullRequests)}
+                provider={null}
+                threadRef={threadRef}
+                openPrLink={openPrLink}
+              />
+              {terminalStatus ? (
+                <span
+                  role="img"
+                  aria-label={terminalStatus.label}
+                  className={cn(
+                    "inline-flex items-center justify-center",
+                    terminalStatus.colorClass,
+                  )}
+                >
+                  <TerminalIcon
+                    className={cn("size-3", terminalStatus.pulse && "animate-status-pulse")}
                   />
-                  <TooltipPopup side="top">Reopen</TooltipPopup>
-                </Tooltip>
-                {appSettingsConfirmThreadArchive ? (
+                </span>
+              ) : null}
+              {/* A thread that moved away says so instead of when it wrapped. */}
+              <span
+                className={cn(
+                  "shrink-0 font-mono text-[11px] tabular-nums",
+                  thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
+                )}
+              >
+                {thread.moveStatus ?? (doneAt ? formatRelativeTimeLabel(doneAt) : null)}
+              </span>
+              {isConfirmingArchive ? (
+                <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>
                   <button
+                    ref={handleConfirmArchiveRef}
                     type="button"
                     data-thread-selection-safe
-                    data-testid={`thread-archive-${thread.id}`}
-                    aria-label={`Archive ${thread.title}`}
-                    className={ROW_ACTION_BUTTON_CLASS_NAME}
+                    data-testid={`thread-archive-confirm-${thread.id}`}
+                    aria-label={`Confirm archive ${thread.title}`}
+                    className="relative inline-flex h-5 cursor-pointer items-center rounded-full bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-ring"
                     onPointerDown={stopPropagationOnPointerDown}
-                    onClick={handleStartArchiveConfirmation}
+                    onClick={handleConfirmArchiveClick}
                   >
-                    <ArchiveIcon className="size-3.5" />
+                    Confirm
                   </button>
-                ) : (
+                </RowFloatingActions>
+              ) : (
+                // A done thread is settled by definition, so archive is always
+                // available here -- the "running" guard the live rows needed is
+                // exactly the state that keeps a thread out of this list.
+                <RowFloatingActions isActive={isActive} isSelected={false}>
                   <Tooltip>
                     <TooltipTrigger
                       render={
                         <button
                           type="button"
                           data-thread-selection-safe
-                          data-testid={`thread-archive-${thread.id}`}
-                          aria-label={`Archive ${thread.title}`}
+                          data-testid={`done-reopen-${thread.id}`}
+                          aria-label={`Reopen ${thread.title}`}
                           className={ROW_ACTION_BUTTON_CLASS_NAME}
                           onPointerDown={stopPropagationOnPointerDown}
-                          onClick={handleArchiveImmediateClick}
+                          onClick={handleReopenClick}
                         >
-                          <ArchiveIcon className="size-3.5" />
+                          <Undo2Icon className="size-3.5" />
                         </button>
                       }
                     />
-                    <TooltipPopup side="top">Archive</TooltipPopup>
+                    <TooltipPopup side="top">Reopen</TooltipPopup>
                   </Tooltip>
-                )}
-              </RowFloatingActions>
-            )}
-          </span>
-        </div>
-      </ThreadHoverCard>
+                  {appSettingsConfirmThreadArchive ? (
+                    <button
+                      type="button"
+                      data-thread-selection-safe
+                      data-testid={`thread-archive-${thread.id}`}
+                      aria-label={`Archive ${thread.title}`}
+                      className={ROW_ACTION_BUTTON_CLASS_NAME}
+                      onPointerDown={stopPropagationOnPointerDown}
+                      onClick={handleStartArchiveConfirmation}
+                    >
+                      <ArchiveIcon className="size-3.5" />
+                    </button>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            data-thread-selection-safe
+                            data-testid={`thread-archive-${thread.id}`}
+                            aria-label={`Archive ${thread.title}`}
+                            className={ROW_ACTION_BUTTON_CLASS_NAME}
+                            onPointerDown={stopPropagationOnPointerDown}
+                            onClick={handleArchiveImmediateClick}
+                          >
+                            <ArchiveIcon className="size-3.5" />
+                          </button>
+                        }
+                      />
+                      <TooltipPopup side="top">Archive</TooltipPopup>
+                    </Tooltip>
+                  )}
+                </RowFloatingActions>
+              )}
+            </span>
+          </div>
+        </ThreadHoverCard>
+      </SwipeableRow>
     </li>
   );
 });

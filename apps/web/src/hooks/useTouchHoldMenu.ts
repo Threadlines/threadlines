@@ -3,8 +3,12 @@ import type * as React from "react";
 
 /** How long a finger rests on a row before its menu opens. */
 export const TOUCH_HOLD_MS = 500;
-/** How far a finger may drift (a scroll starting) before the hold is off. */
-const TOUCH_HOLD_SLOP_PX = 10;
+/**
+ * How far a finger may drift (a scroll starting) before the hold is off. A row
+ * swipe waits for the same distance before it takes the gesture, so a press
+ * that becomes a swipe has always let go of the hold first.
+ */
+export const TOUCH_HOLD_SLOP_PX = 10;
 
 interface HoldState {
   timer: ReturnType<typeof setTimeout> | null;

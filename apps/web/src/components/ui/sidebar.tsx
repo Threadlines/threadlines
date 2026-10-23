@@ -8,13 +8,7 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "~/components/ui/sheet";
+import { Drawer, DrawerDescription, DrawerPopup, DrawerTitle } from "~/components/ui/drawer";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -244,16 +238,14 @@ function Sidebar({
   if (isMobile) {
     return (
       <SidebarInstanceContext value={instanceContextValue}>
-        <Sheet onOpenChange={setOpenMobile} open={openMobile} {...props}>
-          <SheetPopup
-            className={cn(
-              "w-(--sidebar-width) max-w-none bg-sidebar p-0 text-sidebar-foreground",
-              className,
-            )}
+        {/* A drawer rather than a sheet: on a phone the panel can be swiped
+            back toward its edge to close it, the way it slid in. */}
+        <Drawer onOpenChange={setOpenMobile} open={openMobile} swipeDirection={side}>
+          <DrawerPopup
+            className={cn("w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground", className)}
             data-mobile="true"
             data-sidebar="sidebar"
             data-slot="sidebar"
-            showCloseButton={false}
             side={side}
             style={
               {
@@ -261,10 +253,8 @@ function Sidebar({
               } as React.CSSProperties
             }
           >
-            <SheetHeader className="sr-only">
-              <SheetTitle>Sidebar</SheetTitle>
-              <SheetDescription>Displays the mobile sidebar.</SheetDescription>
-            </SheetHeader>
+            <DrawerTitle className="sr-only">Sidebar</DrawerTitle>
+            <DrawerDescription className="sr-only">Displays the mobile sidebar.</DrawerDescription>
             <div
               className={cn(
                 "flex h-full w-full flex-col pb-safe pt-safe",
@@ -273,8 +263,8 @@ function Sidebar({
             >
               {children}
             </div>
-          </SheetPopup>
-        </Sheet>
+          </DrawerPopup>
+        </Drawer>
       </SidebarInstanceContext>
     );
   }

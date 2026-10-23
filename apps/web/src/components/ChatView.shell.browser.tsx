@@ -1043,6 +1043,82 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("on a phone, a swipe on a thread row wraps it with an undo, and a swipe on the rest of the sheet closes it", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-swipes" as MessageId,
+        targetText: "phone swipes",
+      }),
+    });
+    /**
+     * A pointer drawn `dx` across an element in ten steps, then lifted. The
+     * drawer follows a real finger through touch events, which these can't
+     * fake, so the panel swipe below drags with a mouse; the drawer closes
+     * the same way.
+     */
+    const swipe = (element: Element, dx: number, pointerType = "touch") => {
+      const rect = element.getBoundingClientRect();
+      const x0 = rect.left + rect.width * 0.75;
+      const y = rect.top + rect.height / 2;
+      const at = (x: number) => ({
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+        pointerId: 11,
+        pointerType,
+        isPrimary: true,
+        button: 0,
+        buttons: 1,
+      });
+      element.dispatchEvent(new PointerEvent("pointerdown", at(x0)));
+      for (let step = 1; step <= 10; step += 1) {
+        element.dispatchEvent(new PointerEvent("pointermove", at(x0 + (dx * step) / 10)));
+      }
+      element.dispatchEvent(new PointerEvent("pointerup", { ...at(x0 + dx), buttons: 0 }));
+    };
+    const sheet = () => document.querySelector('[data-slot="sidebar"][data-mobile="true"]');
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      sidebarTrigger.click();
+      const threadRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find phone thread row.",
+      );
+
+      // The row owns its swipe: the thread is wrapped up, the sheet stays open.
+      swipe(threadRow, -220);
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      expect(sheet()).not.toBeNull();
+
+      // Wrapping up never asks first, so it offers to take it back, inside
+      // the sheet where a finger can reach it.
+      await expect.element(page.getByTestId("swipe-undo-bar")).toMatchTextContent(/Wrapped up/);
+      await page.getByTestId("swipe-undo-bar").getByRole("button", { name: "Undo" }).click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // Anywhere else on the sheet, the same swipe pushes it closed.
+      swipe(page.getByTestId("sidebar-destination-row").element(), -220, "mouse");
+      await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("on a phone, lists the open page's own items in the sheet, names its icons, and closes on a pick", async () => {
     const readingChatId = "thread-phone-chat-reading" as ThreadId;
     const otherChatId = "thread-phone-chat-other" as ThreadId;
