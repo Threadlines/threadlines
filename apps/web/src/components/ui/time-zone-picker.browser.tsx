@@ -51,6 +51,7 @@ describe("TimeZonePicker", () => {
       await expect.element(options.nth(2)).toMatchTextContent("UTC");
 
       // Typing searches every zone, by city; Enter picks the first match.
+      await expect.element(page.getByRole("combobox", { name: "Search time zones" })).toHaveFocus();
       await userEvent.keyboard("tokyo");
       await expect.poll(() => options.elements().length).toBe(1);
       await expect.element(options.nth(0)).toMatchTextContent("Asia/Tokyo");
