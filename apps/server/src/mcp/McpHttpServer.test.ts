@@ -227,8 +227,18 @@ const listTools = async (url: string, token: string) => {
     { jsonrpc: "2.0", id: 2, method: "tools/list" },
     opened.session,
   );
-  const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
-  return { status: 200, tools: body.result.tools.map((tool) => tool.name).toSorted() } as const;
+  const body = (await response.json()) as {
+    result: { tools: Array<{ name: string; inputSchema: { type?: unknown } }> };
+  };
+  return {
+    status: 200,
+    tools: body.result.tools.map((tool) => tool.name).toSorted(),
+    // MCP clients reject a whole list over one tool whose input isn't an
+    // object; Claude then drops every tool on the endpoint.
+    nonObjectInputs: body.result.tools
+      .filter((tool) => tool.inputSchema.type !== "object")
+      .map((tool) => tool.name),
+  } as const;
 };
 
 /** Poll until `done` holds, for at most five seconds. */
@@ -328,6 +338,11 @@ describe("MCP endpoints", () => {
           expect("tools" in result.reviewerRoom ? result.reviewerRoom.tools : []).toEqual([
             "room_diff",
           ]);
+          for (const listed of [result.browser, result.scheduledRunRoom]) {
+            expect("nonObjectInputs" in listed ? listed.nonObjectInputs : ["(not listed)"]).toEqual(
+              [],
+            );
+          }
           expect(result.reviewerOnBrowser.status).toBe(401);
           expect(result.reviewerScreenshot).toBe(401);
           expect(result.reviewerOnRoom.status).toBe(200);
