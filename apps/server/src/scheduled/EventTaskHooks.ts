@@ -629,6 +629,21 @@ export const makeEventTaskHooks = Effect.gen(function* () {
     ),
   );
 
+  /** The user has given the sender the changed address: stop saying so. */
+  const dismissAddressChange = (taskId: ScheduledTaskId) =>
+    hookLock.withPermits(1)(
+      Effect.gen(function* () {
+        const found = yield* webhooks.getTaskWebhook(taskId);
+        if (Option.isNone(found)) return yield* refuse("This task doesn't start on events.");
+        if (!found.value.addressChanged) return;
+        yield* webhooks.putTaskWebhook({
+          ...found.value,
+          addressChanged: false,
+          updatedAt: yield* nowIso,
+        });
+      }),
+    );
+
   /** A new address: a new relay hook (or none until the relay answers) and a new local token. */
   const rotate = (taskId: ScheduledTaskId) =>
     Effect.gen(function* () {
@@ -715,6 +730,7 @@ export const makeEventTaskHooks = Effect.gen(function* () {
     syncActive,
     reconcile,
     rotate,
+    dismissAddressChange,
     address,
     localUrl,
     ensureSecret,

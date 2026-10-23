@@ -420,6 +420,9 @@ export interface WsRpcClient {
     readonly runWithWebhookEvent: RpcUnaryMethod<
       typeof WS_METHODS.scheduledTasksRunWithWebhookEvent
     >;
+    readonly dismissWebhookAddressChange: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksDismissWebhookAddressChange
+    >;
   };
   /**
    * Computer links (docs/design/fleet.md): owner and client sessions alike,
@@ -1170,6 +1173,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.scheduledTasksTestWebhook](input)),
       runWithWebhookEvent: (input) =>
         transport.request((client) => client[WS_METHODS.scheduledTasksRunWithWebhookEvent](input)),
+      dismissWebhookAddressChange: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksDismissWebhookAddressChange](input),
+        ),
     },
     links: {
       subscribe: (listener, options) =>

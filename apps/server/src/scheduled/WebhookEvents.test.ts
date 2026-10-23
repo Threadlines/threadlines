@@ -885,6 +885,10 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         assert.isFalse(githubAfter?.webhook?.addressChanged);
         const address = yield* service.webhookAddress({ id: manual.id });
         assert.include(address.relayUrl ?? "", "/v2/hooks/host-2/");
+        // "Got it" clears the notice and keeps the new address.
+        const dismissed = yield* service.dismissWebhookAddressChange({ id: manual.id });
+        assert.isFalse(dismissed.webhook?.addressChanged);
+        assert.equal((yield* service.webhookAddress({ id: manual.id })).relayUrl, address.relayUrl);
         const patched = computer.github.calls.findLast((call) => call.args.includes("PATCH"));
         assert.equal(
           JSON.parse(patched?.stdin ?? "{}").config.url,
@@ -1096,6 +1100,26 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         assert.equal(cut.body.byteLength, 16 * 1024);
         assert.isTrue(cut.bodyTruncated);
       }),
+  );
+
+  it.effect("the page says when events can't reach this computer, after ten minutes cut off", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      yield* service.create(draft({ name: "Deploys", cadence: anyCadence() }));
+      computer.relay.state.reachable = false;
+      yield* service.tick;
+      yield* setClock("2026-10-20T08:09:00.000Z");
+      yield* service.tick;
+      assert.isUndefined((yield* service.snapshot).eventsUnreachable);
+      yield* setClock("2026-10-20T08:10:30.000Z");
+      yield* service.tick;
+      assert.isTrue((yield* service.snapshot).eventsUnreachable);
+      computer.relay.state.reachable = true;
+      yield* service.tick;
+      assert.isUndefined((yield* service.snapshot).eventsUnreachable);
+    }),
   );
 
   it.effect("a client that can't show event tasks gets none of them, nor their runs", () =>

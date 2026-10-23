@@ -2743,6 +2743,12 @@ const makeWsRpcLayer = (currentSession: {
             scheduledTasks.disconnectGitHub(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
+        [WS_METHODS.scheduledTasksDismissWebhookAddressChange]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDismissWebhookAddressChange,
+            scheduledTasks.dismissWebhookAddressChange(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
         [WS_METHODS.scheduledTasksListWebhookEvents]: (input) =>
           observeRpcEffect(
             WS_METHODS.scheduledTasksListWebhookEvents,

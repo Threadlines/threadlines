@@ -326,6 +326,11 @@ export const ScheduledTasksSnapshot = Schema.Struct({
   requests: Schema.Array(ScheduledTaskRequest),
   /** The computer's own time zone: a new task there starts in it. */
   timeZone: Schema.String,
+  /**
+   * The computer has event tasks and has been cut off from the relay for 10
+   * minutes or more: events wait there (up to a day) until it's back.
+   */
+  eventsUnreachable: Schema.optionalKey(Schema.Boolean),
 });
 export type ScheduledTasksSnapshot = typeof ScheduledTasksSnapshot.Type;
 

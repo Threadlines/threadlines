@@ -119,6 +119,7 @@ import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { RelayHooks } from "../relay/RelayHooks.ts";
 import { EventTaskHookRefusal, makeEventTaskHooks } from "./EventTaskHooks.ts";
 import {
   isWorkingRun,
@@ -142,6 +143,8 @@ import {
 
 /** How often the scheduler looks for due slots and finished runs. */
 export const SCHEDULER_TICK = Duration.seconds(30);
+/** A relay connection down this long, with an event task waiting, is shown on the page. */
+const EVENTS_UNREACHABLE_AFTER_MS = 10 * 60_000;
 /** A run whose turn never started, with its thread idle this long, has failed. */
 const NEVER_STARTED_GRACE_MS = 60_000;
 const GIT_TIMEOUT_MS = 60_000;
@@ -302,6 +305,10 @@ export interface ScheduledTasksShape {
   readonly disconnectGitHub: (
     input: ScheduledTaskIdInput,
   ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
+  /** "Got it" on a changed address: the user has given the sender the new one. */
+  readonly dismissWebhookAddressChange: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
   readonly listWebhookEvents: (
     input: ScheduledTaskListWebhookEventsInput,
   ) => Effect.Effect<ScheduledTaskListWebhookEventsResult, ScheduledTaskError>;
@@ -396,7 +403,8 @@ export const snapshotForClient = (
   supports?.includes("webhook") === true
     ? snapshot
     : {
-        ...snapshot,
+        requests: snapshot.requests,
+        timeZone: snapshot.timeZone,
         tasks: snapshot.tasks.flatMap((task) => {
           if (task.cadence.kind === "webhook") return [];
           const { webhook: _webhook, ...rest } = task;
@@ -558,6 +566,10 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment;
   const webhooks = yield* WebhookTaskRepository;
   const hooks = yield* makeEventTaskHooks;
+  const relayHooks = yield* RelayHooks;
+  /** When the relay connection went down while an event task existed; null while up. */
+  let relayDownSince: number | null = null;
+  let eventsUnreachable = false;
 
   const changed = yield* PubSub.sliding<void>(1);
   const notify = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
@@ -612,6 +624,7 @@ const make = Effect.gen(function* () {
       tasks: tasks.map((task) => toTask(task, summaries.get(task.id), states(task.id))),
       requests: requests.map(toRequest),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ...(eventsUnreachable ? { eventsUnreachable: true } : {}),
     };
   }).pipe(Effect.mapError(storageError("read the scheduled tasks")));
 
@@ -2136,6 +2149,22 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Whether events can reach this computer: with an event task, a relay
+   * connection down for EVENTS_UNREACHABLE_AFTER_MS says so on the page.
+   */
+  const checkEventsReachable = (tasks: ReadonlyArray<ScheduledTaskRow>, now: number) =>
+    Effect.gen(function* () {
+      const hasEventTask = tasks.some((task) => task.cadence.kind === "webhook");
+      const connected = hasEventTask ? yield* relayHooks.connected : true;
+      relayDownSince = connected ? null : (relayDownSince ?? now);
+      const next = relayDownSince !== null && now - relayDownSince >= EVENTS_UNREACHABLE_AFTER_MS;
+      if (next !== eventsUnreachable) {
+        eventsUnreachable = next;
+        yield* notify;
+      }
+    });
+
   const tick: ScheduledTasksShape["tick"] = Effect.gen(function* () {
     // Runs whose turns ended (one the previous process never saw end, say)
     // are settled first, so they never count against overlap or the cap of
@@ -2143,6 +2172,7 @@ const make = Effect.gen(function* () {
     yield* sweepRuns;
     const now = yield* nowMillis;
     const tasks = yield* repo.listTasks.pipe(Effect.orElseSucceed(() => []));
+    yield* checkEventsReachable(tasks, now);
     let claimedAny = false;
     for (const task of tasks) {
       const claimed = yield* claimDue(task, now).pipe(
@@ -2317,6 +2347,9 @@ const make = Effect.gen(function* () {
   const disconnectGitHub: ScheduledTasksShape["disconnectGitHub"] = (input) =>
     changeGitHub(input.id, hooks.disconnectGitHub, "remove the webhook from GitHub");
 
+  const dismissWebhookAddressChange: ScheduledTasksShape["dismissWebhookAddressChange"] = (input) =>
+    changeGitHub(input.id, hooks.dismissAddressChange, "save that");
+
   const listWebhookEvents: ScheduledTasksShape["listWebhookEvents"] = (input) =>
     events.listEvents(input).pipe(Effect.mapError(storageError("read the task's events")));
 
@@ -2381,6 +2414,7 @@ const make = Effect.gen(function* () {
     gitHubContext,
     connectGitHub,
     disconnectGitHub,
+    dismissWebhookAddressChange,
     listWebhookEvents,
     webhookEvent,
     testWebhook,

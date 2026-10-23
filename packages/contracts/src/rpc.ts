@@ -644,6 +644,7 @@ export const WS_METHODS = {
   scheduledTasksWebhookEvent: "scheduledTasks.webhookEvent",
   scheduledTasksTestWebhook: "scheduledTasks.testWebhook",
   scheduledTasksRunWithWebhookEvent: "scheduledTasks.runWithWebhookEvent",
+  scheduledTasksDismissWebhookAddressChange: "scheduledTasks.dismissWebhookAddressChange",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -1991,6 +1992,16 @@ export const WsScheduledTasksTestWebhookRpc = Rpc.make(WS_METHODS.scheduledTasks
   error: ScheduledTaskError,
 });
 
+/** "Got it" on "This task's address changed": the user has updated the sender. */
+export const WsScheduledTasksDismissWebhookAddressChangeRpc = Rpc.make(
+  WS_METHODS.scheduledTasksDismissWebhookAddressChange,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTask,
+    error: ScheduledTaskError,
+  },
+);
+
 /** "Run with this event": the event again, as a new one past the duplicate check. */
 export const WsScheduledTasksRunWithWebhookEventRpc = Rpc.make(
   WS_METHODS.scheduledTasksRunWithWebhookEvent,
@@ -2264,6 +2275,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksWebhookEventRpc,
   WsScheduledTasksTestWebhookRpc,
   WsScheduledTasksRunWithWebhookEventRpc,
+  WsScheduledTasksDismissWebhookAddressChangeRpc,
   WsMovesPreviewRpc,
   WsMovesStartRpc,
   WsMovesCancelRpc,

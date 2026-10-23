@@ -14,6 +14,7 @@ import { readEnvironmentConnection } from "../../environments/runtime";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { openExternalUrl } from "../../lib/externalLinks";
+import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
 import {
@@ -102,12 +103,15 @@ function AddressRow({
   children,
   actions,
   testId,
+  warning = false,
 }: {
   readonly label: string;
   readonly hint?: ReactNode;
   readonly children?: ReactNode;
   readonly actions?: ReactNode;
   readonly testId?: string;
+  /** Something is wrong: the label reads as a warning. */
+  readonly warning?: boolean;
 }) {
   return (
     <div
@@ -118,7 +122,14 @@ function AddressRow({
       data-testid={testId}
     >
       <div className="min-w-0 flex-1 space-y-0.5">
-        <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">{label}</h3>
+        <h3
+          className={cn(
+            "text-[13.5px] leading-[19px] font-medium",
+            warning ? "text-warning" : "text-foreground",
+          )}
+        >
+          {label}
+        </h3>
         {children}
         {hint ? <p className="text-[12.5px] leading-[18px] text-muted-foreground">{hint}</p> : null}
       </div>
@@ -348,6 +359,9 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
   const state = task.webhook;
   const github = cadence?.source === "github" ? (cadence.github ?? null) : null;
   const connected = state?.github === true;
+  const eventsUnreachable = useScheduledTasksStore(
+    (store) => store.byEnvironment[environment.environmentId]?.eventsUnreachable === true,
+  );
   const queryClient = useQueryClient();
   const address = useQuery({
     // Read again when the relay gives the task an address or a new one.
@@ -364,7 +378,7 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
     task.projectId,
     github !== null && !connected,
   );
-  const [busy, setBusy] = useState<"connect" | "disconnect" | "rotate" | null>(null);
+  const [busy, setBusy] = useState<"connect" | "disconnect" | "rotate" | "dismiss" | null>(null);
   const [connectFailed, setConnectFailed] = useState(false);
   const [byHand, setByHand] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -376,7 +390,7 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
     void queryClient.invalidateQueries({ queryKey: eventKeys.address(located) });
 
   const act = async (
-    kind: "connect" | "disconnect" | "rotate",
+    kind: "connect" | "disconnect" | "rotate" | "dismiss",
     run: () => Promise<unknown>,
     failure: string,
   ) => {
@@ -403,6 +417,15 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
     );
     // Without admin rights on the repository, the steps by hand still work.
     if (!ok) setConnectFailed(true);
+  };
+  const dismissAddressChange = async () => {
+    const client = clientFor(located);
+    if (!client) return;
+    await act(
+      "dismiss",
+      () => client.scheduledTasks.dismissWebhookAddressChange({ id: task.id }),
+      "Couldn't save that",
+    );
   };
   const disconnect = async () => {
     const client = clientFor(located);
@@ -446,12 +469,34 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
       }
       data-testid="scheduled-event-address"
     >
+      {eventsUnreachable ? (
+        <AddressRow
+          label="Events can't reach this computer right now"
+          hint="It has been cut off from the relay for a while. Events wait there for up to a day and run when it's back."
+          testId="scheduled-event-unreachable"
+          warning
+        />
+      ) : null}
+
       {state?.addressChanged && !connected ? (
         <AddressRow
           label="This task's address changed"
           hint="A sender you set up by hand needs the new one."
           testId="scheduled-event-address-changed"
-          actions={relayUrl ? <CopyButton value={relayUrl} label="Copy the new address" /> : null}
+          actions={
+            <>
+              {relayUrl ? <CopyButton value={relayUrl} label="Copy the new address" /> : null}
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => void dismissAddressChange()}
+                data-testid="scheduled-event-address-changed-dismiss"
+              >
+                Got it
+              </Button>
+            </>
+          }
         >
           <AddressValue url={relayUrl} testId="scheduled-event-address-changed-url" />
         </AddressRow>
