@@ -112,12 +112,18 @@ export function shouldEnableTransferCompression(
   return !LOOPBACK_BIND_HOSTNAMES.has(normalizedHost);
 }
 
+/**
+ * The folder in the data folder that holds a server's state: dev servers
+ * (serving the web app from Vite) keep theirs apart from the installed app's.
+ */
+export const serverStateDirName = (dev: boolean): "dev" | "userdata" => (dev ? "dev" : "userdata");
+
 export const deriveServerPaths = Effect.fn(function* (
   baseDir: ServerConfigShape["baseDir"],
   devUrl: ServerConfigShape["devUrl"],
 ): Effect.fn.Return<ServerDerivedPaths, never, Path.Path> {
   const { join } = yield* Path.Path;
-  const stateDir = join(baseDir, devUrl !== undefined ? "dev" : "userdata");
+  const stateDir = join(baseDir, serverStateDirName(devUrl !== undefined));
   const dbPath = join(stateDir, "state.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");

@@ -9,6 +9,7 @@ import {
   MonitorUpIcon,
   GitForkIcon,
   PinIcon,
+  PlugIcon,
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
@@ -34,6 +35,10 @@ import { SwipeableRow, threadRowSwipeAction } from "./SwipeableRow";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunLabel } from "../../lib/scheduledTasksState";
 import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
+import {
+  outsideOriginDescription,
+  outsideOriginLabel,
+} from "../../environments/outsideAgents/outsideAgents.logic";
 import { isThreadSessionStarting } from "../../lib/threadSort";
 import { selectProjectByRef, useStore } from "../../store";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -986,6 +991,19 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                       className="size-2.5 shrink-0"
                     />
                     <span className="min-w-0 truncate">{scheduledRunLabel}</span>
+                  </span>
+                ) : thread.outsideOrigin ? (
+                  // An outside agent's thread names the agent, in the project
+                  // name's place.
+                  <span
+                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    title={outsideOriginDescription(thread.outsideOrigin)}
+                    data-testid={`thread-outside-origin-${thread.id}`}
+                  >
+                    <PlugIcon aria-hidden className="size-2.5 shrink-0" />
+                    <span className="min-w-0 truncate">
+                      {outsideOriginLabel(thread.outsideOrigin)}
+                    </span>
                   </span>
                 ) : remoteParent !== null ? (
                   // Started from another computer and standing on its own: the
@@ -1950,6 +1968,16 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 className="inline-flex shrink-0 items-center text-muted-foreground/60"
               >
                 <ScheduledRunIcon event={thread.scheduledRun?.event === true} className="size-3" />
+              </span>
+            ) : thread.outsideOrigin ? (
+              <span
+                role="img"
+                aria-label={outsideOriginDescription(thread.outsideOrigin)}
+                title={outsideOriginDescription(thread.outsideOrigin)}
+                data-testid={`done-outside-origin-${thread.id}`}
+                className="inline-flex shrink-0 items-center text-muted-foreground/60"
+              >
+                <PlugIcon className="size-3" />
               </span>
             ) : null}
             <span

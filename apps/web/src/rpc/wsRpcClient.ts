@@ -438,6 +438,19 @@ export interface WsRpcClient {
     >;
   };
   /**
+   * Agents outside Threadlines (docs/design/outside-agents.md): owner only,
+   * on servers whose descriptor reports `outsideAgents`.
+   */
+  readonly outsideAgents: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.outsideAgentsSubscribe>;
+    readonly approve: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsApprove>;
+    readonly deny: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsDeny>;
+    readonly denyAll: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsDenyAll>;
+    readonly resumeRequests: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsResumeRequests>;
+    readonly update: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsUpdate>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsRemove>;
+  };
+  /**
    * Computer links (docs/design/fleet.md): owner and client sessions alike,
    * on servers whose descriptor reports `computerLinks`.
    */
@@ -1223,6 +1236,25 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
       respondRequest: (input) =>
         transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
+    },
+    // Never replayed on a new socket: the user answers what is on screen, and
+    // after a reconnect the fresh snapshot says what still waits.
+    outsideAgents: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.outsideAgentsSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.outsideAgentsSubscribe,
+        }),
+      approve: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsApprove](input)),
+      deny: (input) => transport.request((client) => client[WS_METHODS.outsideAgentsDeny](input)),
+      denyAll: () => transport.request((client) => client[WS_METHODS.outsideAgentsDenyAll]({})),
+      resumeRequests: () =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsResumeRequests]({})),
+      update: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsUpdate](input)),
+      remove: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsRemove](input)),
     },
     // Never replayed on a new socket: a start that may have landed is told by
     // the thread's own `move`, and a second one would only be refused.

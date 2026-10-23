@@ -15,6 +15,7 @@ import {
   type OrchestrationThread,
   type OrchestrationWarmUpTurnInput,
   type OrchestrationWorkflowRunPatch,
+  OutsideAgentConnectionId,
   ProviderRuntimeEvent,
   ProviderSession,
   type ProviderSessionStartInput,
@@ -208,6 +209,8 @@ describe("ProviderCommandReactor", () => {
     readonly scheduledTaskNotes?: ScheduledTaskNotesShape;
     /** The reactor's reads of a thread fail while this says so. */
     readonly failThreadRead?: (threadId: ThreadId) => boolean;
+    /** Runs before each of the reactor's reads of a thread (it may hold the read). */
+    readonly beforeThreadRead?: (threadId: ThreadId) => Effect.Effect<void>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -594,25 +597,30 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(
-        input?.failThreadRead === undefined
+        input?.failThreadRead === undefined && input?.beforeThreadRead === undefined
           ? projectionSnapshotLayer
           : Layer.effect(
               ProjectionSnapshotQuery,
               Effect.gen(function* () {
                 const real = yield* ProjectionSnapshotQuery;
-                const failThreadRead = input.failThreadRead!;
+                const failThreadRead = input.failThreadRead ?? (() => false);
+                const beforeThreadRead = input.beforeThreadRead ?? (() => Effect.void);
                 return {
                   ...real,
                   getThreadDetailById: (threadId: ThreadId) =>
-                    Effect.suspend(() =>
-                      failThreadRead(threadId)
-                        ? Effect.fail(
-                            new PersistenceSqlError({
-                              operation: "getThreadDetailById",
-                              detail: "busy",
-                            }),
-                          )
-                        : real.getThreadDetailById(threadId),
+                    beforeThreadRead(threadId).pipe(
+                      Effect.andThen(
+                        Effect.suspend(() =>
+                          failThreadRead(threadId)
+                            ? Effect.fail(
+                                new PersistenceSqlError({
+                                  operation: "getThreadDetailById",
+                                  detail: "busy",
+                                }),
+                              )
+                            : real.getThreadDetailById(threadId),
+                        ),
+                      ),
                     ),
                 };
               }),
@@ -2892,6 +2900,169 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("roomTools");
     expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("scheduledRunTools");
+  });
+
+  describe("outside agents", () => {
+    const AGENT = {
+      connectionId: OutsideAgentConnectionId.make("connection-1"),
+      name: "Claude Code",
+    };
+    const createOutsideThread = (harness: Awaited<ReturnType<typeof createHarness>>, id: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-create-${id}`),
+          threadId: ThreadId.make(id),
+          projectId: asProjectId("project-1"),
+          title: "Fix the flaky test",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          outsideOrigin: AGENT,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    const outsideTurn = (harness: Awaited<ReturnType<typeof createHarness>>, id: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-${id}`),
+          threadId: ThreadId.make(id),
+          message: {
+            messageId: asMessageId(`message-${id}`),
+            role: "user",
+            text: "Make the test pass",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+
+    it("gives a thread an outside agent started no Threadlines tools, and names the agent", async () => {
+      // Agents may invite and start threads: every other thread gets the tools.
+      const harness = await createHarness({
+        serverSettings: { agentInvites: "ask", agentThreads: "auto" },
+      });
+      await createOutsideThread(harness, "outside-thread");
+      await outsideTurn(harness, "outside-thread");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+      expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("scheduleTools");
+      const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string };
+      expect(sent.input).toContain("This message is from Claude Code, an agent running outside");
+      expect(sent.input).toContain("Make the test pass");
+    });
+
+    it("restarts a runtime still above the ceiling before it takes the agent's turn", async () => {
+      // The user raised the thread to Full access and ran a turn there, then
+      // lowered it. The agent sends before the reactor applies the lower
+      // mode; the slot already says Supervised, the runtime doesn't.
+      const threadId = ThreadId.make("lowered-thread");
+      let hold: Deferred.Deferred<void> | null = null;
+      const harness = await createHarness({
+        beforeThreadRead: (id) =>
+          id === threadId && hold !== null ? Deferred.await(hold) : Effect.void,
+      });
+      const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      const setMode = (runtimeMode: "approval-required" | "full-access", at: string) =>
+        dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make(`cmd-mode-${runtimeMode}-${at}`),
+          threadId,
+          runtimeMode,
+          createdAt: at,
+        });
+      const settle = (status: "interrupted" | "ready", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-settle-${status}`),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      await createOutsideThread(harness, "lowered-thread");
+      await setMode("full-access", "2026-01-01T00:00:01.000Z");
+      await dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-user-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message"),
+          role: "user",
+          text: "Do it with full access",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({ runtimeMode: "full-access" });
+      await settle("interrupted", "2026-01-01T00:00:03.000Z");
+      await settle("ready", "2026-01-01T00:00:04.000Z");
+
+      hold = Effect.runSync(Deferred.make<void>());
+      await setMode("approval-required", "2026-01-01T00:00:05.000Z");
+      await outsideTurn(harness, "lowered-thread");
+      Effect.runSync(Deferred.succeed(hold, undefined));
+      hold = null;
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        runtimeMode: "approval-required",
+      });
+    });
+
+    it("doesn't start an agent's turn the user raised above its ceiling after it was accepted", async () => {
+      // The reactor's first read of the thread waits until the test lets it
+      // go: the user's raise lands after the decider took the turn, before
+      // the turn starts.
+      const threadId = ThreadId.make("raised-thread");
+      let hold: Deferred.Deferred<void> | null = null;
+      const harness = await createHarness({
+        beforeThreadRead: (id) =>
+          id === threadId && hold !== null ? Deferred.await(hold) : Effect.void,
+      });
+      await createOutsideThread(harness, "raised-thread");
+      hold = Effect.runSync(Deferred.make<void>());
+      await outsideTurn(harness, "raised-thread");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("cmd-raise"),
+          threadId,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      Effect.runSync(Deferred.succeed(hold, undefined));
+      hold = null;
+
+      const failure = async () =>
+        (await harness.readModel()).threads
+          .find((entry) => entry.id === threadId)
+          ?.activities.find((activity) => activity.kind === "provider.turn.start.failed");
+      await waitFor(async () => (await failure()) !== undefined);
+      expect(await failure()).toMatchObject({
+        payload: { detail: expect.stringContaining("raised above what it may use") },
+      });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
   });
 
   it("picks up the room tools at the next turn, never in the middle of one", async () => {

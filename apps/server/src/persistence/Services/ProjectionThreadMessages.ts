@@ -26,6 +26,7 @@ import {
   RoomAgentRequestOutcome,
   RoomAgentInvite,
   ThreadMessageOrigin,
+  OutsideAgentRef,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -62,6 +63,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads; see OrchestrationMessage.fromThread. Kept like `fromAgent`. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See OrchestrationMessage.fromOutside. Kept like `fromAgent`. */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /** See OrchestrationMessage.imported. Once set, kept. */
   imported: Schema.optional(Schema.Literal(true)),
   /**
@@ -125,7 +128,8 @@ export interface ProjectionThreadMessageRepositoryShape {
 
   /**
    * When the user last wrote in the thread: the newest user-role message that
-   * no agent or other thread wrote (see `isUserWrittenMessage`), or null.
+   * no agent, other thread or outside agent wrote (see `isUserWrittenMessage`),
+   * or null.
    */
   readonly getLatestUserWrittenAt: (
     input: ListProjectionThreadMessagesInput,

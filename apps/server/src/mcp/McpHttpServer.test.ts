@@ -23,6 +23,13 @@ import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
 import * as McpRoomServer from "./McpRoomServer.ts";
 import { makeMcpSessionRegistry, mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { ROOM_TOOL_NAMES } from "./roomToolAccess.ts";
+import { ConnectToolkit } from "../outsideAgents/connectTools.ts";
+import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
+import { AskUserToRunTool } from "./commandTools.ts";
+import { PreviewPageTool, ShowPageTool } from "./pageTools.ts";
+import { RoomToolkit } from "./roomTools.ts";
+import { ScheduleToolkit } from "./scheduleTools.ts";
+import { ThreadToolkit } from "./threadTools.ts";
 
 /**
  * The whole browser feature hung on this.
@@ -522,5 +529,27 @@ describe("MCP endpoints", () => {
 
     expect(started).toBe(true);
     expect(interrupted).toBe(true);
+  });
+});
+
+describe("tool input schemas", () => {
+  // MCP clients refuse a tools/list whose inputSchema isn't an object; Claude
+  // Code then drops the whole server. `parameters: Schema.Struct({})` becomes
+  // "object or array", so a tool without inputs leaves `parameters` out.
+  it("describe every tool's input as an object", () => {
+    const tools: ReadonlyArray<Tool.Any> = [
+      ...Object.values(ThreadToolkit.tools),
+      ...Object.values(RoomToolkit.tools),
+      ...Object.values(ScheduleToolkit.tools),
+      ...Object.values(BrowserStandardToolkit.tools),
+      ...Object.values(BrowserScreenshotToolkit.tools),
+      ...Object.values(ConnectToolkit.tools),
+      AskUserToRunTool,
+      ShowPageTool,
+      PreviewPageTool,
+    ];
+    for (const tool of tools) {
+      expect(Tool.getJsonSchema(tool).type, tool.name).toBe("object");
+    }
   });
 });

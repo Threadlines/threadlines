@@ -45,6 +45,8 @@ import {
   preloadProviderSignInDialog,
   ProviderSignInDialogHost,
 } from "../components/chat/ProviderSignInDialog";
+import { OutsideAgentsHost } from "../components/outsideAgents/OutsideAgentsHost";
+import { preloadOutsideAgentDialog } from "../components/outsideAgents/outsideAgentDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { ProviderUpdateProgress } from "../components/ProviderUpdateProgress";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
@@ -242,6 +244,7 @@ function RootRouteView() {
         <ConnectComputerDialogHost />
         <ExpandedImageViewerHost />
         <ProviderSignInDialogHost />
+        {primaryEnvironmentAuthenticated ? <OutsideAgentsHost /> : null}
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
@@ -721,8 +724,9 @@ function whenIdleAfterFirstPaint(task: () => void): () => void {
  * for on its first switch to a thread, the command palette's body, so the
  * first shortcut press opens it at once, the pages' sidebar lists, so the
  * first switch from the rail shows its list at once, and the bodies of the
- * dialogs the menus open (move, set up, connect, sign in), so they open at
- * once and a web deploy that replaced their files can't fail a later open.
+ * dialogs the menus open (move, set up, connect, sign in) and the one an
+ * outside agent's sign-in opens, so they open at once and a web deploy that
+ * replaced their files can't fail a later open.
  */
 function AppShellIdlePreloads() {
   const router = useRouter();
@@ -742,6 +746,7 @@ function AppShellIdlePreloads() {
       void preloadProjectSetupDialog();
       void preloadConnectComputerDialog();
       void preloadProviderSignInDialog();
+      void preloadOutsideAgentDialog();
     });
   }, [router, workspaceLoaded]);
 

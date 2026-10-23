@@ -7,54 +7,42 @@
  * route never sees, so both are handled here, around everything the server
  * answers: such a request is logged with its path cut to `/api/hooks/…`, and
  * never traced.
+ *
+ * Outside agents' sign-in routes (docs/design/outside-agents.md) carry the
+ * client id, `state` and the waiting page's secret in their query strings.
+ * The request logger drops a query from the path it records, but a failed
+ * request (a method no route takes) is logged with its error, whose message
+ * holds the whole URL. So these are handled the same way: logged here
+ * without their query or error, and never traced.
  */
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import {
-  FindMyWay,
   HttpMiddleware,
   type HttpServerRequest,
   HttpServerRequest as HttpServerRequestTag,
   type HttpServerResponse,
 } from "effect/unstable/http";
 
+import { makeRoutePatternMatcher } from "./httpRoutePaths.ts";
+import { isOutsideAgentSignInPath } from "./outsideAgents/oauthPaths.ts";
 import { LOCAL_HOOK_ROUTE_PREFIX } from "./scheduled/EventTaskHooks.ts";
 
 /** Path prefixes whose remainder is a credential. */
 const SECRET_PATH_PREFIXES: ReadonlyArray<string> = [LOCAL_HOOK_ROUTE_PREFIX];
 
-/**
- * The router's own matcher, set up as the server's router is (its defaults:
- * any case, duplicate and trailing slashes ignored, escapes decoded, a query
- * after `?`, `;` or `#`), so a path is secret exactly when the router could
- * hand it to a secret route, however it is spelled.
- */
-const secretPaths = (() => {
-  const router = FindMyWay.make<string>();
-  for (const prefix of SECRET_PATH_PREFIXES) {
-    router.on("GET", `${prefix}/*` as FindMyWay.PathInput, prefix);
-  }
-  return router;
-})();
-
 /** The secret prefix a request URL's path falls under, if any. */
-const secretPrefixOf = (url: string): string | undefined => {
-  let target = url;
-  // An absolute-form request URL: the router reads its path.
-  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(target)) {
-    try {
-      const parsed = new URL(target);
-      target = `${parsed.pathname}${parsed.search}`;
-    } catch {
-      // Not a URL after all: read it as a path.
-    }
-  }
-  return secretPaths.find("GET", target)?.handler;
-};
+const secretPrefixOf = makeRoutePatternMatcher(
+  SECRET_PATH_PREFIXES.map((prefix) => [`${prefix}/*`, prefix] as const),
+);
 
 /** Whether a request URL's path carries a credential. */
 export const hasSecretPath = (url: string): boolean => secretPrefixOf(url) !== undefined;
+
+/** Whether a request URL's path or query carries a credential. */
+const carriesCredential = (url: string): boolean =>
+  hasSecretPath(url) || isOutsideAgentSignInPath(url);
 
 /** A request URL's path as logs may show it: a credential-carrying one cut to its prefix. */
 export const redactedRequestPath = (url: string): string => {
@@ -64,9 +52,10 @@ export const redactedRequestPath = (url: string): string => {
 
 /**
  * Wraps everything the server answers (`HttpRouter.serve`'s middleware, so
- * inside its request logger): a request whose path carries a credential is
- * left out of that logger, and logged here instead, with the path cut,
- * when `logRequests` (the logger is on).
+ * inside its request logger): a request whose path or query carries a
+ * credential is left out of that logger, and logged here instead, with the
+ * path cut, the query dropped and no error, when `logRequests` (the logger
+ * is on).
  */
 export const requestPrivacy =
   (logRequests: boolean) =>
@@ -79,7 +68,7 @@ export const requestPrivacy =
   > =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequestTag.HttpServerRequest;
-      if (!hasSecretPath(request.url)) return yield* httpApp;
+      if (!carriesCredential(request.url)) return yield* httpApp;
       const exit = yield* httpApp.pipe(HttpMiddleware.withLoggerDisabled, Effect.exit);
       if (logRequests) {
         yield* Effect.log("Sent HTTP response").pipe(
@@ -93,7 +82,10 @@ export const requestPrivacy =
       return yield* exit;
     });
 
-/** Leaves requests whose path carries a credential out of server tracing, whose spans record it. */
+/**
+ * Leaves requests whose path or query carries a credential out of server
+ * tracing, whose spans record both.
+ */
 export const requestTracingPrivacyLayer = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
-  (request: HttpServerRequest.HttpServerRequest) => hasSecretPath(request.url),
+  (request: HttpServerRequest.HttpServerRequest) => carriesCredential(request.url),
 );

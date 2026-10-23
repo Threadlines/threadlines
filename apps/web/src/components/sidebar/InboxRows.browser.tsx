@@ -4,6 +4,7 @@ import {
   ChildRequestId,
   type ComputerLinkPendingRequest,
   EnvironmentId,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -366,6 +367,23 @@ describe("InboxThreadRow scheduled runs", () => {
     await expect
       .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
       .toHaveTextContent("Scheduled · Triage labeled issues");
+  });
+});
+
+describe("InboxThreadRow outside agents", () => {
+  it("names the agent outside Threadlines that started it, in the project's place", async () => {
+    renderRow(null, [], {
+      ...THREAD,
+      outsideOrigin: {
+        connectionId: OutsideAgentConnectionId.make("connection-claude"),
+        name: "Claude Code",
+      },
+    });
+    const label = page.getByTestId(`thread-outside-origin-${THREAD_ID}`);
+    await expect.element(label).toHaveTextContent("from Claude Code");
+    await expect
+      .element(label)
+      .toHaveAttribute("title", "Started by Claude Code, an agent outside Threadlines");
   });
 });
 

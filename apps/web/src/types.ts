@@ -54,6 +54,7 @@ import type {
   RoomReviewInput,
   RuntimeMode,
   ThreadMessageOrigin,
+  OutsideAgentRef,
 } from "@threadlines/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -119,6 +120,11 @@ export interface ChatMessage {
    * agent wrote (child threads). Never the user's.
    */
   fromThread?: ThreadMessageOrigin | undefined;
+  /**
+   * See OrchestrationMessage.fromOutside: a user-role message an agent
+   * outside Threadlines wrote. Never the user's.
+   */
+  fromOutside?: OutsideAgentRef | undefined;
   /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
   /** See OrchestrationMessage.sentFrom: the device the user sent it from. */
@@ -242,6 +248,8 @@ export interface Thread {
   handedBackTurnId?: TurnId | null;
   /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
   scheduledRun?: ThreadScheduledRun | null;
+  /** See ThreadShell.outsideOrigin. */
+  outsideOrigin?: OutsideAgentRef | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
@@ -349,6 +357,11 @@ export interface ThreadShell {
   handedBackTurnId?: TurnId | null;
   /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
   scheduledRun?: ThreadScheduledRun | null;
+  /**
+   * Started by an agent outside Threadlines (docs/design/outside-agents.md):
+   * labelled with its name. Absent or null: started in Threadlines.
+   */
+  outsideOrigin?: OutsideAgentRef | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
@@ -455,6 +468,8 @@ export interface SidebarThreadSummary {
   attachedToParent?: boolean;
   /** See ThreadShell.scheduledRun. */
   scheduledRun?: ThreadScheduledRun | null;
+  /** See ThreadShell.outsideOrigin. */
+  outsideOrigin?: OutsideAgentRef | null;
   /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */
   handedBackTurnId?: TurnId | null;
   /** See ThreadShell.awaitedChildThreadCount. */

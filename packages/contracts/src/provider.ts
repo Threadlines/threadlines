@@ -86,6 +86,9 @@ export const ThreadContextSeedEntry = Schema.Struct({
   kind: Schema.Literals(["message", "tool"]),
   // Present for `kind === "message"`; identifies the speaker.
   role: Schema.optional(OrchestrationMessageRole),
+  // Who wrote it, when the role's own name would mislead: an outside agent's
+  // user-role message is not the user's (@threadlines/shared/messageAuthor).
+  author: Schema.optional(Schema.String),
   // Verbatim message text, or the tool activity's summary line. May be empty
   // on decode (the builder filters empties); kept permissive so partial seeds
   // round-trip without validation churn.

@@ -153,6 +153,9 @@ function resolveDesktopRuntimeInfo(input: {
 
 const DEFAULT_BASE_DIR_NAME = ".threadlines";
 
+/** The server bundle the app runs, from the app's root. */
+export const BACKEND_ENTRY_RELATIVE_PATH = "apps/server/dist/bin.mjs";
+
 /**
  * Whether Threadlines keeps its data in the default `~/.threadlines`. Only that
  * folder is the desktop's to repair: earlier versions copied legacy data into
@@ -233,7 +236,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     logDir: path.join(stateDir, "logs"),
     rootDir,
     appRoot,
-    backendEntryPath: path.join(appRoot, "apps/server/dist/bin.mjs"),
+    backendEntryPath: path.join(appRoot, BACKEND_ENTRY_RELATIVE_PATH),
     backendCwd: input.isPackaged
       ? homeDirectory
       : Option.match(config.desktopBackendCwd, {

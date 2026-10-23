@@ -19,6 +19,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
   OrchestrationThreadShell,
+  OutsideAgentConnectionId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -247,6 +248,21 @@ export interface ProjectionSnapshotQueryShape {
     ReadonlyArray<ThreadId>,
     ProjectionRepositoryError
   >;
+
+  /**
+   * Thread shells picked by id, by project or by the outside agent that
+   * started them (docs/design/outside-agents.md), built from those threads' rows
+   * alone: no other thread, no repository identities and no diff rollups
+   * (`cumulativeDiffStat` reads null). For callers that must not rebuild
+   * the sidebar's whole snapshot to answer one question. Newest activity
+   * first; archived threads only with `includeArchived`.
+   */
+  readonly listThreadShells: (input: {
+    readonly threadIds?: ReadonlyArray<ThreadId>;
+    readonly projectIds?: ReadonlyArray<ProjectId>;
+    readonly outsideConnectionId?: OutsideAgentConnectionId;
+    readonly includeArchived?: boolean;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread shell row by id.

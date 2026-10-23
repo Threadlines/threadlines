@@ -30,11 +30,7 @@ import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolve
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
-import {
-  browserApiCorsAllowedHeaders,
-  browserApiCorsAllowedMethods,
-  browserApiCorsHeaders,
-} from "./httpCors.ts";
+import { browserApiCors, browserApiCorsHeaders } from "./httpCors.ts";
 import { IMAGE_MIME_TYPE_BY_EXTENSION, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 import { isCurrentProviderExtensionPluginIconPath } from "./provider/providerExtensions.ts";
 
@@ -165,11 +161,7 @@ function staticCacheControl(filePath: string): string {
   return "public, max-age=3600";
 }
 
-export const browserApiCorsLayer = HttpRouter.cors({
-  allowedMethods: [...browserApiCorsAllowedMethods],
-  allowedHeaders: [...browserApiCorsAllowedHeaders],
-  maxAge: 600,
-});
+export const browserApiCorsLayer = HttpRouter.middleware(browserApiCors, { global: true });
 
 export function isLoopbackHostname(hostname: string): boolean {
   const normalizedHostname = hostname

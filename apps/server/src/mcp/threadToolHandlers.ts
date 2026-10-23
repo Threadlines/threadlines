@@ -37,7 +37,6 @@ import {
   type ProjectId,
   type ProviderInteractionMode,
   ProviderInstanceId,
-  type ProviderOptionSelection,
   type RoomAgentRef,
   type ServerProvider,
   ThreadId,
@@ -58,17 +57,21 @@ import * as Schema from "effect/Schema";
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
-import {
-  childAgentProviderName,
-  childAgentRefusal,
-  childModelRefusal,
-} from "../orchestration/childThreadAgents.ts";
-import { inviteBilling } from "../orchestration/agentInvites.ts";
+import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
+import {
+  dispatchOutcome,
+  listThreadAgents,
+  modelLabel,
+  readThreadPage,
+  relatedThreadTitles,
+  requestedAgent,
+  summarizeThread,
+  THREAD_PROMPT_CHAR_LIMIT,
+  THREAD_TITLE_CHAR_LIMIT,
+} from "../threads/threadOperations.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
-import { messageAuthor } from "@threadlines/shared/messageAuthor";
-import { roomAgentEntries, roomAgentName } from "./roomAgents.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
 import { roomCheckoutCwd } from "./roomToolHandlers.ts";
@@ -83,14 +86,6 @@ import type {
   ThreadSummary,
 } from "./threadTools.ts";
 
-/** A thread's title, at most this long; a longer one is cut. */
-export const THREAD_TITLE_CHAR_LIMIT = 80;
-/** A prompt or message to a thread, at most this long. */
-export const THREAD_PROMPT_CHAR_LIMIT = 50_000;
-/** What `thread_read` returns of one message. */
-export const THREAD_READ_MESSAGE_CHAR_LIMIT = 4_000;
-const THREAD_READ_DEFAULT_LIMIT = 20;
-const THREAD_READ_MAX_LIMIT = 50;
 /** `thread_list` with `scope: "project"` lists at most this many. */
 export const THREAD_LIST_PROJECT_LIMIT = 30;
 const GIT_TIMEOUT_MS = 15_000;
@@ -162,8 +157,6 @@ const SIDE_REFUSAL = "Only the agent working in this thread can use the thread t
 const GONE = "This thread is gone.";
 const REMOTE_ORIGIN_REFUSAL =
   "This thread was started by an agent on another computer, so it has no thread tools. Do the work here; your final reply goes back to it.";
-/** How many models thread_agents shows per provider before "and N more". */
-const MODELS_LISTED_PER_PROVIDER = 12;
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
 
 /** A turn id no thread has: a caller outside its turn never matches it. */
@@ -172,26 +165,6 @@ const NO_TURN = TurnId.make("no-turn");
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-
-const clipText = (text: string, limit: number) =>
-  text.length > limit
-    ? { text: `${text.slice(0, limit)}\n[clipped; read the rest in the thread]`, clipped: true }
-    : { text, clipped: false };
-
-/** The decider's own words for a refused command, or `failed` for anything else. */
-const dispatchRefusal = (error: {
-  readonly _tag: string;
-  readonly message: string;
-}): { readonly outcome: "refused" | "failed"; readonly detail: string } => {
-  const detail =
-    "detail" in error && typeof error.detail === "string" && error.detail.trim() !== ""
-      ? error.detail
-      : error.message;
-  return error._tag === "OrchestrationCommandInvariantError" ||
-    error._tag === "OrchestrationCommandPreviouslyRejectedError"
-    ? { outcome: "refused", detail }
-    : { outcome: "failed", detail: `It could not be recorded: ${detail}` };
-};
 
 /** A refusal from the shared rules, as a tool outcome. */
 const ruleOutcome = (refusal: ChildRequestRefusal) => ({
@@ -207,56 +180,6 @@ export const callerModelSelection = (
   (participantId !== null
     ? thread.participants.find((participant) => participant.id === participantId)?.modelSelection
     : undefined) ?? thread.modelSelection;
-
-/** A model's name as the model picker shows it. */
-export const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<ServerProvider>) => {
-  const model = providers
-    .find((provider) => provider.instanceId === selection.instanceId)
-    ?.models.find((candidate) => candidate.slug === selection.model);
-  return model?.shortName ?? model?.name ?? selection.model;
-};
-
-/**
- * How a thread is doing, in the words the sidebar uses: blocked on the user
- * first, then running, then waiting on background or child work, then how
- * its last turn ended. `wrapped` is only the user's explicit Mark done; the
- * sidebar's automatic filing rules live in the client.
- */
-export function threadStatusWord(
-  thread: OrchestrationThreadShell,
-  /** A card in it asks the user about its agent's scheduled-task change. */
-  scheduleAnswerWaiting = false,
-): ThreadStatusWord {
-  if (
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput ||
-    thread.pendingChildApproval ||
-    scheduleAnswerWaiting
-  ) {
-    return "needs the user";
-  }
-  const session = thread.session;
-  if (
-    thread.latestTurn?.state === "running" ||
-    (session !== null &&
-      (session.activeTurnId !== null ||
-        session.status === "running" ||
-        session.status === "starting"))
-  ) {
-    return "working";
-  }
-  const awaitedTasks = session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount;
-  if ((awaitedTasks ?? 0) > 0 || thread.awaitedChildThreadCount > 0) {
-    return "waiting";
-  }
-  if (thread.latestTurn?.state === "error" || session?.status === "error") {
-    return "failed";
-  }
-  if (thread.doneOverride?.state === "done") {
-    return "wrapped";
-  }
-  return "idle";
-}
 
 /** A child on a linked computer's last reported status, as a status word. */
 const remoteStatusWord = (cachedStatus: string): ThreadStatusWord =>
@@ -299,159 +222,6 @@ const childIsBusy = (child: OrchestrationThread, parent: OrchestrationThread) =>
       (request.status === "starting" || request.status === "queued"),
   );
 
-/**
- * One thread as the list tools report it. `caller` is the asking thread here;
- * absent when another computer reads it (peer.thread.read), where a thread
- * its link started is "started by" that computer's thread.
- */
-export const summarizeThread = (
-  thread: OrchestrationThreadShell,
-  input: {
-    readonly caller?: Pick<OrchestrationThread, "id">;
-    readonly providers: ReadonlyArray<ServerProvider>;
-    readonly titleOf: (threadId: ThreadId) => string | undefined;
-    /** Threads a scheduled-task card waits in (ThreadToolDeps.scheduleAnswerWaiting). */
-    readonly scheduleAnswerWaiting?: ReadonlySet<ThreadId>;
-  },
-): ThreadSummary => {
-  const remoteOrigin = thread.remoteOrigin ?? null;
-  return {
-    threadId: thread.id,
-    title: thread.title,
-    status: threadStatusWord(thread, input.scheduleAnswerWaiting?.has(thread.id) ?? false),
-    branch: thread.branch,
-    model: modelLabel(thread.modelSelection, input.providers),
-    attached: (thread.parentThreadId !== null && thread.attachedToParent) || remoteOrigin !== null,
-    startedBy:
-      remoteOrigin !== null
-        ? `${remoteOrigin.threadTitle} (on ${remoteOrigin.environmentLabel})`
-        : thread.parentThreadId === null
-          ? null
-          : thread.parentThreadId === input.caller?.id
-            ? "you"
-            : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
-    ...(input.caller !== undefined && thread.id === input.caller.id ? { you: true } : {}),
-  };
-};
-
-/**
- * The agents a thread here can run on, as thread_agents and a linked
- * computer's peer.describe list them: ready providers that can honor the
- * caller's interaction mode, and the set-up ones that can't take a thread now.
- */
-export function listThreadAgents(
-  providers: ReadonlyArray<ServerProvider>,
-  input: {
-    readonly interactionMode: ProviderInteractionMode;
-    /** List only this provider, with every model. */
-    readonly only?: string | undefined;
-  },
-): {
-  readonly agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }>;
-  readonly unavailable: Array<ThreadAgentsResult["unavailable"][number]>;
-} {
-  const agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }> = [];
-  const unavailable: Array<ThreadAgentsResult["unavailable"][number]> = [];
-  for (const provider of providers) {
-    // Providers the user never turned on are not worth a line.
-    if (!provider.enabled || !provider.installed) continue;
-    if (input.only !== undefined && provider.instanceId !== input.only) continue;
-    const refusal = childAgentRefusal(provider, input.interactionMode);
-    const name = childAgentProviderName(provider);
-    if (refusal !== null) {
-      unavailable.push({ instanceId: provider.instanceId, name, reason: refusal });
-      continue;
-    }
-    const models = provider.models
-      .filter((model) => model.isHidden !== true)
-      .map((model) => ({ model: model.slug, name: model.shortName ?? model.name }));
-    // A gateway can list a hundred models; the first ones, in the
-    // provider's own order, are enough to choose from unless asked.
-    const listed = input.only === undefined ? models.slice(0, MODELS_LISTED_PER_PROVIDER) : models;
-    agents.push({
-      instanceId: provider.instanceId,
-      name,
-      billing: inviteBilling(provider).label,
-      models: listed,
-      ...(listed.length < models.length ? { moreModels: models.length - listed.length } : {}),
-      driver: provider.driver,
-    });
-  }
-  return { agents, unavailable };
-}
-
-/**
- * A page of a thread's messages, oldest first, as thread_read returns it
- * here and peer.thread.read returns it to a linked computer.
- */
-export function readThreadPage(
-  target: OrchestrationThread,
-  input: {
-    readonly providers: ReadonlyArray<ServerProvider>;
-    readonly titles: ReadonlyMap<string, string>;
-    readonly after?: number | undefined;
-    readonly limit?: number | undefined;
-  },
-): Pick<ThreadReadResult, "messages" | "next" | "more"> {
-  const entries = roomAgentEntries(target, modelLabel(target.modelSelection, input.providers));
-  const remoteOrigin = target.remoteOrigin ?? null;
-  const names = {
-    agentName: (participantId: Parameters<typeof roomAgentName>[1]) =>
-      roomAgentName(entries, participantId),
-    threadTitle: (threadId: ThreadId) =>
-      input.titles.get(threadId) ??
-      (remoteOrigin !== null && remoteOrigin.threadId === threadId
-        ? remoteOrigin.threadTitle
-        : undefined),
-  };
-  const sequenceOf = (message: OrchestrationThread["messages"][number]) =>
-    message.eventSequence ?? 0;
-  const readable = target.messages
-    .filter(
-      (message) =>
-        (message.role === "user" || message.role === "assistant") && message.text.trim().length > 0,
-    )
-    .toSorted(
-      (left, right) =>
-        sequenceOf(left) - sequenceOf(right) || left.createdAt.localeCompare(right.createdAt),
-    );
-  const limit = Math.max(
-    1,
-    Math.min(
-      THREAD_READ_MAX_LIMIT,
-      Math.floor(
-        input.limit !== undefined && Number.isFinite(input.limit)
-          ? input.limit
-          : THREAD_READ_DEFAULT_LIMIT,
-      ),
-    ),
-  );
-  const after = input.after !== undefined && Number.isFinite(input.after) ? input.after : undefined;
-  const newer =
-    after !== undefined ? readable.filter((message) => sequenceOf(message) > after) : readable;
-  const page = after !== undefined ? newer.slice(0, limit) : newer.slice(-limit);
-  const last = page.at(-1);
-  return {
-    messages: page.map((message) => {
-      const { author, origin } = messageAuthor(message, names);
-      const clipped = clipText(message.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT);
-      return {
-        messageId: message.id,
-        sequence: sequenceOf(message),
-        at: message.createdAt,
-        role: message.role === "user" ? ("user" as const) : ("assistant" as const),
-        author,
-        origin,
-        text: clipped.text,
-        ...(clipped.clipped ? { clipped: true } : {}),
-        ...(message.streaming ? { streaming: true } : {}),
-      };
-    }),
-    next: last !== undefined ? sequenceOf(last) : (after ?? null),
-    more: after !== undefined && newer.length > page.length,
-  };
-}
-
 interface StartSpec {
   readonly title: string;
   readonly prompt: string;
@@ -478,27 +248,6 @@ interface StartInput {
   /** A linked computer's name or environment id: start them there. */
   readonly computer?: string | undefined;
 }
-
-/** An agent's requested model, trimmed and with unusable options dropped. */
-const agentSelection = (
-  agent: NonNullable<StartInput["threads"][number]["agent"]>,
-): ModelSelection | { readonly refused: string } => {
-  const instanceId = agent.instanceId.trim();
-  const model = agent.model.trim();
-  if (instanceId.length === 0 || model.length === 0) {
-    return { refused: "Name the agent's instanceId and model, from thread_agents." };
-  }
-  const options = (agent.options ?? []).flatMap((option): ProviderOptionSelection[] => {
-    const id = option.id.trim();
-    const value = typeof option.value === "string" ? option.value.trim() : option.value;
-    return id.length > 0 && value !== "" ? [{ id, value }] : [];
-  });
-  return {
-    instanceId: ProviderInstanceId.make(instanceId),
-    model,
-    ...(options.length > 0 ? { options } : {}),
-  };
-};
 
 const isLaunch = Schema.is(ChildThreadLaunch);
 
@@ -552,7 +301,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   const dispatch = (command: Parameters<ThreadToolDeps["engine"]["dispatch"]>[0]) =>
     deps.engine.dispatch(command).pipe(
       Effect.as(undefined),
-      Effect.catch((error) => Effect.succeed(dispatchRefusal(error))),
+      Effect.catch((error) => Effect.succeed(dispatchOutcome(error))),
     );
 
   // ---------------------------------------------------------------------------
@@ -834,7 +583,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             detail: `Keep each prompt under ${THREAD_PROMPT_CHAR_LIMIT.toLocaleString("en-US")} characters.`,
           } satisfies ThreadStartResult;
         }
-        const agent = entry.agent !== undefined ? agentSelection(entry.agent) : undefined;
+        const agent =
+          entry.agent !== undefined ? requestedAgent(entry.agent, "thread_agents") : undefined;
         if (agent !== undefined && "refused" in agent) {
           return {
             outcome: "unavailable_agent",
@@ -1378,25 +1128,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return { outcome: "refused", detail: NOT_FOUND, ...none } satisfies ThreadReadResult;
       }
       const providers = yield* deps.providers;
-      // Titles for the author lines and "started by": the threads its
-      // cross-thread messages came from, and its parent.
-      const related = new Set<ThreadId>();
-      for (const message of target.messages) {
-        if (message.fromThread !== undefined) related.add(message.fromThread.threadId);
-      }
-      if (target.parentThreadId !== null) related.add(target.parentThreadId);
-      const titles = new Map<string, string>([[caller.id, caller.title]]);
-      yield* Effect.forEach(
-        [...related].filter((threadId) => !titles.has(threadId)),
-        (threadId) =>
-          deps.readThreadShell(threadId).pipe(
-            Effect.tap((shell) =>
-              Effect.sync(() => {
-                if (shell !== undefined) titles.set(threadId, shell.title);
-              }),
-            ),
-          ),
-        { discard: true },
+      // Titles for the author lines and "started by".
+      const titles = yield* relatedThreadTitles(
+        target,
+        deps.readThreadShell,
+        new Map([[caller.id, caller.title]]),
       );
       const shell = yield* deps.readThreadShell(target.id);
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;

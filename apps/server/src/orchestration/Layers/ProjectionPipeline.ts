@@ -102,6 +102,7 @@ import {
   applyWorkflowRunPatch,
   retainWorkflowRunsAfterRevert,
 } from "@threadlines/shared/workflowRuns";
+import { hasActionableProposedPlan } from "../proposedPlans.ts";
 import { carriedBackgroundTasks } from "../sessionBackgroundTasks.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
@@ -187,35 +188,6 @@ function assistantMessageEventCompletesTurn(input: {
     return input.explicitCompletesTurn;
   }
   return input.activeTurnId === null || input.activeTurnId !== input.eventTurnId;
-}
-
-function deriveHasActionableProposedPlan(input: {
-  readonly latestTurnId: string | null;
-  readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
-}): boolean {
-  const sorted = [...input.proposedPlans].toSorted(
-    (left, right) =>
-      (left.eventSequence === undefined && right.eventSequence === undefined
-        ? left.updatedAt.localeCompare(right.updatedAt)
-        : compareTranscriptOrder(left, right)) || left.planId.localeCompare(right.planId),
-  );
-
-  let latestForTurn: ProjectionThreadProposedPlan | null = null;
-  if (input.latestTurnId !== null) {
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const plan = sorted[index];
-      if (plan?.turnId === input.latestTurnId) {
-        latestForTurn = plan;
-        break;
-      }
-    }
-  }
-  if (latestForTurn !== null) {
-    return latestForTurn.implementedAt === null;
-  }
-
-  const latestPlan = sorted.at(-1) ?? null;
-  return latestPlan !== null && latestPlan.implementedAt === null;
 }
 
 function revertProjectionMessages(
@@ -546,9 +518,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             compareTranscriptOrder(left, right) || left.activityId.localeCompare(right.activityId),
         ),
       );
-      const hasActionableProposedPlan = deriveHasActionableProposedPlan({
+      const actionablePlan = hasActionableProposedPlan({
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
+        idOf: (plan) => plan.planId,
       });
 
       yield* projectionThreadRepository.upsert({
@@ -556,7 +529,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         latestUserMessageAt,
         pendingApprovalCount,
         ...userInputCounts,
-        hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
+        hasActionableProposedPlan: actionablePlan ? 1 : 0,
       });
     });
 
@@ -579,6 +552,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
             remoteOrigin: event.payload.remoteOrigin ?? null,
             scheduledRun: event.payload.scheduledRun ?? null,
+            outsideOrigin: event.payload.outsideOrigin ?? null,
             move: null,
             movedFrom: event.payload.movedFrom ?? null,
             historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
@@ -1576,6 +1550,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
             ...(event.payload.fromThread !== undefined
               ? { fromThread: event.payload.fromThread }
+              : {}),
+            ...(event.payload.fromOutside !== undefined
+              ? { fromOutside: event.payload.fromOutside }
               : {}),
             ...(event.payload.imported === true ? { imported: true as const } : {}),
             ...(event.payload.agentModels !== undefined

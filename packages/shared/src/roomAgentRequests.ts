@@ -291,15 +291,20 @@ export const withInviteChoice = (
 
 /**
  * Whether an agent wrote or queued this, not the user: a room agent's request
- * or routed reply (`fromAgent`), or another thread's request or report
- * (`fromThread`, child threads). Every "is this the user's" question asks
- * this one, so the user's messages keep their priority, their place in the
- * inbox order and their power to reset the agents' limits.
+ * or routed reply (`fromAgent`), another thread's request or report
+ * (`fromThread`, child threads), or an agent running outside Threadlines
+ * (`fromOutside`, docs/design/outside-agents.md). Every "is this the user's"
+ * question asks this one, so the user's messages keep their priority, their
+ * place in the inbox order and their power to reset the agents' limits.
  */
 export const isAgentOrigin = (entry: {
   readonly fromAgent?: unknown;
   readonly fromThread?: unknown;
-}): boolean => entry.fromAgent !== undefined || entry.fromThread !== undefined;
+  readonly fromOutside?: unknown;
+}): boolean =>
+  entry.fromAgent !== undefined ||
+  entry.fromThread !== undefined ||
+  entry.fromOutside !== undefined;
 
 /**
  * A message an agent queued (a reply, or a child thread's report or request)
@@ -328,11 +333,12 @@ export const withUnqueuedAgentMessage = <
 /**
  * Whether the user wrote a message. In a room, an agent can write a user-role
  * message too (a request or a routed reply), and so can another thread's
- * agent (child threads); those never count as the user's activity (inbox
- * order, "last message from you").
+ * agent (child threads) and an outside agent; those never count as the
+ * user's activity (inbox order, "last message from you").
  */
 export const isUserWrittenMessage = (message: {
   readonly role: string;
   readonly fromAgent?: unknown;
   readonly fromThread?: unknown;
+  readonly fromOutside?: unknown;
 }): boolean => message.role === "user" && !isAgentOrigin(message);

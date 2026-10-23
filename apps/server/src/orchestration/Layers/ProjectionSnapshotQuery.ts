@@ -62,6 +62,7 @@ import {
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
+  OutsideAgentRef,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -158,6 +159,7 @@ type ThreadLineageRow = Pick<
   | "childRequests"
   | "remoteOrigin"
   | "scheduledRun"
+  | "outsideOrigin"
   | "move"
   | "movedFrom"
   | "historySeedOwed"
@@ -176,6 +178,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+  ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
   ...threadMoveFields(row),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
@@ -207,6 +210,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+    ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
     ...threadMoveFields(row),
     ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
     ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
@@ -229,6 +233,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
     fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
+    fromOutside: Schema.NullOr(Schema.fromJsonString(OutsideAgentRef)),
     imported: Schema.NullOr(Schema.Number),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
@@ -268,6 +273,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
+    outsideOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(OutsideAgentRef))),
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
@@ -513,6 +519,60 @@ function mapSessionRow(
   };
 }
 
+/** A thread row as the sidebar shows it, with its newest turn, session and diff rollup. */
+function mapThreadShellRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>,
+  related: {
+    readonly latestTurn: OrchestrationLatestTurn | null;
+    readonly session: OrchestrationSession | null;
+    readonly diffStat: Schema.Schema.Type<typeof ProjectionThreadDiffStatDbRowSchema> | undefined;
+  },
+): OrchestrationThreadShell {
+  return {
+    id: row.threadId,
+    projectId: row.projectId,
+    title: row.title,
+    modelSelection: row.modelSelection,
+    runtimeMode: row.runtimeMode,
+    interactionMode: row.interactionMode,
+    branch: row.branch,
+    worktreePath: row.worktreePath,
+    effectiveCwd: row.effectiveCwd,
+    ...projectEffectiveCwdSource(row),
+    goal: row.goal,
+    ...(row.checkBacks ? { checkBacks: row.checkBacks } : {}),
+    voiceActive: (row.voiceActive ?? 0) > 0,
+    latestTurn: related.latestTurn,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    archivedAt: row.archivedAt,
+    pinnedAt: row.pinnedAt,
+    pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
+    pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
+    linkedPullRequests: row.linkedPullRequests ?? [],
+    ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+      ? { dismissedPullRequests: row.dismissedPullRequests }
+      : {}),
+    queuedFollowUps: row.queuedFollowUps ?? [],
+    participants: row.participants ?? [],
+    ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+    ...(row.agentRole ? { agentRole: row.agentRole } : {}),
+    doneOverride: mapThreadDoneOverride(row),
+    lastSeenAt: row.lastSeenAt ?? null,
+    session: related.session,
+    latestUserMessageAt: row.latestUserMessageAt,
+    ...shellLineageFields(row),
+    hasPendingApprovals:
+      row.pendingApprovalCount > 0 ||
+      hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
+    hasPendingUserInput: row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
+    hasBlockingUserInput: row.blockingUserInputCount > 0,
+    hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+    cumulativeDiffStat: mapThreadDiffStat(related.diffStat),
+    diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
+  };
+}
+
 function mapThreadMessageRow(
   row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
 ): OrchestrationMessage {
@@ -533,6 +593,7 @@ function mapThreadMessageRow(
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
     ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
+    ...(row.fromOutside !== null ? { fromOutside: row.fromOutside } : {}),
     ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
@@ -835,6 +896,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -899,6 +961,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -965,6 +1028,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1003,6 +1067,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
@@ -1061,6 +1126,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
@@ -1755,6 +1821,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1794,6 +1861,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
@@ -3112,50 +3180,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ),
                 threads: threadRows
                   .filter((row) => row.deletedAt === null)
-                  .map((row): OrchestrationThreadShell => ({
-                    id: row.threadId,
-                    projectId: row.projectId,
-                    title: row.title,
-                    modelSelection: row.modelSelection,
-                    runtimeMode: row.runtimeMode,
-                    interactionMode: row.interactionMode,
-                    branch: row.branch,
-                    worktreePath: row.worktreePath,
-                    effectiveCwd: row.effectiveCwd,
-                    ...projectEffectiveCwdSource(row),
-                    goal: row.goal,
-                    ...(row.checkBacks ? { checkBacks: row.checkBacks } : {}),
-                    voiceActive: (row.voiceActive ?? 0) > 0,
-                    latestTurn: latestTurnByThread.get(row.threadId) ?? null,
-                    createdAt: row.createdAt,
-                    updatedAt: row.updatedAt,
-                    archivedAt: row.archivedAt,
-                    pinnedAt: row.pinnedAt,
-                    pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
-                    pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
-                    linkedPullRequests: row.linkedPullRequests ?? [],
-                    ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
-                      ? { dismissedPullRequests: row.dismissedPullRequests }
-                      : {}),
-                    queuedFollowUps: row.queuedFollowUps ?? [],
-                    participants: row.participants ?? [],
-                    ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
-                    ...(row.agentRole ? { agentRole: row.agentRole } : {}),
-                    doneOverride: mapThreadDoneOverride(row),
-                    lastSeenAt: row.lastSeenAt ?? null,
-                    session: sessionByThread.get(row.threadId) ?? null,
-                    latestUserMessageAt: row.latestUserMessageAt,
-                    ...shellLineageFields(row),
-                    hasPendingApprovals:
-                      row.pendingApprovalCount > 0 ||
-                      hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
-                    hasPendingUserInput:
-                      row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
-                    hasBlockingUserInput: row.blockingUserInputCount > 0,
-                    hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                    cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
-                    diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
-                  })),
+                  .map((row) =>
+                    mapThreadShellRow(row, {
+                      latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                      session: sessionByThread.get(row.threadId) ?? null,
+                      diffStat: diffStatByThread.get(row.threadId),
+                    }),
+                  ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
 
@@ -3278,50 +3309,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   .map((row) =>
                     mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
                   ),
-                threads: threadRows.map((row): OrchestrationThreadShell => ({
-                  id: row.threadId,
-                  projectId: row.projectId,
-                  title: row.title,
-                  modelSelection: row.modelSelection,
-                  runtimeMode: row.runtimeMode,
-                  interactionMode: row.interactionMode,
-                  branch: row.branch,
-                  worktreePath: row.worktreePath,
-                  effectiveCwd: row.effectiveCwd,
-                  ...projectEffectiveCwdSource(row),
-                  goal: row.goal,
-                  ...(row.checkBacks ? { checkBacks: row.checkBacks } : {}),
-                  voiceActive: (row.voiceActive ?? 0) > 0,
-                  latestTurn: latestTurnByThread.get(row.threadId) ?? null,
-                  createdAt: row.createdAt,
-                  updatedAt: row.updatedAt,
-                  archivedAt: row.archivedAt,
-                  pinnedAt: row.pinnedAt,
-                  pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
-                  pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
-                  linkedPullRequests: row.linkedPullRequests ?? [],
-                  ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
-                    ? { dismissedPullRequests: row.dismissedPullRequests }
-                    : {}),
-                  queuedFollowUps: row.queuedFollowUps ?? [],
-                  participants: row.participants ?? [],
-                  ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
-                  ...(row.agentRole ? { agentRole: row.agentRole } : {}),
-                  doneOverride: mapThreadDoneOverride(row),
-                  lastSeenAt: row.lastSeenAt ?? null,
-                  session: sessionByThread.get(row.threadId) ?? null,
-                  latestUserMessageAt: row.latestUserMessageAt,
-                  ...shellLineageFields(row),
-                  hasPendingApprovals:
-                    row.pendingApprovalCount > 0 ||
-                    hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
-                  hasPendingUserInput:
-                    row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
-                  hasBlockingUserInput: row.blockingUserInputCount > 0,
-                  hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                  cumulativeDiffStat: mapThreadDiffStat(diffStatByThread.get(row.threadId)),
-                  diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
-                })),
+                threads: threadRows.map((row) =>
+                  mapThreadShellRow(row, {
+                    latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                    session: sessionByThread.get(row.threadId) ?? null,
+                    diffStat: diffStatByThread.get(row.threadId),
+                  }),
+                ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
 
@@ -3536,6 +3530,166 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  // The thread row's columns, as every thread query here reads them.
+  const threadRowColumns = sql.literal(`
+    thread_id AS "threadId",
+    project_id AS "projectId",
+    title,
+    model_selection_json AS "modelSelection",
+    runtime_mode AS "runtimeMode",
+    interaction_mode AS "interactionMode",
+    branch,
+    worktree_path AS "worktreePath",
+    effective_cwd AS "effectiveCwd",
+    effective_cwd_source AS "effectiveCwdSource",
+    goal AS "goal",
+    check_backs AS "checkBacks",
+    voice_active AS "voiceActive",
+    diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
+    latest_turn_id AS "latestTurnId",
+    created_at AS "createdAt",
+    updated_at AS "updatedAt",
+    archived_at AS "archivedAt",
+    pinned_at AS "pinnedAt",
+    pull_request_auto_fix AS "pullRequestAutoFix",
+    pull_request_auto_merge AS "pullRequestAutoMerge",
+    linked_pull_requests AS "linkedPullRequests",
+    dismissed_pull_requests AS "dismissedPullRequests",
+    queued_follow_ups AS "queuedFollowUps",
+    participants AS "participants",
+    side_turn AS "sideTurn",
+    agent_role AS "agentRole",
+    room_context AS "roomContext",
+    sent_models AS "sentModels",
+    agent_requests AS "agentRequests",
+    parent_thread_id AS "parentThreadId",
+    parent_turn_id AS "parentTurnId",
+    attached_to_parent AS "attachedToParent",
+    parent_attachment_epoch AS "parentAttachmentEpoch",
+    handed_back_at AS "handedBackAt",
+    handed_back_turn_id AS "handedBackTurnId",
+    archived_with_parent_at AS "archivedWithParentAt",
+    child_requests AS "childRequests",
+    remote_origin_json AS "remoteOrigin",
+    scheduled_run_json AS "scheduledRun",
+    outside_origin_json AS "outsideOrigin",
+    move_json AS "move",
+    moved_from_json AS "movedFrom",
+    history_seed_owed AS "historySeedOwed",
+    history_seed_message_id AS "historySeedMessageId",
+    done_override AS "doneOverride",
+    done_override_at AS "doneOverrideAt",
+    last_seen_at AS "lastSeenAt",
+    latest_user_message_at AS "latestUserMessageAt",
+    pending_approval_count AS "pendingApprovalCount",
+    pending_user_input_count AS "pendingUserInputCount",
+    blocking_user_input_count AS "blockingUserInputCount",
+    has_actionable_proposed_plan AS "hasActionableProposedPlan",
+    deleted_at AS "deletedAt"
+  `);
+
+  const listThreadShells: ProjectionSnapshotQueryShape["listThreadShells"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        (input.projectIds !== undefined && input.projectIds.length === 0) ||
+        (input.threadIds !== undefined && input.threadIds.length === 0)
+      ) {
+        return [];
+      }
+      const threadRows = yield* SqlSchema.findAll({
+        Request: Schema.Void,
+        Result: ProjectionThreadDbRowSchema,
+        execute: () => sql`
+          SELECT ${threadRowColumns}
+          FROM projection_threads
+          WHERE ${sql.and([
+            sql`deleted_at IS NULL`,
+            ...(input.includeArchived === true ? [] : [sql`archived_at IS NULL`]),
+            ...(input.threadIds !== undefined ? [sql.in("thread_id", input.threadIds)] : []),
+            ...(input.projectIds !== undefined ? [sql.in("project_id", input.projectIds)] : []),
+            ...(input.outsideConnectionId !== undefined
+              ? [
+                  sql`json_extract(outside_origin_json, '$.connectionId') = ${input.outsideConnectionId}`,
+                ]
+              : []),
+          ])}
+          ORDER BY updated_at DESC, thread_id ASC
+        `,
+      })(undefined);
+      if (threadRows.length === 0) {
+        return [];
+      }
+      const threadIds = threadRows.map((row) => row.threadId);
+      const [sessionRows, latestTurnRows] = yield* Effect.all([
+        SqlSchema.findAll({
+          Request: Schema.Void,
+          Result: ProjectionThreadSessionDbRowSchema,
+          execute: () => sql`
+            SELECT
+              thread_id AS "threadId",
+              status,
+              provider_name AS "providerName",
+              provider_instance_id AS "providerInstanceId",
+              provider_session_id AS "providerSessionId",
+              provider_thread_id AS "providerThreadId",
+              runtime_mode AS "runtimeMode",
+              checkout_cwd AS "checkoutCwd",
+              participant_id AS "participantId",
+              active_turn_id AS "activeTurnId",
+              pending_background_task_count AS "pendingBackgroundTaskCount",
+              awaited_background_task_count AS "awaitedBackgroundTaskCount",
+              awaited_background_tasks AS "awaitedBackgroundTasks",
+              startup,
+              last_error AS "lastError",
+              updated_at AS "updatedAt"
+            FROM projection_thread_sessions
+            WHERE ${sql.in("thread_id", threadIds)}
+          `,
+        })(undefined),
+        SqlSchema.findAll({
+          Request: Schema.Void,
+          Result: ProjectionLatestTurnDbRowSchema,
+          execute: () => sql`
+            SELECT
+              turns.thread_id AS "threadId",
+              turns.turn_id AS "turnId",
+              turns.state,
+              turns.requested_at AS "requestedAt",
+              turns.started_at AS "startedAt",
+              turns.completed_at AS "completedAt",
+              turns.assistant_message_id AS "assistantMessageId",
+              turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+              turns.source_proposed_plan_id AS "sourceProposedPlanId"
+            FROM projection_threads threads
+            JOIN projection_turns turns
+              ON turns.thread_id = threads.thread_id
+              AND turns.turn_id = threads.latest_turn_id
+            WHERE ${sql.in("threads.thread_id", threadIds)}
+          `,
+        })(undefined),
+      ]);
+      const sessionByThread = new Map(
+        sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
+      );
+      const latestTurnByThread = new Map(
+        latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
+      );
+      return threadRows.map((row) =>
+        mapThreadShellRow(row, {
+          latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+          session: sessionByThread.get(row.threadId) ?? null,
+          diffStat: undefined,
+        }),
+      );
+    }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadShells:query",
+          "ProjectionSnapshotQuery.listThreadShells:decodeRows",
+        ),
+      ),
+    );
+
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, diffStatRow] = yield* Effect.all([
@@ -3577,52 +3731,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         return Option.none<OrchestrationThreadShell>();
       }
 
-      return Option.some({
-        id: threadRow.value.threadId,
-        projectId: threadRow.value.projectId,
-        title: threadRow.value.title,
-        modelSelection: threadRow.value.modelSelection,
-        runtimeMode: threadRow.value.runtimeMode,
-        interactionMode: threadRow.value.interactionMode,
-        branch: threadRow.value.branch,
-        worktreePath: threadRow.value.worktreePath,
-        effectiveCwd: threadRow.value.effectiveCwd,
-        ...projectEffectiveCwdSource(threadRow.value),
-        goal: threadRow.value.goal,
-        ...(threadRow.value.checkBacks ? { checkBacks: threadRow.value.checkBacks } : {}),
-        voiceActive: (threadRow.value.voiceActive ?? 0) > 0,
-        latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
-        createdAt: threadRow.value.createdAt,
-        updatedAt: threadRow.value.updatedAt,
-        archivedAt: threadRow.value.archivedAt,
-        pinnedAt: threadRow.value.pinnedAt,
-        pullRequestAutoFix: (threadRow.value.pullRequestAutoFix ?? 0) > 0,
-        pullRequestAutoMerge: threadRow.value.pullRequestAutoMerge ?? null,
-        linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
-        ...(threadRow.value.dismissedPullRequests &&
-        threadRow.value.dismissedPullRequests.length > 0
-          ? { dismissedPullRequests: threadRow.value.dismissedPullRequests }
-          : {}),
-        queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
-        participants: threadRow.value.participants ?? [],
-        ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
-        ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
-        doneOverride: mapThreadDoneOverride(threadRow.value),
-        lastSeenAt: threadRow.value.lastSeenAt ?? null,
-        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
-        latestUserMessageAt: threadRow.value.latestUserMessageAt,
-        ...shellLineageFields(threadRow.value),
-        hasPendingApprovals:
-          threadRow.value.pendingApprovalCount > 0 ||
-          hasPendingChildApproval(threadRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
-        hasPendingUserInput:
-          threadRow.value.pendingUserInputCount > 0 ||
-          hasAwaitingInvite(threadRow.value.agentRequests),
-        hasBlockingUserInput: threadRow.value.blockingUserInputCount > 0,
-        hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
-        cumulativeDiffStat: mapThreadDiffStat(Option.getOrUndefined(diffStatRow)),
-        diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
-      } satisfies OrchestrationThreadShell);
+      return Option.some(
+        mapThreadShellRow(threadRow.value, {
+          latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
+          session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+          diffStat: Option.getOrUndefined(diffStatRow),
+        }),
+      );
     });
 
   const getTurnActivities: ProjectionSnapshotQueryShape["getTurnActivities"] = (input) =>
@@ -3846,6 +3961,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listThreadDiffStatBaselines,
     listThreadTurnOverlapsSince,
     listThreadIdsWithOpenAgentRequests,
+    listThreadShells,
     getThreadShellById,
     getThreadDetailById,
     getTurnActivities,

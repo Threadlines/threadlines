@@ -120,6 +120,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getBackgroundOptions: () => ipcRenderer.invoke(IpcChannels.GET_BACKGROUND_OPTIONS_CHANNEL),
   setBackgroundOptions: (patch) =>
     ipcRenderer.invoke(IpcChannels.SET_BACKGROUND_OPTIONS_CHANNEL, patch),
+  getCliCommandStatus: () => ipcRenderer.invoke(IpcChannels.GET_CLI_COMMAND_STATUS_CHANNEL),
+  installCliCommand: () => ipcRenderer.invoke(IpcChannels.INSTALL_CLI_COMMAND_CHANNEL),
+  removeCliCommand: () => ipcRenderer.invoke(IpcChannels.REMOVE_CLI_COMMAND_CHANNEL),
   getRetiredPhoneLinkNotice: () =>
     ipcRenderer.invoke(IpcChannels.GET_RETIRED_PHONE_LINK_NOTICE_CHANNEL),
   dismissRetiredPhoneLinkNotice: () =>

@@ -63,6 +63,7 @@ import {
   PencilIcon,
   PinIcon,
   PinOffIcon,
+  PlugIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -174,6 +175,7 @@ import { openThreadMoveDialog } from "./ThreadMoveDialog";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useThreadMoveOffered } from "../environments/links/threadMoves";
+import { useOutsideAgentsSnapshot } from "../environments/outsideAgents/outsideAgents";
 import { threadMoveStatus } from "../threadMove";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -559,6 +561,8 @@ export function OpenCommandPaletteDialog() {
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const pullRequestEnvironments = usePullRequestEnvironments();
   const scheduledTaskEnvironments = useScheduledTaskEnvironments();
+  // Heard from only for this computer's owner, where its server takes outside agents.
+  const managesOutsideAgents = useOutsideAgentsSnapshot() !== null;
   // The active thread's pull request, so the palette can offer its tab. Both
   // reads are the sidebar's: the same refcounted git status and the same open
   // listing key, and neither runs on a thread with no branch to match.
@@ -1765,6 +1769,29 @@ export function OpenCommandPaletteDialog() {
       openConnectComputerDialog();
     },
   });
+
+  if (managesOutsideAgents) {
+    actionItems.push({
+      kind: "action",
+      value: "action:connect-agent",
+      searchTerms: [
+        "connect an agent",
+        "outside agent",
+        "mcp",
+        "claude code",
+        "codex",
+        "gemini",
+        "cursor",
+        "terminal",
+      ],
+      title: "Connect an agent",
+      description: "Let an agent you run outside Threadlines use it",
+      icon: <PlugIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/settings/connections", search: { section: "agents" } });
+      },
+    });
+  }
 
   // Each computer's Fleet page, once there is more than one to choose from.
   if (addProjectEnvironmentOptions.length > 1) {

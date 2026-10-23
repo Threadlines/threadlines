@@ -145,6 +145,7 @@ import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
+import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
@@ -383,6 +384,7 @@ const makeWsRpcLayer = (
           ? Effect.void
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
+      const outsideAgents = yield* OutsideAgentSignIn;
       const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
@@ -2889,6 +2891,62 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
             "rpc.aggregate": "projectSetups",
           }),
+        // Outside agents (docs/design/outside-agents.md): managing who may
+        // use this computer is owner only, like the device list.
+        [WS_METHODS.outsideAgentsSubscribe]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.outsideAgentsSubscribe,
+            requireOwner(WS_METHODS.outsideAgentsSubscribe).pipe(Effect.as(outsideAgents.changes)),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsApprove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsApprove,
+            requireOwner(WS_METHODS.outsideAgentsApprove).pipe(
+              Effect.andThen(outsideAgents.approve(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsDeny]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsDeny,
+            requireOwner(WS_METHODS.outsideAgentsDeny).pipe(
+              Effect.andThen(outsideAgents.deny(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsDenyAll]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsDenyAll,
+            requireOwner(WS_METHODS.outsideAgentsDenyAll).pipe(
+              Effect.andThen(outsideAgents.denyAll),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsResumeRequests]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsResumeRequests,
+            requireOwner(WS_METHODS.outsideAgentsResumeRequests).pipe(
+              Effect.andThen(outsideAgents.resumeRequests),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsUpdate,
+            requireOwner(WS_METHODS.outsideAgentsUpdate).pipe(
+              Effect.andThen(outsideAgents.update(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsRemove,
+            requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
+              Effect.andThen(outsideAgents.remove(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

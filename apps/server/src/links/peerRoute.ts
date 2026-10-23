@@ -29,7 +29,7 @@ import { ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { SessionCredentialService } from "../auth/Services/SessionCredentialService.ts";
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { listThreadAgents } from "../mcp/threadToolHandlers.ts";
+import { listThreadAgents } from "../threads/threadOperations.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { resolveProjectPlace } from "../project/projectPlace.ts";

@@ -1,4 +1,8 @@
-import { EnvironmentId, ProviderDriverKind } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  OutsideAgentConnectionId,
+  ProviderDriverKind,
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -76,6 +80,19 @@ describe("ChatHeader", () => {
 
     expect(markup).toContain('data-active-project-name="Orbit"');
     expect(markup).toContain('data-active-thread-title="Project file editing"');
+  });
+
+  it("names the agent outside Threadlines that started the thread, as the agent gave it", () => {
+    const markup = renderChatHeader({
+      outsideOrigin: {
+        connectionId: OutsideAgentConnectionId.make("connection-claude"),
+        name: "Claude Code",
+      },
+    });
+
+    expect(markup).toContain('data-testid="chat-header-outside-origin"');
+    expect(markup).toContain("Started by Claude Code, an agent outside Threadlines");
+    expect(renderChatHeader()).not.toContain("chat-header-outside-origin");
   });
 
   it("renders an actionable continue-in-project control by default", () => {

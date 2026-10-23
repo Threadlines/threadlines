@@ -18,6 +18,10 @@ Threadlines sends product and reliability events such as:
   finish and again when an answer changes;
 - when a community agent (one from the open ACP registry) is installed or
   removed, with its public registry id and version;
+- when an agent outside Threadlines (one you approve under Settings,
+  Connections, Agents) connects: which kind it is (`claude-code`, `codex`,
+  `gemini-cli`, `cursor`, `threadlines-command` or `other`, never the name it
+  gave) and whether it may only see threads or also start them;
 - provider session start, stop, and recovery;
 - turn sent, steered, interrupted, and compact-requested events;
 - how long a sent message waited, in milliseconds, before Threadlines handed it
@@ -45,6 +49,10 @@ Threadlines sends product and reliability events such as:
 - explicit thread fork events with sanitized source/target model values and
   context counts;
 - provider approval/request responses;
+- once a day, how many calls agents running outside Threadlines (connected
+  under Settings → Connections → Agents) made to each of their tools, by the
+  tool and how it answered (started, busy, refused and so on). Never the
+  agent's name, a project or a thread's content;
 - thread rollback and delete events;
 - basic counts such as project count, thread count, attachment count, and active session count.
 

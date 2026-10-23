@@ -530,6 +530,36 @@ export const DesktopBackgroundOptionsPatchSchema = Schema.Struct({
 });
 export type DesktopBackgroundOptionsPatch = typeof DesktopBackgroundOptionsPatchSchema.Type;
 
+/**
+ * The `threadlines` command on this computer's PATH, as the desktop app put
+ * it there (docs/design/outside-agents.md, "Putting it on PATH"); Settings ›
+ * Connections › Agents shows it.
+ */
+export const DesktopCliCommandStatusSchema = Schema.Struct({
+  /**
+   * `installed`: this copy of the app's command is at `path`. `other_copy`:
+   * something else is there (another copy of Threadlines). `unavailable`:
+   * this build doesn't install it (`reason`, or `devCommand` in a dev build).
+   */
+  state: Schema.Literals(["not_installed", "installed", "other_copy", "unavailable"]),
+  /** Where Install puts the command. */
+  path: Schema.String,
+  /** False when the command's folder isn't on PATH, so typing `threadlines` won't find it. */
+  folderOnPath: Schema.Boolean,
+  reason: Schema.NullOr(Schema.String),
+  /** Dev builds: how to run the command from the repo instead. */
+  devCommand: Schema.NullOr(Schema.String),
+});
+export type DesktopCliCommandStatus = typeof DesktopCliCommandStatusSchema.Type;
+
+export const DesktopCliCommandResultSchema = Schema.Struct({
+  /** `cancelled`: the user said no to the system's administrator prompt; nothing changed. */
+  outcome: Schema.Literals(["done", "cancelled", "failed"]),
+  detail: Schema.NullOr(Schema.String),
+  status: DesktopCliCommandStatusSchema,
+});
+export type DesktopCliCommandResult = typeof DesktopCliCommandResultSchema.Type;
+
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
@@ -1366,6 +1396,10 @@ export interface DesktopBridge {
   setBackgroundOptions?: (
     patch: DesktopBackgroundOptionsPatch,
   ) => Promise<DesktopBackgroundOptions>;
+  /** The `threadlines` command on PATH; absent in a desktop app that predates it. */
+  getCliCommandStatus?: () => Promise<DesktopCliCommandStatus>;
+  installCliCommand?: () => Promise<DesktopCliCommandResult>;
+  removeCliCommand?: () => Promise<DesktopCliCommandResult>;
   /**
    * True once after an update retired this desktop's old (v1) phone link,
    * until dismissed. Phones paired that way need "Connect a device" again.

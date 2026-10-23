@@ -7990,6 +7990,7 @@ export default function ChatView(props: ChatViewProps) {
       taskProgress={taskProgress}
       forkContext={forkHeaderContext}
       parentContext={parentHeaderContext}
+      outsideOrigin={activeThread.outsideOrigin ?? null}
       onOpenParentThread={onOpenParentThread}
       backgroundRuns={backgroundRuns}
       activeThreadRef={activeThreadRef}

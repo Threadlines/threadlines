@@ -93,6 +93,8 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
+import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
+import { OutsideAgentRequestsLive } from "./outsideAgents/OutsideAgentRequests.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
 import * as McpApps from "./mcpApps/McpApps.ts";
 import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
@@ -145,6 +147,8 @@ import {
   authWebSocketTokenRouteLayer,
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
+import { outsideAgentSignInRouteLayer } from "./outsideAgents/oauthHttp.ts";
+import { OutsideAgentConnectionsLive } from "./outsideAgents/OutsideAgentConnectionsLive.ts";
 import { PushAlertsLive } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, RelayHostLive } from "./relay/RelayHost.ts";
 import { RelayDeviceRepositoryLive } from "./relay/RelayDeviceRepository.ts";
@@ -476,6 +480,14 @@ const RelayLayerLive = RelayHostLive.pipe(
   Layer.provide(ServerSecretStoreLive),
 );
 
+// Agents outside Threadlines (docs/design/outside-agents.md): their
+// connections, which `/mcp/connect` checks every call against, and their
+// sign-in, behind the OAuth routes and the owner's `outsideAgents.*` RPCs.
+// Needs the outside_agent_connections table below and the signing key.
+const OutsideAgentsLayerLive = OutsideAgentConnectionsLive.pipe(
+  Layer.provide(ServerSecretStoreLive),
+);
+
 const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   ThreadAutoArchiveSweeperLive,
@@ -507,6 +519,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       CommandRuns.layer,
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
+      // Outside agents' starts and sends by request id (`/mcp/connect`);
+      // building it marks the ones a restart cut off.
+      OutsideAgentRequestsLive,
     ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),
@@ -533,6 +548,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // from the settings layer below.
   // `RelayLayerLive` ("Connect a device") rides along here: like the broker it
   // owns no project state, only sockets and the relay_devices table below.
+  // So do outside agents' connections (OutsideAgentsLayerLive), over their
+  // own table.
   Layer.provideMerge(
     Layer.mergeAll(
       PreviewAutomationBroker.layer,
@@ -541,6 +558,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       PagePreview.layer,
       DictationLive,
       RelayLayerLive,
+      OutsideAgentsLayerLive,
     ),
   ),
   Layer.provideMerge(PersistenceLayerLive),
@@ -592,6 +610,8 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpRoomServer.layer,
   McpPagesServer.layer,
   McpCommandsServer.layer,
+  // Outside agents' tools (docs/design/outside-agents.md).
+  McpConnectServer.layer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
@@ -602,6 +622,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   authPairingCredentialRouteLayer,
   authSessionRouteLayer,
   authWebSocketTokenRouteLayer,
+  outsideAgentSignInRouteLayer,
   attachmentsRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationProjectCatalogRouteLayer,

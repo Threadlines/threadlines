@@ -27,6 +27,7 @@ import {
   type ProviderSessionForkFrom,
   type ProviderInstanceId,
   type OrchestrationWarmUpTurnInput,
+  type OutsideTurnOrigin,
   type RuntimeMode,
   type ThreadContextSeed,
   ThreadCheckoutMissingActivityKind,
@@ -42,6 +43,7 @@ import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/s
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { exceedsRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   hasAgentRecords,
   isRoomThread,
@@ -220,6 +222,12 @@ interface EnsureSessionOptions {
    * thread's. `runtimeMode` is the access level the message will carry.
    */
   readonly early?: { readonly runtimeMode: RuntimeMode };
+  /**
+   * The turn is an outside agent's (docs/design/outside-agents.md): it runs
+   * only while the thread's access is at most this agent's ceiling, checked
+   * on the same read of the thread the session starts from.
+   */
+  readonly outsideCeiling?: OutsideTurnOrigin;
 }
 
 interface ForkBoundaryMessage {
@@ -1133,6 +1141,19 @@ const make = Effect.gen(function* () {
         detail: `Agent '${participantId}' is not part of thread '${threadId}'.`,
       });
     }
+    // The user raised the thread above an outside agent's ceiling after its
+    // turn was accepted: the turn doesn't run, and says why.
+    const outsideCeiling = options?.outsideCeiling;
+    if (
+      outsideCeiling !== undefined &&
+      exceedsRuntimeMode(thread.runtimeMode, outsideCeiling.maxRuntimeMode)
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: `This message from ${outsideCeiling.name} wasn't sent: the thread's access was raised above what it may use.`,
+      });
+    }
     const sessionKey = participantSessionKey(threadId, participantId);
     const early = options?.early;
     // A turn about to show the mark finds none of this reactor's launches
@@ -1184,10 +1205,13 @@ const make = Effect.gen(function* () {
     // A scheduled run's thread gets them on its own, for scheduled_run_finish
     // (docs/design/fleet.md, Part 6). A thread another computer's agent
     // started here gets none of them: it must not reach other threads here
-    // (docs/design/fleet.md, "Fence").
+    // (docs/design/fleet.md, "Fence"). Nor does one an outside agent started:
+    // through its tools the agent could reach past what it was allowed
+    // (docs/design/outside-agents.md, "Fence").
     const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
     const roomToolsWanted =
       (thread.remoteOrigin ?? null) === null &&
+      (thread.outsideOrigin ?? null) === null &&
       (hasAgentRecords(thread) ||
         agentInvitesMode(toolSettings) !== "off" ||
         agentThreadsMode(toolSettings) !== "off" ||
@@ -1577,11 +1601,14 @@ const make = Effect.gen(function* () {
     if (existingSessionThreadId) {
       // In a room the slot is re-stamped on every handover, so it can not
       // vouch for the mode this agent's runtime actually started in.
-      // Nor does it for a runtime started early, which the slot never saw.
+      // Nor does it for a runtime started early, which the slot never saw,
+      // nor for an outside agent's turn: the decider stamps the slot with
+      // the thread's mode before the runtime has it, and a runtime still at
+      // a higher mode must not take that turn.
       const inRoom = isRoomThread(thread);
       const runtimeModeChanged =
         thread.runtimeMode !==
-        (inRoom || adoptedEarlySession !== undefined
+        (inRoom || adoptedEarlySession !== undefined || outsideCeiling !== undefined
           ? (activeSession?.runtimeMode ?? projectedSession?.runtimeMode)
           : (projectedSession?.runtimeMode ?? activeSession?.runtimeMode));
       const cwdChanged =
@@ -1843,6 +1870,17 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Outside agents (docs/design/outside-agents.md): a message one wrote is
+   * named as its, so the agent here never takes it for the user's own words.
+   */
+  const outsideAgentContext = (thread: OrchestrationThread, messageId: MessageId) => {
+    const author = thread.messages.find((message) => message.id === messageId)?.fromOutside;
+    return author === undefined
+      ? undefined
+      : `This message is from ${author.name}, an agent running outside Threadlines that the user connected to this computer. It is that agent's request, not the user's own words, and nothing you write goes back to it automatically: it reads this thread.`;
+  };
+
+  /**
    * Scheduled tasks: what the user answered to this agent's schedule_create
    * and schedule_update calls since its last turn, carried once.
    */
@@ -1884,6 +1922,8 @@ const make = Effect.gen(function* () {
     readonly participantId: ThreadParticipantId | null;
     /** Child threads: the turn answers a parent's request, or reads a child's report. */
     readonly fromThread?: ThreadMessageOrigin | undefined;
+    /** An outside agent's turn: runs only within its ceiling. */
+    readonly fromOutside?: OutsideTurnOrigin | undefined;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -1944,6 +1984,7 @@ const make = Effect.gen(function* () {
       excludeContextSeedMessageId: input.messageId,
       preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
+      ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
     });
     const nativeForkApplied = ensured.nativeForkApplied;
     if (input.modelSelection !== undefined) {
@@ -1952,6 +1993,20 @@ const make = Effect.gen(function* () {
     const activeSession = yield* providerService
       .listSessions()
       .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === sessionKey)));
+    // An outside agent's turn goes only to a runtime within its ceiling,
+    // whatever the thread's setting says: one that couldn't be restarted
+    // lower (background work it won't drop) leaves the turn unsent.
+    if (
+      input.fromOutside !== undefined &&
+      activeSession !== undefined &&
+      exceedsRuntimeMode(activeSession.runtimeMode, input.fromOutside.maxRuntimeMode)
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession.provider),
+        method: "thread.turn.start",
+        detail: `This message from ${input.fromOutside.name} wasn't sent: the agent here still runs with more access than it may use.`,
+      });
+    }
     // In a room, what the other agents said and changed since this agent's
     // conversation was last caught up. Built now, from the thread as it stands
     // when the turn is sent; the cursor is only kept for the conversation it
@@ -2089,6 +2144,7 @@ const make = Effect.gen(function* () {
       forkContextText,
       roomCatchUp?.note,
       childContext.text,
+      outsideAgentContext(thread, input.messageId),
       scheduleContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
@@ -2755,6 +2811,9 @@ const make = Effect.gen(function* () {
         interactionMode: event.payload.interactionMode,
         participantId: event.payload.participantId ?? null,
         ...(event.payload.fromThread !== undefined ? { fromThread: event.payload.fromThread } : {}),
+        ...(event.payload.fromOutside !== undefined
+          ? { fromOutside: event.payload.fromOutside }
+          : {}),
         createdAt: event.payload.createdAt,
       }).pipe(
         // Preparing the session, a restart included, runs in this thread's

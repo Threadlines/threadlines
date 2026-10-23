@@ -393,6 +393,8 @@ export function decideThreadImport(
       ...(message.completesTurn !== undefined ? { completesTurn: message.completesTurn } : {}),
       // Who wrote it there, not the agent it continues with here.
       ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
+      // An outside agent there: its name, for history; its connection was that computer's.
+      ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       createdAt: message.createdAt,
       updatedAt: message.createdAt,

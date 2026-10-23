@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type EditorId,
+  type OutsideAgentRef,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ThreadId,
@@ -18,6 +19,7 @@ import {
   GlobeIcon,
   MessagesSquareIcon,
   PanelRightIcon,
+  PlugIcon,
   TerminalSquareIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -35,6 +37,7 @@ import { HeaderAgentFaces } from "./HeaderAgentFaces";
 import type { WorkingTreeChanges } from "../ChatView.logic";
 import { cn } from "../../lib/utils";
 import { useComputerLabel } from "../sidebar/linkedComputers";
+import { outsideOriginDescription } from "../../environments/outsideAgents/outsideAgents.logic";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -109,6 +112,8 @@ interface ChatHeaderProps {
   forkContext: ForkHeaderContext | null;
   /** Set on a thread another thread's agent started; it stays after separating. */
   parentContext?: ParentThreadHeaderContext | null | undefined;
+  /** Set on a thread an agent outside Threadlines started (docs/design/outside-agents.md). */
+  outsideOrigin?: OutsideAgentRef | null | undefined;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** The thread the background runs belong to; where their output is read from. */
   activeThreadRef: ScopedThreadRef | null;
@@ -269,6 +274,28 @@ function StartedByChip({
   );
 }
 
+/**
+ * A thread an agent outside Threadlines started: a chip after the title
+ * naming it ("Started by Claude Code"), by the name it gave when it signed in.
+ */
+function OutsideOriginChip({ origin }: { origin: OutsideAgentRef }) {
+  const sentence = outsideOriginDescription(origin);
+  return (
+    <span
+      data-testid="chat-header-outside-origin"
+      className={cn(STARTED_BY_CHIP_CLASS, "cursor-default")}
+      title={sentence}
+    >
+      <span className="sr-only">{sentence}</span>
+      <span aria-hidden="true" className="inline-flex min-w-0 items-center gap-1">
+        <PlugIcon className="size-3 shrink-0" />
+        <span className="hidden sm:inline">Started by</span>
+        <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">{origin.name}</span>
+      </span>
+    </span>
+  );
+}
+
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadTitle,
@@ -298,6 +325,7 @@ export const ChatHeader = memo(function ChatHeader({
   taskProgress,
   forkContext,
   parentContext = null,
+  outsideOrigin = null,
   backgroundRuns,
   activeThreadRef,
   onRunProjectScript,
@@ -401,6 +429,7 @@ export const ChatHeader = memo(function ChatHeader({
         {parentContext ? (
           <StartedByChip parent={parentContext} onOpen={onOpenParentThread} />
         ) : null}
+        {outsideOrigin ? <OutsideOriginChip origin={outsideOrigin} /> : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (
           <TooltipWrapper tooltip="This folder isn't a git repository. Chat works; source control, diffs, and refs need git. Run git init to enable them.">
             <span className="shrink-0 cursor-default text-[11px] leading-none text-amber-700/90 dark:text-amber-400/90">

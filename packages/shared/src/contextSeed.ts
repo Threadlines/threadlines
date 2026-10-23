@@ -124,7 +124,7 @@ export function renderSeedEntries(entries: ReadonlyArray<ThreadContextSeedEntry>
       lines.push(`- (tool) ${text}`);
       continue;
     }
-    const label = ROLE_LABEL[entry.role ?? "user"] ?? "User";
+    const label = entry.author ?? ROLE_LABEL[entry.role ?? "user"] ?? "User";
     lines.push(`**${label}:** ${text}`);
   }
   return lines.join("\n");
