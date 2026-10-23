@@ -16,6 +16,7 @@ import {
 } from "@threadlines/contracts";
 import { convertGitRemoteUrl } from "@threadlines/shared/git";
 import { isUncPath, isWindowsDrivePath } from "@threadlines/shared/path";
+import { trimMatchingCharacters, trimMatchingCharactersEnd } from "@threadlines/shared/String";
 
 /** A project as "does this computer have it" asks: its repository and its folder in it. */
 export interface ProjectSetupProjectKey {
@@ -151,12 +152,14 @@ export function joinProjectSetupFolder(folder: string, name: string): string {
   return /[\\/]$/.test(folder) ? `${folder}${name}` : `${folder}${separator}${name}`;
 }
 
+const isPathSeparator = (character: string) => character === "/" || character === "\\";
+
 /**
  * The folder holding `path`, or null when that would be a filesystem root
  * (`/`, `C:\`): no one keeps their projects loose there.
  */
 export function projectSetupParentFolder(path: string): string | null {
-  const trimmed = path.replace(/[\\/]+$/, "");
+  const trimmed = trimMatchingCharactersEnd(path, isPathSeparator);
   const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   if (cut <= 0) return null;
   const parent = trimmed.slice(0, cut);
@@ -200,7 +203,7 @@ export function defaultProjectSetupFolder(input: {
   )[0];
   if (shared !== undefined) return joinProjectSetupFolder(shared[0], input.folderName);
 
-  const homeRelativePath = input.homeRelativePath?.replace(/^[\\/]+|[\\/]+$/g, "") ?? "";
+  const homeRelativePath = trimMatchingCharacters(input.homeRelativePath ?? "", isPathSeparator);
   if (homeRelativePath.length > 0) return `~/${homeRelativePath}`;
   return `~/${input.folderName}`;
 }

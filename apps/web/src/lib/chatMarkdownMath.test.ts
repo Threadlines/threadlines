@@ -79,6 +79,13 @@ describe("normalizeChatMath", () => {
     expect(normalizeChatMath("\\[\r\nx^2\r\n\r\ny^2\r\n\\]")).toBe("$$\nx^2\n\ny^2\n$$");
   });
 
+  it("reads a line of many nested quote markers at once", () => {
+    // The line-start patterns once tried every way to share the spaces
+    // between markers: 2^40 tries before saying this isn't display math.
+    const line = `${"> ".repeat(40)}x costs $5`;
+    expect(normalizeChatMath(line)).toBe(line);
+  });
+
   it("waits for the character after a closing dollar while a reply streams", () => {
     // `$5-$` might still become `$5-$10`.
     expect(normalizeChatMath("from $5-$", { streaming: true })).toBe("from $5-$");

@@ -84,3 +84,28 @@ export function formatForkSourceExcerpt(text: string, maxLength: number): string
 
   return truncate(collapseWhitespace(stripMarkdownCodeFences(trimmed)), maxLength);
 }
+
+/**
+ * `value` without the characters `shouldTrim` matches at either end. A loop
+ * rather than a `^[…]+|[…]+$` regex: on a long run of those characters that
+ * doesn't reach the end, the regex retries from each one of them, slowing to
+ * a crawl on input like "/////…x".
+ */
+export function trimMatchingCharacters(
+  value: string,
+  shouldTrim: (character: string) => boolean,
+): string {
+  let start = 0;
+  while (start < value.length && shouldTrim(value[start] ?? "")) start += 1;
+  return trimMatchingCharactersEnd(value.slice(start), shouldTrim);
+}
+
+/** `value` without the characters `shouldTrim` matches at its end, the same way. */
+export function trimMatchingCharactersEnd(
+  value: string,
+  shouldTrim: (character: string) => boolean,
+): string {
+  let end = value.length;
+  while (end > 0 && shouldTrim(value[end - 1] ?? "")) end -= 1;
+  return value.slice(0, end);
+}

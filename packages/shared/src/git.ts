@@ -10,6 +10,7 @@ import type {
 import { randomUUIDv4 } from "./uuid.ts";
 import * as Effect from "effect/Effect";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
+import { trimMatchingCharacters, trimMatchingCharactersEnd } from "./String.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "threadlines";
 const LEGACY_WORKTREE_BRANCH_PREFIXES = ["t3code"] as const;
@@ -18,19 +19,7 @@ const TEMP_WORKTREE_BRANCH_PATTERNS = [
   ...LEGACY_WORKTREE_BRANCH_PREFIXES,
 ].map((prefix) => new RegExp(`^${prefix}\\/[0-9a-f]{8}$`));
 
-function trimMatchingCharacters(value: string, shouldTrim: (character: string) => boolean): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && shouldTrim(value[start] ?? "")) start += 1;
-  while (end > start && shouldTrim(value[end - 1] ?? "")) end -= 1;
-  return value.slice(start, end);
-}
-
-function trimTrailingCharacter(value: string, character: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === character) end -= 1;
-  return value.slice(0, end);
-}
+const isSlash = (character: string) => character === "/";
 
 function stripGitSuffix(value: string): string {
   return value.toLowerCase().endsWith(".git") ? value.slice(0, -4) : value;
@@ -205,7 +194,7 @@ export function buildWorkBranchName(raw: string): string {
  * the URL's shape.
  */
 export function normalizeGitRemoteUrl(value: string): string {
-  const normalized = stripGitSuffix(trimTrailingCharacter(value.trim(), "/")).toLowerCase();
+  const normalized = stripGitSuffix(trimMatchingCharactersEnd(value.trim(), isSlash)).toLowerCase();
 
   if (/^(?:ssh|https?|git):\/\//i.test(normalized)) {
     try {
@@ -469,7 +458,7 @@ export function parseGitRemoteEndpoint(url: string): GitRemoteEndpoint | null {
   }
   const scpStyle = /^[a-z0-9._-]+@([a-z0-9.-]+):([^/\s].*)$/i.exec(trimmed);
   if (scpStyle?.[1] && scpStyle[2]) {
-    const path = stripGitSuffix(trimTrailingCharacter(scpStyle[2], "/"));
+    const path = stripGitSuffix(trimMatchingCharactersEnd(scpStyle[2], isSlash));
     return path.length > 0 ? { scheme: "ssh", host: scpStyle[1].toLowerCase(), path } : null;
   }
   return null;

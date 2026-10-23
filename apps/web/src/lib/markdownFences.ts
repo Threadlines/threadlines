@@ -12,10 +12,15 @@ const BLOCK_FENCE_MARKER_REGEX = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /**
  * What can start a line before a display formula: quote markers, and on the
  * first line of a list item its marker. Captured so a rewrite keeps it.
+ *
+ * Each space or tab here has one place to go: a list marker only looks ahead
+ * at the space after it, and the next marker or the final run takes it. When
+ * a marker could also keep the space, a line of thirty quote markers that
+ * didn't match took seconds to give up on.
  */
-export const OPENER_PREFIX = String.raw`((?:[ \t]*(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+))*[ \t]*)`;
+export const OPENER_PREFIX = String.raw`((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*)`;
 /** What can start a later line of the same container: quote markers and indentation. */
-export const CONTINUATION_PREFIX = String.raw`((?:[ \t]*>[ \t]?)*[ \t]*)`;
+export const CONTINUATION_PREFIX = String.raw`((?:[ \t]*>)*[ \t]*)`;
 
 /** `$$` opening display math, alone or with the formula's first line after it. */
 export const DOLLAR_MATH_OPEN_REGEX = new RegExp(
@@ -121,8 +126,9 @@ export function createFenceTracker(options?: {
   };
 }
 
+// OPENER_PREFIX, uncaptured.
 const FENCED_BLOCK_OPENER_REGEX =
-  /^(?:[ \t]*(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+))*[ \t]*(`{3,}|~{3,}|\$\$)/;
+  /^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*(`{3,}|~{3,}|\$\$)/;
 const CONTINUATION_PREFIX_REGEX = new RegExp(`^${CONTINUATION_PREFIX}`);
 
 /**

@@ -157,7 +157,8 @@ export function addProviderAuthHint(provider: ProviderDriverKind, message: strin
  */
 export function hasProviderAuthError(text: string | null | undefined): boolean {
   return (text ?? "").split("\n").some((line) => {
-    const withoutHint = line.replace(/\s*Run `[^`]+` in a terminal, then retry\.\s*$/u, "");
+    // No leading \s* in the pattern: on a long run of spaces it would retry from each one.
+    const withoutHint = line.replace(/Run `[^`]+` in a terminal, then retry\.\s*$/u, "").trimEnd();
     return isProviderAuthErrorMessage(withoutHint) || isProviderAuthErrorMessage(line);
   });
 }

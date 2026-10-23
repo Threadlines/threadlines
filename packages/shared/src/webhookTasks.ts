@@ -20,6 +20,7 @@ import type {
 } from "@threadlines/contracts";
 
 import { bytesEqual, fromBase64Url, hmacSha256, utf8 } from "./relaySecure.ts";
+import { trimMatchingCharactersEnd } from "./String.ts";
 
 // ---------------------------------------------------------------------------
 // Events
@@ -353,7 +354,10 @@ function fromHex(text: string): Uint8Array | null {
 }
 
 function fromBase64(text: string): Uint8Array | null {
-  const urlSafe = text.trim().replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+  const urlSafe = trimMatchingCharactersEnd(
+    text.trim().replace(/\+/gu, "-").replace(/\//gu, "_"),
+    (character) => character === "=",
+  );
   return fromBase64Url(urlSafe);
 }
 
