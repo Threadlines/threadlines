@@ -45,7 +45,8 @@ import {
   ScheduledTaskNotesLive,
   ScheduledTasksLive,
 } from "./scheduled/ScheduledTasks.ts";
-import { localHookRouteLayer, localHookTracingLayer } from "./scheduled/webhookRoute.ts";
+import { localHookRouteLayer } from "./scheduled/webhookRoute.ts";
+import { requestPrivacy, requestTracingPrivacyLayer } from "./httpRequestPrivacy.ts";
 import { WebhookTaskRepositoryLive } from "./scheduled/WebhookTaskRepository.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -724,8 +725,10 @@ export const makeServerLayer = Layer.unwrap(
     const serverApplicationLayer = Layer.mergeAll(
       HttpRouter.serve(makeRoutesLayer, {
         disableLogger: !config.logWebSocketEvents,
-        // Event tasks' local addresses carry their token in the path.
-      }).pipe(Layer.provide(localHookTracingLayer)),
+        // Paths that carry a credential (event tasks' local addresses) are
+        // logged cut short and never traced, preflights included.
+        middleware: requestPrivacy(config.logWebSocketEvents),
+      }).pipe(Layer.provide(requestTracingPrivacyLayer)),
       httpListeningLayer,
       runtimeStateLayer,
       relayStartLayer,

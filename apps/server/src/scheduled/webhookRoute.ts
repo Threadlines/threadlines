@@ -5,15 +5,14 @@
  * network, a tunnel). No session sign-in: the 32-byte token in the path is
  * the sign-in, checked in constant time before the body is read. The body is
  * capped at 1 MiB and each task takes 60 requests a minute. The path is a
- * credential, so the request is never logged or traced.
+ * credential: httpRequestPrivacy keeps it out of the server's logs and
+ * traces, for this route and anything else answering the same path.
  */
 import { RELAY_HOOK_MAX_BODY_BYTES } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Layer from "effect/Layer";
 import {
   HttpIncomingMessage,
-  HttpMiddleware,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
@@ -22,10 +21,6 @@ import {
 import { ScheduledTasks } from "./ScheduledTasks.ts";
 
 export const LOCAL_HOOK_ROUTE = "/api/hooks/:taskId/:token";
-
-/** Requests to the route, which tracing leaves out (the path carries the token). */
-export const isLocalHookRequest = (request: HttpServerRequest.HttpServerRequest) =>
-  request.url.startsWith("/api/hooks/");
 
 /** Methods a sender may use, as through the relay. */
 const METHODS: ReadonlySet<string> = new Set(["POST", "PUT", "PATCH"]);
@@ -57,12 +52,7 @@ const handler = Effect.gen(function* () {
   return status === 202
     ? HttpServerResponse.jsonUnsafe({ accepted: true }, { status: 202 })
     : HttpServerResponse.empty({ status });
-}).pipe(HttpMiddleware.withLoggerDisabled);
+});
 
 /** Every method lands here, so none falls through to a logged "not found" with the token. */
 export const localHookRouteLayer = HttpRouter.add("*", LOCAL_HOOK_ROUTE, handler);
-
-/** Leaves the route's requests out of server tracing, whose spans record the path. */
-export const localHookTracingLayer = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
-  isLocalHookRequest,
-);
