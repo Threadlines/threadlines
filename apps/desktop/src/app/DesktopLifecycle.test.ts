@@ -211,6 +211,22 @@ describe("confirmQuitWithRunningAgentSessions", () => {
             );
           }),
       });
+      // Asked for other work, the question still says what happens to them.
+      yield* runConfirmHarness({
+        runningThreadCount: 0,
+        busyTerminalCount: 1,
+        activeScheduledTaskCount: 1,
+        styledFailure: { windowOpen: true },
+        nativeResponse: 0,
+        body: (shouldQuit, _styledCalls, dialogCalls) =>
+          Effect.sync(() => {
+            assert.equal(shouldQuit, false);
+            assert.equal(
+              dialogCalls[0]?.message,
+              "A terminal command is still running. A scheduled task won't run until you open Threadlines again.",
+            );
+          }),
+      });
     }),
   );
 

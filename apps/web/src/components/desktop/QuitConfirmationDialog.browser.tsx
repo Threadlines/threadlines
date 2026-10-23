@@ -166,4 +166,24 @@ describe("QuitConfirmationDialog", () => {
         "npm run dev is still running in a terminal. Quitting now will stop it and the local Threadlines server.",
       );
   });
+
+  it("asks about scheduled tasks alone without naming work that isn't running", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_COMPUTER_ID,
+      label: "Gaming PC",
+      platform: { os: "windows", arch: "x64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    const bridge = stubQuitBridge();
+    mounted = await render(<QuitConfirmationDialog />);
+
+    // Kept running in the tray, quitting stops the schedules and nothing else.
+    bridge.ask({ requestId: "quit-3", runningThreadCount: 0, activeScheduledTaskCount: 2 });
+    await expect
+      .element(page.getByRole("alertdialog"))
+      .toMatchTextContent(
+        /^Quit Threadlines\?Quitting now will stop the local Threadlines server\. This computer's 2 scheduled tasks won't run until you open Threadlines again\./,
+      );
+  });
 });
