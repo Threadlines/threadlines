@@ -3892,6 +3892,11 @@ export const ThreadImportMessage = Schema.Struct({
   completesTurn: Schema.optional(Schema.Boolean),
   /** Who wrote it, as stamped where it was written (OrchestrationMessage.agentModels). */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
+  /**
+   * An outside agent wrote it, on the computer it left (OrchestrationMessage.fromOutside).
+   * Kept for who wrote it only: the connection is that computer's, not this one's.
+   */
+  fromOutside: Schema.optional(OutsideAgentRef),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;

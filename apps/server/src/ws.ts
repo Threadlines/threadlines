@@ -2854,22 +2854,38 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
             "rpc.aggregate": "projectSetups",
           }),
-        // Outside agents (docs/design/outside-agents.md): placeholders until
-        // the sign-in side lands; every one refuses.
+        // Outside agents (docs/design/outside-agents.md): owner only. These
+        // are placeholders until the sign-in side lands; every one refuses.
         [WS_METHODS.outsideAgentsSubscribe]: (_input) =>
-          Stream.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          Stream.unwrap(
+            requireOwner(WS_METHODS.outsideAgentsSubscribe).pipe(
+              Effect.as(Stream.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+            ),
+          ),
         [WS_METHODS.outsideAgentsApprove]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsApprove).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.outsideAgentsDeny]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsDeny).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.outsideAgentsDenyAll]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsDenyAll).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.outsideAgentsResumeRequests]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsResumeRequests).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.outsideAgentsUpdate]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsUpdate).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.outsideAgentsRemove]: (_input) =>
-          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+          requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
+            Effect.andThen(Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady }))),
+          ),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

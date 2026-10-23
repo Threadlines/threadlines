@@ -119,6 +119,13 @@ function inferOs(userAgent: string | undefined): string | undefined {
   return undefined;
 }
 
+/** The address the request's socket came from (IPv4-mapped IPv6 unwrapped), when known. */
+export function requestRemoteAddress(
+  request: Pick<HttpServerRequest.HttpServerRequest, "source">,
+): string | undefined {
+  return readRemoteAddressFromSource(request.source);
+}
+
 function readRemoteAddressFromSource(source: unknown): string | undefined {
   if (!source || typeof source !== "object") {
     return undefined;

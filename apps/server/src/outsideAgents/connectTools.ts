@@ -23,7 +23,7 @@ import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
-import { AgentParameter, drivesThreads, readsThreads } from "../mcp/threadTools.ts";
+import { agentParameter, drivesThreads, readsThreads } from "../mcp/threadTools.ts";
 import type { OutsideAgentCaller } from "./OutsideAgentConnections.ts";
 
 /** The connection behind the call being handled (set by the `/mcp/connect` middleware). */
@@ -38,8 +38,24 @@ const dependencies = [McpConnectInvocation];
 export const THREAD_WAIT_MAX_SECONDS = 50;
 export const THREAD_WAIT_DEFAULT_SECONDS = 45;
 
-/** A refusal every tool can give: the connection may not do this (its grant), or the user removed it. */
 const Detail = Schema.optional(Schema.String);
+
+/**
+ * Every tool can answer `limit` when the connection made too many calls in
+ * the last minute (or, for a start, has too many threads running or started
+ * too many today); `retryAfterSeconds` says when to try again, when known.
+ */
+const RetryAfter = Schema.optional(Schema.Number);
+
+/**
+ * How the thread's newest turn ended, so a caller can tell a finished turn
+ * from a stopped or failed one (the status word says `idle` for all three).
+ */
+export const OutsideLastTurn = Schema.Struct({
+  turnId: Schema.String,
+  state: Schema.Literals(["running", "completed", "interrupted", "error"]),
+});
+export type OutsideLastTurn = typeof OutsideLastTurn.Type;
 
 export const OutsideThreadSummary = Schema.Struct({
   ...AgentThreadSummary.fields,
@@ -47,6 +63,8 @@ export const OutsideThreadSummary = Schema.Struct({
   project: Schema.String,
   /** The thread's access now (`approval-required` is Supervised). */
   access: RuntimeMode,
+  /** Its newest turn; null before the first. */
+  lastTurn: Schema.NullOr(OutsideLastTurn),
 });
 export type OutsideThreadSummary = typeof OutsideThreadSummary.Type;
 
@@ -55,8 +73,9 @@ export const OutsideWaitingOn = Schema.Literals(["approval", "question", "plan"]
 export type OutsideWaitingOn = typeof OutsideWaitingOn.Type;
 
 export const ProjectsResult = Schema.Struct({
-  outcome: Schema.Literals(["ok", "not_allowed"]),
+  outcome: Schema.Literals(["ok", "not_allowed", "limit"]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   projects: Schema.Array(
     Schema.Struct({ projectId: Schema.String, name: Schema.String, folder: Schema.String }),
   ),
@@ -64,8 +83,9 @@ export const ProjectsResult = Schema.Struct({
 export type ProjectsResult = typeof ProjectsResult.Type;
 
 export const AgentsResult = Schema.Struct({
-  outcome: Schema.Literals(["ok", "not_allowed"]),
+  outcome: Schema.Literals(["ok", "not_allowed", "limit"]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   agents: Schema.Array(AgentThreadAgent),
   /** What a thread runs on when thread_start's `agent` is left out: the user's default. */
   default: Schema.NullOr(Schema.Struct({ instanceId: Schema.String, model: Schema.String })),
@@ -76,15 +96,17 @@ export const AgentsResult = Schema.Struct({
 export type AgentsResult = typeof AgentsResult.Type;
 
 export const ThreadsListResult = Schema.Struct({
-  outcome: Schema.Literals(["ok", "not_allowed", "not_found"]),
+  outcome: Schema.Literals(["ok", "not_allowed", "not_found", "limit"]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   threads: Schema.Array(OutsideThreadSummary),
 });
 export type ThreadsListResult = typeof ThreadsListResult.Type;
 
 export const OutsideThreadReadResult = Schema.Struct({
   ...AgentThreadReadResult.fields,
-  outcome: Schema.Literals(["ok", "not_allowed", "not_found"]),
+  outcome: Schema.Literals(["ok", "not_allowed", "not_found", "limit"]),
+  retryAfterSeconds: RetryAfter,
   thread: Schema.optional(OutsideThreadSummary),
   waitingOn: Schema.optional(OutsideWaitingOn),
 });
@@ -92,8 +114,9 @@ export type OutsideThreadReadResult = typeof OutsideThreadReadResult.Type;
 
 export const ThreadWaitResult = Schema.Struct({
   /** `done`: it left `working`. `still_working`: the wait ran out first; wait again. */
-  outcome: Schema.Literals(["done", "still_working", "not_allowed", "not_found"]),
+  outcome: Schema.Literals(["done", "still_working", "not_allowed", "not_found", "limit"]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   thread: Schema.optional(OutsideThreadSummary),
   waitingOn: Schema.optional(OutsideWaitingOn),
   /** Its newest reply, clipped at 4,000 characters; null when it has none. */
@@ -112,6 +135,7 @@ export const OutsideThreadStartResult = Schema.Struct({
     "failed",
   ]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   thread: Schema.optional(
     Schema.Struct({
       threadId: Schema.String,
@@ -137,6 +161,7 @@ export const OutsideThreadSendResult = Schema.Struct({
     "failed",
   ]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   threadId: Schema.optional(Schema.String),
 });
 export type OutsideThreadSendResult = typeof OutsideThreadSendResult.Type;
@@ -148,9 +173,11 @@ export const OutsideThreadStopResult = Schema.Struct({
     "not_yours",
     "not_allowed",
     "not_found",
+    "limit",
     "failed",
   ]),
   detail: Detail,
+  retryAfterSeconds: RetryAfter,
   threadId: Schema.optional(Schema.String),
 });
 export type OutsideThreadStopResult = typeof OutsideThreadStopResult.Type;
@@ -248,7 +275,7 @@ export const OutsideThreadStartTool = drivesThreads(
       title: Schema.optional(
         Schema.String.annotate({ description: "A few words naming the work." }),
       ),
-      agent: Schema.optional(AgentParameter),
+      agent: Schema.optional(agentParameter("agents")),
       workspace: Schema.optional(
         Schema.Literals(["worktree", "project_folder"]).annotate({
           description:

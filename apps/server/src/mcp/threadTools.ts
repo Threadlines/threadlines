@@ -140,18 +140,22 @@ const ThreadIdParameter = Schema.String.annotate({
   description: "The thread's id, from thread_start or thread_list.",
 });
 
-export const AgentParameter = Schema.Struct({
-  instanceId: Schema.String.annotate({ description: "From thread_agents." }),
-  model: Schema.String.annotate({ description: "From thread_agents." }),
-  options: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        id: Schema.String,
-        value: Schema.Union([Schema.String, Schema.Boolean]),
-      }),
-    ).annotate({ description: "Model options such as reasoning effort; usually left out." }),
-  ),
-});
+/** The `agent` parameter of a tool that starts threads; `listTool` is where its values come from. */
+export const agentParameter = (listTool: string) =>
+  Schema.Struct({
+    instanceId: Schema.String.annotate({ description: `From ${listTool}.` }),
+    model: Schema.String.annotate({ description: `From ${listTool}.` }),
+    options: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          value: Schema.Union([Schema.String, Schema.Boolean]),
+        }),
+      ).annotate({ description: "Model options such as reasoning effort; usually left out." }),
+    ),
+  });
+
+const AgentParameter = agentParameter("thread_agents");
 
 export const readsThreads = <T extends Tool.Any>(tool: T): T =>
   tool

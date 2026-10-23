@@ -391,6 +391,11 @@ const make = Effect.gen(function* () {
             ...(bootstrap.createThread.agentRole !== undefined
               ? { agentRole: bootstrap.createThread.agentRole }
               : {}),
+            // Only `/mcp/connect` builds a bootstrap with it; the Normalizer
+            // refuses it from clients (docs/design/outside-agents.md).
+            ...(bootstrap.createThread.outsideOrigin !== undefined
+              ? { outsideOrigin: bootstrap.createThread.outsideOrigin }
+              : {}),
             createdAt: bootstrap.createThread.createdAt,
           });
           createdThread = true;

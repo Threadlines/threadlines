@@ -208,9 +208,15 @@ which Claude Code builds on.
   - `client_name` (trimmed, at most 60 characters);
   - up to 5 `redirect_uris`;
   - `software_id`;
-  - when it was issued.
+  - a random registration id.
+- **Same agent.** "The same agent" means the same registration. Clients keep
+  theirs and sign in again with it (Claude Code, Codex and the `threadlines`
+  command do), so a new approval replaces their old connection. A fresh
+  registration is a new agent.
 - **Redirects:** loopback only. `http://127.0.0.1`, `http://localhost` or
-  `http://[::1]`, on any port, with the path matched exactly (RFC 8252).
+  `http://[::1]`. The port is ignored when matching: a registered loopback
+  redirect matches any port at authorize time, so a kept registration works
+  with a fresh listener (RFC 8252 §7.3). The path must match exactly.
 - **Refused:** https callbacks, other hosts, userinfo, fragments.
 - **No CIMD.** Clients fall back to DCR, and a CIMD document proves nothing for
   a client with a localhost redirect.
@@ -312,12 +318,20 @@ which Claude Code builds on.
 
 ### Host and origin
 
-- **Host allowlist:** `127.0.0.1`, `localhost` or `[::1]` on the server's port.
-  - Anything else gets a 421 with a plain message. This blocks DNS rebinding.
-  - It refuses requests arriving through Tailscale Serve or a network-exposed
-    bind (DesktopServerExposure). Approval promises the agent is on this
-    computer, and a remote client with its own loopback listener would break
-    that promise.
+- **On this computer only.** `outsideAgentOrigin` (OutsideAgentConnections.ts)
+  requires all three of these:
+  - **The socket's own address is loopback.** A network-exposed server
+    (DesktopServerExposure) can't be reached from the LAN by sending
+    `Host: 127.0.0.1`.
+  - **No proxy header.** `Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP` and
+    `Tailscale-User-*` are all refused. Tailscale Serve and reverse proxies
+    connect from loopback on someone else's behalf.
+  - **Host** is `127.0.0.1`, `localhost` or `[::1]` on the server's port. This
+    blocks DNS rebinding.
+
+  Anything else gets a 421 with a plain message. Approval promises the agent is
+  on this computer.
+
 - **Browser requests:** a request to `/mcp/connect` carrying `Origin` gets a 403. Effect's McpServer already does this, and a test pins it.
 - **CORS:** `/oauth/*` and the well-known routes are taken out of
   `httpCors.ts`'s `*`.
@@ -340,7 +354,7 @@ which Claude Code builds on.
     `created_at`;
   - kept for 24 hours.
 - **Projection columns:** `projection_threads.outside_origin_json` and
-  `projection_thread_messages.from_outside_json`.
+  `projection_thread_messages.from_outside`.
   - These are new columns with no backfill. SQLite adds a column without
     rewriting rows.
   - Still timed against a copy of a real database before merging (the
@@ -364,10 +378,14 @@ which Claude Code builds on.
   - After a Change, a newly allowed tool shows the next time the agent lists
     tools, usually when it starts.
   - A removed one is refused at once, whether the agent lists again or not.
-- **Refusals.** A refused call is a tool error result with `outcome:
-  "not_allowed"` and a plain reason, such as "This connection can only see
-  threads. The user can change that in Threadlines → Settings → Connections."
-  - That matches the internal tools' outcomes.
+- **Refusals.** A refused call is an ordinary (successful) tool result whose
+  `outcome` says why: for example `not_allowed`, with a plain reason such as
+  "This connection can only see threads. The user can change that in
+  Threadlines → Settings → Connections."
+  - That matches the internal tools' house rule: every decision is an outcome,
+    never an MCP error, so the structured result always decodes.
+  - **Limits.** Every tool can answer `limit`, with `retryAfterSeconds` when
+    known.
   - We don't use HTTP 403 `insufficient_scope`, which clients turn into a new
     sign-in prompt. A downgrade was the user's own choice.
 
@@ -404,11 +422,17 @@ which Claude Code builds on.
 `thread_send`, carries `fromOutside { connectionId, name, maxRuntimeMode }` on
 `thread.turn.start`.
 
-- The decider refuses the turn with a typed error when the thread's current
-  access is above `maxRuntimeMode`. The handler turns that into `not_allowed`:
-  "This thread's access is above what Claude Code may use."
-- The decider is serialized, so a raise can't slip between the check and the
-  turn.
+- **Ceiling.** The decider refuses the turn with a distinguishable, typed
+  refusal when the thread's current access is above `maxRuntimeMode`. The
+  handler turns that into `not_allowed`: "This thread's access is above what
+  Claude Code may use."
+- **Busy.** The decider also refuses an outside turn while the thread has a
+  turn running or about to start (a pending turn start, an approval, question
+  or plan still waiting), or its setup is in progress. That refusal is also
+  distinguishable, and the handler turns it into `busy`. A per-connection lock
+  can't serialize against the user's own sends; the decider can.
+- The decider is serialized, so a raise or a user's send can't slip between
+  the check and the turn.
 - **Build check.** The reactor must start the provider at the mode recorded on
   the turn-start event, not re-read the thread's.
   - Today the decider emits the thread's current mode (decider.ts:2450).
@@ -474,15 +498,21 @@ new thread, a `thread.turn.start` with a `bootstrap`, and runs it through
   - `fromOutside` on the turn start;
   - ids derived from `(connectionId, requestId)`.
 
-**A restart in the middle** behaves exactly as when the app's own first send is
-cut off by one.
+**A restart in the middle.** `runTurnStart` is not resumable: only its final
+turn start has a stable command id. If the server restarts after it made the
+thread but before the turn started, the thread is left without its first turn,
+as the app's own first send would be.
 
-- `runTurnStart` keeps the command id for the final turn start, so a retry
-  after the turn started is answered from its receipt.
-- The live test restarts the server mid-start and checks that a retry with the
-  same `requestId` produces neither a second thread nor a stuck one.
-- Anything wrong there is a bug in the app's path too, and is fixed there, in
-  the shared path, not worked around here.
+- The `outside_agent_requests` row says `starting` until the call answers.
+- On startup, rows still `starting` become `failed`. A retry with the same
+  `requestId` then answers `failed`, names the half-made thread and says to
+  start again with a new `requestId`. It never re-runs the bootstrap: that would
+  fail on the existing thread, or cut a second worktree.
+- The half-made thread is visible in the app with the agent's label, so the
+  user can see it and delete it.
+- Making `runTurnStart` resume its stages (stable sub-command ids, recovering
+  an existing worktree) would help the app's own first send too. That is a
+  separate follow-up (Honest limits).
 
 **Server-only fields.** `outsideOrigin` (on `ThreadBootstrapCreateThread` and
 the thread shell) and `fromOutside` (on `thread.turn.start`) are server-only,
@@ -502,7 +532,7 @@ schema has no such fields, and the Normalizer refuses them.
 `fromThread`:
 
 - **Decider:** onto the message events.
-- **Projector:** into `from_outside_json`.
+- **Projector:** into `projection_thread_messages.from_outside`.
 - **Provider context:** the agent sees the message labelled as coming from the
   outside agent, by name, the way `fromThread` requests are labelled.
 - **Shared code:** `packages/shared/src/roomAgentRequests.ts` (origin
@@ -510,6 +540,15 @@ schema has no such fields, and the Normalizer refuses them.
   the agent's name, not "User".
 - **The web:** the message folds like agent messages (agentMessageFolds),
   labelled with the name.
+- **Moves and context seeds.**
+  - `ThreadImportMessage.fromOutside` carries the attribution when a thread
+    moves to another computer, for who wrote it only: the connection belongs to
+    the computer it left.
+  - Fork context and provider-handoff seeds (`packages/shared/src/contextSeed.ts`
+    renders user-role messages as "User") use the same shared attribution
+    rendering.
+  - The thread's `outsideOrigin` is never copied onto a fork or an imported
+    thread. Ownership is local; who wrote what is history.
 
 No queued outside messages exist, so the follow-up queue needs no change.
 
@@ -532,7 +571,12 @@ live ceiling, until it's removed.
   - send and stop dispatch;
   - thread status. Status combines shell state with scheduled-task waiting
     state (threadToolHandlers.ts:1401). Today it checks approvals before
-    running state, and that order stays.
+    running state, and that order stays. It must also count an actionable
+    proposed plan (the shell's `hasActionableProposedPlan`) as "needs the user"
+    with `waitingOn: "plan"`. Today a finished planning turn reads `idle`.
+  - Each summary carries the newest turn's id and how it ended (`lastTurn`).
+    The status word says `idle` after a completed, a stopped or a failed turn
+    alike.
 
 Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
 
@@ -577,6 +621,9 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
 - **The address carries the port.** Desktop keeps 3773 unless something else
   holds it. Then Settings shows the new address, and the user adds it again.
 - **Check-backs** are outside the running cap.
+- **A restart during a start** leaves a thread without its first turn (see
+  Starting). Making `runTurnStart` resumable would fix it for the app's own
+  first send too. It's a follow-up, not in this build.
 - **Phones** can't see, approve or remove connections.
 - **One long-lived token per connection** (see Spec status).
 
@@ -733,14 +780,14 @@ It lives in `apps/server/src/cli/` (registered in bin.ts beside `auth` and
 
 **Exit codes** (the same for `--wait` and `thread wait`):
 
-| Code | Meaning                                                                                               |
-| ---- | ----------------------------------------------------------------------------------------------------- |
-| 0    | Done: the call worked, or the thread finished and is idle.                                            |
-| 1    | The thread failed or was stopped, or the call `failed`.                                               |
-| 2    | The thread needs the user: an approval, a question or a plan.                                         |
-| 3    | `--timeout` ran out.                                                                                  |
-| 4    | Refused: `not_allowed`, `not_found`, `not_yours`, `limit`, `busy`, `conflict` or `unavailable_agent`. |
-| 5    | Not connected (run `threadlines connect`), or Threadlines isn't running.                              |
+| Code | Meaning                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------- |
+| 0    | Done: the call worked, or the thread's newest turn `completed` (status idle, waiting or wrapped).             |
+| 1    | The thread's newest turn was `interrupted` or ended in `error`, its status is `failed`, or the call `failed`. |
+| 2    | The thread needs the user: an approval, a question or a plan.                                                 |
+| 3    | `--timeout` ran out.                                                                                          |
+| 4    | Refused: `not_allowed`, `not_found`, `not_yours`, `limit`, `busy`, `conflict` or `unavailable_agent`.         |
+| 5    | Not connected (run `threadlines connect`), or Threadlines isn't running.                                      |
 
 **Finding Threadlines.**
 
@@ -785,6 +832,12 @@ through the desktop bridge:
   folder added to the user PATH (no admin). New terminals see it.
 - **Linux:** `~/.local/bin/threadlines`. When that folder isn't on PATH, the row
   says so.
+  - **AppImage builds** run from a temporary mount that changes every launch,
+    so the script can't hold paths inside it. Instead it runs the persistent
+    `$APPIMAGE` file with an environment variable the app's main process checks
+    first, which then runs the command from wherever it is mounted.
+  - This is tested across a quit and relaunch. If that can't be made reliable,
+    the row says Install isn't available for the AppImage.
 - **The script** runs the app's own runtime: `ELECTRON_RUN_AS_NODE=1` with the
   app executable and the app's `apps/server/dist/bin.mjs`.
   - The paths are written in at install time, plus the app's
@@ -823,6 +876,45 @@ through the desktop bridge:
 - **A third access level**, "work with all threads", under the live ceiling.
 - **Queued sends**, if agents ask for them. Each queued message would carry
   its ceiling, and be re-checked and counted when it drains.
+
+## Rev 4: Sol's review of the shared pieces, and what changed
+
+14 findings. Each was taken; fixes are in the code or in this plan as noted.
+
+1. **Host alone didn't prove locality.** `outsideAgentOrigin` now also needs a
+   loopback socket address and no proxy header, with a test.
+2. **`runTurnStart` dropped `outsideOrigin`.** It's forwarded now
+   (ThreadBootstrap.ts).
+3. **`runTurnStart` can't resume a start cut off by a restart.**
+   - The plan no longer promises it.
+   - A `starting` row turns `failed` on startup, a retry answers `failed`, and
+     the half-made thread stays visible.
+   - Resumable bootstrap is a follow-up.
+4. **"Busy" needed the decider.** The decider refuses an outside turn while the
+   thread is busy, with a distinguishable refusal.
+5. **The wait couldn't tell finished from stopped.** Summaries now carry
+   `lastTurn`, and the exit codes map every status.
+6. **Actionable plans read `idle`.** The shared status counts them as needing
+   the user.
+7. **Reconnecting made a new agent.** Same agent now means same registration.
+   The command keeps its registration, and a loopback redirect matches any
+   port.
+8. **AppImage paths are temporary.** The script runs the persistent
+   `$APPIMAGE`, or Install says it isn't available.
+9. **Attribution was lost through moves and context seeds.**
+   - `ThreadImportMessage.fromOutside` was added.
+   - Context seeds use the shared rendering.
+   - `outsideOrigin` is never copied onto forks or imports.
+10. **No limit answer on most tools.** Every result has `limit` and
+    `retryAfterSeconds`.
+11. **The plan said "tool error" while the schemas use outcomes.** Outcomes in
+    successful results, everywhere.
+12. **The placeholder RPCs had no owner guard.** `requireOwner` is in front of
+    each now.
+13. **The column name differed between the plan and the migration.** It's
+    `from_outside` in both.
+14. **The agent parameter pointed to `thread_agents`.** It's now
+    `agentParameter("agents")` for outside tools.
 
 ## Rev 3: Sol's re-check of rev 2, and what changed
 

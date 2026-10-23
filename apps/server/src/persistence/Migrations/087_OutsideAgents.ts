@@ -20,7 +20,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *   `thread_send`, keyed by the caller's `requestId` (or one the server made).
  *   `input_hash` tells a retry from a different call under the same id.
  *   `command_id` and `thread_id` are the derived ids the call dispatched;
- *   `result_json` is what it answered. Rows go 24 hours after `created_at`.
+ *   `state` is `starting` until it answers, then `done` with `result_json`.
+ *   A row still `starting` after a restart was cut off: a retry answers
+ *   `failed` naming the thread, never runs it again. Rows go 24 hours after
+ *   `created_at`.
  * - `projection_threads.outside_origin_json`: see OutsideAgentRef
  *   (`outsideOrigin`).
  * - `projection_thread_messages.from_outside`: see OutsideAgentRef
@@ -63,6 +66,7 @@ export default Effect.gen(function* () {
       input_hash TEXT NOT NULL,
       thread_id TEXT,
       command_id TEXT,
+      state TEXT NOT NULL,
       result_json TEXT,
       created_at TEXT NOT NULL,
       PRIMARY KEY (connection_id, request_id)
