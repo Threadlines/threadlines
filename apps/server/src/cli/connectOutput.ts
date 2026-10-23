@@ -53,7 +53,11 @@ export function describeRefusal(result: {
   readonly detail?: string | undefined;
   readonly retryAfterSeconds?: number | undefined;
 }): string {
-  if (result.detail !== undefined && result.detail.trim().length > 0) return result.detail;
+  // The server words `busy` for agents ("wait with thread_wait"); a person
+  // at a shell gets the command to run instead.
+  if (result.outcome !== "busy" && result.detail !== undefined && result.detail.trim().length > 0) {
+    return result.detail;
+  }
   switch (result.outcome) {
     case "not_allowed":
       return "Threadlines doesn't allow this command to do that. You can change what it may do in Threadlines > Settings > Connections > Agents.";

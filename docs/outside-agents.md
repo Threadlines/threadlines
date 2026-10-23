@@ -35,6 +35,39 @@ dialog is the one the agent gave; Threadlines can't check it.
 Sign-in happens once. Later runs, including unattended ones like `claude -p` or
 `codex exec`, use it until you remove the agent or don't use it for 90 days.
 
+## The `threadlines` command
+
+For scripts, and for agents that run shell commands but don't speak MCP. In the
+desktop app, Settings → Connections → Agents → Threadlines command → Install
+puts `threadlines` on your PATH (macOS asks for your password once). An npm
+install of Threadlines already has it.
+
+```sh
+threadlines connect                      # sign in once; approve it in Threadlines
+threadlines projects
+threadlines thread start app "Fix the flaky login test" --wait
+threadlines thread send <id> "Also update the changelog" --wait
+threadlines thread list --mine
+threadlines thread read <id>
+threadlines thread stop <id>
+```
+
+Every command takes `--json`. `--wait` and `threadlines thread wait` exit with:
+
+| Code | Means                                                                 |
+| ---- | --------------------------------------------------------------------- |
+| 0    | Done: the thread's latest turn finished.                              |
+| 1    | Its latest turn was stopped or failed.                                |
+| 2    | It needs you: an approval, a question or a plan waits in Threadlines. |
+| 3    | `--timeout` ran out.                                                  |
+| 4    | Refused: not allowed, not found, busy, or over a limit.               |
+| 5    | Not signed in (run `threadlines connect`), or Threadlines isn't open. |
+
+The installed command never starts a second Threadlines; it only talks to the
+app. Removing the app leaves the command behind; remove it from Settings first,
+or delete `/usr/local/bin/threadlines` (macOS), `~/.local/bin/threadlines`
+(Linux) or `%LOCALAPPDATA%\Threadlines\bin` (Windows).
+
 ## What an agent can and can't do
 
 - It sees only the projects you gave it. A thread elsewhere looks like it
