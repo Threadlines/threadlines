@@ -56,6 +56,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   commandRuns: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server follows a command put in the terminal past the user's Enter
+   * to its end, and a request card's output then goes back to its agent by
+   * itself (docs/terminal-command-runs.md). Older servers stop at Enter, and
+   * the user sends it.
+   */
+  followsInsertedCommands: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server links to other computers' servers and runs agents' threads on
    * them (`links.*`, docs/design/fleet.md). Older servers omit it; clients
    * then hide link UI for them.

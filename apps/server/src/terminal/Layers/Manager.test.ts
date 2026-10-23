@@ -2266,17 +2266,31 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
-  it.effect("puts a command at the prompt once the shell is ready and follows it to Enter", () =>
+  it.effect("puts a command at the prompt once the shell is ready and follows it to its end", () =>
     Effect.gen(function* () {
+      // In front of the terminal at its own prompt, or behind a program it started.
+      const shellInFront = yield* Ref.make(true);
+      let shellPid = 0;
       const { manager, ptyAdapter } = yield* createManager(50, {
         platform: "darwin",
         shellResolver: () => "/bin/zsh",
+        // Polling never gets a look in: the prompt alone ends it.
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 60_000,
+        freshProcessRowsReader: () =>
+          Ref.get(shellInFront).pipe(
+            Effect.map((front) => [
+              { ...processRow(shellPid, 1, "/bin/zsh"), status: front ? "Ss+" : "Ss" },
+            ]),
+          ),
       });
       const updates = yield* collectRunUpdates(manager);
+      const types = Ref.get(updates).pipe(Effect.map((list) => list.map((update) => update.type)));
       yield* manager.startCommandRun(
         commandRunInput({ mode: "insert", command: "git add .\ngit commit" }),
       );
       const pty = ptyAdapter.processes[0]!;
+      shellPid = pty.pid;
       expect(ptyAdapter.spawnInputs[0]?.args).toEqual(["-o", "nopromptsp"]);
       expect(pty.writes).toEqual([]);
 
@@ -2286,14 +2300,148 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
       pty.emitData("git add .\r\ngit commit");
       yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "\r" });
-      yield* waitFor(
-        Ref.get(updates).pipe(Effect.map((list) => list.some((u) => u.type === "submitted"))),
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("running"))));
+      // A program it started that reads lines (the commit message editor)
+      // turns the line editor on too: while it runs in front, the command goes on.
+      yield* Ref.set(shellInFront, false);
+      pty.emitData("\u001b[?2004l\r\nmessage: \u001b[?2004h");
+      yield* Effect.sleep("150 millis");
+      expect(yield* types).toEqual(["waiting", "running"]);
+
+      // Back at the shell's own prompt: done, with what the tab showed.
+      yield* Ref.set(shellInFront, true);
+      pty.emitData("\u001b[?2004l\r\n[main 1a2b3c] fix\r\nprompt % \u001b[?2004h");
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("finished"))));
+      expect((yield* Ref.get(updates)).at(-1)).toEqual({
+        type: "finished",
+        runId: "run-1",
+        at: expect.any(String),
+        startedAt: expect.any(String),
+        exitCode: null,
+        output: "git add .\ngit commit\nmessage:\n[main 1a2b3c] fix\nprompt %",
+      });
+    }),
+  );
+
+  it.effect("keeps following an entered insert until its shell's prompt is back", () =>
+    Effect.gen(function* () {
+      let shellPid = 0;
+      const nextCommandRunning = yield* Ref.make(false);
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+        subprocessChecker: () => Ref.get(nextCommandRunning),
+        subprocessPollIntervalMs: 20,
+        // By the time anyone looks, the line typed ahead runs in front.
+        freshProcessRowsReader: () =>
+          Effect.sync(() => [{ ...processRow(shellPid, 1, "/bin/zsh"), status: "Ss" }]),
+      });
+      const updates = yield* collectRunUpdates(manager);
+      const types = Ref.get(updates).pipe(Effect.map((list) => list.map((update) => update.type)));
+      yield* manager.startCommandRun(commandRunInput({ mode: "insert", command: "read answer" }));
+      const pty = ptyAdapter.processes[0]!;
+      shellPid = pty.pid;
+      pty.emitData("prompt % \u001b[?2004h");
+      yield* waitFor(Effect.sync(() => pty.writes.length === 1));
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "\r" });
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("running"))));
+      // A builtin waiting for input runs no process: idle polls don't end it.
+      pty.emitData("read answer\u001b[?2004l\r\n");
+      yield* Effect.sleep("250 millis");
+      expect(yield* types).toEqual(["waiting", "running"]);
+
+      // Answered, and the next command typed before the prompt is back: the
+      // command ends at that prompt, before the next one takes the terminal.
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "yes\r" });
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: "terminal-run",
+        data: "npm run dev\r",
+      });
+      yield* Ref.set(nextCommandRunning, true);
+      pty.emitData("yes\r\nprompt % \u001b[?2004hnpm run dev\u001b[?2004l\r\nready on :3000\r\n");
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("finished"))));
+      expect((yield* Ref.get(updates)).at(-1)).toMatchObject({
+        type: "finished",
+        output: "read answer\nyes\nprompt %",
+      });
+    }),
+  );
+
+  it.effect("never takes an answer typed to the command for a line typed ahead", () =>
+    Effect.gen(function* () {
+      const shellInFront = yield* Ref.make(false);
+      let shellPid = 0;
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+        subprocessChecker: () => Ref.get(shellInFront).pipe(Effect.map((front) => !front)),
+        subprocessPollIntervalMs: 20,
+        freshProcessRowsReader: () =>
+          Ref.get(shellInFront).pipe(
+            Effect.map((front) => [
+              { ...processRow(shellPid, 1, "/bin/zsh"), status: front ? "Ss+" : "Ss" },
+            ]),
+          ),
+      });
+      const updates = yield* collectRunUpdates(manager);
+      const types = Ref.get(updates).pipe(Effect.map((list) => list.map((update) => update.type)));
+      yield* manager.startCommandRun(commandRunInput({ mode: "insert", command: "ssh build-box" }));
+      const pty = ptyAdapter.processes[0]!;
+      shellPid = pty.pid;
+      pty.emitData("prompt % \u001b[?2004h");
+      yield* waitFor(Effect.sync(() => pty.writes.length === 1));
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "\r" });
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("running"))));
+      // The password is a line entered before any prompt; the remote shell's
+      // prompt then stays up for the user, who works there.
+      pty.emitData("ssh build-box\u001b[?2004l\r\npassword: ");
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "secret\r" });
+      pty.emitData("\r\nremote $ \u001b[?2004h");
+      yield* Effect.sleep("100 millis");
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "ls\r" });
+      pty.emitData("ls\u001b[?2004l\r\nfile\r\nremote $ \u001b[?2004h");
+      yield* Effect.sleep("150 millis");
+      expect(yield* types).toEqual(["waiting", "running"]);
+
+      yield* Ref.set(shellInFront, true);
+      pty.emitData("logout\r\nprompt % \u001b[?2004h");
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("finished"))));
+      expect((yield* Ref.get(updates)).at(-1)).toMatchObject({
+        type: "finished",
+        output: expect.stringContaining("remote $ ls\nfile"),
+      });
+    }),
+  );
+
+  it.effect("ends a PowerShell command entered from an insert at its prompt's marker", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "win32",
+        shellResolver: () => "pwsh.exe",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+      const updates = yield* collectRunUpdates(manager);
+      const types = Ref.get(updates).pipe(Effect.map((list) => list.map((update) => update.type)));
+      yield* manager.startCommandRun(
+        commandRunInput({ mode: "insert", dialect: "powershell", command: "gh auth login" }),
       );
-      expect((yield* Ref.get(updates)).map((update) => update.type)).toEqual([
-        "waiting",
-        "submitted",
-      ]);
-      expect(yield* manager.readCommandRunOutput("run-1")).toBe("git add .\ngit commit");
+      const pty = ptyAdapter.processes[0]!;
+      pty.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(Effect.sync(() => pty.writes.length === 1));
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "\r" });
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("running"))));
+      // A cmdlet has no process to find: polling never ends it, the prompt does.
+      yield* Effect.sleep("150 millis");
+      expect(yield* types).toEqual(["waiting", "running"]);
+      pty.emitData("gh auth login\r\nLogged in\r\n\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(types.pipe(Effect.map((list) => list.includes("finished"))));
+      expect((yield* Ref.get(updates)).at(-1)).toMatchObject({
+        type: "finished",
+        exitCode: null,
+        output: expect.stringContaining("Logged in"),
+      });
     }),
   );
 

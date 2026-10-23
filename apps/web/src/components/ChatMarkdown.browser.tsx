@@ -1348,6 +1348,7 @@ describe("ChatMarkdown code block commands", () => {
   const REPLY = MessageId.make("reply-1");
   const actionsWith = (runs: ReadonlyArray<OrchestrationCommandRun> = []): CommandRunActions => ({
     supported: true,
+    followsInserts: true,
     dialect: "posix",
     cwdLabel: "~/repo",
     runs,

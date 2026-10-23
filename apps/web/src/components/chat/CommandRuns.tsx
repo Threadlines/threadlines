@@ -43,6 +43,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 export interface CommandRunActions {
   /** The thread's server runs commands and the thread has a folder to run them in. */
   readonly supported: boolean;
+  /** The server follows a command put in the terminal to its end, so a card's output goes back by itself. */
+  readonly followsInserts: boolean;
   /** The shell family the server's terminal speaks. */
   readonly dialect: CommandDialect;
   /** The folder runs start in, shortened for display (e.g. `~/badcode`). */
@@ -146,13 +148,18 @@ const CommandRunStatusLine = memo(function CommandRunStatusLine(props: {
       text = `Ran in ${where}`;
       break;
     case "finished":
-      dot = run.exitCode === null || run.exitCode === 0 ? "success" : "failure";
-      text =
-        run.exitCode === null || run.exitCode === 0
-          ? `Finished in ${where}`
-          : run.exitCode === 130
-            ? `Stopped in ${where}`
-            : `Exited with code ${run.exitCode} in ${where}`;
+      if (run.mode === "insert") {
+        // The shell it was typed into never says how it went.
+        text = `Ran in ${where}`;
+      } else {
+        dot = run.exitCode === null || run.exitCode === 0 ? "success" : "failure";
+        text =
+          run.exitCode === null || run.exitCode === 0
+            ? `Finished in ${where}`
+            : run.exitCode === 130
+              ? `Stopped in ${where}`
+              : `Exited with code ${run.exitCode} in ${where}`;
+      }
       if (duration !== null) text += ` · ${duration}`;
       break;
     case "cancelled":
@@ -176,6 +183,10 @@ const CommandRunStatusLine = memo(function CommandRunStatusLine(props: {
       run.status === "submitted" ||
       ((run.status === "finished" || run.status === "interrupted") && run.hasOutput));
   const autoSendPending = run.autoSend && !sent && run.status !== "finished";
+  // Output on its way by itself. A command still going can send what it has
+  // so far (a dev server never finishes); one not entered yet has nothing.
+  const sendsItself = autoSendPending && (run.status === "running" || run.status === "waiting");
+  const sendable = canSend && !(sendsItself && run.status === "waiting");
   const held =
     run.heldReason === "stopped"
       ? `You pressed Stop, so it wasn't sent to ${agent}.`
@@ -204,10 +215,8 @@ const CommandRunStatusLine = memo(function CommandRunStatusLine(props: {
       <span className="min-w-0">{text}</span>
       {sent ? <span>· Sent to {agent}</span> : null}
       {held !== null && !sent ? <span>· {held}</span> : null}
-      {autoSendPending && run.status === "running" ? (
-        <span>· {agent} gets the output when it finishes</span>
-      ) : null}
-      {canSend && !(autoSendPending && run.status === "running") ? (
+      {sendsItself ? <span>· {agent} gets the output when it finishes</span> : null}
+      {sendable ? (
         <>
           <Separator />
           <Button
@@ -494,7 +503,7 @@ export const CommandRequestRow = memo(function CommandRequestRow(props: {
             Skip
           </Button>
           <span className="ml-auto text-[12.5px] text-muted-foreground">
-            {oneClick
+            {oneClick || actions.followsInserts
               ? `${agent} gets the output when it finishes`
               : `You send ${agent} the output when you're done`}
           </span>
@@ -541,14 +550,14 @@ export const CommandOutputMessage = memo(function CommandOutputMessage(props: {
   const summary =
     run === null
       ? "Sent command output"
-      : run.mode === "insert"
-        ? "Sent the terminal's output"
-        : run.status === "finished"
-          ? run.exitCode === null || run.exitCode === 0
-            ? `Finished${duration ? ` after ${duration}` : ""}`
-            : `Exited with code ${run.exitCode}`
-          : run.status === "running"
-            ? "Output so far"
+      : run.status === "finished"
+        ? run.exitCode === null || run.exitCode === 0
+          ? `Finished${duration ? ` after ${duration}` : ""}`
+          : `Exited with code ${run.exitCode}`
+        : run.status === "running"
+          ? "Output so far"
+          : run.mode === "insert" && run.status !== "interrupted"
+            ? "Sent the terminal's output"
             : "Stopped before it finished";
   return (
     <div className="flex min-w-0 flex-col gap-1" data-command-output-message={runId ?? undefined}>

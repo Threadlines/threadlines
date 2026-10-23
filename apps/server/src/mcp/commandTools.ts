@@ -37,7 +37,7 @@ export const AskUserToRunTool = Tool.make(ASK_USER_TO_RUN_TOOL_NAME, {
   description: [
     "Ask the user to run a shell command in their Threadlines terminal, when you can't run it yourself: it needs their password or a sign-in, your sandbox or permissions blocked it, or it is a long-running process like a dev server they should own.",
     "It shows a card in the chat with Run, Put in terminal and Skip, and returns right away; nothing runs until the user chooses.",
-    "When they click Run, the output comes back to you as a message once the command finishes. Risky commands (deleting files, discarding changes, sudo, publishing and the like) can't run with one click: the user puts them in the terminal, presses Enter themselves and sends you the output.",
+    "When the command they run finishes, the output comes back to you as a message. Risky commands (deleting files, discarding changes, sudo, publishing and the like) can't run with one click: the user puts them in the terminal and presses Enter themselves, and the output comes back the same way.",
     "Use it instead of asking the user to copy a command into a terminal. Don't use it for commands you can run yourself.",
   ].join(" "),
   parameters: AskUserToRunParameters,

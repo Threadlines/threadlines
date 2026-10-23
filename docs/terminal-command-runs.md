@@ -34,8 +34,12 @@ exited with a code, or stopped.
 
 **Put in terminal** starts a fresh shell in a terminal tab, waits for its
 prompt, and types the command there without pressing Enter. You check it, change it if you need
-to, and press Enter yourself. Threadlines does not follow a command after you
-press Enter; the line under it says it ran.
+to, and press Enter yourself. From then on the tab is yours, like any line you
+type, and Threadlines follows the command until the shell is back at its own
+prompt. The line under it says it's running,
+then that it ran and how long it took. A shell doesn't say how a command it
+ran ended, so there's no exit code. Ctrl+C before Enter clears it ("Cleared
+without running").
 
 Only a command with nothing worth a second look gets a one-click Run. These
 always go into the terminal for you to press Enter, with a plain reason shown
@@ -64,15 +68,18 @@ runs could differ from what you see.
 
 ## Sending the output back
 
-When you click **Run** on an agent's card, the output goes back to that agent
-by itself when the command finishes, as a message from you. If the agent is
+When you click **Run** on an agent's card, or put it in the terminal and press
+Enter, the output goes back to that agent by itself when the command
+finishes, as a message from you. For a command you put in, that's what the
+tab showed from the moment it went in, so the agent also sees what you changed. If the agent is
 still working, the message goes into its turn; if the turn is already
 wrapping up, or the agent is idle, it goes out as the next turn, like a message
 you type. It shows in the chat as one line ("You ran `pnpm install`
 · Finished after 14s") that opens to the full text.
 
-Everything else is sent by hand with **Send output to …**: a code block's run,
-a card you put in the terminal, or a run still going ("Send output so far").
+Everything else is sent by hand with **Send output to …**: a code block's run
+or insert, or a command still going ("Send output so far", for a dev server
+that never finishes, say; the rest then doesn't go by itself).
 Output is the end of what the command printed, about 16,000 characters, with
 progress bars collapsed to their last frame.
 
@@ -143,6 +150,26 @@ on code blocks stay, since they only act when you click them.
   exit status (OSC 6973, stripped from the terminal history), then execs a
   normal interactive shell. An insert
   waits for the shell's line editor to switch on bracketed paste, then pastes.
+  After the user's Enter it is followed until the command it started ends.
+  PowerShell's prompt marker says when. A POSIX shell that switches bracketed
+  paste on and off says when its line editor reads again; the process table
+  then says whether that's the shell's own prompt (it is the terminal's
+  foreground job again, `+` in its `ps` state) or a program in front of it
+  that reads lines too (a REPL, ssh, a nested shell), which keeps it going.
+  A job left in the background isn't part of it, and a builtin waiting for
+  input (`read`) runs until the prompt is back. A line typed ahead ends it at
+  the first prompt when the shell takes that line right away there (an
+  answer typed to the command, like an ssh password, doesn't count: the
+  prompt that follows stays up). The output stops where that prompt began.
+  Without shell hooks some cases still read wrong: a builtin with its own
+  line editor (`read -e`, `vared`) or a shell without job control looks done
+  early, and a command started within the moment it takes to check the
+  process table keeps the run going until it ends too. A shell that never reports its
+  line editor is done once polling sees nothing under it a few times. Its
+  output is the tab's history from the insert on. When the tab can't follow
+  the line just entered, the run stays "submitted", as every insert did on
+  older servers (`followsInsertedCommands` tells clients which kind they
+  have).
 - Requests and runs are orchestration events (`thread.command-requested`,
   `thread.command-run-started`, `thread.command-run-updated`), kept in
   `projection_thread_command_requests` and `projection_thread_command_runs`.

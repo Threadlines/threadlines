@@ -73,6 +73,7 @@ export function useCommandRunActions(input: {
     environmentId !== null &&
     threadId !== null &&
     cwd !== null;
+  const followsInserts = descriptor?.capabilities.followsInsertedCommands === true;
 
   const startRun = useCallback<CommandRunActions["startRun"]>(
     ({ command, mode, source }) => {
@@ -171,6 +172,7 @@ export function useCommandRunActions(input: {
   return useMemo(
     () => ({
       supported,
+      followsInserts,
       dialect,
       cwdLabel: cwd === null ? null : shortenHome(cwd),
       runs,
@@ -186,6 +188,7 @@ export function useCommandRunActions(input: {
       cwd,
       dialect,
       focusTerminal,
+      followsInserts,
       runs,
       sendOutput,
       setRequestDismissed,

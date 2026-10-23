@@ -29,6 +29,7 @@ const request = (command: string): OrchestrationCommandRequest => ({
 
 const actionsWith = (runs: ReadonlyArray<OrchestrationCommandRun> = []): CommandRunActions => ({
   supported: true,
+  followsInserts: true,
   dialect: "posix",
   cwdLabel: "~/repo",
   runs,
@@ -81,6 +82,10 @@ describe("CommandRequestRow", () => {
         .element(page.getByRole("button", { name: "Put in terminal" }))
         .toBeInTheDocument();
       expect(page.getByRole("button", { name: "Run", exact: true }).elements()).toHaveLength(0);
+      // Entered from the terminal, it still answers the agent by itself.
+      await expect
+        .element(page.getByText("Codex gets the output when it finishes"))
+        .toBeInTheDocument();
     } finally {
       await screen.unmount();
     }

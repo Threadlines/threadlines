@@ -111,7 +111,10 @@ export interface TerminalCommandRunInput {
 
 /**
  * How a run moved on. `output` is the rendered text (redraws collapsed, end
- * kept) a `run` left when it stopped.
+ * kept) a `run` left when it stopped, or what an `insert`'s tab showed from
+ * the insert on. An insert is `waiting` at the prompt, then `running` from
+ * the user's Enter until the command it started ends (`finished`, with no exit
+ * code); `submitted` when the shell can't say when that is.
  */
 export type TerminalCommandRunUpdate =
   | { readonly type: "running"; readonly runId: string; readonly at: string }
@@ -268,8 +271,8 @@ export interface TerminalManagerShape {
 
   /**
    * The output a run has so far, while its tab is open: a `run` still going,
-   * or everything an `insert`'s tab printed since the command went in.
-   * Null once the tab is gone.
+   * or everything an `insert`'s tab printed since the command went in (until
+   * now, also after its command ended). Null once the tab is gone.
    */
   readonly readCommandRunOutput: (runId: string) => Effect.Effect<string | null>;
 

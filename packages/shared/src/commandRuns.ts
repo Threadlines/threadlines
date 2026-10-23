@@ -179,9 +179,20 @@ export function buildCommandOutputMessage(input: {
 }): string {
   const { run } = input;
   const duration = commandRunDuration(run);
+  // An insert's exit code is unknown: the shell it was typed into doesn't say.
+  const insertState =
+    run.status === "waiting"
+      ? "I haven't pressed Enter on it yet."
+      : run.status === "finished"
+        ? `I may have changed it before pressing Enter. It finished${duration ? ` after ${duration}` : ""}.`
+        : run.status === "running"
+          ? "I may have changed it before pressing Enter. It is still running."
+          : run.status === "interrupted"
+            ? "I may have changed it before pressing Enter. It stopped before finishing (the terminal was closed or restarted)."
+            : "I may have changed it before pressing Enter.";
   const ending =
     run.mode === "insert"
-      ? "I may have changed it before pressing Enter. This is what the terminal shows since it went in:"
+      ? `${insertState} This is what the terminal shows since it went in:`
       : run.status === "finished"
         ? `It finished${duration ? ` after ${duration}` : ""}${
             run.exitCode === null ? "" : ` with exit code ${run.exitCode}`
