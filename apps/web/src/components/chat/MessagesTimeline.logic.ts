@@ -128,18 +128,28 @@ const UNPLACED: TimelineRowPlacement = { padTop: false };
  * The user writing starts an exchange. A message one room agent wrote to
  * another (a hand-off, its reply) happens inside the exchange: it neither
  * splits the turn that wrote it nor ends the user's exchange. A message from
- * another thread (child threads: a parent's request, a child's answer) starts
- * a turn of its own, so it starts an exchange the way the user's would,
- * unless it was steered into the turn already running (isTurnAside).
+ * another thread (child threads: a parent's request, a child's answer) or
+ * from an agent outside Threadlines starts a turn of its own, so it starts an
+ * exchange the way the user's would, unless it was steered into the turn
+ * already running (isTurnAside).
  */
 const startsExchange = (
   message: Pick<
     ChatMessage,
-    "role" | "fromAgent" | "fromThread" | "turnId" | "sideTurnId" | "requestKind" | "requestOutcome"
+    | "role"
+    | "fromAgent"
+    | "fromThread"
+    | "fromOutside"
+    | "turnId"
+    | "sideTurnId"
+    | "requestKind"
+    | "requestOutcome"
   >,
 ) =>
   isUserWrittenMessage(message) ||
-  (message.role === "user" && message.fromThread !== undefined && !isTurnAside(message));
+  (message.role === "user" &&
+    (message.fromThread !== undefined || message.fromOutside !== undefined) &&
+    !isTurnAside(message));
 
 export type MessagesTimelineRow = TimelineRowPlacement &
   (
@@ -2353,25 +2363,31 @@ const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
 
 /**
  * How a message row is drawn (TimelineRowContent): the agent's own answer, a
- * message from another thread, the user's message, an agent's invite or side
- * reply, or a message one room agent wrote to another. Null draws nothing.
- * Find in chat reads the same choice to know what text the row shows.
+ * message from another thread or from an agent outside Threadlines, the
+ * user's message, an agent's invite or side reply, or a message one room
+ * agent wrote to another. Null draws nothing. Find in chat reads the same
+ * choice to know what text the row shows.
  */
 export type TimelineMessageView =
   | "assistant"
   | "thread-message"
+  | "outside-message"
   | "user"
   | "invite"
   | "side-answer-reply"
   | "agent-message";
 
 export function timelineMessageView(
-  message: Pick<ChatMessage, "role" | "fromThread" | "fromAgent" | "requestKind" | "requestId">,
+  message: Pick<
+    ChatMessage,
+    "role" | "fromThread" | "fromOutside" | "fromAgent" | "requestKind" | "requestId"
+  >,
   sideAnswerRequests: { has(requestId: NonNullable<ChatMessage["requestId"]>): boolean },
 ): TimelineMessageView | null {
   if (message.role === "assistant") return "assistant";
   if (message.role !== "user") return null;
   if (message.fromThread !== undefined) return "thread-message";
+  if (message.fromOutside !== undefined) return "outside-message";
   if (message.fromAgent === undefined) return "user";
   if (message.requestKind === "invite") return "invite";
   if (
@@ -2395,7 +2411,9 @@ export function scheduledRunMessageId(
   for (const entry of timelineEntries) {
     if (entry.kind !== "message") continue;
     if (entry.message.role !== "user") continue;
-    return entry.message.fromThread === undefined && entry.message.fromAgent === undefined
+    return entry.message.fromThread === undefined &&
+      entry.message.fromAgent === undefined &&
+      entry.message.fromOutside === undefined
       ? entry.message.id
       : null;
   }
@@ -2482,7 +2500,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       }
       if (
         row.message.role === "user" &&
-        (row.message.fromAgent !== undefined || row.message.fromThread !== undefined)
+        (row.message.fromAgent !== undefined ||
+          row.message.fromThread !== undefined ||
+          row.message.fromOutside !== undefined)
       ) {
         // An agent's message to another: a meta line over its text, no bubble,
         // or over its first line while it shows folded.

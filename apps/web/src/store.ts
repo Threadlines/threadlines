@@ -43,7 +43,7 @@ import {
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
-import type { ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
+import type { OutsideAgentRef, ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
@@ -365,6 +365,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.reviewInput ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite ? { invite: message.invite } : {}),
     ...(message.fromThread ? { fromThread: message.fromThread } : {}),
+    ...(message.fromOutside ? { fromOutside: message.fromOutside } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
     ...(message.imported ? { imported: true as const } : {}),
   };
@@ -381,6 +382,7 @@ function threadLineage(thread: {
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
   readonly scheduledRun?: ThreadScheduledRun | null | undefined;
+  readonly outsideOrigin?: OutsideAgentRef | null | undefined;
 }): Pick<
   ThreadShell,
   | "parentThreadId"
@@ -389,6 +391,7 @@ function threadLineage(thread: {
   | "handedBackAt"
   | "handedBackTurnId"
   | "scheduledRun"
+  | "outsideOrigin"
 > {
   return {
     parentThreadId: thread.parentThreadId ?? null,
@@ -397,6 +400,7 @@ function threadLineage(thread: {
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     scheduledRun: thread.scheduledRun ?? null,
+    outsideOrigin: thread.outsideOrigin ?? null,
   };
 }
 
@@ -571,6 +575,7 @@ function sidebarLineage(
     | "pendingChildApproval"
     | "queuedFollowUps"
     | "scheduledRun"
+    | "outsideOrigin"
     | "remoteOrigin"
     | "remoteChildren"
     | "remoteChildStarts"
@@ -586,6 +591,7 @@ function sidebarLineage(
   | "pendingChildApproval"
   | "queuedFollowUpCount"
   | "scheduledRun"
+  | "outsideOrigin"
   | "remoteOrigin"
   | "remoteChildren"
   | "remoteChildStarts"
@@ -594,6 +600,7 @@ function sidebarLineage(
   const moveStatus = threadMoveStatus(thread.move);
   return {
     scheduledRun: thread.scheduledRun ?? null,
+    outsideOrigin: thread.outsideOrigin ?? null,
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
@@ -1147,6 +1154,7 @@ function sidebarThreadSummariesEqual(
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
@@ -1166,6 +1174,17 @@ function scheduledRunsEqual(
         a.taskName === b.taskName &&
         a.slotUtc === b.slotUtc &&
         (a.event ?? false) === (b.event ?? false);
+}
+
+function outsideOriginsEqual(
+  left: OutsideAgentRef | null | undefined,
+  right: OutsideAgentRef | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.connectionId === b.connectionId && a.name === b.name;
 }
 
 function sideTurnsEqual(
@@ -1230,6 +1249,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
@@ -1901,6 +1921,7 @@ function upsertThreadMessage(
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite !== undefined ? { invite: message.invite } : {}),
     ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
+    ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
     ...(message.imported ? { imported: true as const } : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
@@ -2413,6 +2434,7 @@ function applyEnvironmentOrchestrationEvent(
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
           scheduledRun: event.payload.scheduledRun ?? null,
+          outsideOrigin: event.payload.outsideOrigin ?? null,
           ...(event.payload.movedFrom ? { movedFrom: event.payload.movedFrom } : {}),
         },
         environmentId,
@@ -2789,6 +2811,9 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.invite !== undefined ? { invite: event.payload.invite } : {}),
           ...(event.payload.fromThread !== undefined
             ? { fromThread: event.payload.fromThread }
+            : {}),
+          ...(event.payload.fromOutside !== undefined
+            ? { fromOutside: event.payload.fromOutside }
             : {}),
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }

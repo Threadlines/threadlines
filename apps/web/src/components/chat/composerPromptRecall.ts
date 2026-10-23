@@ -6,7 +6,8 @@ const RECALL_LIMIT = 50;
 /**
  * What the user wrote in this thread, newest first, the way the composer's Up
  * arrow walks it: their own messages only (no agent's words, side questions,
- * invites or a child thread's report), each one once in a row.
+ * invites, a child thread's report or an outside agent's prompt), each one
+ * once in a row.
  */
 export function recallablePrompts(messages: ReadonlyArray<ChatMessage>): string[] {
   const prompts: string[] = [];
@@ -16,6 +17,7 @@ export function recallablePrompts(messages: ReadonlyArray<ChatMessage>): string[
       message.role !== "user" ||
       message.fromAgent !== undefined ||
       message.fromThread !== undefined ||
+      message.fromOutside !== undefined ||
       message.sideTurnId !== undefined ||
       message.requestKind !== undefined
     ) {

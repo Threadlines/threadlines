@@ -2275,6 +2275,10 @@ function MessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "messag
       return row.message.fromThread !== undefined ? (
         <ThreadMessageTimelineRow row={row} origin={row.message.fromThread} />
       ) : null;
+    case "outside-message":
+      return row.message.fromOutside !== undefined ? (
+        <OutsideAgentMessageTimelineRow row={row} origin={row.message.fromOutside} />
+      ) : null;
     case "user":
       return <UserTimelineRow row={row} />;
     case "invite":
@@ -3014,6 +3018,63 @@ function ThreadMessageTimelineRow({
           {isReport ? "Not read: its delivery was cancelled first" : "Taken back before it ran"}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A message an agent outside Threadlines sent this thread (its first prompt
+ * or a follow-up, docs/design/outside-agents.md). Folded like the messages
+ * agents send each other, under the agent's name, never read as the user's.
+ * The name is the one the agent gave when it signed in.
+ */
+function OutsideAgentMessageTimelineRow({
+  row,
+  origin,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  origin: NonNullable<ChatMessage["fromOutside"]>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  // Sent to this thread's agent, which reads its paths in this checkout.
+  const fold = useAgentMessageFold(row, ctx.markdownCwd);
+  return (
+    <div
+      className="group min-w-0 px-1 py-0.5"
+      data-outside-agent-message={origin.connectionId}
+      title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+    >
+      <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
+        <span className="min-w-0 truncate text-foreground/85" data-outside-agent-message-author>
+          {origin.name}
+        </span>
+        <span className="shrink-0 text-muted-foreground/50">·</span>
+        <span className="min-w-0 truncate">outside Threadlines</span>
+        {message.text.length > 0 && !fold.folded ? (
+          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+            <MessageCopyButton
+              text={message.text}
+              ariaLabel="Copy message"
+              size="icon-xs"
+              variant="ghost"
+              className="-my-1.5"
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="border-l border-border pl-3">
+        <AgentMessageBody
+          text={message.text}
+          fold={fold}
+          cwd={ctx.markdownCwd}
+          skills={ctx.skills}
+          className="text-foreground/80"
+          searchHighlightQuery={
+            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+          }
+        />
+      </div>
     </div>
   );
 }

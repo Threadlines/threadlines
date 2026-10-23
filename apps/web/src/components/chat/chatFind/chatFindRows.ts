@@ -90,6 +90,18 @@ function messageBlocks(
           visualizations: false,
         }),
       );
+    case "outside-message":
+      // Markdown, its file links read against this thread's checkout, like
+      // the user's own prompt would be; all of it, folded or not.
+      return cached(message, `${view}|${contextKey}`, () =>
+        findableMarkdownBlocks({
+          text: message.text,
+          cwd: context.cwd,
+          skills: context.skills,
+          isStreaming: false,
+          visualizations: false,
+        }),
+      );
     case "thread-message":
       // Markdown written in another thread's checkout: no file links here.
       return cached(message, `${view}|${contextKey}`, () =>

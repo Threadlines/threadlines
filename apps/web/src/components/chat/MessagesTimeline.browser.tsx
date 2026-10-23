@@ -2,6 +2,7 @@ import "../../index.css";
 
 import {
   ChildRequestId,
+  OutsideAgentConnectionId,
   EnvironmentId,
   MessageId,
   SideTurnId,
@@ -1366,6 +1367,42 @@ describe("MessagesTimeline", () => {
       await expect.element(foldedAgain).toBeVisible();
       await expect.element(foldedAgain).toHaveFocus();
       expect(document.body.textContent).not.toContain("The docs say so");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("folds an outside agent's prompt under its name, never as the user's", async () => {
+    const prompt = {
+      id: MessageId.make("message-outside"),
+      role: "user" as const,
+      text: "Fix the flaky upload test.\n\nIt fails about one run in five on CI.",
+      fromOutside: {
+        connectionId: OutsideAgentConnectionId.make("connection-claude"),
+        name: "Claude Code",
+      },
+      createdAt: MESSAGE_CREATED_AT,
+      streaming: false,
+    };
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          { id: prompt.id, kind: "message", createdAt: MESSAGE_CREATED_AT, message: prompt },
+        ]}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Fix the flaky upload test." }))
+        .toHaveAttribute("aria-expanded", "false");
+      const row = document.querySelector("[data-outside-agent-message]");
+      expect(row?.querySelector("[data-outside-agent-message-author]")?.textContent).toBe(
+        "Claude Code",
+      );
+      expect(document.body.textContent).not.toContain("one run in five");
+      expect(document.querySelector("[data-user-message-body]")).toBeNull();
     } finally {
       await screen.unmount();
     }
