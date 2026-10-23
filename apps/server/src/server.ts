@@ -39,12 +39,15 @@ import {
 import { peerRpcRouteLayer } from "./links/peerRoute.ts";
 import { RemoteChildReactorLive } from "./links/RemoteChildReactor.ts";
 import { ComputerLinkReactorsLive } from "./links/ComputerLinkReactors.ts";
+import { RelayHooksUnavailable } from "./scheduled/relayHooksUnavailable.ts";
 import { ScheduledTaskRepositoryLive } from "./scheduled/ScheduledTaskRepository.ts";
 import {
   ScheduledRunTurnEndsLive,
   ScheduledTaskNotesLive,
   ScheduledTasksLive,
 } from "./scheduled/ScheduledTasks.ts";
+import { localHookRouteLayer, localHookTracingLayer } from "./scheduled/webhookRoute.ts";
+import { WebhookTaskRepositoryLive } from "./scheduled/WebhookTaskRepository.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -285,13 +288,27 @@ const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, Computer
 // runtime ingestion hands every turn's end to it (ScheduledRunTurnEnds), and
 // the provider command reactor reads agents' answers from it
 // (ScheduledTaskNotes).
+//
+// Event tasks (docs/design/event-tasks.md) ride on it: their storage, the
+// secret store for signing secrets, `gh` for "Add to GitHub", and the relay's
+// hooks. RelayHooksUnavailable stands in until the relay client provides
+// RelayHooksLive; until then event tasks take events on this computer's own
+// port only.
 const ScheduledTasksLayerLive = Layer.mergeAll(
   ScheduledRunTurnEndsLive,
   ScheduledTaskNotesLive,
 ).pipe(
   Layer.provideMerge(ScheduledTasksLive),
   Layer.provideMerge(ScheduledTaskRepositoryLive),
-  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectionTurnRepositoryLive,
+      WebhookTaskRepositoryLive,
+      RelayHooksUnavailable,
+      ServerSecretStoreLive,
+      GitHubCli.layer,
+    ),
+  ),
 );
 
 // Setting up a project copied from another computer (docs/design/fleet.md,
@@ -592,6 +609,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   websocketRpcRouteLayer,
   peerRpcRouteLayer,
   relayDirectRouteLayer,
+  localHookRouteLayer,
 ).pipe(
   Layer.provide(browserApiCorsLayer),
   // Build setup services once for the HTTP server, not once per WebSocket.
@@ -710,7 +728,8 @@ export const makeServerLayer = Layer.unwrap(
     const serverApplicationLayer = Layer.mergeAll(
       HttpRouter.serve(makeRoutesLayer, {
         disableLogger: !config.logWebSocketEvents,
-      }),
+        // Event tasks' local addresses carry their token in the path.
+      }).pipe(Layer.provide(localHookTracingLayer)),
       httpListeningLayer,
       runtimeStateLayer,
       relayStartLayer,
