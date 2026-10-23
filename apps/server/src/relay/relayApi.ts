@@ -2,6 +2,8 @@ import {
   type RelayCreateInviteInput,
   RelayCreateInviteResult,
   RelayDecisionResult,
+  type RelayDeviceAlertInput,
+  RelayDeviceAlertResult,
   RELAY_ERROR_BAD_HOST_SECRET,
   RELAY_ERROR_UNKNOWN_HOST,
   RelayHookDelivery,
@@ -42,6 +44,7 @@ const decodeRelayDecisionResult = Schema.decodeUnknownEffect(RelayDecisionResult
 const decodeRelayJoinResult = Schema.decodeUnknownEffect(RelayJoinResult);
 const decodeRelayRequestStatusResult = Schema.decodeUnknownEffect(RelayRequestStatusResult);
 const decodeRelayHookMintResult = Schema.decodeUnknownEffect(RelayHookMintResult);
+const decodeRelayDeviceAlertResult = Schema.decodeUnknownEffect(RelayDeviceAlertResult);
 const decodeRelayHookStateResult = Schema.decodeUnknownEffect(RelayHookStateResult);
 const decodeRelayHookStatusResult = Schema.decodeUnknownEffect(RelayHookStatusResult);
 const decodeRelayHookDelivery = Schema.decodeUnknownEffect(RelayHookDelivery);
@@ -208,6 +211,23 @@ export const relayApi = {
       path: `/v2/hosts/${hostId}/devices/${deviceId}/revoke`,
       bearer: hostSecret,
       decode: ignoreBody,
+    }),
+
+  /** Asks the relay to send an alert sealed for one of this computer's paired devices. */
+  sendDeviceAlert: (
+    origin: string,
+    hostId: string,
+    hostSecret: string,
+    deviceId: string,
+    body: RelayDeviceAlertInput,
+  ) =>
+    request({
+      origin,
+      method: "POST",
+      path: `/v2/hosts/${hostId}/devices/${encodeURIComponent(deviceId)}/alert`,
+      bearer: hostSecret,
+      body,
+      decode: (value) => decodeRelayDeviceAlertResult(value),
     }),
 
   /** Mints an event task hook; its full public address comes back. */

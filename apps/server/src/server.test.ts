@@ -86,6 +86,7 @@ import {
 import { DictationLive } from "./dictation/DictationService.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
+import { PushAlerts, type PushAlertsShape } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import {
   RelayDeviceRepository,
@@ -520,6 +521,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
     relayHost?: Partial<RelayHostShape>;
+    pushAlerts?: Partial<PushAlertsShape>;
     relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
     computerLinks?: Partial<ComputerLinksShape>;
     scheduledTasks?: Partial<ScheduledTasksShape>;
@@ -819,6 +821,11 @@ const buildAppUnderTest = (options?: {
             directRoutes: () => Effect.succeed([]),
             isRevokedDevice: () => Effect.succeed(false),
             ...options?.layers?.relayHost,
+          }),
+          Layer.mock(PushAlerts)({
+            setViewing: () => Effect.void,
+            releaseViewer: () => Effect.void,
+            ...options?.layers?.pushAlerts,
           }),
           Layer.mock(RelayDeviceRepository)({
             getDevice: () => Effect.succeed(Option.none()),

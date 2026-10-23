@@ -77,6 +77,12 @@ import {
   WsOwnerRequiredError,
 } from "./relayAccess.ts";
 import {
+  PresenceSetViewingInput,
+  PushAlertsError,
+  PushRegisterInput,
+  PushSendTestResult,
+} from "./pushAlerts.ts";
+import {
   PreviewAutomationHostSchema,
   PreviewAutomationHostMessageSchema,
   PreviewAutomationProgressSchema,
@@ -621,6 +627,13 @@ export const WS_METHODS = {
   relayRespondToJoinRequest: "relay.respondToJoinRequest",
   relaySubmitJoin: "relay.submitJoin",
   relayDirectRoutes: "relay.directRoutes",
+
+  // Phone alerts (docs/design/push-alerts.md). A paired phone's own session.
+  pushRegister: "push.register",
+  pushUnregister: "push.unregister",
+  pushSendTest: "push.sendTest",
+  /** Every client: the thread on screen, so it gets no alerts meanwhile. */
+  presenceSetViewing: "presence.setViewing",
 
   // Computer links (docs/design/fleet.md). Owner and client sessions alike.
   linksList: "links.list",
@@ -1837,6 +1850,26 @@ export const WsRelaySubmitJoinRpc = Rpc.make(WS_METHODS.relaySubmitJoin, {
   error: RelayAccessError,
 });
 
+export const WsPushRegisterRpc = Rpc.make(WS_METHODS.pushRegister, {
+  payload: PushRegisterInput,
+  error: PushAlertsError,
+});
+
+export const WsPushUnregisterRpc = Rpc.make(WS_METHODS.pushUnregister, {
+  payload: Schema.Struct({}),
+  error: PushAlertsError,
+});
+
+export const WsPushSendTestRpc = Rpc.make(WS_METHODS.pushSendTest, {
+  payload: Schema.Struct({}),
+  success: PushSendTestResult,
+  error: PushAlertsError,
+});
+
+export const WsPresenceSetViewingRpc = Rpc.make(WS_METHODS.presenceSetViewing, {
+  payload: PresenceSetViewingInput,
+});
+
 export const WsLinksListRpc = Rpc.make(WS_METHODS.linksList, {
   payload: Schema.Struct({}),
   success: ComputerLinksSnapshot,
@@ -2269,6 +2302,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsRelayCancelInviteRpc,
   WsRelayRespondToJoinRequestRpc,
   WsRelaySubmitJoinRpc,
+  WsPushRegisterRpc,
+  WsPushUnregisterRpc,
+  WsPushSendTestRpc,
+  WsPresenceSetViewingRpc,
   WsRelayDirectRoutesRpc,
   WsLinksListRpc,
   WsLinksSubscribeRpc,

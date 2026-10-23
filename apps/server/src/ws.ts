@@ -140,6 +140,7 @@ import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
 import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
+import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
@@ -375,6 +376,7 @@ const makeWsRpcLayer = (
           ? Effect.void
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
+      const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
       const threadMoves = yield* ThreadMoves;
@@ -2634,6 +2636,20 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.relaySubmitJoin, relayHost.submitJoin(input), {
             "rpc.aggregate": "auth",
           }),
+        // Phone alerts: the calling phone's own registration; any client's view.
+        [WS_METHODS.pushRegister]: (input) =>
+          observeRpcEffect(WS_METHODS.pushRegister, pushAlerts.register(currentSessionId, input), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.pushUnregister]: (_input) =>
+          observeRpcEffect(WS_METHODS.pushUnregister, pushAlerts.unregister(currentSessionId), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.pushSendTest]: (_input) =>
+          observeRpcEffect(WS_METHODS.pushSendTest, pushAlerts.sendTest(currentSessionId), {
+            "rpc.aggregate": "push",
+          }),
+        [WS_METHODS.presenceSetViewing]: (input) => pushAlerts.setViewing(viewerId, input.threadId),
         [WS_METHODS.relayDirectRoutes]: (_input) =>
           observeRpcEffect(
             WS_METHODS.relayDirectRoutes,
@@ -2905,6 +2921,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
+    const pushAlerts = yield* PushAlerts;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2987,7 +3004,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           () =>
             sessions
               .markDisconnected(session.sessionId)
-              .pipe(Effect.andThen(terminalManager.releaseViewer(viewerId))),
+              .pipe(
+                Effect.andThen(terminalManager.releaseViewer(viewerId)),
+                Effect.andThen(pushAlerts.releaseViewer(viewerId)),
+              ),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
     );

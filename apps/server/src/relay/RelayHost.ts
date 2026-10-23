@@ -11,6 +11,8 @@ import {
   RELAY_WEBSOCKET_PROTOCOL,
   RelayAccessError,
   type RelayAccessSnapshot,
+  type RelayDeviceAlertInput,
+  type RelayDeviceAlertResult,
   RelayControlEvent,
   type RelayHostJoinRequest,
   type RelayHostStatus,
@@ -130,6 +132,18 @@ export interface RelayHostShape {
   ) => Effect.Effect<RelayLinkInvite, RelayAccessError>;
   /** Whether this server removed the device (so its far end can tell that from a wrong address). */
   readonly isRevokedDevice: (deviceId: string) => Effect.Effect<boolean>;
+  /**
+   * The paired device (an app, not a linked computer) signed in as
+   * `sessionId`, while it still has access; null for any other session.
+   */
+  readonly activeClientDeviceForSession: (sessionId: AuthSessionId) => Effect.Effect<string | null>;
+  /** Whether `deviceId` is a paired device (an app) that still has access. */
+  readonly isActiveClientDevice: (deviceId: string) => Effect.Effect<boolean>;
+  /** Asks the relay to send an alert sealed for one of this computer's paired devices. */
+  readonly sendDeviceAlert: (
+    deviceId: string,
+    input: RelayDeviceAlertInput,
+  ) => Effect.Effect<RelayDeviceAlertResult, RelayApiError>;
   readonly cancelInvite: (inviteId: RelayInviteId) => Effect.Effect<void, RelayAccessError>;
   readonly respondToJoinRequest: (
     input: RelayRespondToJoinRequestInput,
@@ -1372,6 +1386,43 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
+  const isActiveClient = (row: Option.Option<RelayDeviceRow>) =>
+    Option.isSome(row) && row.value.state === "active" && row.value.grant === "client";
+
+  const activeClientDeviceForSession: RelayHostShape["activeClientDeviceForSession"] = (
+    sessionId,
+  ) =>
+    repo.getDeviceBySession(sessionId).pipe(
+      Effect.map((row) => (isActiveClient(row) ? Option.getOrThrow(row).deviceId : null)),
+      Effect.orElseSucceed(() => null),
+    );
+
+  const isActiveClientDevice: RelayHostShape["isActiveClientDevice"] = (deviceId) =>
+    repo.getDevice(deviceId).pipe(
+      Effect.map(isActiveClient),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const sendDeviceAlert: RelayHostShape["sendDeviceAlert"] = (deviceId, input) =>
+    Effect.gen(function* () {
+      const creds = yield* Effect.suspend(() => loadCredentials).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (!relayOrigin || !creds) {
+        return yield* new RelayApiError({
+          status: null,
+          detail: "This computer isn't registered with the relay.",
+        });
+      }
+      return yield* relayApi.sendDeviceAlert(
+        relayOrigin,
+        creds.hostId,
+        creds.hostSecret,
+        deviceId,
+        input,
+      );
+    });
+
   const cancelInvite: RelayHostShape["cancelInvite"] = (inviteId) =>
     Effect.gen(function* () {
       if (invite?.inviteId === inviteId) clearInvite();
@@ -1509,6 +1560,9 @@ const make = Effect.gen(function* () {
       createInvite,
       createLinkInvite,
       isRevokedDevice,
+      activeClientDeviceForSession,
+      isActiveClientDevice,
+      sendDeviceAlert,
       cancelInvite,
       respondToJoinRequest,
       submitJoin,
