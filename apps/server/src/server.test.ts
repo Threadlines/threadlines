@@ -85,6 +85,8 @@ import {
 } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
+import { OutsideAgentConnections } from "./outsideAgents/OutsideAgentConnections.ts";
+import { OutsideAgentRequests } from "./outsideAgents/OutsideAgentRequests.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import {
@@ -756,6 +758,9 @@ const buildAppUnderTest = (options?: {
           // MCP app cards are tested on their own (McpApps.test.ts); here
           // only the routes need something to call.
           Layer.mock(McpApps)({}),
+          // Outside agents' tools are tested on their own (connectToolHandlers.test.ts).
+          Layer.mock(OutsideAgentRequests)({}),
+          Layer.mock(OutsideAgentConnections)({}),
           // Suggested commands are tested on their own; here only the routes
           // and the tool endpoint need something to call.
           Layer.mock(CommandRuns)({
