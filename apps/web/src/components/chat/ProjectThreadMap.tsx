@@ -197,8 +197,9 @@ function hitStyle(rect: ThreadMapRect, width: number, height: number) {
  * The new-thread screen's drawing of the project being started in: the main
  * line, this week's merged pull requests looping above it, and a branch below
  * for each thread that is running, blocked or freshly finished. Each end is a
- * button that opens what it stands for. Draws itself in once and then holds
- * still.
+ * button that opens what it stands for, and its card opens with no hover wait:
+ * the card is the only thing naming a line. Draws itself in once and then
+ * holds still.
  */
 export function ProjectThreadMap({
   memberProjectRefs,
@@ -442,6 +443,7 @@ export function ProjectThreadMap({
             : "merged";
           return (
             <TooltipWrapper
+              delay={0}
               key={loop.key}
               side="top"
               tooltip={
@@ -485,6 +487,7 @@ export function ProjectThreadMap({
           if (!source) return null;
           return (
             <TooltipWrapper
+              delay={0}
               key={lane.key}
               side="right"
               tooltip={
