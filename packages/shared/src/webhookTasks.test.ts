@@ -155,7 +155,7 @@ describe("the run's message", () => {
     if (!rendered.ok) return;
     expect(rendered.missingFields).toEqual(["issue.missing"]);
     expect(rendered.message).toContain(
-      "Event task: Triage. GitHub sent a issues.labeled event. If there is nothing to report",
+      "Event task: Triage. GitHub sent an issues.labeled event. If there is nothing to report",
     );
     expect(rendered.message).toContain(
       "Look at <event-data-0123456789ab>Crash on start</event-data-0123456789ab> ().",

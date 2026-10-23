@@ -104,6 +104,7 @@ import Migration0082 from "./Migrations/082_ThreadMoves.ts";
 import Migration0083 from "./Migrations/083_ProjectionThreadSessionStartup.ts";
 import Migration0084 from "./Migrations/084_ProjectSetups.ts";
 import Migration0085 from "./Migrations/085_RelayHooks.ts";
+import Migration0086 from "./Migrations/086_EventTasks.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -201,6 +202,7 @@ export const migrationEntries = [
   [83, "ProjectionThreadSessionStartup", Migration0083],
   [84, "ProjectSetups", Migration0084],
   [85, "RelayHooks", Migration0085],
+  [86, "EventTasks", Migration0086],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -797,7 +797,9 @@ export function renderWebhookRunMessage(input: WebhookRunMessageInput): WebhookR
   });
   const preamble = [
     `Event task: ${input.taskName}.`,
-    input.source === "github" && input.eventName ? `GitHub sent a ${input.eventName} event.` : null,
+    input.source === "github" && input.eventName
+      ? `GitHub sent ${/^[aeiou]/u.test(input.eventName) ? "an" : "a"} ${input.eventName} event.`
+      : null,
     input.withFinishTool
       ? "If there is nothing to report, call scheduled_run_finish with nothing_to_report: true."
       : null,
