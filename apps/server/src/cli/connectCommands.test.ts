@@ -314,15 +314,21 @@ const toolStubs = Layer.mergeAll(
     subscribeDomainEvents: Effect.succeed(Stream.empty),
   } as never),
   Layer.succeed(ProjectionSnapshotQuery, {
-    getShellSnapshot: () =>
+    getProjectCatalog: () =>
       Effect.succeed({
         snapshotSequence: 0,
         projects: [
-          { id: "project-web", kind: "workspace", title: "web", workspaceRoot: "/repo/web" },
+          {
+            id: "project-web",
+            kind: "workspace",
+            title: "web",
+            workspaceRoot: "/repo/web",
+            deletedAt: null,
+          },
         ],
-        threads: [],
         updatedAt: "",
       }),
+    listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
   } as never),
   Layer.succeed(ThreadBootstrap, { runTurnStart: unused, startChild: unused } as never),
