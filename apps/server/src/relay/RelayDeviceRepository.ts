@@ -111,6 +111,8 @@ export class RelayRepositoryError extends Data.TaggedError("RelayRepositoryError
 export interface RelayDeviceRepositoryShape {
   readonly getHost: Effect.Effect<Option.Option<RelayHostRow>, RelayRepositoryError>;
   readonly saveHost: (host: RelayHostRow) => Effect.Effect<void, RelayRepositoryError>;
+  /** Forgets this computer's relay registration (the relay no longer knows it). */
+  readonly clearHost: Effect.Effect<void, RelayRepositoryError>;
   readonly getDevice: (
     deviceId: string,
   ) => Effect.Effect<Option.Option<RelayDeviceRow>, RelayRepositoryError>;
@@ -291,6 +293,10 @@ const make = Effect.gen(function* () {
         created_at = excluded.created_at
     `.pipe(Effect.asVoid, wrap("saveHost"));
 
+  const clearHost: RelayDeviceRepositoryShape["clearHost"] = sql`
+    DELETE FROM relay_host WHERE id = 1
+  `.pipe(Effect.asVoid, wrap("clearHost"));
+
   const getDevice: RelayDeviceRepositoryShape["getDevice"] = (deviceId) =>
     findDevice({ column: "device_id", value: deviceId }).pipe(wrap("getDevice"));
   const getDeviceByRequest: RelayDeviceRepositoryShape["getDeviceByRequest"] = (requestId) =>
@@ -459,6 +465,7 @@ const make = Effect.gen(function* () {
     prunePairings,
     getHost,
     saveHost,
+    clearHost,
     getDevice,
     getDeviceByRequest,
     getDeviceBySession,
