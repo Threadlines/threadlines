@@ -34,7 +34,9 @@ import {
   timingSafeEqualBase64Url,
 } from "../utils.ts";
 
-const SIGNING_SECRET_NAME = "server-signing-key";
+/** The server signing key in the secret store; other signers derive their own key from it. */
+export const SERVER_SIGNING_SECRET_NAME = "server-signing-key";
+export const SERVER_SIGNING_SECRET_BYTES = 32;
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
 
@@ -97,7 +99,10 @@ export const makeSessionCredentialService = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const secretStore = yield* ServerSecretStore;
   const authSessions = yield* AuthSessionRepository;
-  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
+  const signingSecret = yield* secretStore.getOrCreateRandom(
+    SERVER_SIGNING_SECRET_NAME,
+    SERVER_SIGNING_SECRET_BYTES,
+  );
   const connectedSessionsRef = yield* Ref.make(new Map<string, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   const cookieName = resolveSessionCookieName({

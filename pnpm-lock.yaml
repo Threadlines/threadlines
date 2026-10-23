@@ -263,6 +263,9 @@ importers:
       '@effect/vitest':
         specifier: 4.0.0-beta.107
         version: 4.0.0-beta.107(effect@4.0.0-beta.107(patch_hash=ccee8481ed28c1fa1bb88e1ad0787aea2596f3d866b9b70fe04da9e6a38ce2cb))(vitest@5.0.5)
+      '@modelcontextprotocol/sdk':
+        specifier: 1.32.1
+        version: 1.32.1(zod@4.6.7)
       '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
