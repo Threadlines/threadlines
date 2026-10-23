@@ -1,5 +1,6 @@
 import type {
   GitRemoteAuthFailure,
+  NewWorktreeBaseSettings,
   VcsRef,
   SourceControlProviderInfo,
   VcsStatusLocalResult,
@@ -642,6 +643,78 @@ export function dedupeRemoteBranchesWithLocalMatches(
     );
     return !localBranchCandidates.some((candidate) => localBranchNames.has(candidate));
   });
+}
+
+type NamedRef = Pick<VcsRef, "name" | "isRemote" | "remoteName">;
+
+/**
+ * Whether `ref` is the branch called `branchName`: the local branch of that
+ * name, a remote branch written in full (`upstream/develop`), or a remote's
+ * copy of it (`origin/develop` for `develop`).
+ */
+export function isRefNamed(ref: NamedRef, branchName: string): boolean {
+  if (ref.name === branchName) return true;
+  return (
+    ref.isRemote === true &&
+    ref.remoteName !== undefined &&
+    ref.name === `${ref.remoteName}/${branchName}`
+  );
+}
+
+/**
+ * The name a setting gives `ref`'s branch: a local branch's own name, a
+ * remote branch's without its remote (`origin/develop` is `develop`).
+ * `isRefNamed(ref, settingBranchName(ref))` always holds.
+ */
+export function settingBranchName(ref: NamedRef): string {
+  const prefix = ref.isRemote === true && ref.remoteName !== undefined ? `${ref.remoteName}/` : "";
+  return prefix.length > 0 && ref.name.startsWith(prefix)
+    ? ref.name.slice(prefix.length)
+    : ref.name;
+}
+
+/**
+ * The ref a branch name means among `refs`: the local branch first, then a
+ * remote branch written in full, then a remote's copy (`origin` first).
+ */
+export function findRefForBranchName<T extends NamedRef>(
+  refs: ReadonlyArray<T>,
+  branchName: string,
+): T | null {
+  const name = branchName.trim();
+  if (name.length === 0) return null;
+  const matches = refs.filter((ref) => isRefNamed(ref, name));
+  return (
+    matches.find((ref) => ref.isRemote !== true) ??
+    matches.find((ref) => ref.name === name) ??
+    matches.find((ref) => ref.remoteName === "origin") ??
+    matches[0] ??
+    null
+  );
+}
+
+/**
+ * The branch a new worktree starts from when nobody picks one, by the
+ * computer's "New worktrees from" setting. The repository's default branch
+ * stands in when the setting's branch isn't there (a detached checkout has no
+ * current branch; a project may lack the named one), and the current branch
+ * when no default branch is known. The composer and scheduled runs both ask
+ * this with the refs they have, which must include a lookup of the named
+ * branch.
+ */
+export function resolveNewWorktreeBaseBranch(input: {
+  readonly base: NewWorktreeBaseSettings;
+  readonly refs: ReadonlyArray<Pick<VcsRef, "name" | "isDefault" | "isRemote" | "remoteName">>;
+  readonly currentBranch: string | null;
+}): string | null {
+  const defaultBranch = input.refs.find((ref) => ref.isDefault && ref.isRemote !== true)?.name;
+  const preferred =
+    input.base.from === "current"
+      ? input.currentBranch
+      : input.base.from === "named"
+        ? findRefForBranchName(input.refs, input.base.branch)?.name
+        : undefined;
+  return preferred ?? defaultBranch ?? input.currentBranch;
 }
 
 export function detectSourceControlProviderFromGitRemoteUrl(

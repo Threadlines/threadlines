@@ -33,6 +33,7 @@ import {
 import {
   classifyGitRemoteAuthFailure,
   dedupeRemoteBranchesWithLocalMatches,
+  isRefNamed,
   worktreeFolderNameForBranch,
 } from "@threadlines/shared/git";
 import { compactTraceAttributes } from "@threadlines/shared/observability";
@@ -498,7 +499,13 @@ function filterBranchesForListQuery(
   }
 
   const normalizedQuery = query.toLowerCase();
-  return refs.filter((refName) => refName.name.toLowerCase().includes(normalizedQuery));
+  const matches = refs.filter((refName) => refName.name.toLowerCase().includes(normalizedQuery));
+  // The branch with exactly that name leads, so looking a branch up by name
+  // finds it on the first page however many others contain the name.
+  return [
+    ...matches.filter((refName) => isRefNamed(refName, query)),
+    ...matches.filter((refName) => !isRefNamed(refName, query)),
+  ];
 }
 
 function paginateBranches(input: {
