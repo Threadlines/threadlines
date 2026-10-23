@@ -1,3 +1,4 @@
+import { OrchestrationCommandRefusal } from "@threadlines/contracts";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Schema from "effect/Schema";
 
@@ -32,6 +33,8 @@ export class OrchestrationCommandInvariantError extends Schema.TaggedError<Orche
   {
     commandType: Schema.String,
     detail: Schema.String,
+    /** A refusal its caller acts on by type (OrchestrationCommandRefusal); absent for the rest. */
+    refusal: Schema.optional(OrchestrationCommandRefusal),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

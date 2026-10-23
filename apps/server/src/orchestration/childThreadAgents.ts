@@ -73,24 +73,26 @@ export function childAgentRefusal(
  * Why a child cannot run on `selection`, or null: its provider must pass
  * childAgentRefusal and still offer the model. `knownModel: false` accepts a
  * model the provider does not list (the asking agent's own, which may be a
- * custom one).
+ * custom one). `listTool` is the tool the caller picks agents from.
  */
 export function childModelRefusal(input: {
   readonly selection: ModelSelection;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly interactionMode: ProviderInteractionMode;
   readonly knownModel: boolean;
+  readonly listTool?: string;
 }): string | null {
+  const listTool = input.listTool ?? "thread_agents";
   const provider = input.providers.find((entry) => entry.instanceId === input.selection.instanceId);
   if (provider === undefined) {
-    return `No provider called "${input.selection.instanceId}" is set up. Pick one from thread_agents.`;
+    return `No provider called "${input.selection.instanceId}" is set up. Pick one from ${listTool}.`;
   }
   const refusal = childAgentRefusal(provider, input.interactionMode);
   if (refusal !== null) {
-    return `${childAgentProviderName(provider)} can't take a thread: ${refusal}. Pick another from thread_agents.`;
+    return `${childAgentProviderName(provider)} can't take a thread: ${refusal}. Pick another from ${listTool}.`;
   }
   if (input.knownModel && !provider.models.some((model) => model.slug === input.selection.model)) {
-    return `${childAgentProviderName(provider)} has no model "${input.selection.model}". Pick one from thread_agents.`;
+    return `${childAgentProviderName(provider)} has no model "${input.selection.model}". Pick one from ${listTool}.`;
   }
   return null;
 }

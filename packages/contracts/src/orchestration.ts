@@ -5517,10 +5517,22 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
   },
 ) {}
 
+/**
+ * Why the decider refused a command, for a caller that acts on the reason
+ * rather than showing the words. An outside agent's turn
+ * (docs/design/outside-agents.md): `thread_busy`, the thread has a turn
+ * running or about to start, or waits on the user; `above_ceiling`, its
+ * access is above what the agent may use.
+ */
+export const OrchestrationCommandRefusal = Schema.Literals(["thread_busy", "above_ceiling"]);
+export type OrchestrationCommandRefusal = typeof OrchestrationCommandRefusal.Type;
+
 export class OrchestrationDispatchCommandError extends Schema.TaggedError<OrchestrationDispatchCommandError>()(
   "OrchestrationDispatchCommandError",
   {
     message: TrimmedNonEmptyString,
+    /** See OrchestrationCommandRefusal; absent for every other failure. */
+    refusal: Schema.optional(OrchestrationCommandRefusal),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

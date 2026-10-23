@@ -1,6 +1,7 @@
 import {
   type OrchestrationCommand,
   type OrchestrationThreadShell,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -271,6 +272,58 @@ describe("startProviderReviewForThread", () => {
     );
 
     expect(error.message).toContain("does not support native code reviews");
+    expect(commands).toEqual([]);
+    expect(startReview).not.toHaveBeenCalled();
+  });
+
+  it("refuses a draft that claims lineage only the server gives", async () => {
+    const commands: OrchestrationCommand[] = [];
+    const startReview = vi.fn(() => Effect.die("must not start"));
+    const input = reviewInput({
+      bootstrap: {
+        projectId: PROJECT_ID,
+        title: "Review: Fix the bug",
+        modelSelection: MODEL_SELECTION,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        // A client claiming the thread an outside agent started.
+        outsideOrigin: {
+          connectionId: OutsideAgentConnectionId.make("connection-1"),
+          name: "Claude Code",
+        },
+        createdAt: NOW,
+      },
+    });
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        startProviderReviewForThread(input, {
+          projectionSnapshotQuery: {
+            getThreadShellById: () => Effect.succeed(Option.none()),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return { sequence: commands.length };
+              }),
+          },
+          providerService: {
+            listSessions: () => Effect.succeed([]),
+            earlyStartInFlight: () => Effect.succeed(undefined),
+            stopSession: () => Effect.void,
+            getCapabilities: () =>
+              Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
+            getInstanceInfo: () => Effect.succeed(codexInstanceInfo()),
+            startReview,
+          },
+        }),
+      ),
+    );
+
+    expect(error.message).toContain("can't start a thread");
     expect(commands).toEqual([]);
     expect(startReview).not.toHaveBeenCalled();
   });

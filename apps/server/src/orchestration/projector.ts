@@ -407,6 +407,9 @@ export function projectEvent(
             attachedToParent: payload.attachedToParent ?? false,
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
             ...(payload.scheduledRun !== undefined ? { scheduledRun: payload.scheduledRun } : {}),
+            ...(payload.outsideOrigin !== undefined
+              ? { outsideOrigin: payload.outsideOrigin }
+              : {}),
             ...(payload.movedFrom !== undefined ? { movedFrom: payload.movedFrom } : {}),
             ...(payload.historySeedOwed === true ? { historySeedOwed: true } : {}),
             voiceActive: false,
@@ -1252,6 +1255,7 @@ export function projectEvent(
             ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
             ...(payload.fromThread !== undefined ? { fromThread: payload.fromThread } : {}),
+            ...(payload.fromOutside !== undefined ? { fromOutside: payload.fromOutside } : {}),
             ...(payload.imported === true ? { imported: true } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),

@@ -9,6 +9,7 @@ import {
   CorrelationId,
   EventId,
   MessageId,
+  OutsideAgentConnectionId,
   ProjectId,
   ThreadId,
   SideTurnId,
@@ -1847,7 +1848,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       // The user's newest message is not the last one recorded: one arrives
       // with an older clock, and later user-role messages come from a room
-      // agent and from a child thread, which the user did not write.
+      // agent, a child thread and an outside agent, which the user did not write.
       yield* message("user-newest", "user", "2026-03-01T10:00:03.000Z");
       yield* message("user-older-clock", "user", "2026-03-01T10:00:01.000Z");
       yield* message("from-room-agent", "user", "2026-03-01T10:00:09.000Z", {
@@ -1859,6 +1860,9 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           requestId: ChildRequestId.make("child-request-summary"),
           kind: "report",
         },
+      });
+      yield* message("from-outside-agent", "user", "2026-03-01T10:00:10.500Z", {
+        fromOutside: { connectionId: "connection-summary", name: "Claude Code" },
       });
       yield* message("assistant-reply", "assistant", "2026-03-01T10:00:11.000Z");
 
@@ -3075,6 +3079,78 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       assert.equal(
         detail._tag === "Some" ? detail.value.messages[0]?.fromThread?.kind : undefined,
         "request",
+      );
+    }),
+  );
+
+  it.effect("keeps an outside agent's label on its thread and its messages", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const createdAt = "2026-10-23T10:00:00.000Z";
+      const projectId = ProjectId.make("project-outside");
+      const threadId = ThreadId.make("thread-outside");
+      const agent = { connectionId: OutsideAgentConnectionId.make("connection-1"), name: "Codex" };
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-outside-project"),
+        projectId,
+        title: "Outside",
+        workspaceRoot: "/tmp/project-outside",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-outside-thread"),
+        threadId,
+        projectId,
+        title: "Started from outside",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        outsideOrigin: agent,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-outside-turn"),
+        threadId,
+        message: {
+          messageId: MessageId.make("outside-message"),
+          role: "user",
+          text: "Go",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        fromOutside: { ...agent, maxRuntimeMode: "approval-required" },
+        createdAt,
+      });
+
+      // Read back from SQL, the way the engine rebuilds its read model at boot.
+      const query = yield* ProjectionSnapshotQuery.pipe(
+        Effect.provide(
+          OrchestrationProjectionSnapshotQueryLive.pipe(
+            Layer.provide(RepositoryIdentityResolverLive),
+          ),
+        ),
+      );
+      const readModel = yield* query.getCommandReadModel();
+      assert.deepEqual(
+        readModel.threads.find((thread) => thread.id === threadId)?.outsideOrigin,
+        agent,
+      );
+      const shell = yield* query.getShellSnapshot();
+      const row = shell.threads.find((thread) => thread.id === threadId);
+      assert.deepEqual(row?.outsideOrigin, agent);
+      // The agent's message isn't the user's: nothing the user wrote yet.
+      assert.equal(row?.latestUserMessageAt, null);
+      const detail = yield* query.getThreadDetailById(threadId);
+      assert.deepEqual(
+        detail._tag === "Some" ? detail.value.messages[0]?.fromOutside : undefined,
+        agent,
       );
     }),
   );

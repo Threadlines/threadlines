@@ -607,6 +607,39 @@ describe("thread_read", () => {
     }),
   );
 
+  it.effect("names an outside agent's thread and messages by the agent, never the user", () =>
+    Effect.gen(function* () {
+      const agent = { connectionId: "connection-1" as never, name: "Claude Code" };
+      const outside = makeThread({
+        id: STRANGER,
+        title: "Started from outside",
+        session: null,
+        outsideOrigin: agent,
+        messages: [
+          {
+            id: MessageId.make("outside-1"),
+            eventSequence: 1,
+            role: "user",
+            text: "Fix the flaky test.",
+            fromOutside: agent,
+            turnId: null,
+            streaming: false,
+            createdAt: AT,
+            updatedAt: AT,
+          },
+        ],
+      });
+      const tools = yield* makeTools({ others: [outside] });
+      const result = yield* tools.handlers.thread_read(mainCaller(), { threadId: STRANGER });
+
+      // `user` with the agent's name: linked computers on older versions know no other word.
+      expect(result.messages.map((entry) => [entry.origin, entry.author])).toEqual([
+        ["user", "Claude Code (outside agent)"],
+      ]);
+      expect(result.thread).toMatchObject({ startedBy: "Claude Code (outside agent)" });
+    }),
+  );
+
   it.effect("refuses a thread in another project", () =>
     Effect.gen(function* () {
       const elsewhere = makeChild({ projectId: ProjectId.make("project-2") });

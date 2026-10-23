@@ -21,7 +21,7 @@ import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
 import { McpSchema, McpProtocol, McpServer, Tool } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
   BrowserScreenshotTool,
@@ -141,6 +141,57 @@ export function normalizeMcpHttpResponse(
     body._tag === "Empty" ||
     ((body._tag === "Uint8Array" || body._tag === "Raw") && body.contentLength === 0);
   return response.status === 200 && empty ? HttpServerResponse.setStatus(response, 202) : response;
+}
+
+const jsonDecoder = new TextDecoder();
+const jsonEncoder = new TextEncoder();
+
+/**
+ * A `tools/list` answer cut down to the tools the credential may call. An
+ * endpoint's toolkit is one for every caller, so without this every caller
+ * would see every tool: on the room endpoint a side runtime's forbidden ones
+ * and a scheduled run's own `scheduled_run_finish`, on `/mcp/connect` a
+ * See-only connection's start tools. Each handler still refuses a caller it
+ * doesn't serve. Anything that isn't a JSON body with a tool list passes as is.
+ */
+export function listOnlyGrantedTools(
+  response: HttpServerResponse.HttpServerResponse,
+  granted: ReadonlySet<string>,
+): HttpServerResponse.HttpServerResponse {
+  const body = response.body;
+  if (body._tag !== "Uint8Array" || !body.contentType.includes("json")) return response;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonDecoder.decode(body.body));
+  } catch {
+    return response;
+  }
+  let changed = false;
+  const narrow = (message: unknown): unknown => {
+    if (typeof message !== "object" || message === null || !("result" in message)) {
+      return message;
+    }
+    const result = message.result;
+    if (typeof result !== "object" || result === null || !("tools" in result)) return message;
+    if (!Array.isArray(result.tools)) return message;
+    const tools = result.tools.filter(
+      (tool: unknown) =>
+        typeof tool === "object" &&
+        tool !== null &&
+        "name" in tool &&
+        typeof tool.name === "string" &&
+        granted.has(tool.name),
+    );
+    if (tools.length === result.tools.length) return message;
+    changed = true;
+    return { ...message, result: { ...result, tools } };
+  };
+  const narrowed = Array.isArray(parsed) ? parsed.map(narrow) : narrow(parsed);
+  if (!changed) return response;
+  return HttpServerResponse.setBody(
+    response,
+    HttpBody.uint8Array(jsonEncoder.encode(JSON.stringify(narrowed)), body.contentType),
+  );
 }
 
 const authenticate = Effect.succeed(

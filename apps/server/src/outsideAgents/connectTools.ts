@@ -201,7 +201,6 @@ export const ProjectsTool = readsThreads(
   Tool.make("projects", {
     description:
       "The Threadlines projects you may use on this computer: each one's id, name and folder.",
-    parameters: Schema.Struct({}),
     success: ProjectsResult,
     dependencies,
   }).annotate(Tool.Title, "List projects"),
