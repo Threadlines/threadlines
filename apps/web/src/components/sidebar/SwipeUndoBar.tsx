@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { cn } from "../../lib/utils";
+
 /** How long the bar offers to take a swipe back. */
 const SWIPE_UNDO_VISIBLE_MS = 6000;
 
@@ -28,6 +30,11 @@ export function SwipeUndoBar(props: {
   readonly undo: SwipeUndo;
   /** Called with the undo's id, so a late answer can't dismiss a newer bar. */
   readonly onDismiss: (id: number) => void;
+  /**
+   * On a full page that runs to the bottom of a phone's screen: keep above the
+   * home indicator's strip. A list inside the sidebar is already clear of it.
+   */
+  readonly clearsSafeArea?: boolean;
 }) {
   const { undo, onDismiss } = props;
   const [phase, setPhase] = useState<"offered" | "undoing" | "failed">("offered");
@@ -48,7 +55,14 @@ export function SwipeUndoBar(props: {
   };
 
   return (
-    <div className="pointer-events-none absolute inset-x-2 bottom-2 z-30 flex">
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-x-2 z-30 flex",
+        props.clearsSafeArea === true
+          ? "bottom-[calc(--spacing(2)+env(safe-area-inset-bottom))]"
+          : "bottom-2",
+      )}
+    >
       <div
         role="status"
         data-testid="swipe-undo-bar"

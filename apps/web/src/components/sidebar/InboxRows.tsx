@@ -10,7 +10,6 @@ import {
   MonitorUpIcon,
   GitForkIcon,
   PinIcon,
-  PinOffIcon,
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
@@ -31,7 +30,8 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
 import { cn } from "../../lib/utils";
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
-import { SwipeableRow, type RowSwipeAction } from "./SwipeableRow";
+import type { ThreadRowSwipeHandler } from "../../hooks/useThreadRowSwipes";
+import { SwipeableRow, threadRowSwipeAction } from "./SwipeableRow";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunTaskName } from "../../lib/scheduledTasksState";
 import { isThreadSessionStarting } from "../../lib/threadSort";
@@ -81,36 +81,6 @@ import { describedAwaitedTasks, formatBackgroundWaitWord } from "../../session-l
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
-
-/**
- * What a swipe on an inbox row asks for: the same actions, by the same names,
- * as the row's menu, so a swipe and a menu pick behave alike.
- */
-export type InboxRowSwipeAction = "pin" | "unpin" | "wrap-up" | "reopen" | "archive";
-
-/** Runs a row's swipe action, by thread key. Rows without it don't swipe. */
-type InboxRowSwipeHandler = (action: InboxRowSwipeAction, threadKey: string) => void;
-
-function rowSwipeAction(
-  onSwipeAction: InboxRowSwipeHandler | undefined,
-  threadKey: string,
-  action: InboxRowSwipeAction,
-): RowSwipeAction | null {
-  if (!onSwipeAction) return null;
-  const run = () => onSwipeAction(action, threadKey);
-  switch (action) {
-    case "pin":
-      return { label: "Pin", icon: PinIcon, leaves: false, run };
-    case "unpin":
-      return { label: "Unpin", icon: PinOffIcon, leaves: false, run };
-    case "wrap-up":
-      return { label: "Wrap up", icon: CheckIcon, leaves: true, run };
-    case "reopen":
-      return { label: "Reopen", icon: Undo2Icon, leaves: true, run };
-    case "archive":
-      return { label: "Archive", icon: ArchiveIcon, leaves: true, run };
-  }
-}
 
 export const ROW_SURFACE_CLASS_NAME =
   "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset [-webkit-touch-callout:none]";
@@ -718,7 +688,7 @@ export interface InboxThreadRowProps {
    * Runs what a sideways swipe on the row asks for (touch only). Absent, the
    * row doesn't swipe.
    */
-  onSwipeAction?: InboxRowSwipeHandler | undefined;
+  onSwipeAction?: ThreadRowSwipeHandler | undefined;
 }
 
 /** See InboxThreadRowProps.remoteParent. */
@@ -952,8 +922,16 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       {/* Swiped right it pins (or unpins); swiped left it wraps up, when the
           Wrap up button would. */}
       <SwipeableRow
-        leading={rowSwipeAction(onSwipeAction, threadKey, isPinned ? "unpin" : "pin")}
-        trailing={canMarkDone ? rowSwipeAction(onSwipeAction, threadKey, "wrap-up") : null}
+        leading={threadRowSwipeAction(
+          onSwipeAction,
+          { threadKey, title: thread.title },
+          isPinned ? "unpin" : "pin",
+        )}
+        trailing={
+          canMarkDone
+            ? threadRowSwipeAction(onSwipeAction, { threadKey, title: thread.title }, "wrap-up")
+            : null
+        }
         disabled={isRenaming}
       >
         {/* The surface holds the row and its family's summary line, so the two
@@ -1233,7 +1211,7 @@ export interface InboxChildRowProps {
    */
   computerLabel?: string | null | undefined;
   /** See InboxThreadRowProps.onSwipeAction. */
-  onSwipeAction?: InboxRowSwipeHandler | undefined;
+  onSwipeAction?: ThreadRowSwipeHandler | undefined;
 }
 
 /**
@@ -1375,9 +1353,15 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
       {/* The same action as its button: Reopen once wrapped (swiped right),
           Wrap up while it can be (swiped left). */}
       <SwipeableRow
-        leading={isDone ? rowSwipeAction(onSwipeAction, threadKey, "reopen") : null}
+        leading={
+          isDone
+            ? threadRowSwipeAction(onSwipeAction, { threadKey, title: thread.title }, "reopen")
+            : null
+        }
         trailing={
-          !isDone && canMarkDone ? rowSwipeAction(onSwipeAction, threadKey, "wrap-up") : null
+          !isDone && canMarkDone
+            ? threadRowSwipeAction(onSwipeAction, { threadKey, title: thread.title }, "wrap-up")
+            : null
         }
         disabled={isRenaming}
       >
@@ -1763,7 +1747,7 @@ export interface InboxDoneRowProps {
   /** See ThreadHoverCardPayload.lineage. */
   lineage?: ThreadHoverCardLineage | undefined;
   /** See InboxThreadRowProps.onSwipeAction. */
-  onSwipeAction?: InboxRowSwipeHandler | undefined;
+  onSwipeAction?: ThreadRowSwipeHandler | undefined;
 }
 
 /**
@@ -1914,8 +1898,12 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
       {/* Its two buttons as swipes: right reopens it, left archives it (asking
           first when Settings says to, as the menu does). */}
       <SwipeableRow
-        leading={rowSwipeAction(onSwipeAction, threadKey, "reopen")}
-        trailing={rowSwipeAction(onSwipeAction, threadKey, "archive")}
+        leading={threadRowSwipeAction(onSwipeAction, { threadKey, title: thread.title }, "reopen")}
+        trailing={threadRowSwipeAction(
+          onSwipeAction,
+          { threadKey, title: thread.title },
+          "archive",
+        )}
       >
         {/* Same card the live rows carry: a wrapped thread's detail is no less
           worth a hover, and status={null} reads as its idle state. */}

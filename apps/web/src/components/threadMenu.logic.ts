@@ -33,6 +33,16 @@ export interface ThreadMenuFacts {
   readonly running: boolean;
 }
 
+/**
+ * Whether the thread's agent is mid-turn, from its session: the menu greys out
+ * Archive then, and a swipe doesn't offer it.
+ */
+export function isThreadTurnRunning(
+  session: { readonly status: string; readonly activeTurnId?: unknown } | null | undefined,
+): boolean {
+  return session?.status === "running" && session.activeTurnId != null;
+}
+
 /** The first item of a group carries the divider above it. */
 const asGroup = <T extends string>(
   items: ReadonlyArray<ContextMenuItem<T>>,

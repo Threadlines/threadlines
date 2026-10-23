@@ -297,7 +297,11 @@ describe("InboxThreadRow swipes", () => {
     // The click a lift can end in is the swipe's, not a tap.
     element.dispatchEvent(new MouseEvent("click", at(x0 - 220, y0, "touch")));
     await vi.waitFor(() => {
-      expect(onSwipeAction).toHaveBeenCalledWith("wrap-up", expect.stringContaining(THREAD_ID));
+      expect(onSwipeAction).toHaveBeenCalledWith(
+        "wrap-up",
+        expect.stringContaining(THREAD_ID),
+        THREAD.title,
+      );
     });
     await vi.waitFor(() => expect(swipeAction()).toBeNull());
 
@@ -312,7 +316,11 @@ describe("InboxThreadRow swipes", () => {
     // Right: Pin.
     drag(220, 0)();
     await vi.waitFor(() => {
-      expect(onSwipeAction).toHaveBeenLastCalledWith("pin", expect.stringContaining(THREAD_ID));
+      expect(onSwipeAction).toHaveBeenLastCalledWith(
+        "pin",
+        expect.stringContaining(THREAD_ID),
+        THREAD.title,
+      );
     });
     await vi.waitFor(() => expect(swipeAction()).toBeNull());
 

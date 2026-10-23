@@ -248,19 +248,36 @@ export const COMPACT_FOOTER_VIEWPORT: ViewportSpec = {
   attachmentTolerancePx: 56,
 };
 /**
- * A finger drawn `dx` across an element in ten steps, then lifted, as real
- * touch events: a drawer follows a finger through those, not through
- * pointer events.
+ * A finger drawn `dx` across an element in ten steps, then lifted, the way a
+ * browser reports one: each step as a touch pointer event and then a touch
+ * event. Row swipes follow the pointer events; a drawer follows the touch
+ * events.
  */
 export function touchSwipe(element: Element, dx: number): void {
   const rect = element.getBoundingClientRect();
   const x0 = rect.left + rect.width * 0.75;
   const y = rect.top + rect.height / 2;
-  const fire = (type: "touchstart" | "touchmove" | "touchend", x: number) => {
-    const touch = new Touch({ identifier: 21, target: element, clientX: x, clientY: y });
-    const active = type === "touchend" ? [] : [touch];
+  const fire = (phase: "start" | "move" | "end", x: number) => {
     element.dispatchEvent(
-      new TouchEvent(type, {
+      new PointerEvent(
+        phase === "start" ? "pointerdown" : phase === "move" ? "pointermove" : "pointerup",
+        {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          pointerId: 21,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          buttons: phase === "end" ? 0 : 1,
+        },
+      ),
+    );
+    const touch = new Touch({ identifier: 21, target: element, clientX: x, clientY: y });
+    const active = phase === "end" ? [] : [touch];
+    element.dispatchEvent(
+      new TouchEvent(`touch${phase}`, {
         bubbles: true,
         cancelable: true,
         touches: active,
@@ -269,9 +286,9 @@ export function touchSwipe(element: Element, dx: number): void {
       }),
     );
   };
-  fire("touchstart", x0);
-  for (let step = 1; step <= 10; step += 1) fire("touchmove", x0 + (dx * step) / 10);
-  fire("touchend", x0 + dx);
+  fire("start", x0);
+  for (let step = 1; step <= 10; step += 1) fire("move", x0 + (dx * step) / 10);
+  fire("end", x0 + dx);
 }
 
 export const PHONE_VIEWPORT: ViewportSpec = {

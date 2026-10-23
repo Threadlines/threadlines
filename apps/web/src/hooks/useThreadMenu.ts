@@ -17,6 +17,7 @@ import { openThreadMoveDialog } from "../components/ThreadMoveDialog";
 import { openThreadRenameDialog } from "../components/ThreadRenameDialog";
 import {
   describeThreadMenu,
+  isThreadTurnRunning,
   describeThreadSelectionMenu,
   type ThreadMenuAction,
 } from "../components/threadMenu.logic";
@@ -149,7 +150,7 @@ export function useThreadMenu() {
       putBack,
       workingChildCount,
       moveOffered: readThreadMoveOffered(thread.environmentId, thread.moveStatus),
-      running: full?.session?.status === "running" && full.session.activeTurnId != null,
+      running: isThreadTurnRunning(full?.session),
     });
   }, []);
 

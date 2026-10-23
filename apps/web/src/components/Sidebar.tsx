@@ -43,6 +43,7 @@ import {
   requestIdleThreadDetailPrewarm,
 } from "../environments/runtime/service";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { useThreadRowSwipes } from "../hooks/useThreadRowSwipes";
 import {
   buildThreadRouteParams,
   resolveThreadRouteRef,
@@ -98,7 +99,6 @@ import {
   InboxLinkRequestRow,
   InboxRemoteChildRow,
   InboxThreadRow,
-  type InboxRowSwipeAction,
   type InboxThreadFamily,
   type RemoteParentLine,
 } from "./sidebar/InboxRows";
@@ -113,7 +113,7 @@ import {
 } from "./sidebar/SidebarDrafts";
 import type { EnvironmentScopeOption } from "./sidebar/InboxViewMenu";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
-import { SwipeUndoBar, type SwipeUndo } from "./sidebar/SwipeUndoBar";
+import { SwipeUndoBar } from "./sidebar/SwipeUndoBar";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
@@ -475,7 +475,7 @@ export default function Sidebar() {
   // thread" action uses.
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const { archiveThread, unarchiveThread } = useThreadActions();
+  const { archiveThread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -1293,54 +1293,9 @@ export default function Sidebar() {
     [threadMenu],
   );
 
-  // A swipe on a row runs the menu's action of the same name, so it behaves
-  // as picking it would (archive asks first when Settings says to). The two
-  // that file a thread away without asking, Wrap up and an unconfirmed
-  // Archive, are the ones a swipe can do by accident (a left swipe anywhere
-  // else closes the phone's sidebar), so they offer to take it back.
-  const runThreadMenuAction = threadMenu.run;
-  const [swipeUndo, setSwipeUndo] = useState<SwipeUndo | null>(null);
-  // Numbers the swipes that can be undone, as they happen: an archive that
-  // answers late must not take the bar from a newer swipe.
-  const swipeUndoSeqRef = useRef(0);
-  const dismissSwipeUndo = useCallback((id: number) => {
-    setSwipeUndo((current) => (current?.id === id ? null : current));
-  }, []);
-  const handleRowSwipe = useCallback(
-    (action: InboxRowSwipeAction, threadKey: string) => {
-      const threadRef = parseScopedThreadKey(threadKey);
-      if (!threadRef) return;
-      const title = sidebarThreadByKeyRef.current.get(threadKey)?.title ?? "";
-      const nextUndo = () => {
-        swipeUndoSeqRef.current += 1;
-        const id = swipeUndoSeqRef.current;
-        return (verb: SwipeUndo["verb"], undo: SwipeUndo["undo"]) => {
-          if (swipeUndoSeqRef.current === id) setSwipeUndo({ id, verb, title, undo });
-        };
-      };
-      if (action === "archive" && !appSettingsConfirmThreadArchive) {
-        const offerUndo = nextUndo();
-        void archiveThread(threadRef).then(
-          () => offerUndo("Archived", () => unarchiveThread(threadRef)),
-          (error: unknown) => {
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Failed to archive thread",
-                description: error instanceof Error ? error.message : "An error occurred.",
-              }),
-            );
-          },
-        );
-        return;
-      }
-      void runThreadMenuAction(action, { threadRef });
-      if (action === "wrap-up") {
-        nextUndo()("Wrapped up", async () => reopenThreadByKey(threadKey));
-      }
-    },
-    [appSettingsConfirmThreadArchive, archiveThread, runThreadMenuAction, unarchiveThread],
-  );
+  // A swipe on a row runs the menu's action of the same name; the two that
+  // file a thread away without asking offer Undo (see useThreadRowSwipes).
+  const { handleRowSwipe, swipeUndo, dismissSwipeUndo } = useThreadRowSwipes();
 
   // Compose follows the thread you are in, kept inside the scope while the
   // list is narrowed to projects (see resolveScopedComposeTarget).

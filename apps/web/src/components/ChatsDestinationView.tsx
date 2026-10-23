@@ -5,6 +5,7 @@ import { useCallback } from "react";
 
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useThreadMenu } from "../hooks/useThreadMenu";
+import { type ThreadRowSwipeHandler, useThreadRowSwipes } from "../hooks/useThreadRowSwipes";
 import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../lib/threadInboxSync";
 import { buildThreadRouteParams } from "../threadRoutes";
@@ -21,6 +22,9 @@ import {
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveSeenThreadStatus, type ThreadStatusPill } from "./Sidebar.logic";
 import { ThreadEnvironmentBadge, ThreadStatusText } from "./sidebar/InboxRows";
+import { SwipeableRow, threadRowSwipeAction } from "./sidebar/SwipeableRow";
+import { SwipeUndoBar } from "./sidebar/SwipeUndoBar";
+import { isThreadTurnRunning } from "./threadMenu.logic";
 import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { Button } from "./ui/button";
@@ -75,6 +79,7 @@ function GeneralChatsPage() {
   const seenSources = useThreadSeenSources();
   const { chats, startChat } = useGeneralChats();
   const groups = useGeneralChatGroups(chats);
+  const { handleRowSwipe, swipeUndo, dismissSwipeUndo } = useThreadRowSwipes();
 
   const newChatButton = (
     <button
@@ -91,7 +96,12 @@ function GeneralChatsPage() {
 
   return (
     <ThreadHoverCardProvider side="bottom">
-      <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
+      {/* Positioned for the Undo bar a swipe leaves, which floats over the
+          bottom of the page. */}
+      <div
+        className="relative flex h-full min-h-0 w-full min-w-0 flex-col"
+        data-testid="chats-view"
+      >
         {/* The strip names the page and holds its one action. */}
         <PageTitlebar label="General chats">
           <div className="ml-auto">{newChatButton}</div>
@@ -126,6 +136,7 @@ function GeneralChatsPage() {
                         <ChatRow
                           key={`${thread.environmentId}:${thread.id}`}
                           thread={thread}
+                          onSwipe={handleRowSwipe}
                           onMenu={(position) =>
                             void threadMenu.open(
                               { threadRef: scopeThreadRef(thread.environmentId, thread.id) },
@@ -156,6 +167,14 @@ function GeneralChatsPage() {
             )}
           </div>
         </div>
+        {swipeUndo ? (
+          <SwipeUndoBar
+            key={swipeUndo.id}
+            undo={swipeUndo}
+            onDismiss={dismissSwipeUndo}
+            clearsSafeArea
+          />
+        ) : null}
       </div>
     </ThreadHoverCardProvider>
   );
@@ -170,12 +189,15 @@ function ChatRow({
   status,
   onOpen,
   onMenu,
+  onSwipe,
 }: {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
   onOpen: () => void;
   /** The thread menu (right-click, or a held finger). */
   onMenu: (position: { readonly x: number; readonly y: number }) => void;
+  /** Runs a touch swipe's action: right pins or unpins, left archives. */
+  onSwipe: ThreadRowSwipeHandler;
 }) {
   const handleContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -195,49 +217,70 @@ function ChatRow({
     ? (PROVIDER_OPTIONS.find((option) => option.value === provider)?.label ?? provider)
     : null;
 
+  const swipeTarget = {
+    threadKey: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    title: thread.title,
+  };
   return (
-    <ThreadHoverCard thread={thread} status={status}>
-      <button
-        type="button"
-        className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring [-webkit-touch-callout:none]"
-        data-testid="chats-view-row"
-        onClick={onOpen}
-        {...touchHold}
-      >
-        <span className="flex w-full min-w-0 items-baseline gap-3">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
-            {thread.title}
+    // Its menu's Pin and Archive as swipes; Archive waits, as in the menu,
+    // while its agent is mid-turn. The row reaches past the column by its own
+    // padding, so the swipe's edge does too.
+    <SwipeableRow
+      className="-mx-2 rounded-md"
+      leading={threadRowSwipeAction(
+        onSwipe,
+        swipeTarget,
+        thread.pinnedAt !== null ? "unpin" : "pin",
+      )}
+      trailing={
+        isThreadTurnRunning(thread.session)
+          ? null
+          : threadRowSwipeAction(onSwipe, swipeTarget, "archive")
+      }
+    >
+      <ThreadHoverCard thread={thread} status={status}>
+        <button
+          type="button"
+          className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring [-webkit-touch-callout:none]"
+          data-testid="chats-view-row"
+          onClick={onOpen}
+          {...touchHold}
+        >
+          <span className="flex w-full min-w-0 items-baseline gap-3">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
+              {thread.title}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 self-center">
+              {status ? (
+                <span
+                  aria-label={status.label}
+                  className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+                />
+              ) : null}
+              <ThreadStatusText
+                thread={thread}
+                status={status}
+                testId="chats-view-row-status"
+                resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+                restingClassName="text-muted-foreground"
+              />
+            </span>
           </span>
-          <span className="flex shrink-0 items-center gap-1.5 self-center">
-            {status ? (
-              <span
-                aria-label={status.label}
-                className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+          <span className="flex w-full min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
+              {providerLabel}
+            </span>
+            <ThreadEnvironmentBadge thread={thread} />
+            {provider ? (
+              <ProviderGlyph
+                instanceId={thread.session?.providerInstanceId}
+                driverKind={provider}
+                className="size-3 shrink-0 text-muted-foreground/45"
               />
             ) : null}
-            <ThreadStatusText
-              thread={thread}
-              status={status}
-              testId="chats-view-row-status"
-              resting={formatRelativeTimeLabel(chatActivityAt(thread))}
-              restingClassName="text-muted-foreground"
-            />
           </span>
-        </span>
-        <span className="flex w-full min-w-0 items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
-            {providerLabel}
-          </span>
-          <ThreadEnvironmentBadge thread={thread} />
-          {provider ? (
-            <ProviderGlyph
-              instanceId={thread.session?.providerInstanceId}
-              driverKind={provider}
-              className="size-3 shrink-0 text-muted-foreground/45"
-            />
-          ) : null}
-        </span>
-      </button>
-    </ThreadHoverCard>
+        </button>
+      </ThreadHoverCard>
+    </SwipeableRow>
   );
 }

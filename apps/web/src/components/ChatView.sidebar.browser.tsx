@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
+import type { SidebarThreadSummary } from "../types";
 import {
   makeBrowserTab,
   registerPreviewWebview,
@@ -57,6 +58,7 @@ import {
   createSnapshotForTargetUser,
   addThreadToSnapshot,
   setSidebarThreadWork,
+  touchSwipe,
   draftIdFromPath,
   draftThreadIdFor,
   serverThreadPath,
@@ -618,6 +620,99 @@ describe("ChatView (full app): sidebar", () => {
       await expect
         .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
         .toHaveAttribute("aria-current", "page");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("swipes a general chat: left archives it with an undo, right pins it, and a working chat keeps it", async () => {
+    const idleChatId = "thread-general-chat-swipe-idle" as ThreadId;
+    const workingChatId = "thread-general-chat-swipe-working" as ThreadId;
+    const withChats = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-general-chat-swipe" as MessageId,
+          targetText: "general chat swipe target",
+        }),
+        idleChatId,
+      ),
+      workingChatId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChats,
+        projects: [
+          ...withChats.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: withChats.threads.map((thread) =>
+          thread.id === idleChatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+            : thread.id === workingChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Still thinking" }
+              : thread,
+        ),
+      },
+    });
+    const row = (title: string) =>
+      page.getByTestId("chats-list-row").filter({ hasText: title }).element();
+    const swipeAction = () => document.querySelector("[data-testid='row-swipe-action']");
+
+    try {
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working", {
+        session: {
+          provider: "codex",
+          status: "running",
+          activeTurnId: "turn-still-thinking" as TurnId,
+        } as SidebarThreadSummary["session"],
+      });
+      await page.getByTestId("rail-chats").click();
+      await expect.element(page.getByTestId("chats-list-row").first()).toBeVisible();
+
+      // Left: archived, and the list offers it back.
+      touchSwipe(row("Draft reply"), -260);
+      await expect
+        .element(page.getByTestId("swipe-undo-bar"))
+        .toMatchTextContent(/Archived Draft reply/);
+      await page.getByTestId("swipe-undo-bar").getByRole("button", { name: "Undo" }).click();
+      await expect.element(page.getByTestId("swipe-undo-bar")).not.toBeInTheDocument();
+
+      // Right shows Pin under the row.
+      const target = row("Draft reply");
+      const rect = target.getBoundingClientRect();
+      const at = (x: number) => ({
+        bubbles: true,
+        clientX: x,
+        clientY: rect.top + rect.height / 2,
+        pointerId: 22,
+        pointerType: "touch",
+        isPrimary: true,
+        button: 0,
+      });
+      target.dispatchEvent(new PointerEvent("pointerdown", at(rect.left + 20)));
+      for (let step = 1; step <= 10; step += 1) {
+        target.dispatchEvent(new PointerEvent("pointermove", at(rect.left + 20 + step * 18)));
+      }
+      await vi.waitFor(() => expect(swipeAction()?.textContent).toBe("Pin"));
+      target.dispatchEvent(new PointerEvent("pointercancel", at(rect.left + 200)));
+      await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+      // A chat whose agent is mid-turn can't be archived, so it doesn't swipe left.
+      touchSwipe(row("Still thinking"), -260);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(document.querySelector("[data-testid='swipe-undo-bar']")).toBeNull();
+      expect(row("Still thinking")).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
