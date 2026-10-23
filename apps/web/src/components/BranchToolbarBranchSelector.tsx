@@ -78,7 +78,12 @@ interface BranchToolbarBranchSelectorProps {
   envLocked: boolean;
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
-  onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
+  /** The override is the base the "New worktrees from" setting gave, not a pick. */
+  activeThreadBranchOverrideFromSetting?: boolean;
+  onActiveThreadBranchOverrideChange?: (
+    refName: string | null,
+    options?: { readonly fromSetting?: boolean },
+  ) => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
 }
@@ -117,6 +122,7 @@ export function BranchToolbarBranchSelector({
   envLocked,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
+  activeThreadBranchOverrideFromSetting,
   onActiveThreadBranchOverrideChange,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
@@ -152,6 +158,12 @@ export function BranchToolbarBranchSelector({
     activeThreadBranchOverride !== undefined
       ? activeThreadBranchOverride
       : (serverThread?.branch ?? draftThread?.branch ?? null);
+  // A base the "New worktrees from" setting gave keeps following it (a
+  // changed setting, a branch found or gone) until the user picks one.
+  const activeThreadBranchFromSetting =
+    activeThreadBranchOverride !== undefined
+      ? activeThreadBranchOverrideFromSetting === true
+      : !serverThread && draftThread?.branchFromSetting === true;
   const activeProjectCwd = activeProject?.cwd ?? null;
   const storedWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeWorktreePath = resolveActiveWorktreePath(activeProjectCwd, storedWorktreePath);
@@ -181,7 +193,11 @@ export function BranchToolbarBranchSelector({
   // Thread branch mutation (colocated — only this component calls it)
   // ---------------------------------------------------------------------------
   const setThreadBranch = useCallback(
-    (branch: string | null, worktreePath: string | null) => {
+    (
+      branch: string | null,
+      worktreePath: string | null,
+      options?: { readonly fromSetting?: boolean },
+    ) => {
       if (!activeThreadId || !activeProject) return;
       if (hasServerThread) {
         selectServerThreadCheckout(branch, worktreePath);
@@ -194,6 +210,7 @@ export function BranchToolbarBranchSelector({
       });
       setDraftThreadContext(draftId ?? threadRef, {
         branch,
+        branchFromSetting: options?.fromSetting === true,
         worktreePath,
         envMode: nextDraftEnvMode,
         projectRef: scopeProjectRef(environmentId, activeProject.id),
@@ -510,12 +527,14 @@ export function BranchToolbarBranchSelector({
     runSwitchRef(pending.refName, selectionTarget.checkoutCwd, selectionTarget.nextWorktreePath);
   };
 
-  // A new worktree with no base yet starts from the computer's "New
-  // worktrees from" branch until the user picks another. A thread that
-  // already exists holds it beside its pending mode rather than recording
-  // it as the thread's branch: only a pick the user makes is recorded.
+  // A new worktree starts from the computer's "New worktrees from" branch
+  // until the user picks another. A thread that already exists holds it
+  // beside its pending mode rather than recording it as the thread's branch:
+  // only a pick the user makes is recorded.
   const needsWorktreeBase =
-    effectiveEnvMode === "worktree" && !activeWorktreePath && !activeThreadBranch;
+    effectiveEnvMode === "worktree" &&
+    !activeWorktreePath &&
+    (!activeThreadBranch || activeThreadBranchFromSetting);
   const newWorktreeBaseBranch = useNewWorktreeBaseBranch({
     environmentId,
     cwd: refsCwd,
@@ -527,12 +546,17 @@ export function BranchToolbarBranchSelector({
     if (!needsWorktreeBase || !newWorktreeBaseBranch) {
       return;
     }
-    if (hasServerThread && onActiveThreadBranchOverrideChange) {
-      onActiveThreadBranchOverrideChange(newWorktreeBaseBranch);
+    if (newWorktreeBaseBranch === activeThreadBranch && activeThreadBranchFromSetting) {
       return;
     }
-    setThreadBranch(newWorktreeBaseBranch, null);
+    if (hasServerThread && onActiveThreadBranchOverrideChange) {
+      onActiveThreadBranchOverrideChange(newWorktreeBaseBranch, { fromSetting: true });
+      return;
+    }
+    setThreadBranch(newWorktreeBaseBranch, null, { fromSetting: true });
   }, [
+    activeThreadBranch,
+    activeThreadBranchFromSetting,
     hasServerThread,
     needsWorktreeBase,
     newWorktreeBaseBranch,

@@ -1380,7 +1380,17 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [pendingServerThreadEnvMode, setPendingServerThreadEnvMode] =
     useState<DraftThreadEnvMode | null>(null);
-  const [pendingServerThreadBranch, setPendingServerThreadBranch] = useState<string | null>();
+  // The base an empty server thread's new worktree starts from, before it is
+  // sent; `fromSetting` while it is the one "New worktrees from" gave.
+  const [pendingServerThreadBase, setPendingServerThreadBase] = useState<{
+    readonly branch: string | null;
+    readonly fromSetting: boolean;
+  }>();
+  const onPendingServerThreadBaseChange = useCallback(
+    (branch: string | null, options?: { readonly fromSetting?: boolean }) =>
+      setPendingServerThreadBase({ branch, fromSetting: options?.fromSetting === true }),
+    [],
+  );
   const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useLocalStorage(
     LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
     {},
@@ -4963,8 +4973,8 @@ export default function ChatView(props: ChatViewProps) {
       ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
       : derivedEnvMode;
   const activeThreadBranch =
-    canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
-      ? pendingServerThreadBranch
+    canOverrideServerThreadEnvMode && pendingServerThreadBase !== undefined
+      ? pendingServerThreadBase.branch
       : (activeThread?.branch ?? null);
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
@@ -4973,7 +4983,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     setPendingServerThreadEnvMode(null);
-    setPendingServerThreadBranch(undefined);
+    setPendingServerThreadBase(undefined);
   }, [activeThread?.id]);
 
   useEffect(() => {
@@ -4981,7 +4991,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     setPendingServerThreadEnvMode(null);
-    setPendingServerThreadBranch(undefined);
+    setPendingServerThreadBase(undefined);
   }, [canOverrideServerThreadEnvMode]);
 
   useEffect(() => {
@@ -7732,7 +7742,9 @@ export default function ChatView(props: ChatViewProps) {
       // `threadlines/...` name). Going back to the checkout drops that base.
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
-        setPendingServerThreadBranch(mode === "worktree" ? null : undefined);
+        setPendingServerThreadBase(
+          mode === "worktree" ? { branch: null, fromSetting: false } : undefined,
+        );
         scheduleComposerFocus();
         return;
       }
@@ -8335,7 +8347,9 @@ export default function ChatView(props: ChatViewProps) {
                 {...(canOverrideServerThreadEnvMode
                   ? {
                       activeThreadBranchOverride: activeThreadBranch,
-                      onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+                      activeThreadBranchOverrideFromSetting:
+                        pendingServerThreadBase?.fromSetting === true,
+                      onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
                     }
                   : {})}
                 envLocked={envLocked}

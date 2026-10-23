@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   type ServerProvider,
   type ThreadId,
+  type ServerSettings,
   type ThreadParticipantId,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -13,6 +14,7 @@ import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { applySettingsUpdated } from "../rpc/serverState";
 import { useRoomRecipientStore } from "../rooms";
 import { useTerminalStateStore } from "../terminalStateStore";
 
@@ -932,6 +934,114 @@ describe("ChatView (full app): first sends and worktree setup", () => {
               }
             | undefined;
 
+          expect(turnStartRequest?.bootstrap?.prepareWorktree?.baseBranch).toBe("release/next");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a draft's base on the setting until the user picks one", async () => {
+    // A local draft carrying its checkout's branch, as one opened from a
+    // local thread does.
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: {
+        [THREAD_KEY]: {
+          threadId: THREAD_ID,
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          projectId: PROJECT_ID,
+          logicalProjectKey: PROJECT_DRAFT_KEY,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {
+        [PROJECT_DRAFT_KEY]: THREAD_KEY,
+      },
+    });
+    const settingsNaming = (base: ServerSettings["newWorktreeBase"]): ServerSettings => ({
+      ...fixture.serverConfig.settings,
+      newWorktreeBase: base,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            newWorktreeBase: { from: "named", branch: "develop" },
+          },
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.vcsListRefs) {
+          const refs =
+            body.query === "develop"
+              ? [{ name: "develop", current: false, isDefault: false, worktreePath: null }]
+              : [
+                  { name: "main", current: true, isDefault: true, worktreePath: null },
+                  { name: "release/next", current: false, isDefault: false, worktreePath: null },
+                ];
+          return {
+            isRepo: true,
+            hasPrimaryRemote: true,
+            nextCursor: null,
+            totalCount: refs.length,
+            refs,
+          };
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+    const draftBase = () => useComposerDraftStore.getState().draftThreadsByThreadKey[THREAD_KEY];
+
+    try {
+      const workspace = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="branch-toolbar-sentence"] [aria-label="Workspace"]',
+          ),
+        "Unable to find the workspace picker.",
+      );
+      workspace.click();
+      await clickSelectItemContainingText("New worktree");
+      await waitForDraftBranchPicker({ preposition: "from", branch: "develop" });
+
+      // A changed setting moves a base nobody picked.
+      applySettingsUpdated(settingsNaming({ from: "default", branch: "develop" }));
+      const picker = await waitForDraftBranchPicker({ preposition: "from", branch: "main" });
+
+      // A base the user picks stays when the setting changes again.
+      picker.click();
+      await clickComboboxItemContainingText("release/next");
+      await waitForDraftBranchPicker({ preposition: "from", branch: "release/next" });
+      applySettingsUpdated(settingsNaming({ from: "named", branch: "develop" }));
+      await waitForLayout();
+      await waitForDraftBranchPicker({ preposition: "from", branch: "release/next" });
+      expect(draftBase()).toMatchObject({ branch: "release/next" });
+      expect(draftBase()?.branchFromSetting).toBeUndefined();
+
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Ship it");
+      await waitForLayout();
+      (await waitForSendButton()).click();
+      await vi.waitFor(
+        () => {
+          const turnStartRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.turn.start",
+          ) as { bootstrap?: { prepareWorktree?: { baseBranch?: string } } } | undefined;
           expect(turnStartRequest?.bootstrap?.prepareWorktree?.baseBranch).toBe("release/next");
         },
         { timeout: 8_000, interval: 16 },

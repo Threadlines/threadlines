@@ -1,10 +1,10 @@
 import type { VcsRef } from "@threadlines/contracts";
 import { isTemporaryWorktreeBranch, settingBranchName } from "@threadlines/shared/git";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries } from "@tanstack/react-query";
 import { useDeferredValue, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { gitBranchesAcrossCheckoutsQueryOptions } from "../../lib/gitReactQuery";
+import { gitBranchPageQueryOptions } from "../../lib/gitReactQuery";
 import { useServerConfig } from "../../rpc/serverState";
 import { selectProjectsForEnvironment, useStore } from "../../store";
 import {
@@ -94,24 +94,31 @@ export function NewWorktreeBranchPicker({
   );
   const [query, setQuery] = useState("");
   const search = useDeferredValue(query.trim());
-  const branches = useQuery({
-    ...gitBranchesAcrossCheckoutsQueryOptions({
-      environmentId,
-      cwds: projects.map((project) => project.cwd),
-      query: search,
-      enabled: open,
+  // One lookup per project: each project's branches show as they arrive.
+  const branches = useQueries({
+    queries: projects.map((project) => ({
+      ...gitBranchPageQueryOptions({
+        environmentId,
+        cwd: project.cwd,
+        query: search,
+        enabled: open,
+      }),
+      placeholderData: keepPreviousData,
+    })),
+    combine: (results) => ({
+      pages: results.map((result) => result.data),
+      loading: results.filter((result) => result.isPending).length,
     }),
-    placeholderData: keepPreviousData,
   });
   const choices = useMemo(
     () =>
       branchChoicesAcrossProjects(
         projects.map((project, index) => ({
           name: project.name,
-          refs: branches.data?.[index]?.refs ?? [],
+          refs: branches.pages[index]?.refs ?? [],
         })),
       ),
-    [branches.data, projects],
+    [branches.pages, projects],
   );
   // Narrowed here too, so the list follows each keystroke before the
   // search comes back; the branch named exactly what was typed leads.
@@ -126,13 +133,19 @@ export function NewWorktreeBranchPicker({
   }, [choices, typed]);
   const names = useMemo(() => shown.map((choice) => choice.name), [shown]);
   const hasMore =
-    choices.length > SHOWN_LIMIT || (branches.data?.some((page) => page.hasMore) ?? false);
+    choices.length > SHOWN_LIMIT || branches.pages.some((page) => page?.hasMore === true);
   const emptyText =
     projects.length === 0
       ? "Add a project to pick from its branches."
-      : branches.isPending
+      : branches.loading > 0
         ? "Loading branches…"
         : "No branch matches.";
+  const footer =
+    branches.loading > 0 && shown.length > 0
+      ? "Still loading some projects' branches."
+      : hasMore && typed.length === 0
+        ? "Type to search every branch."
+        : null;
 
   return (
     <Combobox
@@ -187,10 +200,8 @@ export function NewWorktreeBranchPicker({
             </ComboboxItem>
           ))}
         </ComboboxList>
-        {hasMore && typed.length === 0 ? (
-          <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-            Type to search every branch.
-          </p>
+        {footer ? (
+          <p className="border-t px-3 py-2 text-xs text-muted-foreground">{footer}</p>
         ) : null}
       </ComboboxPopup>
     </Combobox>

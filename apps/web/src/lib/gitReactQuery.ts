@@ -151,14 +151,14 @@ function invalidateGitBranchQueries(
 }
 
 /**
- * One page of branches from each of several checkouts on one computer, for a
- * picker that isn't tied to one project (Settings › Threads › New worktrees
- * from). A search narrows each page and leads it with the branch of exactly
- * that name. A checkout whose branches can't be read lists none.
+ * The first page of one checkout's branches, for a picker that gathers
+ * several checkouts (Settings › Threads › New worktrees from): one query per
+ * checkout, so a slow repository holds up only its own branches. A search
+ * narrows the page and leads it with the branch of exactly that name.
  */
-export function gitBranchesAcrossCheckoutsQueryOptions(input: {
+export function gitBranchPageQueryOptions(input: {
   environmentId: EnvironmentId | null;
-  cwds: ReadonlyArray<string>;
+  cwd: string;
   query: string;
   enabled?: boolean;
 }) {
@@ -166,30 +166,21 @@ export function gitBranchesAcrossCheckoutsQueryOptions(input: {
   return queryOptions({
     queryKey: [
       "git",
-      "refs-across-checkouts",
+      "refs-page",
       input.environmentId ?? null,
-      input.cwds,
+      input.cwd,
       normalizedQuery,
     ] as const,
     queryFn: async () => {
       if (!input.environmentId) throw new Error("Git refs are unavailable.");
-      const api = ensureEnvironmentApi(input.environmentId);
-      const pages = await Promise.allSettled(
-        input.cwds.map((cwd) =>
-          api.vcs.listRefs({
-            cwd,
-            ...(normalizedQuery.length > 0 ? { query: normalizedQuery } : {}),
-            limit: GIT_BRANCHES_PAGE_SIZE,
-          }),
-        ),
-      );
-      return pages.map((page) =>
-        page.status === "fulfilled"
-          ? { refs: page.value.refs, hasMore: page.value.nextCursor !== null }
-          : { refs: [], hasMore: false },
-      );
+      const page = await ensureEnvironmentApi(input.environmentId).vcs.listRefs({
+        cwd: input.cwd,
+        ...(normalizedQuery.length > 0 ? { query: normalizedQuery } : {}),
+        limit: GIT_BRANCHES_PAGE_SIZE,
+      });
+      return { refs: page.refs, hasMore: page.nextCursor !== null };
     },
-    enabled: input.environmentId !== null && input.cwds.length > 0 && (input.enabled ?? true),
+    enabled: input.environmentId !== null && (input.enabled ?? true),
     staleTime: GIT_BRANCHES_STALE_TIME_MS,
   });
 }
