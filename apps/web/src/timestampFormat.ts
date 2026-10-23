@@ -48,6 +48,22 @@ export function formatShortTimestamp(isoDate: string, timestampFormat: Timestamp
   return getTimestampFormatter(timestampFormat, false).format(new Date(isoDate));
 }
 
+const dateTimeFormatterCache = new Map<TimestampFormat, Intl.DateTimeFormat>();
+
+/** A moment on any day, in the user's clock style: "Oct 22, 3:14 PM". */
+export function formatDateAndTime(isoDate: string, timestampFormat: TimestampFormat): string {
+  let formatter = dateTimeFormatterCache.get(timestampFormat);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      ...getTimestampFormatOptions(timestampFormat, false),
+    });
+    dateTimeFormatterCache.set(timestampFormat, formatter);
+  }
+  return formatter.format(new Date(isoDate));
+}
+
 /**
  * Format a relative time string from an ISO date.
  * Returns `{ value: "20s", suffix: "ago" }` or `{ value: "just now", suffix: null }`
@@ -198,4 +214,11 @@ export function formatExpiresInLabel(isoDate: string, nowMs: number = Date.now()
   if (minutes > 0) tail.push(`${minutes}m`);
   if (seconds > 0) tail.push(`${seconds}s`);
   return tail.length > 0 ? `Expires in ${days}d ${tail.join(" ")}` : `Expires in ${days}d`;
+}
+
+/** Whether times read on the 12-hour clock: the user's choice, or their locale's. */
+export function uses12HourClock(timestampFormat: TimestampFormat): boolean {
+  if (timestampFormat !== "locale") return timestampFormat === "12-hour";
+  const options = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
+  return options.hour12 ?? (options.hourCycle === "h11" || options.hourCycle === "h12");
 }

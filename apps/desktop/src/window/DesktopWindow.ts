@@ -50,7 +50,11 @@ import {
 } from "../preview/signInPopups.ts";
 import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
 
-const TITLEBAR_HEIGHT = 40;
+/**
+ * The app's title row (`--app-titlebar-height` in the web app's index.css):
+ * Windows and Linux draw their window controls this tall, in that row.
+ */
+const TITLEBAR_HEIGHT = 38;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
 const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
@@ -80,6 +84,14 @@ export const MARKETING_CAPTURE_CONTENT_SIZE = {
 const PRINT_SCREEN_ACCELERATOR = "PrintScreen";
 const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
 export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
+/** Renderer actions the Go menu and the tray send; the app shell navigates on them. */
+export const OPEN_FLEET_MENU_ACTION = "open-fleet";
+export const OPEN_SCHEDULED_MENU_ACTION = "open-scheduled";
+export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
+export const OPEN_USAGE_MENU_ACTION = "open-usage";
+export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
+export const NAVIGATE_BACK_MENU_ACTION = "navigate-back";
+export const NAVIGATE_FORWARD_MENU_ACTION = "navigate-forward";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -145,6 +157,14 @@ export type DesktopWindowError =
   | DesktopWindowQuitConfirmationError
   | ElectronWindow.ElectronWindowCreateError;
 
+/** This computer's work quitting would stop, as the page last reported it. */
+export interface DesktopQuitConfirmationWork {
+  readonly runningThreadCount: number;
+  readonly busyTerminalCount: number;
+  /** Active scheduled tasks, which don't run while the app is closed. */
+  readonly activeScheduledTaskCount: number;
+}
+
 export interface DesktopWindowShape {
   readonly createMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
   readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
@@ -164,10 +184,9 @@ export interface DesktopWindowShape {
    * natively, when no window is open or the page does not take the question
    * within {@link QUIT_CONFIRMATION_SHOWN_TIMEOUT}.
    */
-  readonly requestQuitConfirmation: (work: {
-    readonly runningThreadCount: number;
-    readonly busyTerminalCount: number;
-  }) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
+  readonly requestQuitConfirmation: (
+    work: DesktopQuitConfirmationWork,
+  ) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
   /** The page has the question it was sent. */
   readonly quitConfirmationShown: (requestId: string) => Effect.Effect<void>;
   readonly resolveQuitConfirmation: (confirmed: boolean) => Effect.Effect<void>;
@@ -243,7 +262,9 @@ function getWindowTitleBarOptions(
   if (process.platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 16, y: 18 },
+      // Centered in the app's 38px title row, the buttons after them start at
+      // the web app's --app-titlebar-leading.
+      trafficLightPosition: { x: 16, y: 12 },
     };
   }
 
@@ -660,17 +681,21 @@ const make = Effect.gen(function* () {
         return;
       }
       const closingForQuit = mainWindowCloseAllowed || Effect.runSync(Ref.get(state.quitting));
-      if (environment.platform === "darwin" && !closingForQuit) {
-        // On macOS closing the window hides it and the page keeps running, so
-        // the menu bar count, the Dock badge when work finishes, the quit
-        // question and the browser panel agents drive all stay live. The page
-        // goes away only when the app quits.
+      // Windows and Linux keep running in the tray when the user asked for it
+      // ("Keep running in the background"); macOS always does.
+      const hideToBackground =
+        environment.platform === "darwin" || Effect.runSync(Ref.get(state.runInBackground));
+      if (hideToBackground && !closingForQuit) {
+        // Closing the window hides it and the page keeps running, so the
+        // status item's count, the badge when work finishes, the quit
+        // question, scheduled tasks and the browser panel agents drive all
+        // stay live. The page goes away only when the app quits.
         event.preventDefault();
         hiddenByClose = true;
         hideMainWindow(window);
         void runPromise(muteGuestsWhileHidden);
       } else if (
-        environment.platform !== "darwin" &&
+        !hideToBackground &&
         !closingForQuit &&
         Effect.runSync(Ref.get(state.localRunningThreadCount)) > 0
       ) {
@@ -1272,91 +1297,94 @@ const make = Effect.gen(function* () {
   // Never opens a window to ask: a fresh page needs seconds to load and sign
   // in, and a question sent before it listens is lost. With no window the
   // caller asks natively.
-  const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(
-    function* (work: { readonly runningThreadCount: number; readonly busyTerminalCount: number }) {
-      const existingWindow = yield* electronWindow.currentMainOrFirst;
-      if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
-        return yield* new DesktopWindowQuitConfirmationError({
-          cause: "no window is open",
-          windowOpen: false,
-        });
-      }
-      const window = existingWindow.value;
-      const answer = yield* Deferred.make<boolean>();
+  const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(function* (
+    work: DesktopQuitConfirmationWork,
+  ) {
+    const existingWindow = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
+      return yield* new DesktopWindowQuitConfirmationError({
+        cause: "no window is open",
+        windowOpen: false,
+      });
+    }
+    const window = existingWindow.value;
+    const answer = yield* Deferred.make<boolean>();
 
-      // Closing the window while it asks keeps the app running; on macOS
-      // closing hides it.
-      const cancelOnWindowClosed = () => {
-        void runPromise(Deferred.succeed(answer, false));
-      };
-      window.on("closed", cancelOnWindowClosed);
-      window.on("hide", cancelOnWindowClosed);
-      const cleanup = Ref.set(pendingQuitConfirmation, Option.none()).pipe(
-        Effect.andThen(
-          Effect.try({
-            try: () => {
-              if (window.isDestroyed()) return;
-              window.removeListener("closed", cancelOnWindowClosed);
-              window.removeListener("hide", cancelOnWindowClosed);
-              // Take the question back, so a page that took it late does not
-              // keep showing a dialog whose answer nobody waits for.
-              window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, null);
-            },
-            catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
-          }),
-        ),
-        Effect.ignore,
-      );
-
-      // Each pass sends the question once. It ends with the answer, or loops
-      // when quit is asked for again, so a page that lost the dialog gets it back.
-      const askOnce = Effect.gen(function* () {
-        const delivery: QuitConfirmationDelivery = {
-          requestId: yield* randomUUIDv4,
-          shown: yield* Deferred.make<void>(),
-          askedAgain: yield* Deferred.make<void>(),
-          answer,
-        };
-        yield* Ref.set(pendingQuitConfirmation, Option.some(delivery));
-        yield* electronWindow.reveal(window);
-        yield* Effect.try({
+    // Closing the window while it asks keeps the app running; on macOS
+    // closing hides it.
+    const cancelOnWindowClosed = () => {
+      void runPromise(Deferred.succeed(answer, false));
+    };
+    window.on("closed", cancelOnWindowClosed);
+    window.on("hide", cancelOnWindowClosed);
+    const cleanup = Ref.set(pendingQuitConfirmation, Option.none()).pipe(
+      Effect.andThen(
+        Effect.try({
           try: () => {
-            window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
-              requestId: delivery.requestId,
-              runningThreadCount: work.runningThreadCount,
-              busyTerminalCount: work.busyTerminalCount,
-            });
+            if (window.isDestroyed()) return;
+            window.removeListener("closed", cancelOnWindowClosed);
+            window.removeListener("hide", cancelOnWindowClosed);
+            // Take the question back, so a page that took it late does not
+            // keep showing a dialog whose answer nobody waits for.
+            window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, null);
           },
           catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
-        });
-        const heldByPage = Deferred.await(delivery.shown).pipe(
-          Effect.timeoutOrElse({
-            duration: QUIT_CONFIRMATION_SHOWN_TIMEOUT,
-            orElse: () =>
-              Effect.fail(
-                new DesktopWindowQuitConfirmationError({
-                  cause: "the window did not show the quit question in time",
-                  windowOpen: true,
-                }),
-              ),
-          }),
-          Effect.andThen(Deferred.await(delivery.askedAgain)),
-          Effect.as(Option.none<boolean>()),
-        );
-        return yield* Effect.raceFirst(
-          Deferred.await(answer).pipe(Effect.map(Option.some)),
-          heldByPage,
-        );
-      });
+        }),
+      ),
+      Effect.ignore,
+    );
 
-      return yield* Effect.gen(function* () {
-        while (true) {
-          const outcome = yield* askOnce;
-          if (Option.isSome(outcome)) return outcome.value;
-        }
-      }).pipe(Effect.ensuring(cleanup));
-    },
-  );
+    // Each pass sends the question once. It ends with the answer, or loops
+    // when quit is asked for again, so a page that lost the dialog gets it back.
+    const askOnce = Effect.gen(function* () {
+      const delivery: QuitConfirmationDelivery = {
+        requestId: yield* randomUUIDv4,
+        shown: yield* Deferred.make<void>(),
+        askedAgain: yield* Deferred.make<void>(),
+        answer,
+      };
+      yield* Ref.set(pendingQuitConfirmation, Option.some(delivery));
+      yield* electronWindow.reveal(window);
+      yield* Effect.try({
+        try: () => {
+          window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
+            requestId: delivery.requestId,
+            runningThreadCount: work.runningThreadCount,
+            busyTerminalCount: work.busyTerminalCount,
+            ...(work.activeScheduledTaskCount > 0
+              ? { activeScheduledTaskCount: work.activeScheduledTaskCount }
+              : {}),
+          });
+        },
+        catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
+      });
+      const heldByPage = Deferred.await(delivery.shown).pipe(
+        Effect.timeoutOrElse({
+          duration: QUIT_CONFIRMATION_SHOWN_TIMEOUT,
+          orElse: () =>
+            Effect.fail(
+              new DesktopWindowQuitConfirmationError({
+                cause: "the window did not show the quit question in time",
+                windowOpen: true,
+              }),
+            ),
+        }),
+        Effect.andThen(Deferred.await(delivery.askedAgain)),
+        Effect.as(Option.none<boolean>()),
+      );
+      return yield* Effect.raceFirst(
+        Deferred.await(answer).pipe(Effect.map(Option.some)),
+        heldByPage,
+      );
+    });
+
+    return yield* Effect.gen(function* () {
+      while (true) {
+        const outcome = yield* askOnce;
+        if (Option.isSome(outcome)) return outcome.value;
+      }
+    }).pipe(Effect.ensuring(cleanup));
+  });
 
   return DesktopWindow.of({
     createMain,

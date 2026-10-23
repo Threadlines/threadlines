@@ -22,6 +22,7 @@ const clientSettings: ClientSettings = {
   confirmThreadDelete: false,
   wrapUpThreadsOnPullRequestSettled: true,
   wrapUpChildThreadsOnFinish: true,
+  wrapUpIdleThreads: true,
   dismissedProviderUpdateNotificationKeys: [],
   dictationHoldToRecord: true,
   dictationMicrophoneDeviceId: null,
@@ -37,6 +38,7 @@ const clientSettings: ClientSettings = {
   openLinksIn: "browser-panel",
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,
+  sidebarGrouping: "none",
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",

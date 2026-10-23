@@ -1,20 +1,27 @@
 import {
   EventId,
+  GENERAL_CHATS_PROJECT_ID,
   ORCHESTRATION_WS_METHODS,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type ScheduledTaskId,
+  type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore } from "../composerDraftStore";
+import { isMacPlatform } from "../lib/utils";
 import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
+import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 
 import {
   THREAD_ID,
+  PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   THREAD_REF,
   PROJECT_LOGICAL_KEY,
@@ -26,9 +33,13 @@ import {
   WIDE_FOOTER_VIEWPORT,
   COMPACT_FOOTER_VIEWPORT,
   PHONE_VIEWPORT,
+  touchSwipe,
   createUserMessage,
   createAssistantMessage,
   createSnapshotForTargetUser,
+  addThreadToSnapshot,
+  serverThreadPath,
+  setSidebarThreadWork,
   PULL_REQUEST_NUMBER,
   PULL_REQUEST_REPOSITORY,
   PULL_REQUEST_HEAD_BRANCH,
@@ -44,6 +55,7 @@ import {
   waitForComposerText,
   findButtonByText,
   findButtonContainingText,
+  waitForServerConfigToApply,
   mountChatView,
   registerChatViewSuiteHooks,
   setSuppressInitialShellSnapshot,
@@ -61,6 +73,19 @@ vi.mock("../lib/gitStatusState", () => ({
   refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
+
+const SIDEBAR_TOGGLE_KEYBINDING = {
+  command: "sidebar.toggle",
+  shortcut: {
+    key: "b",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    modKey: true,
+  },
+  whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+} as const;
 
 describe("ChatView (full app): app shell", () => {
   registerChatViewSuiteHooks();
@@ -158,7 +183,7 @@ describe("ChatView (full app): app shell", () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot,
-      initialPath: "/usage",
+      initialPath: "/",
       waitForBootstrap: false,
     });
 
@@ -257,63 +282,612 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
-  it("swaps the sidebar Usage action for a history-aware Back action on Usage", async () => {
+  it("goes to Usage from the rail, sliding the selection there, and Threads brings back the thread it left", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-usage-sidebar-back" as MessageId,
-        targetText: "usage sidebar back",
+        targetMessageId: "msg-user-rail-usage" as MessageId,
+        targetText: "rail usage",
       }),
     });
 
     try {
+      // The rail's one selection fill slides to whichever button is chosen.
+      const selectionSitsOn = (testId: string) =>
+        expect
+          .poll(() => {
+            const fill = document
+              .querySelector('[data-testid="rail-selection"]')
+              ?.getBoundingClientRect();
+            const target = document
+              .querySelector(`[data-testid="${testId}"]`)
+              ?.getBoundingClientRect();
+            return fill && target ? Math.round(Math.abs(fill.top - target.top)) : null;
+          })
+          .toBe(0);
       const initialPathname = mounted.router.state.location.pathname;
-      const usageButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-usage-meter"]'),
-        "Unable to find the sidebar Usage button.",
-      );
-      usageButton.click();
+      await expect
+        .element(page.getByTestId("rail-threads"))
+        .toHaveAttribute("aria-current", "page");
+      await selectionSitsOn("rail-threads");
+      await page.getByTestId("rail-usage").click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === "/usage",
         "Expected the Usage route.",
       );
+      await expect.element(page.getByTestId("rail-usage")).toHaveAttribute("aria-current", "page");
+      await selectionSitsOn("rail-usage");
 
-      const footer = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-slot="sidebar-footer"]'),
-        "Unable to find the sidebar footer.",
-      );
-      const backButton = await waitForElement(
-        () =>
-          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find(
-            (button) => button.textContent?.trim() === "Back",
-          ) ?? null,
-        "Unable to find the Usage Back button.",
-      );
-      expect(
-        Array.from(footer.querySelectorAll("button")).some(
-          (button) => button.textContent?.trim() === "Settings",
-        ),
-      ).toBe(true);
-      expect(
-        Array.from(footer.querySelectorAll("button")).some((button) =>
-          button.textContent?.trim().startsWith("Usage"),
-        ),
-      ).toBe(false);
-
-      backButton.click();
+      await page.getByTestId("rail-threads").click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === initialPathname,
-        "Expected Back to return to the route that opened Usage.",
+        "Threads should return to the thread that was open.",
       );
-      await waitForElement(
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("brings Threads back to the last thread in a project, never to a general chat opened since", async () => {
+    const chatId = "thread-general-chat-visited" as ThreadId;
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-visited-chat" as MessageId,
+        targetText: "visited chat",
+      }),
+      chatId,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === chatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Test hello" }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const projectThreadPath = mounted.router.state.location.pathname;
+      // While the page changes, the address is the chat's a moment before
+      // the open thread is: that moment must not count as a Threads view.
+      await mounted.router.navigate({ href: `/${LOCAL_ENVIRONMENT_ID}/${chatId}` });
+      await expect.element(page.getByTestId("rail-chats")).toHaveAttribute("aria-current", "page");
+
+      await page.getByTestId("rail-usage").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/usage", "Usage should open.");
+      await page.getByTestId("rail-threads").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === projectThreadPath,
+        "Threads should return to the last thread in a project, not the chat.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides the thread list inside the panel, moving no button, and keeps what needs you on the rail", async () => {
+    const askingThreadId = "thread-rail-asking" as ThreadId;
+    const workingThreadId = "thread-rail-working" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: "msg-user-rail-hide" as MessageId,
+            targetText: "rail hide",
+          }),
+          askingThreadId,
+        ),
+        workingThreadId,
+      ),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [SIDEBAR_TOGGLE_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingThreadId, "needs-you");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working");
+      const threadsButton = page.getByTestId("rail-threads");
+      await expect
+        .element(threadsButton.getByTestId("rail-needs-you-badge"))
+        .toMatchTextContent("1");
+      // While the list shows, it says what is working; the rail stays quiet.
+      expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
+      const panel = document.querySelector('[data-testid="app-panel"]')!;
+      const list = document.querySelector('[data-slot="sidebar-container"]')!;
+      // The list opens the work panel, just inside its hairline edge.
+      expect(
+        Math.abs(list.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+      ).toBeLessThanOrEqual(1);
+      const frameButtons = ["titlebar-sidebar-toggle", "new-thread-button", "rail-threads"];
+      const placeOf = (testId: string) => {
+        const rect = document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect();
+        return { left: rect.left, top: rect.top };
+      };
+      const placesBefore = frameButtons.map(placeOf);
+
+      await page.getByTestId("titlebar-sidebar-toggle").click();
+      await vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("collapsed");
+      });
+      await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
+      // Hiding the list moves no button in the frame; only the page's edge moves.
+      expect(frameButtons.map(placeOf)).toEqual(placesBefore);
+      await vi.waitFor(() => {
+        const thread = document.querySelector('[data-slot="sidebar-inset"]')!;
+        expect(
+          Math.abs(thread.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+        ).toBeLessThanOrEqual(1);
+      });
+
+      // Mod+B brings the list back.
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      });
+
+      // Usage has no list: it takes the panel, and the toggle stays, disabled,
+      // with the user's choice kept for the pages that have one.
+      await mounted.router.navigate({ to: "/usage" });
+      await vi.waitFor(() => {
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("collapsed");
+      });
+      await expect
+        .element(page.getByTestId("titlebar-sidebar-toggle"))
+        .toHaveAttribute("aria-disabled", "true");
+      document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]')!.click();
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      await mounted.router.navigate({ href: serverThreadPath(THREAD_ID) });
+      await vi.waitFor(() => {
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("expanded");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("counts the pull requests waiting on the user on the rail", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-pull-requests" as MessageId,
+        targetText: "rail pull requests",
+      }),
+      configureFixture: withPullRequestFixture,
+      resolveRpc: (body) => {
+        const response = resolvePullRequestRpc(body);
+        if (body._tag !== WS_METHODS.pullRequestsList || response === undefined) return response;
+        const listing = response as { readonly entries: ReadonlyArray<object> };
+        return {
+          ...listing,
+          entries: listing.entries.flatMap((entry) => [
+            // A review asked of the user waits on them; their own quiet pull request does not.
+            {
+              ...entry,
+              number: PULL_REQUEST_NUMBER + 1,
+              headBranch: "feature/review-me",
+              author: { login: "teammate", isBot: false, avatarUrl: null },
+              viewerIsAuthor: false,
+              viewerReviewRequested: true,
+            },
+            entry,
+          ]),
+        };
+      },
+    });
+
+    try {
+      await expect
+        .element(page.getByTestId("rail-pull-requests").getByTestId("rail-needs-you-badge"))
+        .toMatchTextContent("1");
+      await expect
+        .element(page.getByTestId("rail-pull-requests"))
+        .toHaveAccessibleName(/1 needs you/);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("goes back and forward through the app's pages from the title row and the shortcuts", async () => {
+    const historyKeybinding = (command: "navigate.back" | "navigate.forward", key: string) =>
+      ({
+        command,
+        shortcut: {
+          key,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        },
+        whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+      }) as const;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-app-history" as MessageId,
+        targetText: "app history",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            historyKeybinding("navigate.back", "["),
+            historyKeybinding("navigate.forward", "]"),
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const back = page.getByTestId("titlebar-back");
+      const forward = page.getByTestId("titlebar-forward");
+      // The page the window opened on has nowhere to go back or forward to.
+      await expect.element(back).toHaveAttribute("aria-disabled", "true");
+      await expect.element(forward).toHaveAttribute("aria-disabled", "true");
+
+      await page.getByTestId("rail-usage").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/usage", "Usage should open.");
+      await expect.element(back).not.toHaveAttribute("aria-disabled");
+      await back.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === serverThreadPath(THREAD_ID),
+        "Back should return to the thread.",
+      );
+      await expect.element(forward).not.toHaveAttribute("aria-disabled");
+
+      // Mod+] goes forward again, and then there is nothing ahead.
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "]",
+          code: "BracketRight",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/usage",
+        "Forward should return to Usage.",
+      );
+      await expect.element(forward).toHaveAttribute("aria-disabled", "true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the thread's header in the title row over the content column, moving with the list", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-slot" as MessageId,
+        targetText: "titlebar slot",
+      }),
+    });
+
+    try {
+      const titleRow = document.querySelector<HTMLElement>('[data-testid="app-titlebar"]')!;
+      const slot = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]'),
+        "Unable to find the title row's page slot.",
+      );
+      const cluster = document.querySelector('[data-testid="app-wordmark"]')!.parentElement!
+        .parentElement!;
+      const thread = () => document.querySelector('[data-slot="sidebar-inset"]')!;
+      // The whole header went up: its title and its panel toggles are in the
+      // row, and no header row is left in the panel.
+      await expect
+        .element(page.getByTestId("titlebar-slot").getByRole("button", { name: "Toggle panel" }))
+        .toBeVisible();
+      expect(titleRow.querySelector("h2")?.textContent).toBe("Browser test thread");
+      expect(document.querySelector('header[data-find-region="chat"]')).toBeNull();
+      // The app's name leads the row and the frame's buttons stand between
+      // it and the header, so it never reads as the first step of the
+      // header's project / title path.
+      const right = (testId: string) =>
+        document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect().right;
+      expect(right("app-wordmark")).toBeLessThan(right("titlebar-sidebar-toggle"));
+      expect(right("titlebar-forward")).toBeLessThan(slot.getBoundingClientRect().left);
+      // Its controls are buttons in a window drag region, never dragging it.
+      const panelToggle = slot.querySelector<HTMLElement>('button[aria-label="Toggle panel"]')!;
+      expect(getComputedStyle(slot).getPropertyValue("-webkit-app-region")).toBe("drag");
+      expect(getComputedStyle(panelToggle).getPropertyValue("-webkit-app-region")).toBe("no-drag");
+
+      // List open: the slot starts where the thread's own content would,
+      // past the list and a header's 20px padding.
+      await vi.waitFor(() => {
+        expect(
+          Math.abs(
+            slot.getBoundingClientRect().left - (thread().getBoundingClientRect().left + 20),
+          ),
+        ).toBeLessThanOrEqual(1);
+      });
+
+      // Mid-slide the slot keeps pace with the content column: the clamp
+      // applies to every frame of the list's slide, not just its two ends.
+      useUiStateStore.getState().setSidebarListOpen(false);
+      const slide = await vi.waitFor(() => {
+        expect(titleRow.getAnimations()).not.toHaveLength(0);
+        return document.getAnimations().filter((animation) => animation instanceof CSSTransition);
+      });
+      for (const animation of slide) {
+        animation.pause();
+        animation.currentTime = 15;
+      }
+      expect(
+        Math.abs(slot.getBoundingClientRect().left - (thread().getBoundingClientRect().left + 20)),
+      ).toBeLessThanOrEqual(1);
+      for (const animation of slide) animation.finish();
+
+      // List hidden: the content column starts under the title row's own
+      // buttons, so the slot starts just past them instead.
+      await vi.waitFor(() => {
+        expect(
+          Math.abs(
+            slot.getBoundingClientRect().left - (cluster.getBoundingClientRect().right + 12),
+          ),
+        ).toBeLessThanOrEqual(1);
+      });
+      expect(thread().getBoundingClientRect().left + 20).toBeLessThan(
+        cluster.getBoundingClientRect().right + 12,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the title row's page controls clear of the Windows window controls", async () => {
+    const root = document.documentElement;
+    root.classList.add("electron", "wco");
+    // What env(titlebar-area-*) reports with 138px of window controls.
+    root.style.setProperty("--workspace-controls-right", "150px");
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-wco" as MessageId,
+        targetText: "titlebar wco",
+      }),
+    });
+
+    try {
+      const controlsStart = window.innerWidth - 150;
+      const slotControlsEnd = () =>
+        Math.max(
+          ...Array.from(
+            document.querySelectorAll('[data-testid="titlebar-slot"] button'),
+            (button) => button.getBoundingClientRect().right,
+          ),
+        );
+      await expect
+        .element(page.getByTestId("titlebar-slot").getByRole("button", { name: "Toggle panel" }))
+        .toBeVisible();
+      expect(
+        document.querySelector('[data-testid="titlebar-slot"]')!.getBoundingClientRect().right,
+      ).toBeLessThanOrEqual(controlsStart + 0.5);
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+
+      // A list dragged wide before the window narrowed leaves the header
+      // less room than it needs: what doesn't fit is cut at the slot's end,
+      // never drawn under the controls.
+      const wrapper = document.querySelector<HTMLElement>('[data-slot="sidebar-wrapper"]')!;
+      const slot = document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]')!;
+      const listWidth = wrapper.style.getPropertyValue("--sidebar-width");
+      wrapper.style.setProperty("--sidebar-width", `${window.innerWidth - 300}px`);
+      await vi.waitFor(() => {
+        expect(slotControlsEnd()).toBeGreaterThan(slot.getBoundingClientRect().right);
+      });
+      expect(slot.getBoundingClientRect().right).toBeLessThanOrEqual(controlsStart + 0.5);
+      expect(getComputedStyle(slot).overflowX).toBe("clip");
+      wrapper.style.setProperty("--sidebar-width", listWidth);
+      await vi.waitFor(() => {
+        expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+      });
+
+      // A full page's controls go up there too, as clear of them.
+      await mounted.router.navigate({ to: "/settings/general" });
+      await expect
+        .element(
+          page.getByTestId("titlebar-slot").getByRole("button", { name: /Restore defaults/ }),
+        )
+        .toBeInTheDocument();
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+    } finally {
+      await mounted.cleanup();
+      root.style.removeProperty("--workspace-controls-right");
+      root.classList.remove("electron", "wco");
+    }
+  });
+
+  it("keeps the thread's own header in a window too narrow for the title row", async () => {
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "narrow", width: 720 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-narrow" as MessageId,
+        targetText: "titlebar narrow",
+      }),
+    });
+
+    try {
+      const header = await waitForElement(
+        () => document.querySelector<HTMLElement>('header[data-find-region="chat"]'),
+        "The thread should keep its own header without a title row.",
+      );
+      expect(document.querySelector('[data-testid="app-titlebar"]')).toBeNull();
+      expect(header.querySelector('[data-sidebar="trigger"]')).not.toBeNull();
+      expect(header.querySelector("h2")?.textContent).toBe("Browser test thread");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the title row's buttons past the macOS window controls, and the rail under them", async () => {
+    const root = document.documentElement;
+    root.classList.add("electron", "mac");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-mac" as MessageId,
+        targetText: "rail mac",
+      }),
+    });
+
+    try {
+      const toggle = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]'),
+        "Unable to find the title row's sidebar toggle.",
+      );
+      const titleRow = document
+        .querySelector('[data-testid="app-titlebar"]')!
+        .getBoundingClientRect();
+      // The traffic lights sit at x 16-68, centered in the 38px title row:
+      // the row's buttons start past them, in the same row.
+      expect(titleRow.top).toBe(0);
+      expect(titleRow.height).toBe(38);
+      expect(toggle.getBoundingClientRect().left).toBeGreaterThanOrEqual(76);
+      expect(toggle.getBoundingClientRect().bottom).toBeLessThanOrEqual(titleRow.bottom);
+      // The rail and the work panel start under the row.
+      const newThread = document.querySelector('[data-testid="new-thread-button"]')!;
+      expect(newThread.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleRow.bottom);
+      expect(document.querySelector('[data-testid="app-panel"]')!.getBoundingClientRect().top).toBe(
+        titleRow.bottom,
+      );
+    } finally {
+      await mounted.cleanup();
+      root.classList.remove("electron", "mac");
+    }
+  });
+
+  it("lists All tasks first on the Scheduled page, selected on its overview", async () => {
+    const taskId = "task-all-tasks-row" as ScheduledTaskId;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-scheduled" as MessageId,
+        targetText: "scheduled",
+      }),
+      initialPath: "/scheduled",
+      configureFixture: (nextFixture) => {
+        const capabilities = { repositoryIdentity: true, scheduledTasks: true } as const;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await vi.waitFor(
         () =>
-          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-            button.textContent?.trim().startsWith("Usage"),
-          ) ?? null,
-        "Expected Usage to return after leaving Usage.",
+          expect(
+            wsRequests.some((request) => request._tag === WS_METHODS.scheduledTasksSubscribe),
+          ).toBe(true),
+        { timeout: 8_000, interval: 16 },
       );
+      rpcHarness.emitStreamValue(WS_METHODS.scheduledTasksSubscribe, {
+        tasks: [
+          {
+            id: taskId,
+            name: "Morning review",
+            prompt: "Review yesterday's commits.",
+            projectId: PROJECT_ID,
+            checkout: "local",
+            modelSelection: { instanceId: "codex", model: "gpt-5" },
+            runtimeMode: "auto",
+            interactionMode: "default",
+            cadence: { kind: "daily", time: { hour: 9, minute: 0 } },
+            timeZone: "UTC",
+            target: { kind: "new_thread" },
+            status: "error",
+            error: "Its agent left the thread. Pick another agent or remove the task.",
+            nextRunAt: null,
+            lastRun: null,
+            workingRuns: 0,
+            originThreadId: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+          },
+        ],
+        requests: [],
+        timeZone: "UTC",
+      });
+
+      const allTasks = page.getByTestId("scheduled-list-all");
+      await expect.element(allTasks).toMatchTextContent("All tasks");
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "true");
+      // The stopped task needs the user, counted on the row.
+      await expect.element(allTasks).toMatchTextContent("1 needs you");
+
+      // Inside a task, the row is the way back to the overview.
+      await page.getByTestId(`scheduled-list-task-${taskId}`).click();
+      await vi.waitFor(
+        () => expect(mounted.router.state.location.search).toMatchObject({ task: taskId }),
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "false");
+      await allTasks.click();
+      await vi.waitFor(
+        () => expect(mounted.router.state.location.search).not.toHaveProperty("task"),
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(mounted.router.state.location.pathname).toBe("/scheduled");
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "true");
     } finally {
       await mounted.cleanup();
     }
@@ -472,6 +1046,218 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("on a phone, a swipe on a thread row wraps it with an undo, and a swipe on the rest of the sheet closes it", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-swipes" as MessageId,
+        targetText: "phone swipes",
+      }),
+    });
+    /** A pointer drawn `dx` across an element in ten steps, then lifted. */
+    const swipe = (element: Element, dx: number, pointerType = "touch") => {
+      const rect = element.getBoundingClientRect();
+      const x0 = rect.left + rect.width * 0.75;
+      const y = rect.top + rect.height / 2;
+      const at = (x: number) => ({
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+        pointerId: 11,
+        pointerType,
+        isPrimary: true,
+        button: 0,
+        buttons: 1,
+      });
+      element.dispatchEvent(new PointerEvent("pointerdown", at(x0)));
+      for (let step = 1; step <= 10; step += 1) {
+        element.dispatchEvent(new PointerEvent("pointermove", at(x0 + (dx * step) / 10)));
+      }
+      element.dispatchEvent(new PointerEvent("pointerup", { ...at(x0 + dx), buttons: 0 }));
+    };
+    const sheet = () => document.querySelector('[data-slot="sidebar"][data-mobile="true"]');
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      sidebarTrigger.click();
+      const threadRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find phone thread row.",
+      );
+
+      // The row owns its swipe: the thread is wrapped up, the sheet stays open.
+      swipe(threadRow, -220);
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      expect(sheet()).not.toBeNull();
+
+      // Wrapping up never asks first, so it offers to take it back, inside
+      // the sheet where a finger can reach it.
+      await expect.element(page.getByTestId("swipe-undo-bar")).toMatchTextContent(/Wrapped up/);
+      await page.getByTestId("swipe-undo-bar").getByRole("button", { name: "Undo" }).click();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).not.toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // A mouse never drags the panel (a narrow desktop window shows the same
+      // drawer, and a drag there selects text)...
+      const destinations = page.getByTestId("sidebar-destination-row").element();
+      swipe(destinations, -220, "mouse");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(sheet()).not.toBeNull();
+      // ...but a finger anywhere else on the sheet pushes it closed.
+      touchSwipe(destinations, -220);
+      await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the list with a swipe in from the left edge in the iPhone home-screen app, and not in a browser tab", async () => {
+    const sheet = () => document.querySelector('[data-slot="sidebar"][data-mobile="true"]');
+    const edge = () => document.querySelector('[data-slot="drawer-swipe-area"]');
+
+    // In a browser tab Safari's back swipe owns the edge: no strip there.
+    const inTab = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-edge-tab" as MessageId,
+        targetText: "phone edge tab",
+      }),
+    });
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      expect(edge()).toBeNull();
+    } finally {
+      await inTab.cleanup();
+    }
+
+    // Opened from the home screen, iOS says so on the navigator, on a touch screen.
+    Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+    Object.defineProperty(navigator, "maxTouchPoints", { value: 5, configurable: true });
+    const installed = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-edge-app" as MessageId,
+        targetText: "phone edge app",
+      }),
+    });
+    try {
+      const strip = await waitForElement(
+        () => edge() as HTMLElement | null,
+        "The home-screen app has no edge strip.",
+      );
+      expect(sheet()).toBeNull();
+      touchSwipe(strip, 240);
+      await vi.waitFor(() => expect(sheet()).not.toBeNull(), { timeout: 4_000, interval: 16 });
+
+      // The terminal's text runs to 4px from the edge: while it is open, the
+      // edge is the terminal's, and the strip comes back once it closes.
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
+      const threadRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, THREAD_ID);
+      useTerminalStateStore.getState().setTerminalOpen(threadRef, true);
+      await vi.waitFor(() => expect(edge()).toBeNull(), { timeout: 4_000, interval: 16 });
+      useTerminalStateStore.getState().setTerminalOpen(threadRef, false);
+      await vi.waitFor(() => expect(edge()).not.toBeNull(), { timeout: 4_000, interval: 16 });
+    } finally {
+      Reflect.deleteProperty(navigator, "standalone");
+      Reflect.deleteProperty(navigator, "maxTouchPoints");
+      await installed.cleanup();
+    }
+  });
+
+  it("on a phone, lists the open page's own items in the sheet, names its icons, and closes on a pick", async () => {
+    const readingChatId = "thread-phone-chat-reading" as ThreadId;
+    const otherChatId = "thread-phone-chat-other" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-phone-sheet-chats" as MessageId,
+          targetText: "phone sheet chats",
+        }),
+        readingChatId,
+      ),
+      otherChatId,
+    );
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${readingChatId}`,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === readingChatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Reading this one" }
+            : thread.id === otherChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+              : thread,
+        ),
+      },
+    });
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      sidebarTrigger.click();
+
+      // A finger can't hover for the tooltip: each icon says its name.
+      await expect
+        .element(page.getByTestId("sidebar-destination-row"))
+        .toMatchTextContent(/Threads.*Chats.*Settings/);
+      // The page shows a thumb's width beside the sheet: a strip to tap it shut.
+      const sheet = document.querySelector<HTMLElement>(
+        '[data-slot="sidebar"][data-mobile="true"]',
+      );
+      expect(
+        window.innerWidth - (sheet?.getBoundingClientRect().width ?? 0),
+      ).toBeGreaterThanOrEqual(44);
+      // Reading a chat, the sheet lists the chats, not the project threads.
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Reading this one" }))
+        .toHaveAttribute("aria-current", "page");
+      expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${otherChatId}`),
+        "A chat in the sheet should open that chat.",
+      );
+      await expect.element(page.getByTestId("sidebar-destination-row")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("navigates phone settings through the full-page section index", async () => {
     const mounted = await mountChatView({
       viewport: PHONE_VIEWPORT,
@@ -489,9 +1275,13 @@ describe("ChatView (full app): app shell", () => {
       sidebarTrigger.click();
       await waitForLayout();
 
+      // The phone has no rail: its destinations are a row in the sheet.
       const settingsButton = await waitForElement(
-        () => findButtonContainingText("Settings"),
-        "Unable to find the sidebar settings button.",
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-destination-row"] [data-testid="rail-settings"]',
+          ),
+        "Unable to find the sheet's Settings button.",
       );
       settingsButton.click();
 

@@ -191,7 +191,7 @@ function InstructionFileEditor({
           <textarea
             value={draft.contents}
             onChange={(event) => onChange(event.currentTarget.value)}
-            className="h-full min-h-0 w-full resize-none rounded-lg bg-field px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-(--field-shadow) outline-none transition-shadow placeholder:text-muted-foreground focus-ring"
+            className="h-full min-h-0 w-full resize-none rounded-lg bg-field px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-(--field-shadow) outline-none transition-shadow focus-ring"
             spellCheck={false}
             aria-label={`${provider} instruction file contents`}
           />

@@ -22,6 +22,8 @@
 import {
   type AgentThreadsMode,
   CHILD_THREADS_PER_CALL,
+  type EnvironmentId,
+  type PeerDescriptor,
   ChildRequestBatchId,
   ChildRequestId,
   ChildThreadLaunch,
@@ -47,12 +49,15 @@ import {
   childStartRefusal,
   isAttachedChild,
   ownChildRefusal,
+  remoteChildOf,
 } from "@threadlines/shared/childThreads";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
+import type { ProjectPlace } from "../project/projectPlace.ts";
+import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
 import {
   childAgentProviderName,
   childAgentRefusal,
@@ -110,12 +115,53 @@ export interface ThreadToolDeps {
   readonly threadsMode: Effect.Effect<AgentThreadsMode>;
   readonly git: Pick<GitVcsDriverShape, "execute">;
   readonly requests: RoomRequestRegistry;
+  /** Linked computers (docs/design/fleet.md); absent on a server without links. */
+  readonly links?: ThreadToolLinks;
+  /**
+   * Threads whose agent's scheduled-task change waits for the user
+   * (docs/design/fleet.md, Part 6); absent on a server without scheduled tasks.
+   */
+  readonly scheduleAnswerWaiting?: Effect.Effect<ReadonlySet<ThreadId>>;
+}
+
+/** A computer this one links to, as the thread tools see it. */
+export interface ThreadToolComputer {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  /** This computer's device id there: the child ids derive from it. */
+  readonly deviceId: string;
+  readonly reachable: boolean;
+  /** Its last description, however old; null if it was never reached. */
+  readonly descriptor: PeerDescriptor | null;
+}
+
+export interface ThreadToolLinks {
+  /** Linked computers, their descriptions refreshed when stale (five minutes). */
+  readonly computers: Effect.Effect<ReadonlyArray<ThreadToolComputer>>;
+  /** A computer's description, fresh enough to start on; why not, when it can't be had. */
+  readonly describe: (
+    environmentId: EnvironmentId,
+  ) => Effect.Effect<PeerDescriptor | { readonly unavailable: string }>;
+  /** Reads a thread there that this computer's link started. */
+  readonly read: (
+    environmentId: EnvironmentId,
+    input: {
+      readonly threadId: ThreadId;
+      readonly after?: number | undefined;
+      readonly limit?: number | undefined;
+    },
+  ) => Effect.Effect<ThreadReadResult | { readonly unavailable: string }>;
+  /** The repository's canonical key for a project folder, how another computer finds its copy. */
+  /** The project's repository key and folder in it, or null without a git remote. */
+  readonly projectPlace: (workspaceRoot: string) => Effect.Effect<ProjectPlace | null>;
 }
 
 const THREADS_OFF =
   "Starting threads is turned off in Settings, so the thread tools are off. Do the work in this thread.";
 const SIDE_REFUSAL = "Only the agent working in this thread can use the thread tools.";
 const GONE = "This thread is gone.";
+const REMOTE_ORIGIN_REFUSAL =
+  "This thread was started by an agent on another computer, so it has no thread tools. Do the work here; your final reply goes back to it.";
 /** How many models thread_agents shows per provider before "and N more". */
 const MODELS_LISTED_PER_PROVIDER = 12;
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
@@ -154,7 +200,7 @@ const ruleOutcome = (refusal: ChildRequestRefusal) => ({
 });
 
 /** The calling agent's model: in a room, the agent's own, not the thread's. */
-const callerModelSelection = (
+export const callerModelSelection = (
   thread: OrchestrationThread,
   participantId: McpInvocationScope["participantId"],
 ): ModelSelection =>
@@ -163,7 +209,7 @@ const callerModelSelection = (
     : undefined) ?? thread.modelSelection;
 
 /** A model's name as the model picker shows it. */
-const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<ServerProvider>) => {
+export const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<ServerProvider>) => {
   const model = providers
     .find((provider) => provider.instanceId === selection.instanceId)
     ?.models.find((candidate) => candidate.slug === selection.model);
@@ -176,8 +222,17 @@ const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<ServerPr
  * its last turn ended. `wrapped` is only the user's explicit Mark done; the
  * sidebar's automatic filing rules live in the client.
  */
-export function threadStatusWord(thread: OrchestrationThreadShell): ThreadStatusWord {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput || thread.pendingChildApproval) {
+export function threadStatusWord(
+  thread: OrchestrationThreadShell,
+  /** A card in it asks the user about its agent's scheduled-task change. */
+  scheduleAnswerWaiting = false,
+): ThreadStatusWord {
+  if (
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    thread.pendingChildApproval ||
+    scheduleAnswerWaiting
+  ) {
     return "needs the user";
   }
   const session = thread.session;
@@ -202,6 +257,20 @@ export function threadStatusWord(thread: OrchestrationThreadShell): ThreadStatus
   }
   return "idle";
 }
+
+/** A child on a linked computer's last reported status, as a status word. */
+const remoteStatusWord = (cachedStatus: string): ThreadStatusWord =>
+  (["working", "needs the user", "waiting", "failed", "idle", "wrapped"] as const).find(
+    (word) => word === cachedStatus,
+  ) ?? "idle";
+
+/** The name a parent last knew a linked computer by. */
+const remoteLabel = (thread: OrchestrationThread, environmentId: string) =>
+  (thread.childRequests.remoteChildren ?? []).find((entry) => entry.environmentId === environmentId)
+    ?.label ??
+  thread.childRequests.open.find((request) => request.remote?.environmentId === environmentId)
+    ?.remote?.label ??
+  "the other computer";
 
 /** Whether a child has anything to stop: work in flight, or work its parent still waits on. */
 const childHasWork = (child: OrchestrationThread, parent: OrchestrationThread) =>
@@ -230,29 +299,158 @@ const childIsBusy = (child: OrchestrationThread, parent: OrchestrationThread) =>
       (request.status === "starting" || request.status === "queued"),
   );
 
-/** One thread as the list tools report it. */
-const summarize = (
+/**
+ * One thread as the list tools report it. `caller` is the asking thread here;
+ * absent when another computer reads it (peer.thread.read), where a thread
+ * its link started is "started by" that computer's thread.
+ */
+export const summarizeThread = (
   thread: OrchestrationThreadShell,
   input: {
-    readonly caller: OrchestrationThread;
+    readonly caller?: Pick<OrchestrationThread, "id">;
     readonly providers: ReadonlyArray<ServerProvider>;
     readonly titleOf: (threadId: ThreadId) => string | undefined;
+    /** Threads a scheduled-task card waits in (ThreadToolDeps.scheduleAnswerWaiting). */
+    readonly scheduleAnswerWaiting?: ReadonlySet<ThreadId>;
   },
-): ThreadSummary => ({
-  threadId: thread.id,
-  title: thread.title,
-  status: threadStatusWord(thread),
-  branch: thread.branch,
-  model: modelLabel(thread.modelSelection, input.providers),
-  attached: thread.parentThreadId !== null && thread.attachedToParent,
-  startedBy:
-    thread.parentThreadId === null
-      ? null
-      : thread.parentThreadId === input.caller.id
-        ? "you"
-        : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
-  ...(thread.id === input.caller.id ? { you: true } : {}),
-});
+): ThreadSummary => {
+  const remoteOrigin = thread.remoteOrigin ?? null;
+  return {
+    threadId: thread.id,
+    title: thread.title,
+    status: threadStatusWord(thread, input.scheduleAnswerWaiting?.has(thread.id) ?? false),
+    branch: thread.branch,
+    model: modelLabel(thread.modelSelection, input.providers),
+    attached: (thread.parentThreadId !== null && thread.attachedToParent) || remoteOrigin !== null,
+    startedBy:
+      remoteOrigin !== null
+        ? `${remoteOrigin.threadTitle} (on ${remoteOrigin.environmentLabel})`
+        : thread.parentThreadId === null
+          ? null
+          : thread.parentThreadId === input.caller?.id
+            ? "you"
+            : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
+    ...(input.caller !== undefined && thread.id === input.caller.id ? { you: true } : {}),
+  };
+};
+
+/**
+ * The agents a thread here can run on, as thread_agents and a linked
+ * computer's peer.describe list them: ready providers that can honor the
+ * caller's interaction mode, and the set-up ones that can't take a thread now.
+ */
+export function listThreadAgents(
+  providers: ReadonlyArray<ServerProvider>,
+  input: {
+    readonly interactionMode: ProviderInteractionMode;
+    /** List only this provider, with every model. */
+    readonly only?: string | undefined;
+  },
+): {
+  readonly agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }>;
+  readonly unavailable: Array<ThreadAgentsResult["unavailable"][number]>;
+} {
+  const agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }> = [];
+  const unavailable: Array<ThreadAgentsResult["unavailable"][number]> = [];
+  for (const provider of providers) {
+    // Providers the user never turned on are not worth a line.
+    if (!provider.enabled || !provider.installed) continue;
+    if (input.only !== undefined && provider.instanceId !== input.only) continue;
+    const refusal = childAgentRefusal(provider, input.interactionMode);
+    const name = childAgentProviderName(provider);
+    if (refusal !== null) {
+      unavailable.push({ instanceId: provider.instanceId, name, reason: refusal });
+      continue;
+    }
+    const models = provider.models
+      .filter((model) => model.isHidden !== true)
+      .map((model) => ({ model: model.slug, name: model.shortName ?? model.name }));
+    // A gateway can list a hundred models; the first ones, in the
+    // provider's own order, are enough to choose from unless asked.
+    const listed = input.only === undefined ? models.slice(0, MODELS_LISTED_PER_PROVIDER) : models;
+    agents.push({
+      instanceId: provider.instanceId,
+      name,
+      billing: inviteBilling(provider).label,
+      models: listed,
+      ...(listed.length < models.length ? { moreModels: models.length - listed.length } : {}),
+      driver: provider.driver,
+    });
+  }
+  return { agents, unavailable };
+}
+
+/**
+ * A page of a thread's messages, oldest first, as thread_read returns it
+ * here and peer.thread.read returns it to a linked computer.
+ */
+export function readThreadPage(
+  target: OrchestrationThread,
+  input: {
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly titles: ReadonlyMap<string, string>;
+    readonly after?: number | undefined;
+    readonly limit?: number | undefined;
+  },
+): Pick<ThreadReadResult, "messages" | "next" | "more"> {
+  const entries = roomAgentEntries(target, modelLabel(target.modelSelection, input.providers));
+  const remoteOrigin = target.remoteOrigin ?? null;
+  const names = {
+    agentName: (participantId: Parameters<typeof roomAgentName>[1]) =>
+      roomAgentName(entries, participantId),
+    threadTitle: (threadId: ThreadId) =>
+      input.titles.get(threadId) ??
+      (remoteOrigin !== null && remoteOrigin.threadId === threadId
+        ? remoteOrigin.threadTitle
+        : undefined),
+  };
+  const sequenceOf = (message: OrchestrationThread["messages"][number]) =>
+    message.eventSequence ?? 0;
+  const readable = target.messages
+    .filter(
+      (message) =>
+        (message.role === "user" || message.role === "assistant") && message.text.trim().length > 0,
+    )
+    .toSorted(
+      (left, right) =>
+        sequenceOf(left) - sequenceOf(right) || left.createdAt.localeCompare(right.createdAt),
+    );
+  const limit = Math.max(
+    1,
+    Math.min(
+      THREAD_READ_MAX_LIMIT,
+      Math.floor(
+        input.limit !== undefined && Number.isFinite(input.limit)
+          ? input.limit
+          : THREAD_READ_DEFAULT_LIMIT,
+      ),
+    ),
+  );
+  const after = input.after !== undefined && Number.isFinite(input.after) ? input.after : undefined;
+  const newer =
+    after !== undefined ? readable.filter((message) => sequenceOf(message) > after) : readable;
+  const page = after !== undefined ? newer.slice(0, limit) : newer.slice(-limit);
+  const last = page.at(-1);
+  return {
+    messages: page.map((message) => {
+      const { author, origin } = messageAuthor(message, names);
+      const clipped = clipText(message.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT);
+      return {
+        messageId: message.id,
+        sequence: sequenceOf(message),
+        at: message.createdAt,
+        role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+        author,
+        origin,
+        text: clipped.text,
+        ...(clipped.clipped ? { clipped: true } : {}),
+        ...(message.streaming ? { streaming: true } : {}),
+      };
+    }),
+    next: last !== undefined ? sequenceOf(last) : (after ?? null),
+    more: after !== undefined && newer.length > page.length,
+  };
+}
 
 interface StartSpec {
   readonly title: string;
@@ -277,6 +475,8 @@ interface StartInput {
     readonly runSetup?: boolean | undefined;
   }>;
   readonly reportBack?: boolean | undefined;
+  /** A linked computer's name or environment id: start them there. */
+  readonly computer?: string | undefined;
 }
 
 /** An agent's requested model, trimmed and with unusable options dropped. */
@@ -303,6 +503,8 @@ const agentSelection = (
 const isLaunch = Schema.is(ChildThreadLaunch);
 
 export function makeThreadToolHandlers(deps: ThreadToolDeps) {
+  const waitingOnScheduleAnswers: Effect.Effect<ReadonlySet<ThreadId>> =
+    deps.scheduleAnswerWaiting ?? Effect.succeed(new Set());
   type Gate =
     | {
         readonly refusal: {
@@ -325,6 +527,12 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const thread = yield* deps.readThread(scope.threadId);
       if (thread === undefined) {
         return { refusal: { outcome: "refused" as const, detail: GONE } };
+      }
+      // A thread another computer's agent started here never gets these
+      // (docs/design/fleet.md, "Fence"); its runtime has no thread tools, so
+      // this only guards a stale credential.
+      if ((thread.remoteOrigin ?? null) !== null) {
+        return { refusal: { outcome: "not_allowed" as const, detail: REMOTE_ORIGIN_REFUSAL } };
       }
       return { mode, thread };
     });
@@ -364,32 +572,12 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const { thread, mode } = gated;
       const providers = yield* deps.providers;
       const only = input.instanceId?.trim() || undefined;
-      const agents: Array<ThreadAgentsResult["agents"][number]> = [];
-      const unavailable: Array<ThreadAgentsResult["unavailable"][number]> = [];
-      for (const provider of providers) {
-        // Providers the user never turned on are not worth a line.
-        if (!provider.enabled || !provider.installed) continue;
-        if (only !== undefined && provider.instanceId !== only) continue;
-        const refusal = childAgentRefusal(provider, thread.interactionMode);
-        const name = childAgentProviderName(provider);
-        if (refusal !== null) {
-          unavailable.push({ instanceId: provider.instanceId, name, reason: refusal });
-          continue;
-        }
-        const models = provider.models
-          .filter((model) => model.isHidden !== true)
-          .map((model) => ({ model: model.slug, name: model.shortName ?? model.name }));
-        // A gateway can list a hundred models; the first ones, in the
-        // provider's own order, are enough to choose from unless asked.
-        const listed = only === undefined ? models.slice(0, MODELS_LISTED_PER_PROVIDER) : models;
-        agents.push({
-          instanceId: provider.instanceId,
-          name,
-          billing: inviteBilling(provider).label,
-          models: listed,
-          ...(listed.length < models.length ? { moreModels: models.length - listed.length } : {}),
-        });
-      }
+      const listedAgents = listThreadAgents(providers, {
+        interactionMode: thread.interactionMode,
+        only,
+      });
+      const agents = listedAgents.agents.map(({ driver: _driver, ...agent }) => agent);
+      const unavailable = listedAgents.unavailable;
       if (only !== undefined && agents.length === 0 && unavailable.length === 0) {
         return {
           outcome: "refused",
@@ -398,12 +586,26 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         } satisfies ThreadAgentsResult;
       }
       const yours = callerModelSelection(thread, scope.participantId);
+      const computers =
+        deps.links === undefined || only !== undefined ? [] : yield* deps.links.computers;
       return {
         outcome: "ok",
         approval: mode,
         yours: { instanceId: yours.instanceId, model: yours.model },
         agents,
         unavailable,
+        ...(computers.length > 0
+          ? {
+              computers: computers.map((computer) => ({
+                name: computer.label,
+                environmentId: computer.environmentId,
+                reachable: computer.reachable,
+                agents: (computer.descriptor?.agents ?? []).map(
+                  ({ driver: _driver, ...agent }) => agent,
+                ),
+              })),
+            }
+          : {}),
       } satisfies ThreadAgentsResult;
     });
 
@@ -648,13 +850,29 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           detail: "Threads can only be started during your own turn.",
         } satisfies ThreadStartResult;
       }
+      const computerName = input.computer?.trim() || undefined;
       const key = [
         scope.threadId,
         scope.participantId ?? "primary",
         callerTurnId,
         "thread_start",
-        JSON.stringify({ reportBack, threads: specs }),
+        JSON.stringify({
+          reportBack,
+          threads: specs,
+          ...(computerName !== undefined ? { computer: computerName } : {}),
+        }),
       ].join("\u0000");
+      if (computerName !== undefined) {
+        return yield* remoteStart({
+          scope,
+          thread,
+          specs,
+          reportBack,
+          callerTurnId,
+          key,
+          computerName,
+        });
+      }
       const ids = startIds(key, specs.length);
 
       return yield* deps.requests.join(key, () =>
@@ -759,6 +977,296 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     });
 
   // ---------------------------------------------------------------------------
+  // thread_start on a linked computer
+  // ---------------------------------------------------------------------------
+
+  /** The linked computer an agent named, by name or id, or why it can't be used. */
+  const resolveComputer = (name: string) =>
+    Effect.gen(function* () {
+      const computers = deps.links === undefined ? [] : yield* deps.links.computers;
+      const wanted = name.toLowerCase();
+      const computer = computers.find(
+        (entry) => entry.environmentId === name || entry.label.toLowerCase() === wanted,
+      );
+      if (computer !== undefined) return { computer };
+      return {
+        refused:
+          computers.length === 0
+            ? "This computer isn't linked to any other, so threads can only start here."
+            : `No linked computer is called "${name}". Linked computers: ${computers.map((entry) => entry.label).join(", ")}.`,
+      };
+    });
+
+  /**
+   * Whether the caller's branch is pushed: then the other computer can fetch
+   * it and start from the same commit. Returns the branch name there, or null.
+   */
+  const pushedBranch = (checkout: string) =>
+    Effect.gen(function* () {
+      const run = (args: ReadonlyArray<string>) =>
+        deps.git
+          .execute({
+            operation: "ThreadTools.pushedBranch",
+            cwd: checkout,
+            args,
+            allowNonZeroExit: true,
+            timeoutMs: GIT_TIMEOUT_MS,
+            maxOutputBytes: 16_384,
+          })
+          .pipe(
+            Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : null)),
+            Effect.orElseSucceed(() => null),
+          );
+      const upstream = yield* run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+      if (upstream === null || !upstream.includes("/")) return null;
+      const ahead = yield* run(["rev-list", "--count", "@{u}..HEAD"]);
+      if (ahead !== "0") return null;
+      return upstream.slice(upstream.indexOf("/") + 1);
+    });
+
+  /**
+   * The agent a thread there runs on: the one named (its instance id there),
+   * or that computer's agent of the caller's own kind, its default, or its
+   * first. The caller's own instance id means nothing there and is never sent.
+   */
+  const remoteAgent = (
+    descriptor: PeerDescriptor,
+    spec: StartSpec,
+    caller: { readonly driver: string | undefined; readonly model: string },
+  ): ModelSelection | { readonly refused: string } => {
+    if (spec.agent !== undefined) {
+      const agent = descriptor.agents.find((entry) => entry.instanceId === spec.agent!.instanceId);
+      if (agent === undefined) {
+        return {
+          refused: `${descriptor.label} has no agent "${spec.agent.instanceId}". thread_agents lists its agents under computers.`,
+        };
+      }
+      return spec.agent;
+    }
+    const sameKind =
+      caller.driver === undefined
+        ? undefined
+        : descriptor.agents.find((entry) => entry.driver === caller.driver);
+    const fallback =
+      descriptor.defaultAgent !== null &&
+      descriptor.agents.some((entry) => entry.instanceId === descriptor.defaultAgent!.instanceId)
+        ? descriptor.defaultAgent
+        : undefined;
+    const agent =
+      sameKind ??
+      descriptor.agents.find((entry) => entry.instanceId === fallback?.instanceId) ??
+      descriptor.agents[0];
+    if (agent === undefined) {
+      return { refused: `${descriptor.label} has no agent ready to take a thread.` };
+    }
+    const model =
+      agent.models.find((entry) => entry.model === caller.model)?.model ??
+      (fallback?.instanceId === agent.instanceId ? fallback.model : undefined) ??
+      agent.models[0]?.model;
+    if (model === undefined) {
+      return { refused: `${descriptor.label}'s ${agent.name} has no model to run on.` };
+    }
+    return { instanceId: ProviderInstanceId.make(agent.instanceId), model };
+  };
+
+  const remoteStart = (input: {
+    readonly scope: McpInvocationScope;
+    readonly thread: OrchestrationThread;
+    readonly specs: ReadonlyArray<StartSpec>;
+    readonly reportBack: boolean;
+    readonly callerTurnId: TurnId;
+    readonly key: string;
+    readonly computerName: string;
+  }): Effect.Effect<ThreadStartResult> =>
+    Effect.gen(function* () {
+      const { scope, specs, reportBack, callerTurnId, key } = input;
+      if (deps.links === undefined) {
+        return {
+          outcome: "refused",
+          detail: "This computer can't link to other computers.",
+        } satisfies ThreadStartResult;
+      }
+      const links = deps.links;
+      const resolved = yield* resolveComputer(input.computerName);
+      if ("refused" in resolved) {
+        return { outcome: "refused", detail: resolved.refused } satisfies ThreadStartResult;
+      }
+      const { computer } = resolved;
+      const batchId = ChildRequestBatchId.make(derivedUuid(key, "batch"));
+      const children = specs.map((_, index) => {
+        const requestId = ChildRequestId.make(derivedUuid(key, "request", String(index)));
+        return {
+          requestId,
+          childThreadId: linkThreadId(computer.deviceId, requestId),
+          childMessageId: linkMessageId(computer.deviceId, requestId),
+        };
+      });
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const current = (yield* deps.readThread(scope.threadId)) ?? input.thread;
+          const requestIds = new Set<string>(children.map((child) => child.requestId));
+          const earlier = current.childRequests.open.filter(
+            (request) => request.kind === "start" && requestIds.has(request.requestId),
+          );
+          if (earlier.length > 0) {
+            const outcome = earlier.some((request) => request.status === "awaiting_user")
+              ? ("asked_user" as const)
+              : ("started" as const);
+            return {
+              outcome,
+              detail: startedDetail({
+                outcome,
+                count: earlier.length,
+                reportBack,
+                sharedFolder: false,
+              }),
+              threads: earlier.map((request) => ({
+                threadId: request.childThreadId,
+                title: request.launch?.title ?? request.childThreadId,
+                model: request.launch?.modelSelection.model ?? "",
+                workspace: "remote" as const,
+                computer: computer.label,
+              })),
+            } satisfies ThreadStartResult;
+          }
+          const refusal = childStartRefusal(current, {
+            from: from(scope),
+            callerTurnId,
+            count: specs.length,
+          });
+          if (refusal !== null) {
+            return ruleOutcome(refusal) satisfies ThreadStartResult;
+          }
+          const descriptor = yield* links.describe(computer.environmentId);
+          if ("unavailable" in descriptor) {
+            return {
+              outcome: "refused",
+              detail: `${computer.label} can't be reached right now: ${descriptor.unavailable}`,
+            } satisfies ThreadStartResult;
+          }
+          if (descriptor.access === "off") {
+            return {
+              outcome: "refused",
+              detail: `${descriptor.label} doesn't take work from this computer (its link is set to off there).`,
+            } satisfies ThreadStartResult;
+          }
+          const project = yield* deps.readProject(current.projectId);
+          if (project === undefined || project.kind === "general-chat") {
+            return {
+              outcome: "refused",
+              detail: "Only a project's threads can start threads on another computer.",
+            } satisfies ThreadStartResult;
+          }
+          const place = yield* links.projectPlace(project.workspaceRoot);
+          if (place === null) {
+            return {
+              outcome: "refused",
+              detail:
+                "This project has no git remote, so another computer can't find its copy of it.",
+            } satisfies ThreadStartResult;
+          }
+          const projectKey = place.canonicalKey;
+          if (
+            !descriptor.projects.some(
+              (entry) =>
+                entry.canonicalKey === projectKey &&
+                (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
+            )
+          ) {
+            return {
+              outcome: "refused",
+              detail: `${descriptor.label} doesn't have this project. The user can set it up there from the project's menu.`,
+            } satisfies ThreadStartResult;
+          }
+          const providers = yield* deps.providers;
+          const callerModel = callerModelSelection(current, scope.participantId);
+          const callerDriver = providers.find(
+            (provider) => provider.instanceId === callerModel.instanceId,
+          )?.driver;
+          const selections: ModelSelection[] = [];
+          for (const spec of specs) {
+            const selection = remoteAgent(descriptor, spec, {
+              driver: callerDriver,
+              model: callerModel.model,
+            });
+            if ("refused" in selection) {
+              return {
+                outcome: "unavailable_agent",
+                detail: selection.refused,
+              } satisfies ThreadStartResult;
+            }
+            selections.push(selection);
+          }
+          const checkout = roomCheckoutCwd(current, project.workspaceRoot) ?? project.workspaceRoot;
+          const branch = yield* pushedBranch(checkout);
+          const workspace: ChildThreadWorkspace = {
+            kind: "remote",
+            projectKey,
+            projectSubdirectory: place.subdirectory,
+            checkout: "worktree",
+            ...(branch !== null ? { branch } : {}),
+          };
+          const launches = specs.map((spec, index): ChildThreadLaunch => ({
+            title: spec.title,
+            prompt: spec.prompt,
+            modelSelection: selections[index]!,
+            runtimeMode: current.runtimeMode,
+            interactionMode: current.interactionMode,
+            reportBack,
+            runSetup: spec.runSetup,
+            workspace,
+            target: { environmentId: computer.environmentId, label: descriptor.label },
+          }));
+          if (!launches.every(isLaunch)) {
+            return {
+              outcome: "refused",
+              detail:
+                "Those threads could not be described in full. Check each title, prompt and agent.",
+            } satisfies ThreadStartResult;
+          }
+          const mode = yield* deps.threadsMode;
+          if (mode === "off") {
+            return { outcome: "off", detail: THREADS_OFF } satisfies ThreadStartResult;
+          }
+          const rejected = yield* dispatch({
+            type: "thread.child.start",
+            commandId: childRequestCommandId(batchId, "start"),
+            threadId: scope.threadId,
+            batchId,
+            from: from(scope),
+            callerTurnId,
+            mode,
+            children: children.map((child, index) => ({ ...child, launch: launches[index]! })),
+            createdAt: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return rejected satisfies ThreadStartResult;
+          }
+          const outcome = mode === "auto" ? ("started" as const) : ("asked_user" as const);
+          const where =
+            branch !== null
+              ? ` On ${descriptor.label} ${launches.length === 1 ? "it starts" : "they start"} from your pushed branch ${branch}.`
+              : ` On ${descriptor.label} ${launches.length === 1 ? "it starts" : "they start"} from its default branch: your unpushed changes are not there.`;
+          const asks =
+            descriptor.access === "ask"
+              ? ` ${descriptor.label} asks its user before starting ${launches.length === 1 ? "it" : "them"}.`
+              : "";
+          return {
+            outcome,
+            detail: `${startedDetail({ outcome, count: launches.length, reportBack, sharedFolder: false })}${where}${asks}`,
+            threads: children.map((child, index) => ({
+              threadId: child.childThreadId,
+              title: launches[index]!.title,
+              model: selections[index]!.model,
+              workspace: "remote" as const,
+              computer: descriptor.label,
+            })),
+          } satisfies ThreadStartResult;
+        }),
+      );
+    });
+
+  // ---------------------------------------------------------------------------
   // thread_list
   // ---------------------------------------------------------------------------
 
@@ -785,15 +1293,34 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           : shells
               .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
               .slice(0, THREAD_LIST_PROJECT_LIMIT);
+      // Threads it started on linked computers, as last heard from them.
+      const remote =
+        (input.scope ?? "mine") === "mine"
+          ? (thread.childRequests.remoteChildren ?? []).map((child): ThreadSummary => ({
+              threadId: child.threadId,
+              title: child.title,
+              status: remoteStatusWord(child.cachedStatus),
+              branch: null,
+              model: "",
+              attached: true,
+              startedBy: "you",
+              computer: remoteLabel(thread, child.environmentId),
+            }))
+          : [];
+      const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
         outcome: "ok",
-        threads: listed.map((shell) =>
-          summarize(shell, {
-            caller: thread,
-            providers,
-            titleOf: (threadId) => titles.get(threadId),
-          }),
-        ),
+        threads: [
+          ...listed.map((shell) =>
+            summarizeThread(shell, {
+              caller: thread,
+              providers,
+              titleOf: (threadId) => titles.get(threadId),
+              scheduleAnswerWaiting,
+            }),
+          ),
+          ...remote,
+        ],
       } satisfies ThreadListResult;
     });
 
@@ -817,6 +1344,34 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const { thread: caller } = gated;
       const targetId = input.threadId.trim();
+      const remoteChild =
+        targetId.length > 0
+          ? remoteChildOf(caller.childRequests, ThreadId.make(targetId))
+          : undefined;
+      if (remoteChild !== undefined) {
+        const label = remoteLabel(caller, remoteChild.environmentId);
+        const read =
+          deps.links === undefined
+            ? { unavailable: "this computer has no links" }
+            : yield* deps.links.read(remoteChild.environmentId, {
+                threadId: remoteChild.threadId,
+                after: input.after,
+                limit: input.limit,
+              });
+        if ("unavailable" in read) {
+          return {
+            outcome: "refused",
+            detail: `${label} can't be reached right now, so that thread can't be read (${read.unavailable}). It was last ${remoteChild.cachedStatus}.`,
+            ...none,
+          } satisfies ThreadReadResult;
+        }
+        return {
+          ...read,
+          ...(read.thread !== undefined
+            ? { thread: { ...read.thread, startedBy: "you", computer: label } }
+            : {}),
+        } satisfies ThreadReadResult;
+      }
       const target =
         targetId.length > 0 ? yield* deps.readThread(ThreadId.make(targetId)) : undefined;
       if (target === undefined || target.projectId !== caller.projectId) {
@@ -844,70 +1399,20 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         { discard: true },
       );
       const shell = yield* deps.readThreadShell(target.id);
-      const entries = roomAgentEntries(target, modelLabel(target.modelSelection, providers));
-      const names = {
-        agentName: (participantId: Parameters<typeof roomAgentName>[1]) =>
-          roomAgentName(entries, participantId),
-        threadTitle: (threadId: ThreadId) => titles.get(threadId),
-      };
-
-      const sequenceOf = (message: OrchestrationThread["messages"][number]) =>
-        message.eventSequence ?? 0;
-      const readable = target.messages
-        .filter(
-          (message) =>
-            (message.role === "user" || message.role === "assistant") &&
-            message.text.trim().length > 0,
-        )
-        .toSorted(
-          (left, right) =>
-            sequenceOf(left) - sequenceOf(right) || left.createdAt.localeCompare(right.createdAt),
-        );
-      const limit = Math.max(
-        1,
-        Math.min(
-          THREAD_READ_MAX_LIMIT,
-          Math.floor(
-            input.limit !== undefined && Number.isFinite(input.limit)
-              ? input.limit
-              : THREAD_READ_DEFAULT_LIMIT,
-          ),
-        ),
-      );
-      const after =
-        input.after !== undefined && Number.isFinite(input.after) ? input.after : undefined;
-      const newer =
-        after !== undefined ? readable.filter((message) => sequenceOf(message) > after) : readable;
-      const page = after !== undefined ? newer.slice(0, limit) : newer.slice(-limit);
-      const last = page.at(-1);
+      const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
         outcome: "ok",
         ...(shell !== undefined
           ? {
-              thread: summarize(shell, {
+              thread: summarizeThread(shell, {
                 caller,
                 providers,
                 titleOf: (threadId) => titles.get(threadId),
+                scheduleAnswerWaiting,
               }),
             }
           : {}),
-        messages: page.map((message) => {
-          const { author, origin } = messageAuthor(message, names);
-          const clipped = clipText(message.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT);
-          return {
-            messageId: message.id,
-            sequence: sequenceOf(message),
-            at: message.createdAt,
-            role: message.role === "user" ? ("user" as const) : ("assistant" as const),
-            author,
-            origin,
-            text: clipped.text,
-            ...(clipped.clipped ? { clipped: true } : {}),
-            ...(message.streaming ? { streaming: true } : {}),
-          };
-        }),
-        next: last !== undefined ? sequenceOf(last) : (after ?? null),
-        more: after !== undefined && newer.length > page.length,
+        ...readThreadPage(target, { providers, titles, after: input.after, limit: input.limit }),
       } satisfies ThreadReadResult;
     });
 
@@ -960,6 +1465,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return gated.refusal satisfies ThreadSendResult;
       }
       const { thread } = gated;
+      const remoteChild = remoteChildOf(thread.childRequests, ThreadId.make(input.threadId.trim()));
+      if (remoteChild !== undefined) {
+        return yield* remoteSend(scope, thread, remoteChild, input.message);
+      }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {
         return owned.refusal satisfies ThreadSendResult;
@@ -1066,6 +1575,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return gated.refusal satisfies ThreadStopResult;
       }
       const { thread } = gated;
+      const remoteChild = remoteChildOf(thread.childRequests, ThreadId.make(input.threadId.trim()));
+      if (remoteChild !== undefined) {
+        return yield* remoteStop(scope, thread, remoteChild);
+      }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {
         return owned.refusal satisfies ThreadStopResult;
@@ -1109,6 +1622,139 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             detail:
               "Stopped. Nothing more comes back from it for what you asked; a later thread_send starts it again.",
             threadId: child.id,
+          } satisfies ThreadStopResult;
+        }),
+      );
+    });
+
+  // ---------------------------------------------------------------------------
+  // thread_send and thread_stop for a thread on a linked computer
+  // ---------------------------------------------------------------------------
+
+  type RemoteChild = NonNullable<ReturnType<typeof remoteChildOf>>;
+
+  const remoteSend = (
+    scope: McpInvocationScope,
+    thread: OrchestrationThread,
+    child: RemoteChild,
+    message: string,
+  ): Effect.Effect<ThreadSendResult> =>
+    Effect.gen(function* () {
+      if (isAttachedChild(thread)) {
+        return depthRefusal(thread, scope) satisfies ThreadSendResult;
+      }
+      const text = message.trim();
+      if (text.length === 0) {
+        return { outcome: "refused", detail: "Say what you want from the thread." };
+      }
+      if (text.length > THREAD_PROMPT_CHAR_LIMIT) {
+        return {
+          outcome: "refused",
+          detail: `Keep the message under ${THREAD_PROMPT_CHAR_LIMIT.toLocaleString("en-US")} characters.`,
+        };
+      }
+      const computers = deps.links === undefined ? [] : yield* deps.links.computers;
+      const computer = computers.find((entry) => entry.environmentId === child.environmentId);
+      if (computer === undefined) {
+        return {
+          outcome: "refused",
+          detail: `This computer is no longer linked to ${child.label}.`,
+        } satisfies ThreadSendResult;
+      }
+      const callerTurnId = thread.session?.activeTurnId ?? NO_TURN;
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        callerTurnId,
+        "thread_send",
+        child.threadId,
+        text,
+      ].join("\u0000");
+      const requestId = ChildRequestId.make(derivedUuid(key, "request"));
+      const busy = child.cachedStatus === "working" || child.cachedStatus === "needs the user";
+      const outcome = busy ? ("queued" as const) : ("sent" as const);
+      const detail = {
+        sent: `Sent to ${computer.label}. Its reply comes back to you as a message when it finishes; end your turn if you have nothing else to do.`,
+        queued: `Sent to ${computer.label}; it's busy, so it takes your message after its current turn. Its reply comes back to you as a message; end your turn if you have nothing else to do.`,
+      } as const;
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const current = (yield* deps.readThread(scope.threadId)) ?? thread;
+          if (current.childRequests.open.some((request) => request.requestId === requestId)) {
+            return { outcome, detail: detail[outcome], threadId: child.threadId };
+          }
+          const rejected = yield* dispatch({
+            type: "thread.child.send",
+            commandId: childRequestCommandId(requestId, "send"),
+            threadId: scope.threadId,
+            requestId,
+            from: from(scope),
+            callerTurnId,
+            childThreadId: child.threadId,
+            childMessageId: linkMessageId(computer.deviceId, requestId),
+            text,
+            createdAt: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return rejected satisfies ThreadSendResult;
+          }
+          return {
+            outcome,
+            detail: detail[outcome],
+            threadId: child.threadId,
+          } satisfies ThreadSendResult;
+        }),
+      );
+    });
+
+  const remoteStop = (
+    scope: McpInvocationScope,
+    thread: OrchestrationThread,
+    child: RemoteChild,
+  ): Effect.Effect<ThreadStopResult> =>
+    Effect.gen(function* () {
+      if (isAttachedChild(thread)) {
+        return depthRefusal(thread, scope) satisfies ThreadStopResult;
+      }
+      const open = thread.childRequests.open.filter(
+        (request) => request.childThreadId === child.threadId,
+      );
+      if (
+        open.length === 0 &&
+        child.cachedStatus !== "working" &&
+        child.cachedStatus !== "waiting"
+      ) {
+        return {
+          outcome: "not_running",
+          detail: "It isn't working on anything, and nothing you asked of it is waiting.",
+          threadId: child.threadId,
+        } satisfies ThreadStopResult;
+      }
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        thread.session?.activeTurnId ?? NO_TURN,
+        "thread_stop",
+        child.threadId,
+        String(child.attachmentEpoch),
+        ...open.map((request) => request.requestId).toSorted(),
+      ].join("\u0000");
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const rejected = yield* dispatch({
+            type: "thread.children.stop",
+            commandId: CommandId.make(`server:child-stop:${derivedUuid(key)}`),
+            threadId: scope.threadId,
+            childThreadIds: [child.threadId],
+            createdAt: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return rejected satisfies ThreadStopResult;
+          }
+          return {
+            outcome: "stopped",
+            detail: `Stopped. ${child.label} is told to stop it; nothing more comes back from it for what you asked. A later thread_send starts it again.`,
+            threadId: child.threadId,
           } satisfies ThreadStopResult;
         }),
       );

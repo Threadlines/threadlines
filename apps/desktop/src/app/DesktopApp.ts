@@ -20,6 +20,7 @@ import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
+import * as DesktopBackground from "./DesktopBackground.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopStatusIndicator from "../window/DesktopStatusIndicator.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
@@ -178,6 +179,7 @@ const startup = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+  const background = yield* DesktopBackground.DesktopBackground;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
   yield* shellEnvironment.installIntoProcess;
@@ -200,6 +202,7 @@ const startup = Effect.gen(function* () {
   yield* startBackend.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
   yield* applicationMenu.configure;
   yield* statusIndicator.configure;
+  yield* background.configure;
   yield* electronProtocol.registerDesktopFileProtocol;
   yield* updates.configure;
   yield* installDesktopIpcHandlers.pipe(

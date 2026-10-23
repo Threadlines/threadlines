@@ -11,6 +11,8 @@ interface ComposerPendingApprovalActionsProps {
   /** A risk the provider attached to an answer, shown on its button. */
   decisionWarnings?: Partial<Record<ProviderApprovalDecision, string>> | undefined;
   isResponding: boolean;
+  /** The agent asks that this one not be approved by habit: Approve is not highlighted. */
+  defaultToNo?: boolean | undefined;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -33,6 +35,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   availableDecisions,
   decisionWarnings,
   isResponding,
+  defaultToNo = false,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   return (
@@ -45,7 +48,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           <Button
             key={action.decision}
             size="sm"
-            variant={action.variant}
+            variant={action.decision === "accept" && defaultToNo ? "outline" : action.variant}
             disabled={isResponding}
             onClick={() => void onRespondToApproval(requestId, action.decision)}
           >

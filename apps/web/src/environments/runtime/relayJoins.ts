@@ -7,9 +7,8 @@ import type {
 } from "@threadlines/contracts";
 import { EnvironmentId as EnvironmentIdSchema } from "@threadlines/contracts";
 import { RELAY_RAW_CONTROL_PREFIX, RelayWatchEvent } from "@threadlines/contracts/relay";
+import { claimRelayInvite, RelayInviteInvalidError } from "@threadlines/shared/relayJoin";
 import {
-  claimProof,
-  claimSecrets,
   decodePublicKey,
   fromBase64Url,
   generateStoredKeyPair,
@@ -30,7 +29,6 @@ import {
   generateRelaySecret,
   getRelayRequestStatus,
   postRelayCodeJoin,
-  postRelayInviteClaim,
   postRelayReveal,
   type RelayInviteLink,
   relayDeviceSocketUrl,
@@ -304,40 +302,20 @@ export async function startInviteClaim(input: {
   readonly invite: RelayInviteLink;
   readonly replaceExisting: (environmentId: EnvironmentId) => Promise<void>;
 }): Promise<EnvironmentId> {
-  const inviteSecret = fromBase64Url(input.invite.inviteSecret);
-  const hostKey = await decodePublicKey(input.invite.hostPublicKey);
-  if (!inviteSecret || !hostKey) {
-    throw new RelayJoinError("That link is incomplete. Scan the code again.", "invalid-invite");
+  let claim: Awaited<ReturnType<typeof claimRelayInvite>>;
+  try {
+    claim = await claimRelayInvite({ invite: input.invite, joiner: describeThisBrowser() });
+  } catch (error) {
+    if (error instanceof RelayInviteInvalidError) {
+      throw new RelayJoinError(error.message, "invalid-invite");
+    }
+    throw error;
   }
-  const joinId = crypto.randomUUID();
-  const deviceSecret = generateRelaySecret();
-  const requestSecret = generateRelaySecret();
-  const deviceSecretHash = await relaySecretHash(deviceSecret);
-  const requestSecretHash = await relaySecretHash(requestSecret);
-  const deviceKey = await generateStoredKeyPair();
-  const { claimToken, macKey } = await claimSecrets(inviteSecret);
-  const proof = await claimProof({
-    macKey,
-    inviteId: input.invite.inviteId,
-    joinId,
-    devicePublicKey: fromBase64Url(deviceKey.publicKey)!,
-  });
-  const result = await withReplay(() =>
-    postRelayInviteClaim(input.invite, {
-      joinId,
-      deviceSecretHash,
-      requestSecretHash,
-      devicePublicKey: deviceKey.publicKey,
-      claimToken,
-      claimProof: proof,
-      joiner: describeThisBrowser(),
-    }),
-  );
   return savePendingJoin({
-    accepted: { ...result, relayOrigin: input.invite.relayOrigin },
-    credentials: { deviceSecret, deviceKey },
-    requestSecret,
-    hostPublicKey: input.invite.hostPublicKey,
+    accepted: claim.accepted,
+    credentials: claim.credentials,
+    requestSecret: claim.requestSecret,
+    hostPublicKey: claim.hostPublicKey,
     replaceExisting: input.replaceExisting,
   });
 }

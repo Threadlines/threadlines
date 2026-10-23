@@ -35,6 +35,8 @@ const selectTriggerVariants = cva(
   },
 );
 
+/** The trailing glyph of a solid trigger: the dropdown chevrons, or a field
+ *  picker's calendar or clock (ui/date-picker, ui/time-picker). */
 const selectTriggerIconClassName = "-me-1 size-3.5 shrink-0 opacity-70";
 
 /**
@@ -258,6 +260,7 @@ export {
   inlinePickerTriggerClassName,
   SelectButton,
   selectTriggerVariants,
+  selectTriggerIconClassName,
   DropdownChevron,
   SelectValue,
   SelectPopup,

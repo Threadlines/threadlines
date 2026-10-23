@@ -8,6 +8,7 @@ export type ThreadSortInput = Pick<Thread, "createdAt" | "updatedAt"> & {
   pinnedAt?: string | null;
 };
 
+/** "starting" only while the agent's own program starts up. */
 export type ThreadInFlightStatus = "working" | "starting";
 
 export function toSortableTimestamp(iso: string | undefined): number | null {
@@ -76,6 +77,17 @@ export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
   });
 }
 
+/**
+ * The thread's session is getting a turn going: the turn being prepared, or
+ * the agent's program starting up first. Its latest turn can still be the
+ * previous, finished one for a beat.
+ */
+export function isThreadSessionStarting(thread: Pick<Thread, "session">): boolean {
+  return (
+    thread.session?.status === "connecting" || thread.session?.orchestrationStatus === "starting"
+  );
+}
+
 export function getThreadInFlightStatus(
   thread: Pick<Thread, "session">,
 ): ThreadInFlightStatus | null {
@@ -83,11 +95,11 @@ export function getThreadInFlightStatus(
     return "working";
   }
 
-  if (
-    thread.session?.status === "connecting" ||
-    thread.session?.orchestrationStatus === "starting"
-  ) {
-    return "starting";
+  // Every turn starts this way, an agent already up included; only one
+  // whose program is starting (ThreadSession.launchingInstanceId) is
+  // "starting".
+  if (isThreadSessionStarting(thread)) {
+    return thread.session?.launchingInstanceId !== undefined ? "starting" : "working";
   }
 
   return null;

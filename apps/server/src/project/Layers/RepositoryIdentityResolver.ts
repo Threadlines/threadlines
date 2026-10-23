@@ -15,7 +15,7 @@ import {
   type RepositoryIdentityResolverShape,
 } from "../Services/RepositoryIdentityResolver.ts";
 
-function parseRemoteFetchUrls(stdout: string): Map<string, string> {
+export function parseRemoteFetchUrls(stdout: string): Map<string, string> {
   const remotes = new Map<string, string>();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -31,7 +31,7 @@ function parseRemoteFetchUrls(stdout: string): Map<string, string> {
   return remotes;
 }
 
-function pickPrimaryRemote(
+export function pickPrimaryRemote(
   remotes: ReadonlyMap<string, string>,
 ): { readonly remoteName: string; readonly remoteUrl: string } | null {
   for (const preferredRemoteName of ["origin", "upstream"] as const) {

@@ -17,11 +17,12 @@ import {
 } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import * as Effect from "effect/Effect";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
+import type { SidebarThreadSummary } from "../types";
 import {
   makeBrowserTab,
   registerPreviewWebview,
@@ -32,13 +33,16 @@ import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
-import { useStore } from "../store";
+import { getClientSettings, updateSettings } from "../hooks/useSettings";
+import { isMacPlatform } from "../lib/utils";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 import {
   THREAD_ID,
   THREAD_TITLE,
+  SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   BrowserHostHarness,
   THREAD_REF,
@@ -53,6 +57,8 @@ import {
   createMockEnvironmentApi,
   createSnapshotForTargetUser,
   addThreadToSnapshot,
+  setSidebarThreadWork,
+  touchSwipe,
   draftIdFromPath,
   draftThreadIdFor,
   serverThreadPath,
@@ -62,6 +68,7 @@ import {
   startPromotedServerTurnViaDomainEvent,
   createDraftOnlySnapshot,
   setDraftThreadWithoutWorktree,
+  waitForLayout,
   waitForElement,
   waitForURL,
   waitForComposerEditor,
@@ -69,6 +76,7 @@ import {
   mountChatView,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
+  openCommandPaletteFromTrigger,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -112,7 +120,7 @@ describe("ChatView (full app): sidebar", () => {
     };
   }
 
-  it("narrows the live list from the scope menu and drops the implied project label", async () => {
+  it("narrows the live list from the scope menu and keeps the project name on its rows", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: withThreadBranch(
@@ -138,26 +146,38 @@ describe("ChatView (full app): sidebar", () => {
 
       await vi.waitFor(
         () => {
-          expect(useUiStateStore.getState().inboxProjectScopeKey).toBe(PROJECT_LOGICAL_KEY);
+          expect(useUiStateStore.getState().inboxProjectScopeKeys).toEqual([PROJECT_LOGICAL_KEY]);
+          expect(
+            document.querySelector("[data-testid='inbox-scope-trigger']")?.textContent,
+          ).toContain("Project");
           const scopedRow = document.querySelector<HTMLElement>(
             `[data-testid="thread-row-${THREAD_ID}"]`,
           );
           expect(scopedRow).not.toBeNull();
-          // Scoped: the project is implied, but the row keeps its second line.
-          expect(scopedRow?.textContent).not.toContain("Project");
+          // Scoped: the row still names its project; the menu that says what
+          // the list is narrowed to is out of sight while you read the rows.
           expect(
-            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`),
-          ).not.toBeNull();
+            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`)?.textContent,
+          ).toContain("Project");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // Clicking it again takes it back out: the list is unscoped.
+      await page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`).click();
+      await vi.waitFor(
+        () => {
+          expect(useUiStateStore.getState().inboxProjectScopeKeys).toEqual([]);
         },
         { timeout: 4_000, interval: 16 },
       );
     } finally {
-      useUiStateStore.getState().setInboxProjectScope(null);
+      useUiStateStore.getState().setInboxProjectScope([]);
       await mounted.cleanup();
     }
   });
 
-  it("narrows the live list to rooms from the scope menu and marks the trigger while it does", async () => {
+  it("narrows the live list to rooms from the View button and marks it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -176,24 +196,25 @@ describe("ChatView (full app): sidebar", () => {
     try {
       await waitForElement(threadRow, "Unable to find thread row.");
 
-      await page.getByTestId("inbox-scope-trigger").click();
+      const viewTrigger = () => document.querySelector('[data-testid="inbox-view-trigger"]');
+      await page.getByTestId("inbox-view-trigger").click();
       await page.getByTestId("inbox-rooms-filter-only").click();
       await vi.waitFor(
         () => {
           // The fixture thread has no added agent, so it is not a room.
           expect(threadRow()).toBeNull();
-          expect(document.querySelector('[data-testid="inbox-rooms-filter-mark"]')).not.toBeNull();
+          expect(viewTrigger()?.getAttribute("data-filtered")).toBe("true");
         },
         { timeout: 4_000, interval: 16 },
       );
       await expect.element(page.getByText("No active rooms")).toBeInTheDocument();
 
-      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId("inbox-view-trigger").click();
       await page.getByTestId("inbox-rooms-filter-all").click();
       await vi.waitFor(
         () => {
           expect(threadRow()).not.toBeNull();
-          expect(document.querySelector('[data-testid="inbox-rooms-filter-mark"]')).toBeNull();
+          expect(viewTrigger()?.hasAttribute("data-filtered")).toBe(false);
         },
         { timeout: 4_000, interval: 16 },
       );
@@ -411,42 +432,117 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("keeps General Chats as its own destination above the scope row", async () => {
+  it("groups the thread menu, renames from the palette through a dialog, and wraps up a selection by the inbox's rules", async () => {
+    const pinnedThreadId = "thread-menu-pinned" as ThreadId;
+    const settledThreadId = "thread-menu-settled" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-thread-menu" as MessageId,
+          targetText: "thread menu",
+        }),
+        pinnedThreadId,
+      ),
+      settledThreadId,
+    );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-general-chats-nav" as MessageId,
-        targetText: "general chats nav target",
-      }),
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === pinnedThreadId ? { ...thread, pinnedAt: NOW_ISO } : thread,
+        ),
+      },
     });
 
     try {
-      const chatsRow = page.getByTestId("sidebar-general-chats");
-      await expect.element(chatsRow).toBeInTheDocument();
-      await chatsRow.click();
-
-      await waitForURL(
-        mounted.router,
-        (pathname) => pathname === "/chats",
-        "General Chats should open the chats page.",
+      // The row's menu: the thread's own actions, then groups ending in
+      // Archive and Delete.
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "The thread's sidebar row should be on screen.",
       );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      for (const label of ["Rename", "Pin", "Mark unread", "Copy path", "Archive", "Delete"]) {
+        await expect.element(page.getByRole("button", { name: label, exact: true })).toBeVisible();
+      }
+      expect(document.querySelectorAll('[role="separator"]').length).toBeGreaterThanOrEqual(2);
+      await userEvent.keyboard("{Escape}");
+
+      // The palette's Rename asks in a dialog, and saving sends the new name.
+      await openCommandPaletteFromTrigger();
+      await page.getByTestId("command-palette").getByText("Rename thread", { exact: true }).click();
+      const input = page.getByTestId("thread-rename-input");
+      await expect.element(input).toHaveValue(THREAD_TITLE);
+      await input.fill("Renamed from the palette");
+      await page.getByTestId("thread-rename-save").click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.meta.update" &&
+              request.title === "Renamed from the palette",
+          ),
+        ).toBe(true);
+      });
+      await expect.element(page.getByTestId("thread-rename-dialog")).not.toBeInTheDocument();
+
+      // Wrap up over a selection skips what its own menu wouldn't wrap up:
+      // the pinned thread stays where it is.
+      const keyOf = (threadId: ThreadId) =>
+        scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId));
+      useThreadSelectionStore.getState().toggleThread(keyOf(pinnedThreadId));
+      useThreadSelectionStore.getState().toggleThread(keyOf(settledThreadId));
+      const settledRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${settledThreadId}"]`),
+        "The settled thread's row should be on screen.",
+      );
+      const settledRect = settledRow.getBoundingClientRect();
+      settledRow.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: settledRect.left + 20,
+          clientY: settledRect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "Wrap up (2)", exact: true }).click();
+      const wrapped = () =>
+        wsRequests.flatMap((request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.done-override.set"
+            ? [request.threadId]
+            : [],
+        );
+      await vi.waitFor(() => {
+        expect(wrapped()).toEqual([settledThreadId]);
+      });
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("gives a live general chat a line under General Chats that opens it", async () => {
+  it("counts general chats on the rail, keeps them out of the inbox, and selects General Chats while one is open", async () => {
     const workingChatId = "thread-general-chat-working" as ThreadId;
-    const quietChatId = "thread-general-chat-quiet" as ThreadId;
+    const askingChatId = "thread-general-chat-asking" as ThreadId;
     const withChats = addThreadToSnapshot(
       addThreadToSnapshot(
         createSnapshotForTargetUser({
-          targetMessageId: "msg-user-general-chat-lines" as MessageId,
-          targetText: "general chat lines target",
+          targetMessageId: "msg-user-general-chat-rail" as MessageId,
+          targetText: "general chat rail target",
         }),
         workingChatId,
       ),
-      quietChatId,
+      askingChatId,
     );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -472,23 +568,8 @@ describe("ChatView (full app): sidebar", () => {
                 ...thread,
                 projectId: GENERAL_CHATS_PROJECT_ID,
                 title: "Best way to store passkeys",
-                latestTurn: {
-                  turnId: "turn-general-chat-working" as TurnId,
-                  state: "running" as const,
-                  requestedAt: NOW_ISO,
-                  startedAt: NOW_ISO,
-                  completedAt: null,
-                  assistantMessageId: null,
-                },
-                session: thread.session
-                  ? {
-                      ...thread.session,
-                      status: "running" as const,
-                      activeTurnId: "turn-general-chat-working" as TurnId,
-                    }
-                  : thread.session,
               }
-            : thread.id === quietChatId
+            : thread.id === askingChatId
               ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
               : thread,
         ),
@@ -496,75 +577,397 @@ describe("ChatView (full app): sidebar", () => {
     });
 
     try {
-      const line = page.getByTestId(`sidebar-general-chat-${workingChatId}`);
-      await expect.element(line).toBeInTheDocument();
-      await expect
-        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .toMatchTextContent(/^working/);
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
+      const chatsButton = page.getByTestId("rail-chats");
+      // Chats have no list beside the rail, so their work always shows on it.
+      await expect.element(chatsButton.getByTestId("rail-needs-you-badge")).toMatchTextContent("1");
+      await expect.element(page.getByTestId("rail-chats-working")).toMatchTextContent("1");
+      // The inbox's own counts leave them out.
       expect(
-        document.querySelector(`[data-testid="sidebar-general-chat-${quietChatId}"]`),
-        "A quiet chat nobody has open has nothing to say, so it gets no line.",
+        document.querySelector('[data-testid="rail-threads"] [data-testid="rail-needs-you-badge"]'),
       ).toBeNull();
-      expect(
-        document.querySelector(`[data-testid="thread-row-${workingChatId}"]`),
-        "General chats still stay out of the inbox.",
-      ).toBeNull();
+      expect(document.querySelector(`[data-testid="thread-row-${workingChatId}"]`)).toBeNull();
 
-      await line.click();
-      await waitForURL(
-        mounted.router,
-        (pathname) => pathname.endsWith(`/${workingChatId}`),
-        "The line should open its chat.",
-      );
-      await expect.element(line).toHaveAttribute("aria-current", "page");
-
-      // The General Chats page says the same thing in the same words.
-      await page.getByTestId("sidebar-general-chats").click();
+      await chatsButton.click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === "/chats",
         "General Chats should open the chats page.",
       );
+      // The chats are the list beside the rail; the page offers to start one.
+      await expect.element(page.getByTestId("chats-view-new-chat")).toBeVisible();
       await expect
         .element(
           page
-            .getByTestId("chats-view-row")
+            .getByTestId("chats-list-row")
             .filter({ hasText: "Best way to store passkeys" })
-            .getByTestId("chats-view-row-status"),
+            .getByTestId("chats-list-row-status"),
         )
         .toMatchTextContent(/^working/);
 
-      // The chat settles while the pointer is still over the sidebar (it just
-      // clicked General Chats): its line holds still rather than pulling the
-      // rows below out from under the pointer, and leaves once it moves away.
-      useStore.setState((state) => {
-        const environment = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
-        const summary = environment.sidebarThreadSummaryById[workingChatId]!;
-        return {
-          environmentStateById: {
-            ...state.environmentStateById,
-            [LOCAL_ENVIRONMENT_ID]: {
-              ...environment,
-              sidebarThreadSummaryById: {
-                ...environment.sidebarThreadSummaryById,
-                [workingChatId]: {
-                  ...summary,
-                  latestTurn: null,
-                  session: summary.session
-                    ? { ...summary.session, status: "ready", orchestrationStatus: "ready" }
-                    : null,
-                },
-              },
-            },
-          },
-        };
-      });
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${askingChatId}`),
+        "A chat row should open its chat.",
+      );
+      await expect.element(chatsButton).toHaveAttribute("aria-current", "page");
+      expect(
+        document.querySelector('[data-testid="rail-threads"]')?.getAttribute("aria-current"),
+      ).toBeNull();
+      // The open chat stays listed beside it, marked as the one on screen.
       await expect
-        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .not.toMatchTextContent(/^working/);
-      await expect.element(line).toBeInTheDocument();
-      await page.getByTestId("chats-view-row").first().hover();
-      await expect.element(line).not.toBeInTheDocument();
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("swipes a general chat: left archives it with an undo, right pins it, and a working chat keeps it", async () => {
+    const idleChatId = "thread-general-chat-swipe-idle" as ThreadId;
+    const workingChatId = "thread-general-chat-swipe-working" as ThreadId;
+    const withChats = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-general-chat-swipe" as MessageId,
+          targetText: "general chat swipe target",
+        }),
+        idleChatId,
+      ),
+      workingChatId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChats,
+        projects: [
+          ...withChats.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: withChats.threads.map((thread) =>
+          thread.id === idleChatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+            : thread.id === workingChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Still thinking" }
+              : thread,
+        ),
+      },
+    });
+    const row = (title: string) =>
+      page.getByTestId("chats-list-row").filter({ hasText: title }).element();
+    const swipeAction = () => document.querySelector("[data-testid='row-swipe-action']");
+
+    try {
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working", {
+        session: {
+          provider: "codex",
+          status: "running",
+          activeTurnId: "turn-still-thinking" as TurnId,
+        } as SidebarThreadSummary["session"],
+      });
+      await page.getByTestId("rail-chats").click();
+      await expect.element(page.getByTestId("chats-list-row").first()).toBeVisible();
+
+      // Left: archived, and the list offers it back.
+      touchSwipe(row("Draft reply"), -260);
+      await expect
+        .element(page.getByTestId("swipe-undo-bar"))
+        .toMatchTextContent(/Archived Draft reply/);
+      await page.getByTestId("swipe-undo-bar").getByRole("button", { name: "Undo" }).click();
+      await expect.element(page.getByTestId("swipe-undo-bar")).not.toBeInTheDocument();
+
+      // Right shows Pin under the row.
+      const target = row("Draft reply");
+      const rect = target.getBoundingClientRect();
+      const at = (x: number) => ({
+        bubbles: true,
+        clientX: x,
+        clientY: rect.top + rect.height / 2,
+        pointerId: 22,
+        pointerType: "touch",
+        isPrimary: true,
+        button: 0,
+      });
+      target.dispatchEvent(new PointerEvent("pointerdown", at(rect.left + 20)));
+      for (let step = 1; step <= 10; step += 1) {
+        target.dispatchEvent(new PointerEvent("pointermove", at(rect.left + 20 + step * 18)));
+      }
+      await vi.waitFor(() => expect(swipeAction()?.textContent).toBe("Pin"));
+      target.dispatchEvent(new PointerEvent("pointercancel", at(rect.left + 200)));
+      await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+      // A chat whose agent is mid-turn can't be archived, so it doesn't swipe left.
+      touchSwipe(row("Still thinking"), -260);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(document.querySelector("[data-testid='swipe-undo-bar']")).toBeNull();
+      expect(row("Still thinking")).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("steps between general chats with the next and previous shortcuts, and dots an unread one on the rail", async () => {
+    // Same timestamps, so the chats page and the shortcuts order them c, b, a.
+    const chatA = "thread-chat-traverse-a" as ThreadId;
+    const chatB = "thread-chat-traverse-b" as ThreadId;
+    const chatC = "thread-chat-traverse-c" as ThreadId;
+    const base = [chatA, chatB, chatC].reduce(
+      addThreadToSnapshot,
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-chat-traversal" as MessageId,
+        targetText: "chat traversal",
+      }),
+    );
+    const traversalKeybinding = (command: "thread.next" | "thread.previous", key: string) =>
+      ({
+        command,
+        shortcut: {
+          key,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: true,
+          altKey: false,
+          modKey: true,
+        },
+        whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+      }) as const;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${chatB}`,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === chatA || thread.id === chatB || thread.id === chatC
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            traversalKeybinding("thread.next", "]"),
+            traversalKeybinding("thread.previous", "["),
+          ],
+        };
+      },
+    });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const press = (direction: "next" | "previous") =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: direction === "next" ? "}" : "{",
+          code: direction === "next" ? "BracketRight" : "BracketLeft",
+          shiftKey: true,
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+    try {
+      await waitForServerConfigToApply();
+      // An answer finishes on a chat that is not open, after the app loaded.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, chatC, "working", {
+        session: null,
+        latestTurn: {
+          turnId: "turn-chat-traverse-c" as TurnId,
+          state: "completed",
+          requestedAt: NOW_ISO,
+          startedAt: NOW_ISO,
+          completedAt: new Date(Date.now() + 60_000).toISOString(),
+          assistantMessageId: null,
+        },
+      });
+      const chatsButton = page.getByTestId("rail-chats");
+      // An unread answer is a blue dot, not a count: nothing waits on the user.
+      await expect.element(chatsButton.getByTestId("rail-unread-dot")).toBeVisible();
+      expect(
+        document.querySelector('[data-testid="rail-chats"] [data-testid="rail-needs-you-badge"]'),
+      ).toBeNull();
+      expect(
+        document.querySelector('[data-testid="rail-threads"] [data-testid="rail-unread-dot"]'),
+      ).toBeNull();
+
+      // From a chat, the shortcuts walk the chats, never into the inbox.
+      press("next");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatA}`),
+        "Next should open the older chat.",
+      );
+      await waitForLayout();
+      press("next");
+      press("previous");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatB}`),
+        "Next past the last chat stays put; previous steps back.",
+      );
+      await waitForLayout();
+      press("previous");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatC}`),
+        "Previous should open the newer chat.",
+      );
+      // Opening it reads the answer: the dot goes.
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-testid="rail-chats"] [data-testid="rail-unread-dot"]'),
+        ).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups the inbox by project with families under their parent, and folds a group", async () => {
+    const otherProjectThreadId = "thread-group-other-project" as ThreadId;
+    const childThreadId = "thread-group-child" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-inbox-groups" as MessageId,
+          targetText: "inbox groups",
+        }),
+        otherProjectThreadId,
+      ),
+      childThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            ...base.projects[0]!,
+            id: SECOND_PROJECT_ID,
+            title: "Second project",
+            workspaceRoot: "/repo/second-project",
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === otherProjectThreadId
+            ? { ...thread, projectId: SECOND_PROJECT_ID, title: "Second project thread" }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      // A thread the other project's thread started, filed under the first
+      // project: it travels with its parent.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, childThreadId, "working", {
+        parentThreadId: otherProjectThreadId,
+        attachedToParent: true,
+        title: "Child thread",
+      });
+      updateSettings({ sidebarGrouping: "project" });
+      const headers = () =>
+        Array.from(document.querySelectorAll<HTMLElement>('[data-testid^="inbox-group-project:"]'));
+      await vi.waitFor(() => expect(headers()).toHaveLength(2));
+      const secondHeader = headers().find((header) =>
+        header.textContent?.includes("Second project"),
+      )!;
+      // The family's work counts on its parent's group.
+      expect(secondHeader.textContent).toContain("1 working");
+      const listed = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="inbox-thread-list"] [data-testid^="inbox-group-"], [data-testid="inbox-thread-list"] [data-testid^="thread-row-"]',
+        ),
+      ).map((element) => element.dataset.testid);
+      const parentIndex = listed.indexOf(`thread-row-${otherProjectThreadId}`);
+      expect(listed[parentIndex - 1]).toBe(secondHeader.dataset.testid);
+      // The child folds into its parent's family line rather than standing
+      // in its own project's group.
+      await expect.element(page.getByTestId(`thread-family-${otherProjectThreadId}`)).toBeVisible();
+      expect(listed).not.toContain(`thread-row-${childThreadId}`);
+
+      secondHeader.click();
+      await expect
+        .element(page.getByTestId(`thread-row-${otherProjectThreadId}`))
+        .not.toBeInTheDocument();
+      expect(useUiStateStore.getState().collapsedInboxGroups).toEqual({
+        [secondHeader.dataset.testid!.slice("inbox-group-".length)]: true,
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps idle threads in the list once Wrap up idle threads is off", async () => {
+    const idleThreadId = "thread-idle-for-days" as ThreadId;
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-wrap-idle" as MessageId,
+        targetText: "wrap idle",
+      }),
+      idleThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === idleThreadId
+            ? {
+                ...thread,
+                title: "Quiet for days",
+                createdAt: threeDaysAgo,
+                updatedAt: threeDaysAgo,
+                lastSeenAt: threeDaysAgo,
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await expect.element(page.getByTestId(`done-row-${idleThreadId}`)).toBeInTheDocument();
+
+      await page.getByTestId("rail-settings").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.startsWith("/settings"),
+        "Settings should open from the rail.",
+      );
+      await mounted.router.navigate({ to: "/settings/threads" });
+      await page.getByRole("switch", { name: "Wrap up idle threads" }).click();
+      expect(getClientSettings().wrapUpIdleThreads).toBe(false);
+
+      await page.getByTestId("rail-threads").click();
+      await expect.element(page.getByTestId(`thread-row-${idleThreadId}`)).toBeInTheDocument();
+      expect(document.querySelector(`[data-testid="done-row-${idleThreadId}"]`)).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -872,7 +1275,7 @@ describe("ChatView (full app): sidebar", () => {
     return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
   };
 
-  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+  it("keeps a room's working agent, state, clock and project whole at the default width", async () => {
     const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
       model: "Opus 5.5",
     });
@@ -883,9 +1286,10 @@ describe("ChatView (full app): sidebar", () => {
           line.getBoundingClientRect().right + 0.5,
         );
       }
-      // The project name stays in the row; it is what gave way.
+      // The list starts wide enough beside the rail for a short project name
+      // too; it is the first thing to give way when it has to (below).
       expect(project).toBeDefined();
-      expect(showsWholeText(project!)).toBe(false);
+      expect(showsWholeText(project!)).toBe(true);
     } finally {
       await mounted.cleanup();
     }

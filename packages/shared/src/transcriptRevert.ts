@@ -9,6 +9,10 @@
  * beside a turn never starts one: an invite, and an invited review with its
  * answer (see docs/design/rooms-agent-invites.md). Those stay when they came
  * before the first message the revert removes, and go with it otherwise.
+ *
+ * A thread moved here from another computer keeps what it brought
+ * (`imported`) through every revert, and those messages count toward no
+ * turn: this computer's turns, and its checkpoints, start after them.
  */
 import { compareTranscriptOrder, compareTranscriptPosition } from "./transcriptOrder.ts";
 
@@ -20,6 +24,8 @@ export interface RevertableMessage {
   readonly requestOutcome?: string | undefined;
   readonly createdAt: string;
   readonly eventSequence?: number | undefined;
+  /** Brought by a move: see OrchestrationMessage.imported. */
+  readonly imported?: boolean | undefined;
 }
 
 /**
@@ -72,7 +78,9 @@ export function revertMessages<Message extends RevertableMessage>(
   /** The turns the revert keeps: those it was told to, and any a kept message is stamped with. */
   readonly keptTurnIds: ReadonlySet<string>;
 } {
-  const { messages, idOf, retainedTurnIds, turnCount } = input;
+  const { idOf, retainedTurnIds, turnCount } = input;
+  // What a move brought stays, and is left out of the turn counting below.
+  const messages = input.messages.filter((message) => message.imported !== true);
   const order = (left: Message, right: Message) =>
     compareTranscriptOrder({ ...left, id: idOf(left) }, { ...right, id: idOf(right) });
   const retained = new Set(input.retainedMessageIds ?? []);
@@ -141,7 +149,9 @@ export function revertMessages<Message extends RevertableMessage>(
       retained.add(idOf(message));
     }
   }
-  const kept = messages.filter((message) => retained.has(idOf(message)));
+  const kept = input.messages.filter(
+    (message) => message.imported === true || retained.has(idOf(message)),
+  );
   const keptTurnIds = new Set(retainedTurnIds);
   for (const message of kept) {
     if (message.turnId != null) keptTurnIds.add(message.turnId);
@@ -187,4 +197,22 @@ export function retainTurnItemsAfterRevert<
   return items.filter(
     (item) => compareTranscriptPosition(item, cut) < 0 || keptTurnIds.has(item.turnId),
   );
+}
+
+/**
+ * Whether a revert takes away the send that gave a moved thread's agent its
+ * conversation, so the conversation is owed again: the revert removed the
+ * message that carried it, or, when no send is known to have carried it,
+ * went back to where the thread arrived. Both server read models go
+ * through this.
+ */
+export function revertOwesHistorySeed(input: {
+  readonly movedHere: boolean;
+  readonly historySeedOwed: boolean;
+  /** Whether the revert removed the message that carried it; null when none is known. */
+  readonly seedMessageRemoved: boolean | null;
+  readonly turnCount: number;
+}): boolean {
+  if (!input.movedHere || input.historySeedOwed) return false;
+  return input.seedMessageRemoved ?? input.turnCount === 0;
 }

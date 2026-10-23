@@ -79,19 +79,26 @@ function messageBlocks(
     case "agent-message":
       // A hand-off's reply that repeats the answer above it shows one line.
       if (row.agentLine?.echoesAnswer) return null;
+      // Markdown, its file links read against this thread's checkout; all of
+      // it, folded or not.
       return cached(message, `${view}|${contextKey}`, () =>
-        findableUserMessageBlocks({
+        findableMarkdownBlocks({
           text: message.text,
-          terminalContexts: [],
+          cwd: context.cwd,
           skills: context.skills,
+          isStreaming: false,
+          visualizations: false,
         }),
       );
     case "thread-message":
+      // Markdown written in another thread's checkout: no file links here.
       return cached(message, `${view}|${contextKey}`, () =>
-        findableUserMessageBlocks({
+        findableMarkdownBlocks({
           text: message.text,
-          terminalContexts: [],
+          cwd: undefined,
           skills: context.skills,
+          isStreaming: false,
+          visualizations: false,
         }),
       );
     case "invite": {

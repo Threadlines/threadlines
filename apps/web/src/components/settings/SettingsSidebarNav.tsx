@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { ArrowLeftIcon } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import {
   SidebarContent,
@@ -11,7 +11,6 @@ import {
   SidebarMenuItem,
   SidebarSeparator,
 } from "../ui/sidebar";
-import { SidebarUsageMeter } from "../sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "../sidebar/SidebarVersionTag";
 import { isHostedStaticApp } from "../../hostedPairing";
 import {
@@ -21,6 +20,12 @@ import {
   startsSettingsNavGroup,
 } from "./settingsNavigation";
 import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
+
+/** Settings' list beside the rail: its sections, for the page on screen. */
+export function SettingsDestinationList() {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  return <SettingsSidebarNav pathname={pathname} />;
+}
 
 /**
  * Desktop-only settings section rail. Mobile viewports never render this:
@@ -86,11 +91,6 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarSeparator />
       <SidebarFooter className="p-2">
         <SidebarMenu>
-          {/* The same meter the main sidebar keeps above Settings, so the
-              bottom-left corner means "today's usage" on both surfaces. */}
-          <SidebarMenuItem>
-            <SidebarUsageMeter />
-          </SidebarMenuItem>
           <SidebarMenuItem className="flex items-center gap-1.5">
             <SidebarMenuButton
               size="sm"

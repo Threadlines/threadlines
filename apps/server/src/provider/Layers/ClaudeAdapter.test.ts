@@ -9251,6 +9251,95 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "shows Claude's own words with an approval and keeps Always allow off when it says so",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+        });
+        yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "read it", attachments: [] });
+        yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-approval-words",
+          uuid: "stream-approval-words",
+          parent_tool_use_id: null,
+          event: { type: "message_start", message: { id: "msg-approval-words" } },
+        } as unknown as SDKMessage);
+        yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+        const canUseTool = harness.getLastCreateQueryInput()?.options.canUseTool;
+        assert.equal(typeof canUseTool, "function");
+        if (!canUseTool) {
+          return;
+        }
+        const permissionPromise = canUseTool(
+          "Read",
+          { file_path: "/Users/me/.ssh/config" },
+          {
+            signal: new AbortController().signal,
+            suggestions: [
+              {
+                type: "addRules",
+                rules: [{ toolName: "Read", ruleContent: "//Users/me/**" }],
+                behavior: "allow",
+                destination: "session",
+              },
+            ],
+            title: "  Claude wants to read config  ",
+            decisionReason: "Path is outside the allowed working directories",
+            description: "Claude will have read access to files in ~/.ssh",
+            blockedPath: "/Users/me/.ssh/config",
+            defaultToNo: true,
+            suppressAlwaysAllowRule: true,
+            toolUseID: "tool-use-words",
+            requestId: "request-use-words",
+          },
+        );
+
+        const requested = yield* Stream.runHead(adapter.streamEvents);
+        assert.equal(requested._tag, "Some");
+        if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+          return;
+        }
+        assert.deepInclude(requested.value.payload, {
+          title: "Claude wants to read config",
+          reason: "Path is outside the allowed working directories",
+          description: "Claude will have read access to files in ~/.ssh",
+          blockedPath: "/Users/me/.ssh/config",
+          defaultToNo: true,
+        });
+        assert.deepEqual(requested.value.payload.availableDecisions, [
+          "accept",
+          "decline",
+          "cancel",
+        ]);
+
+        // An answer from a client that still offered it writes no lasting rule.
+        yield* adapter.respondToRequest(
+          session.threadId,
+          ApprovalRequestId.make(requested.value.requestId!),
+          "acceptForSession",
+        );
+        const permissionResult = (yield* Effect.promise(
+          () => permissionPromise,
+        )) as PermissionResult;
+        assert.equal(permissionResult.behavior, "allow");
+        assert.notProperty(permissionResult, "updatedPermissions");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("classifies Agent tools and read-only Claude tools correctly for approvals", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -9522,12 +9611,20 @@ describe("ClaudeAdapterLive", () => {
         });
         // Not asked for: nothing is said either way.
         assert.equal(plain.roomTools, undefined);
+        const appendOf = (options: { readonly systemPrompt?: unknown }) =>
+          (options.systemPrompt as { readonly append?: string } | undefined)?.append ?? "";
+        // No schedule tools, so no word about them.
+        assert.notInclude(
+          appendOf(harness.getLastCreateQueryInput()!.options),
+          "<threadlines_schedules>",
+        );
 
         const session = yield* adapter.startSession({
           threadId: THREAD_ID,
           provider: ProviderDriverKind.make("claudeAgent"),
           runtimeMode: "full-access",
           roomTools: true,
+          scheduleTools: true,
         });
         assert.equal(session.roomTools, true);
         const options = harness.getLastCreateQueryInput()!.options;
@@ -9542,6 +9639,14 @@ describe("ClaudeAdapterLive", () => {
         // Claude outwaits the room's own deadline, so the deadline answers first.
         assert.isAbove(room!.timeout, Duration.toMillis(ROOM_REQUEST_DEADLINE));
         assert.include(options.allowedTools ?? [], "mcp__threadlines_room__room_ask");
+        // Asked to schedule something, it uses Threadlines' scheduled tasks
+        // rather than its own schedulers, which the user would never see.
+        assert.include(appendOf(options), "`mcp__threadlines_room__schedule_create`");
+        assert.include(appendOf(options), "CronCreate");
+        assert.notInclude(
+          options.allowedTools ?? [],
+          "mcp__threadlines_room__scheduled_run_finish",
+        );
         const token = room!.headers.Authorization!.replace("Bearer ", "");
         assert.equal(
           (yield* mcpSessionRegistry.resolve(token))?.roomTools.size,
@@ -9550,6 +9655,23 @@ describe("ClaudeAdapterLive", () => {
 
         yield* adapter.stopSession(THREAD_ID);
         assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+
+        // A scheduled run's agent finishes its run without a permission
+        // prompt, and with agents' schedule changes turned off it hears
+        // nothing about schedule tools it can't see.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          roomTools: true,
+          scheduledRunTools: true,
+        });
+        const runOptions = harness.getLastCreateQueryInput()!.options;
+        assert.include(
+          runOptions.allowedTools ?? [],
+          "mcp__threadlines_room__scheduled_run_finish",
+        );
+        assert.notInclude(appendOf(runOptions), "<threadlines_schedules>");
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

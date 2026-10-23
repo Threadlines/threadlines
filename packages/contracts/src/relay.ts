@@ -172,6 +172,110 @@ export type RelayInviteId = typeof RelayInviteId.Type;
 export const RelayPipeId = TrimmedNonEmptyString.pipe(Schema.brand("RelayPipeId"));
 export type RelayPipeId = typeof RelayPipeId.Type;
 
+/**
+ * Event tasks' public addresses on the relay (docs/design/event-tasks.md).
+ * The relay mints a hook for a host (`POST /v2/hosts/{h}/hooks`); its
+ * address is `/v2/hooks/{hostId}/{hookId}/{mac}`, the mac checked at the edge
+ * before any Durable Object is touched. A delivery is sealed to the host's
+ * hook key at once, held until the host acknowledges it (24 hours at most),
+ * and handed over on the control socket: whole when small (`hook.delivery`),
+ * announced and fetched over HTTP when large (`hook.pending`).
+ */
+export const RelayHookId = TrimmedNonEmptyString.pipe(Schema.brand("RelayHookId"));
+export type RelayHookId = typeof RelayHookId.Type;
+export const RelayHookDeliveryId = TrimmedNonEmptyString.pipe(Schema.brand("RelayHookDeliveryId"));
+export type RelayHookDeliveryId = typeof RelayHookDeliveryId.Type;
+
+/** A body larger than this is refused (413). */
+export const RELAY_HOOK_MAX_BODY_BYTES = 1024 * 1024;
+/** Sealed deliveries up to this size travel on the control socket; larger ones are fetched. */
+export const RELAY_HOOK_INLINE_SEALED_BYTES = 600 * 1024;
+/** How long an unacknowledged delivery waits at the relay. */
+export const RELAY_HOOK_HOLD_MS = 24 * 60 * 60 * 1000;
+
+/** Header names a hook keeps besides the ones every hook keeps (lowercase). */
+export const RelayHookKeptHeaders = Schema.Array(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+).check(Schema.isMaxLength(32));
+export type RelayHookKeptHeaders = typeof RelayHookKeptHeaders.Type;
+
+/**
+ * The host's key for hook deliveries: a P-256 public key, raw uncompressed
+ * point, base64url. Deliveries are sealed to it (packages/shared
+ * relayHookSeal.ts).
+ */
+export const RelayHookPublicKey = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+
+/**
+ * Every hook change carries the host's revision; the relay applies one only
+ * if it is newer than the last it applied, so a late or reordered call can't
+ * undo a newer one.
+ */
+export const RelayHookMintInput = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  publicKey: RelayHookPublicKey,
+  keptHeaders: RelayHookKeptHeaders,
+});
+export type RelayHookMintInput = typeof RelayHookMintInput.Type;
+
+export const RelayHookMintResult = Schema.Struct({
+  hookId: RelayHookId,
+  /** The full public address, mac included. */
+  url: TrimmedNonEmptyString,
+});
+export type RelayHookMintResult = typeof RelayHookMintResult.Type;
+
+/**
+ * The host's whole wanted state: these hooks active with these kept headers,
+ * every other hook of the host retired. Sent after every change and on every
+ * reconnect.
+ */
+export const RelayHookStateInput = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  publicKey: RelayHookPublicKey,
+  active: Schema.Array(Schema.Struct({ hookId: RelayHookId, keptHeaders: RelayHookKeptHeaders })),
+});
+export type RelayHookStateInput = typeof RelayHookStateInput.Type;
+
+export const RelayHookStateResult = Schema.Struct({
+  /** False when the relay had already applied a newer revision. */
+  applied: Schema.Boolean,
+  revision: Schema.Int,
+});
+export type RelayHookStateResult = typeof RelayHookStateResult.Type;
+
+/**
+ * `GET /v2/hosts/{h}/hooks`: the last revision the relay applied. The host
+ * asks after its control socket was refused, to tell a relay that forgot it
+ * (`unknown-host`, `bad-host-secret`) from one it can't reach.
+ */
+export const RelayHookStatusResult = Schema.Struct({
+  revision: Schema.Int,
+});
+export type RelayHookStatusResult = typeof RelayHookStatusResult.Type;
+
+/**
+ * Error codes on host-secret routes. `unknown-host` and `bad-host-secret`
+ * mean the relay no longer knows this computer: register again.
+ */
+export const RELAY_ERROR_UNKNOWN_HOST = "unknown-host" as const;
+export const RELAY_ERROR_BAD_HOST_SECRET = "bad-host-secret" as const;
+/** A hook call whose revision the relay has already passed. */
+export const RELAY_ERROR_STALE_REVISION = "stale-revision" as const;
+/** The relay has no hook path key, so it doesn't take events. */
+export const RELAY_ERROR_HOOKS_OFF = "hooks-off" as const;
+/** The host has as many hooks as the relay keeps for one computer. */
+export const RELAY_ERROR_TOO_MANY_HOOKS = "too-many-hooks" as const;
+
+/** One delivery as the relay holds it; `sealed` is relayHookSeal's envelope. */
+export const RelayHookDelivery = Schema.Struct({
+  deliveryId: RelayHookDeliveryId,
+  hookId: RelayHookId,
+  receivedAt: IsoDateTime,
+  sealed: TrimmedNonEmptyString,
+});
+export type RelayHookDelivery = typeof RelayHookDelivery.Type;
+
 /** Closes a device's sockets after the host removed its access. */
 export const RELAY_CLOSE_CODE_ACCESS_REMOVED = 4003;
 /** Closes a host's data sockets once its daily relay allowance is used up. */
@@ -343,6 +447,9 @@ export const RelayUsageToday = Schema.Struct({
   awakeSecondsLimit: Schema.Number,
   limited: Schema.Boolean,
   resetsAt: IsoDateTime,
+  /** Event task deliveries accepted today, and the daily cap ("Events today"). Newer relays only. */
+  hooks: Schema.optionalKey(Schema.Number),
+  hookLimit: Schema.optionalKey(Schema.Number),
 });
 export type RelayUsageToday = typeof RelayUsageToday.Type;
 
@@ -419,6 +526,19 @@ export const RelayControlUsageEvent = Schema.Struct({
   type: Schema.Literal("usage"),
   usage: RelayUsageToday,
 });
+/** A sealed hook delivery small enough to travel on the control socket. */
+export const RelayControlHookDeliveryEvent = Schema.Struct({
+  type: Schema.Literal("hook.delivery"),
+  delivery: RelayHookDelivery,
+});
+/** A delivery too large for the socket: fetch it (`GET .../hooks/deliveries/{id}`). */
+export const RelayControlHookPendingEvent = Schema.Struct({
+  type: Schema.Literal("hook.pending"),
+  deliveryId: RelayHookDeliveryId,
+  hookId: RelayHookId,
+  receivedAt: IsoDateTime,
+  size: Schema.Int,
+});
 export const RelayControlEvent = Schema.Union([
   RelayControlSnapshotEvent,
   RelayControlJoinRequestedEvent,
@@ -426,6 +546,8 @@ export const RelayControlEvent = Schema.Union([
   RelayControlRequestRevealedEvent,
   RelayControlDeviceConnectingEvent,
   RelayControlUsageEvent,
+  RelayControlHookDeliveryEvent,
+  RelayControlHookPendingEvent,
 ]);
 export type RelayControlEvent = typeof RelayControlEvent.Type;
 
@@ -439,9 +561,15 @@ export const RelayControlRefusePipeMessage = Schema.Struct({
   pipeId: RelayPipeId,
   reason: Schema.Literals(["not-yet", "revoked"]),
 });
+/** The host has stored these deliveries; the relay forgets them. */
+export const RelayControlHookAckMessage = Schema.Struct({
+  type: Schema.Literal("hook.ack"),
+  deliveryIds: Schema.Array(RelayHookDeliveryId).check(Schema.isMaxLength(100)),
+});
 export const RelayControlMessage = Schema.Union([
   RelayControlLeaseMessage,
   RelayControlRefusePipeMessage,
+  RelayControlHookAckMessage,
 ]);
 export type RelayControlMessage = typeof RelayControlMessage.Type;
 

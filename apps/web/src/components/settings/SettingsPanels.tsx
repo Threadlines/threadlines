@@ -96,6 +96,7 @@ import {
 } from "../ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { DesktopBackgroundRows } from "./DesktopBackgroundRows";
 import {
   type ArchivedThreadItem,
   type ArchivedThreadProject,
@@ -441,6 +442,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Confirm delete"]
         : []),
+      ...(settings.wrapUpIdleThreads !== DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads
+        ? ["Wrap up idle threads"]
+        : []),
       ...(settings.wrapUpThreadsOnPullRequestSettled !==
       DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled
         ? ["Wrap up merged threads"]
@@ -486,6 +490,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.wrapUpIdleThreads,
       settings.wrapUpThreadsOnPullRequestSettled,
       settings.newThreadModelSelection,
       settings.newThreadRoomAgents,
@@ -547,6 +552,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      wrapUpIdleThreads: DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads,
       wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
@@ -1113,6 +1119,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         {isPhoneSurface ? <AssistantStreamingRow /> : null}
 
         <PreventSleepRow />
+        {isElectron && !isPhoneSurface ? <DesktopBackgroundRows /> : null}
 
         {!isPhoneSurface ? (
           <SettingsRow

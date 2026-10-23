@@ -13,7 +13,9 @@ import type {
   OrchestrationProjectCatalogSnapshot,
   OrchestrationProjectShell,
   OrchestrationReadModel,
+  OrchestrationSession,
   OrchestrationShellSnapshot,
+  OrchestrationSideTurn,
   OrchestrationThread,
   OrchestrationThreadActivity,
   OrchestrationThreadShell,
@@ -132,6 +134,20 @@ export interface ProjectionSnapshotQueryShape {
     ProjectionRepositoryError
   >;
 
+  /**
+   * Archived threads' sessions and side answers, for settling what a
+   * previous process left running. Used once at startup; it builds none of
+   * the archive page's shell (no repositories, no diff stats).
+   */
+  readonly listArchivedThreadsLiveState: () => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly session: OrchestrationSession | null;
+      readonly sideTurn: OrchestrationSideTurn | null;
+    }>,
+    ProjectionRepositoryError
+  >;
+
   readonly getShellSnapshot: () => Effect.Effect<
     OrchestrationShellSnapshot,
     ProjectionRepositoryError
@@ -240,10 +256,13 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
-   * Read a single active thread detail snapshot by id.
+   * Read a single active thread detail snapshot by id; with
+   * `includeArchived`, an archived one too (a move packs a thread archived
+   * while it moves).
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
+    options?: { readonly includeArchived?: boolean },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 
   /**

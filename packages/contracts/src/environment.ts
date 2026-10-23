@@ -56,11 +56,36 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   commandRuns: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server links to other computers' servers and runs agents' threads on
+   * them (`links.*`, docs/design/fleet.md). Older servers omit it; clients
+   * then hide link UI for them.
+   */
+  computerLinks: Schema.optionalKey(Schema.Boolean),
+  /** The server runs scheduled tasks. Absent until a server ships them. */
+  scheduledTasks: Schema.optionalKey(Schema.Boolean),
+  /** The server moves threads to linked computers. Absent until a server ships it. */
+  threadMove: Schema.optionalKey(Schema.Boolean),
+  /** The server sets up projects copied from another computer (`projectSetups.*`). */
+  projectSetup: Schema.optionalKey(Schema.Boolean),
+  /** The server reports when it froze (`subscribeServerStalls`). */
+  stallReports: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server runs event tasks: scheduled tasks started by a webhook
+   * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
+   */
+  eventTasks: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server keeps each thread's terminal tabs and streams their output per
    * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit
    * it and send every terminal event on one stream.
    */
   terminalTabLists: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server takes the address a terminal sign-in's page ended on in a
+   * browser elsewhere and replays it itself (`ProviderAuthWriteInput.redirect`).
+   * Older servers omit it and would type the address into the command.
+   */
+  signInAddressReplay: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

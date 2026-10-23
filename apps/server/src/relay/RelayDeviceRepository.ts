@@ -19,6 +19,21 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 export const RelayDeviceState = Schema.Literals(["approving", "active", "revoking", "revoked"]);
 export type RelayDeviceState = typeof RelayDeviceState.Type;
 
+/**
+ * The role a device's session gets: `client` for an app, `peer` for another
+ * computer's server (a computer link). Set by this server from the invite the
+ * device claimed, never from what the device says it is.
+ */
+export const RelayDeviceGrant = Schema.Literals(["client", "peer"]);
+export type RelayDeviceGrant = typeof RelayDeviceGrant.Type;
+
+/** Why this server made an invite; decides the grant of the device that claims it. */
+export const RelayInvitePurpose = Schema.Literals(["device", "computer-link"]);
+export type RelayInvitePurpose = typeof RelayInvitePurpose.Type;
+
+export const grantForInvitePurpose = (purpose: RelayInvitePurpose): RelayDeviceGrant =>
+  purpose === "computer-link" ? "peer" : "client";
+
 export const RelayDeviceRow = Schema.Struct({
   deviceId: Schema.String,
   requestId: Schema.String,
@@ -30,10 +45,37 @@ export const RelayDeviceRow = Schema.Struct({
   platform: Schema.NullOr(Schema.String),
   /** End-to-end key pinned at approval (base64url P-256); every connection must prove it. */
   devicePublicKey: Schema.String,
+  grant: RelayDeviceGrant,
+  /** Inbound computer links only: see ComputerLinkAccess. Null: the default. */
+  linkAccess: Schema.NullOr(Schema.Literals(["off", "ask", "allowed"])),
+  linkMaxRuntimeMode: Schema.NullOr(
+    Schema.Literals(["approval-required", "auto-accept-edits", "auto", "full-access"]),
+  ),
+  /** The linked computer's environment id, once it introduced itself. */
+  linkEnvironmentId: Schema.NullOr(Schema.String),
+  /**
+   * `linkEnvironmentId` came from the invite this server made for that
+   * computer, so it is fixed; otherwise it is only what the computer said.
+   */
+  linkEnvironmentPinned: Schema.BooleanFromBit,
+  linkLastUsedAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
 export type RelayDeviceRow = typeof RelayDeviceRow.Type;
+
+/** An invite this server made, as it was persisted when made. */
+export const RelayInviteRow = Schema.Struct({
+  inviteId: Schema.String,
+  purpose: RelayInvitePurpose,
+  expiresAt: Schema.String,
+  claimedBy: Schema.NullOr(Schema.String),
+  approved: Schema.Boolean,
+  /** Computer-link invites: the computer it was made for. */
+  joinerEnvironmentId: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+});
+export type RelayInviteRow = typeof RelayInviteRow.Type;
 
 /**
  * The server's own record of a code join, written before its nonce is sent.
@@ -69,6 +111,8 @@ export class RelayRepositoryError extends Data.TaggedError("RelayRepositoryError
 export interface RelayDeviceRepositoryShape {
   readonly getHost: Effect.Effect<Option.Option<RelayHostRow>, RelayRepositoryError>;
   readonly saveHost: (host: RelayHostRow) => Effect.Effect<void, RelayRepositoryError>;
+  /** Forgets this computer's relay registration (the relay no longer knows it). */
+  readonly clearHost: Effect.Effect<void, RelayRepositoryError>;
   readonly getDevice: (
     deviceId: string,
   ) => Effect.Effect<Option.Option<RelayDeviceRow>, RelayRepositoryError>;
@@ -79,7 +123,12 @@ export interface RelayDeviceRepositoryShape {
     sessionId: AuthSessionId,
   ) => Effect.Effect<Option.Option<RelayDeviceRow>, RelayRepositoryError>;
   readonly listDevices: Effect.Effect<ReadonlyArray<RelayDeviceRow>, RelayRepositoryError>;
-  /** Inserts an `approving` row unless one exists for the request; returns the stored row. */
+  /**
+   * Inserts an `approving` row unless one exists for the request; returns the
+   * stored row. `grant` comes from the verified invite, in the same insert,
+   * before any session exists, and so does `linkEnvironmentId` (pinned) when
+   * the invite named the computer it was for.
+   */
   readonly insertApproving: (input: {
     readonly deviceId: string;
     readonly requestId: string;
@@ -88,8 +137,38 @@ export interface RelayDeviceRepositoryShape {
     readonly kind: string;
     readonly platform: string | null;
     readonly devicePublicKey: string;
+    readonly grant: RelayDeviceGrant;
+    readonly linkEnvironmentId?: string | null;
     readonly now: string;
   }) => Effect.Effect<RelayDeviceRow, RelayRepositoryError>;
+  /** An inbound link's settings; only the fields given change. */
+  readonly setLinkSettings: (input: {
+    readonly deviceId: string;
+    readonly access?: NonNullable<RelayDeviceRow["linkAccess"]>;
+    readonly maxRuntimeMode?: NonNullable<RelayDeviceRow["linkMaxRuntimeMode"]>;
+    readonly now: string;
+  }) => Effect.Effect<void, RelayRepositoryError>;
+  /**
+   * What a linked computer first said about itself (its id never changes
+   * once known, pinned or not), and when it last called.
+   */
+  readonly touchLink: (input: {
+    readonly deviceId: string;
+    readonly environmentId?: string;
+    readonly now: string;
+  }) => Effect.Effect<void, RelayRepositoryError>;
+  readonly insertInvite: (row: RelayInviteRow) => Effect.Effect<void, RelayRepositoryError>;
+  readonly getInvite: (
+    inviteId: string,
+  ) => Effect.Effect<Option.Option<RelayInviteRow>, RelayRepositoryError>;
+  /** Records which request claimed an invite, and whether it was approved. */
+  readonly updateInvite: (input: {
+    readonly inviteId: string;
+    readonly claimedBy: string | null;
+    readonly approved: boolean;
+  }) => Effect.Effect<void, RelayRepositoryError>;
+  /** Forgets invites that expired before `before`. */
+  readonly pruneInvites: (before: string) => Effect.Effect<void, RelayRepositoryError>;
   readonly setSession: (input: {
     readonly deviceId: string;
     readonly sessionId: AuthSessionId;
@@ -151,6 +230,12 @@ const make = Effect.gen(function* () {
       kind AS "kind",
       platform AS "platform",
       device_public_key AS "devicePublicKey",
+      access_grant AS "grant",
+      link_access AS "linkAccess",
+      link_max_runtime_mode AS "linkMaxRuntimeMode",
+      link_environment_id AS "linkEnvironmentId",
+      link_environment_pinned AS "linkEnvironmentPinned",
+      link_last_used_at AS "linkLastUsedAt",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM relay_devices
@@ -208,6 +293,10 @@ const make = Effect.gen(function* () {
         created_at = excluded.created_at
     `.pipe(Effect.asVoid, wrap("saveHost"));
 
+  const clearHost: RelayDeviceRepositoryShape["clearHost"] = sql`
+    DELETE FROM relay_host WHERE id = 1
+  `.pipe(Effect.asVoid, wrap("clearHost"));
+
   const getDevice: RelayDeviceRepositoryShape["getDevice"] = (deviceId) =>
     findDevice({ column: "device_id", value: deviceId }).pipe(wrap("getDevice"));
   const getDeviceByRequest: RelayDeviceRepositoryShape["getDeviceByRequest"] = (requestId) =>
@@ -223,13 +312,16 @@ const make = Effect.gen(function* () {
 
   const insertApproving: RelayDeviceRepositoryShape["insertApproving"] = (input) =>
     Effect.gen(function* () {
+      const pinned = input.linkEnvironmentId != null;
       yield* sql`
         INSERT INTO relay_devices (
           device_id, request_id, relay_origin, session_id, state, label, kind, platform,
-          device_public_key, created_at, updated_at
+          device_public_key, access_grant, link_environment_id, link_environment_pinned,
+          created_at, updated_at
         ) VALUES (
           ${input.deviceId}, ${input.requestId}, ${input.relayOrigin}, NULL, 'approving',
           ${input.label}, ${input.kind}, ${input.platform}, ${input.devicePublicKey},
+          ${input.grant}, ${input.linkEnvironmentId ?? null}, ${pinned ? 1 : 0},
           ${input.now}, ${input.now}
         )
         ON CONFLICT(request_id) DO NOTHING
@@ -237,6 +329,67 @@ const make = Effect.gen(function* () {
       const row = yield* findDevice({ column: "request_id", value: input.requestId });
       return Option.getOrThrow(row);
     }).pipe(wrap("insertApproving"));
+
+  const setLinkSettings: RelayDeviceRepositoryShape["setLinkSettings"] = (input) =>
+    sql`
+      UPDATE relay_devices SET
+        link_access = COALESCE(${input.access ?? null}, link_access),
+        link_max_runtime_mode = COALESCE(${input.maxRuntimeMode ?? null}, link_max_runtime_mode),
+        updated_at = ${input.now}
+      WHERE device_id = ${input.deviceId}
+    `.pipe(Effect.asVoid, wrap("setLinkSettings"));
+
+  const touchLink: RelayDeviceRepositoryShape["touchLink"] = (input) =>
+    sql`
+      UPDATE relay_devices SET
+        link_environment_id = COALESCE(link_environment_id, ${input.environmentId ?? null}),
+        link_last_used_at = ${input.now}
+      WHERE device_id = ${input.deviceId}
+    `.pipe(Effect.asVoid, wrap("touchLink"));
+
+  const insertInvite: RelayDeviceRepositoryShape["insertInvite"] = (row) =>
+    sql`
+      INSERT INTO relay_invites (
+        invite_id, purpose, expires_at, claimed_by, approved, joiner_environment_id, created_at
+      )
+      VALUES (
+        ${row.inviteId}, ${row.purpose}, ${row.expiresAt}, ${row.claimedBy},
+        ${row.approved ? 1 : 0}, ${row.joinerEnvironmentId}, ${row.createdAt}
+      )
+      ON CONFLICT(invite_id) DO NOTHING
+    `.pipe(Effect.asVoid, wrap("insertInvite"));
+
+  const getInvite: RelayDeviceRepositoryShape["getInvite"] = (inviteId) =>
+    SqlSchema.findOneOption({
+      Request: Schema.String,
+      Result: Schema.Struct({ ...RelayInviteRow.fields, approved: Schema.Number }),
+      execute: (id) => sql`
+        SELECT
+          invite_id AS "inviteId",
+          purpose AS "purpose",
+          expires_at AS "expiresAt",
+          claimed_by AS "claimedBy",
+          approved AS "approved",
+          joiner_environment_id AS "joinerEnvironmentId",
+          created_at AS "createdAt"
+        FROM relay_invites WHERE invite_id = ${id}
+      `,
+    })(inviteId).pipe(
+      Effect.map(Option.map((row) => ({ ...row, approved: row.approved !== 0 }))),
+      wrap("getInvite"),
+    );
+
+  const updateInvite: RelayDeviceRepositoryShape["updateInvite"] = (input) =>
+    sql`
+      UPDATE relay_invites SET claimed_by = ${input.claimedBy}, approved = ${input.approved ? 1 : 0}
+      WHERE invite_id = ${input.inviteId}
+    `.pipe(Effect.asVoid, wrap("updateInvite"));
+
+  const pruneInvites: RelayDeviceRepositoryShape["pruneInvites"] = (before) =>
+    sql`DELETE FROM relay_invites WHERE expires_at < ${before}`.pipe(
+      Effect.asVoid,
+      wrap("pruneInvites"),
+    );
 
   const setSession: RelayDeviceRepositoryShape["setSession"] = (input) =>
     sql`
@@ -312,11 +465,18 @@ const make = Effect.gen(function* () {
     prunePairings,
     getHost,
     saveHost,
+    clearHost,
     getDevice,
     getDeviceByRequest,
     getDeviceBySession,
     listDevices,
     insertApproving,
+    setLinkSettings,
+    touchLink,
+    insertInvite,
+    getInvite,
+    updateInvite,
+    pruneInvites,
     setSession,
     transition,
     deleteDevice,

@@ -34,15 +34,55 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
 
 | Token                     | Dark  | Light | Used for                                         |
 | ------------------------- | ----- | ----- | ------------------------------------------------ |
-| `--app-chrome-background` | 0.19  | 0.95  | window frame behind everything                   |
-| `--background` (canvas)   | 0.228 | 0.98  | the thread, settings pages, full pages           |
-| `--rail` / `--sidebar`    | 0.26  | 0.965 | the left sidebar and docked side panels          |
+| `--app-chrome-background` | 0.19  | 0.95  | gutters behind panels, the setup screen's chrome |
+| `--frame`                 | 0.26  | 0.95  | the window frame: the title row and the rail     |
+| `--background` (canvas)   | 0.228 | 0.98  | the work panel: page lists, threads, full pages  |
+| `--rail` / `--sidebar`    | 0.26  | 0.965 | docked side panels (diff, browser, tasks)        |
 | `--card`                  | 0.292 | white | the composer box and raised items inside panels  |
 | `--popover`               | 0.312 | white | menus, popovers, dialogs, toasts (with a shadow) |
 
-- **The workspace is continuous.** The sidebar, the thread and the docked
-  side panels (diff, source control, browser, tasks) sit edge to edge, joined
-  by one `--border` line. No floating rounded panes, no gaps between regions.
+- **A frame, and one work panel inside it.** The title row (window controls,
+  the app's name, the list toggle, back, forward) and the navigation rail
+  under it form one L-shaped frame in `--frame` that wraps the window's
+  top-left. Everything you work in sits in one panel beside the rail: the
+  page's list and the page share the canvas, split by a `--border` hairline,
+  and the panel meets the frame with a hairline on its top and left and the
+  one rounded corner in the app (top-left, 10px). It runs to the window's
+  right and bottom edges. In dark mode the frame is a step lighter than the
+  panel, never a black stripe; in light mode it is the soft grey around the
+  near-white canvas. Muted text on the frame keeps 4.5:1 in both (5.4:1 dark,
+  5.2:1 light).
+- **The title row's right part belongs to the open page**, the way Mail,
+  Notes and Finder put their toolbars in the title bar. After the app's name
+  and the frame's own buttons, a page puts its header there
+  (`TitleBarContent`): a thread's project, title and actions, Settings'
+  Restore defaults. It starts over the page's content column (past the list
+  while it shows, plus a header's 20px), never nearer the frame's buttons
+  than 12px, and slides with the list on the list's own curve. It ends 12px
+  from the window's edge on macOS and clear of the Windows and Linux window
+  controls. Pages with no controls of their own (Fleet, Pull Requests,
+  Usage) leave it empty. The work panel then has no header row at all on a
+  wide screen; a window too narrow for the title row, and a phone, keep the
+  page's own header with the sidebar trigger. Empty space in the row moves
+  the window; its controls never do. The app's name leads the row, before
+  the buttons, so it never reads as the first step of the page's
+  project / title path.
+- **The work panel is continuous.** The list, the page and the docked side
+  panels (diff, source control, browser, tasks) sit edge to edge inside it,
+  joined by one `--border` line. No floating rounded panes, no gaps between
+  regions.
+- **Headers in the panel end in a fade, not a rule.** Where a page keeps a
+  header in the panel (a narrow window), it has no bottom border; content scrolling under it passes into a short, light
+  fade (`HeaderEdgeFade`), the same way the thread list's rows pass under its
+  search row. On a thread the fade sits on the conversation itself, never on
+  the browser or side panels docked beside it. A rule there would meet the list's divider in a square T, so
+  the divider runs as one clean line from the panel's top to its bottom.
+  (The phone header, with no list beside it, keeps its rule.)
+- **Each destination brings its own list** (`destinationLists.tsx`): the
+  thread inbox on Threads, your chats on General Chats, computers on Fleet,
+  the sections on Settings. Pull Requests and Usage have none and take the
+  panel's full width; the list toggle stays where it is, disabled. Hiding
+  the list moves only the page's left edge: no button in the frame moves.
 - **The composer is the one raised box on the canvas**: `--card`, 12px radius
   (`rounded-4xl`), a 1px `--border` line. In light mode it also keeps the
   soft `elevate-raised` drop, because a white box on the near-white canvas
@@ -104,7 +144,7 @@ states, forms inside popovers and detail blocks.
 | Dropdown (`SelectTrigger`, `SelectButton`, menu and popover triggers drawn as a dropdown) | the solid button look with up-down chevrons on the right. Custom triggers end with `DropdownChevron` (`ui/select.tsx`): the up-down pair when solid, a small down chevron when plain.                                                                                 |
 | Switch                                                                                    | 34x20 track (dense lists: 28x17), white knob with a soft drop. Off track `--switch-off`, on track the accent.                                                                                                                                                         |
 | Checkbox and radio                                                                        | solid when empty, accent fill with a white mark when chosen.                                                                                                                                                                                                          |
-| Text field (`Input`, `Textarea`, `InputGroup`, `NumberField`)                             | pressed in: `--field` fill and `--field-shadow` (inset ring plus a soft inner shadow), 6px radius.                                                                                                                                                                    |
+| Text field (`Input`, `Textarea`, `InputGroup`, `NumberField`)                             | pressed in: a shallow slot, `--field` a shade off the group and `--field-shadow` (a thin inset ring and a thin shadow along the top edge), 6px radius. Placeholders are hints: `--placeholder` grey and italic (base layer), never mistaken for typed text.           |
 | Segmented control (`SegmentedControl`)                                                    | a pressed-in track with 2px padding; the chosen segment is a raised solid piece, the others plain text. For 2 to 4 options that switch a filter or a mode. When the options are open-ended (provider accounts, projects) and can exceed four, use a dropdown instead. |
 
 Heights: controls in a settings row are `size="sm"` (28px on desktop) or
@@ -288,7 +328,15 @@ a switch's off track and a field's edge must stay visible against the group
 
 ## Exceptions kept on purpose
 
-- The thread sidebar keeps today's inbox design exactly.
+- The thread inbox keeps today's row design exactly. The navigation rail at
+  the window's left edge is part of the frame: plain toolbar buttons on
+  `--frame` with New thread always first, the selected destination a soft
+  `--sidebar-accent` fill (hover a lighter one, pressed between the two), and
+  status color only in its counts (amber needs you, a blue dot for unread or
+  work). Hiding the list keeps the rail and the title row as they are.
+- The title row's and rail's buttons are 30px and 34px, every one with a
+  tooltip that names it and gives its shortcut; a disabled one keeps its
+  tooltip, which says why.
 - Menus, popovers, hover cards and toasts keep their shadows (they float).
 - The sign-in, error and connection screens keep their centered floating
   card: on an otherwise empty window it is a dialog.

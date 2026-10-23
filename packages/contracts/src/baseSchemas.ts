@@ -68,11 +68,20 @@ export type CommandRunId = typeof CommandRunId.Type;
 /** One piece of work a thread's agent asked of a thread it started. */
 export const ChildRequestId = makeEntityId("ChildRequestId");
 export type ChildRequestId = typeof ChildRequestId.Type;
+/** One move of a thread to a linked computer (docs/design/fleet.md, Part 3). */
+export const ThreadMoveId = makeEntityId("ThreadMoveId");
+export type ThreadMoveId = typeof ThreadMoveId.Type;
 /** The requests one `thread_start` call made, approved or declined together. */
 export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
+/** A scheduled task on one computer (docs/design/fleet.md, Part 6). */
+export const ScheduledTaskId = makeEntityId("ScheduledTaskId");
+export type ScheduledTaskId = typeof ScheduledTaskId.Type;
+/** One project setup on a computer (docs/design/fleet.md, Part 8); made by the app that starts it. */
+export const ProjectSetupId = makeEntityId("ProjectSetupId");
+export type ProjectSetupId = typeof ProjectSetupId.Type;
 
 export const ProviderItemId = makeEntityId("ProviderItemId");
 export type ProviderItemId = typeof ProviderItemId.Type;

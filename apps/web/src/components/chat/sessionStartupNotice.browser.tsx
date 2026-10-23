@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -18,16 +19,20 @@ import {
 } from "@tanstack/react-router";
 
 const { refreshProvidersMock } = vi.hoisted(() => ({
-  refreshProvidersMock: vi.fn(async () => ({ providers: [] })),
+  refreshProvidersMock: vi.fn(
+    async (_input: { readonly environmentId: unknown; readonly instanceId: unknown }) => ({
+      providers: [],
+    }),
+  ),
 }));
 
-vi.mock("../../localApi", () => ({
-  ensureLocalApi: vi.fn(() => ({
-    server: {
-      refreshProviders: refreshProvidersMock,
-    },
-  })),
+// Refresh asks the computer the thread runs on, through this module.
+vi.mock("../../environments/providerStatusRefresh", () => ({
+  refreshProviderStatus: refreshProvidersMock,
 }));
+
+/** The computer the thread runs on in these tests. */
+const THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-mac-mini");
 
 import { ComposerNoticeDock } from "./ComposerNoticeDock";
 import {
@@ -39,16 +44,20 @@ function SessionStartupNoticeHarness({
   startedAt,
   providerStatus,
   suppressed = false,
+  launching = null,
 }: {
   startedAt: string | null;
   providerStatus: ServerProvider | null;
   suppressed?: boolean;
+  launching?: { readonly agentName: string | null } | null;
 }) {
   const notice = useSessionStartupNotice({
     isSessionStarting: true,
     providerStatus,
     startedAt,
     suppressed,
+    launching,
+    environmentId: THREAD_ENVIRONMENT_ID,
   });
   return <ComposerNoticeDock notices={notice ? [notice] : []} />;
 }
@@ -115,8 +124,28 @@ describe("session startup composer notice", () => {
       await page.getByRole("button", { name: "Refresh provider status" }).click();
 
       await vi.waitFor(() => {
-        expect(refreshProvidersMock).toHaveBeenCalledWith({ instanceId: provider.instanceId });
+        expect(refreshProvidersMock).toHaveBeenCalledWith({
+          environmentId: THREAD_ENVIRONMENT_ID,
+          instanceId: provider.instanceId,
+        });
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names the agent when its program is what is slow to start", async () => {
+    const screen = await renderWithTestRouter(
+      <SessionStartupNoticeHarness
+        startedAt={slowStartedAt()}
+        providerStatus={makeProvider()}
+        launching={{ agentName: "Codex" }}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Codex is taking a while to start.")).toBeVisible();
+      expect(document.body.textContent).not.toContain("Preparing this turn");
     } finally {
       await screen.unmount();
     }

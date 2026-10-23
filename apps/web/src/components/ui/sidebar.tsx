@@ -3,18 +3,20 @@ import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftCloseIcon, PanelLeftIcon } from "lucide-react";
 import * as React from "react";
+import { isIosHomeScreenApp } from "~/env";
+import { useScreenEdgeClaimed } from "~/screenEdgeClaims";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
 import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "~/components/ui/sheet";
+  Drawer,
+  DrawerDescription,
+  DrawerPopup,
+  DrawerSwipeArea,
+  DrawerTitle,
+} from "~/components/ui/drawer";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -25,12 +27,13 @@ import {
 } from "~/hooks/useLocalStorage";
 import * as Schema from "effect/Schema";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
-// Runtime CSS string: tailwind functions like --spacing() don't exist here,
-// so the 12px edge inset is spelled out as a plain length.
-const SIDEBAR_WIDTH_MOBILE = "calc(100vw - 0.75rem)";
+// The phone's sheet leaves a thumb's width (48px) of the page showing, a
+// strip to tap shut and a glimpse of where closing it lands. It never gets
+// narrower than its row of named icons needs (18rem; the smallest phones
+// keep a thinner strip), nor wider than a panel (22rem; tablets and narrow
+// windows). A runtime CSS string: tailwind's --spacing() doesn't exist here.
+const SIDEBAR_WIDTH_MOBILE = "min(max(calc(100vw - 3rem), 18rem), 22rem)";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
 type SidebarContextProps = {
@@ -92,6 +95,18 @@ function useSidebar() {
   return context;
 }
 
+/**
+ * For a list that can sit in the phone's sheet: call it when the user picks
+ * something there, and the sheet gets out of the way of what opens. Beside
+ * the rail on a wide screen it does nothing.
+ */
+function useCloseSidebarSheet(): () => void {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return React.useCallback(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [isMobile, setOpenMobile]);
+}
+
 function SidebarProvider({
   defaultOpen = true,
   open: openProp,
@@ -108,26 +123,19 @@ function SidebarProvider({
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
+  // This is the internal state of the sidebar. A caller that keeps the state
+  // somewhere lasting (the app's thread list remembers it across launches)
+  // passes `open` and `onOpenChange` instead.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
-    async (value: boolean | ((value: boolean) => boolean)) => {
+    (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
         setOpenProp(openState);
       } else {
         _setOpen(openState);
       }
-
-      // This sets the cookie to keep the sidebar state.
-      await cookieStore.set({
-        expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
-        path: "/",
-        value: String(openState),
-      });
     },
     [setOpenProp, open],
   );
@@ -195,6 +203,7 @@ function Sidebar({
   resizable?: boolean | SidebarResizableOptions;
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const screenEdgeClaimed = useScreenEdgeClaimed();
   const animateLayout = motion === "animated";
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
@@ -238,16 +247,21 @@ function Sidebar({
   if (isMobile) {
     return (
       <SidebarInstanceContext value={instanceContextValue}>
-        <Sheet onOpenChange={setOpenMobile} open={openMobile} {...props}>
-          <SheetPopup
-            className={cn(
-              "w-(--sidebar-width) max-w-none bg-sidebar p-0 text-sidebar-foreground",
-              className,
-            )}
+        {/* A drawer rather than a sheet: on a phone the panel can be swiped
+            back toward its edge to close it, the way it slid in. */}
+        <Drawer onOpenChange={setOpenMobile} open={openMobile} swipeDirection={side}>
+          {/* In the home-screen app nothing else owns the screen edge, so a
+              swipe in from it opens the list. It starts below the header,
+              whose menu button sits in that corner, and steps aside while
+              something on screen claims the edge (see screenEdgeClaims). */}
+          {isIosHomeScreenApp() && !screenEdgeClaimed ? (
+            <DrawerSwipeArea side={side} className="top-[var(--chat-header-bottom,4rem)]" />
+          ) : null}
+          <DrawerPopup
+            className={cn("w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground", className)}
             data-mobile="true"
             data-sidebar="sidebar"
             data-slot="sidebar"
-            showCloseButton={false}
             side={side}
             style={
               {
@@ -255,10 +269,8 @@ function Sidebar({
               } as React.CSSProperties
             }
           >
-            <SheetHeader className="sr-only">
-              <SheetTitle>Sidebar</SheetTitle>
-              <SheetDescription>Displays the mobile sidebar.</SheetDescription>
-            </SheetHeader>
+            <DrawerTitle className="sr-only">Sidebar</DrawerTitle>
+            <DrawerDescription className="sr-only">Displays the mobile sidebar.</DrawerDescription>
             <div
               className={cn(
                 "flex h-full w-full flex-col pb-safe pt-safe",
@@ -267,8 +279,8 @@ function Sidebar({
             >
               {children}
             </div>
-          </SheetPopup>
-        </Sheet>
+          </DrawerPopup>
+        </Drawer>
       </SidebarInstanceContext>
     );
   }
@@ -287,7 +299,8 @@ function Sidebar({
         <div
           className={cn(
             "relative w-(--sidebar-width) bg-transparent",
-            animateLayout && "transition-[width] duration-200 ease-linear",
+            animateLayout &&
+              "transition-[width] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -296,10 +309,14 @@ function Sidebar({
           )}
           data-slot="sidebar-gap"
         />
+        {/* Placed in the nearest positioned ancestor: the app's work panel,
+            which clips it as it slides away, so a sidebar never covers the
+            window's title row or the rail. */}
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
-            animateLayout && "transition-[left,right,width] duration-200 ease-linear",
+            "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
+            animateLayout &&
+              "transition-[left,right,width,opacity] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] group-data-[collapsible=offcanvas]:opacity-0 motion-reduce:transition-none",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -366,7 +383,7 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
 
 /**
  * Header-local sidebar trigger for mobile sheet layouts. Desktop uses the
- * shared fixed titlebar control from AppSidebarLayout.
+ * toggle in the window's title row (AppTitleBar).
  */
 function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
   return <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />;
@@ -424,6 +441,7 @@ function SidebarRail({
         setLocalStorageItem(resolvedResizable.storageKey, resizeState.width, Schema.Finite);
       }
       resolvedResizable?.onResize?.(resizeState.width);
+      delete resizeState.wrapper.dataset.sidebarResizing;
       resizeStateRef.current = null;
       if (resizeState.rail.hasPointerCapture(pointerId)) {
         resizeState.rail.releasePointerCapture(pointerId);
@@ -480,6 +498,9 @@ function SidebarRail({
         wrapper,
       };
       wrapper.style.setProperty("--sidebar-width", `${initialWidth}px`);
+      // Anything that follows the width with its own transition (the title
+      // row's page slot) follows a drag at once instead.
+      wrapper.dataset.sidebarResizing = "";
       event.currentTarget.setPointerCapture(event.pointerId);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
@@ -617,6 +638,7 @@ function SidebarRail({
       resizeState?.transitionTargets.forEach((element) => {
         element.style.removeProperty("transition-duration");
       });
+      if (resizeState) delete resizeState.wrapper.dataset.sidebarResizing;
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     };
@@ -1051,5 +1073,6 @@ export {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
+  useCloseSidebarSheet,
   useSidebar,
 };

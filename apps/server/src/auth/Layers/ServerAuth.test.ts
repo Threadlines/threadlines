@@ -8,6 +8,7 @@ import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { BootstrapCredentialError } from "../Services/BootstrapCredentialService.ts";
 import { ServerAuth, type ServerAuthShape } from "../Services/ServerAuth.ts";
+import { SessionCredentialService } from "../Services/SessionCredentialService.ts";
 import { ServerAuthLive, toBootstrapExchangeAuthError } from "./ServerAuth.ts";
 import { ServerSecretStoreLive } from "./ServerSecretStore.ts";
 
@@ -391,5 +392,47 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
         }),
       ),
     ),
+  );
+  it.effect("keeps a linked computer's session to /peer, and every other session off it", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const sessions = yield* SessionCredentialService;
+      const upgrade = (token: string) =>
+        ({
+          url: `/peer?wsToken=${encodeURIComponent(token)}`,
+          cookies: {},
+          headers: { host: "127.0.0.1:13773" },
+        }) as unknown as ServerAuthRequest;
+      const bearer = (token: string) =>
+        makeAuthRequest({ headers: { authorization: `Bearer ${token}` } });
+
+      const peer = yield* sessions.issue({ role: "peer", method: "bearer-session-token" });
+      const peerSocketToken = yield* sessions.issueWebSocketToken(peer.sessionId);
+      const owner = yield* sessions.issue({ role: "owner", method: "bearer-session-token" });
+      const ownerSocketToken = yield* sessions.issueWebSocketToken(owner.sessionId);
+
+      // A peer session never reaches the client endpoints: HTTP, /ws, session state.
+      const http = yield* Effect.flip(serverAuth.authenticateHttpRequest(bearer(peer.token)));
+      expect(http.status).toBe(403);
+      const socket = yield* Effect.flip(
+        serverAuth.authenticateWebSocketUpgrade(upgrade(peerSocketToken.token)),
+      );
+      expect(socket.status).toBe(403);
+      const state = yield* serverAuth.getSessionState(bearer(peer.token));
+      expect(state.authenticated).toBe(false);
+
+      // /peer takes it, and only it.
+      const peerSession = yield* serverAuth.authenticatePeerUpgrade(upgrade(peerSocketToken.token));
+      expect(peerSession.sessionId).toBe(peer.sessionId);
+      expect(peerSession.role).toBe("peer");
+      const ownerOnPeer = yield* Effect.flip(
+        serverAuth.authenticatePeerUpgrade(upgrade(ownerSocketToken.token)),
+      );
+      expect(ownerOnPeer.status).toBe(403);
+      const ownerSocket = yield* serverAuth.authenticateWebSocketUpgrade(
+        upgrade(ownerSocketToken.token),
+      );
+      expect(ownerSocket.role).toBe("owner");
+    }).pipe(Effect.provide(makeServerAuthLayer())),
   );
 });

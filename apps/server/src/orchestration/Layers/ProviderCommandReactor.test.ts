@@ -4,11 +4,14 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  ChildRequestId,
   CommandRequestId,
   CommandRunId,
+  EnvironmentId,
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
+  type OrchestrationThread,
   type OrchestrationWarmUpTurnInput,
   type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
@@ -18,6 +21,7 @@ import {
   ProviderInstanceId,
   RoomAgentRequestId,
   RuntimeTaskId,
+  ScheduledTaskId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -84,7 +88,13 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
+import {
+  ScheduledTaskNotes,
+  type ScheduledTaskNotesShape,
+} from "../Services/ScheduledTaskNotes.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -191,6 +201,12 @@ describe("ProviderCommandReactor", () => {
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     /** Instances that are no longer configured (an account was removed). */
     readonly removedInstanceIds?: ReadonlyArray<string>;
+    /** Computer links' check on a linked computer's queued messages. */
+    readonly remoteRequestGate?: RemoteRequestGateShape;
+    /** Scheduled tasks' answers for agents. */
+    readonly scheduledTaskNotes?: ScheduledTaskNotesShape;
+    /** The reactor's reads of a thread fail while this says so. */
+    readonly failThreadRead?: (threadId: ThreadId) => boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -308,6 +324,13 @@ describe("ProviderCommandReactor", () => {
     );
     // Like ProviderService: an early runtime is listed, but waits to be adopted.
     const earlyKeys = new Set<string>();
+    // Early starts still running: adopting one waits until the test lets it
+    // finish, and says it is waiting.
+    const earlyStartsInFlight = new Map<
+      string,
+      { readonly instanceId: ProviderInstanceId; readonly finished: Deferred.Deferred<void> }
+    >();
+    const earlyAdoptsWaiting = new Set<string>();
     const startEarlySession = vi.fn<ProviderServiceShape["startEarlySession"]>((threadId, input) =>
       earlyKeys.has(threadId)
         ? Effect.succeed("renewed" as const)
@@ -459,12 +482,23 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       startEarlySession,
       adoptEarlySession: (threadId) =>
-        Effect.sync(() =>
-          earlyKeys.delete(threadId)
-            ? runtimeSessions.find((session) => session.threadId === threadId)
-            : undefined,
+        Effect.suspend(() => {
+          const inFlight = earlyStartsInFlight.get(threadId);
+          if (inFlight === undefined) return Effect.void;
+          earlyAdoptsWaiting.add(threadId);
+          return Deferred.await(inFlight.finished);
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(() =>
+              earlyKeys.delete(threadId)
+                ? runtimeSessions.find((session) => session.threadId === threadId)
+                : undefined,
+            ),
+          ),
         ),
       isEarlySession: (threadId) => Effect.sync(() => earlyKeys.has(threadId)),
+      earlyStartInFlight: (threadId) =>
+        Effect.sync(() => earlyStartsInFlight.get(threadId)?.instanceId),
       abandonEarlySession: () => Effect.void,
       listExternalThreads: () => unsupported(),
       readExternalThread: () => unsupported(),
@@ -545,10 +579,44 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(
+        input?.remoteRequestGate !== undefined
+          ? Layer.succeed(RemoteRequestGate, input.remoteRequestGate)
+          : Layer.empty,
+      ),
+      Layer.provideMerge(
+        input?.scheduledTaskNotes !== undefined
+          ? Layer.succeed(ScheduledTaskNotes, input.scheduledTaskNotes)
+          : Layer.empty,
+      ),
       // No checkpoint reactor here to report captures done: hand over at once.
       Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(
+        input?.failThreadRead === undefined
+          ? projectionSnapshotLayer
+          : Layer.effect(
+              ProjectionSnapshotQuery,
+              Effect.gen(function* () {
+                const real = yield* ProjectionSnapshotQuery;
+                const failThreadRead = input.failThreadRead!;
+                return {
+                  ...real,
+                  getThreadDetailById: (threadId: ThreadId) =>
+                    Effect.suspend(() =>
+                      failThreadRead(threadId)
+                        ? Effect.fail(
+                            new PersistenceSqlError({
+                              operation: "getThreadDetailById",
+                              detail: "busy",
+                            }),
+                          )
+                        : real.getThreadDetailById(threadId),
+                    ),
+                };
+              }),
+            ).pipe(Layer.provide(projectionSnapshotLayer)),
+      ),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       // Return a deterministic seed so handoff tests can assert it reaches
       // `startSession`. `build` is only invoked on seeded handoffs (and to pay
@@ -670,6 +738,8 @@ describe("ProviderCommandReactor", () => {
       startSession,
       startEarlySession,
       earlyKeys,
+      earlyStartsInFlight,
+      earlyAdoptsWaiting,
       sendTurn,
       steerTurn,
       interruptTurn,
@@ -860,6 +930,225 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  /** Every session update that marked the thread as launching, oldest first. */
+  const launchingWrites = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId = ThreadId.make("thread-1"),
+  ) => {
+    const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+    return Array.from(events).flatMap((event) =>
+      event.type === "thread.session-set" &&
+      event.payload.threadId === threadId &&
+      event.payload.session.startup != null
+        ? [event.payload.session]
+        : [],
+    );
+  };
+
+  const projectedSession = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId = ThreadId.make("thread-1"),
+  ) => (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.session ?? null;
+
+  /** Holds the next session start until the returned release is called. */
+  const holdNextStart = (harness: Awaited<ReturnType<typeof createHarness>>) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const defaultStartSession = harness.startSession.getMockImplementation();
+    if (!defaultStartSession) {
+      throw new Error("startSession mock has no implementation");
+    }
+    harness.startSession.mockImplementationOnce((threadId: unknown, input: unknown) =>
+      Effect.promise(() => gate).pipe(Effect.flatMap(() => defaultStartSession(threadId, input))),
+    );
+    return release;
+  };
+
+  const startTurn = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    id: string,
+    extra?: { readonly modelSelection?: ModelSelection },
+  ) =>
+    Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-start-${id}`),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId(`user-message-${id}`),
+          role: "user",
+          text: id,
+          attachments: [],
+        },
+        ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+  it("says the agent is launching while its program starts, through the provider's own updates", async () => {
+    const harness = await createHarness();
+    const release = holdNextStart(harness);
+    await startTurn(harness, "cold");
+
+    await waitFor(async () => (await projectedSession(harness))?.startup != null);
+    const launching = await projectedSession(harness);
+    expect(launching).toMatchObject({
+      status: "starting",
+      startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+      // Marking keeps the turn's start time: the chat times the turn from it.
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Codex reports its start-up as a fresh session update without the mark;
+    // the mark stays until the start is over.
+    if (!launching) {
+      throw new Error("Expected a starting session.");
+    }
+    const { startup: _startup, ...providerUpdate } = launching;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-provider-starting"),
+        threadId: ThreadId.make("thread-1"),
+        session: providerUpdate,
+        createdAt: "2026-01-01T00:00:00.500Z",
+      }),
+    );
+    expect((await projectedSession(harness))?.startup).toMatchObject({ phase: "launching" });
+
+    release();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+  });
+
+  it("clears the launching mark when the agent's program fails to start", async () => {
+    const harness = await createHarness();
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed in test harness",
+        }),
+      ),
+    );
+    await startTurn(harness, "fails");
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.lastError?.includes("spawn failed in test harness") === true;
+    });
+    expect(await launchingWrites(harness)).toHaveLength(1);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    expect(harness.sendTurn.mock.calls.length).toBe(0);
+  });
+
+  it("says launching while a message waits on an agent still starting early", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.earlyKeys.has(threadId));
+    const finished = Effect.runSync(Deferred.make<void>());
+    harness.earlyStartsInFlight.set(threadId, {
+      instanceId: ProviderInstanceId.make("codex"),
+      finished,
+    });
+
+    await startTurn(harness, "early");
+    await waitFor(async () => (await projectedSession(harness))?.startup != null);
+    expect((await projectedSession(harness))?.startup).toEqual({
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+
+    harness.earlyStartsInFlight.delete(threadId);
+    Effect.runSync(Deferred.succeed(finished, undefined));
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    // The early start was the only one.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
+  it("names the agent the message switches to, not the one still starting early", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.earlyKeys.has(threadId));
+    const finished = Effect.runSync(Deferred.make<void>());
+    harness.earlyStartsInFlight.set(threadId, {
+      instanceId: ProviderInstanceId.make("codex"),
+      finished,
+    });
+
+    // The user picked Claude before Codex finished starting.
+    await startTurn(harness, "switch-while-early", {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-4-6",
+      },
+    });
+    // The message waits on the early start before anything else.
+    await waitFor(() => harness.earlyAdoptsWaiting.has(threadId));
+    harness.earlyStartsInFlight.delete(threadId);
+    Effect.runSync(Deferred.succeed(finished, undefined));
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect(
+      (await launchingWrites(harness)).map((session) => session.startup?.providerInstanceId),
+    ).toEqual([ProviderInstanceId.make("claudeAgent")]);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+  });
+
+  it("clears a launching mark no launch holds on the next turn", async () => {
+    const harness = await createHarness();
+    await startTurn(harness, "first");
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    const running = await projectedSession(harness);
+    if (!running) {
+      throw new Error("Expected the first turn to bind a session.");
+    }
+    // A write that read the session mid-launch brings the old mark back.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stale-mark"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...running,
+          status: "ready",
+          activeTurnId: null,
+          startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await startTurn(harness, "second");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
   it("starts a stopped agent while the user types, and the message then uses it", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -963,6 +1252,51 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startEarlySession).not.toHaveBeenCalled();
   });
 
+  it("tells the agent the user's answer to its scheduled task with its next turn, once", async () => {
+    let pending = [
+      {
+        requestId: "request-1",
+        text: 'The user allowed your scheduled task "Morning review": it\'s on the Scheduled page (id task-1).',
+      },
+    ];
+    const delivered: Array<ReadonlyArray<string>> = [];
+    const harness = await createHarness({
+      scheduledTaskNotes: {
+        pendingFor: (threadId, participantId) =>
+          Effect.succeed(
+            threadId === ThreadId.make("thread-1") && participantId === null ? pending : [],
+          ),
+        delivered: (requestIds) =>
+          Effect.sync(() => {
+            delivered.push(requestIds);
+            pending = [];
+          }),
+      },
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-schedule-answer"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-schedule-answer"),
+          role: "user",
+          text: "Anything else?",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain('The user allowed your scheduled task "Morning review"');
+    expect(sent?.input?.endsWith("Anything else?")).toBe(true);
+    await waitFor(() => delivered.length === 1);
+    expect(delivered).toEqual([["request-1"]]);
+  });
+
   it("hands the thread's history to a session that could not reopen its conversation", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1019,6 +1353,94 @@ describe("ProviderCommandReactor", () => {
       "third question",
     );
   });
+
+  it.each([
+    ["", false],
+    [", also when its session couldn't reopen a conversation", true],
+  ])(
+    "gives a thread moved here its conversation with its first send, once%s",
+    async (_, resumeFailed) => {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
+      const moved = ThreadId.make("thread-moved");
+      if (resumeFailed) {
+        const startFresh = harness.startSession.getMockImplementation();
+        if (!startFresh) throw new Error("expected the harness start implementation");
+        harness.startSession.mockImplementationOnce((key, input) =>
+          startFresh(key, input).pipe(
+            Effect.map((session) => ({ ...session, resumeFailed: true })),
+          ),
+        );
+      }
+      const own = (await harness.readModel()).threads.find((thread) => thread.id === "thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make("cmd-thread-import"),
+          threadId: moved,
+          projectId: asProjectId("project-1"),
+          title: "Moved here",
+          modelSelection: own!.modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: now,
+          },
+          messages: [
+            {
+              messageId: asMessageId("moved-question"),
+              role: "user",
+              text: "what we said there",
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+          activities: [],
+          createdAt: now,
+        }),
+      );
+      const turnStart = (id: string, text: string) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-moved-turn-${id}`),
+            threadId: moved,
+            message: {
+              messageId: asMessageId(`moved-message-${id}`),
+              role: "user",
+              text,
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt: now,
+          }),
+        );
+
+      await turnStart("1", "first here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+      expect(sent?.input).toContain("prior context");
+      expect(sent?.input?.endsWith("first here")).toBe(true);
+      await waitFor(
+        async () =>
+          (await harness.readModel()).threads.find((thread) => thread.id === moved)
+            ?.historySeedOwed !== true,
+      );
+
+      // Paid: the next message goes out as written.
+      await turnStart("2", "second here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect((harness.sendTurn.mock.calls[1]?.[0] as { readonly input?: string })?.input).toBe(
+        "second here",
+      );
+    },
+  );
 
   it("says in the chat why an access change could not restart the session", async () => {
     const harness = await createHarness();
@@ -2313,6 +2735,80 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls.length).toBe(2);
   });
 
+  it("gives a scheduled run's thread its tools on its own, and a linked computer's thread none", async () => {
+    // Agents may neither invite nor start threads.
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const createAndStart = async (
+      id: string,
+      origin:
+        | { readonly scheduledRun: NonNullable<OrchestrationThread["scheduledRun"]> }
+        | { readonly remoteOrigin: NonNullable<OrchestrationThread["remoteOrigin"]> },
+    ) => {
+      const threadId = ThreadId.make(id);
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-create-${id}`),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Morning review",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        ...origin,
+        createdAt: now,
+      });
+      await dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-${id}`),
+        threadId,
+        message: {
+          messageId: asMessageId(`message-${id}`),
+          role: "user",
+          text: "go",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+    };
+
+    await createAndStart("scheduled-run-thread", {
+      scheduledRun: {
+        taskId: ScheduledTaskId.make("task-1"),
+        taskName: "Morning review",
+        slotUtc: "2026-01-01T09:00:00.000Z",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      roomTools: true,
+      scheduledRunTools: true,
+    });
+
+    // The fence holds whatever the settings say.
+    await harness.updateServerSettings({ agentInvites: "ask", agentThreads: "auto" });
+    await createAndStart("linked-computer-thread", {
+      remoteOrigin: {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("roomTools");
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("scheduledRunTools");
+  });
+
   it("picks up the room tools at the next turn, never in the middle of one", async () => {
     const harness = await createHarness({
       serverSettings: { agentInvites: "off", agentThreads: "off" },
@@ -3356,6 +3852,7 @@ describe("ProviderCommandReactor", () => {
     const staleThreadId = ThreadId.make("thread-stale-restart");
     const staleTurnId = asTurnId("turn-stale-restart");
     const waitingThreadId = ThreadId.make("thread-waiting-restart");
+    const archivedThreadId = ThreadId.make("thread-archived-restart");
     const harness = await createHarness({
       beforeStart: (engine) =>
         Effect.gen(function* () {
@@ -3394,6 +3891,8 @@ describe("ProviderCommandReactor", () => {
               activeTurnId: staleTurnId,
               pendingBackgroundTaskCount: 1,
               awaitedBackgroundTaskCount: 1,
+              // The process died while it was launching an agent.
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
               lastError: null,
               updatedAt: now,
             },
@@ -3426,10 +3925,48 @@ describe("ProviderCommandReactor", () => {
               activeTurnId: null,
               pendingBackgroundTaskCount: 1,
               awaitedBackgroundTaskCount: 1,
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
               lastError: null,
               updatedAt: now,
             },
             createdAt: now,
+          });
+          // A thread archived while its agent was still starting: archiving
+          // doesn't stop the agent.
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-create-archived"),
+            threadId: archivedThreadId,
+            projectId: asProjectId("project-stale"),
+            title: "Archived Thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-session-set-archived"),
+            threadId: archivedThreadId,
+            session: {
+              threadId: archivedThreadId,
+              status: "starting",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("cmd-thread-archive"),
+            threadId: archivedThreadId,
           });
         }),
     });
@@ -3463,6 +4000,24 @@ describe("ProviderCommandReactor", () => {
       (entry) => entry.id === waitingThreadId,
     );
     expect(waiting?.session).toMatchObject({ status: "ready", pendingBackgroundTaskCount: 0 });
+    // Launches the old process never finished say nothing now.
+    expect(thread?.session?.startup ?? null).toBeNull();
+    expect(waiting?.session?.startup ?? null).toBeNull();
+    // The archived thread is settled the same way, ready for when it is restored.
+    await waitFor(async () => {
+      const archived = (await harness.readModel()).threads.find(
+        (entry) => entry.id === archivedThreadId,
+      );
+      return archived?.session?.status === "interrupted";
+    });
+    const archived = (await harness.readModel()).threads.find(
+      (entry) => entry.id === archivedThreadId,
+    );
+    expect(archived?.archivedAt).not.toBeNull();
+    expect(archived?.session?.startup ?? null).toBeNull();
+    expect(
+      archived?.activities.some((entry) => entry.kind === "provider.session.restart-interrupted"),
+    ).toBe(true);
     expect(
       thread?.activities.find((entry) => entry.kind === "provider.session.restart-interrupted"),
     ).toMatchObject({ turnId: staleTurnId });
@@ -3597,6 +4152,59 @@ describe("ProviderCommandReactor", () => {
     const readThread = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
       (await harness.readModel()).threads.find((entry) => entry.id === threadId);
 
+    const createRemoteThread = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      id: string,
+    ) => {
+      const remoteThread = ThreadId.make(id);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-create-${id}`),
+          threadId: remoteThread,
+          projectId: asProjectId("project-1"),
+          title: "Write the changelog",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          remoteOrigin: {
+            linkDeviceId: "device-windows",
+            environmentId: EnvironmentId.make("env-windows"),
+            environmentLabel: "Windows PC",
+            threadId: ThreadId.make("windows-parent"),
+            threadTitle: "Ship the release",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      return remoteThread;
+    };
+
+    /** A linked computer's message written into its thread's queue. */
+    const queueRemote = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      remoteThread: ThreadId,
+      messageId: MessageId,
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+
     it("sends a queued message as the next turn once the running turn completes", async () => {
       const harness = await createHarness();
       const first = asMessageId("queued-first");
@@ -3626,6 +4234,295 @@ describe("ProviderCommandReactor", () => {
         role: "user",
         text: "then write tests",
       });
+    });
+
+    it("takes back a linked computer's queued message whose request was cancelled, and sends the next", async () => {
+      const takenBack = asMessageId("remote-taken-back");
+      const kept = asMessageId("remote-kept");
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: ({ messageId }) =>
+            Effect.succeed(messageId === takenBack ? "taken-back" : "run"),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-thread-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const setRemoteSession = (status: "running" | "ready", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-remote-session-${status}-${at}`),
+          threadId: remoteThread,
+          session: {
+            threadId: remoteThread,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? turnId : null,
+            pendingBackgroundTaskCount: 0,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      await setRemoteSession("running", "2026-01-01T00:00:01.000Z");
+      // The linked computer sent two; it took the first back, but the clean-up
+      // that would unqueue it hasn't landed.
+      for (const messageId of [takenBack, kept]) {
+        await dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-remote-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: origin.threadId,
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: origin.environmentId,
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+      }
+
+      await setRemoteSession("ready", "2026-01-01T00:00:03.000Z");
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+      // Only the one still asked for ran; the other left the queue unsent.
+      expect(harness.sendTurn.mock.calls.map((call) => call[0])).toMatchObject([
+        { threadId: remoteThread, messageId: kept },
+      ]);
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
+      expect(thread?.queuedFollowUps ?? []).toEqual([]);
+    });
+
+    it("holds a linked computer's queued message while its record can't be read, then sends it", async () => {
+      const messageId = asMessageId("remote-held");
+      const verdicts: Array<"run" | "unknown"> = ["unknown"];
+      const asked: Array<MessageId> = [];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: (input) =>
+            Effect.sync(() => {
+              asked.push(input.messageId);
+              return verdicts.shift() ?? "run";
+            }),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread-held");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-held-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      // Queued on an idle thread: it would go at once, but its record can't be read.
+      await dispatch({
+        type: "thread.remote-request.queue",
+        commandId: CommandId.make("cmd-remote-held-queue"),
+        threadId: remoteThread,
+        messageId,
+        text: "Add the security fixes too.",
+        fromThread: {
+          threadId: origin.threadId,
+          requestId: ChildRequestId.make("request-held"),
+          kind: "request",
+          environmentId: origin.environmentId,
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      await waitFor(() => asked.length === 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      // Once it can be read (the next try, a second later), the message goes.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 5_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId: remoteThread,
+        messageId,
+      });
+      // Asked again right before the turn went to the provider.
+      expect(asked.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(asked)).toEqual(new Set([messageId]));
+    });
+
+    it("never sends a linked computer's turn whose request was taken back after it was asked for", async () => {
+      const harness = await createHarness({
+        remoteRequestGate: { messageVerdict: () => Effect.succeed("taken-back") },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-start");
+      // A start's first turn, asked for by its setup before the cancel landed.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-remote-first-turn"),
+          threadId: remoteThread,
+          message: {
+            messageId: asMessageId("remote-first-message"),
+            role: "user",
+            text: "Write the changelog.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make("request-start"),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === remoteThread,
+        );
+        return (
+          thread?.session?.lastError ===
+          "The other computer took this request back before it started."
+        );
+      });
+      await harness.drain();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
+      expect(thread?.session?.status).not.toBe("starting");
+    });
+
+    it("checks a linked computer's turn again right before sending it, after its session started", async () => {
+      // Allowed when the turn was asked for; taken back while the provider
+      // was still starting.
+      const verdicts: Array<"run" | "taken-back"> = ["run", "taken-back"];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: () => Effect.sync(() => verdicts.shift() ?? "taken-back"),
+        },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-late-cancel");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-remote-late-cancel"),
+          threadId: remoteThread,
+          message: {
+            messageId: asMessageId("remote-late-cancel-message"),
+            role: "user",
+            text: "Write the changelog.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make("request-late-cancel"),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === remoteThread,
+        );
+        return (
+          thread?.session?.lastError ===
+          "The other computer took this request back before it started."
+        );
+      });
+      await harness.drain();
+      expect(harness.startSession).toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
+
+    it("keeps one retry per thread: a newer unknown replaces the older one", async () => {
+      const first = asMessageId("remote-overlap-first");
+      const second = asMessageId("remote-overlap-second");
+      const verdicts: Array<"run" | "unknown"> = ["unknown", "unknown"];
+      const asked: Array<MessageId> = [];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: (input) =>
+            Effect.sync(() => {
+              asked.push(input.messageId);
+              return verdicts.shift() ?? "run";
+            }),
+        },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-overlap");
+      await queueRemote(harness, remoteThread, first);
+      await waitFor(() => asked.length === 1);
+      // Another message before the first retry: its hold replaces the first.
+      await queueRemote(harness, remoteThread, second);
+      await waitFor(() => asked.length === 2);
+      // The first timer (a second) finds it no longer owns the hold.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(asked.length).toBe(2);
+      // The replacement (two seconds after the second hold) sends the queue.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 5_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId: first });
+    });
+
+    it("tries a held turn again when reading its thread fails during the retry", async () => {
+      const messageId = asMessageId("remote-read-fails");
+      const verdicts: Array<"run" | "unknown"> = ["unknown"];
+      let failReadsUntil = 0;
+      const remoteThread = ThreadId.make("remote-thread-read-fails");
+      const harness = await createHarness({
+        failThreadRead: (threadId) => threadId === remoteThread && Date.now() < failReadsUntil,
+        remoteRequestGate: {
+          messageVerdict: () =>
+            Effect.sync(() => {
+              const verdict = verdicts.shift() ?? "run";
+              // Reading the thread fails through the first retry (a second later).
+              if (verdict === "unknown") failReadsUntil = Date.now() + 1_300;
+              return verdict;
+            }),
+        },
+      });
+      await createRemoteThread(harness, "remote-thread-read-fails");
+      await queueRemote(harness, remoteThread, messageId);
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 6_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId });
     });
 
     it("keeps queued messages waiting after the turn is interrupted", async () => {
@@ -4668,6 +5565,11 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
+    // Only the first turn launched the agent's program; the warm one never
+    // said it was launching, though its session was "starting" too.
+    await waitFor(async () => (await projectedSession(harness, threadId))?.status === "running");
+    expect(await launchingWrites(harness, threadId)).toHaveLength(1);
+    expect((await projectedSession(harness, threadId))?.startup ?? null).toBeNull();
   });
 
   it("restarts an existing Codex thread on a compatible requested instance", async () => {
@@ -5721,6 +6623,13 @@ describe("ProviderCommandReactor", () => {
     expect(
       thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
     ).toBe(false);
+    // The hand-over's launch names the instance being started, while the
+    // session still belongs to the old one.
+    const launches = await launchingWrites(harness);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.startup?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(launches[0]?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+    expect(thread?.session?.startup ?? null).toBeNull();
   });
 
   it("hands off with a seed to a same-driver instance that has its own history", async () => {
@@ -6249,6 +7158,10 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
     });
+    // Picking the conversation back up launches the agent's program again.
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect(await launchingWrites(harness)).toHaveLength(1);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
   });
 
   it("rejects active runtime sessions that are missing provider instance ids", async () => {

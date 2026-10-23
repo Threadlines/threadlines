@@ -80,6 +80,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
       </SettingsSection>
 
       <SettingsSection title="When a thread is done">
+        <WrapUpIdleThreadsRow />
         <WrapUpMergedThreadsRow />
         <WrapUpChildThreadsRow />
         <ConfirmArchiveRow />
@@ -638,10 +639,10 @@ function AgentThreadsRow() {
       title="Agents can start threads"
       description={
         mode === "auto"
-          ? "The thread's agent can start threads of its own, each in its own worktree, without asking you."
+          ? "The thread's agent can start threads of its own and change scheduled tasks, without asking you."
           : mode === "ask"
-            ? "The thread's agent can ask to start threads of its own, each in its own worktree, and you decide each time."
-            : "The thread's agent never starts threads of its own."
+            ? "The thread's agent can ask to start threads of its own or change scheduled tasks, and you decide each time."
+            : "The thread's agent never starts threads of its own or changes scheduled tasks."
       }
       resetAction={
         mode !== "ask" ? (
@@ -809,6 +810,35 @@ function WritingModelRows() {
         }
       />
     </>
+  );
+}
+
+function WrapUpIdleThreadsRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      id="wrap-up-idle-threads"
+      title="Wrap up idle threads"
+      description="Move a thread to Wrapped after two quiet days, unless it's pinned or has news you haven't seen."
+      resetAction={
+        settings.wrapUpIdleThreads !== DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads ? (
+          <SettingResetButton
+            label="wrap up idle threads"
+            onClick={() =>
+              updateSettings({ wrapUpIdleThreads: DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.wrapUpIdleThreads}
+          onCheckedChange={(checked) => updateSettings({ wrapUpIdleThreads: Boolean(checked) })}
+          aria-label="Wrap up idle threads"
+        />
+      }
+    />
   );
 }
 

@@ -26,9 +26,15 @@ import type {
   OrchestrationChildRequestState,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
+  RemoteChildStart,
+  RemoteChildThread,
+  ThreadRemoteOrigin,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
+  ThreadScheduledRun,
   SideTurnId,
   ThreadParticipantId,
   ProjectId,
@@ -114,6 +120,12 @@ export interface ChatMessage {
   fromThread?: ThreadMessageOrigin | undefined;
   /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
+  /**
+   * See OrchestrationMessage.imported: brought over when the thread moved
+   * here from another computer. Outside this computer's turns, so it never
+   * offers a revert.
+   */
+  imported?: true | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -225,10 +237,18 @@ export interface Thread {
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
+  /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
+  /** See ThreadShell.remoteOrigin. */
+  remoteOrigin?: ThreadRemoteOrigin | null;
+  /** See ThreadShell.move. */
+  move?: OrchestrationThreadMove | null;
+  /** See ThreadShell.movedFrom. */
+  movedFrom?: ThreadMovedFrom | null;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -324,10 +344,29 @@ export interface ThreadShell {
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
+  /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
+  /**
+   * Started by an agent on a linked computer: which computer and thread.
+   * Absent or null: started on this thread's own computer.
+   */
+  remoteOrigin?: ThreadRemoteOrigin | null;
+  /** On a parent: its children on linked computers, with their last known status. */
+  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  /** On a parent: starts asked of linked computers with no thread there yet. */
+  remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
+  /**
+   * Moving, or moved, to a linked computer (OrchestrationThreadMove): frozen
+   * here from the start, and read-only once `movedAway` is set. Absent or
+   * null: neither.
+   */
+  move?: OrchestrationThreadMove | null;
+  /** Moved here from another computer (ThreadMovedFrom). Absent or null: started here. */
+  movedFrom?: ThreadMovedFrom | null;
   /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
@@ -354,6 +393,9 @@ export interface ThreadTurnState {
   latestTurn: OrchestrationLatestTurn | null;
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
 }
+
+/** A thread moving to a linked computer, or moved there (ThreadShell.move). */
+export type ThreadMoveStatus = "moving" | "moved";
 
 export interface SidebarThreadSummary {
   id: ThreadId;
@@ -408,14 +450,30 @@ export interface SidebarThreadSummary {
   parentTurnId?: TurnId | null;
   /** See ThreadShell.attachedToParent: nested under its parent in the inbox. */
   attachedToParent?: boolean;
+  /** See ThreadShell.scheduledRun. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */
   handedBackTurnId?: TurnId | null;
   /** See ThreadShell.awaitedChildThreadCount. */
   awaitedChildThreadCount?: number;
   /** See ThreadShell.pendingChildApproval. */
   pendingChildApproval?: boolean;
+  /**
+   * The thread's agent asked to create or change a scheduled task and a card
+   * waits for the user's answer (from that computer's scheduled tasks feed,
+   * not the shell; see setScheduleApprovalThreads).
+   */
+  pendingScheduleApproval?: boolean;
+  /** See ThreadShell.remoteOrigin: nested under its parent on the other computer. */
+  remoteOrigin?: ThreadRemoteOrigin | null;
+  /** See ThreadShell.remoteChildren. */
+  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  /** See ThreadShell.remoteChildStarts. */
+  remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
+  /** See ThreadShell.move: only how far it got, for the row's status word. Absent: neither. */
+  moveStatus?: ThreadMoveStatus;
   /** See Thread.checkBacks. */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
 }
@@ -441,6 +499,12 @@ export interface ThreadSession {
   awaitedBackgroundTaskCount?: number | undefined;
   /** What those tasks are, when the provider said; see describedAwaitedTasks. */
   awaitedBackgroundTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined;
+  /**
+   * While the agent's own program is starting (OrchestrationSession.startup),
+   * the instance being started. During a hand-over it is not yet
+   * `providerInstanceId`.
+   */
+  launchingInstanceId?: ProviderInstanceId | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

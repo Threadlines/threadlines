@@ -1,29 +1,28 @@
 import {
+  CheckIcon,
   ChevronsUpDownIcon,
-  CloudIcon,
   EllipsisIcon,
   FolderIcon,
   FolderPlusIcon,
-  MessageSquareIcon,
-  MonitorIcon,
-  MonitorSmartphoneIcon,
   SquarePenIcon,
-  UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useState } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import type {
   ContextMenuItem,
-  EnvironmentId,
+  SidebarGrouping,
   SidebarProjectGroupingMode,
 } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
 import { cn, newCommandId } from "../../lib/utils";
+import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebarListField";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
+import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import {
   deriveProjectGroupingOverrideKey,
@@ -35,6 +34,7 @@ import type {
 } from "../../sidebarProjectGrouping";
 import type { ProjectScopeOption } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { openProjectSetupDialog } from "../ProjectSetupDialog";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -50,9 +50,12 @@ import {
   Menu,
   MENU_PICK_ITEM_CLASS_NAME,
   MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-  MenuGroup,
-  MenuGroupLabel,
+  MenuCheckboxItem,
+  MenuEmpty,
+  MenuFilterInput,
+  MenuFilterProvider,
   MenuItem,
+  MenuList,
   MenuPopup,
   MenuSeparator,
   MenuTrigger,
@@ -60,6 +63,7 @@ import {
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { InboxViewMenu, type EnvironmentScopeOption } from "./InboxViewMenu";
 
 const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> = {
   repository: "Group by repository",
@@ -89,30 +93,64 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
 }
 
+const SET_UP_ELSEWHERE_ITEM_ID = "set-up-elsewhere";
+
 const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
 const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
 
-/** One machine the inbox can be narrowed to. */
-export interface EnvironmentScopeOption {
-  environmentId: EnvironmentId;
-  label: string;
-  isPrimary: boolean;
+/**
+ * For a button inside a menu row: Enter and Space press the button itself.
+ * Left to bubble, the menu would read them as picking the row (or, while a
+ * search holds focus, the highlighted match) instead.
+ */
+function keepActivationKeys(event: React.KeyboardEvent<HTMLButtonElement>) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.stopPropagation();
+  }
+}
+
+/** How many picked projects the trigger draws an icon for. */
+const TRIGGER_FAVICON_LIMIT = 3;
+
+/**
+ * Past this many projects the menu gets a search line. Fewer fit on screen at
+ * once, where a search box would only be one more row to look past.
+ */
+const PROJECT_SEARCH_MIN_PROJECTS = 9;
+
+/**
+ * What the trigger calls the picked projects: their names while two fit, a
+ * count past that -- at sidebar widths a third name is only ever an ellipsis.
+ */
+function describeScopedProjects(projects: readonly SidebarProjectSnapshot[]): string {
+  return projects.length <= 2
+    ? projects.map((project) => project.displayName).join(", ")
+    : `${projects.length} projects`;
 }
 
 export interface ProjectScopeMenuProps {
   options: readonly ProjectScopeOption[];
   projectByKey: ReadonlyMap<string, SidebarProjectSnapshot>;
-  scopedProjectKey: string | null;
-  onScopeChange: (projectKey: string | null) => void;
-  /** Empty or single-entry while only one machine is known: no filter is offered. */
+  /** The projects the list is narrowed to, in the order they were picked; empty is All. */
+  scopedProjectKeys: readonly string[];
+  /** Replaces the whole scope: empty for All projects, one key for "Only". */
+  onScopeChange: (projectKeys: readonly string[]) => void;
+  /** Adds a project to the scope, or takes it out. */
+  onToggleScopeProject: (projectKey: string) => void;
+  /** The View button's settings; see {@link InboxViewMenu}. */
   environmentOptions: readonly EnvironmentScopeOption[];
   scopedEnvironmentId: string | null;
   onEnvironmentScopeChange: (environmentId: string | null) => void;
-  /** Whether the list shows only rooms. Null while Rooms is off: no filter is offered. */
   roomsOnly: boolean | null;
   onRoomsOnlyChange: (roomsOnly: boolean) => void;
+  grouping: SidebarGrouping;
+  onGroupingChange: (grouping: SidebarGrouping) => void;
   onAddProject: () => void;
-  onNewThread: () => void;
+  /**
+   * A new-thread button at the row's end, on a phone. Null on a wide screen,
+   * where the rail's New thread is the one.
+   */
+  onNewThread: (() => void) | null;
   newThreadShortcutLabel: string | null;
 }
 
@@ -120,31 +158,50 @@ export interface ProjectScopeMenuProps {
  * The scope filter: one quiet line naming what the list is showing.
  *
  * Projects stopped being a tree, so this is where a project is addressed.
- * Picking one narrows the list; right-clicking it opens what the project
- * header used to hold (rename, grouping, path, removal), which keeps those
- * off the menu itself. A menu scales with the pane where a chip row could
- * not, so only "Add project" stays out here as a visible button.
+ * Clicking one adds it to the list's scope or takes it out, and the menu stays
+ * open for the next; "Only" on a row narrows straight to that one project.
+ * Right-clicking a project opens what the project header used to hold
+ * (rename, grouping, path, removal), which keeps those off the menu itself. A
+ * menu scales with the pane where a chip row could not, and a long one gets a
+ * search line on a mouse (on a phone, focusing it would raise the keyboard
+ * every time the menu opened).
  *
- * The machine and rooms filters live here too, as sections under the
- * projects: each narrows the same list, and none is worth a permanent row.
+ * The menu holds projects only. Which computer, which kind of thread and how
+ * rows group are set once and left, so they sit behind the View button beside
+ * it rather than lengthening a menu used all day.
  */
 export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
   const {
     options,
     projectByKey,
-    scopedProjectKey,
+    scopedProjectKeys,
     onScopeChange,
+    onToggleScopeProject,
     environmentOptions,
     scopedEnvironmentId,
     onEnvironmentScopeChange,
     roomsOnly,
     onRoomsOnlyChange,
+    grouping,
+    onGroupingChange,
     onAddProject,
     onNewThread,
     newThreadShortcutLabel,
   } = props;
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const { updateSettings } = useUpdateSettings();
+  // Controlled so "Only" can close it: toggling a project leaves it open.
+  const [menuOpen, setMenuOpen] = useState(false);
+  // The row of controls the menu drops from. The menu takes the row's width
+  // rather than its widest name, so a long project name truncates instead of
+  // stretching the menu past the sidebar.
+  const [controlsRow, setControlsRow] = useState<HTMLDivElement | null>(null);
+  // Controlled so the rows that are not projects can step aside while a
+  // search is typed; the menu clears it as it closes.
+  const [projectQuery, setProjectQuery] = useState("");
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
+  const showProjectSearch = !isCoarsePointer && options.length >= PROJECT_SEARCH_MIN_PROJECTS;
+  const searching = showProjectSearch && projectQuery.trim().length > 0;
   const [projectRenameTarget, setProjectRenameTarget] = useState<SidebarProjectGroupMember | null>(
     null,
   );
@@ -385,11 +442,23 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           };
         };
 
+        // Offered only where another computer could take a copy; the copy
+        // it starts from is the one on this app's own computer when it can.
+        const setupSource = readProjectSetupSourceAmong(project.memberProjects);
+        if (setupSource !== null) {
+          actionHandlers.set(SET_UP_ELSEWHERE_ITEM_ID, () =>
+            openProjectSetupDialog({ project: setupSource }),
+          );
+        }
+
         const clicked = await api.contextMenu.show(
           [
             buildTargetedItem("rename", "Rename project"),
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
+            ...(setupSource !== null
+              ? [{ id: SET_UP_ELSEWHERE_ITEM_ID, label: "Set up on another computer…" }]
+              : []),
             buildTargetedItem("delete", "Remove project", { destructive: true }),
           ],
           position,
@@ -500,245 +569,237 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     [showProjectContextMenuAt],
   );
 
-  const scopedProject =
-    scopedProjectKey === null ? null : (projectByKey.get(scopedProjectKey) ?? null);
-  // One machine is not a choice: the section only appears once there is
-  // somewhere else the work could be.
-  const showEnvironmentScope = environmentOptions.length > 1;
-  const scopedEnvironment =
-    showEnvironmentScope && scopedEnvironmentId !== null
-      ? (environmentOptions.find((option) => option.environmentId === scopedEnvironmentId) ?? null)
-      : null;
+  const scopedProjects = useMemo(
+    () =>
+      scopedProjectKeys.flatMap((key) => {
+        const project = projectByKey.get(key);
+        return project ? [project] : [];
+      }),
+    [projectByKey, scopedProjectKeys],
+  );
+  const soleScopedProject = scopedProjects.length === 1 ? scopedProjects[0]! : null;
 
-  return (
-    <>
-      <div className="flex items-center gap-1 px-2 py-1">
-        <Menu>
-          <MenuTrigger
-            data-testid="inbox-scope-trigger"
-            // Dressed as an input surface at rest -- hairline border, faint
-            // fill, paired chevrons -- so it reads as a picker before hover,
-            // unlike the flat icon buttons beside it.
-            className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-1.5 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-sidebar-accent/60 hover:text-foreground focus-ring dark:bg-input/32"
-            // Right-clicking the trigger addresses the project you are already
-            // scoped to, so the menu is not the only way in.
-            onContextMenu={(event: React.MouseEvent) => {
-              if (scopedProject) {
-                handleProjectContextMenu(event, scopedProject.projectKey);
-              }
-            }}
-          >
-            {scopedProject ? (
+  const projectMenu = (
+    <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+      <MenuTrigger
+        data-testid="inbox-scope-trigger"
+        // The same quiet surface as the search bar above it (paired
+        // chevrons say it is a picker), unlike the flat icon buttons beside it.
+        className={cn(SIDEBAR_LIST_FIELD_CLASS, "flex-1 text-xs")}
+        // Right-clicking the trigger addresses the project you are scoped
+        // to, so the menu is not the only way in. With several picked
+        // there is no one project it could mean.
+        onContextMenu={(event: React.MouseEvent) => {
+          if (soleScopedProject) {
+            handleProjectContextMenu(event, soleScopedProject.projectKey);
+          }
+        }}
+      >
+        {scopedProjects.length > 0 ? (
+          // Side by side rather than overlapped: a project icon is a logo,
+          // and a stack would clip all but the first.
+          <span className="flex shrink-0 items-center gap-0.5">
+            {scopedProjects.slice(0, TRIGGER_FAVICON_LIMIT).map((project) => (
               <ProjectFavicon
-                cwd={scopedProject.cwd}
-                environmentId={scopedProject.environmentId}
-                name={scopedProject.displayName}
+                key={project.projectKey}
+                cwd={project.cwd}
+                environmentId={project.environmentId}
+                name={project.displayName}
                 className="size-3.5 shrink-0"
               />
-            ) : scopedEnvironment ? (
-              // A machine-only scope leads with the machine: its glyph in the
-              // icon slot and its name as the whole text, because at sidebar
-              // widths "All projects · <machine>" truncated to the half that
-              // said nothing.
-              scopedEnvironment.isPrimary ? (
-                <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
-              ) : (
-                <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
-              )
-            ) : (
-              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
-            )}
-            <span className="min-w-0 flex-1 truncate text-left">
-              {scopedProject
-                ? `${scopedProject.displayName}${scopedEnvironment ? ` · ${scopedEnvironment.label}` : ""}`
-                : (scopedEnvironment?.label ?? "All projects")}
-            </span>
-            {roomsOnly === true ? (
-              // A glyph rather than a word: it survives any label width, and
-              // it is the same mark every room row carries.
-              <UsersRoundIcon
-                aria-label="Rooms only"
-                data-testid="inbox-rooms-filter-mark"
-                className="size-3 shrink-0 text-foreground"
-              />
-            ) : null}
-            <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
-          </MenuTrigger>
-          <MenuPopup align="start" side="bottom" className="min-w-56">
+            ))}
+          </span>
+        ) : (
+          <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+        )}
+        {/* Projects only: the View button beside it says when a computer
+            or the rooms filter narrows the list too. */}
+        <span data-testid="inbox-scope-label" className="min-w-0 flex-1 truncate text-left">
+          {scopedProjects.length > 0 ? describeScopedProjects(scopedProjects) : "All projects"}
+        </span>
+        <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
+      </MenuTrigger>
+      <MenuPopup align="start" side="bottom" anchor={controlsRow} className="w-(--anchor-width)">
+        {showProjectSearch ? (
+          <MenuFilterInput
+            data-testid="inbox-scope-search"
+            aria-label="Find a project"
+            placeholder="Find a project"
+          />
+        ) : null}
+        <MenuList>
+          {/* A search finds projects, never these two: "all" must not land on
+              All projects ahead of a project named Alloy. They step aside
+              while one is typed. */}
+          {searching ? null : (
             <MenuItem
               data-testid="inbox-scope-all"
               className={cn(
                 SCOPE_ITEM_CLASS_NAME,
-                scopedProjectKey === null && SCOPE_ITEM_SELECTED,
+                scopedProjectKeys.length === 0 && SCOPE_ITEM_SELECTED,
               )}
               onClick={() => {
-                onScopeChange(null);
+                onScopeChange([]);
               }}
             >
               <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
               <span className="min-w-0 flex-1 truncate">All projects</span>
             </MenuItem>
-            {options.map((option) => {
-              const project = projectByKey.get(option.key);
-              return (
-                <MenuItem
-                  key={option.key}
-                  data-testid={`inbox-scope-${option.key}`}
-                  className={cn(
-                    SCOPE_ITEM_CLASS_NAME,
-                    "group/scope-item",
-                    scopedProjectKey === option.key && SCOPE_ITEM_SELECTED,
-                  )}
-                  onClick={() => {
-                    onScopeChange(option.key);
-                  }}
-                  // Right-click keeps working; the button is the discoverable half.
-                  onContextMenu={(event: React.MouseEvent) => {
-                    handleProjectContextMenu(event, option.key);
-                  }}
-                >
-                  {project ? (
-                    <ProjectFavicon
-                      cwd={project.cwd}
-                      environmentId={project.environmentId}
-                      name={project.displayName}
-                      className="size-3.5 shrink-0"
-                    />
-                  ) : (
-                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                  {option.needsYouCount > 0 ? (
-                    <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
-                      {option.needsYouCount}
-                    </span>
-                  ) : null}
+          )}
+          {options.map((option) => {
+            const project = projectByKey.get(option.key);
+            const picked = scopedProjectKeys.includes(option.key);
+            return (
+              <MenuCheckboxItem
+                key={option.key}
+                variant="fill"
+                // The name alone is what a search matches, not "Only" or the count.
+                label={option.label}
+                checked={picked}
+                onCheckedChange={() => {
+                  onToggleScopeProject(option.key);
+                }}
+                data-testid={`inbox-scope-${option.key}`}
+                className="group/scope-item"
+                // Right-click keeps working; the button is the discoverable half.
+                onContextMenu={(event: React.MouseEvent) => {
+                  handleProjectContextMenu(event, option.key);
+                }}
+              >
+                {project ? (
+                  <ProjectFavicon
+                    cwd={project.cwd}
+                    environmentId={project.environmentId}
+                    name={project.displayName}
+                    className="size-3.5 shrink-0"
+                  />
+                ) : (
+                  <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                )}
+                <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <span className="min-w-0 truncate">{option.label}</span>
+                  {picked ? <CheckIcon aria-hidden className="size-3 shrink-0" /> : null}
+                </span>
+                {/* The fast switch: toggling is the click, so jumping to one
+                    project is its own small button. It and the manage button
+                    show on the highlighted row only (always, on touch), so the
+                    other rows keep their width for names. Absent on the one
+                    project already showing alone, where it would do nothing. */}
+                {picked && scopedProjectKeys.length === 1 ? null : (
                   <button
                     type="button"
-                    data-testid={`inbox-scope-actions-${option.key}`}
-                    aria-label={`Manage ${option.label}`}
-                    className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/scope-item:opacity-100 group-focus-within/scope-item:opacity-100 pointer-coarse:opacity-100"
+                    data-testid={`inbox-scope-only-${option.key}`}
+                    aria-label={`Show only ${option.label}`}
+                    className="hidden h-5 shrink-0 cursor-pointer items-center rounded-sm px-1.5 text-[11px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-ring group-data-highlighted/scope-item:inline-flex pointer-coarse:inline-flex"
+                    onKeyDown={keepActivationKeys}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      showProjectContextMenuAt(option.key, {
-                        x: Math.round(rect.right),
-                        y: Math.round(rect.bottom),
-                      });
+                      onScopeChange([option.key]);
+                      setMenuOpen(false);
                     }}
                   >
-                    <EllipsisIcon className="size-3.5" />
+                    Only
                   </button>
-                </MenuItem>
-              );
-            })}
-            {showEnvironmentScope ? (
-              <MenuGroup>
-                <MenuSeparator />
-                <MenuGroupLabel>Machine</MenuGroupLabel>
-                <MenuItem
-                  data-testid="inbox-machine-scope-all"
-                  className={cn(
-                    SCOPE_ITEM_CLASS_NAME,
-                    scopedEnvironmentId === null && SCOPE_ITEM_SELECTED,
-                  )}
-                  onClick={() => {
-                    onEnvironmentScopeChange(null);
+                )}
+                {option.needsYouCount > 0 ? (
+                  <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
+                    {option.needsYouCount}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  data-testid={`inbox-scope-actions-${option.key}`}
+                  aria-label={`Manage ${option.label}`}
+                  className="-mr-1 hidden size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:text-foreground focus-ring group-data-highlighted/scope-item:inline-flex pointer-coarse:inline-flex"
+                  onKeyDown={keepActivationKeys}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    showProjectContextMenuAt(option.key, {
+                      x: Math.round(rect.right),
+                      y: Math.round(rect.bottom),
+                    });
                   }}
                 >
-                  <MonitorSmartphoneIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                  <span className="min-w-0 flex-1 truncate">All machines</span>
-                </MenuItem>
-                {environmentOptions.map((option) => (
-                  <MenuItem
-                    key={option.environmentId}
-                    data-testid={`inbox-machine-scope-${option.environmentId}`}
-                    className={cn(
-                      SCOPE_ITEM_CLASS_NAME,
-                      scopedEnvironmentId === option.environmentId && SCOPE_ITEM_SELECTED,
-                    )}
-                    onClick={() => {
-                      onEnvironmentScopeChange(option.environmentId);
-                    }}
-                  >
-                    {option.isPrimary ? (
-                      <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                    ) : (
-                      <CloudIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                  </MenuItem>
-                ))}
-              </MenuGroup>
-            ) : null}
-            {roomsOnly !== null ? (
-              <MenuGroup>
-                <MenuSeparator />
-                <MenuGroupLabel>Threads</MenuGroupLabel>
-                <MenuItem
-                  data-testid="inbox-rooms-filter-all"
-                  className={cn(SCOPE_ITEM_CLASS_NAME, !roomsOnly && SCOPE_ITEM_SELECTED)}
-                  onClick={() => {
-                    onRoomsOnlyChange(false);
-                  }}
-                >
-                  <MessageSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                  <span className="min-w-0 flex-1 truncate">All threads</span>
-                </MenuItem>
-                <MenuItem
-                  data-testid="inbox-rooms-filter-only"
-                  className={cn(SCOPE_ITEM_CLASS_NAME, roomsOnly && SCOPE_ITEM_SELECTED)}
-                  onClick={() => {
-                    onRoomsOnlyChange(true);
-                  }}
-                >
-                  <UsersRoundIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                  <span className="min-w-0 flex-1 truncate">Rooms only</span>
-                </MenuItem>
-              </MenuGroup>
-            ) : null}
-            <MenuSeparator />
-            <MenuItem onClick={onAddProject}>
-              <FolderPlusIcon />
-              <span className="min-w-0 flex-1 truncate">Add project…</span>
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                aria-label="Add project"
-                data-testid="sidebar-add-project-trigger"
-                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                onClick={onAddProject}
-              />
-            }
-          >
-            <FolderPlusIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="bottom">Add project</TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                aria-label="New thread"
-                data-testid="new-thread-button"
-                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                onClick={onNewThread}
-              />
-            }
-          >
-            <SquarePenIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="bottom">
-            {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
+                  <EllipsisIcon className="size-3.5" />
+                </button>
+              </MenuCheckboxItem>
+            );
+          })}
+          {searching ? null : (
+            <>
+              <MenuSeparator />
+              <MenuItem onClick={onAddProject}>
+                <FolderPlusIcon />
+                <span className="min-w-0 flex-1 truncate">Add project…</span>
+              </MenuItem>
+            </>
+          )}
+        </MenuList>
+        {showProjectSearch ? <MenuEmpty>No matching projects</MenuEmpty> : null}
+      </MenuPopup>
+    </Menu>
+  );
+
+  return (
+    <>
+      <div className="px-3 pt-2 pb-2">
+        <div ref={setControlsRow} className="flex items-center gap-1">
+          {showProjectSearch ? (
+            <MenuFilterProvider autoHighlight value={projectQuery} onValueChange={setProjectQuery}>
+              {projectMenu}
+            </MenuFilterProvider>
+          ) : (
+            projectMenu
+          )}
+          <InboxViewMenu
+            environmentOptions={environmentOptions}
+            scopedEnvironmentId={scopedEnvironmentId}
+            onEnvironmentScopeChange={onEnvironmentScopeChange}
+            roomsOnly={roomsOnly}
+            onRoomsOnlyChange={onRoomsOnlyChange}
+            grouping={grouping}
+            onGroupingChange={onGroupingChange}
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Add project"
+                  data-testid="sidebar-add-project-trigger"
+                  className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+                  onClick={onAddProject}
+                />
+              }
+            >
+              <FolderPlusIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">Add project</TooltipPopup>
+          </Tooltip>
+          {onNewThread ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="New thread"
+                    data-testid="new-thread-button"
+                    className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+                    onClick={onNewThread}
+                  />
+                }
+              >
+                <SquarePenIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">
+                {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
+        </div>
       </div>
 
       <Dialog

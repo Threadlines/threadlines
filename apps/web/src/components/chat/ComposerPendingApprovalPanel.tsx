@@ -32,6 +32,33 @@ function approvalHeading(approval: PendingApproval): string {
 }
 
 /**
+ * What the agent said about the request: why it asks, what approving allows,
+ * and the path that made it ask (unless that path is exactly what is shown
+ * above). The agent's words never stand in for what is being approved.
+ */
+function ApprovalNotes({ approval }: { approval: PendingApproval }) {
+  const blockedPath =
+    approval.blockedPath && approval.blockedPath.trim() !== approval.detail?.trim()
+      ? approval.blockedPath
+      : undefined;
+  if (!approval.reason && !approval.description && !blockedPath) return null;
+  return (
+    <div
+      className="max-h-32 space-y-0.5 overflow-y-auto text-[13px] text-muted-foreground"
+      data-pending-approval-notes="true"
+    >
+      {approval.reason ? <p className="break-words">Why: {approval.reason}</p> : null}
+      {approval.description ? <p className="break-words">{approval.description}</p> : null}
+      {blockedPath ? (
+        <p className="break-all">
+          Path: <span className="font-mono text-[12.5px]">{blockedPath}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * A workflow asking to run: its name, the steps its script plans, and what it
  * costs, with the script one click away.
  */
@@ -91,14 +118,26 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
       <div className="px-4 py-3.5 sm:px-5 sm:py-4">
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
+          {approval.title ? (
+            <span className="text-sm font-medium" data-testid="pending-approval-heading">
+              {approval.title}
+            </span>
+          ) : null}
           {pendingCount > 1 ? (
             <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
           ) : null}
         </div>
         <WorkflowApprovalBody workflow={approval.workflow} />
+        <div className="mt-1.5">
+          <ApprovalNotes approval={approval} />
+        </div>
       </div>
     );
   }
+  // The agent's own sentence leads when it gave one; what it would run or
+  // touch always follows, since only that is what gets approved.
+  const heading = approval.title ?? approvalHeading(approval);
+  const detail = approval.detail;
   // Shell commands and the text typed into a terminal render as code.
   const showsCode =
     approval.requestKind === "terminal-input" ||
@@ -110,28 +149,31 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
-          <span className="text-sm font-medium">{approvalHeading(approval)}</span>
+          <span className="text-sm font-medium" data-testid="pending-approval-heading">
+            {heading}
+          </span>
           {pendingCount > 1 ? (
             <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
           ) : null}
         </div>
-        {approval.detail ? (
+        {detail ? (
           showsCode ? (
             <pre
               data-testid="pending-approval-detail"
               className="max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-foreground"
             >
-              {approval.detail}
+              {detail}
             </pre>
           ) : (
             <p
               data-testid="pending-approval-detail"
               className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-sm text-foreground"
             >
-              {approval.detail}
+              {detail}
             </p>
           )
         ) : null}
+        <ApprovalNotes approval={approval} />
         {approval.environmentId ? (
           <p className="truncate text-xs text-muted-foreground">
             Environment: {approval.environmentId}

@@ -764,6 +764,126 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("draws math the ways models write it and leaves prices and shell variables alone", async () => {
+    const text = [
+      "Sorting is $O(n \\log n)$ and \\(a+b\\) is short.",
+      "",
+      "\\[",
+      "\\int_0^1 x\\,dx",
+      "\\]",
+      "",
+      "It costs $5 and $10, and $HOME/$USER is a path.",
+    ].join("\n");
+    const screen = await render(<ChatMarkdown text={text} cwd="/repo" />);
+    try {
+      // KaTeX is a chunk of its own: its first load on a busy CI runner can
+      // outlast waitFor's one second.
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll(".chat-markdown-math .katex")).toHaveLength(2);
+          expect(
+            document.querySelector(".chat-markdown-math-display .katex-display"),
+          ).not.toBeNull();
+        },
+        { timeout: 10_000 },
+      );
+      // The drawn formula keeps its TeX for screen readers and copying.
+      expect(document.querySelector(".chat-markdown-math annotation")?.textContent).toBe(
+        "O(n \\log n)",
+      );
+      expect(document.body.textContent).toContain(
+        "It costs $5 and $10, and $HOME/$USER is a path.",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows TeX it can't draw as written", async () => {
+    const screen = await render(<ChatMarkdown text={"See $\\frac{1}{$ here."} cwd="/repo" />);
+    try {
+      await vi.waitFor(() => {
+        const source = document.querySelector<HTMLElement>("code.chat-markdown-math-source");
+        expect(source?.textContent).toBe("\\frac{1}{");
+        expect(source?.title).toContain("couldn't be drawn");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("draws a finished mermaid block as a diagram, with its code a click away", async () => {
+    const diagram = "```mermaid\nflowchart LR\n  Start --> Done\n```";
+    // Still being written: the code, as it arrives.
+    const screen = await render(
+      <ChatMarkdown text={diagram.slice(0, -4)} cwd="/repo" isStreaming />,
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(document.querySelector("[data-chat-markdown-diagram] svg")).toBeNull();
+      expect(document.querySelector(".chat-markdown-codeblock pre")?.textContent).toContain(
+        "Start --> Done",
+      );
+
+      // Closed, with nothing after it yet: drawn.
+      await screen.rerender(<ChatMarkdown text={diagram} cwd="/repo" isStreaming />);
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-markdown-diagram] svg")).not.toBeNull();
+      });
+
+      // And it stays drawn while the reply goes on.
+      await screen.rerender(
+        <ChatMarkdown text={`${diagram}\nThat is the`} cwd="/repo" isStreaming />,
+      );
+      await vi.waitFor(() => {
+        const svg = document.querySelector("[data-chat-markdown-diagram] svg");
+        expect(svg).not.toBeNull();
+        expect(svg?.textContent).toContain("Start");
+      });
+
+      await page.getByRole("button", { name: "Show code" }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-markdown-diagram]")).toBeNull();
+        expect(document.querySelector(".chat-markdown-codeblock pre")?.textContent).toContain(
+          "flowchart LR",
+        );
+      });
+      await page.getByRole("button", { name: "Show diagram" }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-markdown-diagram] svg")).not.toBeNull();
+      });
+
+      // The full-size view draws it at its own width, not the column's.
+      await page.getByRole("button", { name: "View full size" }).click();
+      await vi.waitFor(() => {
+        const full = document.querySelector<HTMLElement>(".chat-markdown-diagram-full");
+        expect(full?.querySelector("svg")).not.toBeNull();
+        expect(full?.style.width).toMatch(/^\d+(\.\d+)?px$/);
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a diagram it can't read as code, with the reason", async () => {
+    const screen = await render(
+      <ChatMarkdown text={"```mermaid\nflowchart LR\n  A -->\n```"} cwd="/repo" />,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-markdown-diagram-error]")?.textContent).toMatch(
+          /^Couldn't draw this diagram/,
+        );
+      });
+      expect(document.querySelector("[data-chat-markdown-diagram]")).toBeNull();
+      expect(document.querySelector(".chat-markdown-codeblock pre")?.textContent).toContain(
+        "A -->",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("opens a picture from the web in the image viewer on a click or a pinch, not one in a link", async () => {
     const picture = `${location.origin}/apple-touch-icon.png`;
     const screen = await render(
@@ -1138,6 +1258,23 @@ describe("find in chat reads what ChatMarkdown draws", () => {
         "<div>",
         "block html",
         "</div>",
+      ].join("\n"),
+    },
+    {
+      name: "math and diagrams",
+      text: [
+        "Sorting costs $O(n \\log n)$, not $5 or $10.",
+        "",
+        "$$",
+        "\\sum_{i=1}^n i",
+        "$$",
+        "",
+        "```mermaid",
+        "flowchart LR",
+        "  Start --> Done",
+        "```",
+        "",
+        "And the end.",
       ].join("\n"),
     },
     {

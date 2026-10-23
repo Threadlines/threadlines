@@ -269,7 +269,7 @@ export function PickedElementContextChip({
               }
             }}
             placeholder="What about this element?"
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors focus:border-ring"
             data-testid={`picked-element-note-${chipId}`}
           />
         ) : context.note === null ? null : (
@@ -502,7 +502,7 @@ export function PickedElementContextGroupChip({
               }
             }}
             placeholder={`What about these ${contexts.length} elements?`}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors focus:border-ring"
             data-testid={`picked-element-note-${chipId}`}
           />
         ) : note === null ? null : (

@@ -11,6 +11,7 @@ import {
   type ModelSelection,
   type NewThreadRoomAgent,
   type ProviderInstanceId,
+  type ScopedProjectRef,
   type ServerConfig,
   type ServerProvider,
   type ThreadCreateParticipant,
@@ -23,9 +24,13 @@ import { nextRoomAgentName } from "@threadlines/shared/threadParticipants";
 import { getPickerModelName } from "./components/chat/providerIconUtils";
 import { type DraftId, type DraftRoom, useComposerDraftStore } from "./composerDraftStore";
 import { readPrimaryEnvironmentDescriptor } from "./environments/primary/context";
+import { waitForSetUpProject } from "./environments/projectSetups/projectSetups";
 import { useSavedEnvironmentRuntimeStore } from "./environments/runtime";
 import type { NewThreadPlacement } from "./lib/chatThreadActions";
 import { randomUUID } from "./lib/utils";
+import { deriveLogicalProjectKeyFromSettings } from "./logicalProject";
+import { getClientSettings } from "./hooks/useSettings";
+import { selectProjectByRef, useStore } from "./store";
 import {
   deriveDisplayProviderInstanceEntries,
   type ProviderInstanceEntry,
@@ -370,4 +375,39 @@ export function applyMovedDraftDefaults(
     envMode: startIn,
   }));
   return applyNewThreadDefaultsToDraft(draftId, toEnvironmentId, { keepModel: picked });
+}
+
+/**
+ * After a setup made a copy of the draft's project on another computer: the
+ * draft moves to that copy, keeping its text, when it is still the one on
+ * screen (`isOpen`), still unsent, still on the project it started from, and
+ * the copy is the same repository. It joins the copy's sidebar project (in
+ * "Separate" grouping, another one) and takes that computer's defaults.
+ */
+export async function moveDraftToSetUpProject(input: {
+  readonly draftId: DraftId;
+  readonly from: ScopedProjectRef;
+  readonly to: ScopedProjectRef;
+  readonly isOpen: () => boolean;
+}): Promise<void> {
+  const { draftId, from, to } = input;
+  if (!(await waitForSetUpProject(to))) return;
+  if (!input.isOpen()) return;
+  const draft = useComposerDraftStore.getState().getDraftSession(draftId);
+  if (!draft || draft.promotedTo != null) return;
+  if (draft.environmentId !== from.environmentId || draft.projectId !== from.projectId) return;
+  const state = useStore.getState();
+  const source = selectProjectByRef(state, from);
+  const project = selectProjectByRef(state, to);
+  const key = source?.repositoryIdentity?.canonicalKey;
+  if (!project || key == null || project.repositoryIdentity?.canonicalKey !== key) return;
+  const grouping = getClientSettings();
+  useComposerDraftStore.getState().setDraftThreadContext(draftId, {
+    projectRef: to,
+    logicalProjectKey: deriveLogicalProjectKeyFromSettings(project, {
+      sidebarProjectGroupingMode: grouping.sidebarProjectGroupingMode,
+      sidebarProjectGroupingOverrides: grouping.sidebarProjectGroupingOverrides,
+    }),
+  });
+  await applyMovedDraftDefaults(draftId, to.environmentId);
 }

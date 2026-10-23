@@ -5,6 +5,66 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  ComputerLinkError,
+  ComputerLinkInvite,
+  ComputerLinksSnapshot,
+  InboundComputerLink,
+  LinksAcceptInput,
+  LinksCreateInviteInput,
+  LinksRemoveInput,
+  LinksRemoveResult,
+  LinksRespondRequestInput,
+  LinksSetAccessInput,
+  OutboundComputerLink,
+} from "./links.ts";
+import {
+  ScheduledRun,
+  ScheduledTask,
+  ScheduledTaskCreateInput,
+  ScheduledTaskDeleteInput,
+  ScheduledTaskError,
+  ScheduledTaskListRunsInput,
+  ScheduledTaskListRunsResult,
+  ScheduledTaskRespondRequestInput,
+  ScheduledTaskRunNowInput,
+  ScheduledTasksSnapshot,
+  ScheduledTasksSubscribeInput,
+  ScheduledTaskIdInput,
+  ScheduledTaskWebhookAddress,
+  ScheduledTaskSetSigningSecretInput,
+  ScheduledTaskSigningSecret,
+  ScheduledTaskGitHubContext,
+  ScheduledTaskGitHubContextInput,
+  ScheduledTaskListWebhookEventsInput,
+  ScheduledTaskListWebhookEventsResult,
+  ScheduledTaskWebhookEventInput,
+  WebhookEventDetail,
+  WebhookEventRecord,
+  ScheduledTaskTestWebhookInput,
+  ScheduledTaskUpdateInput,
+} from "./scheduledTasks.ts";
+import {
+  ThreadMoveCancelInput,
+  ThreadMoveError,
+  ThreadMovePreview,
+  ThreadMovePreviewInput,
+  ThreadMoveStartInput,
+  ThreadMoveStartResult,
+} from "./moves.ts";
+import {
+  ProjectSetupDestination,
+  ProjectSetupError,
+  ProjectSetupInspectDestinationInput,
+  ProjectSetupJob,
+  ProjectSetupJobInput,
+  ProjectSetupReadFilesInput,
+  ProjectSetupReadFilesResult,
+  ProjectSetupSource,
+  ProjectSetupSourceInput,
+  ProjectSetupStartInput,
+  ProjectSetupsSnapshot,
+} from "./projectSetup.ts";
+import {
   RelayAccessError,
   RelayAccessSnapshot,
   RelayCancelInviteInput,
@@ -299,6 +359,7 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerStall,
   ServerProviderDataSharingError,
   ServerProviderDataSharingSetInput,
   ServerProviderDataSharingSetResult,
@@ -549,6 +610,7 @@ export const WS_METHODS = {
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
+  subscribeServerStalls: "subscribeServerStalls",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeRelayAccess: "subscribeRelayAccess",
@@ -559,6 +621,49 @@ export const WS_METHODS = {
   relayRespondToJoinRequest: "relay.respondToJoinRequest",
   relaySubmitJoin: "relay.submitJoin",
   relayDirectRoutes: "relay.directRoutes",
+
+  // Computer links (docs/design/fleet.md). Owner and client sessions alike.
+  linksList: "links.list",
+  linksSubscribe: "links.subscribe",
+  linksCreateInvite: "links.createInvite",
+  linksAccept: "links.accept",
+  linksSetAccess: "links.setAccess",
+  linksRemove: "links.remove",
+  linksRespondRequest: "links.respondRequest",
+
+  // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
+  scheduledTasksSubscribe: "scheduledTasks.subscribe",
+  scheduledTasksListRuns: "scheduledTasks.listRuns",
+  scheduledTasksCreate: "scheduledTasks.create",
+  scheduledTasksUpdate: "scheduledTasks.update",
+  scheduledTasksDelete: "scheduledTasks.delete",
+  scheduledTasksRunNow: "scheduledTasks.runNow",
+  scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
+  scheduledTasksWebhookAddress: "scheduledTasks.webhookAddress",
+  scheduledTasksRotateWebhookAddress: "scheduledTasks.rotateWebhookAddress",
+  scheduledTasksSetWebhookSigningSecret: "scheduledTasks.setWebhookSigningSecret",
+  scheduledTasksRevealWebhookSigningSecret: "scheduledTasks.revealWebhookSigningSecret",
+  scheduledTasksGitHubContext: "scheduledTasks.gitHubContext",
+  scheduledTasksConnectGitHub: "scheduledTasks.connectGitHub",
+  scheduledTasksDisconnectGitHub: "scheduledTasks.disconnectGitHub",
+  scheduledTasksListWebhookEvents: "scheduledTasks.listWebhookEvents",
+  scheduledTasksWebhookEvent: "scheduledTasks.webhookEvent",
+  scheduledTasksTestWebhook: "scheduledTasks.testWebhook",
+  scheduledTasksRunWithWebhookEvent: "scheduledTasks.runWithWebhookEvent",
+  scheduledTasksDismissWebhookAddressChange: "scheduledTasks.dismissWebhookAddressChange",
+  // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
+  movesPreview: "moves.preview",
+  movesStart: "moves.start",
+  movesCancel: "moves.cancel",
+
+  // Setting up a project on another computer (docs/design/fleet.md, Part 8)
+  projectSetupsSource: "projectSetups.source",
+  projectSetupsReadFiles: "projectSetups.readFiles",
+  projectSetupsInspectDestination: "projectSetups.inspectDestination",
+  projectSetupsStart: "projectSetups.start",
+  projectSetupsCancel: "projectSetups.cancel",
+  projectSetupsDismiss: "projectSetups.dismiss",
+  projectSetupsSubscribe: "projectSetups.subscribe",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1679,6 +1784,16 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
   stream: true,
 });
 
+/**
+ * The server's latest stall if it ended within ten minutes, then each new one.
+ * Only servers reporting the `stallReports` capability answer it.
+ */
+export const WsSubscribeServerStallsRpc = Rpc.make(WS_METHODS.subscribeServerStalls, {
+  payload: Schema.Struct({}),
+  success: ServerStall,
+  stream: true,
+});
+
 export const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecycle, {
   payload: Schema.Struct({}),
   success: ServerLifecycleStreamEvent,
@@ -1720,6 +1835,269 @@ export const WsRelaySubmitJoinRpc = Rpc.make(WS_METHODS.relaySubmitJoin, {
   payload: RelaySubmitJoinInput,
   success: RelaySubmitJoinResult,
   error: RelayAccessError,
+});
+
+export const WsLinksListRpc = Rpc.make(WS_METHODS.linksList, {
+  payload: Schema.Struct({}),
+  success: ComputerLinksSnapshot,
+  error: ComputerLinkError,
+});
+
+/** Outbound links with their state, inbound links with access, and requests waiting here. */
+export const WsLinksSubscribeRpc = Rpc.make(WS_METHODS.linksSubscribe, {
+  payload: Schema.Struct({}),
+  success: ComputerLinksSnapshot,
+  error: ComputerLinkError,
+  stream: true,
+});
+
+/** Owner or client: a remote client is how one click links two computers. */
+export const WsLinksCreateInviteRpc = Rpc.make(WS_METHODS.linksCreateInvite, {
+  payload: LinksCreateInviteInput,
+  success: ComputerLinkInvite,
+  error: ComputerLinkError,
+});
+
+export const WsLinksAcceptRpc = Rpc.make(WS_METHODS.linksAccept, {
+  payload: LinksAcceptInput,
+  success: OutboundComputerLink,
+  error: ComputerLinkError,
+});
+
+export const WsLinksSetAccessRpc = Rpc.make(WS_METHODS.linksSetAccess, {
+  payload: LinksSetAccessInput,
+  success: InboundComputerLink,
+  error: ComputerLinkError,
+});
+
+export const WsLinksRemoveRpc = Rpc.make(WS_METHODS.linksRemove, {
+  payload: LinksRemoveInput,
+  success: LinksRemoveResult,
+  error: ComputerLinkError,
+});
+
+export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest, {
+  payload: LinksRespondRequestInput,
+  error: ComputerLinkError,
+});
+
+/** This computer's scheduled tasks, each with its last run; again on every change. */
+export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
+  payload: ScheduledTasksSubscribeInput,
+  success: ScheduledTasksSnapshot,
+  error: ScheduledTaskError,
+  stream: true,
+});
+
+export const WsScheduledTasksListRunsRpc = Rpc.make(WS_METHODS.scheduledTasksListRuns, {
+  payload: ScheduledTaskListRunsInput,
+  success: ScheduledTaskListRunsResult,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksCreateRpc = Rpc.make(WS_METHODS.scheduledTasksCreate, {
+  payload: ScheduledTaskCreateInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksUpdateRpc = Rpc.make(WS_METHODS.scheduledTasksUpdate, {
+  payload: ScheduledTaskUpdateInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksDeleteRpc = Rpc.make(WS_METHODS.scheduledTasksDelete, {
+  payload: ScheduledTaskDeleteInput,
+  error: ScheduledTaskError,
+});
+
+/** Starts a run now, under the same rules as a scheduled one: it may come back skipped. */
+export const WsScheduledTasksRunNowRpc = Rpc.make(WS_METHODS.scheduledTasksRunNow, {
+  payload: ScheduledTaskRunNowInput,
+  success: ScheduledRun,
+  error: ScheduledTaskError,
+});
+
+/** Allows or denies an agent's change to the tasks (Agents can start threads: Ask first). */
+export const WsScheduledTasksRespondRequestRpc = Rpc.make(WS_METHODS.scheduledTasksRespondRequest, {
+  payload: ScheduledTaskRespondRequestInput,
+  error: ScheduledTaskError,
+});
+
+/** An event task's addresses (docs/design/event-tasks.md). */
+export const WsScheduledTasksWebhookAddressRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookAddress, {
+  payload: ScheduledTaskIdInput,
+  success: ScheduledTaskWebhookAddress,
+  error: ScheduledTaskError,
+});
+
+/** A new address for an event task; the old one stops taking events at once. */
+export const WsScheduledTasksRotateWebhookAddressRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRotateWebhookAddress,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTaskWebhookAddress,
+    error: ScheduledTaskError,
+  },
+);
+
+/** Sets an event task's signing secret; a generated one comes back once. */
+export const WsScheduledTasksSetWebhookSigningSecretRpc = Rpc.make(
+  WS_METHODS.scheduledTasksSetWebhookSigningSecret,
+  {
+    payload: ScheduledTaskSetSigningSecretInput,
+    success: ScheduledTaskSigningSecret,
+    error: ScheduledTaskError,
+  },
+);
+
+/** Shows an event task's signing secret, when the user asks to see it. */
+export const WsScheduledTasksRevealWebhookSigningSecretRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRevealWebhookSigningSecret,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTaskSigningSecret,
+    error: ScheduledTaskError,
+  },
+);
+
+/** A project's GitHub repository and who `gh` is signed in as, for the form. */
+export const WsScheduledTasksGitHubContextRpc = Rpc.make(WS_METHODS.scheduledTasksGitHubContext, {
+  payload: ScheduledTaskGitHubContextInput,
+  success: ScheduledTaskGitHubContext,
+  error: ScheduledTaskError,
+});
+
+/** "Add to GitHub": sets the event task's webhook up on its repository. */
+export const WsScheduledTasksConnectGitHubRpc = Rpc.make(WS_METHODS.scheduledTasksConnectGitHub, {
+  payload: ScheduledTaskIdInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+/** Removes the webhook Threadlines set up on GitHub; the task keeps its address. */
+export const WsScheduledTasksDisconnectGitHubRpc = Rpc.make(
+  WS_METHODS.scheduledTasksDisconnectGitHub,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTask,
+    error: ScheduledTaskError,
+  },
+);
+
+/** An event task's events, newest first. */
+export const WsScheduledTasksListWebhookEventsRpc = Rpc.make(
+  WS_METHODS.scheduledTasksListWebhookEvents,
+  {
+    payload: ScheduledTaskListWebhookEventsInput,
+    success: ScheduledTaskListWebhookEventsResult,
+    error: ScheduledTaskError,
+  },
+);
+
+/** One event opened up: its headers, body and the message it made. */
+export const WsScheduledTasksWebhookEventRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookEvent, {
+  payload: ScheduledTaskWebhookEventInput,
+  success: WebhookEventDetail,
+  error: ScheduledTaskError,
+});
+
+/** "Send a test event": a sample event through every check; a dry run unless asked. */
+export const WsScheduledTasksTestWebhookRpc = Rpc.make(WS_METHODS.scheduledTasksTestWebhook, {
+  payload: ScheduledTaskTestWebhookInput,
+  success: WebhookEventDetail,
+  error: ScheduledTaskError,
+});
+
+/** "Got it" on "This task's address changed": the user has updated the sender. */
+export const WsScheduledTasksDismissWebhookAddressChangeRpc = Rpc.make(
+  WS_METHODS.scheduledTasksDismissWebhookAddressChange,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTask,
+    error: ScheduledTaskError,
+  },
+);
+
+/** "Run with this event": the event again, as a new one past the duplicate check. */
+export const WsScheduledTasksRunWithWebhookEventRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRunWithWebhookEvent,
+  {
+    payload: ScheduledTaskWebhookEventInput,
+    success: WebhookEventRecord,
+    error: ScheduledTaskError,
+  },
+);
+
+/** Where this thread could move, and what would go with it. */
+export const WsMovesPreviewRpc = Rpc.make(WS_METHODS.movesPreview, {
+  payload: ThreadMovePreviewInput,
+  success: ThreadMovePreview,
+  error: ThreadMoveError,
+});
+
+/** Freeze the thread and move it; the move then runs on its own. */
+export const WsMovesStartRpc = Rpc.make(WS_METHODS.movesStart, {
+  payload: ThreadMoveStartInput,
+  success: ThreadMoveStartResult,
+  error: ThreadMoveError,
+});
+
+/** Ask to stop a move; the thread unfreezes once the other computer confirms. */
+export const WsMovesCancelRpc = Rpc.make(WS_METHODS.movesCancel, {
+  payload: ThreadMoveCancelInput,
+  error: ThreadMoveError,
+});
+
+/** On the source computer: what another computer needs to copy this project. */
+export const WsProjectSetupsSourceRpc = Rpc.make(WS_METHODS.projectSetupsSource, {
+  payload: ProjectSetupSourceInput,
+  success: ProjectSetupSource,
+  error: ProjectSetupError,
+});
+
+/** On the source computer: the ticked ignored files' bytes. */
+export const WsProjectSetupsReadFilesRpc = Rpc.make(WS_METHODS.projectSetupsReadFiles, {
+  payload: ProjectSetupReadFilesInput,
+  success: ProjectSetupReadFilesResult,
+  error: ProjectSetupError,
+});
+
+/** On the target computer: what a folder there would mean for the setup. */
+export const WsProjectSetupsInspectDestinationRpc = Rpc.make(
+  WS_METHODS.projectSetupsInspectDestination,
+  {
+    payload: ProjectSetupInspectDestinationInput,
+    success: ProjectSetupDestination,
+    error: ProjectSetupError,
+  },
+);
+
+/** On the target computer: clone, copy the files and add the project; runs on its own. */
+export const WsProjectSetupsStartRpc = Rpc.make(WS_METHODS.projectSetupsStart, {
+  payload: ProjectSetupStartInput,
+  success: ProjectSetupJob,
+  error: ProjectSetupError,
+});
+
+export const WsProjectSetupsCancelRpc = Rpc.make(WS_METHODS.projectSetupsCancel, {
+  payload: ProjectSetupJobInput,
+  error: ProjectSetupError,
+});
+
+/** Forgets a finished job. */
+export const WsProjectSetupsDismissRpc = Rpc.make(WS_METHODS.projectSetupsDismiss, {
+  payload: ProjectSetupJobInput,
+  error: ProjectSetupError,
+});
+
+/** This computer's setups, unfinished and recent; again on every change. */
+export const WsProjectSetupsSubscribeRpc = Rpc.make(WS_METHODS.projectSetupsSubscribe, {
+  payload: Schema.Struct({}),
+  success: ProjectSetupsSnapshot,
+  error: ProjectSetupError,
+  stream: true,
 });
 
 /** Empty for anyone but a "Connect a device" device. */
@@ -1884,6 +2262,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsDictationTranscribeRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
+  WsSubscribeServerStallsRpc,
   WsSubscribeAuthAccessRpc,
   WsSubscribeRelayAccessRpc,
   WsRelayCreateInviteRpc,
@@ -1891,6 +2270,42 @@ export const WsRpcGroup = RpcGroup.make(
   WsRelayRespondToJoinRequestRpc,
   WsRelaySubmitJoinRpc,
   WsRelayDirectRoutesRpc,
+  WsLinksListRpc,
+  WsLinksSubscribeRpc,
+  WsLinksCreateInviteRpc,
+  WsLinksAcceptRpc,
+  WsLinksSetAccessRpc,
+  WsLinksRemoveRpc,
+  WsLinksRespondRequestRpc,
+  WsScheduledTasksSubscribeRpc,
+  WsScheduledTasksListRunsRpc,
+  WsScheduledTasksCreateRpc,
+  WsScheduledTasksUpdateRpc,
+  WsScheduledTasksDeleteRpc,
+  WsScheduledTasksRunNowRpc,
+  WsScheduledTasksRespondRequestRpc,
+  WsScheduledTasksWebhookAddressRpc,
+  WsScheduledTasksRotateWebhookAddressRpc,
+  WsScheduledTasksSetWebhookSigningSecretRpc,
+  WsScheduledTasksRevealWebhookSigningSecretRpc,
+  WsScheduledTasksGitHubContextRpc,
+  WsScheduledTasksConnectGitHubRpc,
+  WsScheduledTasksDisconnectGitHubRpc,
+  WsScheduledTasksListWebhookEventsRpc,
+  WsScheduledTasksWebhookEventRpc,
+  WsScheduledTasksTestWebhookRpc,
+  WsScheduledTasksRunWithWebhookEventRpc,
+  WsScheduledTasksDismissWebhookAddressChangeRpc,
+  WsMovesPreviewRpc,
+  WsMovesStartRpc,
+  WsMovesCancelRpc,
+  WsProjectSetupsSourceRpc,
+  WsProjectSetupsReadFilesRpc,
+  WsProjectSetupsInspectDestinationRpc,
+  WsProjectSetupsStartRpc,
+  WsProjectSetupsCancelRpc,
+  WsProjectSetupsDismissRpc,
+  WsProjectSetupsSubscribeRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

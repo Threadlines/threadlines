@@ -31,12 +31,18 @@ export interface PersistedUiState {
   doneThreadOverrides?: Record<string, { state: "done" | "active"; at: string }>;
   /** Legacy, see `doneThreadOverrides`. */
   threadLastVisitedAtById?: Record<string, string>;
+  inboxProjectScopeKeys?: string[];
+  /** Legacy: the single project the list was narrowed to, before several could be. */
   inboxProjectScopeKey?: string | null;
   inboxEnvironmentScopeId?: string | null;
   /** See `UiInboxState.threadWrapUpOnPullRequestSettledById`. */
   threadWrapUpOnPullRequestSettledById?: Record<string, boolean>;
   /** See `UiInboxState.childThreadFamilyOpenById`. */
   childThreadFamilyOpenById?: Record<string, boolean>;
+  /** See `UiInboxState.collapsedInboxGroups`. */
+  collapsedInboxGroups?: Record<string, boolean>;
+  /** See `UiLayoutState.sidebarListOpen`. */
+  sidebarListOpen?: boolean;
 }
 
 export interface UiProjectState {
@@ -116,17 +122,33 @@ export interface UiInboxState {
    * on this device: how a list is folded is a matter of where it is read.
    */
   childThreadFamilyOpenById: Record<string, boolean>;
-  /** Which project chip is selected; null is All. */
-  inboxProjectScopeKey: string | null;
-  /** Which machine the list is narrowed to; null is All machines. */
+  /** The projects the list is narrowed to, in the order they were picked; empty is All. */
+  inboxProjectScopeKeys: readonly string[];
+  /** Which computer the list is narrowed to; null is All computers. */
   inboxEnvironmentScopeId: string | null;
+  /**
+   * Which group headers the user folded while the inbox is grouped by project
+   * or computer, by group key. Absent means open, the default. Kept on this
+   * device, like the families above.
+   */
+  collapsedInboxGroups: Record<string, boolean>;
+}
+
+export interface UiLayoutState {
+  /**
+   * Whether the thread list beside the rail is showing on wide screens.
+   * Hiding it leaves the rail. Phones show the list as a sheet instead, which
+   * always starts closed.
+   */
+  sidebarListOpen: boolean;
 }
 
 export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiState extends UiProjectState, UiThreadState, UiInboxState, UiEndpointState {}
+export interface UiState
+  extends UiProjectState, UiThreadState, UiInboxState, UiLayoutState, UiEndpointState {}
 
 export interface SyncProjectInput {
   /** Physical project key (env + cwd). Used for manual sort order. */
@@ -153,8 +175,10 @@ const initialState: UiState = {
   doneThreadOverlays: {},
   threadWrapUpOnPullRequestSettledById: {},
   childThreadFamilyOpenById: {},
-  inboxProjectScopeKey: null,
+  inboxProjectScopeKeys: [],
   inboxEnvironmentScopeId: null,
+  collapsedInboxGroups: {},
+  sidebarListOpen: true,
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -200,10 +224,7 @@ export function readPersistedState(): UiState {
       threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
         parsed.threadChangedFilesExpandedById,
       ),
-      inboxProjectScopeKey:
-        typeof parsed.inboxProjectScopeKey === "string" && parsed.inboxProjectScopeKey.length > 0
-          ? parsed.inboxProjectScopeKey
-          : null,
+      inboxProjectScopeKeys: sanitizePersistedProjectScopeKeys(parsed),
       inboxEnvironmentScopeId:
         typeof parsed.inboxEnvironmentScopeId === "string" &&
         parsed.inboxEnvironmentScopeId.length > 0
@@ -213,6 +234,8 @@ export function readPersistedState(): UiState {
         parsed.threadWrapUpOnPullRequestSettledById,
       ),
       childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
+      collapsedInboxGroups: sanitizePersistedBooleanRecord(parsed.collapsedInboxGroups),
+      sidebarListOpen: parsed.sidebarListOpen !== false,
     };
   } catch {
     return initialState;
@@ -287,6 +310,24 @@ export function dropLegacyInboxState(threadKeys: readonly string[]): void {
   } catch {
     // Ignore quota/storage errors to avoid breaking chat UX.
   }
+}
+
+/**
+ * The persisted project scope. A build from before several projects could be
+ * picked stored one key, which carries over as a scope of one; anything that
+ * is not a non-empty key is dropped rather than kept as a scope nothing can
+ * match.
+ */
+function sanitizePersistedProjectScopeKeys(parsed: PersistedUiState): string[] {
+  const stored: unknown = parsed.inboxProjectScopeKeys ?? parsed.inboxProjectScopeKey;
+  const candidates: readonly unknown[] = Array.isArray(stored) ? stored : [stored];
+  const keys: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0 && !keys.includes(candidate)) {
+      keys.push(candidate);
+    }
+  }
+  return keys;
 }
 
 function sanitizePersistedBooleanRecord(
@@ -425,10 +466,12 @@ export function persistState(state: UiState): void {
         projectOrderCwds,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
-        inboxProjectScopeKey: state.inboxProjectScopeKey,
+        inboxProjectScopeKeys: [...state.inboxProjectScopeKeys],
         inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
         threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
+        collapsedInboxGroups: state.collapsedInboxGroups,
+        sidebarListOpen: state.sidebarListOpen,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -893,6 +936,27 @@ export function setChildThreadFamilyOpen(
 }
 
 /**
+ * Folds or unfolds one group of the grouped inbox. Open is the default, so
+ * unfolding forgets the entry rather than storing it.
+ */
+export function setInboxGroupCollapsed(
+  state: UiState,
+  groupKey: string,
+  collapsed: boolean,
+): UiState {
+  if ((state.collapsedInboxGroups[groupKey] ?? false) === collapsed) {
+    return state;
+  }
+  const next = { ...state.collapsedInboxGroups };
+  if (collapsed) {
+    next[groupKey] = true;
+  } else {
+    delete next[groupKey];
+  }
+  return { ...state, collapsedInboxGroups: next };
+}
+
+/**
  * The user's word for one thread on wrapping up once its pull request
  * settles. From here on the thread stops following the app setting.
  */
@@ -1055,11 +1119,14 @@ interface UiStateStore extends UiState {
     writeId: number,
     outcome: { readonly serverLastSeenAt: string | null; readonly resendsLeft?: number },
   ) => void;
-  setInboxProjectScope: (projectKey: string | null) => void;
+  setInboxProjectScope: (projectKeys: readonly string[]) => void;
   setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
   setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
+  setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
+  setSidebarListOpen: (open: boolean) => void;
+  toggleSidebarListOpen: () => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -1085,11 +1152,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => resolveDoneOverlay(state, threadKey, at, outcome)),
   settleSeenOverlay: (threadKey, writeId, outcome) =>
     set((state) => settleSeenOverlay(state, threadKey, writeId, outcome)),
-  setInboxProjectScope: (projectKey) =>
+  setInboxProjectScope: (projectKeys) =>
     set((state) =>
-      state.inboxProjectScopeKey === projectKey
+      state.inboxProjectScopeKeys.length === projectKeys.length &&
+      state.inboxProjectScopeKeys.every((key, index) => key === projectKeys[index])
         ? state
-        : { ...state, inboxProjectScopeKey: projectKey },
+        : { ...state, inboxProjectScopeKeys: [...projectKeys] },
     ),
   setInboxEnvironmentScope: (environmentId) =>
     set((state) =>
@@ -1102,6 +1170,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadWrapUpOnPullRequestSettled(state, threadKey, wrapUp)),
   setChildThreadFamilyOpen: (parentThreadKey, open) =>
     set((state) => setChildThreadFamilyOpen(state, parentThreadKey, open)),
+  setInboxGroupCollapsed: (groupKey, collapsed) =>
+    set((state) => setInboxGroupCollapsed(state, groupKey, collapsed)),
+  setSidebarListOpen: (open) =>
+    set((state) => (state.sidebarListOpen === open ? state : { ...state, sidebarListOpen: open })),
+  toggleSidebarListOpen: () =>
+    set((state) => ({ ...state, sidebarListOpen: !state.sidebarListOpen })),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),

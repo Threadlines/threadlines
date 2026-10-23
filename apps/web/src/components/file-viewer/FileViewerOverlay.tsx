@@ -569,7 +569,7 @@ function FileViewerTree({
             spellCheck={false}
             // 16px on coarse pointers: iOS Safari force-zooms focused inputs
             // below that size, which jolts the whole dialog.
-            className="w-full border-0 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/60 pointer-coarse:text-base"
+            className="w-full border-0 bg-transparent text-xs text-foreground outline-none pointer-coarse:text-base"
           />
         </div>
       </div>

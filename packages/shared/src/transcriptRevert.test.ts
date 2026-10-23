@@ -16,6 +16,7 @@ const message = (
     requestKind?: string;
     requestOutcome?: string;
     fromThread?: { kind: string };
+    imported?: boolean;
   } = {},
 ) => {
   sequence += 1;
@@ -70,6 +71,32 @@ describe("retainMessagesAfterRevert", () => {
       "review-answer",
       "a2",
     ]);
+  });
+});
+
+describe("revert of a thread moved here", () => {
+  it("keeps what the move brought and counts only this computer's turns", () => {
+    const messages = [
+      message("moved-u1", "user", { imported: true }),
+      message("moved-a1", "assistant", { turnId: "moved-t1", imported: true }),
+      message("moved-u2", "user", { imported: true }),
+      message("moved-a2", "assistant", { turnId: "moved-t2", imported: true }),
+      message("u1", "user"),
+      message("a1", "assistant", { turnId: "t1" }),
+      message("u2", "user"),
+      message("a2", "assistant", { turnId: "t2" }),
+    ];
+    const kept = (turnCount: number, retainedTurnIds: ReadonlyArray<string>) =>
+      retainMessagesAfterRevert({
+        messages,
+        idOf: (entry) => entry.id,
+        retainedTurnIds: new Set(retainedTurnIds),
+        turnCount,
+      }).map((entry) => entry.id);
+    // Back to the moment it arrived: all of its history, none of this computer's.
+    expect(kept(0, [])).toEqual(["moved-u1", "moved-a1", "moved-u2", "moved-a2"]);
+    // This computer's first turn stays with it, its own prompt included.
+    expect(kept(1, ["t1"])).toEqual(["moved-u1", "moved-a1", "moved-u2", "moved-a2", "u1", "a1"]);
   });
 });
 

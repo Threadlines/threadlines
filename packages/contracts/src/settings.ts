@@ -36,6 +36,14 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository_path";
+/**
+ * How the inbox's live list is arranged: one list, or under a header per
+ * project or per computer. A family of threads always goes where its parent
+ * goes.
+ */
+export const SidebarGrouping = Schema.Literals(["none", "project", "computer"]);
+export type SidebarGrouping = typeof SidebarGrouping.Type;
+export const DEFAULT_SIDEBAR_GROUPING: SidebarGrouping = "none";
 export const MIN_SIDEBAR_THREAD_PREVIEW_COUNT = 1;
 export const MAX_SIDEBAR_THREAD_PREVIEW_COUNT = 15;
 export const SidebarThreadPreviewCount = Schema.Int.check(
@@ -131,6 +139,11 @@ export const ClientSettingsSchema = Schema.Struct({
    * to that agent (docs/design/child-threads.md).
    */
   wrapUpChildThreadsOnFinish: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * File a thread under Wrapped once it has sat idle for two days with nothing
+   * unseen in it. Off, only the user and the rules above wrap threads up.
+   */
+  wrapUpIdleThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -192,6 +205,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // full internal state). Set via the dialog's "Don't ask again" checkbox.
   suppressCrossProviderSwitchWarning: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  sidebarGrouping: SidebarGrouping.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_GROUPING)),
   ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
@@ -1148,6 +1164,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
   wrapUpChildThreadsOnFinish: Schema.optionalKey(Schema.Boolean),
+  wrapUpIdleThreads: Schema.optionalKey(Schema.Boolean),
   dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
   dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   diffChangesOnly: Schema.optionalKey(Schema.Boolean),
@@ -1183,6 +1200,7 @@ export const ClientSettingsPatch = Schema.Struct({
     ),
   ),
   suppressCrossProviderSwitchWarning: Schema.optionalKey(Schema.Boolean),
+  sidebarGrouping: Schema.optionalKey(SidebarGrouping),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

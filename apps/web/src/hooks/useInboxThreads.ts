@@ -22,7 +22,6 @@ import {
   threadPullRequestLookupRequests,
   type ThreadPullRequest,
 } from "../components/pull-requests/pullRequests.logic";
-import type { SidebarGeneralChatEntry } from "../components/sidebar/SidebarGeneralChats";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
   PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
@@ -64,7 +63,10 @@ export interface InboxEntry {
 }
 
 /** A general chat with its seen-aware status, and when the user last saw it. */
-export interface InboxGeneralChatEntry extends SidebarGeneralChatEntry {
+export interface InboxGeneralChatEntry {
+  readonly threadKey: string;
+  readonly thread: SidebarThreadSummary;
+  readonly status: ThreadStatusPill | null;
   readonly lastVisitedAt: string | undefined;
 }
 
@@ -126,6 +128,7 @@ export function useInboxThreads(): InboxThreads {
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
+  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
   const nowMs = useRelativeTimeTick(INBOX_CLOCK_INTERVAL_MS);
   const nowIso = useMemo(() => new Date(nowMs).toISOString(), [nowMs]);
 
@@ -292,6 +295,7 @@ export function useInboxThreads(): InboxThreads {
         doneOverlays: doneThreadOverlays,
         now: nowIso,
         wrapUpChildThreadsOnFinish,
+        wrapUpIdleThreads,
         // The thread's own word wins over the app setting. It waits for every
         // pull request the thread has, its own and the ones its agent opened
         // elsewhere. A landing the host did not date is taken as now, which
@@ -333,6 +337,7 @@ export function useInboxThreads(): InboxThreads {
       seenThreadOverlays,
       sidebarProjectByKey,
       wrapUpChildThreadsOnFinish,
+      wrapUpIdleThreads,
       wrapUpOnPullRequestSettled,
       threadSeedVisitedAtById,
       threadWrapUpOnPullRequestSettledById,

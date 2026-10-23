@@ -46,6 +46,7 @@ import { metricAttributes, providerFirstOutputDuration } from "../../observabili
 import { isAgentOutputEvent } from "../../provider/turnLatency.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
+import { withoutLaunchMark } from "../sessionLaunches.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -67,6 +68,8 @@ import {
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
+import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
+import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -1246,6 +1249,10 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  // Computer links, when this server has them: see RemoteRequestTurnEnds.
+  const remoteRequestTurnEnds = yield* Effect.serviceOption(RemoteRequestTurnEnds);
+  // Scheduled tasks, when this server has them: see ScheduledRunTurnEnds.
+  const scheduledRunTurnEnds = yield* Effect.serviceOption(ScheduledRunTurnEnds);
   const serverSettingsService = yield* ServerSettingsService;
   const agentPages = yield* AgentPages;
   const mcpApps = yield* McpApps;
@@ -2769,15 +2776,40 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
   }) {
     const child = yield* resolveThreadDetail(input.threadId);
-    if (child === undefined || child === null || child.parentThreadId === null) {
+    if (child === undefined || child === null) {
+      return;
+    }
+    // A thread a linked computer's agent started here answers through the
+    // link ledger (docs/design/fleet.md, "Records on B"), by the same rules.
+    if ((child.remoteOrigin ?? null) !== null) {
+      if (Option.isSome(remoteRequestTurnEnds)) {
+        const turn = yield* projectionTurnRepository
+          .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+          .pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          );
+        yield* remoteRequestTurnEnds.value.onTurnEnd({
+          child,
+          end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
+          pendingMessageId: turn?.pendingMessageId ?? null,
+          createdAt: input.createdAt,
+        });
+      }
+      return;
+    }
+    if (child.parentThreadId === null) {
       return;
     }
     const parent = yield* resolveThreadDetail(child.parentThreadId);
-    if (
-      parent === undefined ||
-      parent === null ||
-      !parent.childRequests.open.some((request) => request.childThreadId === child.id)
-    ) {
+    // Requests to a child on a linked computer are RemoteChildReactor's.
+    const owned =
+      parent === undefined || parent === null
+        ? []
+        : parent.childRequests.open.filter(
+            (request) => request.childThreadId === child.id && request.remote === undefined,
+          );
+    if (parent === undefined || parent === null || owned.length === 0) {
       return;
     }
     const turn = yield* projectionTurnRepository
@@ -2787,7 +2819,7 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
     const delivery = childDeliveryForTurnEnd({
-      parent,
+      owned,
       child,
       end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
       pendingMessageId: turn?.pendingMessageId ?? null,
@@ -2984,6 +3016,21 @@ const make = Effect.gen(function* () {
       }
       if (event.type === "session.check-backs.updated") {
         yield* recordCheckBacks(event, thread);
+        return;
+      }
+      // A thread moving or moved to another computer is frozen here: its
+      // runtime was stopped at the freeze, and a turn one starts by itself
+      // anyway is refused and stopped.
+      if (
+        (thread.move ?? null) !== null &&
+        event.type === "turn.started" &&
+        event.turnId !== undefined
+      ) {
+        const key = participantSessionKey(thread.id, event.participantId ?? null);
+        yield* turnAdmission.decide(key, event.turnId, "rejected");
+        yield* providerService
+          .interruptTurn({ threadId: key, turnId: event.turnId })
+          .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
         return;
       }
       // In a room, only the agent holding the session slot is working; an
@@ -3528,7 +3575,7 @@ const make = Effect.gen(function* () {
           commandId: providerCommandId(event, "thread-idle-session-set"),
           threadId: thread.id,
           session: {
-            ...thread.session,
+            ...withoutLaunchMark(thread.session),
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -3567,7 +3614,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "task-snapshot-session-set"),
             threadId: thread.id,
             session: {
-              ...thread.session,
+              ...withoutLaunchMark(thread.session),
               pendingBackgroundTaskCount: nextPendingCount,
               awaitedBackgroundTaskCount: nextAwaitedTasks.length,
               awaitedBackgroundTasks: nextAwaitedTasks,
@@ -3608,7 +3655,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "task-pending-session-set"),
             threadId: thread.id,
             session: {
-              ...thread.session,
+              ...withoutLaunchMark(thread.session),
               pendingBackgroundTaskCount: nextPendingCount,
               // Edges carry no intent, so every task is awaited, and no list:
               // with nothing describing them, the wait stays unspecific.
@@ -3973,21 +4020,39 @@ const make = Effect.gen(function* () {
             event.type === "turn.completed"
               ? normalizeRuntimeTurnState(event.payload.state)
               : "interrupted";
+          const turnOutcome =
+            endedState === "completed"
+              ? ("completed" as const)
+              : endedState === "failed"
+                ? ("failed" as const)
+                : ("interrupted" as const);
+          const turnError =
+            event.type === "turn.completed" && endedState === "failed"
+              ? (event.payload.errorMessage ?? thread.session?.lastError ?? undefined)
+              : undefined;
           yield* routeChildReport({
             threadId: thread.id,
             turnId,
-            outcome:
-              endedState === "completed"
-                ? "completed"
-                : endedState === "failed"
-                  ? "failed"
-                  : "interrupted",
-            error:
-              event.type === "turn.completed" && endedState === "failed"
-                ? (event.payload.errorMessage ?? thread.session?.lastError ?? undefined)
-                : undefined,
+            outcome: turnOutcome,
+            error: turnError,
             createdAt: now,
           });
+          // And a scheduled task's run that this turn's message started.
+          if (Option.isSome(scheduledRunTurnEnds)) {
+            const endedTurn = yield* projectionTurnRepository
+              .getByTurnId({ threadId: thread.id, turnId })
+              .pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.orElseSucceed(() => undefined),
+              );
+            yield* scheduledRunTurnEnds.value.onTurnEnd({
+              threadId: thread.id,
+              turnId,
+              outcome: turnOutcome,
+              error: turnError,
+              pendingMessageId: endedTurn?.pendingMessageId ?? null,
+            });
+          }
 
           yield* finalizeBufferedProposedPlan({
             event,

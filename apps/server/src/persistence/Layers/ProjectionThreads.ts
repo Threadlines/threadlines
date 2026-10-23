@@ -10,6 +10,7 @@ import {
   DeleteProjectionThreadInput,
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
+  ListProjectionThreadsByRemoteLinkInput,
   ProjectionThread,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
@@ -25,6 +26,11 @@ import {
   OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  ThreadId,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
+  ThreadRemoteOrigin,
+  ThreadScheduledRun,
   PositiveInt,
 } from "@threadlines/contracts";
 
@@ -44,6 +50,10 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
     agentRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
+    remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
+    scheduledRun: Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun)),
+    move: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove)),
+    movedFrom: Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom)),
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
@@ -98,6 +108,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id,
           archived_with_parent_at,
           child_requests,
+          remote_origin_json,
+          scheduled_run_json,
+          move_json,
+          moved_from_json,
+          history_seed_owed,
+          history_seed_message_id,
           done_override,
           done_override_at,
           last_seen_at,
@@ -151,6 +167,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.handedBackTurnId ?? null},
           ${row.archivedWithParentAt ?? null},
           ${row.childRequests ? JSON.stringify(row.childRequests) : null},
+          ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
+          ${row.scheduledRun ? JSON.stringify(row.scheduledRun) : null},
+          ${row.move ? JSON.stringify(row.move) : null},
+          ${row.movedFrom ? JSON.stringify(row.movedFrom) : null},
+          ${row.historySeedOwed ?? 0},
+          ${row.historySeedMessageId ?? null},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -200,6 +222,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id = excluded.handed_back_turn_id,
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
+          remote_origin_json = excluded.remote_origin_json,
+          scheduled_run_json = excluded.scheduled_run_json,
+          move_json = excluded.move_json,
+          moved_from_json = excluded.moved_from_json,
+          history_seed_owed = excluded.history_seed_owed,
+          history_seed_message_id = excluded.history_seed_message_id,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -256,6 +284,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -314,6 +348,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -325,6 +365,20 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE project_id = ${projectId}
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listThreadIdsByRemoteLink = SqlSchema.findAll({
+    Request: ListProjectionThreadsByRemoteLinkInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ linkDeviceId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE remote_origin_json IS NOT NULL
+          AND json_extract(remote_origin_json, '$.linkDeviceId') = ${linkDeviceId}
+          AND deleted_at IS NULL
         ORDER BY created_at ASC, thread_id ASC
       `,
   });
@@ -353,6 +407,14 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.listByProjectId:query")),
     );
 
+  const listIdsByRemoteLink: ProjectionThreadRepositoryShape["listIdsByRemoteLink"] = (input) =>
+    listThreadIdsByRemoteLink(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listIdsByRemoteLink:query"),
+      ),
+    );
+
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>
     deleteProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
@@ -362,6 +424,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     upsert,
     getById,
     listByProjectId,
+    listIdsByRemoteLink,
     deleteById,
   } satisfies ProjectionThreadRepositoryShape;
 });

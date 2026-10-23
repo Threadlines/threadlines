@@ -1,15 +1,23 @@
-import type { ProviderInstanceId } from "@threadlines/contracts";
+import type { EnvironmentId, ProviderInstanceId } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 import { ActivityIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
-import { ensureLocalApi } from "../../localApi";
+import { refreshProviderStatus } from "../../environments/providerStatusRefresh";
 import { Button } from "../ui/button";
 
-export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null): {
+/**
+ * Refresh for a provider's status, asked of the computer the thread runs on
+ * (`environmentId`; null asks the app's own backend).
+ */
+export function useProviderStatusRefresh(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly instanceId: ProviderInstanceId | null;
+}): {
   isRefreshing: boolean;
   refreshError: string | null;
   refreshProvider: () => void;
 } {
+  const { environmentId, instanceId } = input;
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const refreshProvider = useCallback(() => {
@@ -19,8 +27,7 @@ export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null):
 
     setRefreshError(null);
     setIsRefreshing(true);
-    void ensureLocalApi()
-      .server.refreshProviders({ instanceId })
+    void refreshProviderStatus({ environmentId, instanceId })
       .catch((error: unknown) => {
         setRefreshError(
           error instanceof Error ? error.message : "Provider status could not be refreshed.",
@@ -29,7 +36,7 @@ export function useProviderStatusRefresh(instanceId: ProviderInstanceId | null):
       .finally(() => {
         setIsRefreshing(false);
       });
-  }, [instanceId, isRefreshing]);
+  }, [environmentId, instanceId, isRefreshing]);
   return { isRefreshing, refreshError, refreshProvider };
 }
 

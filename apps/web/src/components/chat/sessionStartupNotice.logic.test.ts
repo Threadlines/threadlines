@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   getSessionStartupNoticeDelayMs,
   SESSION_STARTUP_SLOW_NOTICE_DELAY_MS,
+  sessionStartupNoticeMessage,
   shouldShowSessionStartupNotice,
 } from "./sessionStartupNotice";
 
@@ -104,5 +105,24 @@ describe("shouldShowSessionStartupNotice", () => {
         nowMs: STARTED_AT_MS + SESSION_STARTUP_SLOW_NOTICE_DELAY_MS,
       }),
     ).toBe(false);
+  });
+});
+
+describe("sessionStartupNoticeMessage", () => {
+  it("names the agent that is slow to start, as written, or else the turn being prepared", () => {
+    expect(sessionStartupNoticeMessage({ agentName: "Codex" })).toBe(
+      "Codex is taking a while to start. Refresh provider status or open diagnostics if it stays stuck.",
+    );
+    // A lowercase brand stays as written.
+    expect(sessionStartupNoticeMessage({ agentName: "fx" })).toMatch(
+      /^fx is taking a while to start\./,
+    );
+    // An instance that is gone has no name to give.
+    expect(sessionStartupNoticeMessage({ agentName: null })).toMatch(
+      /^The agent is taking a while to start\./,
+    );
+    expect(sessionStartupNoticeMessage(null)).toBe(
+      "Preparing this turn is taking longer than usual. Refresh provider status or open diagnostics if it stays stuck.",
+    );
   });
 });

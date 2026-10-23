@@ -73,6 +73,7 @@ import {
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 import { isImageFilePath } from "./lib/imageFilePaths";
 import { keyedMemo } from "./lib/derivationMemo";
+import { THREAD_MOVE_FAILED_ACTIVITY_KIND, THREAD_MOVED_IN_ACTIVITY_KIND } from "./threadMove";
 
 import type {
   ChatMessage,
@@ -284,6 +285,16 @@ export interface PendingApproval {
   toolName?: string;
   /** What is being approved: the command, path, or tool summary. */
   detail?: string;
+  /** The agent's own sentence for the request ("Claude wants to read notes.txt"). */
+  title?: string;
+  /** Why the agent asks rather than going ahead. */
+  reason?: string;
+  /** What approving allows, in the agent's words. */
+  description?: string;
+  /** The file or folder that made the agent ask. */
+  blockedPath?: string;
+  /** The agent asks that this one not be approved by habit. */
+  defaultToNo?: boolean;
   /** A workflow asking to run: its plan, from the script's own header. */
   workflow?: PendingWorkflowApproval;
 }
@@ -565,6 +576,20 @@ export interface ForkContextEntry {
   seedMode?: ThreadForkSeedOutcomePayload["seedMode"];
 }
 
+/**
+ * Where a thread that moved here from another computer starts being this
+ * computer's: the end of the history it brought (the `thread.moved-in`
+ * activity). Revert never reaches past it.
+ */
+export interface MovedInEntry {
+  readonly id: string;
+  readonly eventSequence?: number | undefined;
+  readonly createdAt: string;
+  /** The computer it came from, by the name it had then. */
+  readonly fromLabel: string;
+  readonly movedAt: string;
+}
+
 /** An MCP app card: the finished tool call whose tool ships the app
  *  (docs/mcp-apps.md). */
 export interface McpAppEntry {
@@ -609,6 +634,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "fork-context";
       createdAt: string;
       forkContext: ForkContextEntry;
+    }
+  | {
+      id: string;
+      kind: "moved-in";
+      createdAt: string;
+      movedIn: MovedInEntry;
     }
   | {
       id: string;
@@ -853,6 +884,37 @@ export function deriveActiveWorkStartedAt(
   return sendStartedAt;
 }
 
+/**
+ * The computer to name with a thread's agent: only when the app is connected
+ * to more than one computer and the thread is on one other than this
+ * device's own. Null when there is nothing worth naming.
+ */
+export function deriveThreadComputerName(input: {
+  readonly threadEnvironmentId: string;
+  readonly primaryEnvironmentId: string | null;
+  readonly connectedEnvironmentIds: ReadonlyArray<string>;
+  readonly computerLabel: string | null | undefined;
+}): string | null {
+  if (input.threadEnvironmentId === input.primaryEnvironmentId) return null;
+  const connected = new Set(input.connectedEnvironmentIds);
+  if (input.primaryEnvironmentId !== null) connected.add(input.primaryEnvironmentId);
+  if (connected.size < 2) return null;
+  return input.computerLabel?.trim() || null;
+}
+
+/**
+ * What the chat calls an agent whose program is starting: its instance's
+ * name, with the computer when there is one worth naming ("Codex on Mac
+ * mini"), or "the agent" when the instance is gone.
+ */
+export function describeLaunchingAgent(input: {
+  readonly agentName: string | null | undefined;
+  readonly computerName: string | null;
+}): string {
+  const agent = input.agentName?.trim() || "the agent";
+  return input.computerName ? `${agent} on ${input.computerName}` : agent;
+}
+
 export function deriveActiveStatusLabel(input: {
   phase: SessionPhase;
   workLogEntries: ReadonlyArray<WorkLogEntry>;
@@ -864,12 +926,17 @@ export function deriveActiveStatusLabel(input: {
   pendingApprovalCount?: number;
   pendingUserInputCount?: number;
   isSessionStarting?: boolean;
+  /** While the session starts, the agent whose program is starting, if one is
+   *  (see describeLaunchingAgent). Otherwise the turn is being prepared. */
+  launchingAgent?: string | null;
 }): string {
   if (input.isRevertingCheckpoint) return "Reverting checkpoint";
   if (input.isPreparingWorktree) return "Preparing worktree";
   if ((input.pendingUserInputCount ?? 0) > 0) return "Waiting for input";
   if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
-  if (input.isSessionStarting) return "Preparing turn";
+  if (input.isSessionStarting) {
+    return input.launchingAgent ? `Starting ${input.launchingAgent}` : "Preparing turn";
+  }
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
   if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
   // Private reasoning renders no timeline row; the working anchor's label is
@@ -930,7 +997,15 @@ export function derivePendingApprovals(
         ? payload.availableDecisions.filter(isProviderApprovalDecision)
         : undefined;
       const decisionWarnings = readDecisionWarnings(payload?.decisionWarnings);
-      const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+      const text = (key: string) => {
+        const value = payload?.[key];
+        return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+      };
+      const detail = text("detail");
+      const title = text("title");
+      const reason = text("reason");
+      const description = text("description");
+      const blockedPath = text("blockedPath");
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
       const environmentId =
@@ -944,12 +1019,31 @@ export function derivePendingApprovals(
           ...(environmentId ? { environmentId } : {}),
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
+          ...(title ? { title } : {}),
+          ...(reason ? { reason } : {}),
+          ...(description ? { description } : {}),
+          ...(blockedPath ? { blockedPath } : {}),
+          ...(payload?.defaultToNo === true ? { defaultToNo: true } : {}),
           ...(workflow ? { workflow } : {}),
           ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
           ...(decisionWarnings ? { decisionWarnings } : {}),
         },
       ];
     });
+}
+
+/**
+ * The answer a message typed while `approval` waits gives it: "no", so the
+ * agent reads the message as what to do instead. An agent that can't be told
+ * no is stopped ("cancel"), and the message starts its next turn. Null when
+ * it offers neither.
+ */
+export function approvalDeclineDecision(
+  approval: Pick<PendingApproval, "availableDecisions">,
+): Extract<ProviderApprovalDecision, "decline" | "cancel"> | null {
+  const offered = approval.availableDecisions;
+  if (!offered || offered.includes("decline")) return "decline";
+  return offered.includes("cancel") ? "cancel" : null;
 }
 
 function parseUserInputQuestions(
@@ -1695,6 +1789,32 @@ export function deriveForkContextEntries(
       ];
     })
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** The moved-in boundaries a thread's activities hold: one for a thread that moved here. */
+export function deriveMovedInEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): MovedInEntry[] {
+  return activities
+    .filter((activity) => activity.kind === THREAD_MOVED_IN_ACTIVITY_KIND)
+    .flatMap((activity) => {
+      const payload = asRecord(activity.payload);
+      const fromLabel = asTrimmedString(payload?.fromLabel);
+      if (!fromLabel) {
+        return [];
+      }
+      return [
+        {
+          id: activity.id,
+          createdAt: activity.createdAt,
+          ...(activity.eventSequence !== undefined
+            ? { eventSequence: activity.eventSequence }
+            : {}),
+          fromLabel,
+          movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
+        },
+      ];
+    });
 }
 
 interface TurnModelSelection {
@@ -3051,6 +3171,8 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
+    // A moved thread's boundary is its own row (deriveMovedInEntries).
+    .filter((activity) => activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND)
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
@@ -3356,16 +3478,21 @@ function toDerivedWorkLogEntry(
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
   const runtimeWarningDisplay = deriveRuntimeWarningDisplay(activity, payload);
-  const detail = isTaskActivity
-    ? !taskDetailAsLabel &&
-      payload &&
-      typeof payload.detail === "string" &&
-      payload.detail.length > 0
-      ? stripTrailingExitCode(payload.detail).output
-      : null
-    : (runtimeWarningDisplay?.detail ??
-      extractRuntimeActivityDetail(activity, payload) ??
-      extractToolDetail(payload, title ?? activity.summary));
+  // A dropped move says why under its "Couldn't move to …".
+  const moveFailureReason =
+    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND ? asTrimmedString(payload?.reason) : null;
+  const detail = moveFailureReason
+    ? moveFailureReason
+    : isTaskActivity
+      ? !taskDetailAsLabel &&
+        payload &&
+        typeof payload.detail === "string" &&
+        payload.detail.length > 0
+        ? stripTrailingExitCode(payload.detail).output
+        : null
+      : (runtimeWarningDisplay?.detail ??
+        extractRuntimeActivityDetail(activity, payload) ??
+        extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const browserReceipt = deriveBrowserReceipt(payload);
   const entry: DerivedWorkLogEntry = {
@@ -3434,7 +3561,7 @@ function toDerivedWorkLogEntry(
       }
     }
   }
-  if (itemType === "mcp_tool_call") {
+  if (itemType === "mcp_tool_call" || itemType === "dynamic_tool_call") {
     const toolResult = extractMcpToolResultText(payload);
     if (toolResult) {
       entry.toolResult = toolResult;
@@ -4522,13 +4649,21 @@ function mcpContentText(content: unknown): string | null {
 /**
  * What an MCP tool call answered (see WorkLogEntry.toolResult). Codex keeps
  * the call's result on its item (`data.item.result`, structured content
- * first); Claude passes the `tool_result` block (`data.result`).
+ * first); Claude passes the `tool_result` block (`data.result`); an ACP
+ * agent its raw output (`data.rawOutput`), else its content blocks
+ * (`data.content`, each `{type: "content", content: {type: "text"}}`).
  */
 function extractMcpToolResultText(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   const result = asRecord(asRecord(data?.item)?.result) ?? asRecord(data?.result);
   if (!result) {
-    return null;
+    const rawOutput = data?.rawOutput;
+    if (rawOutput !== undefined && rawOutput !== null) {
+      return typeof rawOutput === "string" ? asTrimmedString(rawOutput) : JSON.stringify(rawOutput);
+    }
+    return Array.isArray(data?.content)
+      ? mcpContentText(data.content.map((block) => asRecord(block)?.content))
+      : null;
   }
   const structured = result.structuredContent;
   if (structured !== undefined && structured !== null) {
@@ -5972,6 +6107,7 @@ export function deriveTimelineEntries(
   pages: ReadonlyArray<OrchestrationAgentPage> = [],
   commandRequests: ReadonlyArray<OrchestrationCommandRequest> = [],
   workflowRuns: ReadonlyArray<OrchestrationWorkflowRun> = [],
+  movedInEntries: ReadonlyArray<MovedInEntry> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
   // A workflow run shows as its card, where the call that launched it was:
@@ -6059,6 +6195,14 @@ export function deriveTimelineEntries(
       : {}),
     forkContext,
   }));
+  // Where a moved thread's imported history ends, after it.
+  const movedInRows: TimelineEntry[] = movedInEntries.map((movedIn) => ({
+    id: movedIn.id,
+    kind: "moved-in",
+    createdAt: movedIn.createdAt,
+    ...(movedIn.eventSequence !== undefined ? { eventSequence: movedIn.eventSequence } : {}),
+    movedIn,
+  }));
   // A page stands where its turn first showed it; later versions in the same
   // turn replace it there (agentPages.ts).
   const pageRows: TimelineEntry[] = pages.map((page) => ({
@@ -6078,6 +6222,7 @@ export function deriveTimelineEntries(
   }));
   return [
     ...forkContextRows,
+    ...movedInRows,
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
@@ -6154,6 +6299,8 @@ export function inferCheckpointTurnCountByTurnId(
  * that joined a turn already running (the user's steer, an answer to the
  * agent's question, a reply or report steered in): it has no checkpoint of its
  * own, and it must not hide the one of the message that started its turn.
+ * Nor does history a move brought (`imported`): its turns were another
+ * computer's.
  */
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -6168,6 +6315,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       !entry ||
       entry.kind !== "message" ||
       entry.message.role !== "user" ||
+      entry.message.imported === true ||
       isAgentOrigin(entry.message) ||
       isTurnAside(entry.message)
     ) {

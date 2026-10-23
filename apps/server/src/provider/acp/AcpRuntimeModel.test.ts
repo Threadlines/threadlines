@@ -218,6 +218,40 @@ describe("AcpRuntimeModel", () => {
     }
   });
 
+  it("keeps a call's name through an update that carries only its result", () => {
+    const toolCallOf = (update: EffectAcpSchema.SessionNotification["update"]) => {
+      const event = parseSessionUpdateEvent({ sessionId: "session-1", update }).events[0];
+      if (event?._tag !== "ToolCallUpdated") throw new Error("expected a tool call");
+      return event.toolCall;
+    };
+    const started = toolCallOf({
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-2",
+      title: "mcp__threadlines_room__schedule_create",
+      status: "in_progress",
+    });
+    const result = [
+      {
+        type: "content" as const,
+        content: { type: "text" as const, text: '{"outcome":"asked_user"}' },
+      },
+    ];
+    // With only its result, or its kind repeated too.
+    for (const update of [
+      { status: "completed" as const, content: result },
+      { status: "completed" as const, kind: "other" as const, content: result },
+    ]) {
+      const finished = toolCallOf({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-2",
+        ...update,
+      });
+      expect(mergeToolCallState(started, finished).title).toBe(
+        "mcp__threadlines_room__schedule_create",
+      );
+    }
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",

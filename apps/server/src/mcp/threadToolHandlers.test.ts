@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   type AgentThreadsMode,
   EMPTY_AGENT_REQUEST_STATE,
+  EnvironmentId,
+  type PeerDescriptor,
   EMPTY_CHILD_REQUEST_STATE,
   MessageId,
   type OrchestrationChildRequest,
@@ -22,7 +24,8 @@ import * as Effect from "effect/Effect";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { roomToolsFor, THREAD_TOOL_NAMES } from "./roomToolAccess.ts";
-import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
+import { linkThreadId } from "../links/linkIds.ts";
+import { makeThreadToolHandlers, type ThreadToolLinks } from "./threadToolHandlers.ts";
 
 const PROJECT = ProjectId.make("project-1");
 const PARENT = ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01");
@@ -152,6 +155,7 @@ const makeTools = (options: {
   readonly others?: ReadonlyArray<OrchestrationThread>;
   readonly mode?: AgentThreadsMode;
   readonly gitRepository?: boolean;
+  readonly links?: ThreadToolLinks;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -216,6 +220,7 @@ const makeTools = (options: {
           }),
       },
       requests: makeRoomRequestRegistry(yield* Effect.scope),
+      ...(options.links !== undefined ? { links: options.links } : {}),
     });
     return {
       handlers,
@@ -639,6 +644,199 @@ describe("thread_list", () => {
         ["Child", true, "idle"],
         ["Separated", false, "failed"],
       ]);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Linked computers (docs/design/fleet.md, Part 2)
+// ---------------------------------------------------------------------------
+
+const MAC_MINI = EnvironmentId.make("env-mac-mini");
+const MAC_DESCRIPTOR: PeerDescriptor = {
+  environmentId: MAC_MINI,
+  label: "Mac mini",
+  platform: "macOS",
+  serverVersion: "0.0.0",
+  directRoutes: [],
+  access: "allowed",
+  maxRuntimeMode: "auto",
+  agents: [
+    {
+      instanceId: "mac-claude",
+      name: "Claude",
+      billing: "Claude Max",
+      models: [{ model: "opus-5-5", name: "Opus 5.5" }],
+      driver: "claudeAgent",
+    },
+    {
+      instanceId: "mac-codex",
+      name: "Codex",
+      billing: "ChatGPT Pro",
+      models: [{ model: "gpt-6-astra", name: "GPT-6 Astra" }],
+      driver: "codex",
+    },
+  ],
+  defaultAgent: { instanceId: "mac-claude", model: "opus-5-5" },
+  projects: [{ name: "threadlines", canonicalKey: "github.com/threadlines/threadlines" }],
+};
+
+const fakeLinks = (patch: Partial<ThreadToolLinks> = {}): ThreadToolLinks => ({
+  computers: Effect.succeed([
+    {
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      deviceId: "device-1",
+      reachable: true,
+      descriptor: MAC_DESCRIPTOR,
+    },
+  ]),
+  describe: () => Effect.succeed(MAC_DESCRIPTOR),
+  read: () => Effect.succeed({ unavailable: "it is offline" }),
+  projectPlace: () =>
+    Effect.succeed({
+      canonicalKey: "github.com/threadlines/threadlines",
+      subdirectory: "",
+      rootPath: "/repo",
+    }),
+  ...patch,
+});
+
+describe("thread tools across linked computers", () => {
+  it.effect("starts a thread on a linked computer with that computer's own agent", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({ links: fakeLinks() });
+      const result = yield* tools.handlers.thread_start(mainCaller(), {
+        ...oneThread,
+        computer: "mac mini",
+      });
+      expect(result.outcome).toBe("started");
+      expect(result.threads?.[0]).toMatchObject({ workspace: "remote", computer: "Mac mini" });
+      // Its branch isn't pushed: the agent hears its changes aren't there.
+      expect(result.detail).toContain("unpushed");
+      const [start] = ofType(tools.dispatched, "thread.child.start");
+      const child = start?.children[0];
+      // The caller's own instance id means nothing there: the same kind of
+      // agent there is picked.
+      expect(child?.launch.modelSelection).toMatchObject({
+        instanceId: "mac-codex",
+        model: "gpt-6-astra",
+      });
+      expect(child?.launch.target).toEqual({ environmentId: MAC_MINI, label: "Mac mini" });
+      expect(child?.launch.workspace).toEqual({
+        kind: "remote",
+        projectKey: "github.com/threadlines/threadlines",
+        projectSubdirectory: "",
+        checkout: "worktree",
+      });
+      // The child's id is the one that computer makes for this link and request.
+      expect(child?.childThreadId).toBe(linkThreadId("device-1", child!.requestId));
+    }),
+  );
+
+  it.effect("refuses an unknown computer or one without the project, saying which there are", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({ links: fakeLinks() });
+      const unknown = yield* tools.handlers.thread_start(mainCaller(), {
+        ...oneThread,
+        computer: "Laptop",
+      });
+      expect(unknown.outcome).toBe("refused");
+      expect(unknown.detail).toContain("Mac mini");
+
+      const missing = yield* makeTools({
+        links: fakeLinks({ describe: () => Effect.succeed({ ...MAC_DESCRIPTOR, projects: [] }) }),
+      });
+      const noProject = yield* missing.handlers.thread_start(mainCaller(), {
+        ...oneThread,
+        computer: "Mac mini",
+      });
+      expect(noProject).toMatchObject({
+        outcome: "refused",
+        detail:
+          "Mac mini doesn't have this project. The user can set it up there from the project's menu.",
+      });
+      expect(ofType(missing.dispatched, "thread.child.start")).toEqual([]);
+    }),
+  );
+
+  it.effect("lists linked computers and their agents", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({ links: fakeLinks() });
+      const result = yield* tools.handlers.thread_agents(mainCaller(), {});
+      expect(result.computers).toEqual([
+        {
+          name: "Mac mini",
+          environmentId: MAC_MINI,
+          reachable: true,
+          agents: MAC_DESCRIPTOR.agents.map(({ driver: _driver, ...agent }) => agent),
+        },
+      ]);
+    }),
+  );
+
+  it.effect("lists a child on a linked computer, and says plainly when it can't be read", () =>
+    Effect.gen(function* () {
+      const remoteChildId = ThreadId.make("remote-child");
+      const tools = yield* makeTools({
+        links: fakeLinks(),
+        caller: makeThread({
+          childRequests: {
+            ...EMPTY_CHILD_REQUEST_STATE,
+            remoteChildren: [
+              {
+                environmentId: MAC_MINI,
+                label: "Mac mini",
+                threadId: remoteChildId,
+                handle: "Codex",
+                title: "Write the changelog",
+                attachmentEpoch: 0,
+                cachedStatus: "working",
+                updatedAt: AT,
+              },
+            ],
+          },
+        }),
+      });
+      const listed = yield* tools.handlers.thread_list(mainCaller(), {});
+      expect(listed.threads).toContainEqual(
+        expect.objectContaining({
+          threadId: remoteChildId,
+          status: "working",
+          computer: "Mac mini",
+          startedBy: "you",
+        }),
+      );
+      const read = yield* tools.handlers.thread_read(mainCaller(), { threadId: remoteChildId });
+      expect(read.outcome).toBe("refused");
+      expect(read.detail).toContain("Mac mini can't be reached right now");
+      // Stopping it names the computer that is told.
+      const stopped = yield* tools.handlers.thread_stop(mainCaller(), { threadId: remoteChildId });
+      expect(stopped.outcome).toBe("stopped");
+      expect(stopped.detail).toContain("Stopped. Mac mini is told to stop it");
+    }),
+  );
+
+  it.effect("gives a thread a linked computer started no thread tools", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({
+        links: fakeLinks(),
+        caller: makeThread({
+          remoteOrigin: {
+            linkDeviceId: "device-windows",
+            environmentId: EnvironmentId.make("env-windows"),
+            environmentLabel: "Windows PC",
+            threadId: ThreadId.make("windows-parent"),
+            threadTitle: "Ship the release",
+          },
+        }),
+      });
+      const listed = yield* tools.handlers.thread_list(mainCaller(), { scope: "project" });
+      const started = yield* tools.handlers.thread_start(mainCaller(), oneThread);
+      expect(listed.outcome).toBe("not_allowed");
+      expect(listed.threads).toEqual([]);
+      expect(started.outcome).toBe("not_allowed");
+      expect(tools.dispatched).toEqual([]);
     }),
   );
 });

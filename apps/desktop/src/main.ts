@@ -27,6 +27,7 @@ import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronSpelling from "./electron/ElectronSpelling.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
 import * as ElectronTray from "./electron/ElectronTray.ts";
+import * as ElectronPowerSaveBlocker from "./electron/ElectronPowerSaveBlocker.ts";
 import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
@@ -56,6 +57,7 @@ import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopSshRemoteApi from "./ssh/DesktopSshRemoteApi.ts";
 import * as DesktopRelayRetirement from "./relay/DesktopRelayRetirement.ts";
 import * as DesktopState from "./app/DesktopState.ts";
+import * as DesktopBackground from "./app/DesktopBackground.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopStartupFailurePrompt from "./window/DesktopStartupFailurePrompt.ts";
@@ -237,6 +239,7 @@ const electronLayer = Layer.mergeAll(
   ElectronSpelling.layer.pipe(Layer.provide(NodeServices.layer)),
   ElectronTheme.layer,
   ElectronTray.layer,
+  ElectronPowerSaveBlocker.layer,
   ElectronUpdater.layer,
   ElectronWindow.layer,
   Layer.succeed(DesktopIpc.DesktopIpc, DesktopIpc.make(Electron.ipcMain)),
@@ -287,7 +290,7 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
 const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
   DesktopApplicationMenu.layer,
-  DesktopStatusIndicator.layer,
+  DesktopBackground.layer.pipe(Layer.provideMerge(DesktopStatusIndicator.layer)),
   DesktopScreenCapture.layer,
   PreviewProfiles.layer,
   DesktopRelayRetirement.layer,

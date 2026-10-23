@@ -8,6 +8,7 @@
  */
 import {
   IsoDateTime,
+  MessageId,
   ModelSelection,
   NonNegativeInt,
   OrchestrationCheckBack,
@@ -29,6 +30,10 @@ import {
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
+  ThreadRemoteOrigin,
+  ThreadScheduledRun,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -146,6 +151,18 @@ export const ProjectionThread = Schema.Struct({
   handedBackAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   handedBackTurnId: Schema.optional(Schema.NullOr(TurnId)),
   archivedWithParentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** See `OrchestrationThread.remoteOrigin`. Absent or null reads as none. */
+  remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See `OrchestrationThread.scheduledRun`. Absent or null reads as none. */
+  scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /** See `OrchestrationThread.move`. Absent or null reads as none. */
+  move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */
+  movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
+  historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  /** See `OrchestrationThread.historySeedMessageId`. Absent or null reads as none. */
+  historySeedMessageId: Schema.optional(Schema.NullOr(MessageId)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**
@@ -181,6 +198,12 @@ export const ListProjectionThreadsByProjectInput = Schema.Struct({
 });
 export type ListProjectionThreadsByProjectInput = typeof ListProjectionThreadsByProjectInput.Type;
 
+export const ListProjectionThreadsByRemoteLinkInput = Schema.Struct({
+  linkDeviceId: Schema.String,
+});
+export type ListProjectionThreadsByRemoteLinkInput =
+  typeof ListProjectionThreadsByRemoteLinkInput.Type;
+
 /**
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
  */
@@ -207,6 +230,14 @@ export interface ProjectionThreadRepositoryShape {
   readonly listByProjectId: (
     input: ListProjectionThreadsByProjectInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
+
+  /**
+   * Ids of the threads a linked computer's link started here
+   * (`remoteOrigin.linkDeviceId`), archived ones included, deleted ones not.
+   */
+  readonly listIdsByRemoteLink: (
+    input: ListProjectionThreadsByRemoteLinkInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 
   /**
    * Soft-delete a projected thread row by id.

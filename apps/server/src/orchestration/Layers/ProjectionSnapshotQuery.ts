@@ -50,12 +50,17 @@ import {
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
   OrchestrationAwaitedBackgroundTask,
+  OrchestrationSessionStartup,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
   RoomAgentRequestOutcome,
   RoomAgentInvite,
   ThreadMessageOrigin,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
+  ThreadRemoteOrigin,
+  ThreadScheduledRun,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -71,6 +76,7 @@ import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
+  remoteChildStartsOf,
 } from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import {
@@ -149,6 +155,12 @@ type ThreadLineageRow = Pick<
   | "handedBackTurnId"
   | "archivedWithParentAt"
   | "childRequests"
+  | "remoteOrigin"
+  | "scheduledRun"
+  | "move"
+  | "movedFrom"
+  | "historySeedOwed"
+  | "historySeedMessageId"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -161,15 +173,29 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   handedBackTurnId: row.handedBackTurnId ?? null,
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+  ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+  ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+  ...threadMoveFields(row),
+  ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
+  ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
+});
+
+/** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
+const threadMoveFields = (row: Pick<ProjectionThread, "move" | "movedFrom">) => ({
+  ...(row.move ? { move: row.move } : {}),
+  ...(row.movedFrom ? { movedFrom: row.movedFrom } : {}),
 });
 
 /**
  * Child threads as the sidebar reads them: lineage, and on a parent the
- * answers still owed and whether threads wait for the user's yes, without
- * shipping the open requests to every row.
+ * answers still owed, whether threads wait for the user's yes, and its
+ * children on linked computers (so its family shows them even where the app
+ * can't reach that computer), without shipping the open requests to every row.
  */
 const shellLineageFields = (row: ThreadLineageRow) => {
   const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+  const remoteChildren = childRequests.remoteChildren ?? [];
+  const remoteChildStarts = remoteChildStartsOf(childRequests);
   return {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
@@ -178,6 +204,11 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     handedBackTurnId: row.handedBackTurnId ?? null,
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
+    ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+    ...threadMoveFields(row),
+    ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
+    ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
   };
 };
 
@@ -197,6 +228,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
     fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
+    imported: Schema.NullOr(Schema.Number),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
@@ -232,6 +264,10 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     childRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     ),
+    remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
+    scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
+    move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
+    movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -246,6 +282,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     awaitedBackgroundTasks: Schema.fromJsonString(Schema.Array(OrchestrationAwaitedBackgroundTask)),
+    startup: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionStartup))),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -331,6 +368,10 @@ const ProjectIdLookupInput = Schema.Struct({
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
+});
+const ThreadRowLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  includeArchived: Schema.optional(Schema.Boolean),
 });
 const TurnActivityLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -464,6 +505,7 @@ function mapSessionRow(
     pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
     awaitedBackgroundTaskCount: row.awaitedBackgroundTaskCount,
     awaitedBackgroundTasks: row.awaitedBackgroundTasks,
+    ...(row.startup ? { startup: row.startup } : {}),
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -489,6 +531,7 @@ function mapThreadMessageRow(
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
     ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
+    ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
     turnId: row.turnId,
@@ -787,6 +830,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -845,6 +894,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -905,6 +960,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -939,6 +1000,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -995,6 +1057,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -1155,6 +1218,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_background_task_count AS "pendingBackgroundTaskCount",
           awaited_background_task_count AS "awaitedBackgroundTaskCount",
           awaited_background_tasks AS "awaitedBackgroundTasks",
+          startup,
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -1205,6 +1269,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
+          sessions.startup,
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -1235,6 +1300,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
+          sessions.startup,
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -1243,6 +1309,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE threads.deleted_at IS NULL
           AND threads.archived_at IS NOT NULL
         ORDER BY sessions.thread_id ASC
+      `,
+  });
+
+  const listArchivedSideTurnRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      sideTurn: Schema.fromJsonString(OrchestrationSideTurn),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          side_turn AS "sideTurn"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND archived_at IS NOT NULL
+          AND side_turn IS NOT NULL
       `,
   });
 
@@ -1621,9 +1705,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const getActiveThreadRowById = SqlSchema.findOneOption({
-    Request: ThreadIdLookupInput,
+    Request: ThreadRowLookupInput,
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, includeArchived }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -1664,6 +1748,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
+          history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1676,7 +1766,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
-          AND archived_at IS NULL
+          AND (archived_at IS NULL OR ${includeArchived === true ? 1 : 0} = 1)
         LIMIT 1
       `,
   });
@@ -1699,6 +1789,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -1761,6 +1852,44 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
     );
+
+  const listArchivedThreadsLiveState: ProjectionSnapshotQueryShape["listArchivedThreadsLiveState"] =
+    () =>
+      sql
+        .withTransaction(
+          Effect.all([
+            listArchivedThreadSessionRows(undefined),
+            listArchivedSideTurnRows(undefined),
+          ]),
+        )
+        .pipe(
+          Effect.map(([sessionRows, sideTurnRows]) => {
+            const byThread = new Map<
+              ThreadId,
+              {
+                readonly threadId: ThreadId;
+                session: OrchestrationSession | null;
+                sideTurn: OrchestrationSideTurn | null;
+              }
+            >();
+            const entryFor = (threadId: ThreadId) => {
+              const existing = byThread.get(threadId);
+              if (existing !== undefined) return existing;
+              const created = { threadId, session: null, sideTurn: null };
+              byThread.set(threadId, created);
+              return created;
+            };
+            for (const row of sessionRows) entryFor(row.threadId).session = mapSessionRow(row);
+            for (const row of sideTurnRows) entryFor(row.threadId).sideTurn = row.sideTurn;
+            return [...byThread.values()];
+          }),
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.listArchivedThreadsLiveState:query",
+              "ProjectionSnapshotQuery.listArchivedThreadsLiveState:decodeRows",
+            ),
+          ),
+        );
 
   const listThreadPageRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -2018,6 +2147,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_background_task_count AS "pendingBackgroundTaskCount",
           awaited_background_task_count AS "awaitedBackgroundTaskCount",
           awaited_background_tasks AS "awaitedBackgroundTasks",
+          startup,
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -3500,11 +3630,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
-      // An archived, deleted or unknown thread answers none before the eight
-      // detail reads below, the activity history among them.
-      const threadRow = yield* getActiveThreadRowById({ threadId }).pipe(
+      // An archived (unless asked for), deleted or unknown thread answers none
+      // before the eight detail reads below, the activity history among them.
+      const threadRow = yield* getActiveThreadRowById({
+        threadId,
+        ...(options?.includeArchived === true ? { includeArchived: true } : {}),
+      }).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
@@ -3692,6 +3828,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshot,
     getShellSnapshot,
     listRunningWorkflowRuns,
+    listArchivedThreadsLiveState,
     getArchivedShellSnapshot,
     getSnapshotSequence,
     getCounts,

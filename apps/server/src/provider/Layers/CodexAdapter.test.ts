@@ -2448,6 +2448,40 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("keeps Codex's reason beside the command it asks to run", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-command-reason-request"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-10-22T00:00:00.000Z",
+        method: "item/commandExecution/requestApproval",
+        requestKind: "command",
+        requestId: ApprovalRequestId.make("req-command-reason-1"),
+        payload: {
+          command: "npm install",
+          reason: "Needs network access to download packages",
+          itemId: "item-command-reason",
+          startedAtMs: 1_800_000_000_000,
+          threadId: "provider-thread-1",
+          turnId: "turn-1",
+        },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag === "Some" && firstEvent.value.type, "request.opened");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "request.opened") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.detail, "npm install");
+      assert.equal(firstEvent.value.payload.reason, "Needs network access to download packages");
+    }),
+  );
+
   it("reads the typed text out of every quoting style Codex's shlex join produces", () => {
     const cases: ReadonlyArray<readonly [string, string | undefined]> = [
       ["write_stdin --session-id 42 y", '"y"'],

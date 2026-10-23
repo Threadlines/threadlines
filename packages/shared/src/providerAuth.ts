@@ -1,4 +1,8 @@
-import type { ProviderDriverKind, ServerProvider } from "@threadlines/contracts";
+import {
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderDriverKind,
+  type ServerProvider,
+} from "@threadlines/contracts";
 
 import { BROWSER_SIGN_IN_DRIVERS, GUIDED_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
 
@@ -146,3 +150,69 @@ export function addProviderAuthHint(provider: ProviderDriverKind, message: strin
 
   return `${trimmed} ${hint}`;
 }
+
+/**
+ * Whether any line of `text` is a sign-in error, read past the "Run `…` in
+ * a terminal, then retry." hint Threadlines adds after one.
+ */
+export function hasProviderAuthError(text: string | null | undefined): boolean {
+  return (text ?? "").split("\n").some((line) => {
+    // No leading \s* in the pattern: on a long run of spaces it would retry from each one.
+    const withoutHint = line.replace(/Run `[^`]+` in a terminal, then retry\.\s*$/u, "").trimEnd();
+    return isProviderAuthErrorMessage(withoutHint) || isProviderAuthErrorMessage(line);
+  });
+}
+
+/** Why a provider can't run a turn on its computer now, as its server reports it. */
+export type ProviderNotReady = "turned_off" | "not_installed" | "signed_out";
+
+/** Null when nothing the server reports says it can't (or it reported nothing). */
+export function providerNotReady(
+  provider: Pick<ServerProvider, "enabled" | "installed" | "auth"> | undefined,
+): ProviderNotReady | null {
+  if (provider === undefined) return null;
+  if (!provider.enabled) return "turned_off";
+  if (!provider.installed) return "not_installed";
+  if (
+    provider.auth.status === "unauthenticated" ||
+    provider.auth.capabilities?.chat?.status === "unavailable"
+  ) {
+    return "signed_out";
+  }
+  return null;
+}
+
+/** The provider's name as people know it: its own, else its kind's, else `fallback`. */
+export function providerAgentName(
+  provider: Pick<ServerProvider, "displayName" | "driver"> | undefined,
+  fallback: string,
+): string {
+  return (
+    provider?.displayName ??
+    (provider === undefined ? undefined : PROVIDER_DISPLAY_NAMES[provider.driver]) ??
+    fallback
+  );
+}
+
+/** "Claude isn't signed in on Denys's MacBook Pro.": what is wrong, by name. */
+export function providerNotReadySentence(
+  reason: ProviderNotReady,
+  agent: string,
+  computer: string,
+): string {
+  switch (reason) {
+    case "turned_off":
+      return `${agent} is turned off on ${computer}.`;
+    case "not_installed":
+      return `${agent} isn't installed on ${computer}.`;
+    case "signed_out":
+      return `${agent} isn't signed in on ${computer}.`;
+  }
+}
+
+/** Where the user fixes it, as an instruction: "Sign in under Settings › Providers". */
+export const PROVIDER_NOT_READY_FIX: Record<ProviderNotReady, string> = {
+  turned_off: "Turn it on under Settings › Providers",
+  not_installed: "Set it up under Settings › Providers",
+  signed_out: "Sign in under Settings › Providers",
+};

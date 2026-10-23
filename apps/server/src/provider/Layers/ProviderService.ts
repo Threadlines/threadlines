@@ -33,7 +33,7 @@ import {
   ProviderStopSessionInput,
   ThreadGoalStatus,
   TrimmedNonEmptyString,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -1182,6 +1182,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const isEarlySession: ProviderServiceShape["isEarlySession"] = (threadId) =>
     Effect.sync(() => earlySessions.isEarly(threadId));
+
+  const earlyStartInFlight: ProviderServiceShape["earlyStartInFlight"] = (threadId) =>
+    Effect.sync(() => {
+      const entry = earlySessions.waiting(threadId);
+      return entry?.phase === "starting" ? ProviderInstanceId.make(entry.instanceId) : undefined;
+    });
 
   const recordEarlySessionUnused = (
     entry: { readonly instanceId: string; readonly startedAtMs: number },
@@ -2920,6 +2926,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startEarlySession,
     adoptEarlySession,
     isEarlySession,
+    earlyStartInFlight,
     abandonEarlySession,
     listExternalThreads,
     readExternalThread,

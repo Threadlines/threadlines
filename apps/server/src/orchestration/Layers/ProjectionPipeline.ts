@@ -9,7 +9,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
-import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
+import {
+  retainTurnItemsAfterRevert,
+  revertMessages,
+  revertOwesHistorySeed,
+} from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import {
   ApprovalRequestId,
@@ -573,6 +577,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: event.payload.parentThreadId ?? null,
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
+            remoteOrigin: event.payload.remoteOrigin ?? null,
+            scheduledRun: event.payload.scheduledRun ?? null,
+            move: null,
+            movedFrom: event.payload.movedFrom ?? null,
+            historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -629,6 +638,74 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             archivedAt: null,
             archivedWithParentAt: null,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        // Moving a thread to a linked computer: the row keeps the move as
+        // OrchestrationThreadMove, applied the way the in-memory projector does.
+        case "thread.move-started":
+        case "thread.move-progressed":
+        case "thread.move-cancel-requested":
+        case "thread.move-aborted":
+        case "thread.moved-away": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const move = existingRow.value.move ?? null;
+          const nextMove =
+            event.type === "thread.move-started"
+              ? {
+                  transferId: event.payload.transferId,
+                  target: event.payload.target,
+                  agent: event.payload.agent,
+                  phase: "exporting" as const,
+                  cancelRequested: false,
+                  startedAt: event.payload.startedAt,
+                }
+              : move === null || move.transferId !== event.payload.transferId
+                ? move
+                : event.type === "thread.move-progressed"
+                  ? {
+                      ...move,
+                      phase: event.payload.phase,
+                      ...(event.payload.sentBytes !== undefined
+                        ? { sentBytes: event.payload.sentBytes }
+                        : {}),
+                      ...(event.payload.totalBytes !== undefined
+                        ? { totalBytes: event.payload.totalBytes }
+                        : {}),
+                    }
+                  : event.type === "thread.move-cancel-requested"
+                    ? { ...move, cancelRequested: true }
+                    : event.type === "thread.move-aborted"
+                      ? null
+                      : {
+                          ...move,
+                          movedAway: {
+                            threadId: event.payload.movedThreadId,
+                            movedAt: event.payload.movedAt,
+                          },
+                        };
+          if (nextMove === move) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({ ...existingRow.value, move: nextMove });
+          return;
+        }
+
+        case "thread.history-seed-delivered": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            historySeedOwed: 0,
+            historySeedMessageId: event.payload.messageId ?? null,
           });
           return;
         }
@@ -810,7 +887,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-request-settled":
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
-        case "thread.child-requests-reset": {
+        case "thread.child-requests-reset":
+        case "thread.remote-child-updated":
+        case "thread.remote-cancel-queued":
+        case "thread.remote-cancels-delivered": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
@@ -829,7 +909,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     ? childRequestStateOn.notesDelivered(state, event.payload.requestIds)
                     : event.type === "thread.child-deliveries-cancelled"
                       ? childRequestStateOn.deliveriesCancelled(state, event.payload.deliveryEpoch)
-                      : childRequestStateOn.reset(state);
+                      : event.type === "thread.remote-child-updated"
+                        ? childRequestStateOn.remoteChildUpdated(state, event.payload.child)
+                        : event.type === "thread.remote-cancel-queued"
+                          ? childRequestStateOn.remoteCancelQueued(state, event.payload.cancel)
+                          : event.type === "thread.remote-cancels-delivered"
+                            ? childRequestStateOn.remoteCancelsDelivered(
+                                state,
+                                event.payload.requestIds,
+                              )
+                            : childRequestStateOn.reset(state);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }
@@ -1342,9 +1431,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             }
           }
 
+          // The send that gave a moved thread's agent the conversation is
+          // undone (its message is gone by now): it is owed again.
+          const seedMessageId = existingRow.value.historySeedMessageId ?? null;
+          const owesSeed = revertOwesHistorySeed({
+            movedHere: (existingRow.value.movedFrom ?? null) !== null,
+            historySeedOwed: (existingRow.value.historySeedOwed ?? 0) > 0,
+            seedMessageRemoved:
+              seedMessageId === null
+                ? null
+                : Option.isNone(
+                    yield* projectionThreadMessageRepository.getByMessageId({
+                      messageId: seedMessageId,
+                    }),
+                  ),
+            turnCount: event.payload.turnCount,
+          });
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId,
+            ...(owesSeed ? { historySeedOwed: 1, historySeedMessageId: null } : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -1471,6 +1577,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.fromThread !== undefined
               ? { fromThread: event.payload.fromThread }
               : {}),
+            ...(event.payload.imported === true ? { imported: true as const } : {}),
             ...(event.payload.agentModels !== undefined
               ? { agentModels: event.payload.agentModels }
               : {}),
@@ -1945,6 +2052,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           : {}),
         activeTurnId: event.payload.session.activeTurnId,
         ...carriedBackgroundTasks(event.payload.session),
+        // Absent keeps the stored startup phase; see OrchestrationSession.
+        ...(event.payload.session.startup !== undefined
+          ? { startup: event.payload.session.startup }
+          : {}),
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

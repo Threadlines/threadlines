@@ -1,15 +1,21 @@
 /**
  * Child threads: the decider's side of threads an agent starts, the answers
- * they owe it, and the family they form (docs/design/child-threads.md). Each
+ * they owe it, and the family they form (docs/design/child-threads.md), on
+ * this computer or on a linked one (docs/design/fleet.md, Part 2). A child on
+ * a linked computer is not in this read model: its requests carry `remote`,
+ * the parent keeps it in `childRequests.remoteChildren`, and every decision
+ * about it writes only the parent; what that computer must hear goes into the
+ * parent's outbox (`remoteCancels`) for RemoteChildReactor to send. Each
  * function returns the events to plan, or a refusal to report. A decision can
  * touch both ends of a family (a settle writes the report into the parent and
  * marks the child handed back), so events are based per thread through
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   ChildRequestBatchId,
-  type ChildRequestId,
+  ChildRequestId,
   type ChildRequestOutcome,
   MessageId,
   type OrchestrationChildRequest,
@@ -28,6 +34,7 @@ import {
   childStartRefusal,
   isAttachedChild,
   ownChildRefusal,
+  remoteChildOf,
 } from "@threadlines/shared/childThreads";
 import {
   APPROVAL_ACTIVITY_KINDS,
@@ -55,20 +62,13 @@ export type ChildThreadDecision = ReadonlyArray<PlannedEvent> | { readonly refus
 
 const refuse = (refusal: string) => ({ refusal });
 
-const RUNTIME_MODE_RANK: Record<RuntimeMode, number> = {
-  "approval-required": 0,
-  "auto-accept-edits": 1,
-  auto: 2,
-  "full-access": 3,
-};
-
 /** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
 export function withinModeCeiling(
   child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
   ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
 ): boolean {
   return (
-    RUNTIME_MODE_RANK[child.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode] &&
+    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
     (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
   );
 }
@@ -89,10 +89,7 @@ export function clampLaunchToCeiling<
 ): Launch {
   return {
     ...launch,
-    runtimeMode:
-      RUNTIME_MODE_RANK[launch.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode]
-        ? launch.runtimeMode
-        : ceiling.runtimeMode,
+    runtimeMode: saferRuntimeMode(launch.runtimeMode, ceiling.runtimeMode),
     interactionMode: ceiling.interactionMode === "plan" ? "plan" : launch.interactionMode,
   };
 }
@@ -119,11 +116,22 @@ export function isChildBeingSetUp(
   );
 }
 
-/** Whether a parent's request is still open: the only kind a child may still run. */
+/**
+ * Whether a parent's request is still open: the only kind a child may still
+ * run. A parent on a linked computer is not in this read model; that
+ * computer's ledger decides for its requests (see LinkRequestReactor).
+ */
 export function isOpenParentRequest(
   readModel: OrchestrationReadModel,
-  origin: { readonly threadId: ThreadId; readonly requestId: ChildRequestId },
+  origin: {
+    readonly threadId: ThreadId;
+    readonly requestId: ChildRequestId;
+    readonly environmentId?: unknown;
+  },
 ): boolean {
+  if (origin.environmentId !== undefined) {
+    return true;
+  }
   return (
     readModel.threads
       .find((entry) => entry.id === origin.threadId)
@@ -202,8 +210,62 @@ const unqueueReportsFrom = (
       },
     }));
 
-const titleOf = (readModel: OrchestrationReadModel, request: OrchestrationChildRequest) =>
-  findThread(readModel, request.childThreadId)?.title ?? request.launch?.title ?? "a thread";
+const titleOf = (
+  readModel: OrchestrationReadModel,
+  request: OrchestrationChildRequest,
+  parent?: OrchestrationThread,
+) =>
+  (request.remote === undefined
+    ? findThread(readModel, request.childThreadId)?.title
+    : undefined) ??
+  (parent !== undefined
+    ? remoteChildOf(parent.childRequests, request.childThreadId)?.title
+    : undefined) ??
+  request.launch?.title ??
+  "a thread";
+
+/**
+ * What a linked computer must still hear about requests given up on here
+ * (Stop, a wrap, thread_stop, a participant leaving): each is cancelled
+ * there, and with `stopThread` the child's session there is stopped too.
+ * The stop holds even when this computer never heard the child's id (the
+ * start's answer was lost): that computer finds the thread from the request.
+ * Requests it never got (still waiting for this computer's user) need
+ * nothing.
+ */
+export function remoteCancelEvents(
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  requests: ReadonlyArray<OrchestrationChildRequest>,
+  createdAt: string,
+  stopThread: boolean,
+): ReadonlyArray<PlannedEvent> {
+  return requests.flatMap((request): ReadonlyArray<PlannedEvent> => {
+    const remote = request.remote;
+    if (remote === undefined || request.status === "awaiting_user") {
+      return [];
+    }
+    const threadId = remote.threadId ?? (request.kind === "send" ? request.childThreadId : null);
+    return [
+      {
+        ...baseFor(parent.id),
+        type: "thread.remote-cancel-queued",
+        payload: {
+          threadId: parent.id,
+          cancel: {
+            requestId: request.requestId,
+            environmentId: remote.environmentId,
+            threadId,
+            cancelRequest: true,
+            stopThread,
+            createdAt,
+          },
+          createdAt,
+        },
+      },
+    ];
+  });
+}
 
 /**
  * Every open request of `parent` (optionally only those for one child) is
@@ -228,7 +290,7 @@ function settleOpenRequests(
     noted.add(recipient);
     const titles = requests
       .filter((entry) => (entry.from.participantId ?? "primary") === recipient)
-      .map((entry) => titleOf(readModel, entry));
+      .map((entry) => titleOf(readModel, entry, parent));
     return settledEvent(baseFor, parent, request, outcome, createdAt, { note: noteFor(titles) });
   });
 }
@@ -255,15 +317,21 @@ export function decideChildStart(
   }
   const seen = new Set<string>();
   for (const child of command.children) {
+    // A child on a linked computer gets its id there; only this computer's
+    // ids can collide with threads here.
     if (
       seen.has(child.childThreadId) ||
-      readModel.threads.some((thread) => thread.id === child.childThreadId)
+      (child.launch.target === undefined &&
+        readModel.threads.some((thread) => thread.id === child.childThreadId))
     ) {
       return refuse(`Thread '${child.childThreadId}' already exists.`);
     }
     seen.add(child.childThreadId);
     if (!withinModeCeiling(child.launch, parent)) {
       return refuse("A thread cannot be started with more access than the thread starting it.");
+    }
+    if ((child.launch.target === undefined) !== (child.launch.workspace.kind !== "remote")) {
+      return refuse("A thread on another computer needs that computer's workspace, and only it.");
     }
   }
   return command.children.map((child): PlannedEvent => ({
@@ -282,6 +350,16 @@ export function decideChildStart(
         childThreadId: child.childThreadId,
         childMessageId: child.childMessageId,
         launch: child.launch,
+        ...(child.launch.target !== undefined
+          ? {
+              remote: {
+                environmentId: child.launch.target.environmentId,
+                label: child.launch.target.label,
+                threadId: null,
+                status: "sending" as const,
+              },
+            }
+          : {}),
         createdAt: command.createdAt,
       },
       createdAt: command.createdAt,
@@ -333,6 +411,10 @@ export function decideChildSend(
   command: CommandOf<"thread.child.send">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
+  const remoteChild = remoteChildOf(parent.childRequests, command.childThreadId);
+  if (remoteChild !== undefined) {
+    return decideRemoteChildSend(parent, command, baseFor, remoteChild);
+  }
   const child = findThread(readModel, command.childThreadId);
   const refusal = childSendRefusal(parent, child, {
     from: command.from,
@@ -412,6 +494,81 @@ export function decideChildSend(
   ];
 }
 
+/**
+ * A message to a child on a linked computer: only the parent's request is
+ * written here. RemoteChildReactor sends it there, where it is queued in the
+ * child like a local send.
+ */
+function decideRemoteChildSend(
+  parent: OrchestrationThread,
+  command: CommandOf<"thread.child.send">,
+  baseFor: ChildEventBase,
+  remoteChild: NonNullable<ReturnType<typeof remoteChildOf>>,
+): ChildThreadDecision {
+  const refusal = childSendRefusal(
+    parent,
+    {
+      id: remoteChild.threadId,
+      parentThreadId: parent.id,
+      attachedToParent: true,
+      archivedAt: null,
+    },
+    { from: command.from, callerTurnId: command.callerTurnId },
+  );
+  if (refusal !== null) {
+    return refuse(refusal.detail);
+  }
+  if (parent.childRequests.open.some((request) => request.requestId === command.requestId)) {
+    return refuse("That message was already sent.");
+  }
+  if (
+    parent.childRequests.open.some(
+      (request) =>
+        request.childThreadId === remoteChild.threadId &&
+        request.kind === "start" &&
+        request.remote?.threadId === null,
+    )
+  ) {
+    return refuse("That thread is still being set up. Send it a message once it has started.");
+  }
+  return [
+    {
+      ...baseFor(parent.id),
+      type: "thread.child-request-submitted",
+      payload: {
+        threadId: parent.id,
+        request: {
+          requestId: command.requestId,
+          batchId: ChildRequestBatchId.make(command.requestId),
+          kind: "send",
+          from: command.from,
+          callerTurnId: command.callerTurnId,
+          deliveryEpoch: parent.childRequests.deliveryEpoch,
+          status: "queued",
+          childThreadId: remoteChild.threadId,
+          childMessageId: command.childMessageId,
+          text: command.text,
+          remote: {
+            environmentId: remoteChild.environmentId,
+            label: remoteLabelOf(parent, remoteChild.environmentId),
+            threadId: remoteChild.threadId,
+            status: "sending",
+          },
+          createdAt: command.createdAt,
+        },
+        createdAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/** The name a parent last knew a linked computer by. */
+const remoteLabelOf = (parent: OrchestrationThread, environmentId: string) =>
+  parent.childRequests.open
+    .toReversed()
+    .find((request) => request.remote?.environmentId === environmentId)?.remote?.label ??
+  "the other computer";
+
 /** A request moved on (`thread.child-request.update`). */
 export function decideChildRequestUpdate(
   parent: OrchestrationThread,
@@ -436,6 +593,7 @@ export function decideChildRequestUpdate(
         ...(command.candidateTurnId !== undefined
           ? { candidateTurnId: command.candidateTurnId }
           : {}),
+        ...(command.remote !== undefined ? { remote: command.remote } : {}),
         updatedAt: command.createdAt,
       },
     },
@@ -469,6 +627,9 @@ export function decideChildRequestSettle(
     note: command.note,
   });
   const reply = command.reply;
+  if (request.remote !== undefined) {
+    return decideRemoteRequestSettle(parent, command, baseFor, request, settled);
+  }
   const child = findThread(readModel, request.childThreadId);
   if (
     reply === undefined ||
@@ -534,6 +695,230 @@ export function decideChildRequestSettle(
       ...baseFor(child.id),
       type: "thread.handed-back",
       payload: { threadId: child.id, turnId: reply.turnId, handedBackAt: command.createdAt },
+    },
+  ];
+}
+
+/**
+ * A request to a linked computer is over. Its answer (or what went wrong
+ * there) is delivered like a local child's, unless Stop or a wrap moved the
+ * epoch, the parent stopped that child since (its attachment epoch moved),
+ * the parent is archived, or the asking agent left. Nothing is written on
+ * the child, which isn't here. The thread the report names there
+ * (`remoteChild`) is recorded in the same decision, so a request never
+ * settles without it.
+ */
+function decideRemoteRequestSettle(
+  parent: OrchestrationThread,
+  command: CommandOf<"thread.child-request.settle">,
+  baseFor: ChildEventBase,
+  request: OrchestrationChildRequest,
+  settled: PlannedEvent,
+): ChildThreadDecision {
+  const reply = command.reply;
+  const remote = request.remote!;
+  const remoteChild = remoteChildOf(parent.childRequests, request.childThreadId);
+  const named = command.remoteChild;
+  const childRecorded: ReadonlyArray<PlannedEvent> =
+    named !== undefined && named.environmentId === remote.environmentId
+      ? [
+          {
+            ...baseFor(parent.id),
+            type: "thread.remote-child-updated",
+            payload: {
+              threadId: parent.id,
+              child: {
+                ...named,
+                attachmentEpoch: Math.max(
+                  named.attachmentEpoch,
+                  remoteChildOf(parent.childRequests, named.threadId)?.attachmentEpoch ?? 0,
+                ),
+              },
+              updatedAt: command.createdAt,
+            },
+          },
+        ]
+      : [];
+  if (
+    reply === undefined ||
+    request.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
+    parent.archivedAt !== null ||
+    !isPresent(parent, request.from) ||
+    parent.messages.some((message) => message.id === reply.messageId)
+  ) {
+    return [...childRecorded, settled];
+  }
+  const fromThread = {
+    threadId: request.childThreadId,
+    requestId: request.requestId,
+    kind: "report" as const,
+    deliveryEpoch: parent.childRequests.deliveryEpoch,
+    attachmentEpoch: remoteChild?.attachmentEpoch ?? 0,
+    environmentId: remote.environmentId,
+  };
+  const participantId = request.from.participantId;
+  return [
+    ...childRecorded,
+    settled,
+    {
+      ...baseFor(parent.id),
+      type: "thread.message-sent",
+      payload: {
+        threadId: parent.id,
+        messageId: reply.messageId,
+        role: "user",
+        text: reply.text,
+        attachments: [],
+        participantId,
+        fromThread,
+        agentModels: messageAgentModels(parent, [
+          { participantId, modelSelection: currentAgentModel(parent, participantId) },
+        ]),
+        turnId: null,
+        streaming: false,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      },
+    },
+    {
+      ...baseFor(parent.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: parent.id,
+        followUp: {
+          messageId: reply.messageId,
+          text: reply.text,
+          attachments: [],
+          ...(participantId !== null ? { participantId } : {}),
+          fromThread,
+          runtimeMode: parent.runtimeMode,
+          interactionMode: parent.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
+    },
+  ];
+}
+
+/**
+ * A linked computer's word on a child: its thread started, or its status
+ * moved (`thread.remote-child.update`). Only a child this thread asked for
+ * is recorded, and Stop's attachment epoch never goes back.
+ */
+export function decideRemoteChildUpdate(
+  parent: OrchestrationThread,
+  command: CommandOf<"thread.remote-child.update">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const existing = remoteChildOf(parent.childRequests, command.child.threadId);
+  const asked = parent.childRequests.open.some(
+    (request) =>
+      request.remote?.environmentId === command.child.environmentId &&
+      request.childThreadId === command.child.threadId,
+  );
+  if (existing === undefined && !asked) {
+    return refuse("This thread didn't start that thread.");
+  }
+  return [
+    {
+      ...baseFor(parent.id),
+      type: "thread.remote-child-updated",
+      payload: {
+        threadId: parent.id,
+        child: {
+          ...command.child,
+          attachmentEpoch: Math.max(command.child.attachmentEpoch, existing?.attachmentEpoch ?? 0),
+        },
+        updatedAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/** A linked computer confirmed cancels and stops (`thread.remote-cancels.delivered`). */
+export function decideRemoteCancelsDelivered(
+  parent: OrchestrationThread,
+  command: CommandOf<"thread.remote-cancels.delivered">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  if (
+    !(parent.childRequests.remoteCancels ?? []).some((entry) =>
+      command.requestIds.includes(entry.requestId),
+    )
+  ) {
+    return refuse("Those were already delivered.");
+  }
+  return [
+    {
+      ...baseFor(parent.id),
+      type: "thread.remote-cancels-delivered",
+      payload: {
+        threadId: parent.id,
+        requestIds: command.requestIds,
+        createdAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/**
+ * On the child's computer: a message the parent's agent on another computer
+ * sent this thread (`thread.remote-request.queue`), written and queued the
+ * way `thread.child.send` writes into a local child. Only a thread that
+ * computer's link started takes it.
+ */
+export function decideRemoteRequestQueue(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.remote-request.queue">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const origin = thread.remoteOrigin ?? null;
+  if (
+    origin === null ||
+    command.fromThread.kind !== "request" ||
+    command.fromThread.environmentId !== origin.environmentId ||
+    command.fromThread.threadId !== origin.threadId
+  ) {
+    return refuse("Only the thread that started this one can send it work.");
+  }
+  if (thread.archivedAt !== null) {
+    return refuse("That thread is archived.");
+  }
+  if (thread.messages.some((message) => message.id === command.messageId)) {
+    return refuse("That message was already sent.");
+  }
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.message-sent",
+      payload: {
+        threadId: thread.id,
+        messageId: command.messageId,
+        role: "user",
+        text: command.text,
+        attachments: [],
+        fromThread: command.fromThread,
+        turnId: null,
+        streaming: false,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      },
+    },
+    {
+      ...baseFor(thread.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: thread.id,
+        followUp: {
+          messageId: command.messageId,
+          text: command.text,
+          attachments: [],
+          fromThread: command.fromThread,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
     },
   ];
 }
@@ -671,12 +1056,18 @@ export function decideChildrenStop(
 ):
   | { readonly events: ReadonlyArray<PlannedEvent>; readonly childIds: ReadonlyArray<ThreadId> }
   | { readonly refusal: string } {
+  const remoteChildren = parent.childRequests.remoteChildren ?? [];
+  const isRemote = (id: ThreadId) => remoteChildren.some((entry) => entry.threadId === id);
+  const remoteTargets =
+    command.childThreadIds === undefined
+      ? remoteChildren.filter((entry) => requestsFor(parent, entry.threadId).length > 0)
+      : remoteChildren.filter((entry) => command.childThreadIds!.includes(entry.threadId));
   const targets =
     command.childThreadIds === undefined
       ? attachedChildrenOf(readModel, parent.id).filter(
           (child) => childHasLiveWork(child) || requestsFor(parent, child.id).length > 0,
         )
-      : command.childThreadIds.map((id) => findThread(readModel, id));
+      : command.childThreadIds.filter((id) => !isRemote(id)).map((id) => findThread(readModel, id));
   const children: OrchestrationThread[] = [];
   for (const child of targets) {
     const refusal = ownChildRefusal(parent, child);
@@ -685,10 +1076,19 @@ export function decideChildrenStop(
     }
     children.push(child);
   }
-  if (children.length === 0) {
+  if (remoteTargets.length > 0 && isAttachedChild(parent)) {
+    return refuse("This thread was started by another thread, so it cannot stop threads itself.");
+  }
+  if (children.length === 0 && remoteTargets.length === 0) {
     return refuse("None of its threads are working.");
   }
-  const stoppedIds = new Set(children.map((child) => child.id));
+  const stoppedIds = new Set([
+    ...children.map((child) => child.id),
+    ...remoteTargets.map((entry) => entry.threadId),
+  ]);
+  const remoteRequests = parent.childRequests.open.filter(
+    (request) => request.remote !== undefined && stoppedIds.has(request.childThreadId),
+  );
   return {
     events: [
       ...settleOpenRequests(
@@ -716,6 +1116,47 @@ export function decideChildrenStop(
             at: command.createdAt,
           },
         },
+      ]),
+      // A child on a linked computer: the same, kept on the parent, and its
+      // computer is told to drop the requests and stop its session.
+      ...remoteCancelEvents(baseFor, parent, remoteRequests, command.createdAt, true),
+      ...remoteTargets.flatMap((entry): ReadonlyArray<PlannedEvent> => [
+        ...unqueueReportsFrom(baseFor, parent, entry.threadId, command.createdAt),
+        {
+          ...baseFor(parent.id),
+          type: "thread.remote-child-updated",
+          payload: {
+            threadId: parent.id,
+            child: {
+              ...entry,
+              attachmentEpoch: entry.attachmentEpoch + 1,
+              updatedAt: command.createdAt,
+            },
+            updatedAt: command.createdAt,
+          },
+        },
+        ...(remoteRequests.some((request) => request.childThreadId === entry.threadId)
+          ? []
+          : [
+              {
+                ...baseFor(parent.id),
+                type: "thread.remote-cancel-queued" as const,
+                payload: {
+                  threadId: parent.id,
+                  cancel: {
+                    requestId: ChildRequestId.make(
+                      `stop:${entry.threadId}:${entry.attachmentEpoch + 1}`,
+                    ),
+                    environmentId: entry.environmentId,
+                    threadId: entry.threadId,
+                    cancelRequest: false,
+                    stopThread: true,
+                    createdAt: command.createdAt,
+                  },
+                  createdAt: command.createdAt,
+                },
+              },
+            ]),
       ]),
     ],
     childIds: children.map((child) => child.id),
@@ -748,7 +1189,8 @@ export function decideChildDeliveriesStop(
   if (
     open.length === 0 &&
     !hasQueuedReports &&
-    attachedChildrenOf(readModel, parent.id).length === 0
+    attachedChildrenOf(readModel, parent.id).length === 0 &&
+    (parent.childRequests.remoteChildren ?? []).length === 0
   ) {
     return [];
   }
@@ -779,6 +1221,9 @@ export function decideChildDeliveriesStop(
       (titles) =>
         `${why} ${quotedList(titles)} ${titles.length === 1 ? "keeps" : "keep"} running unless stopped, but no answer will come back to you.`,
     ),
+    // Threads on linked computers are told too, and stopped there: nothing
+    // here shows them working (docs/design/fleet.md, "Stop and wrap").
+    ...remoteCancelEvents(baseFor, parent, open, createdAt, true),
     ...(unqueueReports ? unqueueReportsFrom(baseFor, parent, null, createdAt) : []),
   ];
 }
@@ -942,6 +1387,9 @@ export function isStaleReport(
   if (origin === undefined || origin.kind !== "report") {
     return false;
   }
+  if (origin.environmentId !== undefined) {
+    return isStaleRemoteReport(parent, origin);
+  }
   const child = findThread(readModel, origin.threadId);
   return (
     origin.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
@@ -949,6 +1397,26 @@ export function isStaleReport(
     child.parentThreadId !== parent.id ||
     !child.attachedToParent ||
     origin.attachmentEpoch !== child.parentAttachmentEpoch
+  );
+}
+
+/**
+ * A report from a child on a linked computer whose delivery was cancelled
+ * since it was queued: Stop or a wrap moved the epoch, or the parent stopped
+ * that child (its attachment epoch moved). The parent's own record of the
+ * child decides, since the child isn't here.
+ */
+export function isStaleRemoteReport(
+  parent: OrchestrationThread,
+  origin: NonNullable<OrchestrationQueuedFollowUp["fromThread"]>,
+): boolean {
+  const remoteChild = remoteChildOf(parent.childRequests, origin.threadId);
+  return (
+    origin.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
+    (remoteChild !== undefined &&
+      (remoteChild.environmentId !== origin.environmentId ||
+        origin.attachmentEpoch !== remoteChild.attachmentEpoch)) ||
+    (remoteChild === undefined && (origin.attachmentEpoch ?? 0) !== 0)
   );
 }
 

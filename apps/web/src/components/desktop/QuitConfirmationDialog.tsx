@@ -12,7 +12,11 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import {
+  describeAgentWorkElsewhere,
+  describeRunningAgentSessions,
+  describeStoppedScheduledTasks,
+} from "./agentSessionCopy";
 import { BusyTerminalsSentence } from "./BusyTerminalsSentence";
 import { useBusyLocalTerminalCommands } from "./useBusyLocalTerminals";
 import { useRunningAgentWork } from "./useRunningAgentWork";
@@ -20,15 +24,18 @@ import { useRunningAgentWork } from "./useRunningAgentWork";
 /**
  * The counts are the ones the app asked with: threads and busy terminals on
  * this computer, the only work quitting stops (terminals are named from the
- * live list when it still has them). Work on other computers is named so
+ * live list when it still has them), and this computer's scheduled tasks,
+ * which don't run while it is closed. Work on other computers is named so
  * nobody keeps the app open for threads that run fine without it.
  */
 function QuitConfirmationDescription({
   runningThreadCount,
   busyTerminalCount,
+  activeScheduledTaskCount,
 }: {
   runningThreadCount: number;
   busyTerminalCount: number;
+  activeScheduledTaskCount: number;
 }) {
   const { remoteMachineLabels } = useRunningAgentWork();
   const liveTerminals = useBusyLocalTerminalCommands();
@@ -38,9 +45,10 @@ function QuitConfirmationDescription({
       ? liveTerminals
       : Array.from({ length: busyTerminalCount }, () => null);
   const stoppedCount = runningThreadCount + terminals.length;
+  const schedules = describeStoppedScheduledTasks(activeScheduledTaskCount);
   return (
     <AlertDialogDescription>
-      {runningThreadCount > 0 || terminals.length === 0
+      {runningThreadCount > 0
         ? `${describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} `
         : null}
       {terminals.length > 0 ? (
@@ -48,7 +56,10 @@ function QuitConfirmationDescription({
           <BusyTerminalsSentence commands={terminals} onThisComputer={elsewhere !== null} />{" "}
         </>
       ) : null}
-      Quitting now will stop {stoppedCount === 1 ? "it" : "them"} and the local Threadlines server.
+      {stoppedCount > 0
+        ? `Quitting now will stop ${stoppedCount === 1 ? "it" : "them"} and the local Threadlines server.`
+        : "Quitting now will stop the local Threadlines server."}
+      {schedules ? ` ${schedules}` : null}
       {elsewhere ? ` ${elsewhere}` : null}
     </AlertDialogDescription>
   );
@@ -94,6 +105,7 @@ export function QuitConfirmationDialog() {
             <QuitConfirmationDescription
               runningThreadCount={shownRequest.runningThreadCount}
               busyTerminalCount={shownRequest.busyTerminalCount ?? 0}
+              activeScheduledTaskCount={shownRequest.activeScheduledTaskCount ?? 0}
             />
           ) : null}
         </AlertDialogHeader>

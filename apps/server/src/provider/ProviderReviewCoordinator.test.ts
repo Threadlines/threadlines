@@ -165,6 +165,7 @@ describe("startProviderReviewForThread", () => {
         },
         providerService: {
           listSessions: () => Effect.succeed([]),
+          earlyStartInFlight: () => Effect.succeed(undefined),
           stopSession: () => Effect.void,
           getCapabilities: () =>
             Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
@@ -203,6 +204,15 @@ describe("startProviderReviewForThread", () => {
       providerInstanceId: CODEX_INSTANCE_ID,
       providerThreadId: "provider-thread-from-runtime",
     });
+    // No runtime was live, so the review launched the agent: the chat said so
+    // until the review started.
+    const sessionWrites = commands.flatMap((command) =>
+      command.type === "thread.session.set" ? [command.session] : [],
+    );
+    expect(sessionWrites.map((session) => session.startup ?? null)).toEqual([
+      { phase: "launching", providerInstanceId: CODEX_INSTANCE_ID },
+      null,
+    ]);
   });
 
   it("rejects an unsupported provider before creating a draft or starting a session", async () => {
@@ -239,6 +249,7 @@ describe("startProviderReviewForThread", () => {
           },
           providerService: {
             listSessions: () => Effect.succeed([]),
+            earlyStartInFlight: () => Effect.succeed(undefined),
             stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "unsupported", reviewStart: "unsupported" }),
@@ -307,6 +318,7 @@ describe("startProviderReviewForThread", () => {
           },
           providerService: {
             listSessions: () => Effect.succeed([]),
+            earlyStartInFlight: () => Effect.succeed(undefined),
             stopSession: () => Effect.void,
             getCapabilities,
             getInstanceInfo: () =>
@@ -366,6 +378,7 @@ describe("startProviderReviewForThread", () => {
           },
           providerService: {
             listSessions: () => Effect.succeed([]),
+            earlyStartInFlight: () => Effect.succeed(undefined),
             stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
@@ -415,6 +428,7 @@ describe("startProviderReviewForThread", () => {
           },
           providerService: {
             listSessions: () => Effect.succeed([]),
+            earlyStartInFlight: () => Effect.succeed(undefined),
             stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
@@ -452,6 +466,8 @@ describe("startProviderReviewForThread", () => {
           },
           providerService: {
             listSessions: () => Effect.succeed([]),
+            // The review waits on another account's agent still starting early.
+            earlyStartInFlight: () => Effect.succeed(ProviderInstanceId.make("codex-work")),
             stopSession: () => Effect.void,
             getCapabilities: () =>
               Effect.succeed({ sessionModelSwitch: "in-session", reviewStart: "supported" }),
@@ -476,6 +492,15 @@ describe("startProviderReviewForThread", () => {
       expect(errorCommand.session.activeTurnId).toBeNull();
       expect(errorCommand.session.lastError).toContain("Codex rejected the review request");
     }
+    // While it waited, the chat named the agent starting early; the failed
+    // start ended the mark.
+    const sessionWrites = commands.flatMap((command) =>
+      command.type === "thread.session.set" ? [command.session] : [],
+    );
+    expect(sessionWrites.map((session) => session.startup ?? null)).toEqual([
+      { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex-work") },
+      null,
+    ]);
   });
 });
 

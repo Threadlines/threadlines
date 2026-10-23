@@ -32,6 +32,7 @@ import {
   resolveMarkdownDocumentFileLinks,
   splitMarkdownBlocks,
 } from "../../../lib/chatMarkdownDocument";
+import { normalizeChatMath } from "../../../lib/chatMarkdownMath";
 import { parseCodexInlineVisualizations } from "../../../lib/codexInlineVisualization";
 import { isImageFilePath } from "../../../lib/imageFilePaths";
 import { findInlineTokenSpans, type InlineSkill } from "../../../lib/inlineMarkdownTokens";
@@ -86,22 +87,58 @@ const githubHtmlProcessor = unified()
   .use(remarkRehype, { allowDangerousHtml: true })
   .use(GITHUB_HTML_REHYPE_PLUGINS);
 
+/**
+ * How a piece of a block is drawn: prose (its whitespace wraps as spaces), a
+ * chip (a file, a pull request), a line break, or code kept line for line.
+ */
+type BlockPartKind = "prose" | "chip" | "break" | "code";
+
+interface BlockPart {
+  readonly text: string;
+  readonly kind: BlockPartKind;
+}
+
 /** Collects text into blocks, ordered by where each block first has text. */
 class BlockCollector {
-  private readonly blocks = new Map<object, string[]>();
+  private readonly blocks = new Map<object, BlockPart[]>();
 
-  add(block: object, text: string): void {
+  add(block: object, text: string, kind: BlockPartKind = "prose"): void {
     if (text.length === 0) return;
     const parts = this.blocks.get(block);
-    if (parts) parts.push(text);
-    else this.blocks.set(block, [text]);
+    if (parts) parts.push({ text, kind });
+    else this.blocks.set(block, [{ text, kind }]);
   }
 
-  /** Every block with something besides whitespace in it. */
+  /** Every block with something besides whitespace in it, as the DOM holds its text. */
   result(): string[] {
-    return [...this.blocks.values()]
-      .map((parts) => parts.join(""))
-      .filter((text) => text.trim().length > 0);
+    return this.joined((parts) => parts.map((part) => part.text).join(""));
+  }
+
+  /**
+   * The same blocks as the reader sees the words: prose and chips wrapped onto
+   * one line, a chip spaced from what it sits against, and a new line only
+   * where the block draws one (a line break, a line of code).
+   */
+  readable(): string[] {
+    return this.joined((parts) =>
+      parts.reduce((text, part, index) => {
+        const words =
+          part.kind === "prose" || part.kind === "chip"
+            ? part.text.replace(/\s+/g, " ")
+            : part.text;
+        const previous = parts[index - 1];
+        const spaced =
+          previous !== undefined &&
+          (part.kind === "chip" || previous.kind === "chip") &&
+          !/\s$/.test(previous.text) &&
+          !/^[\s.,;:!?)\]]/.test(part.text);
+        return spaced ? `${text} ${words}` : text + words;
+      }, ""),
+    );
+  }
+
+  private joined(join: (parts: ReadonlyArray<BlockPart>) => string): string[] {
+    return [...this.blocks.values()].map(join).filter((text) => text.trim().length > 0);
   }
 }
 
@@ -232,13 +269,17 @@ function walkAnchor(element: HastElement, context: WalkContext) {
       resolveMarkdownFileLinkMeta(normalizedHref, document.cwd))
     : null;
   if (fileLinkMeta) {
-    document.collector.add(context.block, fileChipLabel(fileLinkMeta, document));
+    document.collector.add(context.block, fileChipLabel(fileLinkMeta, document), "chip");
     return;
   }
   const pullRequest = href ? parsePullRequestUrl(href) : null;
   if (href && pullRequest) {
-    document.collector.add(context.block, `#${pullRequest.number}`);
-    document.collector.add(context.block, pullRequestLinkLabel(hastText(element.children), href));
+    document.collector.add(context.block, `#${pullRequest.number}`, "chip");
+    document.collector.add(
+      context.block,
+      pullRequestLinkLabel(hastText(element.children), href),
+      "chip",
+    );
     return;
   }
   walkChildren(element.children, { ...context, inlinePass: false });
@@ -254,11 +295,13 @@ function walkImage(element: HastElement, context: WalkContext) {
   if (!fileLinkMeta || !isImageFilePath(fileLinkMeta.filePath)) return;
   const alt = element.properties["alt"];
   const name = typeof alt === "string" && alt.length > 0 ? alt : fileLinkMeta.basename;
-  document.collector.add(context.block, name);
+  document.collector.add(context.block, name, "chip");
 }
 
 /** MarkdownCode, inline: a file reference wears its chip's label. */
 function walkInlineCode(element: HastElement, context: WalkContext) {
+  // A formula draws glyphs, not words (InlineMath reads past it too).
+  if (hasClass(element, "language-math")) return;
   const { document } = context;
   const only = element.children.length === 1 ? element.children[0] : undefined;
   if (only?.type !== "text") {
@@ -266,14 +309,15 @@ function walkInlineCode(element: HastElement, context: WalkContext) {
     return;
   }
   const meta = document.fileLinks.inlineCodeFileLinkMetaBySpan.get(only.value.trim());
-  document.collector.add(context.block, meta ? fileChipLabel(meta, document) : only.value);
+  if (meta) document.collector.add(context.block, fileChipLabel(meta, document), "chip");
+  else document.collector.add(context.block, only.value);
 }
 
 function walkElement(element: HastElement, context: WalkContext) {
   if (hasClass(element, SCREEN_READER_ONLY_CLASS)) return;
   const tag = element.tagName;
   if (tag === "br") {
-    context.document.collector.add(context.block, "\n");
+    context.document.collector.add(context.block, "\n", "break");
     return;
   }
   if (tag === "a") {
@@ -289,8 +333,19 @@ function walkElement(element: HastElement, context: WalkContext) {
     return;
   }
   if (tag === "pre") {
-    // A fenced block draws its code as written (ChatCodeBlock), chips and all.
-    context.document.collector.add(element, hastText(element.children));
+    // Display math and diagrams draw pictures, which find reads past
+    // (MarkdownMath, MarkdownDiagram); any other fenced block draws its code
+    // as written (ChatCodeBlock), chips and all.
+    // Only a `pre` holding just its `code` is drawn that way (MarkdownPre).
+    const code = element.children.length === 1 ? element.children[0] : undefined;
+    if (
+      code?.type === "element" &&
+      code.tagName === "code" &&
+      (hasClass(code, "language-math") || hasClass(code, "language-mermaid"))
+    ) {
+      return;
+    }
+    context.document.collector.add(element, hastText(element.children), "code");
     return;
   }
   const block = FIND_BLOCK_TAGS.has(tag) ? element : context.block;
@@ -309,8 +364,10 @@ function collectMarkdownDocument(
     readonly root: object;
   },
 ) {
-  // MarkdownBlock: a streaming tail is drawn with its open markers closed.
-  const rendered = options.isStreaming ? repairStreamingMarkdownTail(text) : text;
+  // MarkdownBlock: math normalized, and a streaming tail drawn with its open
+  // markers closed.
+  const withMath = normalizeChatMath(text, { streaming: options.isStreaming });
+  const rendered = options.isStreaming ? repairStreamingMarkdownTail(withMath) : withMath;
   const processor = options.html === "github" ? githubHtmlProcessor : chatProcessor;
   const tree = processor.runSync(processor.parse(rendered)) as HastRoot;
   const document: DocumentContext = {
@@ -321,6 +378,37 @@ function collectMarkdownDocument(
     collector: options.collector,
   };
   walkChildren(tree.children, { block: options.root, inlinePass: false, document });
+}
+
+/**
+ * The first line of text a finished ChatMarkdown body shows, read as words
+ * (BlockCollector.readable): what a folded message shows of itself. Parses
+ * only as far as it has to. Empty for a body with no text to show (only a
+ * picture, a diagram or a formula).
+ */
+export function markdownFirstLine(input: {
+  readonly text: string;
+  readonly cwd: string | undefined;
+  readonly skills: ReadonlyArray<InlineSkill>;
+}): string {
+  for (const document of splitMarkdownBlocks(input.text)) {
+    const collector = new BlockCollector();
+    collectMarkdownDocument(document, {
+      cwd: input.cwd,
+      skills: input.skills,
+      isStreaming: false,
+      html: undefined,
+      collector,
+      root: {},
+    });
+    const [first] = collector.readable();
+    const line = first
+      ?.split("\n")
+      .map((candidate) => candidate.trim())
+      .find((candidate) => candidate.length > 0);
+    if (line !== undefined) return line;
+  }
+  return "";
 }
 
 /**

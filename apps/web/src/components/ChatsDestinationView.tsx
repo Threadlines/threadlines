@@ -1,138 +1,93 @@
-import {
-  scopedProjectKey,
-  scopedThreadKey,
-  scopeProjectRef,
-  scopeThreadRef,
-} from "@threadlines/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { MessageCirclePlusIcon } from "lucide-react";
-import { useMemo } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { MessageCirclePlusIcon, MessagesSquareIcon } from "lucide-react";
+import { useCallback } from "react";
 
-import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { startNewGeneralChatThread } from "../lib/chatThreadActions";
-import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { useThreadMenu } from "../hooks/useThreadMenu";
+import { type ThreadRowSwipeHandler, useThreadRowSwipes } from "../hooks/useThreadRowSwipes";
+import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../lib/threadInboxSync";
-import { sortThreads } from "../lib/threadSort";
-import { usePrimaryEnvironmentId } from "../environments/primary";
-import {
-  selectGeneralChatsProjectAcrossEnvironments,
-  selectProjectsAcrossEnvironments,
-  selectSidebarThreadsAcrossEnvironments,
-  useStore,
-} from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { cn } from "../lib/utils";
 import { PageTitlebar } from "./PageTitlebar";
 import { ProviderGlyph } from "./chat/ProviderInstanceIcon";
+import {
+  CHAT_GROUP_LABELS,
+  chatActivityAt,
+  useGeneralChatGroups,
+  useGeneralChats,
+} from "./chats/useGeneralChats";
 import { PROVIDER_OPTIONS } from "../session-logic";
 import { resolveSeenThreadStatus, type ThreadStatusPill } from "./Sidebar.logic";
 import { ThreadEnvironmentBadge, ThreadStatusText } from "./sidebar/InboxRows";
+import { SwipeableRow, threadRowSwipeAction } from "./sidebar/SwipeableRow";
+import { SwipeUndoBar } from "./sidebar/SwipeUndoBar";
+import { isThreadTurnRunning } from "./threadMenu.logic";
 import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
+import { Button } from "./ui/button";
 import type { SidebarThreadSummary } from "../types";
 
-const DAY_MS = 24 * 60 * 60 * 1_000;
-
-type ChatGroupId = "today" | "week" | "earlier";
-
-const CHAT_GROUP_LABELS: Record<ChatGroupId, string> = {
-  today: "Today",
-  week: "This week",
-  earlier: "Earlier",
-};
-
-function chatActivityAt(thread: SidebarThreadSummary): string {
-  return thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
-}
-
-/** Recency buckets, read off the same clock as the row's relative time. */
-function resolveChatGroup(activityAt: string, nowMs: number): ChatGroupId {
-  const at = Date.parse(activityAt);
-  if (Number.isNaN(at)) return "earlier";
-  const startOfToday = new Date(nowMs).setHours(0, 0, 0, 0);
-  if (at >= startOfToday) return "today";
-  if (at >= startOfToday - 6 * DAY_MS) return "week";
-  return "earlier";
-}
-
 /**
- * The Chats destination: general chats are threads with no project, so they get
- * a place of their own rather than a project-shaped group in the sidebar.
+ * The General Chats page. On a wide screen the chats are listed beside the
+ * rail (GeneralChatsList) and this is where one starts; a chat that is open
+ * shows in its place. On a phone, which has no list beside the page, this is
+ * the list.
  */
 export function ChatsDestinationView() {
-  const navigate = useNavigate();
-  const { handleNewThread } = useHandleNewThread();
-  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
-  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const seenSources = useThreadSeenSources();
+  const isMobile = useIsMobile();
+  return isMobile ? <GeneralChatsPage /> : <StartGeneralChat />;
+}
 
-  const generalChatsProjectRef = useMemo(
-    () =>
-      resolveGeneralChatsProjectRef({
-        generalChatsProject,
-        activeEnvironmentId,
-        primaryEnvironmentId,
-      }),
-    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
+/** What the main view shows on General Chats while no chat is open. */
+function StartGeneralChat() {
+  const { chats, startChat } = useGeneralChats();
+  return (
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
+      <PageTitlebar label="General chats" />
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center">
+        <MessagesSquareIcon aria-hidden="true" className="size-6 text-muted-foreground" />
+        <div className="flex max-w-sm flex-col gap-1">
+          <h1 className="text-[15px] leading-5 font-semibold text-foreground">
+            {chats.length === 0 ? "No general chats yet" : "Pick a chat, or start one"}
+          </h1>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">
+            General chats are conversations that aren&apos;t tied to a project.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          data-testid="chats-view-new-chat"
+          disabled={startChat === null}
+          onClick={() => startChat?.()}
+        >
+          <MessageCirclePlusIcon aria-hidden="true" />
+          New chat
+        </Button>
+      </div>
+    </div>
   );
+}
 
-  // Every connected machine's general chats, like the sidebar's lines that
-  // lead here: a chat folded behind "N more" must be on this page.
-  const chats = useMemo(() => {
-    const generalChatProjectKeys = new Set(
-      projects
-        .filter((project) => project.kind === "general-chat")
-        .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
-    );
-    return sortThreads(
-      threads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          generalChatProjectKeys.has(
-            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-          ),
-      ),
-    );
-  }, [projects, threads]);
-
-  const groups = useMemo(() => {
-    const nowMs = Date.now();
-    const byGroup = new Map<ChatGroupId, SidebarThreadSummary[]>();
-    for (const thread of chats) {
-      const group = resolveChatGroup(chatActivityAt(thread), nowMs);
-      const existing = byGroup.get(group);
-      if (existing) {
-        existing.push(thread);
-      } else {
-        byGroup.set(group, [thread]);
-      }
-    }
-    // Empty buckets are simply absent: a label with nothing under it is a
-    // heading for a list that does not exist.
-    return (["today", "week", "earlier"] as const).flatMap((group) => {
-      const groupChats = byGroup.get(group);
-      return groupChats ? [{ id: group, chats: groupChats }] : [];
-    });
-  }, [chats]);
-
-  const startChat = () => {
-    if (generalChatsProjectRef) {
-      void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
-    }
-  };
+/** The phone's General Chats page: every chat, newest first, by recency. */
+function GeneralChatsPage() {
+  const navigate = useNavigate();
+  const threadMenu = useThreadMenu();
+  const seenSources = useThreadSeenSources();
+  const { chats, startChat } = useGeneralChats();
+  const groups = useGeneralChatGroups(chats);
+  const { handleRowSwipe, swipeUndo, dismissSwipeUndo } = useThreadRowSwipes();
 
   const newChatButton = (
     <button
       type="button"
       className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground focus-ring"
       data-testid="chats-view-new-chat"
-      disabled={generalChatsProjectRef === null}
-      onClick={startChat}
+      disabled={startChat === null}
+      onClick={() => startChat?.()}
     >
       <MessageCirclePlusIcon className="size-3.5" />
       New chat
@@ -141,16 +96,20 @@ export function ChatsDestinationView() {
 
   return (
     <ThreadHoverCardProvider side="bottom">
-      <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
-        <PageTitlebar label="General chats" />
+      {/* Positioned for the Undo bar a swipe leaves, which floats over the
+          bottom of the page. */}
+      <div
+        className="relative flex h-full min-h-0 w-full min-w-0 flex-col"
+        data-testid="chats-view"
+      >
+        {/* The strip names the page and holds its one action. */}
+        <PageTitlebar label="General chats">
+          <div className="ml-auto">{newChatButton}</div>
+        </PageTitlebar>
         {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
             (like Settings); the reading column centers inside it. */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-8">
-            <div className="mb-1 flex items-center gap-3">
-              <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
-              {newChatButton}
-            </div>
+          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-6">
             <p className="text-sm text-muted-foreground/70">
               Conversations that aren&apos;t tied to a project.
             </p>
@@ -177,6 +136,13 @@ export function ChatsDestinationView() {
                         <ChatRow
                           key={`${thread.environmentId}:${thread.id}`}
                           thread={thread}
+                          onSwipe={handleRowSwipe}
+                          onMenu={(position) =>
+                            void threadMenu.open(
+                              { threadRef: scopeThreadRef(thread.environmentId, thread.id) },
+                              position,
+                            )
+                          }
                           status={
                             resolveSeenThreadStatus(
                               thread,
@@ -201,6 +167,14 @@ export function ChatsDestinationView() {
             )}
           </div>
         </div>
+        {swipeUndo ? (
+          <SwipeUndoBar
+            key={swipeUndo.id}
+            undo={swipeUndo}
+            onDismiss={dismissSwipeUndo}
+            clearsSafeArea
+          />
+        ) : null}
       </div>
     </ThreadHoverCardProvider>
   );
@@ -214,11 +188,28 @@ function ChatRow({
   thread,
   status,
   onOpen,
+  onMenu,
+  onSwipe,
 }: {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
   onOpen: () => void;
+  /** The thread menu (right-click, or a held finger). */
+  onMenu: (position: { readonly x: number; readonly y: number }) => void;
+  /** Runs a touch swipe's action: right pins or unpins, left archives. */
+  onSwipe: ThreadRowSwipeHandler;
 }) {
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      onMenu({ x: event.clientX, y: event.clientY });
+    },
+    [onMenu],
+  );
+  const touchHold = useTouchHoldMenu<HTMLButtonElement>({
+    open: onMenu,
+    onContextMenu: handleContextMenu,
+  });
   const provider = thread.session?.provider ?? null;
   // The listing carries no message text and this page adds no fetching of its
   // own, so the provider is what the second line can honestly say.
@@ -226,48 +217,70 @@ function ChatRow({
     ? (PROVIDER_OPTIONS.find((option) => option.value === provider)?.label ?? provider)
     : null;
 
+  const swipeTarget = {
+    threadKey: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    title: thread.title,
+  };
   return (
-    <ThreadHoverCard thread={thread} status={status}>
-      <button
-        type="button"
-        className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring"
-        data-testid="chats-view-row"
-        onClick={onOpen}
-      >
-        <span className="flex w-full min-w-0 items-baseline gap-3">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
-            {thread.title}
+    // Its menu's Pin and Archive as swipes; Archive waits, as in the menu,
+    // while its agent is mid-turn. The row reaches past the column by its own
+    // padding, so the swipe's edge does too.
+    <SwipeableRow
+      className="-mx-2 rounded-md"
+      leading={threadRowSwipeAction(
+        onSwipe,
+        swipeTarget,
+        thread.pinnedAt !== null ? "unpin" : "pin",
+      )}
+      trailing={
+        isThreadTurnRunning(thread.session)
+          ? null
+          : threadRowSwipeAction(onSwipe, swipeTarget, "archive")
+      }
+    >
+      <ThreadHoverCard thread={thread} status={status}>
+        <button
+          type="button"
+          className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring [-webkit-touch-callout:none]"
+          data-testid="chats-view-row"
+          onClick={onOpen}
+          {...touchHold}
+        >
+          <span className="flex w-full min-w-0 items-baseline gap-3">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
+              {thread.title}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 self-center">
+              {status ? (
+                <span
+                  aria-label={status.label}
+                  className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+                />
+              ) : null}
+              <ThreadStatusText
+                thread={thread}
+                status={status}
+                testId="chats-view-row-status"
+                resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+                restingClassName="text-muted-foreground"
+              />
+            </span>
           </span>
-          <span className="flex shrink-0 items-center gap-1.5 self-center">
-            {status ? (
-              <span
-                aria-label={status.label}
-                className={cn("size-[7px] shrink-0 rounded-full", status.dotClass)}
+          <span className="flex w-full min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
+              {providerLabel}
+            </span>
+            <ThreadEnvironmentBadge thread={thread} />
+            {provider ? (
+              <ProviderGlyph
+                instanceId={thread.session?.providerInstanceId}
+                driverKind={provider}
+                className="size-3 shrink-0 text-muted-foreground/45"
               />
             ) : null}
-            <ThreadStatusText
-              thread={thread}
-              status={status}
-              testId="chats-view-row-status"
-              resting={formatRelativeTimeLabel(chatActivityAt(thread))}
-              restingClassName="text-muted-foreground"
-            />
           </span>
-        </span>
-        <span className="flex w-full min-w-0 items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/55">
-            {providerLabel}
-          </span>
-          <ThreadEnvironmentBadge thread={thread} />
-          {provider ? (
-            <ProviderGlyph
-              instanceId={thread.session?.providerInstanceId}
-              driverKind={provider}
-              className="size-3 shrink-0 text-muted-foreground/45"
-            />
-          ) : null}
-        </span>
-      </button>
-    </ThreadHoverCard>
+        </button>
+      </ThreadHoverCard>
+    </SwipeableRow>
   );
 }

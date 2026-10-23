@@ -56,6 +56,12 @@ export const ProviderAuthWriteInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
   flowId: Schema.optional(Schema.String),
+  /**
+   * `data` is the address a sign-in page ended on in a browser on another
+   * device, for the computer to replay to its own loopback listener; never
+   * typed into the run's terminal. A browser sign-in takes every write so.
+   */
+  redirect: Schema.optional(Schema.Boolean),
 });
 export type ProviderAuthWriteInput = Schema.Codec.Encoded<typeof ProviderAuthWriteInput>;
 

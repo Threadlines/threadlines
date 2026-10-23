@@ -22,13 +22,28 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette, preloadCommandPaletteDialog } from "../components/CommandPalette";
+import { preloadDestinationLists } from "../components/sidebar/destinationLists";
 import { BrowserHostLayer } from "../components/browser/BrowserHostLayer";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
+import {
+  preloadProjectSetupDialog,
+  ProjectSetupDialogHost,
+} from "../components/ProjectSetupDialog";
+import { preloadThreadMoveDialog, ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
+import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
+import {
+  ConnectComputerDialogHost,
+  preloadConnectComputerDialog,
+} from "../components/settings/connections/JoinComputerDialog";
 import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
+import {
+  preloadProviderSignInDialog,
+  ProviderSignInDialogHost,
+} from "../components/chat/ProviderSignInDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
@@ -44,6 +59,12 @@ import {
   toastManager,
 } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
+import {
+  countActiveScheduledTasks,
+  countWorkingScheduledRuns,
+  ScheduledTasksSync,
+  useScheduledTasksStore,
+} from "../lib/scheduledTasksState";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { refreshSourceControlDiscoveryAfterReconnect } from "../lib/sourceControlDiscoveryState";
@@ -93,6 +114,10 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
+import { startComputerLinksSync } from "../environments/links/computerLinks";
+import { startProjectSetupsSync } from "../environments/projectSetups/projectSetups";
+import { startComputerStallsSync } from "../environments/stalls/computerStalls";
+import { ComputerStallNotices } from "../components/ComputerStallNotices";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -201,18 +226,25 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
+        {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
         <SshPasswordPromptDialog />
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
+        <ThreadMoveDialogHost />
+        <ProjectSetupDialogHost />
+        <ThreadRenameDialogHost />
+        <ConnectComputerDialogHost />
         <ExpandedImageViewerHost />
+        <ProviderSignInDialogHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
+        <ComputerStallNotices />
         {primaryEnvironmentAuthenticated ? (
           <WebSocketConnectionSurface>{appShell}</WebSocketConnectionSurface>
         ) : (
@@ -309,6 +341,19 @@ function DesktopTaskbarStatusSync() {
   // Quitting stops only this computer's threads, so the desktop app is told
   // how many of the running ones are local.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // And this computer's active schedules: they keep it awake when the user
+  // asked for that, and quitting stops them.
+  const activeScheduledTaskCount = useScheduledTasksStore((state) =>
+    primaryEnvironmentId === null
+      ? 0
+      : countActiveScheduledTasks(state.byEnvironment[primaryEnvironmentId]),
+  );
+  // Its scheduled runs at work keep it awake too, a one-time task's included.
+  const workingScheduledRunCount = useScheduledTasksStore((state) =>
+    primaryEnvironmentId === null
+      ? 0
+      : countWorkingScheduledRuns(state.byEnvironment[primaryEnvironmentId]),
+  );
   // Quitting stops this computer's terminals too: a busy one makes it ask.
   const localBusyTerminalCount = useTerminalStateStore(
     (state) => selectBusyTerminals(state, primaryEnvironmentId).length,
@@ -318,11 +363,16 @@ function DesktopTaskbarStatusSync() {
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStatusKeyRef = useRef<string | null>(null);
 
-  const setTaskbarStatus = useEffectEvent((input: DesktopTaskbarStatusInput) => {
+  const setTaskbarStatus = useEffectEvent((status: DesktopTaskbarStatusInput) => {
     const bridge = window.desktopBridge;
     if (!bridge?.setTaskbarStatus) {
       return;
     }
+    const input: DesktopTaskbarStatusInput = {
+      ...status,
+      activeScheduledTaskCount,
+      workingScheduledRunCount,
+    };
 
     const threadsKey = (input.threads ?? [])
       .map(
@@ -330,7 +380,7 @@ function DesktopTaskbarStatusSync() {
           `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
       )
       .join("|");
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.localBusyTerminalCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.localBusyTerminalCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${input.workingScheduledRunCount ?? ""}:${threadsKey}`;
     lastStatusInputRef.current = input;
     if (lastStatusKeyRef.current === statusKey) {
       return;
@@ -375,9 +425,15 @@ function DesktopTaskbarStatusSync() {
           settleTaskbarStatus();
         }, TASKBAR_COMPLETION_SETTLE_MS);
       }
-      // The status waits out the settle, but what quitting would stop can't.
+      // The status waits out the settle, but what quitting would stop and
+      // what keeps the computer awake can't.
       const last = lastStatusInputRef.current;
-      if (last !== null && last.localBusyTerminalCount !== localBusyTerminalCount) {
+      if (
+        last !== null &&
+        (last.localBusyTerminalCount !== localBusyTerminalCount ||
+          last.activeScheduledTaskCount !== activeScheduledTaskCount ||
+          last.workingScheduledRunCount !== workingScheduledRunCount)
+      ) {
         setTaskbarStatus({ ...last, localBusyTerminalCount });
       }
       return;
@@ -412,10 +468,12 @@ function DesktopTaskbarStatusSync() {
   useEffect(() => {
     syncTaskbarStatus();
   }, [
+    activeScheduledTaskCount,
     localBusyTerminalCount,
     primaryEnvironmentId,
     runningThreadsSignature,
     unreadThreadsSignature,
+    workingScheduledRunCount,
   ]);
 
   useEffect(
@@ -610,12 +668,23 @@ function EnvironmentConnectionManagerBootstrap() {
     });
     // Joins waiting for a host's Allow survive restarts; pick them back up.
     const stopRelayJoins = startRelayJoinWatchers();
+    // Each connected computer's links, for Fleet, the inbox's link requests
+    // and Settings' linked computers.
+    const stopComputerLinks = startComputerLinksSync();
+    // Each connected computer's project setups, for the setup dialog, its
+    // toasts and Fleet.
+    const stopProjectSetups = startProjectSetupsSync();
+    // Each connected computer's latest freeze or sleep, for its notice and Fleet.
+    const stopComputerStalls = startComputerStallsSync();
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopComputerStalls();
+      stopProjectSetups();
+      stopComputerLinks();
       stopRelayJoins();
       stopConnections();
     };
@@ -645,8 +714,11 @@ function whenIdleAfterFirstPaint(task: () => void): () => void {
 /**
  * Fetches code the first interactions need once the workspace has painted:
  * the thread page, which a launch into a draft or home would otherwise wait
- * for on its first switch to a thread, and the command palette's body, so the
- * first shortcut press opens it at once.
+ * for on its first switch to a thread, the command palette's body, so the
+ * first shortcut press opens it at once, the pages' sidebar lists, so the
+ * first switch from the rail shows its list at once, and the bodies of the
+ * dialogs the menus open (move, set up, connect, sign in), so they open at
+ * once and a web deploy that replaced their files can't fail a later open.
  */
 function AppShellIdlePreloads() {
   const router = useRouter();
@@ -661,6 +733,11 @@ function AppShellIdlePreloads() {
         .loadRouteChunk(router.routesById["/_chat/$environmentId/$threadId"])
         ?.catch(() => undefined);
       preloadCommandPaletteDialog();
+      preloadDestinationLists();
+      void preloadThreadMoveDialog();
+      void preloadProjectSetupDialog();
+      void preloadConnectComputerDialog();
+      void preloadProviderSignInDialog();
     });
   }, [router, workspaceLoaded]);
 

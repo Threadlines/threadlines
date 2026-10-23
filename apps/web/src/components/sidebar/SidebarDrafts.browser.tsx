@@ -78,7 +78,7 @@ function renderDraftBlock(input: {
       countVisibleDraftSessions({
         store,
         projectInfoByScopedRef: PROJECT_INFO,
-        scopedProjectKey: null,
+        scopedProjectKeys: [],
         scopedEnvironmentId: null,
         routeDraftId,
         frozenOpenDraftRow,
@@ -92,7 +92,7 @@ function renderDraftBlock(input: {
         <span data-testid="visible-draft-count">{visibleDraftSessionCount}</span>
         <SidebarDraftBlock
           projectInfoByScopedRef={PROJECT_INFO}
-          scopedProjectKey={null}
+          scopedProjectKeys={[]}
           scopedEnvironmentId={null}
           routeDraftId={routeDraftId}
           frozenOpenDraftRow={frozenOpenDraftRow}

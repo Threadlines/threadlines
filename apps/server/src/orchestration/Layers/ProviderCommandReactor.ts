@@ -25,6 +25,7 @@ import {
   type OrchestrationThread,
   type ProviderSession,
   type ProviderSessionForkFrom,
+  type ProviderInstanceId,
   type OrchestrationWarmUpTurnInput,
   type RuntimeMode,
   type ThreadContextSeed,
@@ -39,7 +40,7 @@ import {
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor } from "@threadlines/shared/childThreads";
+import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   hasAgentRecords,
@@ -85,6 +86,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
+import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 
@@ -111,6 +113,8 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RemoteRequestGate } from "../Services/RemoteRequestGate.ts";
+import { ScheduledTaskNotes } from "../Services/ScheduledTaskNotes.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -124,6 +128,7 @@ import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
+import { isStaleRemoteReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
@@ -171,8 +176,11 @@ type ReactorWork =
   | {
       readonly type: "continue";
       /** Failures are logged and dropped by the worker. */
-      readonly run: Effect.Effect<void, Error, FileSystem.FileSystem | Path.Path | Scope.Scope>;
+      readonly run: ContinueWork;
     };
+
+/** Work an event started elsewhere, finished in its thread's worker. */
+type ContinueWork = Effect.Effect<void, Error, FileSystem.FileSystem | Path.Path | Scope.Scope>;
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -184,6 +192,32 @@ export interface ForkTurnBoundary {
   readonly beforeTurnId?: TurnId;
   /** Stable inclusive boundary used directly or as the compatibility fallback. */
   readonly lastTurnId?: TurnId;
+}
+
+/** One ensure call's launch mark: its generation and instance, once marked. */
+interface SessionLaunch {
+  generation: number | null;
+  providerInstanceId: ProviderInstanceId | null;
+}
+
+interface EnsureSessionOptions {
+  readonly modelSelection?: ModelSelection;
+  readonly excludeContextSeedMessageId?: MessageId;
+  /** Keep the projected startup state until a requested turn reaches the
+   *  provider. Idle session recycling must settle back to ready. */
+  readonly preservePendingTurnStartup?: boolean;
+  /** Same-driver native fork request for a fresh session start. Falls
+   *  back to a plain start (context-seed seeding) when the fork fails. */
+  readonly forkFrom?: ProviderSessionForkFrom;
+  /** The room agent to run. Null or absent: the thread's own agent. */
+  readonly participantId?: ThreadParticipantId | null;
+  /**
+   * Start early, while the user types the message that will need the
+   * session (docs/early-agent-start.md): only where that message would
+   * plainly start or resume the agent, and without making it the
+   * thread's. `runtimeMode` is the access level the message will carry.
+   */
+  readonly early?: { readonly runtimeMode: RuntimeMode };
 }
 
 interface ForkBoundaryMessage {
@@ -438,6 +472,12 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  // Computer links, when this server has them: see RemoteRequestGate.
+  const remoteRequestGate = yield* Effect.serviceOption(RemoteRequestGate);
+  // Scheduled tasks, when this server has them: see ScheduledTaskNotes.
+  const scheduledTaskNotes = yield* Effect.serviceOption(ScheduledTaskNotes);
+  /** The scope start() runs in: timers for held turns live there. */
+  let reactorScope: Scope.Scope | undefined;
   const providerService = yield* ProviderService;
   const seedBuilder = yield* ThreadContextSeedBuilder;
   const checkpointStore = yield* CheckpointStore;
@@ -538,8 +578,35 @@ const make = Effect.gen(function* () {
       readonly driverKind: ProviderDriverKind;
       readonly cwd: string | undefined;
       claimed: boolean;
+      /**
+       * Owed because the thread moved here from another computer
+       * (OrchestrationThread.historySeedOwed), which is recorded: paying it
+       * clears that too, and it is only paid with a seed that holds the
+       * imported conversation.
+       */
+      readonly moved?: true;
+      /**
+       * The runtime started seeded with the conversation, by its start time
+       * (ProviderSession.createdAt): a send on that runtime adds no seed of
+       * its own, and pays the debt once the provider takes it. A send on any
+       * other runtime (this one was stopped or replaced) builds the seed
+       * again. Lost with the process, so a restart seeds the send.
+       */
+      readonly carriedBy?: string;
     }
   >();
+
+  /** A moved thread's agent was given its conversation with `messageId`'s send: the recorded debt is paid. */
+  const markHistorySeedDelivered = (threadId: ThreadId, messageId: MessageId) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.history-seed.delivered",
+        commandId: serverCommandId("history-seed-delivered"),
+        threadId,
+        messageId,
+        createdAt: new Date().toISOString(),
+      })
+      .pipe(Effect.ignore);
 
   /**
    * Checkout path most recently reported missing per thread, so the same dead
@@ -547,6 +614,9 @@ const make = Effect.gen(function* () {
    * thread starts a session somewhere that exists.
    */
   const reportedMissingCheckouts = new Map<ThreadId, string>();
+
+  /** The newest launch that marked each thread's session as launching. */
+  const launchGenerations = makeSessionLaunchGenerations<ThreadId>();
 
   const noteCheckoutSwitchDeferred = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -718,6 +788,65 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
 
+  /**
+   * Says on the thread's session that the agent's program is starting, while
+   * a turn waits on it: only when the slot is this agent's and still
+   * starting. Once per ensure call and instance, so a fork that falls back to
+   * a plain start doesn't flicker. Keeps `updatedAt`, which the chat reads as
+   * when the turn started. Best effort: the turn goes on without the mark.
+   */
+  const markSessionLaunching = (input: {
+    readonly threadId: ThreadId;
+    readonly participantId: ThreadParticipantId | null;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly launch: SessionLaunch;
+  }) =>
+    Effect.gen(function* () {
+      if (input.launch.providerInstanceId === input.providerInstanceId) {
+        return;
+      }
+      const session = (yield* resolveThread(input.threadId))?.session;
+      if (
+        !session ||
+        session.status !== "starting" ||
+        sessionSlotParticipantId(session) !== input.participantId
+      ) {
+        return;
+      }
+      input.launch.generation = launchGenerations.begin(input.threadId);
+      input.launch.providerInstanceId = input.providerInstanceId;
+      yield* setThreadSession({
+        threadId: input.threadId,
+        session: {
+          ...session,
+          startup: { phase: "launching", providerInstanceId: input.providerInstanceId },
+        },
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
+  /**
+   * Ends a launch's mark once its ensure call is over, however it ended,
+   * while it is still the thread's newest launch. A successful start's bind
+   * already wrote the session without it; this covers a start that failed,
+   * timed out or was interrupted.
+   */
+  const clearSessionLaunching = (threadId: ThreadId, launch: SessionLaunch) =>
+    Effect.gen(function* () {
+      if (launch.generation === null || !launchGenerations.end(threadId, launch.generation)) {
+        return;
+      }
+      const session = (yield* resolveThread(threadId))?.session;
+      if (session?.startup == null) {
+        return;
+      }
+      yield* setThreadSession({
+        threadId,
+        session: { ...session, startup: null },
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
   const setThreadSessionErrorOnTurnStartFailure = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly detail: string;
@@ -731,7 +860,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...session,
+        ...withoutLaunchMark(session),
         status: session.status === "stopped" ? "stopped" : "ready",
         activeTurnId: null,
         lastError: input.detail,
@@ -753,7 +882,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...thread.session,
+        ...withoutLaunchMark(thread.session),
         status: "error",
         lastError: input.detail,
         updatedAt: input.createdAt,
@@ -804,7 +933,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...session,
+        ...withoutLaunchMark(session),
         status: "running",
         activeTurnId: input.turnId,
         lastError: null,
@@ -837,6 +966,10 @@ const make = Effect.gen(function* () {
   ) {
     if (origin === undefined || origin.kind !== "report") {
       return false;
+    }
+    // A child on a linked computer isn't here: the parent's record of it decides.
+    if (origin.environmentId !== undefined) {
+      return isStaleRemoteReport(parent, origin);
     }
     const child = yield* resolveThread(origin.threadId);
     return (
@@ -955,28 +1088,28 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
+  /**
+   * Makes sure the thread's agent has a live session for what comes next,
+   * starting, restarting or handing it over as needed. While a turn waits on
+   * the agent's program starting, the session says so (`startup`), until the
+   * start is over.
+   */
+  const ensureSessionForThread = (
     threadId: ThreadId,
     createdAt: string,
-    options?: {
-      readonly modelSelection?: ModelSelection;
-      readonly excludeContextSeedMessageId?: MessageId;
-      /** Keep the projected startup state until a requested turn reaches the
-       *  provider. Idle session recycling must settle back to ready. */
-      readonly preservePendingTurnStartup?: boolean;
-      /** Same-driver native fork request for a fresh session start. Falls
-       *  back to a plain start (context-seed seeding) when the fork fails. */
-      readonly forkFrom?: ProviderSessionForkFrom;
-      /** The room agent to run. Null or absent: the thread's own agent. */
-      readonly participantId?: ThreadParticipantId | null;
-      /**
-       * Start early, while the user types the message that will need the
-       * session (docs/early-agent-start.md): only where that message would
-       * plainly start or resume the agent, and without making it the
-       * thread's. `runtimeMode` is the access level the message will carry.
-       */
-      readonly early?: { readonly runtimeMode: RuntimeMode };
-    },
+    options?: EnsureSessionOptions,
+  ) => {
+    const launch: SessionLaunch = { generation: null, providerInstanceId: null };
+    return ensureSessionForThreadWith(threadId, createdAt, options, launch).pipe(
+      Effect.onExit(() => clearSessionLaunching(threadId, launch)),
+    );
+  };
+
+  const ensureSessionForThreadWith = Effect.fn("ensureSessionForThread")(function* (
+    threadId: ThreadId,
+    createdAt: string,
+    options: EnsureSessionOptions | undefined,
+    launch: SessionLaunch,
   ) {
     const thread = yield* resolveThread(threadId);
     if (!thread) {
@@ -1000,8 +1133,41 @@ const make = Effect.gen(function* () {
     }
     const sessionKey = participantSessionKey(threadId, participantId);
     const early = options?.early;
+    // A turn about to show the mark finds none of this reactor's launches
+    // running, since a thread's ensures run one at a time: one it finds is
+    // left over (its clear never landed). Only for a turn: a review starting
+    // outside the reactor holds a mark of its own meanwhile.
+    if (
+      options?.preservePendingTurnStartup === true &&
+      thread.session?.startup != null &&
+      !launchGenerations.holds(threadId)
+    ) {
+      yield* setThreadSession({
+        threadId,
+        session: { ...thread.session, startup: null },
+        createdAt,
+      }).pipe(Effect.ignoreCause({ log: true }));
+    }
     // A session started early becomes the thread's here: whoever ensures a
-    // session is about to use it. Waits for one still starting.
+    // session is about to use it. Waits for one still starting, which is
+    // this turn's launch when it is the agent the turn asked for; one
+    // switching away waits on it unnamed, then names its own launch.
+    if (early === undefined) {
+      const earlyInstanceId = yield* providerService.earlyStartInFlight(sessionKey);
+      const turnInstanceId = (
+        options?.modelSelection ??
+        participant?.modelSelection ??
+        thread.modelSelection
+      ).instanceId;
+      if (earlyInstanceId !== undefined && earlyInstanceId === turnInstanceId) {
+        yield* markSessionLaunching({
+          threadId,
+          participantId,
+          providerInstanceId: earlyInstanceId,
+          launch,
+        });
+      }
+    }
     const adoptedEarlySession =
       early === undefined ? yield* providerService.adoptEarlySession(sessionKey) : undefined;
     const projectedSession =
@@ -1013,10 +1179,17 @@ const make = Effect.gen(function* () {
     const toolSettings = yield* serverSettingsService.getSettings.pipe(
       Effect.orElseSucceed(() => undefined),
     );
+    // A scheduled run's thread gets them on its own, for scheduled_run_finish
+    // (docs/design/fleet.md, Part 6). A thread another computer's agent
+    // started here gets none of them: it must not reach other threads here
+    // (docs/design/fleet.md, "Fence").
+    const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
     const roomToolsWanted =
-      hasAgentRecords(thread) ||
-      agentInvitesMode(toolSettings) !== "off" ||
-      agentThreadsMode(toolSettings) !== "off";
+      (thread.remoteOrigin ?? null) === null &&
+      (hasAgentRecords(thread) ||
+        agentInvitesMode(toolSettings) !== "off" ||
+        agentThreadsMode(toolSettings) !== "off" ||
+        scheduledRunTools);
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1189,6 +1362,10 @@ const make = Effect.gen(function* () {
       ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
       ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
       ...(roomToolsWanted ? { roomTools: true } : {}),
+      ...(roomToolsWanted && scheduledRunTools ? { scheduledRunTools: true } : {}),
+      ...(roomToolsWanted && agentThreadsMode(toolSettings) !== "off"
+        ? { scheduleTools: true }
+        : {}),
       ...(toolSettings?.enableAgentPages !== false ? { agentPages: true } : {}),
       ...(toolSettings?.enableAgentPages !== false && toolSettings?.enableClaudeArtifacts === true
         ? { artifacts: true }
@@ -1197,6 +1374,8 @@ const make = Effect.gen(function* () {
       runtimeMode: desiredRuntimeMode,
     });
 
+    // Every launch of the agent's program goes through here, for every
+    // driver, so this is where a waiting turn learns the program is starting.
     const startProviderSession = (
       input?: {
         readonly resumeCursor?: unknown;
@@ -1205,11 +1384,20 @@ const make = Effect.gen(function* () {
       },
       startKind: "fresh" | "restart" | "handoff" = "fresh",
     ) =>
-      providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
-        withMetrics({
-          timer: providerSessionStartDuration,
-          attributes: { provider: preferredProvider, startKind },
-        }),
+      markSessionLaunching({
+        threadId,
+        participantId,
+        providerInstanceId: desiredInstanceId,
+        launch,
+      }).pipe(
+        Effect.andThen(
+          providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
+            withMetrics({
+              timer: providerSessionStartDuration,
+              attributes: { provider: preferredProvider, startKind },
+            }),
+          ),
+        ),
       );
 
     // A session that could not reopen its conversation owes the thread's
@@ -1285,6 +1473,8 @@ const make = Effect.gen(function* () {
             checkoutCwd: session.cwd ?? effectiveCwd ?? null,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
+            // The program has started: the launch, if this was one, is over.
+            startup: null,
             lastError: session.lastError ?? null,
             updatedAt: shouldPreservePendingTurnStartup
               ? (latestSession?.updatedAt ?? session.updatedAt)
@@ -1350,7 +1540,25 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
-      if (contextSeed !== undefined) owedHistorySeeds.delete(sessionKey);
+      if (contextSeed !== undefined) {
+        owedHistorySeeds.delete(sessionKey);
+        // A moved thread's debt is paid once a turn reaches the provider on
+        // this seeded session, not when it starts: some adapters keep the
+        // seed in memory until their first send.
+        if (
+          participantId === null &&
+          thread.historySeedOwed === true &&
+          contextSeed.entries.length > 0
+        ) {
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd ?? undefined,
+            claimed: false,
+            moved: true,
+            carriedBy: handoffSession.createdAt,
+          });
+        }
+      }
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
@@ -1576,11 +1784,27 @@ const make = Effect.gen(function* () {
   ) {
     const lines: string[] = [];
     if (fromThread !== undefined) {
-      const other = yield* resolveThread(fromThread.threadId);
-      const otherTitle = other?.title ?? "another thread";
+      // A thread on a linked computer isn't here: its title comes from what
+      // this thread keeps about it (where it was started, or its child record).
+      const remoteOrigin = thread.remoteOrigin ?? null;
+      const remoteChild =
+        fromThread.environmentId !== undefined
+          ? remoteChildOf(thread.childRequests, fromThread.threadId)
+          : undefined;
+      const other =
+        fromThread.environmentId === undefined
+          ? yield* resolveThread(fromThread.threadId)
+          : undefined;
+      const otherTitle =
+        other?.title ??
+        (remoteOrigin !== null && remoteOrigin.threadId === fromThread.threadId
+          ? `${remoteOrigin.threadTitle}" on "${remoteOrigin.environmentLabel}`
+          : undefined) ??
+        remoteChild?.title ??
+        "another thread";
       if (fromThread.kind === "request") {
         lines.push(
-          thread.attachedToParent
+          thread.attachedToParent || fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
             : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
         );
@@ -1613,6 +1837,33 @@ const make = Effect.gen(function* () {
                 createdAt,
               })
               .pipe(Effect.catch(() => Effect.void)),
+    };
+  });
+
+  /**
+   * Scheduled tasks: what the user answered to this agent's schedule_create
+   * and schedule_update calls since its last turn, carried once.
+   */
+  const scheduledTaskContext = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) {
+    if (Option.isNone(scheduledTaskNotes)) {
+      return { text: undefined, delivered: Effect.void };
+    }
+    const notes = yield* scheduledTaskNotes.value.pendingFor(thread.id, participantId);
+    return {
+      text:
+        notes.length === 0
+          ? undefined
+          : [
+              "About the scheduled tasks you asked for, since your last turn:",
+              ...notes.map((note) => `- ${note.text}`),
+            ].join("\n"),
+      delivered:
+        notes.length === 0
+          ? Effect.void
+          : scheduledTaskNotes.value.delivered(notes.map((note) => note.requestId)),
     };
   });
 
@@ -1711,9 +1962,48 @@ const make = Effect.gen(function* () {
     // what, own messages included); elsewhere the transcript seed does. The
     // caller claims the debt as it hands the request to the provider: builds
     // for one thread run one at a time, so the next build sees the claim.
+    // A thread moved here owes its agent the conversation until a send
+    // carries it (recorded on the thread, so a restart still owes it).
+    // A seed carried by a runtime that is gone isn't in this one.
+    const carried = owedHistorySeeds.get(sessionKey);
+    if (
+      carried?.carriedBy !== undefined &&
+      !carried.claimed &&
+      carried.carriedBy !== activeSession?.createdAt
+    ) {
+      owedHistorySeeds.delete(sessionKey);
+    }
+    // A debt for another reason (the provider couldn't reopen its
+    // conversation) on a thread that still owes its moved history is that
+    // debt too: the seed it pays with is the same conversation, and paying
+    // it must record the move's delivery.
+    const unmarked = owedHistorySeeds.get(sessionKey);
+    if (
+      unmarked !== undefined &&
+      unmarked.moved !== true &&
+      unmarked.carriedBy === undefined &&
+      !unmarked.claimed &&
+      thread.historySeedOwed === true &&
+      input.participantId === null
+    ) {
+      owedHistorySeeds.set(sessionKey, { ...unmarked, moved: true });
+    }
+    if (
+      !owedHistorySeeds.has(sessionKey) &&
+      thread.historySeedOwed === true &&
+      input.participantId === null &&
+      activeSession !== undefined
+    ) {
+      owedHistorySeeds.set(sessionKey, {
+        driverKind: activeSession.provider,
+        cwd: thread.worktreePath ?? undefined,
+        claimed: false,
+        moved: true,
+      });
+    }
     const owed = owedHistorySeeds.get(sessionKey);
-    const owedSeed = owed !== undefined && !owed.claimed ? owed : undefined;
-    const roomPaysHistory = owedSeed !== undefined && isRoomThread(thread);
+    const owedCandidate = owed !== undefined && !owed.claimed ? owed : undefined;
+    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread);
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
@@ -1730,28 +2020,40 @@ const make = Effect.gen(function* () {
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
-    const resumeSeed =
-      owedSeed === undefined || roomPaysHistory
+    const builtSeed =
+      owedCandidate === undefined || roomPaysHistory || owedCandidate.carriedBy !== undefined
         ? undefined
         : yield* seedBuilder
             .build({
               threadId: input.threadId,
-              fromProvider: owedSeed.driverKind,
-              toProvider: owedSeed.driverKind,
+              fromProvider: owedCandidate.driverKind,
+              toProvider: owedCandidate.driverKind,
               excludeMessageId: input.messageId,
-              ...(owedSeed.cwd ? { cwd: owedSeed.cwd } : {}),
+              ...(owedCandidate.cwd ? { cwd: owedCandidate.cwd } : {}),
             })
             .pipe(Effect.map(Option.getOrUndefined));
+    // A moved thread's debt is only paid with the conversation itself: the
+    // builder falls back to a workspace pointer when it can't read the
+    // transcript, and that send must leave the debt owed.
+    const movedSeedEmpty =
+      owedCandidate?.moved === true &&
+      owedCandidate.carriedBy === undefined &&
+      (builtSeed === undefined || builtSeed.entries.length === 0) &&
+      thread.messages.some((message) => message.imported === true);
+    const owedSeed = movedSeedEmpty ? undefined : owedCandidate;
+    const resumeSeed = movedSeedEmpty ? undefined : builtSeed;
     const resumeContextText =
       resumeSeed !== undefined ? renderThreadContextSeed(resumeSeed) : undefined;
     // Child threads: who this message is from, and what this agent's threads
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
+    const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
     const providerContext = [
       resumeContextText,
       forkContextText,
       roomCatchUp?.note,
       childContext.text,
+      scheduleContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -1867,9 +2169,12 @@ const make = Effect.gen(function* () {
       historyDebtPaid:
         owedSeed === undefined
           ? Effect.void
-          : Effect.sync(() => {
+          : Effect.gen(function* () {
               if (owedHistorySeeds.get(sessionKey) === owedSeed) {
                 owedHistorySeeds.delete(sessionKey);
+              }
+              if (owedSeed.moved === true) {
+                yield* markHistorySeedDelivered(input.threadId, input.messageId);
               }
             }),
       // A send that failed before the provider took it delivered nothing.
@@ -1879,8 +2184,12 @@ const make = Effect.gen(function* () {
           : Effect.sync(() => {
               owedSeed.claimed = false;
             }),
-      // Child threads: the notes this turn carries, cleared once it is taken.
-      childNotesDelivered: childContext.delivered(input.createdAt),
+      // Child threads' and scheduled tasks' notes this turn carries, cleared
+      // once it is taken.
+      notesDelivered: Effect.andThen(
+        childContext.delivered(input.createdAt),
+        scheduleContext.delivered,
+      ),
       // Recorded only once the provider has taken the turn.
       roomContext:
         roomCatchUp !== undefined && conversationId !== null
@@ -2310,31 +2619,84 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
       });
-      // The session is settled only while this turn is still the thread's
-      // latest start. A turn that waited to take over can be dropped after a
-      // newer one started, and that one's session is left alone.
-      const stillLatestStart = yield* projectionTurnRepository
-        .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
-        .pipe(
-          Effect.map(
-            (pending) =>
-              Option.isSome(pending) && pending.value.messageId === event.payload.messageId,
-          ),
-          Effect.orElseSucceed(() => false),
-        );
-      if (stillLatestStart) {
-        yield* setThreadSessionErrorOnTurnStartFailure({
-          threadId: event.payload.threadId,
-          detail: "Stopped before the turn started.",
-          createdAt: yield* nowIso,
-        });
-      }
+      yield* dropStart("Stopped before the turn started.");
       return true;
     });
 
+    /** Whether this turn is still the thread's latest start (a newer one replaces it). */
+    const stillLatestStart = projectionTurnRepository
+      .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
+      .pipe(
+        Effect.map(
+          (pending) =>
+            Option.isSome(pending) && pending.value.messageId === event.payload.messageId,
+        ),
+      );
+
+    /**
+     * This turn won't be sent. The session is settled only while it is still
+     * the thread's latest start: a turn that waited to take over can be
+     * dropped after a newer one started, and that one's session is left alone.
+     */
+    const dropStart = (detail: string) =>
+      Effect.gen(function* () {
+        if (yield* stillLatestStart.pipe(Effect.orElseSucceed(() => false))) {
+          yield* setThreadSessionErrorOnTurnStartFailure({
+            threadId: event.payload.threadId,
+            detail,
+            createdAt: yield* nowIso,
+          });
+        }
+      });
+
+    /**
+     * A turn answering a linked computer's request (see remoteRequestVerdict):
+     * taken back there, it is dropped; while the record can't be read, it is
+     * held and tried again, as long as it is still the thread's latest start
+     * and its session wasn't stopped meanwhile. True when it must not go now.
+     */
+    const remoteTurnHeld: Effect.Effect<boolean, Error> = Effect.gen(function* () {
+      const verdict = yield* remoteRequestVerdict(
+        event.payload.threadId,
+        event.payload.messageId,
+        event.payload.fromThread,
+      );
+      if (verdict === "none") {
+        return false;
+      }
+      if (verdict === "unknown") {
+        yield* holdRemoteTurn(event.payload.threadId, retryHeldStart);
+        return true;
+      }
+      yield* releaseRemoteHold(event.payload.threadId);
+      if (verdict === "run") {
+        return false;
+      }
+      yield* Effect.logInfo("linked computer's turn not sent: its request was taken back", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      yield* dropStart("The other computer took this request back before it started.");
+      return true;
+    });
+
+    const retryHeldStart = (token: symbol): ContinueWork =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        if (
+          latest === undefined ||
+          latest.session?.status === "stopped" ||
+          !(yield* stillLatestStart)
+        ) {
+          yield* releaseRemoteHold(event.payload.threadId, token);
+          return;
+        }
+        yield* prepareAndSend;
+      });
+
     // Preparing the session and sending the turn, in this thread's worker.
-    const prepareAndSend = Effect.gen(function* () {
-      if (yield* stoppedSinceRequested) {
+    const prepareAndSend: ContinueWork = Effect.gen(function* () {
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
         return;
       }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
@@ -2407,12 +2769,13 @@ const make = Effect.gen(function* () {
         historyDebtClaimed,
         historyDebtPaid,
         historyDebtReturned,
-        childNotesDelivered,
+        notesDelivered,
       } = sendTurnRequest.value;
 
       // Stop pressed while this turn was being prepared waited behind it in
-      // this worker, but has already raised the chain epoch.
-      if (yield* stoppedSinceRequested) {
+      // this worker, but has already raised the chain epoch. A linked
+      // computer may have taken the request back meanwhile too.
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
         return;
       }
       // The turn request already recorded the model it expected to go out.
@@ -2449,7 +2812,7 @@ const make = Effect.gen(function* () {
             ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
             : Effect.void,
         ),
-        Effect.tap(() => childNotesDelivered),
+        Effect.tap(() => notesDelivered),
         // Replies and reports queued while the turn was starting go in now,
         // behind its own message (and its notes), in this thread's worker.
         Effect.tap(() =>
@@ -2610,7 +2973,7 @@ const make = Effect.gen(function* () {
         yield* setThreadSession({
           threadId: event.payload.threadId,
           session: {
-            ...latestSession,
+            ...withoutLaunchMark(latestSession),
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -2743,7 +3106,7 @@ const make = Effect.gen(function* () {
       yield* setThreadSession({
         threadId: event.payload.threadId,
         session: {
-          ...session,
+          ...withoutLaunchMark(session),
           status: "interrupted",
           activeTurnId: null,
           lastError: null,
@@ -3202,7 +3565,7 @@ const make = Effect.gen(function* () {
                   yield* setThreadSession({
                     threadId: thread.id,
                     session: {
-                      ...latestSession,
+                      ...withoutLaunchMark(latestSession),
                       status: "ready",
                       activeTurnId: null,
                       updatedAt: event.payload.createdAt,
@@ -3880,29 +4243,182 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /** Starts a queued message's turn. Losing a race with Remove is fine. */
+  /**
+   * Computer links (docs/design/fleet.md). A linked computer's request runs
+   * here only as a turn sent to the provider: a start's first turn, or a
+   * queued message the link delivered (`fromThread.kind === "request"` with
+   * an `environmentId`). Right before such a turn goes, and before such a
+   * queued message is sent, the link ledger has the last word, through this
+   * one check: a request that computer took back never runs, even if its
+   * command landed after the cancel (an RPC cut off mid-call lets go of its
+   * request while the engine still runs what it had queued) or its first
+   * turn was already asked for. `none`: not a linked computer's request.
+   */
+  const remoteRequestVerdict = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    origin: ThreadMessageOrigin | undefined,
+  ) {
+    if (
+      Option.isNone(remoteRequestGate) ||
+      origin?.kind !== "request" ||
+      origin.environmentId === undefined
+    ) {
+      return "none" as const;
+    }
+    return yield* remoteRequestGate.value.messageVerdict({ threadId, messageId });
+  });
+
+  /**
+   * A thread whose turn waits on an unreadable link record: one owned retry
+   * per thread. A newer hold replaces an older one; a timer acts, or clears
+   * the entry, only while it still owns it.
+   */
+  const heldRemoteTurns = new Map<ThreadId, { readonly token: symbol; readonly tries: number }>();
+
+  /** The thread's hold is over (a verdict came, or there is nothing left to try). */
+  const releaseRemoteHold = (threadId: ThreadId, token?: symbol) =>
+    Effect.sync(() => {
+      const held = heldRemoteTurns.get(threadId);
+      if (held !== undefined && (token === undefined || held.token === token)) {
+        heldRemoteTurns.delete(threadId);
+      }
+    });
+
+  /**
+   * Holds a thread's turn and tries `attempt` again later (a second,
+   * doubling, at most a minute), in the thread's worker so it runs in order
+   * with the thread's events. An attempt whose reads fail tries again the
+   * same way. Timers live in the reactor's own scope.
+   */
+  const holdRemoteTurn = (threadId: ThreadId, attempt: (token: symbol) => ContinueWork) =>
+    Effect.suspend((): Effect.Effect<void> => {
+      const scope = reactorScope;
+      if (scope === undefined) {
+        return Effect.void;
+      }
+      const tries = heldRemoteTurns.get(threadId)?.tries ?? 0;
+      const token = Symbol(threadId);
+      heldRemoteTurns.set(threadId, { token, tries: tries + 1 });
+      const owns = () => heldRemoteTurns.get(threadId)?.token === token;
+      const run: ContinueWork = attempt(token).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logInfo("provider command reactor will retry a held turn", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => (owns() ? holdRemoteTurn(threadId, attempt) : Effect.void)),
+                ),
+              ),
+        ),
+      );
+      return Effect.sleep(Duration.millis(Math.min(60_000, 1_000 * 2 ** tries))).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            owns()
+              ? worker.enqueue(String(threadId), { type: "continue", run }).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+        Effect.forkIn(scope),
+        Effect.asVoid,
+      );
+    });
+
+  /**
+   * A held queued message tried again: unless by then Stop holds the queue,
+   * a turn runs (its end sends the queue), or nothing is queued.
+   */
+  const retryHeldQueue =
+    (threadId: ThreadId) =>
+    (token: symbol): ContinueWork =>
+      Effect.gen(function* () {
+        const thread = yield* resolveThread(threadId);
+        const next = thread ? nextQueuedFollowUp(thread) : undefined;
+        const session = thread?.session ?? null;
+        if (
+          thread === undefined ||
+          next === undefined ||
+          queueHeldByStop.has(threadId) ||
+          session?.status === "running" ||
+          session?.status === "starting" ||
+          (session?.activeTurnId ?? null) !== null
+        ) {
+          yield* releaseRemoteHold(threadId, token);
+          return;
+        }
+        yield* sendQueuedFollowUpWhenFree(threadId, next.messageId, yield* nowIso);
+      });
+
+  /**
+   * Starts a queued message's turn. Losing a race with Remove is fine. A
+   * linked computer's message taken back there leaves the queue unsent and
+   * the next one goes instead (see remoteRequestVerdict).
+   */
   const sendQueuedFollowUp = Effect.fnUntraced(function* (
     threadId: ThreadId,
     messageId: MessageId,
     createdAt: string,
   ) {
-    yield* orchestrationEngine
-      .dispatch({
-        type: "thread.follow-up.send-queued",
-        commandId: serverCommandId("follow-up-send-queued"),
-        threadId,
-        messageId,
-        createdAt,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          Effect.logInfo("provider command reactor could not send a queued follow-up", {
+    let candidate: MessageId | undefined = messageId;
+    while (candidate !== undefined) {
+      const current: MessageId = candidate;
+      const thread = yield* resolveThread(threadId);
+      const origin = thread?.queuedFollowUps?.find(
+        (entry) => entry.messageId === current,
+      )?.fromThread;
+      const verdict = yield* remoteRequestVerdict(threadId, current, origin);
+      if (verdict === "unknown") {
+        yield* holdRemoteTurn(threadId, retryHeldQueue(threadId));
+        return;
+      }
+      if (verdict !== "none") {
+        yield* releaseRemoteHold(threadId);
+      }
+      if (verdict === "run" || verdict === "none") {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: serverCommandId("follow-up-send-queued"),
             threadId,
-            messageId,
-            detail: String(error),
-          }),
-        ),
-      );
+            messageId: current,
+            createdAt,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logInfo("provider command reactor could not send a queued follow-up", {
+                threadId,
+                messageId: current,
+                detail: String(error),
+              }),
+            ),
+          );
+        return;
+      }
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.unqueue",
+          commandId: serverCommandId("follow-up-remote-taken-back"),
+          threadId,
+          messageId: current,
+          createdAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not take back a cancelled message", {
+              threadId,
+              messageId: current,
+              detail: String(error),
+            }),
+          ),
+        );
+      const latest = yield* resolveThread(threadId);
+      const next = latest ? nextQueuedFollowUp(latest) : undefined;
+      candidate = next !== undefined && next.messageId !== current ? next.messageId : undefined;
+    }
   });
 
   /**
@@ -4866,7 +5382,22 @@ const make = Effect.gen(function* () {
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
-      for (const thread of snapshot.threads) {
+      // Archived threads too: archiving doesn't stop an agent, and one left
+      // running or starting would say so forever once it is restored.
+      const archived = yield* projectionSnapshotQuery.listArchivedThreadsLiveState();
+      const threads = [
+        ...snapshot.threads.map((thread) => ({
+          id: thread.id,
+          session: thread.session,
+          sideTurn: thread.sideTurn ?? null,
+        })),
+        ...archived.map((entry) => ({
+          id: entry.threadId,
+          session: entry.session,
+          sideTurn: entry.sideTurn,
+        })),
+      ];
+      for (const thread of threads) {
         // Side runtimes lived in the previous process too. One answering an
         // agent's request fails it with the reason, like other requests the
         // restart cut off; the user's own side answer just stopped.
@@ -4888,6 +5419,8 @@ const make = Effect.gen(function* () {
         // Background tasks lived in the previous process's runtimes, so none
         // survive. A settled session still counting them would read as
         // waiting forever, and in a room would never hand the thread over.
+        // A launch the previous process never finished left its mark behind.
+        const leftStartup = session.startup != null ? { startup: null } : {};
         if (!restartInterruptedStatuses.has(session.status)) {
           if (
             session.status !== "stopped" &&
@@ -4900,9 +5433,16 @@ const make = Effect.gen(function* () {
               session: {
                 ...session,
                 ...NO_BACKGROUND_TASKS,
+                ...leftStartup,
                 updatedAt,
               },
               createdAt: updatedAt,
+            });
+          } else if (session.startup != null) {
+            yield* setThreadSession({
+              threadId: thread.id,
+              session: { ...session, startup: null },
+              createdAt: yield* nowIso,
             });
           }
           continue;
@@ -4915,6 +5455,7 @@ const make = Effect.gen(function* () {
             status: "interrupted",
             activeTurnId: null,
             ...NO_BACKGROUND_TASKS,
+            ...leftStartup,
             lastError: null,
             updatedAt: createdAt,
           },
@@ -4957,6 +5498,7 @@ const make = Effect.gen(function* () {
   );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    reactorScope = yield* Effect.scope;
     yield* settleWorkflowRunsFromPreviousProcess().pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(
@@ -5081,7 +5623,8 @@ const make = Effect.gen(function* () {
         return;
       }
       const thread = yield* resolveThread(input.threadId);
-      if (!thread || thread.archivedAt !== null) {
+      // Moving or moved to another computer: frozen here, nothing to start.
+      if (!thread || thread.archivedAt !== null || (thread.move ?? null) !== null) {
         return;
       }
       // A turn running or on its way: the message will wait or steer anyway.

@@ -69,6 +69,8 @@ export interface McpCredentialRequest {
    * the narrowest.
    */
   readonly sideKind?: RoomSideKind | undefined;
+  /** A scheduled run's thread: its main runtime also gets `scheduled_run_finish`. */
+  readonly scheduledRun?: boolean | undefined;
 }
 
 export interface McpCredential {
@@ -130,7 +132,9 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
           browser: request.browser && sideKind === undefined,
           pages: request.pages === true && sideKind === undefined,
           commands: request.commands === true && sideKind === undefined,
-          roomTools: new Set(request.room ? roomToolsFor(sideKind) : []),
+          roomTools: new Set(
+            request.room ? roomToolsFor(sideKind, { scheduledRun: request.scheduledRun }) : [],
+          ),
         });
         return { token, generation };
       }),

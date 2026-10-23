@@ -17,6 +17,7 @@ import {
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
+  ThreadMoveId,
   TurnId,
   OrchestrationThread,
   type OrchestrationEvent,
@@ -25,6 +26,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { resolveThreadStatusPill } from "./components/Sidebar.logic";
 import { deriveSubagentActivityState, deriveTimelineEntries } from "./session-logic";
 
 import {
@@ -46,6 +48,7 @@ import {
   selectRunningSidebarThreadsByLocation,
   selectThreadDetailLoaded,
   markThreadDetailUnloaded,
+  setScheduleApprovalThreads,
   syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
@@ -1245,6 +1248,37 @@ describe("incremental orchestration updates", () => {
     ).toEqual({ additions: 15, deletions: 5 });
   });
 
+  it("marks a row whose agent's scheduled-task change waits for the user, through rewrites", () => {
+    const threadId = ThreadId.make("thread-1");
+    const statusOf = (state: AppState) => {
+      const summary = localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+      return summary === undefined
+        ? null
+        : (resolveThreadStatusPill({ thread: summary })?.label ?? null);
+    };
+    // Marked before its row is built: the row it gets carries the mark.
+    const marked = setScheduleApprovalThreads(makeState(makeThread()), localEnvironmentId, [
+      threadId,
+    ]);
+    const renamed = applyOrchestrationEvent(
+      marked,
+      makeEvent("thread.meta-updated", {
+        threadId,
+        title: "Updated title",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(statusOf(renamed)).toBe("Pending Approval");
+
+    // Answered: the row the user sees loses it.
+    const answered = setScheduleApprovalThreads(renamed, localEnvironmentId, []);
+    expect(
+      localEnvironmentStateOf(answered).sidebarThreadSummaryById[threadId]?.pendingScheduleApproval,
+    ).toBe(false);
+    expect(statusOf(answered)).toBe(null);
+  });
+
   it("leaves the sidebar diff stat null until a turn reports a file", () => {
     const state = makeState(makeThread());
 
@@ -2063,6 +2097,141 @@ describe("incremental orchestration updates", () => {
     });
   });
 
+  it("follows a move to a linked computer, and drops steps of a move that already ended", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const transferId = ThreadMoveId.make("move-1");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+
+    let state = makeState(makeThread({ id: threadId }));
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId,
+        target: macMini,
+        agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        startedAt: "2026-02-27T00:00:01.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "exporting",
+      cancelRequested: false,
+      target: macMini,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moving");
+
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "sending",
+        sentBytes: 400,
+        totalBytes: 1_000,
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    // A step from another move is not this one's.
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId: ThreadMoveId.make("move-old"),
+        phase: "importing",
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "sending",
+      sentBytes: 400,
+      totalBytes: 1_000,
+    });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-cancel-requested", {
+        threadId,
+        transferId,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move?.cancelRequested).toBe(true);
+
+    // The other computer confirmed it dropped the move: the thread is its own again.
+    state = apply(
+      state,
+      makeEvent("thread.move-aborted", {
+        threadId,
+        transferId,
+        reason: "The user stopped it.",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toBeUndefined();
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
+
+    // A second move that lands: the thread lives on Mac mini now.
+    const secondTransferId = ThreadMoveId.make("move-2");
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId: secondTransferId,
+        target: macMini,
+        agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        startedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.moved-away", {
+        threadId,
+        transferId: secondTransferId,
+        movedThreadId: ThreadId.make("thread-on-mac-mini"),
+        movedAt: "2026-02-27T00:00:07.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move?.movedAway).toEqual({
+      threadId: ThreadId.make("thread-on-mac-mini"),
+      movedAt: "2026-02-27T00:00:07.000Z",
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moved");
+  });
+
+  it("keeps a moved thread's imported history marked, and out of its latest turn", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    let state = makeState(makeThread({ id: threadId }));
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: MessageId.make("imported-answer"),
+        role: "assistant",
+        text: "Done on the other computer.",
+        turnId: TurnId.make("turn-imported"),
+        streaming: false,
+        imported: true,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(state, ref);
+    expect(thread?.messages).toEqual([
+      expect.objectContaining({ id: MessageId.make("imported-answer"), imported: true }),
+    ]);
+    expect(thread?.latestTurn).toBeNull();
+  });
+
   it("shows an agent's new name and reasoning as soon as they are saved", () => {
     const threadId = ThreadId.make("thread-1");
     const astraId = ThreadParticipantId.make("agent-astra");
@@ -2239,6 +2408,46 @@ describe("incremental orchestration updates", () => {
     expect(nextEnvironmentState?.messageByThreadId[thread2.id]).toBe(
       previousEnvironmentState?.messageByThreadId[thread2.id],
     );
+  });
+
+  it("keeps a launching session's agent through updates that leave it out, until cleared", () => {
+    const thread = makeThread();
+    const at = "2026-02-27T00:00:02.000Z";
+    const sessionSet = (sequence: number, startup: OrchestrationSession["startup"] | "absent") =>
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            ...(startup === "absent" ? {} : { startup }),
+            lastError: null,
+            // Marking and clearing keep the turn's start time.
+            updatedAt: at,
+          },
+        },
+        { sequence },
+      );
+    const launching = {
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    } as const;
+
+    const marked = applyOrchestrationEvents(
+      makeState(thread),
+      [sessionSet(2, launching), sessionSet(3, "absent")],
+      localEnvironmentId,
+    );
+    expect(threadsOf(marked)[0]?.session?.launchingInstanceId).toBe(
+      ProviderInstanceId.make("claudeAgent"),
+    );
+
+    const cleared = applyOrchestrationEvents(marked, [sessionSet(4, null)], localEnvironmentId);
+    expect(threadsOf(cleared)[0]?.session?.launchingInstanceId).toBeUndefined();
   });
 
   it("keeps legacy assistant completion events non-terminal while their turn is active", () => {

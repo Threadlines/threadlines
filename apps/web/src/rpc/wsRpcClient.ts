@@ -18,6 +18,7 @@ import {
   type ProviderSubagentTranscriptInput,
   type ProviderSubagentTranscriptResult,
   type ProviderStartReviewResult,
+  type ScheduledTaskClientSupport,
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -49,6 +50,11 @@ interface StreamSubscriptionOptions {
 const OUTPUT_READ_TIMEOUT = Option.some("5 seconds" as const);
 /** An MCP app card's load or tool call (see loadMcpApp). */
 const MCP_APP_REQUEST_TIMEOUT = Option.some("2 minutes" as const);
+/**
+ * The scheduled-task kinds this app can show: a server leaves event tasks and
+ * their runs out for a client that doesn't name `webhook`.
+ */
+const SCHEDULED_TASK_CLIENT_SUPPORT: ScheduledTaskClientSupport = ["webhook"];
 
 type RpcUnaryMethod<TTag extends RpcTag> =
   RpcMethod<TTag> extends (input: any, options?: any) => Effect.Effect<infer TSuccess, any, any>
@@ -374,6 +380,8 @@ export interface WsRpcClient {
     >;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
+    /** Only on servers reporting the `stallReports` capability. */
+    readonly subscribeStalls: RpcStreamMethod<typeof WS_METHODS.subscribeServerStalls>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
   };
   /** "Connect a device". Host methods are owner-only on the server. */
@@ -384,6 +392,75 @@ export interface WsRpcClient {
     readonly respondToJoinRequest: RpcUnaryMethod<typeof WS_METHODS.relayRespondToJoinRequest>;
     readonly submitJoin: RpcUnaryMethod<typeof WS_METHODS.relaySubmitJoin>;
     readonly directRoutes: RpcUnaryNoArgMethod<typeof WS_METHODS.relayDirectRoutes>;
+  };
+  /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
+  readonly scheduledTasks: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
+    readonly listRuns: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksListRuns>;
+    readonly create: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksCreate>;
+    readonly update: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksUpdate>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksDelete>;
+    readonly runNow: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRunNow>;
+    readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRespondRequest>;
+    /** Event tasks (docs/design/event-tasks.md), on servers reporting `eventTasks`. */
+    readonly webhookAddress: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksWebhookAddress>;
+    readonly rotateWebhookAddress: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRotateWebhookAddress
+    >;
+    readonly setWebhookSigningSecret: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksSetWebhookSigningSecret
+    >;
+    readonly revealWebhookSigningSecret: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRevealWebhookSigningSecret
+    >;
+    readonly gitHubContext: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksGitHubContext>;
+    readonly connectGitHub: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksConnectGitHub>;
+    readonly disconnectGitHub: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksDisconnectGitHub>;
+    readonly listWebhookEvents: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksListWebhookEvents>;
+    readonly webhookEvent: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksWebhookEvent>;
+    readonly testWebhook: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksTestWebhook>;
+    readonly runWithWebhookEvent: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRunWithWebhookEvent
+    >;
+    readonly dismissWebhookAddressChange: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksDismissWebhookAddressChange
+    >;
+  };
+  /**
+   * Computer links (docs/design/fleet.md): owner and client sessions alike,
+   * on servers whose descriptor reports `computerLinks`.
+   */
+  readonly links: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.linksSubscribe>;
+    readonly createInvite: RpcUnaryMethod<typeof WS_METHODS.linksCreateInvite>;
+    readonly accept: RpcUnaryMethod<typeof WS_METHODS.linksAccept>;
+    readonly setAccess: RpcUnaryMethod<typeof WS_METHODS.linksSetAccess>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
+    readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.linksRespondRequest>;
+  };
+  /**
+   * Moving a thread to a linked computer (docs/design/fleet.md, Part 3), on
+   * servers whose descriptor reports `threadMove`.
+   */
+  readonly moves: {
+    readonly preview: RpcUnaryMethod<typeof WS_METHODS.movesPreview>;
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.movesStart>;
+    readonly cancel: RpcUnaryMethod<typeof WS_METHODS.movesCancel>;
+  };
+  /**
+   * Setting up a project on another computer (docs/design/fleet.md, Part 8),
+   * on servers whose descriptor reports `projectSetup`: `source` and
+   * `readFiles` on the computer that has the project, the rest on the one
+   * that gets a copy.
+   */
+  readonly projectSetups: {
+    readonly source: RpcUnaryMethod<typeof WS_METHODS.projectSetupsSource>;
+    readonly readFiles: RpcUnaryMethod<typeof WS_METHODS.projectSetupsReadFiles>;
+    readonly inspectDestination: RpcUnaryMethod<typeof WS_METHODS.projectSetupsInspectDestination>;
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.projectSetupsStart>;
+    readonly cancel: RpcUnaryMethod<typeof WS_METHODS.projectSetupsCancel>;
+    readonly dismiss: RpcUnaryMethod<typeof WS_METHODS.projectSetupsDismiss>;
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectSetupsSubscribe>;
   };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
@@ -465,7 +542,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
   return {
     dispose: () => transport.dispose(),
     reconnect: async () => {
-      resetWsReconnectBackoff();
+      // Another computer's reconnect leaves this computer's backoff alone.
+      if (transport.reportsAppConnection !== false) resetWsReconnectBackoff();
       await transport.reconnect();
     },
     isHeartbeatFresh: () => transport.isHeartbeatFresh(),
@@ -1028,6 +1106,11 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           ...options,
           tag: WS_METHODS.subscribeServerLifecycle,
         }),
+      subscribeStalls: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.subscribeServerStalls]({}), listener, {
+          ...options,
+          tag: WS_METHODS.subscribeServerStalls,
+        }),
       subscribeAuthAccess: (listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.subscribeAuthAccess]({}), listener, {
           ...options,
@@ -1048,6 +1131,132 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       submitJoin: (input) =>
         transport.request((client) => client[WS_METHODS.relaySubmitJoin](input)),
       directRoutes: () => transport.request((client) => client[WS_METHODS.relayDirectRoutes]({})),
+    },
+    scheduledTasks: {
+      subscribe: (listener, options) =>
+        transport.subscribe(
+          (client) =>
+            client[WS_METHODS.scheduledTasksSubscribe]({ supports: SCHEDULED_TASK_CLIENT_SUPPORT }),
+          listener,
+          { ...options, tag: WS_METHODS.scheduledTasksSubscribe },
+        ),
+      listRuns: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksListRuns]({
+            ...input,
+            supports: SCHEDULED_TASK_CLIENT_SUPPORT,
+          }),
+        ),
+      create: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksCreate](input)),
+      update: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksUpdate](input)),
+      remove: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksDelete](input)),
+      runNow: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRunNow](input)),
+      respondRequest: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRespondRequest](input)),
+      webhookAddress: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksWebhookAddress](input)),
+      rotateWebhookAddress: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRotateWebhookAddress](input)),
+      setWebhookSigningSecret: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksSetWebhookSigningSecret](input),
+        ),
+      revealWebhookSigningSecret: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksRevealWebhookSigningSecret](input),
+        ),
+      gitHubContext: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksGitHubContext](input)),
+      connectGitHub: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksConnectGitHub](input)),
+      disconnectGitHub: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksDisconnectGitHub](input)),
+      listWebhookEvents: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksListWebhookEvents](input)),
+      webhookEvent: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksWebhookEvent](input)),
+      testWebhook: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksTestWebhook](input)),
+      runWithWebhookEvent: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRunWithWebhookEvent](input)),
+      dismissWebhookAddressChange: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksDismissWebhookAddressChange](input),
+        ),
+    },
+    links: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.linksSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.linksSubscribe,
+        }),
+      createInvite: (input) =>
+        transport.request((client) => client[WS_METHODS.linksCreateInvite](input)),
+      accept: (input) => transport.request((client) => client[WS_METHODS.linksAccept](input)),
+      setAccess: (input) => transport.request((client) => client[WS_METHODS.linksSetAccess](input)),
+      remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
+      respondRequest: (input) =>
+        transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
+    },
+    // Never replayed on a new socket: a start that may have landed is told by
+    // the thread's own `move`, and a second one would only be refused.
+    moves: {
+      preview: (input) => transport.request((client) => client[WS_METHODS.movesPreview](input)),
+      start: (input) => transport.request((client) => client[WS_METHODS.movesStart](input)),
+      cancel: (input) => transport.request((client) => client[WS_METHODS.movesCancel](input)),
+    },
+    // Every call here is safe to send again: the reads are pure, a start is
+    // the same job for the same setupId, and cancel and dismiss repeat as
+    // no-ops. The files travel in readFiles and start (up to 8 MiB), so those
+    // get the time a slow relay needs.
+    projectSetups: {
+      source: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsSource](input),
+          { label: WS_METHODS.projectSetupsSource },
+        ),
+      readFiles: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsReadFiles](input),
+          {
+            label: WS_METHODS.projectSetupsReadFiles,
+            attemptTimeoutMs: 120_000,
+            totalBudgetMs: 180_000,
+          },
+        ),
+      inspectDestination: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsInspectDestination](input),
+          { label: WS_METHODS.projectSetupsInspectDestination },
+        ),
+      start: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsStart](input),
+          {
+            label: WS_METHODS.projectSetupsStart,
+            attemptTimeoutMs: 120_000,
+            totalBudgetMs: 180_000,
+          },
+        ),
+      cancel: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsCancel](input),
+          { label: WS_METHODS.projectSetupsCancel },
+        ),
+      dismiss: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsDismiss](input),
+          { label: WS_METHODS.projectSetupsDismiss },
+        ),
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.projectSetupsSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.projectSetupsSubscribe,
+        }),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending

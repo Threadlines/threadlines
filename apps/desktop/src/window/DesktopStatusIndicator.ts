@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as Electron from "electron";
 
+import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -28,6 +29,12 @@ const MACOS_TRAY_MENU_TITLE_MAX_LENGTH = 44;
 export interface DesktopStatusIndicatorShape {
   readonly configure: Effect.Effect<void>;
   readonly setStatus: (input: DesktopTaskbarStatusInput) => Effect.Effect<void>;
+  /**
+   * Windows and Linux: a tray icon while the app keeps running in the
+   * background ("Keep running in the background"), so a hidden window can
+   * be shown again and the app quit. macOS always has its menu bar item.
+   */
+  readonly setBackgroundTray: (enabled: boolean) => Effect.Effect<void>;
 }
 
 export class DesktopStatusIndicator extends Context.Service<
@@ -184,6 +191,7 @@ const make = Effect.gen(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const state = yield* DesktopState.DesktopState;
+  const assets = yield* DesktopAssets.DesktopAssets;
   const context = yield* Effect.context<DesktopStatusIndicatorRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
   const appName = environment.displayName;
@@ -418,6 +426,22 @@ const make = Effect.gen(function* () {
       click: () => runTrayEffect("new-thread", dispatchRendererAction("new-thread")),
     },
     {
+      label: "Fleet",
+      click: () =>
+        runTrayEffect(
+          DesktopWindow.OPEN_FLEET_MENU_ACTION,
+          dispatchRendererAction(DesktopWindow.OPEN_FLEET_MENU_ACTION),
+        ),
+    },
+    {
+      label: "Scheduled",
+      click: () =>
+        runTrayEffect(
+          DesktopWindow.OPEN_SCHEDULED_MENU_ACTION,
+          dispatchRendererAction(DesktopWindow.OPEN_SCHEDULED_MENU_ACTION),
+        ),
+    },
+    {
       label: "Settings…",
       click: () => runTrayEffect("open-settings", dispatchRendererAction("open-settings")),
     },
@@ -436,7 +460,7 @@ const make = Effect.gen(function* () {
   ];
 
   const updateTray = Effect.fn("desktop.status.updateTray")(function* () {
-    if (environment.platform !== "darwin" || tray === null) {
+    if (tray === null) {
       return;
     }
 
@@ -445,11 +469,52 @@ const make = Effect.gen(function* () {
       if (tray === null) {
         return;
       }
-      tray.setTitle(resolveTrayTitle(currentStatus), MACOS_TRAY_TITLE_OPTIONS);
+      if (environment.platform === "darwin") {
+        tray.setTitle(resolveTrayTitle(currentStatus), MACOS_TRAY_TITLE_OPTIONS);
+      }
       tray.setToolTip(resolveTrayTooltip(appName, currentStatus));
       tray.setContextMenu(menu);
-      syncMacTrayImage();
+      if (environment.platform === "darwin") syncMacTrayImage();
     });
+  });
+
+  const setBackgroundTray = Effect.fn("desktop.status.setBackgroundTray")(function* (
+    enabled: boolean,
+  ) {
+    if (environment.platform === "darwin") return;
+    if (!enabled) {
+      if (tray !== null) {
+        const current = tray;
+        tray = null;
+        yield* Effect.sync(() => current.destroy());
+      }
+      return;
+    }
+    if (tray !== null) return;
+    const iconPaths = yield* assets.iconPaths;
+    const iconPath = environment.platform === "win32" ? iconPaths.ico : iconPaths.png;
+    const image = Option.isSome(iconPath)
+      ? yield* electronTray.createImageFromPath(iconPath.value)
+      : Option.none<Electron.NativeImage>();
+    if (Option.isNone(image)) {
+      yield* logStatusWarning("tray skipped because the app icon could not be loaded");
+      return;
+    }
+    const created = yield* electronTray.create(image.value);
+    tray = created;
+    // A click on the tray icon shows the window; the menu has the rest.
+    yield* Effect.sync(() =>
+      created.on("click", () =>
+        runTrayEffect(
+          "show-threadlines",
+          Effect.gen(function* () {
+            const desktopWindow = yield* DesktopWindow.DesktopWindow;
+            yield* desktopWindow.revealOrCreateMain;
+          }),
+        ),
+      ),
+    );
+    yield* updateTray();
   });
 
   const cancelMacDockBounce = Effect.gen(function* () {
@@ -602,6 +667,7 @@ const make = Effect.gen(function* () {
 
   return DesktopStatusIndicator.of({
     configure,
+    setBackgroundTray,
     setStatus: Effect.fn("desktop.status.setStatus")(function* (input) {
       // Completed also stands for unread work at rest; only the step out of
       // working is the moment worth a bounce or a flash.

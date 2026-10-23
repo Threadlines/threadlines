@@ -385,16 +385,16 @@ const BROWSER_TOOL_PHRASES: Readonly<Record<string, Phrase>> = {
  */
 function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
   const who = agent ?? "another agent";
-  const notable = (wording: Phrase): StepDraft => ({
+  const notable = (wording: Phrase, icon: ActivityIcon = "agent"): StepDraft => ({
     routine: false,
-    icon: "agent",
+    icon,
     label: wording.past,
     liveLabel: wording.live,
   });
-  const routine = (wording: Phrase): StepDraft => ({
+  const routine = (wording: Phrase, icon: ActivityIcon = "agent"): StepDraft => ({
     routine: true,
     tallies: [{ tally: "tool" }],
-    icon: "agent",
+    icon,
     label: wording.past,
     liveLabel: wording.live,
   });
@@ -432,6 +432,19 @@ function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
       return routine(phrase("Checked its threads", "Checking its threads"));
     case "thread_read":
       return routine(phrase("Read one of its threads", "Reading a thread"));
+    // Scheduled tasks: a finished create or change leaves its own record in
+    // the chat (MessagesTimeline); these words are for while it runs.
+    case "schedule_create":
+      return notable(phrase("Scheduled a task", "Scheduling a task"), "clock");
+    case "schedule_update":
+      return notable(phrase("Changed a scheduled task", "Changing a scheduled task"), "clock");
+    case "schedule_list":
+      return routine(
+        phrase("Checked the scheduled tasks", "Checking the scheduled tasks"),
+        "clock",
+      );
+    case "scheduled_run_finish":
+      return routine(phrase("Finished the scheduled run", "Finishing the scheduled run"), "clock");
     default:
       return null;
   }

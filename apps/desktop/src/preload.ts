@@ -117,6 +117,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
+  getBackgroundOptions: () => ipcRenderer.invoke(IpcChannels.GET_BACKGROUND_OPTIONS_CHANNEL),
+  setBackgroundOptions: (patch) =>
+    ipcRenderer.invoke(IpcChannels.SET_BACKGROUND_OPTIONS_CHANNEL, patch),
   getRetiredPhoneLinkNotice: () =>
     ipcRenderer.invoke(IpcChannels.GET_RETIRED_PHONE_LINK_NOTICE_CHANNEL),
   dismissRetiredPhoneLinkNotice: () =>

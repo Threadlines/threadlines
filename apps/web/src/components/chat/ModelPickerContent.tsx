@@ -201,6 +201,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   notice?: ReactNode;
   /**
+   * Settings shows the computer these providers run on. False for a thread on
+   * another computer: a link there would show the wrong computer's agents.
+   */
+  providerSettingsShown?: boolean;
+  /**
    * Open on Favorites whenever it has models, not only when the active model
    * is one of them: picking an agent to add has no active model to follow.
    */
@@ -993,7 +998,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     {line}
                   </span>
                 ))}
-                {emptyState.showSettingsAction ? (
+                {emptyState.showSettingsAction && props.providerSettingsShown !== false ? (
                   <Link
                     to="/settings/providers"
                     className="cursor-pointer font-medium text-foreground underline-offset-2 transition-colors hover:underline focus-ring"

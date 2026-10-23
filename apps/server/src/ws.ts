@@ -16,6 +16,7 @@ import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
   AuthSessionId,
+  type ClientOrchestrationCommand,
   CommandId,
   type OrchestrationCommand,
   type GitActionProgressEvent,
@@ -140,12 +141,18 @@ import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
+import { ComputerLinks } from "./links/ComputerLinks.ts";
+import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
+import { ThreadMoves } from "./moves/ThreadMoves.ts";
+import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
 import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
@@ -217,6 +224,9 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.child-notes-delivered"
       | "thread.child-deliveries-cancelled"
       | "thread.child-requests-reset"
+      | "thread.remote-child-updated"
+      | "thread.remote-cancel-queued"
+      | "thread.remote-cancels-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
       | "thread.pull-request-dismissed";
@@ -238,6 +248,9 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.child-notes-delivered" ||
     event.type === "thread.child-deliveries-cancelled" ||
     event.type === "thread.child-requests-reset" ||
+    event.type === "thread.remote-child-updated" ||
+    event.type === "thread.remote-cancel-queued" ||
+    event.type === "thread.remote-cancels-delivered" ||
     event.type === "thread.handed-back" ||
     event.type === "thread.parent-attachment-set" ||
     // Which pull request rows are closed lives on the shell, but a detail
@@ -362,6 +375,11 @@ const makeWsRpcLayer = (
           ? Effect.void
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
+      const computerLinks = yield* ComputerLinks;
+      const scheduledTasks = yield* ScheduledTasks;
+      const threadMoves = yield* ThreadMoves;
+      const projectSetups = yield* ProjectSetups;
+      const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
@@ -424,6 +442,7 @@ const makeWsRpcLayer = (
         providerService,
       });
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const stallMonitor = yield* StallMonitor.StallMonitor;
 
       const loadAuthAccessSnapshot = () =>
         Effect.all({
@@ -709,6 +728,92 @@ const makeWsRpcLayer = (
       const noteExtensionsChanged = (input: { readonly providerInstanceId: ProviderInstanceId }) =>
         providerService.noteExtensionsChanged({ providerInstanceId: input.providerInstanceId });
 
+      /**
+       * A command as a client sends it, with what an archive brings along
+       * (its session stopped, its terminals closed, the children it took with
+       * it cleaned up). Scheduled tasks' "Also archive its run threads"
+       * archives through here too.
+       */
+      const dispatchClientCommand = (command: ClientOrchestrationCommand) =>
+        Effect.gen(function* () {
+          const normalizedCommand = yield* normalizeDispatchCommand(command);
+          // Where the event log stood before an archive, so the threads
+          // that archive took with it (a parent's settled children) can
+          // be read back from what it wrote.
+          const archiveCursor =
+            normalizedCommand.type === "thread.archive"
+              ? yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
+                  Effect.map(({ snapshotSequence }) => snapshotSequence),
+                  Effect.catch(() => Effect.succeed(null)),
+                )
+              : null;
+          const shouldStopSessionAfterArchive =
+            normalizedCommand.type === "thread.archive"
+              ? yield* projectionSnapshotQuery.getThreadShellById(normalizedCommand.threadId).pipe(
+                  Effect.map(
+                    Option.match({
+                      onNone: () => false,
+                      onSome: (thread) =>
+                        thread.session !== null && thread.session.status !== "stopped",
+                    }),
+                  ),
+                  Effect.catch(() => Effect.succeed(false)),
+                )
+              : false;
+          const result = yield* dispatchNormalizedCommand(normalizedCommand);
+          if (normalizedCommand.type === "thread.archive") {
+            if (shouldStopSessionAfterArchive) {
+              yield* Effect.gen(function* () {
+                const stopCommand = yield* normalizeDispatchCommand({
+                  type: "thread.session.stop",
+                  commandId: CommandId.make(
+                    `session-stop-for-archive:${normalizedCommand.commandId}`,
+                  ),
+                  threadId: normalizedCommand.threadId,
+                  createdAt: yield* nowIso,
+                });
+
+                yield* dispatchNormalizedCommand(stopCommand);
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("failed to stop provider session during archive", {
+                    threadId: normalizedCommand.threadId,
+                    cause,
+                  }),
+                ),
+              );
+            }
+
+            yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("failed to close thread terminals after archive", {
+                  threadId: normalizedCommand.threadId,
+                  error: error.message,
+                }),
+              ),
+            );
+
+            if (archiveCursor !== null) {
+              yield* cleanUpArchivedWith({
+                commandId: normalizedCommand.commandId,
+                threadId: normalizedCommand.threadId,
+                fromSequenceExclusive: archiveCursor,
+                throughSequence: result.sequence,
+              });
+            }
+          }
+          return result;
+        }).pipe(
+          Effect.mapError((cause) =>
+            isOrchestrationDispatchCommandError(cause)
+              ? cause
+              : new OrchestrationDispatchCommandError({
+                  message: "Failed to dispatch orchestration command",
+                  cause,
+                }),
+          ),
+        );
+
       return WsRpcGroup.of({
         // A hint while the user types; open to paired devices, like sending.
         [ORCHESTRATION_WS_METHODS.warmUpTurn]: (input) =>
@@ -720,86 +825,7 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
-            Effect.gen(function* () {
-              const normalizedCommand = yield* normalizeDispatchCommand(command);
-              // Where the event log stood before an archive, so the threads
-              // that archive took with it (a parent's settled children) can
-              // be read back from what it wrote.
-              const archiveCursor =
-                normalizedCommand.type === "thread.archive"
-                  ? yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
-                      Effect.map(({ snapshotSequence }) => snapshotSequence),
-                      Effect.catch(() => Effect.succeed(null)),
-                    )
-                  : null;
-              const shouldStopSessionAfterArchive =
-                normalizedCommand.type === "thread.archive"
-                  ? yield* projectionSnapshotQuery
-                      .getThreadShellById(normalizedCommand.threadId)
-                      .pipe(
-                        Effect.map(
-                          Option.match({
-                            onNone: () => false,
-                            onSome: (thread) =>
-                              thread.session !== null && thread.session.status !== "stopped",
-                          }),
-                        ),
-                        Effect.catch(() => Effect.succeed(false)),
-                      )
-                  : false;
-              const result = yield* dispatchNormalizedCommand(normalizedCommand);
-              if (normalizedCommand.type === "thread.archive") {
-                if (shouldStopSessionAfterArchive) {
-                  yield* Effect.gen(function* () {
-                    const stopCommand = yield* normalizeDispatchCommand({
-                      type: "thread.session.stop",
-                      commandId: CommandId.make(
-                        `session-stop-for-archive:${normalizedCommand.commandId}`,
-                      ),
-                      threadId: normalizedCommand.threadId,
-                      createdAt: yield* nowIso,
-                    });
-
-                    yield* dispatchNormalizedCommand(stopCommand);
-                  }).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logWarning("failed to stop provider session during archive", {
-                        threadId: normalizedCommand.threadId,
-                        cause,
-                      }),
-                    ),
-                  );
-                }
-
-                yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("failed to close thread terminals after archive", {
-                      threadId: normalizedCommand.threadId,
-                      error: error.message,
-                    }),
-                  ),
-                );
-
-                if (archiveCursor !== null) {
-                  yield* cleanUpArchivedWith({
-                    commandId: normalizedCommand.commandId,
-                    threadId: normalizedCommand.threadId,
-                    fromSequenceExclusive: archiveCursor,
-                    throughSequence: result.sequence,
-                  });
-                }
-              }
-              return result;
-            }).pipe(
-              Effect.mapError((cause) =>
-                isOrchestrationDispatchCommandError(cause)
-                  ? cause
-                  : new OrchestrationDispatchCommandError({
-                      message: "Failed to dispatch orchestration command",
-                      cause,
-                    }),
-              ),
-            ),
+            dispatchClientCommand(command),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getTurnDiff]: (input) =>
@@ -2555,6 +2581,12 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.subscribeServerStalls]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.subscribeServerStalls,
+            Effect.succeed(stallMonitor.stalls),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.subscribeServerLifecycle]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerLifecycle,
@@ -2608,6 +2640,218 @@ const makeWsRpcLayer = (
             relayHost.directRoutes(currentSessionId).pipe(Effect.map((routes) => ({ routes }))),
             { "rpc.aggregate": "auth" },
           ),
+        // Computer links (docs/design/fleet.md): open to owner and client
+        // sessions alike. A remote client links the computer it is on to
+        // another one in one click, and it can already run commands here; a
+        // linked computer's own session is narrower still and never reaches /ws.
+        [WS_METHODS.linksList]: (_input) =>
+          observeRpcEffect(WS_METHODS.linksList, computerLinks.snapshot, {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksSubscribe]: (_input) =>
+          observeRpcStream(WS_METHODS.linksSubscribe, computerLinks.changes, {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksCreateInvite]: (input) =>
+          observeRpcEffect(WS_METHODS.linksCreateInvite, computerLinks.createInvite(input), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksAccept]: (input) =>
+          observeRpcEffect(WS_METHODS.linksAccept, computerLinks.accept(input.invite), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksSetAccess]: (input) =>
+          observeRpcEffect(WS_METHODS.linksSetAccess, computerLinks.setAccess(input), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksRemove]: (input) =>
+          observeRpcEffect(WS_METHODS.linksRemove, computerLinks.remove(input), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksRespondRequest]: (input) =>
+          observeRpcEffect(WS_METHODS.linksRespondRequest, computerLinks.respondRequest(input), {
+            "rpc.aggregate": "links",
+          }),
+        // Scheduled tasks (docs/design/fleet.md, Part 6): open to paired
+        // devices, which can already start threads here.
+        // A client that can't show event tasks (no "webhook" in `supports`)
+        // never gets them.
+        [WS_METHODS.scheduledTasksSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.scheduledTasksSubscribe,
+            scheduledTasks.changes.pipe(
+              Stream.map((snapshot) => snapshotForClient(snapshot, input.supports)),
+            ),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksListRuns]: (input) =>
+          observeRpcEffect(WS_METHODS.scheduledTasksListRuns, scheduledTasks.listRuns(input), {
+            "rpc.aggregate": "scheduledTasks",
+          }),
+        [WS_METHODS.scheduledTasksCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.scheduledTasksCreate, scheduledTasks.create(input), {
+            "rpc.aggregate": "scheduledTasks",
+          }),
+        [WS_METHODS.scheduledTasksUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.scheduledTasksUpdate, scheduledTasks.update(input), {
+            "rpc.aggregate": "scheduledTasks",
+          }),
+        [WS_METHODS.scheduledTasksDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDelete,
+            Effect.gen(function* () {
+              const runThreads = yield* scheduledTasks.remove(input);
+              if (!input.archiveRunThreads) return;
+              // Archived as the user would archive each: its session stops too.
+              for (const threadId of runThreads) {
+                yield* dispatchClientCommand({
+                  type: "thread.archive",
+                  commandId: CommandId.make(`scheduled-task-delete:${input.id}:${threadId}`),
+                  threadId,
+                }).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("could not archive a deleted task's run thread", {
+                      threadId,
+                      detail: error.message,
+                    }),
+                  ),
+                );
+              }
+            }),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRunNow]: (input) =>
+          observeRpcEffect(WS_METHODS.scheduledTasksRunNow, scheduledTasks.runNow(input), {
+            "rpc.aggregate": "scheduledTasks",
+          }),
+        [WS_METHODS.scheduledTasksRespondRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRespondRequest,
+            scheduledTasks.respondRequest(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        // Event tasks (docs/design/event-tasks.md): the same callers as the
+        // scheduled-task calls above, paired phones included.
+        [WS_METHODS.scheduledTasksWebhookAddress]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksWebhookAddress,
+            scheduledTasks.webhookAddress(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRotateWebhookAddress]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRotateWebhookAddress,
+            scheduledTasks.rotateWebhookAddress(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksSetWebhookSigningSecret]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksSetWebhookSigningSecret,
+            scheduledTasks.setWebhookSigningSecret(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRevealWebhookSigningSecret]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRevealWebhookSigningSecret,
+            scheduledTasks.revealWebhookSigningSecret(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksGitHubContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksGitHubContext,
+            scheduledTasks.gitHubContext(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksConnectGitHub]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksConnectGitHub,
+            scheduledTasks.connectGitHub(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksDisconnectGitHub]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDisconnectGitHub,
+            scheduledTasks.disconnectGitHub(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksDismissWebhookAddressChange]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDismissWebhookAddressChange,
+            scheduledTasks.dismissWebhookAddressChange(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksListWebhookEvents]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksListWebhookEvents,
+            scheduledTasks.listWebhookEvents(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksWebhookEvent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksWebhookEvent,
+            scheduledTasks.webhookEvent(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksTestWebhook]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksTestWebhook,
+            scheduledTasks.testWebhook(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRunWithWebhookEvent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRunWithWebhookEvent,
+            scheduledTasks.runWithWebhookEvent(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
+        [WS_METHODS.movesPreview]: (input) =>
+          observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesStart]: (input) =>
+          observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
+            "rpc.aggregate": "moves",
+          }),
+        // Setting up a project on another computer (docs/design/fleet.md,
+        // Part 8): the app reads from the computer that has it and starts
+        // the job on the one that gets the copy.
+        [WS_METHODS.projectSetupsSource]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectSetupsSource,
+            projectSetupSource.source(input.projectId),
+            { "rpc.aggregate": "projectSetups" },
+          ),
+        [WS_METHODS.projectSetupsReadFiles]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsReadFiles, projectSetupSource.readFiles(input), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsInspectDestination]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectSetupsInspectDestination,
+            projectSetups.inspectDestination(input),
+            { "rpc.aggregate": "projectSetups" },
+          ),
+        [WS_METHODS.projectSetupsStart]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsStart, projectSetups.start(input), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsCancel, projectSetups.cancel(input.setupId), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsDismiss]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsDismiss, projectSetups.dismiss(input.setupId), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsSubscribe]: (_input) =>
+          observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
+            "rpc.aggregate": "projectSetups",
+          }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

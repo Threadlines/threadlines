@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark, .dark *));
-/* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
-@custom-variant wco (&:is(.wco, .wco *));
+/* Window Controls Overlay: active when Electron exposes native titlebar control geometry.
+   Never inside the app shell's work panel: the title row above it holds the
+   window controls, so only what covers the whole window (a sheet, setup)
+   has to keep clear of them. */
+@custom-variant wco (&:is(.wco, .wco *):not([data-slot="app-panel"] *));
 /* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
@@ -14,33 +17,33 @@
 :root {
   --workspace-topbar-height: 52px;
   /* Measured bottom edge of the chat header (see useChatHeaderBottomVarRef in
-     rightPanelLayout.ts); portal overlays use it to start below the header, and
-     the collapsed rail aligns its top edge to it. Defaults to the titlebar
-     height so the rail is still inset before any header has mounted. */
-  --chat-header-bottom: var(--workspace-topbar-height);
+     rightPanelLayout.ts); portal overlays use it to start below the header. On
+     a wide screen the header sits in the window's title row, so this is the
+     row's bottom; that is also the value before any header has mounted. */
+  --chat-header-bottom: var(--app-titlebar-height);
   --workspace-controls-top: 0px;
   --workspace-controls-left: calc(env(safe-area-inset-left) + 0.75rem);
   --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
-  --workspace-native-controls-inset: 0px;
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.25rem;
-}
-
-[data-slot="sidebar-wrapper"] {
-  --workspace-titlebar-content-left: calc(
-    var(--workspace-controls-left) + var(--workspace-titlebar-control-size) +
-      var(--workspace-titlebar-control-gap)
-  );
+  /* The app shell's title row (AppTitleBar), part of the frame with the rail.
+     The desktop app draws Windows and Linux window controls this tall, and
+     centers the macOS traffic lights in it (DesktopWindow.ts). */
+  --app-titlebar-height: 38px;
+  /* Where the title row's first item (the app's name) starts: over the 48px
+     rail, or past the window controls where they sit at the left (below). */
+  --app-titlebar-leading: 9px;
+  /* The navigation rail's width (NAVIGATION_RAIL_WIDTH_PX). */
+  --app-rail-width: 48px;
 }
 
 .wco {
+  --app-titlebar-height: env(titlebar-area-height, 38px);
+  --app-titlebar-leading: calc(env(titlebar-area-x, 0px) + 9px);
   --workspace-topbar-height: env(titlebar-area-height, 52px);
   --workspace-controls-top: env(titlebar-area-y, 0px);
   --workspace-controls-left: calc(env(titlebar-area-x, 0px) + 0.75rem);
   --workspace-controls-right: calc(
-    100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
-  );
-  --workspace-native-controls-inset: calc(
     100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
   );
 }
@@ -50,6 +53,10 @@
    Linux report theirs: .wco above). Marketing captures have no buttons. */
 html.electron.mac:not([data-marketing-capture]) {
   --workspace-controls-left: 88px;
+  /* The green light ends 76px in (DesktopWindow's trafficLightPosition);
+     the logo starts 23px past it (its link pads 4px), the same gap the name
+     keeps from the sidebar button after it. */
+  --app-titlebar-leading: 95px;
 }
 
 @theme inline {
@@ -119,6 +126,7 @@ html.electron.mac:not([data-marketing-capture]) {
   --color-foreground: var(--foreground);
   --color-background: var(--background);
   --color-rail: var(--rail);
+  --color-frame: var(--frame);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
@@ -183,6 +191,13 @@ html.electron.mac:not([data-marketing-capture]) {
     @apply text-foreground relative;
     background-color: var(--app-chrome-background);
   }
+  /* Every text field's placeholder reads as a hint. The composer draws its own
+     placeholder element and keeps its look. */
+  ::placeholder {
+    color: var(--placeholder);
+    font-style: italic;
+    opacity: 1;
+  }
 }
 
 /* Safe-area inset utilities for surfaces that opt into edge-to-edge rendering.
@@ -238,6 +253,9 @@ html.electron.mac:not([data-marketing-capture]) {
      rail 0.965 < background 0.98 < card/popover white); dark inverts it (see below). */
   --background: oklch(0.98 0 0);
   --app-chrome-background: oklch(0.95 0 0);
+  /* The window's frame: the title row and the rail, around the rounded work
+     panel. Light: the soft chrome grey around the near-white canvas. */
+  --frame: var(--app-chrome-background);
   --foreground: oklch(0.285 0 0);
   --card: var(--color-white);
   --card-foreground: var(--foreground);
@@ -315,9 +333,13 @@ html.electron.mac:not([data-marketing-capture]) {
   --control-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.1);
   /* Pressed (and open-menu) face: the edge stays, the drop goes. */
   --control-shadow-pressed: 0 0 0 0.5px rgb(0 0 0 / 0.16);
-  /* Pressed-in text fields. */
-  --field: var(--color-white);
-  --field-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), inset 0 1px 1px rgb(0 0 0 / 0.05);
+  /* Pressed-in text fields: a shallow slot, a shade off the group, with a thin
+     shadow along the top edge. Raised controls stand up; fields sink in. */
+  --field: oklch(0.985 0 0);
+  --field-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.13), inset 0 1px 2px rgb(0 0 0 / 0.07);
+  /* Placeholder text: a dim fixed grey (and italic, base layer), so a hint is
+     never mistaken for something typed. */
+  --placeholder: oklch(0.79 0 0);
   --switch-off: --alpha(var(--color-black) / 20%);
   /* Segmented-control track: grey under the white chosen piece in light (a white
      field would swallow it), pressed in like a field in dark. */
@@ -361,9 +383,9 @@ html.electron.mac:not([data-marketing-capture]) {
 
        Elevation ladder — distinct lightness steps so sections read as stacked
        surfaces, not one flat field (deepest to highest):
-         chrome 0.19       window frame / gutters behind panels
-         background 0.228  main content well
-         rail 0.26         left + right side panels
+         chrome 0.19       gutters behind panels
+         background 0.228  the work panel (page lists and pages)
+         rail 0.26         docked side panels; the frame (title row, rail)
          card 0.292        raised cards, activity bands, composer
          popover 0.312     floating menus */
     --background: oklch(0.228 0 0);
@@ -372,6 +394,9 @@ html.electron.mac:not([data-marketing-capture]) {
     --card: oklch(0.292 0 0);
     --card-foreground: var(--foreground);
     --rail: oklch(0.26 0 0);
+    /* Dark: the frame is a step lighter than the work panel, never a black
+       stripe around it. */
+    --frame: var(--rail);
     --agent-line: --alpha(var(--color-white) / 20%);
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
@@ -424,8 +449,9 @@ html.electron.mac:not([data-marketing-capture]) {
     /* Dark solidity comes from a 0.5px top highlight plus a 1px drop. */
     --control-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.35);
     --control-shadow-pressed: inset 0 0.5px 0 rgb(255 255 255 / 0.08);
-    --field: --alpha(var(--color-black) / 24%);
-    --field-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), inset 0 1px 2px rgb(0 0 0 / 0.3);
+    --field: --alpha(var(--color-black) / 12%);
+    --field-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08), inset 0 1px 1.5px rgb(0 0 0 / 0.45);
+    --placeholder: oklch(0.45 0.004 286);
     --switch-off: --alpha(var(--color-white) / 22%);
     --segmented-track: var(--field);
     --segmented-track-shadow: var(--field-shadow);
@@ -454,6 +480,12 @@ html.electron.mac:not([data-marketing-capture]) {
 /* Keep edge-facing scrollbars clear of Electron's native window resize hit zone. */
 html.electron {
   --app-window-resize-edge-inset: 6px;
+}
+
+/* That strip at the window's right edge continues the frame beside the title
+   row and the canvas beside the work panel, so neither ends in a stripe. */
+html.electron body {
+  background: linear-gradient(var(--frame) var(--app-titlebar-height), var(--background) 0);
 }
 
 body {
@@ -502,6 +534,31 @@ code {
   font-size-adjust: none;
 }
 
+/* The list's width as the window's title row sees it (AppTitleBar). It is a
+   registered length so it can transition itself: the page slot's start is
+   clamped against the row's own buttons on every frame, so the slot keeps
+   pace with the content column through the list's slide and stops where it
+   meets them. A resize drag moves it at once. */
+@property --titlebar-list-width {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+[data-titlebar-slides] {
+  transition: --titlebar-list-width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-sidebar-resizing] [data-titlebar-slides] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-titlebar-slides] {
+    transition: none;
+  }
+}
+
 /* Window drag region (frameless titlebar) */
 .drag-region {
   -webkit-app-region: drag;
@@ -511,7 +568,9 @@ code {
 .drag-region input,
 .drag-region textarea,
 .drag-region select,
-.drag-region a {
+.drag-region a,
+.drag-region [role="button"],
+.drag-region [contenteditable="true"] {
   -webkit-app-region: no-drag;
 }
 
@@ -1085,6 +1144,72 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--muted) 78%, var(--background)) !important;
 }
 
+/* Math (MarkdownMath.tsx): KaTeX at a size that sits in a 14px line, display
+   formulas scrolling sideways rather than widening the column. */
+.chat-markdown .chat-markdown-math .katex {
+  font-size: 1.08em;
+}
+
+.chat-markdown .chat-markdown-math-display {
+  margin: 0.65rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.1rem 0;
+}
+
+.chat-markdown .chat-markdown-math-display .katex-display {
+  margin: 0;
+}
+
+.chat-markdown .chat-markdown-math-display .katex {
+  font-size: 1.12em;
+}
+
+/* Diagrams (MarkdownDiagram.tsx), drawn by pele in a code block's frame. Its
+   colors are these variables, so a theme change recolors a diagram without
+   drawing it again. Unscoped: the full-size view sits outside the message. */
+.chat-markdown-diagram {
+  --pele-bg: transparent;
+  --pele-fg: var(--foreground);
+  --pele-muted: var(--muted-foreground);
+  --pele-line: color-mix(in srgb, var(--foreground) 55%, transparent);
+  --pele-surface: var(--background);
+  --pele-surface-alt: color-mix(in srgb, var(--foreground) 7%, var(--background));
+  --pele-border: color-mix(in srgb, var(--foreground) 28%, transparent);
+  --pele-accent: var(--primary);
+  --pele-error: var(--destructive);
+  --pele-critical: var(--destructive);
+  --pele-font: var(--font-sans);
+  --pele-font-mono: var(--font-mono);
+  --pele-radius: 6px;
+  --pele-series-1: var(--primary);
+  --pele-series-2: var(--color-emerald-500);
+  --pele-series-3: var(--color-amber-500);
+  --pele-series-4: var(--color-violet-500);
+  --pele-series-5: var(--color-cyan-500);
+  --pele-series-6: var(--color-rose-500);
+  --pele-series-7: var(--color-lime-500);
+  --pele-series-8: var(--muted-foreground);
+}
+
+.chat-markdown .chat-markdown-diagram {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  background: color-mix(in srgb, var(--muted) 78%, var(--background));
+  /* Room above for the buttons on the frame's first line. */
+  padding: calc(0.8rem + 1lh + 0.35rem) 0.9rem 0.9rem;
+}
+
+.chat-markdown-diagram svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.chat-markdown-diagram-full svg {
+  max-width: none;
+}
+
 .chat-markdown table {
   width: 100%;
   border-collapse: collapse;
@@ -1237,6 +1362,21 @@ label:has(> select#reasoning-effort) select {
 @media (prefers-reduced-motion: reduce) {
   .update-indeterminate-rail {
     animation: none;
+  }
+}
+
+/* The rail update card's words roll: the new ones up from below, the old up and out. */
+@keyframes update-card-roll-in {
+  from {
+    opacity: 0;
+    transform: translateY(70%);
+  }
+}
+
+@keyframes update-card-roll-out {
+  to {
+    opacity: 0;
+    transform: translateY(-70%);
   }
 }
 

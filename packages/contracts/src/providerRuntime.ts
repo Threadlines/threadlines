@@ -694,6 +694,16 @@ const RequestOpenedPayload = Schema.Struct({
   availableDecisions: Schema.optional(Schema.Array(ProviderApprovalDecision)),
   /** A risk the provider attached to an answer (Antigravity's "allow always"). */
   decisionWarnings: Schema.optional(ProviderApprovalDecisionWarnings),
+  /** The agent's own sentence for the request ("Claude wants to read notes.txt"). */
+  title: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Why the agent asks rather than going ahead. */
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** What approving allows, in the agent's words. */
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The file or folder that made the agent ask, when one did. */
+  blockedPath: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The agent asks that this one not be approved by habit: Approve is not the highlighted answer. */
+  defaultToNo: Schema.optional(Schema.Boolean),
   args: Schema.optional(Schema.Unknown),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;

@@ -30,6 +30,14 @@ export interface WsProtocolCloseContext {
 }
 
 export interface WsProtocolLifecycleHandlers {
+  /**
+   * Whether this socket is the app's own connection, the one the reconnect
+   * coordinator and its toasts read (`wsConnectionState`). On by default. Off
+   * for sockets to other computers: they keep their own state in the saved
+   * environment runtime, so one of them dropping never reads as this
+   * computer's link going down, and a live one never hides that it did.
+   */
+  readonly reportsAppConnection?: boolean;
   readonly getConnectionLabel?: () => string | null;
   readonly getVersionMismatchHint?: () => string | null;
   readonly isCloseIntentional?: () => boolean;
@@ -144,25 +152,30 @@ type ComposedWsProtocolLifecycleHandlers = Required<
   >
 >;
 
+function reportsAppConnection(handlers?: WsProtocolLifecycleHandlers): boolean {
+  return handlers?.reportsAppConnection !== false;
+}
+
 function defaultLifecycleHandlers(
   handlers?: WsProtocolLifecycleHandlers,
 ): ComposedWsProtocolLifecycleHandlers {
+  const reports = reportsAppConnection(handlers);
   return {
     isActive: () => true,
     onAttempt: (socketUrl) => {
-      recordWsConnectionAttempt(socketUrl, resolveConnectionMetadata(handlers));
+      if (reports) recordWsConnectionAttempt(socketUrl, resolveConnectionMetadata(handlers));
     },
     onOpen: () => {
-      recordWsConnectionOpened(resolveConnectionMetadata(handlers));
+      if (reports) recordWsConnectionOpened(resolveConnectionMetadata(handlers));
     },
     onFirstMessage: () => undefined,
     onError: (message) => {
       clearAllTrackedRpcRequests();
-      recordWsConnectionErrored(message, resolveConnectionMetadata(handlers));
+      if (reports) recordWsConnectionErrored(message, resolveConnectionMetadata(handlers));
     },
     onClose: (details, context) => {
       clearAllTrackedRpcRequests();
-      if (context.intentional) {
+      if (context.intentional || !reports) {
         return;
       }
       recordWsConnectionClosed(details, resolveConnectionMetadata(handlers));
@@ -409,10 +422,12 @@ export function createWsRpcProtocolLayer(
       onPingTimeout: Effect.sync(() => {
         if (lifecycle.isActive()) {
           clearAllTrackedRpcRequests();
-          recordWsConnectionErrored(
-            "WebSocket heartbeat timed out.",
-            resolveConnectionMetadata(handlers),
-          );
+          if (reportsAppConnection(handlers)) {
+            recordWsConnectionErrored(
+              "WebSocket heartbeat timed out.",
+              resolveConnectionMetadata(handlers),
+            );
+          }
           handlers?.onHeartbeatTimeout?.();
         }
       }),

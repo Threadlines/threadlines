@@ -29,6 +29,7 @@ import {
   WIDE_FOOTER_VIEWPORT,
   COMPACT_FOOTER_VIEWPORT,
   PHONE_VIEWPORT,
+  touchSwipe,
   createSnapshotForTargetUser,
   createDraftOnlySnapshot,
   createSnapshotWithChangedFileSummary,
@@ -327,7 +328,7 @@ describe("ChatView (full app): right panel and header actions", () => {
         () => document.querySelector("[data-right-panel-launcher='true']") as HTMLElement | null,
         "The sidebar never opened on a phone width.",
       );
-      expect(launcher.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+      expect(launcher.closest('[data-slot="drawer-popup"]')).not.toBeNull();
       expect(document.querySelector("[data-right-panel-strip='true']")).not.toBeNull();
 
       await openRightPanelSurfaceFromLauncher("agents");
@@ -336,7 +337,7 @@ describe("ChatView (full app): right panel and header actions", () => {
         () => document.querySelector("[data-agents-panel='tree']") as HTMLElement | null,
         "The agents tab never opened on a phone width.",
       );
-      expect(agentsPanel.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+      expect(agentsPanel.closest('[data-slot="drawer-popup"]')).not.toBeNull();
       await expect.element(page.getByText(/No agents yet\./u)).toBeVisible();
 
       // Closed and reopened, the sheet comes back on Agents — the same
@@ -356,7 +357,109 @@ describe("ChatView (full app): right panel and header actions", () => {
           expect(mounted.router.state.location.search).toMatchObject({ agents: "1" });
           const reopened = document.querySelector("[data-agents-panel='tree']");
           expect(reopened).not.toBeNull();
-          expect(reopened?.closest('[data-slot="sheet-popup"]')).not.toBeNull();
+          expect(reopened?.closest('[data-slot="drawer-popup"]')).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes the overlay panel with a finger pushing it right, and not with a mouse drag", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-swipe" as MessageId,
+        targetText: "rail swipe",
+      }),
+    });
+    const launcher = () => document.querySelector("[data-right-panel-launcher='true']");
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      const panel = await waitForElement(
+        () => launcher() as HTMLElement | null,
+        "The panel never opened on a phone width.",
+      );
+
+      // Once it has slid in...
+      const popup = panel.closest('[data-slot="drawer-popup"]') as HTMLElement;
+      await vi.waitFor(
+        () => {
+          expect(popup.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth + 1);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      // ...a mouse drag across its plain text is left to the content
+      // (selecting text in a diff, in a narrow desktop window): it stays.
+      const label = await waitForElement(
+        () => page.getByText("Open a panel").element() as HTMLElement | null,
+        "Unable to find the launcher's label.",
+      );
+      const rect = label.getBoundingClientRect();
+      const mouse = (type: string, x: number) =>
+        label.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            clientX: x,
+            clientY: rect.top + rect.height / 2,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+            button: 0,
+            buttons: type === "pointerup" ? 0 : 1,
+          }),
+        );
+      const x0 = rect.left + 4;
+      mouse("pointerdown", x0);
+      for (let step = 1; step <= 10; step += 1) mouse("pointermove", x0 + step * 25);
+      mouse("pointerup", x0 + 250);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(launcher()).not.toBeNull();
+      expect(railToggle.hasAttribute("data-pressed")).toBe(true);
+
+      // With two tabs, a finger dragging one reorders the tabs; it doesn't
+      // take the panel along.
+      await openRightPanelSurfaceFromLauncher("sourceControl");
+      (
+        (await waitForElement(
+          () => document.querySelector("[data-right-panel-add-tab='true']") as HTMLElement | null,
+          "Unable to find the strip's + button.",
+        )) as HTMLElement
+      ).click();
+      (
+        await waitForElement(
+          () =>
+            document.querySelector("[data-right-panel-menu-tab='agents']") as HTMLElement | null,
+          "The + menu never listed Agents.",
+        )
+      ).click();
+      const tab = await waitForElement(
+        () =>
+          document.querySelector(
+            "[data-right-panel-tab='sourceControl'][data-base-ui-swipe-ignore]",
+          ) as HTMLElement | null,
+        "The Source tab never became a reorderable tab.",
+      );
+      touchSwipe(tab, 260);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(railToggle.hasAttribute("data-pressed")).toBe(true);
+
+      // A finger pushing the panel toward its edge closes it, as the toggle would.
+      const agentsPanel = await waitForElement(
+        () => document.querySelector("[data-agents-panel='tree']") as HTMLElement | null,
+        "The agents tab never opened.",
+      );
+      touchSwipe(agentsPanel, 260);
+      await vi.waitFor(
+        () => {
+          expect(railToggle.hasAttribute("data-pressed")).toBe(false);
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -529,7 +632,7 @@ describe("ChatView (full app): right panel and header actions", () => {
         "Unable to find the source control panel.",
       );
       const sheetPopup = sourceControlPanel.closest(
-        '[data-slot="sheet-popup"]',
+        '[data-slot="drawer-popup"]',
       ) as HTMLElement | null;
       expect(sheetPopup).not.toBeNull();
       await waitForLayout();

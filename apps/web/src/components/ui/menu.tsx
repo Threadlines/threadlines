@@ -1,7 +1,7 @@
 "use client";
 
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
@@ -94,6 +94,13 @@ function MenuItem({
   );
 }
 
+/**
+ * A menu entry that switches on and off without closing the menu.
+ *
+ * "fill" is the house selection treatment (see MENU_PICK_ITEM_*) for a picker
+ * where several entries can be on at once: checked rows carry the resting
+ * fill, and the children draw their own mark -- there is no indicator column.
+ */
 function MenuCheckboxItem({
   className,
   children,
@@ -101,20 +108,26 @@ function MenuCheckboxItem({
   variant = "default",
   ...props
 }: MenuPrimitive.CheckboxItem.Props & {
-  variant?: "default" | "switch";
+  variant?: "default" | "switch" | "fill";
 }) {
   return (
     <MenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
-        "grid min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 text-base text-foreground outline-none data-disabled:pointer-events-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
-        variant === "switch" ? "grid-cols-[1fr_auto] gap-4 pe-1.5" : "grid-cols-[1rem_1fr] pe-4",
+        "min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 text-base text-foreground outline-none data-disabled:pointer-events-none data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        variant === "fill"
+          ? "flex pe-2 text-muted-foreground data-checked:bg-pick-selected data-checked:text-foreground data-checked:inset-ring data-checked:inset-ring-border data-highlighted:bg-foreground/12 data-highlighted:text-foreground"
+          : "grid data-highlighted:bg-accent data-highlighted:text-accent-foreground",
+        variant === "switch" && "grid-cols-[1fr_auto] gap-4 pe-1.5",
+        variant === "default" && "grid-cols-[1rem_1fr] pe-4",
         className,
       )}
       data-slot="menu-checkbox-item"
       {...props}
     >
-      {variant === "switch" ? (
+      {variant === "fill" ? (
+        children
+      ) : variant === "switch" ? (
         <>
           <span className="col-start-1">{children}</span>
           <MenuPrimitive.CheckboxItemIndicator
@@ -289,6 +302,49 @@ function MenuSubTrigger({
   );
 }
 
+/** Makes the menu it wraps filterable: give its popup a MenuFilterInput. */
+const MenuFilterProvider = MenuPrimitive.FilterProvider;
+
+/**
+ * Holds a menu's rows apart from other content in the popup, such as a
+ * MenuFilterInput, so the rows alone carry the menu role.
+ */
+const MenuList = MenuPrimitive.List;
+
+/**
+ * The search line at the top of a filterable menu. It stays put while the rows
+ * scroll beneath it, and holds focus while the menu is open so typing filters
+ * at once; the arrow keys and Enter still move through and pick the rows.
+ */
+function MenuFilterInput({ className, ...props }: MenuPrimitive.Input.Props) {
+  return (
+    <div className="sticky top-0 z-10 -mx-1 -mt-1 mb-1 bg-popover p-1" data-slot="menu-filter">
+      <div className="flex h-7 items-center gap-2 rounded-md bg-muted/50 px-2">
+        <SearchIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground/70" />
+        <MenuPrimitive.Input
+          className={cn(
+            "min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none",
+            className,
+          )}
+          data-slot="menu-filter-input"
+          {...props}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The line a filterable menu shows in place of its rows when nothing matches. */
+function MenuEmpty({ className, ...props }: MenuPrimitive.Empty.Props) {
+  return (
+    <MenuPrimitive.Empty
+      className={cn("px-2 py-1.5 text-sm text-muted-foreground", className)}
+      data-slot="menu-empty"
+      {...props}
+    />
+  );
+}
+
 function MenuSubPopup({
   className,
   sideOffset = 0,
@@ -333,6 +389,10 @@ export {
   MenuItem as DropdownMenuItem,
   MenuCheckboxItem,
   MenuCheckboxItem as DropdownMenuCheckboxItem,
+  MenuEmpty,
+  MenuFilterInput,
+  MenuFilterProvider,
+  MenuList,
   MenuRadioGroup,
   MenuRadioGroup as DropdownMenuRadioGroup,
   MenuRadioItem,

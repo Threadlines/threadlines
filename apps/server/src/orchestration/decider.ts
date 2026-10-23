@@ -9,8 +9,10 @@ import {
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
+  type TurnId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
+import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
@@ -76,6 +78,10 @@ import {
   childrenArchivedWith,
   decideChildDeliveriesStop,
   decideChildNotesDelivered,
+  decideRemoteCancelsDelivered,
+  decideRemoteChildUpdate,
+  decideRemoteRequestQueue,
+  remoteCancelEvents,
   decideChildRequestSettle,
   decideChildRequestUpdate,
   decideChildRespond,
@@ -92,6 +98,16 @@ import {
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { projectEvent } from "./projector.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
+import {
+  decideHistorySeedDelivered,
+  decideMoveAbort,
+  decideMoveCancel,
+  decideMoveComplete,
+  decideMoveProgress,
+  decideMoveStart,
+  decideThreadImport,
+  threadMoveGuardRefusal,
+} from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -325,6 +341,31 @@ function childStopEvents(
 }
 
 /**
+ * Whether a turn and the message that started it are still the last thing
+ * in the thread: its latest turn (it may still be finishing), no other turn
+ * running or starting, nothing queued behind it, and no message written to
+ * the thread after it. The messages are the source of truth for work
+ * accepted but not begun: a turn start the decider accepted leaves the
+ * latest turn and the session as they were until the provider takes it, but
+ * its message is already in the thread, after the run's.
+ */
+function isQuietAfterTurn(
+  thread: OrchestrationThread,
+  run: { readonly turnId: TurnId; readonly messageId: MessageId },
+): boolean {
+  const session = thread.session;
+  const activeTurnId = session?.activeTurnId ?? null;
+  const lastUserMessage = thread.messages.findLast((message) => message.role === "user");
+  return (
+    thread.latestTurn?.turnId === run.turnId &&
+    (activeTurnId === null || activeTurnId === run.turnId) &&
+    session?.status !== "starting" &&
+    (thread.queuedFollowUps ?? []).length === 0 &&
+    lastUserMessage?.id === run.messageId
+  );
+}
+
+/**
  * A message for the agent at work: steers into its turn when it can, else waits
  * in the queue for its agent, like a message the user typed while it worked.
  */
@@ -387,6 +428,9 @@ function decideFollowUpSubmit(
                 : {}),
               ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
               ...(command.composer !== undefined ? { composer: command.composer } : {}),
+              ...(command.scheduledTaskId !== undefined
+                ? { scheduledTaskId: command.scheduledTaskId }
+                : {}),
               runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
               interactionMode: command.interactionMode ?? targetThread.interactionMode,
               createdAt: command.createdAt,
@@ -456,6 +500,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
+  // A thread moving or moved to another computer is frozen here.
+  const frozenRefusal = threadMoveGuardRefusal(readModel, command);
+  if (frozenRefusal !== null) {
+    return yield* new OrchestrationCommandInvariantError({
+      commandType: command.type,
+      detail: frozenRefusal,
+    });
+  }
   switch (command.type) {
     case "project.create": {
       yield* requireProjectAbsent({
@@ -481,6 +533,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           scripts: [],
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "project.general-chats.relocate": {
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (project.kind !== "general-chat") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Project '${command.projectId}' is not the General Chats project.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "project.meta-updated",
+        payload: {
+          projectId: command.projectId,
+          workspaceRoot: command.workspaceRoot,
+          updatedAt: occurredAt,
         },
       };
     }
@@ -607,6 +688,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
       }
+      // A thread another computer's agent started here has no family here.
+      if (command.remoteOrigin !== undefined && parentThreadId !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A thread is started either by a thread here or by one on a linked computer.",
+        });
+      }
+      // Nor does a scheduled task's run: the scheduler starts it on its own.
+      if (
+        command.scheduledRun !== undefined &&
+        (parentThreadId !== undefined || command.remoteOrigin !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A scheduled run's thread is started by its schedule alone.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -656,6 +754,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 attachedToParent: command.attachedToParent === true,
               }
             : {}),
+          ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
+          ...(command.scheduledRun !== undefined ? { scheduledRun: command.scheduledRun } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -880,13 +980,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Child threads: its family is separated (or deleted with it), and a
       // child's parent stops waiting on it.
       const withChildren = command.withChildren === true;
-      const familyEvents = childDeletionEvents(
-        readModel,
-        thread,
-        childEventBase(command, occurredAt),
-        occurredAt,
-        withChildren,
-      );
+      const familyEvents = [
+        ...childDeletionEvents(
+          readModel,
+          thread,
+          childEventBase(command, occurredAt),
+          occurredAt,
+          withChildren,
+        ),
+        // Threads it asked for on linked computers: their requests are dropped
+        // there; the threads keep running, like separated children here.
+        ...remoteCancelEvents(
+          childEventBase(command, occurredAt),
+          thread,
+          thread.childRequests.open,
+          occurredAt,
+          false,
+        ),
+      ];
       // Only the children the user was shown: the ones not archived. An
       // archived child is separated instead and lives on in the archive.
       const childDeletes = withChildren
@@ -1134,6 +1245,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A quiet scheduled run wraps its thread only while its turn is still
+      // the last thing there: newer work keeps the thread in front of the user.
+      if (
+        command.whileQuietAfter !== undefined &&
+        !isQuietAfterTurn(thread, command.whileQuietAfter)
+      ) {
+        return [];
+      }
       const occurredAt = yield* nowIso;
       // Child threads: a wrapped parent is not woken by a late answer.
       const wrapEvents =
@@ -1163,7 +1282,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           at: command.at,
         },
       };
-      return wrapEvents.length === 0 ? overrideEvent : [...wrapEvents, overrideEvent];
+      const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> =
+        command.whileQuietAfter !== undefined
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.seen-set",
+                payload: { threadId: command.threadId, at: command.at },
+              },
+            ]
+          : [];
+      return wrapEvents.length === 0 && seenEvents.length === 0
+        ? overrideEvent
+        : [...wrapEvents, overrideEvent, ...seenEvents];
     }
 
     case "thread.seen.set": {
@@ -1534,7 +1670,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "thread.child.send":
     case "thread.child-request.update":
     case "thread.child-request.settle":
-    case "thread.child-notes.delivered": {
+    case "thread.child-notes.delivered":
+    case "thread.remote-child.update":
+    case "thread.remote-cancels.delivered":
+    case "thread.remote-request.queue": {
       const thread = yield* requireThread({
         readModel,
         command,
@@ -1553,7 +1692,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 ? decideChildRequestUpdate(thread, command, baseFor)
                 : command.type === "thread.child-request.settle"
                   ? decideChildRequestSettle(readModel, thread, command, baseFor)
-                  : decideChildNotesDelivered(thread, command, baseFor),
+                  : command.type === "thread.remote-child.update"
+                    ? decideRemoteChildUpdate(thread, command, baseFor)
+                    : command.type === "thread.remote-cancels.delivered"
+                      ? decideRemoteCancelsDelivered(thread, command, baseFor)
+                      : command.type === "thread.remote-request.queue"
+                        ? decideRemoteRequestQueue(thread, command, baseFor)
+                        : decideChildNotesDelivered(thread, command, baseFor),
+      );
+    }
+
+    case "thread.import": {
+      return yield* planChildThreadDecision(
+        command.type,
+        decideThreadImport(readModel, command, childEventBase(command, command.createdAt)),
+      );
+    }
+
+    case "thread.move.start":
+    case "thread.move.progress":
+    case "thread.move.cancel":
+    case "thread.move.abort":
+    case "thread.move.complete":
+    case "thread.history-seed.delivered": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planChildThreadDecision(
+        command.type,
+        command.type === "thread.move.start"
+          ? decideMoveStart(readModel, thread, command, baseFor)
+          : command.type === "thread.move.progress"
+            ? decideMoveProgress(thread, command, baseFor)
+            : command.type === "thread.move.cancel"
+              ? decideMoveCancel(thread, command, baseFor)
+              : command.type === "thread.move.abort"
+                ? decideMoveAbort(thread, command, baseFor)
+                : command.type === "thread.move.complete"
+                  ? decideMoveComplete(thread, command, baseFor)
+                  : decideHistorySeedDelivered(thread, command, baseFor),
       );
     }
 
@@ -1811,25 +1991,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // Child threads: what it asked of its threads has nobody to go back to.
       const leavingBase = childEventBase(command, command.createdAt);
+      const leavingRequests = thread.childRequests.open.filter(
+        (request) => request.from.participantId === participant.id,
+      );
       const childEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
-        ...thread.childRequests.open
-          .filter((request) => request.from.participantId === participant.id)
-          .map((request): PlannedOrchestrationEvent => ({
-            ...leavingBase(thread.id),
-            type: "thread.child-request-settled",
-            payload: {
-              threadId: thread.id,
-              requestId: request.requestId,
-              childThreadId: request.childThreadId,
-              outcome: "cancelled",
-              error: "The agent that asked left the room.",
-              settledAt: command.createdAt,
-            },
-          })),
+        ...remoteCancelEvents(leavingBase, thread, leavingRequests, command.createdAt, false),
+        ...leavingRequests.map((request): PlannedOrchestrationEvent => ({
+          ...leavingBase(thread.id),
+          type: "thread.child-request-settled",
+          payload: {
+            threadId: thread.id,
+            requestId: request.requestId,
+            childThreadId: request.childThreadId,
+            outcome: "cancelled",
+            error: "The agent that asked left the room.",
+            settledAt: command.createdAt,
+          },
+        })),
+        // A child's report, and a scheduled task's run, for the leaving agent:
+        // never handed to another (the task's run says its agent left).
         ...(thread.queuedFollowUps ?? [])
           .filter(
             (queued) =>
-              queued.fromThread?.kind === "report" && queued.participantId === participant.id,
+              (queued.fromThread?.kind === "report" || queued.scheduledTaskId !== undefined) &&
+              queued.participantId === participant.id,
           )
           .map((queued): PlannedOrchestrationEvent => ({
             ...leavingBase(thread.id),
@@ -2289,7 +2474,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // now running there.
       const origin = command.fromThread;
       const parentForRequest =
-        origin?.kind === "request"
+        origin?.kind === "request" && origin.environmentId === undefined
           ? readModel.threads.find((entry) => entry.id === origin.threadId)
           : undefined;
       const answeredRequest = parentForRequest?.childRequests.open.find(
@@ -2643,6 +2828,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ]),
         ];
       }
+      // Likewise a scheduled task's run: it is taken back, and the run says
+      // its agent left.
+      if (queued.scheduledTaskId !== undefined && !queuedParticipantPresent) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
       if (agentQueued && !queuedParticipantPresent) {
         return [
           { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
@@ -2668,8 +2858,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // with the thread's current ones, so a message queued before the user
       // narrowed access cannot widen it back. The message is stamped now, not
       // when it was queued, so it lands after the answer it waited for.
-      const runtimeMode = agentQueued ? targetThread.runtimeMode : queued.runtimeMode;
-      const interactionMode = agentQueued ? targetThread.interactionMode : queued.interactionMode;
+      // A scheduled run's message may lower the thread's access but never
+      // raise it (the user may have lowered it while the message waited), and
+      // keeps the thread's own interaction mode, which no task chooses.
+      const scheduledQueued = queued.scheduledTaskId !== undefined;
+      const runtimeMode = agentQueued
+        ? targetThread.runtimeMode
+        : scheduledQueued
+          ? saferRuntimeMode(queued.runtimeMode, targetThread.runtimeMode)
+          : queued.runtimeMode;
+      const interactionMode =
+        agentQueued || scheduledQueued ? targetThread.interactionMode : queued.interactionMode;
       const turnEvents = yield* decideCommandSequence({
         readModel,
         commands: [

@@ -9,6 +9,8 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { expect } from "vite-plus/test";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -363,6 +365,74 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
       const refreshed = yield* harness.getRefreshed;
       assert.deepStrictEqual(refreshed, []);
     }).pipe(Effect.provide(settingsLayer)),
+  );
+
+  it.effect(
+    "finishes a terminal sign-in from another device by replaying its address here, once",
+    () =>
+      Effect.gen(function* () {
+        // `codex login`'s listener, on this computer.
+        const received: string[] = [];
+        const listener = createServer((request, response) => {
+          received.push(request.url ?? "");
+          // Codex sends the browser on to its success page, and finishes
+          // only once that is asked for.
+          if (request.url?.startsWith("/auth/callback")) {
+            response.writeHead(302, { location: "/success" }).end();
+          } else {
+            response.writeHead(200).end("Signed in");
+          }
+        });
+        yield* Effect.acquireRelease(
+          Effect.promise(
+            () => new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve)),
+          ),
+          () =>
+            Effect.promise(() => new Promise<void>((resolve) => listener.close(() => resolve()))),
+        );
+        const port = (listener.address() as AddressInfo).port;
+
+        const harness = yield* createSessions();
+        yield* harness.subscribeTo(CODEX_INSTANCE);
+        yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+        const process = harness.ptyAdapter.processes[0]!;
+        const redirect = encodeURIComponent(`http://localhost:${port}/auth/callback`);
+        // The page behind a short hyperlink label, as some CLIs print it.
+        const signInPage = `https://auth.openai.com/oauth/authorize?response_type=code&redirect_uri=${redirect}&state=st-1`;
+        process.emitData(
+          `Starting local login server on http://localhost:${port}.\r\n` +
+            `\u001b]8;;${signInPage}\u0007\u001b[94mSign in\u001b[0m\u001b]8;;\u0007\r\n`,
+        );
+        yield* waitFor(
+          harness.getEvents.pipe(Effect.map((events) => outputOf(events).includes("Sign in"))),
+        );
+
+        const paste = (data: string) =>
+          harness.sessions.write({ instanceId: CODEX_INSTANCE, data, redirect: true }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.detail),
+          );
+        // Only this sign-in's redirect: not another attempt's, not another listener.
+        expect(yield* paste(`http://localhost:${port}/auth/callback?code=c&state=other`)).toBe(
+          "That address belongs to a different sign-in attempt.",
+        );
+        expect(
+          yield* paste(`http://localhost:${port + 1}/auth/callback?code=c&state=st-1`),
+        ).toMatch(/^That address isn't this sign-in's/);
+        expect(received).toEqual([]);
+
+        yield* harness.sessions.write({
+          instanceId: CODEX_INSTANCE,
+          data: `http://localhost:${port}/auth/callback?code=c-1&state=st-1`,
+          redirect: true,
+        });
+        expect(received).toEqual(["/auth/callback?code=c-1&state=st-1", "/success"]);
+        // Replayed, never typed into the command.
+        expect(process.writes).toEqual([]);
+        expect(yield* paste(`http://localhost:${port}/auth/callback?code=c-1&state=st-1`)).toBe(
+          "This sign-in already received its address.",
+        );
+      }).pipe(Effect.provide(settingsLayer)),
   );
 
   it.effect("rejects a setup-token flow on a driver that has no such command", () =>

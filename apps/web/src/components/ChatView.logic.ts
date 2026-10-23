@@ -56,11 +56,13 @@ import { threadMemo } from "../lib/derivationMemo";
 import { isProviderAuthErrorChatMessage } from "../lib/providerAuthMessages";
 import {
   deriveForkContextEntries,
+  deriveMovedInEntries,
   deriveRevertTurnCountByUserMessageId,
   deriveSubagentActivityState,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   type ForkContextEntry,
+  type MovedInEntry,
   type SubagentLiveEntry,
   type SubagentProgressItem,
   type SubagentResultEntry,
@@ -2566,6 +2568,10 @@ export const deriveThreadForkContextEntries = threadMemo(
   (activities: ReadonlyArray<OrchestrationThreadActivity>) => deriveForkContextEntries(activities),
 );
 
+export const deriveThreadMovedInEntries = threadMemo(
+  (activities: ReadonlyArray<OrchestrationThreadActivity>) => deriveMovedInEntries(activities),
+);
+
 export const deriveThreadSubagentActivityState = threadMemo(
   (
     activities: ReadonlyArray<OrchestrationThreadActivity>,
@@ -2593,7 +2599,7 @@ export const deriveThreadSideAnswers = threadMemo(
 
 /**
  * The conversation's rows: messages (side questions aside), plans, steps,
- * pages, command cards and agents.
+ * pages, command cards, agents and where a moved thread's history ends.
  */
 export const deriveThreadTimelineEntries = threadMemo(
   (
@@ -2606,6 +2612,7 @@ export const deriveThreadTimelineEntries = threadMemo(
     pages: ReadonlyArray<OrchestrationAgentPage>,
     commandRequests: ReadonlyArray<OrchestrationCommandRequest>,
     workflowRuns: ReadonlyArray<OrchestrationWorkflowRun>,
+    movedInEntries: ReadonlyArray<MovedInEntry>,
   ) =>
     deriveTimelineEntries(
       messages.filter((message) => !isSideMessage(message)),
@@ -2617,6 +2624,7 @@ export const deriveThreadTimelineEntries = threadMemo(
       pages,
       commandRequests,
       workflowRuns,
+      movedInEntries,
     ),
 );
 

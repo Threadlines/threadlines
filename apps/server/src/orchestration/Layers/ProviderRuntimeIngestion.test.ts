@@ -113,6 +113,7 @@ function createProviderServiceHarness() {
     startEarlySession: () => Effect.succeed("unsupported" as const),
     adoptEarlySession: () => Effect.succeed(undefined),
     isEarlySession: () => Effect.succeed(false),
+    earlyStartInFlight: () => Effect.succeed(undefined),
     abandonEarlySession: () => Effect.void,
     listExternalThreads: () => unsupported(),
     readExternalThread: () => unsupported(),
@@ -1358,6 +1359,62 @@ describe("ProviderRuntimeIngestion", () => {
       shareUrl: "https://claude.ai/artifact/abc",
       title: "Report",
     });
+  });
+
+  it("leaves the launch mark out of the task updates it writes", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const launching = {
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    } as const;
+
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "ready");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-launching"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "starting",
+          providerName: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          pendingBackgroundTaskCount: 0,
+          startup: launching,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    await waitForThread(harness.readModel, (thread) => thread.session?.startup != null);
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-task-started-while-launching"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { taskId: "task-while-launching", description: "Warming a cache" },
+    });
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.pendingBackgroundTaskCount === 1,
+    );
+
+    // The update was built from the session it read; copying that mark could
+    // bring back one the launch cleared meanwhile, so it leaves it out and the
+    // mark stays whatever it is now.
+    const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+    const taskUpdate = Array.from(events).findLast((event) => event.type === "thread.session-set");
+    expect(
+      taskUpdate?.type === "thread.session-set" && "startup" in taskUpdate.payload.session,
+    ).toBe(false);
+    expect(thread.session?.startup).toEqual(launching);
   });
 
   it("tracks pending provider tasks on the thread session", async () => {

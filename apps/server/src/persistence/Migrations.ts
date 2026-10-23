@@ -96,6 +96,15 @@ import Migration0074 from "./Migrations/074_ProjectionThreadsCheckBacks.ts";
 import Migration0075 from "./Migrations/075_McpAppCalls.ts";
 import Migration0076 from "./Migrations/076_ProjectionThreadsDismissedPullRequests.ts";
 import Migration0077 from "./Migrations/077_ProjectionThreadSubagentsRepairClaudeRows.ts";
+import Migration0078 from "./Migrations/078_ComputerLinks.ts";
+import Migration0079 from "./Migrations/079_ComputerLinkPinnedEnvironment.ts";
+import Migration0080 from "./Migrations/080_LinkStopsOwed.ts";
+import Migration0081 from "./Migrations/081_ScheduledTasks.ts";
+import Migration0082 from "./Migrations/082_ThreadMoves.ts";
+import Migration0083 from "./Migrations/083_ProjectionThreadSessionStartup.ts";
+import Migration0084 from "./Migrations/084_ProjectSetups.ts";
+import Migration0085 from "./Migrations/085_RelayHooks.ts";
+import Migration0086 from "./Migrations/086_EventTasks.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -185,6 +194,15 @@ export const migrationEntries = [
   [75, "McpAppCalls", Migration0075],
   [76, "ProjectionThreadsDismissedPullRequests", Migration0076],
   [77, "ProjectionThreadSubagentsRepairClaudeRows", Migration0077],
+  [78, "ComputerLinks", Migration0078],
+  [79, "ComputerLinkPinnedEnvironment", Migration0079],
+  [80, "LinkStopsOwed", Migration0080],
+  [81, "ScheduledTasks", Migration0081],
+  [82, "ThreadMoves", Migration0082],
+  [83, "ProjectionThreadSessionStartup", Migration0083],
+  [84, "ProjectSetups", Migration0084],
+  [85, "RelayHooks", Migration0085],
+  [86, "EventTasks", Migration0086],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -61,6 +61,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads; see OrchestrationMessage.fromThread. Kept like `fromAgent`. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See OrchestrationMessage.imported. Once set, kept. */
+  imported: Schema.optional(Schema.Literal(true)),
   /**
    * See OrchestrationMessage.agentModels. Written by the write that creates
    * the row; a later write only fills it in when it is empty.

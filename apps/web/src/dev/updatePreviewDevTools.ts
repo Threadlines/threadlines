@@ -73,6 +73,12 @@ export type ProviderUpdatePreviewStatus = Exclude<ServerProviderUpdateStatus, "i
 export interface UpdatePreviewDevTools {
   desktopUpdate(mode?: DesktopUpdatePreviewMode, options?: DesktopUpdatePreviewOptions): void;
   animateDesktopDownload(durationMs?: number): void;
+  /**
+   * What the next simulated Check finds: a version (`"0.8.0"`, or a nightly
+   * like `"0.8.0-nightly.20261024.352"`) that comes back as available, or
+   * null for up to date. Persists for the session.
+   */
+  nextCheckFinds(version: string | null): void;
   clearDesktopUpdate(): void;
   providerUpdates(
     statuses?: ProviderUpdatePreviewStatus | ReadonlyArray<ProviderUpdatePreviewStatus>,
@@ -243,6 +249,7 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
     };
   };
 
+  let nextCheckFinds: string | null = null;
   const simulateDesktopCheckForUpdate = async (): Promise<DesktopUpdateCheckResult | null> => {
     const currentState =
       queryClient.getQueryData<DesktopUpdateState | null>(desktopUpdateQueryKeys.state()) ?? null;
@@ -272,8 +279,8 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
 
       const resultState: DesktopUpdateState = {
         ...latestState,
-        status: "up-to-date",
-        availableVersion: null,
+        status: nextCheckFinds ? "available" : "up-to-date",
+        availableVersion: nextCheckFinds,
         downloadedVersion: null,
         downloadPercent: null,
         checkedAt: new Date().toISOString(),
@@ -425,6 +432,10 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
     animateDesktopDownload(durationMs = DESKTOP_DOWNLOAD_PREVIEW_MS) {
       releaseBootPreview();
       startDesktopDownloadAnimation(nextPatchVersion(APP_VERSION), durationMs);
+    },
+
+    nextCheckFinds(version) {
+      nextCheckFinds = version;
     },
 
     clearDesktopUpdate() {

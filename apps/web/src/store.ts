@@ -28,9 +28,14 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
+  OrchestrationThreadMove,
   ProjectId,
+  RemoteChildStart,
+  RemoteChildThread,
   ScopedProjectRef,
   ScopedThreadRef,
+  ThreadMovedFrom,
+  ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import {
   EMPTY_AGENT_REQUEST_STATE,
@@ -38,7 +43,7 @@ import {
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
-import type { ThreadId, TurnId } from "@threadlines/contracts";
+import type { ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
@@ -75,6 +80,7 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { threadMoveStatus } from "./threadMove";
 import {
   roomSideModelSelection,
   roomSideRole,
@@ -109,6 +115,7 @@ import {
   awaitedChildRequestCount,
   childRequestStateOn,
   hasPendingChildApproval,
+  remoteChildStartsOf,
 } from "@threadlines/shared/childThreads";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
@@ -184,6 +191,12 @@ export interface EnvironmentState {
   // the active thread visible while shell projection catches up.
   // ---------------------------------------------------------------------------
   sidebarThreadSummaryById: Record<ThreadId, SidebarThreadSummary>;
+  /**
+   * Threads whose agent's scheduled-task change waits for the user, from this
+   * computer's scheduled tasks feed (setScheduleApprovalThreads). Every
+   * summary written here carries it as `pendingScheduleApproval`.
+   */
+  scheduleApprovalThreadIds?: Record<ThreadId, true>;
 
   bootstrapComplete: boolean;
 }
@@ -268,9 +281,32 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     ...(session.awaitedBackgroundTasks?.length
       ? { awaitedBackgroundTasks: session.awaitedBackgroundTasks }
       : {}),
+    ...(session.startup?.phase === "launching"
+      ? { launchingInstanceId: session.startup.providerInstanceId }
+      : {}),
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
+  };
+}
+
+/**
+ * A session update applied over the thread's current session. One that does
+ * not name the slot holder keeps the current one, and one that leaves out the
+ * startup phase keeps that (see OrchestrationSession).
+ */
+function mapSessionUpdate(
+  session: OrchestrationSession,
+  current: ThreadSession | null | undefined,
+): ThreadSession {
+  return {
+    ...mapSession(session),
+    ...(session.participantId === undefined && current?.participantId
+      ? { participantId: current.participantId }
+      : {}),
+    ...(session.startup === undefined && current?.launchingInstanceId
+      ? { launchingInstanceId: current.launchingInstanceId }
+      : {}),
   };
 }
 
@@ -330,6 +366,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.invite ? { invite: message.invite } : {}),
     ...(message.fromThread ? { fromThread: message.fromThread } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
+    ...(message.imported ? { imported: true as const } : {}),
   };
 }
 
@@ -343,9 +380,15 @@ function threadLineage(thread: {
   readonly attachedToParent?: boolean | undefined;
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
+  readonly scheduledRun?: ThreadScheduledRun | null | undefined;
 }): Pick<
   ThreadShell,
-  "parentThreadId" | "parentTurnId" | "attachedToParent" | "handedBackAt" | "handedBackTurnId"
+  | "parentThreadId"
+  | "parentTurnId"
+  | "attachedToParent"
+  | "handedBackAt"
+  | "handedBackTurnId"
+  | "scheduledRun"
 > {
   return {
     parentThreadId: thread.parentThreadId ?? null,
@@ -353,6 +396,7 @@ function threadLineage(thread: {
     attachedToParent: thread.attachedToParent ?? false,
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
+    scheduledRun: thread.scheduledRun ?? null,
   };
 }
 
@@ -377,6 +421,144 @@ function childRequestCounts(thread: {
       };
 }
 
+/**
+ * A thread's family across computers (docs/design/fleet.md): the thread on
+ * another computer whose agent started it, and on a parent its children on
+ * linked computers. A loaded thread's open requests know them first-hand;
+ * without them, the shell's copies stand. Empty lists are left out, so two
+ * copies of the same family compare alike.
+ */
+function remoteFamily(thread: {
+  readonly remoteOrigin?: ThreadRemoteOrigin | null | undefined;
+  readonly childRequests?: OrchestrationChildRequestState | undefined;
+  readonly remoteChildren?: ReadonlyArray<RemoteChildThread> | undefined;
+  readonly remoteChildStarts?: ReadonlyArray<RemoteChildStart> | undefined;
+}): Pick<ThreadShell, "remoteOrigin" | "remoteChildren" | "remoteChildStarts"> {
+  const children =
+    thread.childRequests !== undefined
+      ? (thread.childRequests.remoteChildren ?? [])
+      : (thread.remoteChildren ?? []);
+  const starts =
+    thread.childRequests !== undefined
+      ? remoteChildStartsOf(thread.childRequests)
+      : (thread.remoteChildStarts ?? []);
+  return {
+    ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
+    ...(children.length > 0 ? { remoteChildren: children } : {}),
+    ...(starts.length > 0 ? { remoteChildStarts: starts } : {}),
+  };
+}
+
+function remoteOriginsEqual(
+  left: ThreadRemoteOrigin | null | undefined,
+  right: ThreadRemoteOrigin | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.linkDeviceId === b.linkDeviceId &&
+        a.environmentId === b.environmentId &&
+        a.environmentPinned === b.environmentPinned &&
+        a.environmentLabel === b.environmentLabel &&
+        a.threadId === b.threadId &&
+        a.threadTitle === b.threadTitle;
+}
+
+function remoteChildrenEqual(
+  left: ReadonlyArray<RemoteChildThread> | undefined,
+  right: ReadonlyArray<RemoteChildThread> | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((child, index) => {
+      const other = b[index]!;
+      return (
+        child.environmentId === other.environmentId &&
+        child.threadId === other.threadId &&
+        child.label === other.label &&
+        child.title === other.title &&
+        child.cachedStatus === other.cachedStatus &&
+        child.updatedAt === other.updatedAt
+      );
+    })
+  );
+}
+
+function remoteChildStartsEqual(
+  left: ReadonlyArray<RemoteChildStart> | undefined,
+  right: ReadonlyArray<RemoteChildStart> | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((start, index) => {
+      const other = b[index]!;
+      return (
+        start.requestId === other.requestId &&
+        start.environmentId === other.environmentId &&
+        start.label === other.label &&
+        start.title === other.title &&
+        start.status === other.status
+      );
+    })
+  );
+}
+
+/**
+ * A thread's move either way (docs/design/fleet.md, Part 3): leaving for a
+ * linked computer, or arrived from one. Nulls are left out, so two copies of
+ * the same thread compare alike.
+ */
+function threadMoves(thread: {
+  readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly movedFrom?: ThreadMovedFrom | null | undefined;
+}): Pick<ThreadShell, "move" | "movedFrom"> {
+  return {
+    ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
+  };
+}
+
+function threadMovesEqual(
+  left: OrchestrationThreadMove | null | undefined,
+  right: OrchestrationThreadMove | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.transferId === b.transferId &&
+        a.target.environmentId === b.target.environmentId &&
+        a.target.label === b.target.label &&
+        a.agent.instanceId === b.agent.instanceId &&
+        a.agent.model === b.agent.model &&
+        a.phase === b.phase &&
+        a.sentBytes === b.sentBytes &&
+        a.totalBytes === b.totalBytes &&
+        a.cancelRequested === b.cancelRequested &&
+        a.startedAt === b.startedAt &&
+        a.movedAway?.threadId === b.movedAway?.threadId &&
+        a.movedAway?.movedAt === b.movedAway?.movedAt;
+}
+
+function movedFromEqual(
+  left: ThreadMovedFrom | null | undefined,
+  right: ThreadMovedFrom | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.environmentId === b.environmentId &&
+        a.label === b.label &&
+        a.threadId === b.threadId &&
+        a.movedAt === b.movedAt;
+}
+
 /** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
 function sidebarLineage(
   thread: Pick<
@@ -388,6 +570,11 @@ function sidebarLineage(
     | "awaitedChildThreadCount"
     | "pendingChildApproval"
     | "queuedFollowUps"
+    | "scheduledRun"
+    | "remoteOrigin"
+    | "remoteChildren"
+    | "remoteChildStarts"
+    | "move"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -398,8 +585,15 @@ function sidebarLineage(
   | "awaitedChildThreadCount"
   | "pendingChildApproval"
   | "queuedFollowUpCount"
+  | "scheduledRun"
+  | "remoteOrigin"
+  | "remoteChildren"
+  | "remoteChildStarts"
+  | "moveStatus"
 > {
+  const moveStatus = threadMoveStatus(thread.move);
   return {
+    scheduledRun: thread.scheduledRun ?? null,
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
@@ -407,6 +601,8 @@ function sidebarLineage(
     awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
     pendingChildApproval: thread.pendingChildApproval ?? false,
     queuedFollowUpCount: thread.queuedFollowUps?.length ?? 0,
+    ...remoteFamily(thread),
+    ...(moveStatus !== undefined ? { moveStatus } : {}),
   };
 }
 
@@ -496,6 +692,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     childRequests: thread.childRequests,
     ...threadLineage(thread),
     ...childRequestCounts(thread),
+    ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -549,6 +747,8 @@ function mapThreadShell(
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
+    ...remoteFamily(thread),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -631,6 +831,8 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
+    ...remoteFamily(thread),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -729,6 +931,8 @@ function toSidebarThreadSummary(
     ...sidebarLineage({
       ...threadLineage(thread),
       ...childRequestCounts(thread),
+      ...remoteFamily(thread),
+      ...threadMoves(thread),
       queuedFollowUps: thread.queuedFollowUps ?? [],
     }),
   };
@@ -775,6 +979,7 @@ function threadSessionsEqual(
     left.orchestrationStatus === right.orchestrationStatus &&
     left.activeTurnId === right.activeTurnId &&
     left.participantId === right.participantId &&
+    left.launchingInstanceId === right.launchingInstanceId &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError &&
@@ -880,6 +1085,17 @@ function participantsEqual(
   );
 }
 
+/** The summary with whether a scheduled-task card waits for the user in its thread. */
+function withScheduleApproval(
+  state: EnvironmentState,
+  summary: SidebarThreadSummary,
+): SidebarThreadSummary {
+  const pending = state.scheduleApprovalThreadIds?.[summary.id] === true;
+  return (summary.pendingScheduleApproval ?? false) === pending
+    ? summary
+    : { ...summary, pendingScheduleApproval: pending };
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -928,8 +1144,28 @@ function sidebarThreadSummariesEqual(
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
-    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0)
+    (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
+    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
+    remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
+    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
+    left.moveStatus === right.moveStatus
   );
+}
+
+function scheduledRunsEqual(
+  left: ThreadScheduledRun | null | undefined,
+  right: ThreadScheduledRun | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.taskId === b.taskId &&
+        a.taskName === b.taskName &&
+        a.slotUtc === b.slotUtc &&
+        (a.event ?? false) === (b.event ?? false);
 }
 
 function sideTurnsEqual(
@@ -993,6 +1229,12 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
+    remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
+    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
+    threadMovesEqual(left.move, right.move) &&
+    movedFromEqual(left.movedFrom, right.movedFrom) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1193,9 +1435,9 @@ function writeThreadState(
 ): EnvironmentState {
   const nextShell = toThreadShell(nextThread);
   const nextTurnState = toThreadTurnState(nextThread);
-  const nextSummary = toSidebarThreadSummary(
-    nextThread,
-    state.sidebarThreadSummaryById[nextThread.id],
+  const nextSummary = withScheduleApproval(
+    state,
+    toSidebarThreadSummary(nextThread, state.sidebarThreadSummaryById[nextThread.id]),
   );
   const previousShell = state.threadShellById[nextThread.id];
   const previousTurnState = state.threadTurnStateById[nextThread.id];
@@ -1458,17 +1700,15 @@ function writeThreadShellState(
     };
   }
 
+  const nextSummary = withScheduleApproval(state, nextThread.summary);
   if (
-    !sidebarThreadSummariesEqual(
-      state.sidebarThreadSummaryById[nextThread.shell.id],
-      nextThread.summary,
-    )
+    !sidebarThreadSummariesEqual(state.sidebarThreadSummaryById[nextThread.shell.id], nextSummary)
   ) {
     nextState = {
       ...nextState,
       sidebarThreadSummaryById: {
         ...nextState.sidebarThreadSummaryById,
-        [nextThread.shell.id]: nextThread.summary,
+        [nextThread.shell.id]: nextSummary,
       },
     };
   }
@@ -1661,6 +1901,7 @@ function upsertThreadMessage(
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite !== undefined ? { invite: message.invite } : {}),
     ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
+    ...(message.imported ? { imported: true as const } : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
@@ -1840,6 +2081,26 @@ function updateChildRequestState(
     const current = thread.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
     const next = change(current);
     return next === current ? thread : { ...thread, childRequests: next };
+  });
+}
+
+/**
+ * Apply a step of one move to a thread's `move`: only while that move is the
+ * thread's own, so a late step of a move that already ended changes nothing.
+ * The change returns null to clear it (the move was dropped).
+ */
+function updateThreadMove(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  transferId: OrchestrationThreadMove["transferId"],
+  change: (current: OrchestrationThreadMove) => OrchestrationThreadMove | null,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    if (!thread.move || thread.move.transferId !== transferId) return thread;
+    const next = change(thread.move);
+    if (next !== null) return { ...thread, move: next };
+    const { move: _dropped, ...rest } = thread;
+    return rest;
   });
 }
 
@@ -2151,6 +2412,8 @@ function applyEnvironmentOrchestrationEvent(
           handedBackTurnId: null,
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
+          scheduledRun: event.payload.scheduledRun ?? null,
+          ...(event.payload.movedFrom ? { movedFrom: event.payload.movedFrom } : {}),
         },
         environmentId,
       );
@@ -2420,6 +2683,10 @@ function applyEnvironmentOrchestrationEvent(
               ...(participantId !== null ? { participantId } : {}),
               status: "connecting",
               orchestrationStatus: "starting",
+              // Only the server's launch sets or clears the mark, as there.
+              ...(thread.session?.launchingInstanceId
+                ? { launchingInstanceId: thread.session.launchingInstanceId }
+                : {}),
               createdAt: thread.session?.createdAt ?? event.payload.createdAt,
               updatedAt: event.payload.createdAt,
               ...(thread.session?.lastError ? { lastError: thread.session.lastError } : {}),
@@ -2526,12 +2793,18 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }
             : {}),
+          ...(event.payload.imported ? { imported: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
         });
         const messages = upsertThreadMessage(thread.messages, message);
+        // Brought over by a move: the turns it names are the other
+        // computer's, never this one's latest.
+        if (event.payload.imported) {
+          return { ...thread, messages, updatedAt: event.occurredAt };
+        }
         const turnDiffSummaries =
           event.payload.role === "assistant" && event.payload.turnId !== null
             ? rebindTurnDiffSummariesForAssistantMessage(
@@ -2589,11 +2862,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        // An update that does not name the slot holder keeps the current one.
-        session:
-          event.payload.session.participantId !== undefined || !thread.session?.participantId
-            ? mapSession(event.payload.session)
-            : { ...mapSession(event.payload.session), participantId: thread.session.participantId },
+        session: mapSessionUpdate(event.payload.session, thread.session),
         error: sanitizeThreadErrorMessage(event.payload.session.lastError),
         latestTurn:
           event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
@@ -3042,6 +3311,71 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.child-requests-reset":
       return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
+
+    // Children on linked computers (docs/design/fleet.md), kept on the parent.
+    case "thread.remote-child-updated":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteChildUpdated(current, event.payload.child),
+      );
+
+    case "thread.remote-cancel-queued":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteCancelQueued(current, event.payload.cancel),
+      );
+
+    case "thread.remote-cancels-delivered":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteCancelsDelivered(current, event.payload.requestIds),
+      );
+
+    // Moving to a linked computer (docs/design/fleet.md, Part 3). Each step
+    // names its move, so a late one from a move that already ended is
+    // dropped. Like a done mark, none moves `updatedAt`.
+    case "thread.move-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        move: {
+          transferId: event.payload.transferId,
+          target: event.payload.target,
+          agent: event.payload.agent,
+          phase: "exporting",
+          cancelRequested: false,
+          startedAt: event.payload.startedAt,
+        },
+      }));
+
+    case "thread.move-progressed":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => {
+        const { sentBytes: _sent, totalBytes: _total, ...rest } = move;
+        return {
+          ...rest,
+          phase: event.payload.phase,
+          ...(event.payload.sentBytes !== undefined ? { sentBytes: event.payload.sentBytes } : {}),
+          ...(event.payload.totalBytes !== undefined
+            ? { totalBytes: event.payload.totalBytes }
+            : {}),
+        };
+      });
+
+    case "thread.move-cancel-requested":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
+        ...move,
+        cancelRequested: true,
+      }));
+
+    // Its activity ("Couldn't move to …") arrives on its own.
+    case "thread.move-aborted":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, () => null);
+
+    case "thread.moved-away":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
+        ...move,
+        movedAway: { threadId: event.payload.movedThreadId, movedAt: event.payload.movedAt },
+      }));
+
+    // The seed debt is the server's alone; nothing here shows it.
+    case "thread.history-seed-delivered":
+      return state;
 
     // On a child. Like a done mark, neither moves `updatedAt`: the inbox
     // weighs both against real activity.
@@ -3549,6 +3883,44 @@ export function restoreThreadCheckout(
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
+/**
+ * The threads on one computer whose agent's scheduled-task change waits for
+ * the user, from that computer's waiting requests (ScheduledTasksSync). Their
+ * rows need the user like any other approval: Pending Approval in the
+ * sidebar and inbox, and in every count of what needs the user.
+ */
+export function setScheduleApprovalThreads(
+  state: AppState,
+  environmentId: EnvironmentId,
+  threadIds: Iterable<ThreadId>,
+): AppState {
+  const environmentState = state.environmentStateById[environmentId];
+  // Nothing of this computer is here yet: its shell writes read the next call.
+  if (environmentState === undefined) return state;
+  const next: Record<ThreadId, true> = {};
+  for (const threadId of threadIds) next[threadId] = true;
+  const previous = environmentState.scheduleApprovalThreadIds ?? {};
+  const changed = new Set([...Object.keys(previous), ...Object.keys(next)] as ThreadId[]);
+  for (const threadId of changed) {
+    if (previous[threadId] === next[threadId]) changed.delete(threadId);
+  }
+  if (changed.size === 0) return state;
+  const nextEnvironmentState: EnvironmentState = {
+    ...environmentState,
+    scheduleApprovalThreadIds: next,
+  };
+  const summaries = { ...environmentState.sidebarThreadSummaryById };
+  for (const threadId of changed) {
+    const summary = summaries[threadId];
+    if (summary !== undefined)
+      summaries[threadId] = withScheduleApproval(nextEnvironmentState, summary);
+  }
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    sidebarThreadSummaryById: summaries,
+  });
+}
+
 interface AppStore extends AppState {
   setActiveEnvironmentId: (environmentId: EnvironmentId) => void;
   removeEnvironmentState: (environmentId: EnvironmentId) => void;
@@ -3565,6 +3937,7 @@ interface AppStore extends AppState {
   ) => void;
   applyShellEvent: (event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
+  setScheduleApprovalThreads: (environmentId: EnvironmentId, threadIds: Iterable<ThreadId>) => void;
   setThreadBranch: (
     threadRef: ScopedThreadRef,
     branch: string | null,
@@ -3609,6 +3982,8 @@ export const useStore = create<AppStore>((set) => ({
     }
   },
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
+  setScheduleApprovalThreads: (environmentId, threadIds) =>
+    set((state) => setScheduleApprovalThreads(state, environmentId, threadIds)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
   selectThreadCheckout: (threadRef, branch, worktreePath) =>

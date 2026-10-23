@@ -222,6 +222,46 @@ describe("DesktopApplicationMenu", () => {
     }),
   );
 
+  it.effect("routes Go > Fleet, Go > Back and View > Toggle Sidebar to the renderer", () =>
+    Effect.gen(function* () {
+      const fleet = yield* configureMenu("linux");
+      const goItems = submenuItems(fleet.template, (item) => item.label === "Go", "Go");
+      // Mirrors in-app shortcuts, so no native accelerator may steal the keys.
+      assert.isUndefined(findMenuItem(goItems, "Fleet").accelerator);
+      clickMenuItem(goItems, "Fleet");
+      assert.equal(
+        yield* Deferred.await(fleet.selectedAction),
+        DesktopWindow.OPEN_FLEET_MENU_ACTION,
+      );
+
+      const scheduled = yield* configureMenu("linux");
+      const scheduledItems = submenuItems(scheduled.template, (item) => item.label === "Go", "Go");
+      assert.isUndefined(findMenuItem(scheduledItems, "Scheduled").accelerator);
+      clickMenuItem(scheduledItems, "Scheduled");
+      assert.equal(
+        yield* Deferred.await(scheduled.selectedAction),
+        DesktopWindow.OPEN_SCHEDULED_MENU_ACTION,
+      );
+
+      const back = yield* configureMenu("darwin");
+      const backItems = submenuItems(back.template, (item) => item.label === "Go", "Go");
+      assert.isUndefined(findMenuItem(backItems, "Back").accelerator);
+      clickMenuItem(backItems, "Back");
+      assert.equal(
+        yield* Deferred.await(back.selectedAction),
+        DesktopWindow.NAVIGATE_BACK_MENU_ACTION,
+      );
+
+      const sidebar = yield* configureMenu("darwin");
+      const viewItems = submenuItems(sidebar.template, (item) => item.label === "View", "View");
+      clickMenuItem(viewItems, "Toggle Sidebar");
+      assert.equal(
+        yield* Deferred.await(sidebar.selectedAction),
+        DesktopWindow.TOGGLE_SIDEBAR_MENU_ACTION,
+      );
+    }),
+  );
+
   it.effect("opens the GitHub repository from the Help menu", () =>
     Effect.gen(function* () {
       const { template, openedExternalUrl } = yield* configureMenu("darwin");

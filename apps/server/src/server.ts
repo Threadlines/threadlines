@@ -18,6 +18,36 @@ import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
+import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
+import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
+import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
+import { ComputerLinksLive } from "./links/ComputerLinks.ts";
+import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
+import { LinkMovesLive } from "./links/LinkMoves.ts";
+import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
+import { layer as ProcessRunnerLive } from "./processRunner.ts";
+import { ProjectSetupRepositoryLive } from "./projectSetup/ProjectSetupRepository.ts";
+import { ProjectSetupsLive } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSourceLive } from "./projectSetup/ProjectSetupSource.ts";
+import { LinkRequestRepositoryLive } from "./links/LinkRequestRepository.ts";
+import {
+  LinkRequestsLive,
+  RemoteRequestGateLive,
+  RemoteRequestTurnEndsLive,
+} from "./links/LinkRequests.ts";
+import { peerRpcRouteLayer } from "./links/peerRoute.ts";
+import { RemoteChildReactorLive } from "./links/RemoteChildReactor.ts";
+import { ComputerLinkReactorsLive } from "./links/ComputerLinkReactors.ts";
+import { ScheduledTaskRepositoryLive } from "./scheduled/ScheduledTaskRepository.ts";
+import {
+  ScheduledRunTurnEndsLive,
+  ScheduledTaskNotesLive,
+  ScheduledTasksLive,
+} from "./scheduled/ScheduledTasks.ts";
+import { localHookRouteLayer } from "./scheduled/webhookRoute.ts";
+import { requestPrivacy, requestTracingPrivacyLayer } from "./httpRequestPrivacy.ts";
+import { WebhookTaskRepositoryLive } from "./scheduled/WebhookTaskRepository.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -120,6 +150,7 @@ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ThreadSearchLive } from "./orchestration/Layers/ThreadSearch.ts";
@@ -235,10 +266,66 @@ const PlatformServicesLive = ChildEnvironment.layer.pipe(
   ),
 );
 
+// Computer links (docs/design/fleet.md): this server's links to other
+// computers and what it does for computers linked to it. Each side's reactor
+// starts with the orchestration reactor; runtime ingestion hands turns that
+// end in a linked computer's thread to the ledger (RemoteRequestTurnEnds).
+const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, ComputerLinksLive).pipe(
+  Layer.provideMerge(RemoteChildReactorLive),
+  Layer.provideMerge(ThreadMovesLive),
+  Layer.provideMerge(LinkMovesLive),
+  Layer.provideMerge(LinkRequestsLive),
+  Layer.provideMerge(ComputerLinkClientLive),
+  Layer.provideMerge(
+    Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive, LinkMoveRepositoryLive),
+  ),
+  Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
+  Layer.provide(ServerSecretStoreLive),
+);
+
+// Scheduled tasks (docs/design/fleet.md, Part 6): this computer's tasks and
+// the scheduler that starts their runs, started with the other reactors;
+// runtime ingestion hands every turn's end to it (ScheduledRunTurnEnds), and
+// the provider command reactor reads agents' answers from it
+// (ScheduledTaskNotes).
+//
+// Event tasks (docs/design/event-tasks.md) ride on it: their storage, the
+// secret store for signing secrets and `gh` for "Add to GitHub". Their relay
+// hooks (RelayHooks) come from the relay layer, which RelayHostLive builds.
+const ScheduledTasksLayerLive = Layer.mergeAll(
+  ScheduledRunTurnEndsLive,
+  ScheduledTaskNotesLive,
+).pipe(
+  Layer.provideMerge(ScheduledTasksLive),
+  Layer.provideMerge(ScheduledTaskRepositoryLive),
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectionTurnRepositoryLive,
+      WebhookTaskRepositoryLive,
+      ServerSecretStoreLive,
+      GitHubCli.layer,
+    ),
+  ),
+);
+
+// Setting up a project copied from another computer (docs/design/fleet.md,
+// Part 8): the reads for a copy of this computer's projects, and the jobs
+// that make copies here. Jobs a restart cut short are finished or undone
+// as the layer starts.
+const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSourceLive).pipe(
+  Layer.provideMerge(ProjectSetupRepositoryLive),
+  Layer.provide(ProcessRunnerLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
+  // Both reactors above take these (optionally), so they come after them.
+  Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  Layer.provideMerge(ScheduledTasksLayerLive),
+  Layer.provideMerge(ProjectSetupsLayerLive),
+  Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
@@ -350,6 +437,7 @@ const TerminalLayerLive = TerminalManagerLive.pipe(
 const ProcessDiagnosticsLayerLive = Layer.mergeAll(
   ProcessDiagnostics.layer,
   ProcessResourceMonitor.layer,
+  StallMonitor.layer,
 ).pipe(Layer.provideMerge(ProcessSnapshotLayerLive));
 
 const WorkspaceEntriesLayerLive = WorkspaceEntriesLive.pipe(
@@ -376,7 +464,7 @@ const AuthLayerLive = ServerAuthLive.pipe(
 // "Connect a device": the server's end of the relay. Needs persistence, the
 // session service, and its own secret-store handle for the host secret.
 const RelayLayerLive = RelayHostLive.pipe(
-  Layer.provide(RelayDeviceRepositoryLive),
+  Layer.provideMerge(RelayDeviceRepositoryLive),
   Layer.provide(ServerSecretStoreLive),
 );
 
@@ -516,7 +604,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   serverEnvironmentRouteLayer,
   staticAndDevRouteLayer,
   websocketRpcRouteLayer,
+  peerRpcRouteLayer,
   relayDirectRouteLayer,
+  localHookRouteLayer,
 ).pipe(
   Layer.provide(browserApiCorsLayer),
   // Build setup services once for the HTTP server, not once per WebSocket.
@@ -635,7 +725,10 @@ export const makeServerLayer = Layer.unwrap(
     const serverApplicationLayer = Layer.mergeAll(
       HttpRouter.serve(makeRoutesLayer, {
         disableLogger: !config.logWebSocketEvents,
-      }),
+        // Paths that carry a credential (event tasks' local addresses) are
+        // logged cut short and never traced, preflights included.
+        middleware: requestPrivacy(config.logWebSocketEvents),
+      }).pipe(Layer.provide(requestTracingPrivacyLayer)),
       httpListeningLayer,
       runtimeStateLayer,
       relayStartLayer,

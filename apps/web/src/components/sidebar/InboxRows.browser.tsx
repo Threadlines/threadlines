@@ -1,14 +1,18 @@
 import "../../index.css";
 
 import {
+  ChildRequestId,
+  type ComputerLinkPendingRequest,
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
+  ScheduledTaskId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 // The row asks git for the checkout's current ref, which is what decides
 // whether its own status or the workspace listing answers for the branch.
@@ -32,8 +36,24 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import type { SidebarThreadSummary } from "../../types";
-import { resolveThreadStatusPill, summarizeChildThreads } from "../Sidebar.logic";
-import { InboxChildRow, InboxThreadRow } from "./InboxRows";
+import {
+  __resetComputerLinksForTests,
+  __setComputerLinksClientForTests,
+  useComputerLinksStore,
+  type ComputerLinksClient,
+} from "../../environments/links/computerLinks";
+import {
+  resolveRemoteFamilyChildren,
+  resolveThreadStatusPill,
+  summarizeChildThreads,
+} from "../Sidebar.logic";
+import {
+  InboxChildRow,
+  InboxLinkRequestRow,
+  InboxRemoteChildRow,
+  InboxThreadRow,
+} from "./InboxRows";
+import { usePendingLinkRequests } from "./linkedComputers";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -114,6 +134,240 @@ function renderRow(
   );
   return { openPrLink };
 }
+
+describe("InboxThreadRow on a touch screen", () => {
+  it("opens the thread's menu on a held finger, and the lift doesn't also open the thread", async () => {
+    const handleThreadContextMenu = vi.fn(async () => undefined);
+    const handleThreadClick = vi.fn();
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            thread={THREAD}
+            status={resolveThreadStatusPill({ thread: THREAD })}
+            projectLabel={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            orderedThreadKeys={[]}
+            renamingThreadKey={null}
+            renamingTitle=""
+            setRenamingTitle={() => undefined}
+            renamingInputRef={{ current: null }}
+            renamingCommittedRef={{ current: false }}
+            handleThreadClick={handleThreadClick}
+            navigateToThread={() => undefined}
+            handleMultiSelectContextMenu={async () => undefined}
+            handleThreadContextMenu={handleThreadContextMenu}
+            clearSelection={() => undefined}
+            commitRename={async () => undefined}
+            cancelRename={() => undefined}
+            markThreadDone={() => undefined}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+    const row = page.getByTestId(`thread-row-${THREAD_ID}`);
+    await expect.element(row).toBeVisible();
+    const element = row.element();
+    const rect = element.getBoundingClientRect();
+    const finger = {
+      bubbles: true,
+      clientX: rect.left + 24,
+      clientY: rect.top + 12,
+      pointerId: 7,
+      pointerType: "touch",
+      isPrimary: true,
+    };
+    const tap = () => element.dispatchEvent(new MouseEvent("click", finger));
+
+    // Held: the menu opens where the finger is, and lifting it opens nothing.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    await vi.waitFor(() => expect(handleThreadContextMenu).toHaveBeenCalledTimes(1));
+    expect(handleThreadContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: THREAD_ID }),
+      { x: finger.clientX, y: finger.clientY },
+    );
+    element.dispatchEvent(new PointerEvent("pointerup", finger));
+    tap();
+    expect(handleThreadClick).not.toHaveBeenCalled();
+
+    // A quick tap still opens the thread, and no menu.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    element.dispatchEvent(new PointerEvent("pointerup", finger));
+    tap();
+    expect(handleThreadClick).toHaveBeenCalledTimes(1);
+    expect(handleThreadContextMenu).toHaveBeenCalledTimes(1);
+
+    // A hold whose lift lands on the menu, not the row, leaves nothing behind:
+    // the next press, even a mouse's, opens the thread.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    await vi.waitFor(() => expect(handleThreadContextMenu).toHaveBeenCalledTimes(2));
+    element.dispatchEvent(new PointerEvent("pointercancel", finger));
+    const mouse = { ...finger, pointerType: "mouse", pointerId: 1 };
+    element.dispatchEvent(new PointerEvent("pointerdown", mouse));
+    element.dispatchEvent(new PointerEvent("pointerup", mouse));
+    element.dispatchEvent(new MouseEvent("click", mouse));
+    expect(handleThreadClick).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("InboxThreadRow swipes", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("wraps up on a swipe left and pins on a swipe right, and leaves scrolls, short swipes and mouse drags alone", async () => {
+    const onSwipeAction = vi.fn();
+    const handleThreadClick = vi.fn();
+    const handleThreadContextMenu = vi.fn(async () => undefined);
+    render(
+      <ThreadHoverCardProvider>
+        <ul style={{ width: "360px" }}>
+          <InboxThreadRow
+            thread={THREAD}
+            status={resolveThreadStatusPill({ thread: THREAD })}
+            projectLabel={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone
+            orderedThreadKeys={[]}
+            renamingThreadKey={null}
+            renamingTitle=""
+            setRenamingTitle={() => undefined}
+            renamingInputRef={{ current: null }}
+            renamingCommittedRef={{ current: false }}
+            handleThreadClick={handleThreadClick}
+            navigateToThread={() => undefined}
+            handleMultiSelectContextMenu={async () => undefined}
+            handleThreadContextMenu={handleThreadContextMenu}
+            clearSelection={() => undefined}
+            commitRename={async () => undefined}
+            cancelRename={() => undefined}
+            markThreadDone={() => undefined}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            onSwipeAction={onSwipeAction}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+    const row = page.getByTestId(`thread-row-${THREAD_ID}`);
+    await expect.element(row).toBeVisible();
+    const element = row.element();
+    const rect = element.getBoundingClientRect();
+    const x0 = rect.left + rect.width / 2;
+    const y0 = rect.top + 12;
+    const at = (x: number, y: number, pointerType: string) => ({
+      bubbles: true,
+      clientX: x,
+      clientY: y,
+      pointerId: 9,
+      pointerType,
+      isPrimary: true,
+      button: 0,
+    });
+    /** A finger (or mouse) drawn (dx, dy) across the row in ten steps, not yet lifted. */
+    const drag = (dx: number, dy: number, pointerType = "touch") => {
+      element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, pointerType)));
+      for (let step = 1; step <= 10; step += 1) {
+        element.dispatchEvent(
+          new PointerEvent(
+            "pointermove",
+            at(x0 + (dx * step) / 10, y0 + (dy * step) / 10, pointerType),
+          ),
+        );
+      }
+      return () => {
+        element.dispatchEvent(new PointerEvent("pointerup", at(x0 + dx, y0 + dy, pointerType)));
+      };
+    };
+    const swipeAction = () => document.querySelector("[data-testid='row-swipe-action']");
+
+    // Left, far enough: Wrap up shows under the row and is armed; letting go runs it.
+    let lift = drag(-220, 0);
+    await vi.waitFor(() => {
+      expect(swipeAction()?.textContent).toBe("Wrap up");
+      expect(swipeAction()?.getAttribute("data-armed")).toBe("true");
+    });
+    lift();
+    // The click a lift can end in is the swipe's, not a tap.
+    element.dispatchEvent(new MouseEvent("click", at(x0 - 220, y0, "touch")));
+    await vi.waitFor(() => {
+      expect(onSwipeAction).toHaveBeenCalledWith(
+        "wrap-up",
+        expect.stringContaining(THREAD_ID),
+        THREAD.title,
+      );
+    });
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // A press during the slide-out still gets the swipe it follows: the owed
+    // action runs at once instead of being dropped.
+    drag(-220, 0)();
+    element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, "touch")));
+    expect(onSwipeAction).toHaveBeenCalledTimes(2);
+    element.dispatchEvent(new PointerEvent("pointerup", at(x0, y0, "touch")));
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // Right: Pin.
+    drag(220, 0)();
+    await vi.waitFor(() => {
+      expect(onSwipeAction).toHaveBeenLastCalledWith(
+        "pin",
+        expect.stringContaining(THREAD_ID),
+        THREAD.title,
+      );
+    });
+    await vi.waitFor(() => expect(swipeAction()).toBeNull());
+
+    // Mostly down is a scroll; a short swipe springs back; a mouse never swipes.
+    drag(40, 160)();
+    drag(-60, 0)();
+    drag(-220, 0, "mouse")();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(onSwipeAction).toHaveBeenCalledTimes(3);
+    expect(handleThreadClick).not.toHaveBeenCalled();
+    expect(handleThreadContextMenu).not.toHaveBeenCalled();
+
+    // A tap right after a swipe is a tap of its own: it opens the thread.
+    drag(-60, 0)();
+    element.dispatchEvent(new PointerEvent("pointerdown", at(x0, y0, "touch")));
+    element.dispatchEvent(new PointerEvent("pointerup", at(x0, y0, "touch")));
+    element.dispatchEvent(new MouseEvent("click", at(x0, y0, "touch")));
+    expect(handleThreadClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("InboxThreadRow scheduled runs", () => {
+  const runThread = (event: boolean): SidebarThreadSummary => ({
+    ...THREAD,
+    scheduledRun: {
+      taskId: ScheduledTaskId.make("task-triage"),
+      taskName: "Triage labeled issues",
+      slotUtc: "2026-09-01T09:00:00.000Z",
+      ...(event ? { event: true } : {}),
+    },
+  });
+
+  it("names an event task's run as an event", async () => {
+    renderRow(null, [], runThread(true));
+    await expect
+      .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
+      .toHaveTextContent("Event · Triage labeled issues");
+  });
+
+  it("names a clock task's run as scheduled", async () => {
+    renderRow(null, [], runThread(false));
+    await expect
+      .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
+      .toHaveTextContent("Scheduled · Triage labeled issues");
+  });
+});
 
 describe("InboxThreadRow pull request badge", () => {
   it("names the pull request the open listing found for this branch", async () => {
@@ -320,9 +574,283 @@ describe("child thread families in the inbox", () => {
     await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));
     expect(reopenThread).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:thread-wrapped-child`);
   });
+
+  it("says which computer a family's thread runs on, and where a thread on its own came from", async () => {
+    const remoteChild: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-on-windows"),
+      title: "Fix the flaky test",
+      branch: null,
+    };
+    // A start Windows PC hasn't allowed yet: there is no thread there.
+    const [waitingStart] = resolveRemoteFamilyChildren({
+      parent: {
+        remoteChildStarts: [
+          {
+            requestId: ChildRequestId.make("request-notes"),
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            title: "Draft the notes",
+            status: "awaiting_approval",
+            createdAt: "2026-10-21T09:00:00.000Z",
+          },
+        ],
+      },
+      canSeeComputer: () => false,
+      computerLabel: (_environmentId, lastKnown) => lastKnown,
+    });
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            {...rowCallbacks}
+            thread={remoteChild}
+            status={status("Working")}
+            projectLabel="threadlines"
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            remoteParent={{ title: "Ship the 0.6 release", computerLabel: "Mac mini" }}
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={remoteChild}
+            status={status("Working")}
+            isDone={false}
+            doneAt={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={() => undefined}
+            computerLabel="Windows PC"
+          />
+          <InboxRemoteChildRow child={waitingStart!} />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+
+    await expect
+      .element(page.getByTestId(`thread-detail-${remoteChild.id}`))
+      .toMatchTextContent("from Ship the 0.6 release on Mac mini");
+    await expect
+      .element(page.getByTestId(`child-computer-${remoteChild.id}`))
+      .toHaveAttribute("aria-label", "On Windows PC");
+    await expect
+      .element(page.getByTestId("remote-child-meta-start:environment-windows:request-notes"))
+      .toMatchTextContent("Waiting for Windows PC to allow it");
+  });
+});
+
+describe("a thread another computer asked to start", () => {
+  const MAC_MINI = EnvironmentId.make("environment-mac-mini");
+  const REQUEST: ComputerLinkPendingRequest = {
+    deviceId: "device-windows-pc",
+    requestId: ChildRequestId.make("request-changelog"),
+    fromLabel: "Windows PC",
+    parentEnvironmentId: EnvironmentId.make("environment-windows"),
+    parentThreadId: ThreadId.make("thread-release"),
+    parentThreadTitle: "Ship the 0.6 release",
+    askedBy: "Codex",
+    title: "Write the changelog",
+    prompt: "Read the pull requests merged since 0.5,\n\n   then write the changelog.",
+    projectName: "threadlines",
+    agent: { instanceId: "codex", model: "gpt-5" },
+    runtimeMode: "auto",
+    createdAt: "2026-10-21T09:00:00.000Z",
+    expiresAt: "2099-10-22T09:00:00.000Z",
+  };
+
+  // Requests whose row was clicked, in order.
+  let opened: string[] = [];
+
+  // What the sidebar draws from the links store: each request waiting on a
+  // computer this app hears from, as a row.
+  function PendingRequestRows() {
+    const pending = usePendingLinkRequests();
+    return (
+      <ul>
+        {pending.map(({ environmentId, request }) => (
+          <InboxLinkRequestRow
+            key={request.requestId}
+            environmentId={environmentId}
+            computerLabel="Mac mini"
+            askerLabel="Windows PC"
+            request={request}
+            onOpen={() => opened.push(request.requestId)}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  function stubMacMini(
+    respondRequest: ComputerLinksClient["respondRequest"],
+    pending: ReadonlyArray<ComputerLinkPendingRequest> = [REQUEST],
+  ) {
+    const unused = () => {
+      throw new Error("Not part of this test.");
+    };
+    __setComputerLinksClientForTests(MAC_MINI, {
+      subscribe: () => () => undefined,
+      createInvite: unused,
+      accept: unused,
+      setAccess: unused,
+      remove: unused,
+      respondRequest,
+    });
+    useComputerLinksStore.getState().put(MAC_MINI, { outbound: [], inbound: [], pending });
+  }
+
+  afterEach(() => {
+    __resetComputerLinksForTests();
+    opened = [];
+  });
+
+  it("reads as a request from another computer and sends Allow to the one it would run on", async () => {
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined);
+    stubMacMini(respondRequest);
+    render(<PendingRequestRows />);
+
+    await expect
+      .element(page.getByTestId(`link-request-title-${REQUEST.requestId}`))
+      .toMatchTextContent("Write the changelog");
+    await expect
+      .element(page.getByTestId(`link-request-where-${REQUEST.requestId}`))
+      .toMatchTextContent("Asked by “Ship the 0.6 release” on Windows PC");
+
+    // Allow answers the request; it doesn't open it.
+    await userEvent.click(page.getByTestId(`link-request-allow-${REQUEST.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: REQUEST.deviceId,
+      requestId: REQUEST.requestId,
+      allow: true,
+    });
+    expect(opened).toEqual([]);
+    // Answered: nothing more to press while Mac mini drops the request.
+    await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeDisabled();
+  });
+
+  it("reads a move as a move: which computers, what goes, and where it lands", async () => {
+    const move: ComputerLinkPendingRequest = {
+      ...REQUEST,
+      requestId: ChildRequestId.make("transfer-login"),
+      kind: "move",
+      title: "Fix the login bug",
+      parentThreadTitle: "Fix the login bug",
+      prompt: "",
+      move: {
+        messageCount: 12,
+        branch: "fix/login",
+        trackedFiles: 3,
+        untrackedFiles: 1,
+        unpushedCommits: 2,
+      },
+    };
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined);
+    stubMacMini(respondRequest, [move]);
+    render(<PendingRequestRows />);
+
+    await expect
+      .element(page.getByTestId(`link-request-title-${move.requestId}`))
+      .toMatchTextContent("Fix the login bug");
+    await expect
+      .element(page.getByTestId(`link-request-where-${move.requestId}`))
+      .toMatchTextContent("Windows PC wants to move a thread to Mac mini");
+    await expect
+      .element(page.getByTestId(`link-request-move-${move.requestId}`))
+      .toMatchTextContent(
+        "12 messages · branch fix/login · 3 changed files · 1 new file · 2 commits not pushed" +
+          "Lands in threadlines with up to Auto access",
+      );
+
+    await userEvent.click(page.getByTestId(`link-request-allow-${move.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: move.deviceId,
+      requestId: move.requestId,
+      allow: true,
+    });
+    expect(opened).toEqual([]);
+  });
+
+  it("opens the request when the row is clicked", async () => {
+    stubMacMini(vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined));
+    render(<PendingRequestRows />);
+
+    await userEvent.click(page.getByTestId(`link-request-title-${REQUEST.requestId}`));
+    expect(opened).toEqual([REQUEST.requestId]);
+  });
+
+  it("sends Deny, and offers both again when Mac mini can't take the answer", async () => {
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => {
+      throw new Error("Mac mini can't be reached right now.");
+    });
+    stubMacMini(respondRequest);
+    render(<PendingRequestRows />);
+
+    await userEvent.click(page.getByTestId(`link-request-deny-${REQUEST.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: REQUEST.deviceId,
+      requestId: REQUEST.requestId,
+      allow: false,
+    });
+    await expect.element(page.getByTestId(`link-request-allow-${REQUEST.requestId}`)).toBeEnabled();
+    await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeEnabled();
+  });
+
+  it("leaves out a computer the app no longer hears from", async () => {
+    stubMacMini(vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined));
+    useComputerLinksStore.getState().markStale(MAC_MINI);
+    render(<PendingRequestRows />);
+
+    await expect.element(page.getByRole("list")).toBeInTheDocument();
+    expect(page.getByTestId(`link-request-${REQUEST.requestId}`).elements()).toHaveLength(0);
+  });
 });
 
 describe("InboxThreadRow background wait", () => {
+  /** A message getting going, before its turn's row lands: the latest turn
+   *  is still the previous one. */
+  const startingThread = (launching: boolean): SidebarThreadSummary => ({
+    ...THREAD,
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "completed",
+      requestedAt: "2026-09-01T09:00:00.000Z",
+      startedAt: "2026-09-01T09:00:01.000Z",
+      completedAt: "2026-09-01T09:05:00.000Z",
+      assistantMessageId: null,
+    },
+    session: {
+      provider: ProviderDriverKind.make("codex"),
+      status: "connecting",
+      orchestrationStatus: "starting",
+      ...(launching ? { launchingInstanceId: ProviderInstanceId.make("codex") } : {}),
+      createdAt: "2026-09-01T09:00:00.000Z",
+      updatedAt: "2026-09-01T10:00:00.000Z",
+    },
+  });
+  const rowMetaText = () =>
+    document.querySelector(`[data-testid="thread-meta-${THREAD_ID}"]`)?.textContent ?? "";
+
+  it("says working for a message to an agent already up, without the previous turn's clock", async () => {
+    renderRow(null, [], startingThread(false));
+    await expect
+      .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+      .toMatchTextContent(/working/);
+    expect(rowMetaText()).not.toMatch(/starting|·/);
+  });
+
+  it("says starting while the agent's program starts up", async () => {
+    renderRow(null, [], startingThread(true));
+    await expect
+      .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+      .toMatchTextContent(/starting/);
+    expect(rowMetaText()).not.toMatch(/·/);
+  });
+
   it("names the agents a settled thread waits on, and lists every task on hover", async () => {
     const thread: SidebarThreadSummary = {
       ...THREAD,

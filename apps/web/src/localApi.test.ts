@@ -492,6 +492,7 @@ describe("wsApi", () => {
       confirmThreadDelete: false,
       wrapUpThreadsOnPullRequestSettled: true,
       wrapUpChildThreadsOnFinish: true,
+      wrapUpIdleThreads: true,
       dismissedProviderUpdateNotificationKeys: [],
       dictationHoldToRecord: true,
       dictationMicrophoneDeviceId: null,
@@ -507,6 +508,7 @@ describe("wsApi", () => {
       openLinksIn: "browser-panel" as const,
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
+      sidebarGrouping: "none" as const,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -572,6 +574,7 @@ describe("wsApi", () => {
       confirmThreadDelete: false,
       wrapUpThreadsOnPullRequestSettled: true,
       wrapUpChildThreadsOnFinish: true,
+      wrapUpIdleThreads: true,
       dismissedProviderUpdateNotificationKeys: [],
       dictationHoldToRecord: true,
       dictationMicrophoneDeviceId: null,
@@ -587,6 +590,7 @@ describe("wsApi", () => {
       openLinksIn: "browser-panel" as const,
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
+      sidebarGrouping: "none" as const,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,

@@ -31,8 +31,10 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     doneThreadOverlays: {},
     threadWrapUpOnPullRequestSettledById: {},
     childThreadFamilyOpenById: {},
-    inboxProjectScopeKey: null,
+    inboxProjectScopeKeys: [],
     inboxEnvironmentScopeId: null,
+    collapsedInboxGroups: {},
+    sidebarListOpen: true,
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -578,13 +580,26 @@ describe("uiStateStore persistence round-trip", () => {
 
   it("carries the inbox machine filter across a restart, and drops a junk value", () => {
     const state = makeUiState({
-      inboxProjectScopeKey: "github.com/example/repo",
+      inboxProjectScopeKeys: ["github.com/example/repo", "github.com/example/other"],
       inboxEnvironmentScopeId: "env-macbook",
     });
     persistState(state);
 
     expect(readPersistedState().inboxEnvironmentScopeId).toBe("env-macbook");
-    expect(readPersistedState().inboxProjectScopeKey).toBe("github.com/example/repo");
+    expect(readPersistedState().inboxProjectScopeKeys).toEqual([
+      "github.com/example/repo",
+      "github.com/example/other",
+    ]);
+
+    // A build that could pick only one project saved a single key: it carries
+    // over as a scope of one.
+    window.localStorage.setItem(
+      PERSISTED_STATE_KEY,
+      JSON.stringify({
+        inboxProjectScopeKey: "github.com/example/repo",
+      } satisfies PersistedUiState),
+    );
+    expect(readPersistedState().inboxProjectScopeKeys).toEqual(["github.com/example/repo"]);
 
     // An empty or non-string value is "no filter", never a scope nothing can
     // match -- that would hide the whole inbox behind a filter with no name.
@@ -593,6 +608,21 @@ describe("uiStateStore persistence round-trip", () => {
       JSON.stringify({ inboxEnvironmentScopeId: "" } satisfies PersistedUiState),
     );
     expect(readPersistedState().inboxEnvironmentScopeId).toBe(null);
+  });
+
+  it("remembers a hidden thread list and folded inbox groups across a restart", () => {
+    // A fresh install shows the list: nothing stored means open.
+    window.localStorage.removeItem(PERSISTED_STATE_KEY);
+    expect(readPersistedState().sidebarListOpen).toBe(true);
+
+    persistState(
+      makeUiState({
+        sidebarListOpen: false,
+        collapsedInboxGroups: { "computer:env-macbook": true },
+      }),
+    );
+    expect(readPersistedState().sidebarListOpen).toBe(false);
+    expect(readPersistedState().collapsedInboxGroups).toEqual({ "computer:env-macbook": true });
   });
 
   it("preserves all-collapsed project state across restart", () => {

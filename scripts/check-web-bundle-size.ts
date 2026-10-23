@@ -25,12 +25,16 @@ import { readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { gzipSync } from "node:zlib";
 
-// Measured 190 KB gzip (2026-10); budget leaves ~10% headroom. Raise
-// deliberately, never reactively.
-const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 210_000;
-// Measured 719 KB gzip (2026-10): 54 JS files (667 KB) and 1 CSS file
-// (52 KB). Budget leaves ~10% headroom. Raise deliberately, never reactively.
-const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 790_000;
+// Measured 223 KB gzip (2026-10-23, 0.8.0); budget leaves ~10% headroom.
+// Raise deliberately, never reactively.
+const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 245_000;
+// Measured 823 KB gzip (2026-10-23, 0.8.0): 67 JS files (769 KB) and 1 CSS
+// file (54 KB). Up from 749 KB with Fleet's app shell (the navigation rail,
+// the shared thread menu, the inbox's view menu and swipe rows, the phone
+// drawer, the computer-link contracts), after its dialogs, the sign-in
+// terminal and the pages' sidebar lists moved behind lazy() boundaries.
+// Budget leaves ~10% headroom. Raise deliberately, never reactively.
+const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 905_000;
 
 const entryBudgetBytes = Number(
   process.env.THREADLINES_WEB_ENTRY_GZIP_BUDGET_BYTES ?? DEFAULT_ENTRY_GZIP_BUDGET_BYTES,

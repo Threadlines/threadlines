@@ -87,6 +87,7 @@ import {
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import {
@@ -473,6 +474,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const instructionsFor = (input: {
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
+      readonly scheduleTools: boolean;
       readonly managedWorktree: boolean;
     }) =>
       [
@@ -482,6 +484,9 @@ export function makePiAdapter(options: PiAdapterOptions) {
           : []),
         ...(input.commandRequests
           ? [buildCommandRequestInstructions({ toolPrefix: `mcp__${COMMANDS_MCP_SERVER_NAME}__` })]
+          : []),
+        ...(input.scheduleTools
+          ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
@@ -1689,6 +1694,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -1700,6 +1706,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const instructions = instructionsFor({
             agentPageAssetsDir,
             commandRequests,
+            scheduleTools: roomTools && input.scheduleTools === true,
             managedWorktree,
           });
           const instructionsPath = NodePath.join(

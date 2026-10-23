@@ -7,6 +7,7 @@ import {
   type OrchestrationCheckBack,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
+  type RemoteChildThread,
   type RoomAgentRequestId,
   type ServerProviderSkill,
   type SideTurnId,
@@ -23,6 +24,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -87,9 +89,16 @@ import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
 import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  agentMessagePreview,
+  setAgentMessageOpened,
+  useAgentMessageOpened,
+} from "./agentMessageFolds";
+import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
+import {
   ArrowDownIcon,
   ArrowUpIcon,
   BotIcon,
+  CalendarClockIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -99,6 +108,7 @@ import {
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
+  MonitorDownIcon,
   RefreshCwIcon,
   ReplyIcon,
   PencilIcon,
@@ -131,10 +141,20 @@ import {
   threadStartCallHasRecord,
   useChildRequestState,
   useChildThreadsStartedIn,
-  useThreadTitle,
+  useRemoteChildren,
+  useThreadMessageSource,
   type ThreadStartCall,
 } from "../../childThreads";
-import { resolveThreadStatusPill } from "../Sidebar.logic";
+import { selectEnvironmentState, useStore } from "../../store";
+import { remoteChildEntry, remoteChildStatusText, resolveThreadStatusPill } from "../Sidebar.logic";
+import { useComputerLabel } from "../sidebar/linkedComputers";
+import {
+  describeScheduleCall,
+  parseScheduleCallResult,
+  type ScheduleChangeTool,
+} from "../scheduled/scheduled.logic";
+import { useScheduledNavigation } from "../scheduled/useScheduledPage";
+import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
@@ -143,6 +163,8 @@ import {
   deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
+  foldsAgentMessage,
+  scheduledRunMessageId,
   shouldCollapseUserMessage,
   stretchDurationMs,
   timelineMessageView,
@@ -184,7 +206,7 @@ import {
 import { cn, pluralize } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
-import { formatTimestamp } from "../../timestampFormat";
+import { formatDateAndTime, formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
 import { useStreamingHeightFloor } from "../../hooks/useStreamingHeightFloor";
 import { useStreamingTextReveal } from "../../hooks/useStreamingTextReveal";
@@ -306,9 +328,11 @@ interface TimelineRowSharedState {
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
   /** See MessagesTimelineProps.onOpenThread. */
-  onOpenThread: ((threadId: ThreadId) => void) | null;
+  onOpenThread: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
+  /** A run thread's own first message and the line it folds to (MessagesTimelineProps.scheduledRunLabel). */
+  runMessage: RunMessageFoldState | null;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -344,6 +368,12 @@ interface FailedTurnRetryAction {
 interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
+}
+
+interface RunMessageFoldState {
+  readonly messageId: MessageId;
+  readonly label: string;
+  readonly event: boolean;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -814,10 +844,19 @@ interface MessagesTimelineProps {
   /** What a workflow run's card can do: open it, stop it, save its script. */
   workflowRunActions?: WorkflowRunActions | null | undefined;
   /**
-   * Opens another thread in this environment: the one that started this
-   * thread, or one this thread's agent started (child threads).
+   * Opens another thread: the one that started this thread, or one this
+   * thread's agent started (child threads). `environmentId` names the
+   * computer it lives on when that is another one; absent, this thread's.
    */
-  onOpenThread?: ((threadId: ThreadId) => void) | null | undefined;
+  onOpenThread?: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null | undefined;
+  /**
+   * The thread was started by a scheduled task's run: its first message, the
+   * run's own, folds to this line ("Event · <task>", "Scheduled · <task>")
+   * until the reader opens it. Absent or null: not a run thread.
+   */
+  scheduledRunLabel?: string | null | undefined;
+  /** The run was an event task's (a webhook glyph on the line, not a clock). */
+  scheduledRunEvent?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -880,6 +919,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenAgentsPanel: onOpenAgentsPanelProp = null,
   workflowRunActions: workflowRunActionsProp = null,
   onOpenThread: onOpenThreadProp = null,
+  scheduledRunLabel = null,
+  scheduledRunEvent = false,
 }: MessagesTimelineProps) {
   // What every row reads changes only when something rows show changes: the
   // chat rebuilds its callbacks and some of its lookups on every update to
@@ -1040,9 +1081,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // even after the reader folded it again.
   const [findOpenRequests, setFindOpenRequests] =
     useState<ReadonlyMap<string, number>>(NO_FIND_OPEN_REQUESTS);
-  const onFindOpenRow = useCallback((rowId: string) => {
-    setFindOpenRequests((current) => new Map(current).set(rowId, (current.get(rowId) ?? 0) + 1));
-  }, []);
+  const onFindOpenRow = useCallback(
+    (rowId: string) => {
+      setFindOpenRequests((current) => new Map(current).set(rowId, (current.get(rowId) ?? 0) + 1));
+      // A message agents sent each other keeps its fold outside the row.
+      setAgentMessageOpened(routeThreadKey, rowId, true);
+    },
+    [routeThreadKey],
+  );
   const onFindOpenSideExchange = useCallback((sideTurnId: SideTurnId) => {
     setExpandedSideTurnIds((current) =>
       current.has(sideTurnId) ? current : new Set([...current, sideTurnId]),
@@ -1230,6 +1276,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     searchTargetRowIndex,
     setAutoStickToBottomState,
   ]);
+
+  // A jump from search opens a folded message agents sent each other, before
+  // the list draws it, so its match is there to find.
+  const searchTargetRowId = rows[searchTargetRowIndex]?.id ?? null;
+  useLayoutEffect(() => {
+    if (searchTarget && searchTargetRowId !== null) {
+      setAgentMessageOpened(routeThreadKey, searchTargetRowId, true);
+    }
+  }, [routeThreadKey, searchTarget, searchTargetRowId]);
 
   // A command-palette jump takes the reader somewhere else: an open find bar
   // would describe matches they are no longer looking at.
@@ -1828,6 +1883,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [clearTouchSettleTimer, clearUserScrollLockTimer]);
 
+  const runMessageId = useMemo(
+    () => (scheduledRunLabel === null ? null : scheduledRunMessageId(timelineEntries)),
+    [scheduledRunLabel, timelineEntries],
+  );
+  const runMessage = useMemo<RunMessageFoldState | null>(
+    () =>
+      scheduledRunLabel === null || runMessageId === null
+        ? null
+        : { messageId: runMessageId, label: scheduledRunLabel, event: scheduledRunEvent },
+    [runMessageId, scheduledRunEvent, scheduledRunLabel],
+  );
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       timestampFormat,
@@ -1872,6 +1938,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
+      runMessage,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1917,6 +1984,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
+      runMessage,
       anchorOwnsLiveAgents,
     ],
   );
@@ -2184,6 +2252,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
       {row.kind === "message" ? <MessageTimelineRow row={row} /> : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
+      {row.kind === "moved-in" ? <MovedInTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "page" ? <PageTimelineRow row={row} /> : null}
       {row.kind === "command-request" ? <CommandRequestTimelineRow row={row} /> : null}
@@ -2284,6 +2353,33 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Where a thread that moved here from another computer starts being this
+ * computer's: a quiet rule across the conversation with one line in it. The
+ * history above came with the move, and revert stops at this line.
+ */
+function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-in" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="mx-auto max-w-4xl px-1">
+      <div
+        className="flex min-w-0 items-center gap-3 text-xs leading-[18px] text-muted-foreground"
+        data-testid="moved-in-boundary"
+      >
+        <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
+        <span className="flex min-w-0 items-center gap-1.5">
+          <MonitorDownIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">
+            Moved here from {row.movedIn.fromLabel} ·{" "}
+            {formatDateAndTime(row.movedIn.movedAt, ctx.timestampFormat)}
+          </span>
+        </span>
+        <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
       </div>
     </div>
   );
@@ -2415,12 +2511,54 @@ function CommandOutputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
   );
 }
 
+/**
+ * A run's first message folds and opens the way a message agents send each
+ * other does (agentMessageFolds.ts): kept per thread and row, opened by find
+ * in chat and by a jump from search. The control pressed goes away either
+ * way, so focus moves to what replaced it: the message's start, or the line
+ * that opens it again.
+ */
+function useRunMessageFold(rowId: string, foldable: boolean) {
+  const ctx = use(TimelineRowCtx);
+  const threadKey = ctx.routeThreadKey;
+  const opened = useAgentMessageOpened(threadKey, rowId);
+  const folded = foldable && !opened;
+  const focusAfterToggleRef = useRef<"message" | "fold" | null>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  // After the toggle's render (no dependencies: it waits on the ref, not a value).
+  useLayoutEffect(() => {
+    const target = focusAfterToggleRef.current;
+    if (target === null) return;
+    focusAfterToggleRef.current = null;
+    const element = target === "message" ? messageRef.current : foldRef.current;
+    element?.focus({ preventScroll: true });
+  });
+  const setOpened = useCallback(
+    (next: boolean) => {
+      focusAfterToggleRef.current = next ? "message" : "fold";
+      setAgentMessageOpened(threadKey, rowId, next);
+    },
+    [rowId, threadKey],
+  );
+  return { folded, setOpened, foldRef, messageRef };
+}
+
 function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
   const userImages = useResolvedAttachmentPreviews(
     messageAttachments.filter((attachment) => attachment.type === "image"),
   );
+  // A scheduled task's run started the thread with this message: it folds
+  // to the line naming the task, kept as the reader left it.
+  const runMessage = ctx.runMessage?.messageId === row.message.id ? ctx.runMessage : null;
+  const {
+    folded: runFolded,
+    setOpened: setRunOpened,
+    foldRef: runFoldRef,
+    messageRef: runMessageRef,
+  } = useRunMessageFold(row.id, runMessage !== null);
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
@@ -2437,6 +2575,34 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
   }));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
+
+  if (runMessage !== null && runFolded && ctx.searchTargetMessageId !== row.message.id) {
+    return (
+      <div className="flex flex-col items-end">
+        <div className="flex w-full justify-end">
+          <div className="relative max-w-[80%] min-w-0 rounded-4xl bg-secondary px-3.5 py-2.5">
+            <button
+              ref={runFoldRef}
+              type="button"
+              aria-expanded={false}
+              data-scroll-anchor-ignore
+              // All of the message is counted (chatFindRows): a match in it opens it.
+              data-chat-find-folded=""
+              data-run-message-fold=""
+              className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+              onClick={() => setRunOpened(true)}
+            >
+              <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+              <ScheduledRunIcon event={runMessage.event} className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate" data-chat-find-ignore="">
+                {runMessage.label}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const onTheSide = row.message.sideTurnId !== undefined;
   const addressee =
@@ -2455,7 +2621,12 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
         </div>
       ) : null}
       <div className="flex w-full justify-end">
-        <div className="group relative max-w-[80%] rounded-4xl bg-secondary px-3.5 py-2.5">
+        <div
+          ref={runMessageRef}
+          // A run's message, just opened, takes focus from the line that opened it.
+          tabIndex={runMessage !== null ? -1 : undefined}
+          className="group relative max-w-[80%] rounded-4xl bg-secondary px-3.5 py-2.5 outline-none"
+        >
           <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
           <TimelineImagePreviewGrid
             images={userImages}
@@ -2473,6 +2644,7 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
               role: "user",
             }}
             skills={ctx.skills}
+            onFold={runMessage !== null ? () => setRunOpened(false) : undefined}
             forceExpanded={ctx.searchTargetMessageId === row.message.id}
             findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
             searchHighlightQuery={
@@ -2504,10 +2676,121 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
   );
 }
 
-const NO_TERMINAL_CONTEXTS: ParsedTerminalContextEntry[] = [];
-const NO_TRANSCRIPT_HIGHLIGHTS: ParsedTranscriptHighlightContextEntry[] = [];
-const NO_PICKED_ELEMENTS: SentPickedElementEntry[] = [];
-const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
+interface AgentMessageFold {
+  /** Shows folded until the reader opens it; false for one that shows whole. */
+  readonly foldable: boolean;
+  readonly folded: boolean;
+  /** Its first line of text, or null when it has none to show. */
+  readonly preview: string | null;
+  readonly setOpened: (opened: boolean) => void;
+}
+
+/**
+ * How a message agents sent each other draws: folded to its first line until
+ * the reader opens it, and kept as they left it (agentMessageFolds.ts). One
+ * whose first line is all of it shows whole; one with no line of text to show
+ * (only a picture or a diagram) folds under the words that open it. `cwd`
+ * reads its file links.
+ */
+function useAgentMessageFold(
+  row: Extract<TimelineRow, { kind: "message" }>,
+  cwd: string | undefined,
+): AgentMessageFold {
+  const ctx = use(TimelineRowCtx);
+  const threadKey = ctx.routeThreadKey;
+  const rowId = row.id;
+  const opened = useAgentMessageOpened(threadKey, rowId);
+  const foldable = foldsAgentMessage(row.message.text);
+  const preview = foldable ? agentMessagePreview(row.message, cwd, ctx.skills) || null : null;
+  const setOpened = useCallback(
+    (next: boolean) => setAgentMessageOpened(threadKey, rowId, next),
+    [rowId, threadKey],
+  );
+  return { foldable, folded: foldable && !opened, preview, setOpened };
+}
+
+/**
+ * The text of a message agents sent each other, drawn as markdown like any
+ * answer. Folded, its first line opens it; open, "Show less" folds it again.
+ * The control pressed goes away either way, so focus moves to what replaced
+ * it: the message's start, or the line that opens it again.
+ */
+function AgentMessageBody(props: {
+  text: string;
+  fold: AgentMessageFold;
+  cwd: string | undefined;
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** The text's color. */
+  className: string;
+  searchHighlightQuery: string | undefined;
+}) {
+  const { fold } = props;
+  const focusAfterToggleRef = useRef<"message" | "fold" | null>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const target = focusAfterToggleRef.current;
+    focusAfterToggleRef.current = null;
+    const element =
+      target === "message" ? messageRef.current : target === "fold" ? foldRef.current : null;
+    element?.focus({ preventScroll: true });
+  }, [fold.folded]);
+  if (props.text.trim().length === 0) {
+    return null;
+  }
+  if (fold.folded) {
+    return (
+      <button
+        ref={foldRef}
+        type="button"
+        aria-expanded={false}
+        data-scroll-anchor-ignore
+        data-agent-message-fold=""
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1 text-left text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() => {
+          focusAfterToggleRef.current = "message";
+          fold.setOpened(true);
+        }}
+      >
+        <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+        {fold.preview === null ? (
+          <span className="min-w-0 truncate" data-chat-find-ignore="">
+            Show full message
+          </span>
+        ) : (
+          // All of the text is counted (chatFindRows): a match past this line opens it.
+          <span className="min-w-0 truncate" data-chat-find-body="" data-chat-find-folded="">
+            {fold.preview}
+          </span>
+        )}
+      </button>
+    );
+  }
+  return (
+    <div>
+      <div ref={messageRef} tabIndex={-1} className="outline-none" data-chat-find-body="">
+        <ChatMarkdown
+          text={props.text}
+          cwd={props.cwd}
+          skills={props.skills}
+          searchHighlightQuery={props.searchHighlightQuery}
+          className={props.className}
+        />
+      </div>
+      {fold.foldable ? (
+        <div className="mt-1.5 flex items-center" data-user-message-footer="true">
+          <MessageFoldButton
+            expanded
+            onToggle={() => {
+              focusAfterToggleRef.current = "fold";
+              fold.setOpened(false);
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * A message one room agent wrote to another through a room tool: a question,
@@ -2517,6 +2800,8 @@ const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
 function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
+  // Written in this thread's own checkout.
+  const fold = useAgentMessageFold(row, ctx.markdownCwd);
   const description = describeRoomAgentMessage({
     message,
     labels: messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler),
@@ -2555,20 +2840,14 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
     );
   }
   const body = (
-    <CollapsibleUserMessageBody
+    <AgentMessageBody
       text={message.text}
-      terminalContexts={NO_TERMINAL_CONTEXTS}
-      transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
-      pickedElements={NO_PICKED_ELEMENTS}
-      drawings={NO_DRAWINGS}
+      fold={fold}
+      cwd={ctx.markdownCwd}
       skills={ctx.skills}
       // Spoken to another agent, a hand-off reads close to an answer; a
       // question asked on the side reads like the asker's notes.
-      bodyClassName={
-        agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
-      }
-      forceExpanded={ctx.searchTargetMessageId === message.id}
-      findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
+      className={agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"}
       searchHighlightQuery={
         ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
       }
@@ -2626,7 +2905,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
             <RoomReviewTag request={message} timestampFormat={ctx.timestampFormat} />
           </>
         ) : null}
-        {message.text.length > 0 ? (
+        {message.text.length > 0 && !fold.folded ? (
           <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
             <MessageCopyButton
               text={message.text}
@@ -2660,9 +2939,16 @@ function ThreadMessageTimelineRow({
 }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
-  const title = useThreadTitle(ctx.activeThreadEnvironmentId, origin.threadId);
+  // Written in another thread's checkout: its paths aren't this one's.
+  const fold = useAgentMessageFold(row, undefined);
+  const source = useThreadMessageSource(ctx.activeThreadEnvironmentId, ctx.activeThreadId, origin);
+  const computerLabel = useComputerLabel();
   const isReport = origin.kind === "report";
-  const author = title ?? (isReport ? "A thread it started" : "The thread that started it");
+  const author = source.title ?? (isReport ? "A thread it started" : "The thread that started it");
+  const computer = source.computer
+    ? computerLabel(source.computer.environmentId, source.computer.lastKnown)
+    : "";
+  const kindWord = isReport ? "reply" : "request";
   return (
     <div
       className="group min-w-0 px-1 py-0.5"
@@ -2670,21 +2956,33 @@ function ThreadMessageTimelineRow({
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
-        {ctx.onOpenThread ? (
+        {ctx.onOpenThread && source.openable ? (
           <button
             type="button"
             className="min-w-0 cursor-pointer truncate text-foreground/85 underline-offset-2 transition-colors hover:text-foreground hover:underline"
             data-thread-message-author={origin.threadId}
-            onClick={() => ctx.onOpenThread?.(origin.threadId)}
+            onClick={() =>
+              ctx.onOpenThread?.(
+                origin.threadId,
+                source.computer ? source.computer.environmentId : undefined,
+              )
+            }
           >
             {author}
           </button>
         ) : (
-          <span className="min-w-0 truncate text-foreground/85">{author}</span>
+          <span
+            className="min-w-0 truncate text-foreground/85"
+            data-thread-message-author={origin.threadId}
+          >
+            {author}
+          </span>
         )}
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="shrink-0">{isReport ? "reply" : "request"}</span>
-        {message.text.length > 0 ? (
+        <span className="min-w-0 truncate" data-thread-message-kind>
+          {computer.length > 0 ? `${kindWord} from ${computer}` : kindWord}
+        </span>
+        {message.text.length > 0 && !fold.folded ? (
           <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
             <MessageCopyButton
               text={message.text}
@@ -2697,16 +2995,12 @@ function ThreadMessageTimelineRow({
         ) : null}
       </div>
       <div className="border-l border-border pl-3">
-        <CollapsibleUserMessageBody
+        <AgentMessageBody
           text={message.text}
-          terminalContexts={NO_TERMINAL_CONTEXTS}
-          transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
-          pickedElements={NO_PICKED_ELEMENTS}
-          drawings={NO_DRAWINGS}
+          fold={fold}
+          cwd={undefined}
           skills={ctx.skills}
-          bodyClassName="text-foreground/80"
-          forceExpanded={ctx.searchTargetMessageId === message.id}
-          findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
+          className="text-foreground/80"
           searchHighlightQuery={
             ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
           }
@@ -3951,10 +4245,15 @@ const WorkGroupSection = memo(function WorkGroupSection({
       }),
     [threadStartCallsByTurn, threadStartEntries],
   );
+  // Where the agent created or changed a scheduled task: its own record too.
+  const scheduleCallEntries = useMemo(
+    () => groupedEntries.filter(isSettledScheduleChangeEntry),
+    [groupedEntries],
+  );
   const steps = useMemo(
     () =>
       groupedEntries.flatMap((entry) => {
-        if (threadStartEntries.includes(entry)) return [];
+        if (threadStartEntries.includes(entry) || scheduleCallEntries.includes(entry)) return [];
         const step = activityStepFromWorkLogEntry(entry, {
           workspaceRoot,
           roomAgentNames,
@@ -3964,7 +4263,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
         });
         return step ? [step] : [];
       }),
-    [groupedEntries, roomAgentNames, threadStartEntries, turnDiffSummaryByTurnId, workspaceRoot],
+    [
+      groupedEntries,
+      roomAgentNames,
+      scheduleCallEntries,
+      threadStartEntries,
+      turnDiffSummaryByTurnId,
+      workspaceRoot,
+    ],
   );
   const entriesById = useMemo(
     () => new Map(groupedEntries.map((entry) => [entry.id, entry] as const)),
@@ -3985,7 +4291,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
     !(isWorking && row.inActiveExchange);
   const hasSettledSteps = steps.some((step) => !step.running);
 
-  if (!hasSettledSteps && !showTracker && recordedThreadStartEntries.length === 0) {
+  if (
+    !hasSettledSteps &&
+    !showTracker &&
+    recordedThreadStartEntries.length === 0 &&
+    scheduleCallEntries.length === 0
+  ) {
     return null;
   }
 
@@ -4035,9 +4346,90 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {recordedThreadStartEntries.map((entry) => (
         <StartedThreadsRecord key={entry.id} entry={entry} />
       ))}
+      {scheduleCallEntries.map((entry) => (
+        <ScheduleCallRecordLine key={entry.id} entry={entry} />
+      ))}
     </div>
   );
 });
+
+/** A finished `schedule_create` or `schedule_update` call: the steps leave it to its own record. */
+function isSettledScheduleChangeEntry(entry: TimelineWorkEntry): boolean {
+  if (entry.executionState === "running") return false;
+  const tool = threadlinesRoomToolOf(entry);
+  return tool === "schedule_create" || tool === "schedule_update";
+}
+
+/**
+ * Where the agent created or changed a scheduled task: one line with the task
+ * as it is now (its schedule and next run), or its card still waiting for the
+ * user. A click opens the task on the Scheduled page.
+ */
+function ScheduleCallRecordLine({ entry }: { entry: TimelineWorkEntry }) {
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
+  const nowMs = useRelativeTimeTick(30_000);
+  const navigation = useScheduledNavigation();
+  const snapshot = useScheduledTasksStore(
+    (state) => state.byEnvironment[activeThreadEnvironmentId],
+  );
+  const result = useMemo(
+    () => parseScheduleCallResult(entry.toolResult ?? entry.outputPreview),
+    [entry.outputPreview, entry.toolResult],
+  );
+  const tool: ScheduleChangeTool =
+    threadlinesRoomToolOf(entry) === "schedule_update" ? "schedule_update" : "schedule_create";
+  const record = describeScheduleCall({
+    tool,
+    result,
+    task:
+      result.taskId === null
+        ? null
+        : (snapshot?.tasks.find((task) => task.id === result.taskId) ?? null),
+    waiting:
+      result.requestId !== null &&
+      (snapshot?.requests.some((request) => request.requestId === result.requestId) ?? false),
+    failed: entry.executionState === "failed",
+    followed: snapshot !== undefined,
+    nowMs,
+  });
+  const line = (
+    <>
+      <CalendarClockIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/60" />
+      <span className="max-w-[70%] min-w-0 shrink-0 truncate" data-schedule-call-heading>
+        {record.heading}
+      </span>
+      {record.outcome !== null ? (
+        <>
+          <span className="shrink-0 text-muted-foreground/50">·</span>
+          <span className="min-w-0 truncate text-muted-foreground" data-schedule-call-outcome>
+            {record.outcome}
+          </span>
+        </>
+      ) : null}
+    </>
+  );
+  const className = "flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80";
+  const open = record.open;
+  return open === null ? (
+    <div className={className} data-schedule-call={entry.id}>
+      {line}
+    </div>
+  ) : (
+    <button
+      type="button"
+      className={cn(
+        className,
+        "w-full cursor-pointer text-left transition-colors hover:text-foreground",
+      )}
+      data-schedule-call={entry.id}
+      onClick={() =>
+        navigation.openTask({ environmentId: activeThreadEnvironmentId, taskId: open })
+      }
+    >
+      {line}
+    </button>
+  );
+}
 
 /**
  * Where the agent started threads of its own (child threads): one line for
@@ -4055,6 +4447,8 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
     turnId,
   );
   const requests = useChildRequestState(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
+  const remoteChildren = useRemoteChildren(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
+  const computerLabel = useComputerLabel();
   const record = useMemo(() => {
     const turnCalls = ctx.threadStartCallsByTurn.get(threadStartTurnKey(entry)) ?? [];
     const call = turnCalls.find((candidate) => candidate.id === entry.id) ?? {
@@ -4067,12 +4461,22 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
       turnCalls: turnCalls.length > 0 ? turnCalls : [call],
       startedInTurn,
       openRequests: requests?.open ?? [],
+      remoteChildren,
+      computerLabel,
     });
-  }, [ctx.threadStartCallsByTurn, entry, requests, startedInTurn, turnId]);
+  }, [
+    computerLabel,
+    ctx.threadStartCallsByTurn,
+    entry,
+    remoteChildren,
+    requests,
+    startedInTurn,
+    turnId,
+  ]);
   if (record === null) {
     return null;
   }
-  const { heading, outcome, threads } = record;
+  const { heading, outcome, threads, remoteThreads } = record;
   return (
     <div className="min-w-0" data-started-threads={entry.id}>
       <div className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80">
@@ -4089,10 +4493,16 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
           </>
         ) : null}
       </div>
-      {threads.length > 0 ? (
+      {threads.length > 0 || remoteThreads.length > 0 ? (
         <ul className="ml-[19px]">
           {threads.map((thread) => (
             <StartedThreadLine key={thread.id} thread={thread} />
+          ))}
+          {remoteThreads.map((child) => (
+            <RemoteStartedThreadLine
+              key={`${child.environmentId}:${child.threadId}`}
+              child={child}
+            />
           ))}
         </ul>
       ) : null}
@@ -4100,9 +4510,57 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
   );
 }
 
-/** One thread the agent started: its live dot, title and status, opening its chat. */
-function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
-  const { onOpenThread } = use(TimelineRowCtx);
+/**
+ * A thread the agent started on a linked computer: the real thread when the
+ * app has that computer's threads, else the parent's record of it, with its
+ * last known status. Either way it says which computer.
+ */
+function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
+  const computerLabel = useComputerLabel();
+  const thread = useStore(
+    (state) =>
+      selectEnvironmentState(state, child.environmentId).sidebarThreadSummaryById[child.threadId],
+  );
+  const computer = computerLabel(child.environmentId, child.label);
+  if (thread !== undefined) {
+    return <StartedThreadLine thread={thread} computer={computer} />;
+  }
+  const entry = remoteChildEntry(child, computer);
+  return (
+    <li
+      className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/85"
+      data-started-thread={child.threadId}
+    >
+      <span
+        aria-label={entry.status?.label ?? "Finished"}
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
+        )}
+      />
+      <span className="min-w-0 truncate">{child.title}</span>
+      <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+      {entry.status ? (
+        <span className="ms-auto shrink-0 text-muted-foreground">
+          {remoteChildStatusText(entry)}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * One thread the agent started: its live dot, title and status, opening its
+ * chat. `computer` names the linked computer it runs on, when it does.
+ */
+function StartedThreadLine({
+  thread,
+  computer,
+}: {
+  thread: SidebarThreadSummary;
+  computer?: string;
+}) {
+  const { onOpenThread, activeThreadEnvironmentId } = use(TimelineRowCtx);
   const status = resolveThreadStatusPill({
     thread: { ...thread, ...(thread.lastSeenAt ? { lastVisitedAt: thread.lastSeenAt } : {}) },
   });
@@ -4120,7 +4578,12 @@ function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
         className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-xs leading-5 text-foreground/85 transition-colors hover:text-foreground disabled:cursor-default"
         disabled={onOpenThread === null}
         data-started-thread={thread.id}
-        onClick={() => onOpenThread?.(thread.id)}
+        onClick={() =>
+          onOpenThread?.(
+            thread.id,
+            thread.environmentId === activeThreadEnvironmentId ? undefined : thread.environmentId,
+          )
+        }
       >
         <span
           aria-label={status?.label ?? "Finished"}
@@ -4130,6 +4593,9 @@ function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
           )}
         />
         <span className="min-w-0 truncate">{thread.title}</span>
+        {computer !== undefined ? (
+          <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+        ) : null}
         <span className="ms-auto flex shrink-0 items-center gap-1.5">
           <ThreadStatusText
             thread={thread}
@@ -4831,8 +5297,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   findOpenRequest?: number | undefined;
   searchHighlightQuery?: string | undefined;
   footer?: ReactNode;
-  /** Overrides the text's classes (its color, for an agent's quieter message). */
-  bodyClassName?: string | undefined;
+  /**
+   * A run's first message, opened from its one-line fold: drawn whole (no
+   * fade of its own), with Show less folding it back to that line.
+   */
+  onFold?: (() => void) | undefined;
 }) {
   const findOpenRequest = props.findOpenRequest ?? 0;
   const [expanded, setExpanded] = useState(findOpenRequest > 0);
@@ -4846,8 +5315,10 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
     props.terminalContexts.length > 0 ||
     props.transcriptHighlights.length > 0;
   const hasAttachedContextChips = props.pickedElements.length > 0 || props.drawings.length > 0;
-  const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
+  const canCollapse =
+    props.onFold === undefined && hasVisibleBody && shouldCollapseUserMessage(props.text);
   const isCollapsed = canCollapse && !expanded && !props.forceExpanded;
+  const onFold = props.onFold;
 
   return (
     <div>
@@ -4871,7 +5342,6 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
             transcriptHighlights={props.transcriptHighlights}
             skills={props.skills}
             searchHighlightQuery={props.searchHighlightQuery}
-            className={props.bodyClassName}
           />
         </div>
       ) : null}
@@ -4906,26 +5376,21 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           ))}
         </div>
       ) : null}
-      {canCollapse || props.footer ? (
+      {canCollapse || onFold || props.footer ? (
         <div
           className={cn(
             "mt-1.5 flex items-center gap-2",
-            canCollapse && props.footer ? "justify-between" : "justify-end",
+            (canCollapse || onFold) && props.footer ? "justify-between" : "justify-end",
           )}
           data-user-message-footer="true"
         >
           {canCollapse ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              aria-expanded={expanded}
-              data-scroll-anchor-ignore
-              onClick={() => setExpanded((value) => !value)}
-              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
-            >
-              {expanded ? "Show less" : "Show full message"}
-            </Button>
+            <MessageFoldButton
+              expanded={expanded}
+              onToggle={() => setExpanded((value) => !value)}
+            />
+          ) : onFold ? (
+            <MessageFoldButton expanded onToggle={onFold} />
           ) : null}
           {props.footer ? (
             <div className="ml-auto flex items-center gap-2">{props.footer}</div>
@@ -4936,18 +5401,32 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
+/** Opens a folded message or folds it again, under its text. */
+function MessageFoldButton(props: { expanded: boolean; onToggle: () => void }) {
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost"
+      aria-expanded={props.expanded}
+      data-scroll-anchor-ignore
+      onClick={props.onToggle}
+      className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
+    >
+      {props.expanded ? "Show less" : "Show full message"}
+    </Button>
+  );
+}
+
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
   transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
-  className?: string | undefined;
 }) {
-  const textClassName = cn(
-    "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground",
-    props.className,
-  );
+  const textClassName =
+    "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground";
   // Quoted context the message carries, not the message's own words: find in
   // chat reads past it.
   const transcriptHighlightNodes =

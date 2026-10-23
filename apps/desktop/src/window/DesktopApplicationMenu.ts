@@ -15,6 +15,14 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
+type GoMenuAction =
+  | typeof DesktopWindow.NAVIGATE_BACK_MENU_ACTION
+  | typeof DesktopWindow.NAVIGATE_FORWARD_MENU_ACTION
+  | typeof DesktopWindow.OPEN_FLEET_MENU_ACTION
+  | typeof DesktopWindow.OPEN_SCHEDULED_MENU_ACTION
+  | typeof DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION
+  | typeof DesktopWindow.OPEN_USAGE_MENU_ACTION;
+
 export const GITHUB_REPOSITORY_URL = "https://github.com/Threadlines/threadlines";
 export const GITHUB_NEW_ISSUE_URL = "https://github.com/Threadlines/threadlines/issues/new/choose";
 
@@ -154,6 +162,15 @@ const make = Effect.gen(function* () {
     const commandPaletteClick = () => {
       runMenuEffect("toggle-command-palette", dispatchMenuAction("toggle-command-palette"));
     };
+    const toggleSidebarClick = () => {
+      runMenuEffect(
+        DesktopWindow.TOGGLE_SIDEBAR_MENU_ACTION,
+        dispatchMenuAction(DesktopWindow.TOGGLE_SIDEBAR_MENU_ACTION),
+      );
+    };
+    const goTo = (action: GoMenuAction) => () => {
+      runMenuEffect(action, dispatchMenuAction(action));
+    };
     const openGitHubClick = () => {
       runMenuEffect("open-github", openExternalHelpUrl(GITHUB_REPOSITORY_URL));
     };
@@ -217,6 +234,7 @@ const make = Effect.gen(function* () {
         label: "View",
         submenu: [
           { label: "Command Palette...", click: commandPaletteClick },
+          { label: "Toggle Sidebar", click: toggleSidebarClick },
           { type: "separator" },
           { role: "reload" },
           { role: "forceReload" },
@@ -238,6 +256,23 @@ const make = Effect.gen(function* () {
                 },
               ]
             : []),
+        ],
+      },
+      {
+        // The rail's destinations. Pull Requests is left out: the app offers
+        // it only where a connected server can answer, which the menu can't
+        // know. Scheduled stays: this app's own server always runs scheduled
+        // tasks. Settings is in the app menu (File on Windows and Linux).
+        label: "Go",
+        submenu: [
+          // Through the app's own history, like the title bar's arrows.
+          { label: "Back", click: goTo(DesktopWindow.NAVIGATE_BACK_MENU_ACTION) },
+          { label: "Forward", click: goTo(DesktopWindow.NAVIGATE_FORWARD_MENU_ACTION) },
+          { type: "separator" },
+          { label: "General Chats", click: goTo(DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION) },
+          { label: "Fleet", click: goTo(DesktopWindow.OPEN_FLEET_MENU_ACTION) },
+          { label: "Scheduled", click: goTo(DesktopWindow.OPEN_SCHEDULED_MENU_ACTION) },
+          { label: "Usage", click: goTo(DesktopWindow.OPEN_USAGE_MENU_ACTION) },
         ],
       },
       { role: "windowMenu" },

@@ -18,6 +18,10 @@ export interface ElectronTrayShape {
   readonly createTemplateImage: (
     representations: readonly TrayImageRepresentation[],
   ) => Effect.Effect<Option.Option<Electron.NativeImage>>;
+  /** The app's own icon file, for the Windows and Linux tray. */
+  readonly createImageFromPath: (
+    path: string,
+  ) => Effect.Effect<Option.Option<Electron.NativeImage>>;
   readonly buildMenu: (
     template: readonly Electron.MenuItemConstructorOptions[],
   ) => Effect.Effect<Electron.Menu>;
@@ -61,6 +65,15 @@ export const layer = Layer.succeed(
           return image;
         }),
       ),
+    createImageFromPath: (path) =>
+      Effect.sync(() => {
+        try {
+          const image = Electron.nativeImage.createFromPath(path);
+          return image.isEmpty() ? Option.none() : Option.some(image);
+        } catch {
+          return Option.none<Electron.NativeImage>();
+        }
+      }),
     buildMenu: (template) => Effect.sync(() => Electron.Menu.buildFromTemplate([...template])),
   }),
 );

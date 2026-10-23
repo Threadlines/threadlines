@@ -17,6 +17,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
 import {
@@ -123,7 +124,9 @@ import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
 import {
   type ComposerRoomDelivery,
+  ComposerDeclineAndSendButton,
   ComposerPrimaryActions,
+  ComposerRoomSendButton,
   ComposerStopButton,
   FOLLOW_UP_DELIVERY_LABELS,
   roomDeliveryLabels,
@@ -133,6 +136,10 @@ import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
 import { getThreadInFlightStatus } from "../../lib/threadSort";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
+import { ComposerScheduleRequestPanel } from "./ComposerScheduleRequestPanel";
+import { useScheduledTaskRequestsForThread } from "../../lib/scheduledTasksState";
+import { ComposerRemoteStartPanel } from "./ComposerRemoteStartPanel";
+import { usePendingLinkRequests } from "../sidebar/linkedComputers";
 import { pendingChildThreads } from "../../childThreads";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -162,6 +169,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { isAppBackendEnvironment } from "../../environments/providerComputer";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ProviderUsageSignIn } from "./providerSignIn";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -597,6 +605,11 @@ export interface ChatComposerProps {
     readonly label: string;
     readonly connectionState: "connecting" | "disconnected" | "error";
   } | null;
+  /**
+   * The thread takes no messages here: it is moving, or moved, to another
+   * computer (docs/design/fleet.md, Part 3). `reason` is the placeholder.
+   */
+  threadLocked?: { readonly reason: string } | null;
 
   // Pending approvals / inputs
   activePendingApproval: PendingApproval | null;
@@ -755,6 +768,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy,
     isPreparingWorktree,
     environmentUnavailable,
+    threadLocked = null,
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
@@ -1250,6 +1264,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           )
         : null,
     [activeThread, providerInstanceEntries],
+  );
+  // A change to the scheduled tasks the agent asked for, waiting for the
+  // user's yes ("Ask me first"): the child-thread card's schedule kind.
+  const pendingScheduleRequest = useScheduledTaskRequestsForThread(
+    routeThreadRef.environmentId,
+    routeThreadRef.threadId,
+  )[0];
+  // A thread the agent asked another computer to start, waiting for that
+  // computer's user: the card that decides it sits here, in the thread that
+  // asked, where the conversation says why.
+  const pendingLinkRequests = usePendingLinkRequests();
+  const pendingRemoteStart = useMemo(
+    () =>
+      activeThread
+        ? (pendingLinkRequests.find(
+            ({ request }) =>
+              request.parentEnvironmentId === activeThread.environmentId &&
+              request.parentThreadId === activeThread.id,
+          ) ?? null)
+        : null,
+    [activeThread, pendingLinkRequests],
   );
   // The agents "@" offers in a room, first in the menu above files. Picking
   // one sends the message to it, like the agent picker.
@@ -1923,21 +1958,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // handled inside the menu rather than here. Models without image input
   // still accept document attachments, so modality no longer disables the
   // whole menu — image files are rejected per-file during ingest instead.
-  const attachmentsDisabled = isComposerApprovalState || hasBlockingQuestion;
+  const attachmentsDisabled = hasBlockingQuestion;
   const attachmentsDisabledReason = attachmentsDisabled
     ? "Finish the pending prompt before adding attachments"
     : null;
+  // Nothing can be sent from here: the thread's computer is out of reach, or
+  // the thread is moving or moved away.
+  const composerUnavailable = environmentUnavailable !== null || threadLocked !== null;
   // Dictation writes into the prompt, so it is blocked by everything that
   // blocks typing, named the way the placeholder names it.
-  const dictationDisabledReason = isComposerApprovalState
-    ? "Resolve the approval first"
-    : hasBlockingQuestion
-      ? "Answer the question first"
-      : environmentUnavailable
-        ? `${environmentUnavailable.label} is ${
-            environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
-          }`
-        : null;
+  const dictationDisabledReason = hasBlockingQuestion
+    ? isComposerApprovalState
+      ? "Resolve the approval first"
+      : "Answer the question first"
+    : environmentUnavailable
+      ? `${environmentUnavailable.label} is ${
+          environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
+        }`
+      : (threadLocked?.reason ?? null);
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -2848,6 +2886,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
     return true;
   }, [promptRef, promptSuggestion, promptSuggestionView, readComposerSnapshot, setPrompt]);
+  // Up and Down bring back what the user wrote here before (shell style):
+  // see stepPromptRecall. The recalled text is remembered so an edit hands
+  // the arrows back to the caret.
+  const promptRecallRef = useRef<PromptRecall | null>(null);
+  const stepRecall = useCallback(
+    (key: "ArrowUp" | "ArrowDown"): boolean => {
+      const step = stepPromptRecall({
+        key,
+        value: readComposerSnapshot().value,
+        recall: promptRecallRef.current,
+        prompts: recallablePrompts(threadMessages ?? []),
+      });
+      if (step === null) {
+        promptRecallRef.current = null;
+        return false;
+      }
+      promptRecallRef.current = step.recall;
+      promptRef.current = step.value;
+      setPrompt(step.value);
+      const nextCursor = collapseExpandedComposerCursor(step.value, step.value.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(null);
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(nextCursor);
+      });
+      return true;
+    },
+    [promptRef, readComposerSnapshot, setPrompt, threadMessages],
+  );
   // Stays set while the box fills and empties again, so the editor keeps the
   // suggestion mounted and its fade-in plays once.
   const promptSuggestionDisplay = useMemo<ComposerPromptSuggestionDisplay | null>(() => {
@@ -2856,7 +2923,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isConnecting ||
       isComposerApprovalState ||
       hasBlockingQuestion ||
-      environmentUnavailable !== null
+      composerUnavailable
     ) {
       return null;
     }
@@ -2873,7 +2940,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     acceptPromptSuggestion,
     composerCapabilityHint,
-    environmentUnavailable,
+    composerUnavailable,
     hasBlockingQuestion,
     isComposerApprovalState,
     isConnecting,
@@ -3143,6 +3210,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return true;
       }
     }
+    // Up and Down walk the user's earlier prompts while the box is empty or
+    // still holds one unedited; an open menu above keeps the arrows.
+    if (
+      (key === "ArrowUp" || key === "ArrowDown") &&
+      !menuIsActive &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      stepRecall(key)
+    ) {
+      return true;
+    }
     // Tab takes the agent's suggestion in the box: all of it when the box is
     // empty, or the rest when the typed words start it, so it never clobbers
     // other text. The menu branch above already claimed Tab when a slash or
@@ -3392,6 +3472,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       stops="background-work"
     />
   ) : null;
+  // Typing while an approval waits: a message for the agent that asked
+  // declines it and tells that agent what to do instead. In a room, a message
+  // for another agent is asked or queued as usual and leaves the approval be.
+  const approvalRedirectPlaceholder =
+    isComposerApprovalState && !hasBlockingQuestion && roomDelivery === null
+      ? `Type to decline and tell ${roomAgentLabels?.get(roomAgentKey(roomHolderId))?.name ?? "the agent"} what to do instead`
+      : null;
+  const approvalSendDisabled =
+    isSendBusy ||
+    isConnecting ||
+    composerUnavailable ||
+    (activePendingApproval !== null &&
+      respondingRequestIds.includes(activePendingApproval.requestId));
+  const approvalSendButton =
+    !isComposerApprovalState ||
+    hasBlockingQuestion ||
+    !composerSendState.hasSendableContent ? null : roomDelivery !== null ? (
+      <ComposerRoomSendButton
+        roomDelivery={roomDelivery}
+        onRoomDeliveryChange={handleRoomDeliveryChange}
+        disabled={approvalSendDisabled}
+        preserveComposerFocusOnPointerDown={isMobileViewport}
+      />
+    ) : (
+      <ComposerDeclineAndSendButton
+        disabled={approvalSendDisabled}
+        preserveComposerFocusOnPointerDown={isMobileViewport}
+      />
+    );
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
@@ -3674,7 +3783,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               hasComposerDockContent({ pullRequests, notices: dockedNotices }) &&
               "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
-            environmentUnavailable ? "opacity-75" : null,
+            composerUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,
           )}
           onFocusCapture={(event) => {
@@ -3717,7 +3826,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   {...(onRespondToUserInput ? { onRespond: onRespondToUserInput } : {})}
                   onPrevious={onPreviousActivePendingUserInputQuestion}
                   onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
-                  isUnavailable={environmentUnavailable !== null}
+                  isUnavailable={composerUnavailable}
                   isAgentRunning={hasActiveTurn}
                 />
               </div>
@@ -3735,6 +3844,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingChildThreadStarts.batchId}
                   threadRef={routeThreadRef}
                   request={pendingChildThreadStarts}
+                />
+              </div>
+            ) : pendingScheduleRequest !== undefined ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerScheduleRequestPanel
+                  key={pendingScheduleRequest.requestId}
+                  threadRef={routeThreadRef}
+                  request={pendingScheduleRequest}
+                />
+              </div>
+            ) : pendingRemoteStart !== null ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerRemoteStartPanel
+                  key={`${pendingRemoteStart.environmentId}:${pendingRemoteStart.request.requestId}`}
+                  pending={pendingRemoteStart}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
@@ -3757,9 +3881,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               />
               <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 sm:px-4">
                 <ComposerPendingApprovalActions
+                  // A new request gets new buttons: focus left on one answer
+                  // must not let Enter give it to the next request.
+                  key={activePendingApproval.requestId}
                   requestId={activePendingApproval.requestId}
                   availableDecisions={activePendingApproval.availableDecisions}
                   decisionWarnings={activePendingApproval.decisionWarnings}
+                  defaultToNo={activePendingApproval.defaultToNo}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                   onRespondToApproval={onRespondToApproval}
                 />
@@ -3831,7 +3959,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isComposerCollapsedMobile && "hidden",
                 )}
               >
-                {composerMenuOpen && !isComposerApprovalState && (
+                {composerMenuOpen && (
                   <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                     <ComposerCommandMenu
                       maxListHeightPx={composerMenuRoom}
@@ -3849,7 +3977,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerAttachments.length > 0 && (
                     <div className="mb-3 flex flex-wrap gap-2">
@@ -3938,7 +4065,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerTerminalContexts.length > 0 && (
                     <ComposerPendingTerminalContexts
@@ -3949,7 +4075,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerPickedElementContexts.length > 0 && (
                     <ComposerPendingPickedElementContexts
@@ -3962,7 +4087,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerDrawingContexts.length > 0 && (
                     <ComposerPendingDrawingContexts
@@ -3974,7 +4098,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerTranscriptHighlightContexts.length > 0 && (
                     <ComposerPendingTranscriptHighlightContexts
@@ -3986,7 +4109,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerFileSelectionContexts.length > 0 && (
                     <ComposerPendingFileSelectionContexts
@@ -3999,7 +4121,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <div className="relative">
                   <ComposerPromptEditor
                     editorRef={composerEditorRef}
-                    value={isComposerApprovalState ? "" : prompt}
+                    value={prompt}
                     cursor={composerCursor}
                     terminalContexts={[]}
                     skills={composerSkills}
@@ -4012,29 +4134,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPaste={onComposerPaste}
                     suggestion={promptSuggestionDisplay}
                     placeholder={
-                      isComposerApprovalState
-                        ? "Resolve this approval request to continue"
-                        : hasBlockingQuestion
-                          ? "Answer the question above, or stop the turn"
-                          : showPlanFollowUpPrompt && activeProposedPlan
-                            ? "Add feedback to refine the plan, or leave this blank to implement it"
-                            : environmentUnavailable
-                              ? `${environmentUnavailable.label} is ${
-                                  environmentUnavailable.connectionState === "connecting"
-                                    ? "connecting"
-                                    : "disconnected"
-                                }`
-                              : defaultComposerPlaceholder
+                      threadLocked
+                        ? threadLocked.reason
+                        : isComposerApprovalState && hasBlockingQuestion
+                          ? "Resolve this approval request to continue"
+                          : approvalRedirectPlaceholder !== null
+                            ? approvalRedirectPlaceholder
+                            : hasBlockingQuestion
+                              ? "Answer the question above, or stop the turn"
+                              : showPlanFollowUpPrompt && activeProposedPlan
+                                ? "Add feedback to refine the plan, or leave this blank to implement it"
+                                : environmentUnavailable
+                                  ? `${environmentUnavailable.label} is ${
+                                      environmentUnavailable.connectionState === "connecting"
+                                        ? "connecting"
+                                        : "disconnected"
+                                    }`
+                                  : defaultComposerPlaceholder
                     }
-                    disabled={
-                      isConnecting ||
-                      isComposerApprovalState ||
-                      hasBlockingQuestion ||
-                      environmentUnavailable !== null
-                    }
+                    disabled={isConnecting || hasBlockingQuestion || composerUnavailable}
                   />
                 </div>
-                {workflowKeywordActive && !isComposerApprovalState ? (
+                {workflowKeywordActive ? (
                   <ComposerWorkflowKeywordHint
                     suppressed={workflowKeywordSuppressed === true}
                     onToggle={onToggleWorkflowKeyword}
@@ -4046,13 +4167,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               {isComposerCollapsedMobile ? null : activePendingApproval ? (
                 <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
                   <ComposerPendingApprovalActions
+                    // A new request gets new buttons: focus left on one answer
+                    // must not let Enter give it to the next request.
+                    key={activePendingApproval.requestId}
                     requestId={activePendingApproval.requestId}
                     availableDecisions={activePendingApproval.availableDecisions}
                     decisionWarnings={activePendingApproval.decisionWarnings}
+                    defaultToNo={activePendingApproval.defaultToNo}
                     isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                     onRespondToApproval={onRespondToApproval}
                   />
-                  {sideStopButton}
+                  {approvalSendButton ?? sideStopButton}
                 </div>
               ) : (
                 <div
@@ -4096,6 +4221,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       keybindings={keybindings}
                       modelOptionsByInstance={modelOptionsByInstance}
                       terminalOpen={terminalOpen}
+                      providerSettingsShown={isAppBackendEnvironment(environmentId)}
                       side="top"
                       open={isComposerModelPickerOpen}
                       {...(composerProviderState.modelPickerIconClassName
@@ -4268,7 +4394,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       promptHasText={prompt.trim().length > 0}
                       isSendBusy={isSendBusy}
                       isConnecting={isConnecting}
-                      isEnvironmentUnavailable={environmentUnavailable !== null}
+                      isEnvironmentUnavailable={composerUnavailable}
                       isPreparingWorktree={isPreparingWorktree}
                       hasSendableContent={
                         !hasBlockingQuestion && composerSendState.hasSendableContent

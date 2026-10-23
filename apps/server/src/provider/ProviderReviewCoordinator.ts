@@ -22,7 +22,12 @@ import type { ProviderServiceShape } from "./Services/ProviderService.ts";
 interface ProviderReviewCoordinatorServices {
   readonly providerService: Pick<
     ProviderServiceShape,
-    "getCapabilities" | "getInstanceInfo" | "startReview" | "listSessions" | "stopSession"
+    | "getCapabilities"
+    | "getInstanceInfo"
+    | "startReview"
+    | "listSessions"
+    | "stopSession"
+    | "earlyStartInFlight"
   >;
   readonly projectionSnapshotQuery: Pick<ProjectionSnapshotQueryShape, "getThreadShellById">;
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch">;
@@ -171,6 +176,16 @@ export function startProviderReviewForThread(
       }
     }
 
+    // Starting the review waits on an early start still running (which it
+    // then uses), or launches the agent's program when no runtime is live:
+    // until the review starts, the chat names that instance
+    // (OrchestrationSession.startup).
+    const earlyInstanceId = yield* services.providerService.earlyStartInFlight(input.threadId);
+    const runtimeLive = (yield* services.providerService.listSessions()).some(
+      (session) => session.threadId === input.threadId,
+    );
+    const launchingInstanceId = earlyInstanceId ?? (runtimeLive ? null : requestedInstanceId);
+
     yield* services.orchestrationEngine.dispatch({
       type: "thread.message.user.record",
       commandId: CommandId.make(`server:provider-review:user-message:${crypto.randomUUID()}`),
@@ -188,6 +203,10 @@ export function startProviderReviewForThread(
         ...reviewSessionBase,
         status: "starting",
         activeTurnId: null,
+        startup:
+          launchingInstanceId === null
+            ? null
+            : { phase: "launching", providerInstanceId: launchingInstanceId },
         lastError: null,
         updatedAt: reviewRequestedAt,
       },
@@ -240,6 +259,7 @@ export function startProviderReviewForThread(
                 ...latestSessionBase,
                 status: "error",
                 activeTurnId: null,
+                startup: null,
                 lastError: cause.message || "Failed to start provider review.",
                 updatedAt: failedAt,
               },
@@ -269,6 +289,7 @@ export function startProviderReviewForThread(
         ...latestSessionBase,
         status: "running",
         activeTurnId: review.turnId,
+        startup: null,
         lastError: null,
         updatedAt: reviewStartedAt,
       },

@@ -277,6 +277,8 @@ export interface ContextMenuItem<T extends string = string> {
   label: string;
   destructive?: boolean;
   disabled?: boolean;
+  /** Starts a new group: a divider above it (none at the top of the menu). */
+  separatorBefore?: boolean;
   children?: readonly ContextMenuItem<T>[];
 }
 
@@ -285,6 +287,7 @@ export interface ContextMenuItemSchemaType {
   readonly label: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
+  readonly separatorBefore?: boolean;
   readonly children?: readonly ContextMenuItemSchemaType[];
 }
 
@@ -293,6 +296,7 @@ export const ContextMenuItemSchema: Schema.Codec<ContextMenuItemSchemaType> = Sc
   label: Schema.String,
   destructive: Schema.optionalKey(Schema.Boolean),
   disabled: Schema.optionalKey(Schema.Boolean),
+  separatorBefore: Schema.optionalKey(Schema.Boolean),
   children: Schema.optionalKey(
     Schema.Array(
       Schema.suspend((): Schema.Codec<ContextMenuItemSchemaType> => ContextMenuItemSchema),
@@ -474,6 +478,17 @@ export interface DesktopTaskbarStatusInput {
   completedThreadCount?: number;
   /** Unseen-completed and running threads, in display order for the status item menu. */
   threads?: readonly DesktopTaskbarThreadSummary[];
+  /**
+   * Active scheduled tasks that run again on their own on this computer's own
+   * server: they keep it awake when the user asked for that, and quitting
+   * stops them until Threadlines runs again.
+   */
+  activeScheduledTaskCount?: number;
+  /**
+   * Scheduled runs still working on this computer's own server: they keep it
+   * awake too, a one-time task's last run included.
+   */
+  workingScheduledRunCount?: number;
 }
 
 export interface DesktopQuitConfirmationRequest {
@@ -481,6 +496,8 @@ export interface DesktopQuitConfirmationRequest {
   requestId: string;
   /** Threads running on this computer, the work quitting would stop. */
   runningThreadCount: number;
+  /** This computer's active scheduled tasks, which don't run while Threadlines is closed. */
+  activeScheduledTaskCount?: number;
   /** Terminals on this computer running a command, which quitting stops too. */
   busyTerminalCount?: number;
 }
@@ -488,8 +505,29 @@ export interface DesktopQuitConfirmationRequest {
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
   requestId: Schema.String,
   runningThreadCount: Schema.Number,
+  activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
   busyTerminalCount: Schema.optionalKey(Schema.Number),
 });
+
+/**
+ * How the desktop app keeps working in the background for scheduled tasks:
+ * keep this computer awake while it has an active schedule, and (Windows and
+ * Linux, where closing the window quits) keep running in the tray when the
+ * window closes.
+ */
+export const DesktopBackgroundOptionsSchema = Schema.Struct({
+  keepAwakeForScheduledTasks: Schema.Boolean,
+  runInBackground: Schema.Boolean,
+  /** False on macOS, which always keeps running when the window closes. */
+  runInBackgroundSupported: Schema.Boolean,
+});
+export type DesktopBackgroundOptions = typeof DesktopBackgroundOptionsSchema.Type;
+
+export const DesktopBackgroundOptionsPatchSchema = Schema.Struct({
+  keepAwakeForScheduledTasks: Schema.optionalKey(Schema.Boolean),
+  runInBackground: Schema.optionalKey(Schema.Boolean),
+});
+export type DesktopBackgroundOptionsPatch = typeof DesktopBackgroundOptionsPatchSchema.Type;
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
@@ -499,6 +537,8 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   localBusyTerminalCount: Schema.optionalKey(Schema.Number),
   completedThreadCount: Schema.optionalKey(Schema.Number),
   threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
+  activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
+  workingScheduledRunCount: Schema.optionalKey(Schema.Number),
 });
 
 /** Optional structured payload accompanying a desktop menu action. */
@@ -1320,6 +1360,11 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  /** Background running for scheduled tasks; absent in a desktop app that predates it. */
+  getBackgroundOptions?: () => Promise<DesktopBackgroundOptions>;
+  setBackgroundOptions?: (
+    patch: DesktopBackgroundOptionsPatch,
+  ) => Promise<DesktopBackgroundOptions>;
   /**
    * True once after an update retired this desktop's old (v1) phone link,
    * until dismissed. Phones paired that way need "Connect a device" again.

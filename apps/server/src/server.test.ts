@@ -87,6 +87,17 @@ import { DictationLive } from "./dictation/DictationService.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
+import {
+  RelayDeviceRepository,
+  type RelayDeviceRepositoryShape,
+} from "./relay/RelayDeviceRepository.ts";
+import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
+import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
+import { LinkMoves } from "./links/LinkMoves.ts";
+import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
+import { ThreadMoves } from "./moves/ThreadMoves.ts";
+import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -162,6 +173,7 @@ import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
 
@@ -508,6 +520,10 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
     relayHost?: Partial<RelayHostShape>;
+    relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
+    computerLinks?: Partial<ComputerLinksShape>;
+    scheduledTasks?: Partial<ScheduledTasksShape>;
+    linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
@@ -801,8 +817,37 @@ const buildAppUnderTest = (options?: {
             admitDirect: () => null,
             acceptDirect: () => Effect.succeed(null),
             directRoutes: () => Effect.succeed([]),
+            isRevokedDevice: () => Effect.succeed(false),
             ...options?.layers?.relayHost,
           }),
+          Layer.mock(RelayDeviceRepository)({
+            getDevice: () => Effect.succeed(Option.none()),
+            getDeviceBySession: () => Effect.succeed(Option.none()),
+            listDevices: Effect.succeed([]),
+            ...options?.layers?.relayDeviceRepository,
+          }),
+          Layer.mock(ComputerLinks)({
+            snapshot: Effect.succeed({ outbound: [], inbound: [], pending: [] }),
+            changes: Stream.make({ outbound: [], inbound: [], pending: [] }),
+            ...options?.layers?.computerLinks,
+          }),
+          Layer.mock(ScheduledTasks)({
+            snapshot: Effect.succeed({ tasks: [], requests: [], timeZone: "UTC" }),
+            changes: Stream.make({ tasks: [], requests: [], timeZone: "UTC" }),
+            ...options?.layers?.scheduledTasks,
+          }),
+          Layer.mock(LinkRequests)({
+            pending: Effect.succeed([]),
+            pendingChanges: Stream.empty,
+            ...options?.layers?.linkRequests,
+          }),
+          Layer.mock(LinkMoves)({
+            pending: Effect.succeed([]),
+            pendingChanges: Stream.empty,
+          }),
+          Layer.mock(ThreadMoves)({}),
+          Layer.mock(ProjectSetups)({}),
+          Layer.mock(ProjectSetupSource)({}),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
             ...options?.layers?.threadSearch,
@@ -848,29 +893,32 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readCurrent: Effect.succeed({
-            serverPid: process.pid,
-            readAt: TEST_EPOCH,
-            processCount: 0,
-            totalRssBytes: 0,
-            totalCpuPercent: 0,
-            processes: [],
-            error: Option.none(),
-          }),
-          readHistory: (input) =>
-            Effect.succeed({
+        Layer.mergeAll(
+          Layer.mock(StallMonitor.StallMonitor)({ stalls: Stream.empty }),
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readCurrent: Effect.succeed({
+              serverPid: process.pid,
               readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
+              processCount: 0,
+              totalRssBytes: 0,
+              totalCpuPercent: 0,
+              processes: [],
               error: Option.none(),
             }),
-        }),
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(TraceDiagnostics.TraceDiagnostics)({
@@ -1726,6 +1774,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(typeof wsTokenBody.token, "string");
       assert.isTrue(wsTokenBody.token.length > 0);
       assert.equal(typeof wsTokenBody.expiresAt, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps a client app's session off /peer, the linked computers' socket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const wsTokenUrl = yield* getHttpServerUrl("/api/auth/ws-token");
+      const wsTokenBody = (yield* Effect.promise(() =>
+        fetch(wsTokenUrl, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearerToken}` },
+        }).then((response) => response.json()),
+      )) as { readonly token: string };
+      const peerUrl = yield* getHttpServerUrl("/peer");
+
+      const withOwnerToken = yield* Effect.promise(() =>
+        fetch(`${peerUrl}?wsToken=${encodeURIComponent(wsTokenBody.token)}`),
+      );
+      const withoutToken = yield* Effect.promise(() => fetch(peerUrl));
+
+      assert.equal(withOwnerToken.status, 403);
+      assert.equal(withoutToken.status, 401);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

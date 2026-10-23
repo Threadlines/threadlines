@@ -1,19 +1,18 @@
 "use client";
 
-import type { ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
-import type { Terminal } from "@xterm/xterm";
+import type { EnvironmentId, ProviderAuthFlow, ProviderInstanceId } from "@threadlines/contracts";
 import { CheckIcon, ChevronDownIcon, CopyIcon, ExternalLinkIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
-import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { lazyWithPreload } from "../../lib/lazyWithPreload";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { createXtermSurface } from "../terminal/xtermSurface";
 import {
   isProviderConnectFlowActive,
+  PROVIDER_CONNECT_TERMINAL_CLASS,
   providerConnectStatusLine,
 } from "./providerConnectFlow.logic";
 import { useIsCommunityAgent } from "./communityAgents";
@@ -21,80 +20,14 @@ import { ProviderAuthQuestionForm } from "./ProviderAuthQuestionForm";
 import type { ProviderConnectFlowState } from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
-interface ProviderConnectTerminalProps {
-  readonly instanceId: ProviderInstanceId;
-  readonly bufferRef: { current: string };
-  readonly writeRef: { current: ((data: string) => void) | null };
-}
-
-/**
- * The real interactive terminal behind "Show details". Mounted only while
- * expanded; it replays the buffered output the panel has seen so far, then
- * receives live chunks through `writeRef`.
- */
-function ProviderConnectTerminal({
-  instanceId,
-  bufferRef,
-  writeRef,
-}: ProviderConnectTerminalProps) {
-  const mountRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    const client = getPrimaryEnvironmentConnection().client;
-    const { terminal, fitAddon } = createXtermSurface({ mount, fontSize: 11, scrollback: 2_000 });
-    let disposed = false;
-
-    if (bufferRef.current.length > 0) {
-      terminal.write(bufferRef.current);
-    }
-    writeRef.current = (data: string) => {
-      if (!disposed) terminal.write(data);
-    };
-
-    const dataSubscription = terminal.onData((data) => {
-      void client.providerAuth.write({ instanceId, data }).catch(() => {
-        // The panel's status line already reports a dead session.
-      });
-    });
-
-    const pushSize = (activeTerminal: Terminal) => {
-      void client.providerAuth
-        .resize({ instanceId, cols: activeTerminal.cols, rows: activeTerminal.rows })
-        .catch(() => {});
-    };
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (disposed) return;
-      fitAddon.fit();
-      pushSize(terminal);
-    });
-    resizeObserver.observe(mount);
-    pushSize(terminal);
-    terminal.focus();
-
-    return () => {
-      disposed = true;
-      writeRef.current = null;
-      resizeObserver.disconnect();
-      dataSubscription.dispose();
-      terminal.dispose();
-    };
-  }, [bufferRef, instanceId, writeRef]);
-
-  return (
-    <div
-      ref={mountRef}
-      className="h-56 w-full overflow-hidden rounded-sm bg-background"
-      data-agent-row-toggle-ignore
-    />
-  );
-}
+const ProviderConnectTerminal = lazyWithPreload(() =>
+  import("./ProviderConnectTerminal").then((module) => module.ProviderConnectTerminal),
+);
 
 export interface ProviderConnectFlowProps {
   readonly instanceId: ProviderInstanceId;
+  /** The computer that runs the provider; null (the default) is the app's own backend. */
+  readonly environmentId?: EnvironmentId | null | undefined;
   readonly flow: ProviderAuthFlow;
   readonly displayName: string;
   /** Label for the idle button, e.g. "Sign in" / "Reconnect" / "Generate token". */
@@ -147,6 +80,23 @@ export interface ProviderConnectFlowProps {
         readonly runningHint: string;
       }
     | undefined;
+  /**
+   * Offer the command for the user's own terminal. Off where that terminal
+   * would be on another computer than the one the user is at.
+   */
+  readonly offerCommandFallback?: boolean;
+  /** Fired once per run that ends in `succeeded`. */
+  readonly onSucceeded?: (() => void) | undefined;
+  /**
+   * Start the run as the panel appears: the user already asked for it on
+   * the surface that opened this one (the composer's Sign in).
+   */
+  readonly autoStart?: boolean;
+  /**
+   * Say why a run couldn't start in the panel itself, not in a toast: a
+   * toast sits under the window this panel is in.
+   */
+  readonly startErrorInline?: boolean;
 }
 
 /**
@@ -337,6 +287,7 @@ function ProviderPageRequest(props: {
  */
 export function ProviderConnectFlow({
   instanceId,
+  environmentId = null,
   flow,
   displayName,
   actionLabel,
@@ -349,6 +300,10 @@ export function ProviderConnectFlow({
   surface = "terminal",
   acceptsRedirect = true,
   terminalFallback,
+  offerCommandFallback = true,
+  onSucceeded,
+  autoStart = false,
+  startErrorInline = false,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -376,10 +331,17 @@ export function ProviderConnectFlow({
     submitRedirect,
     answerPageRequest,
     answerQuestion,
+    writeTerminal,
+    resizeTerminal,
+    startError,
+    takesPastedAddress,
   } = useProviderConnectFlow({
     instanceId,
+    environmentId,
     flow,
+    onSucceeded,
     onStartError: (error) => {
+      if (startErrorInline) return;
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -397,7 +359,7 @@ export function ProviderConnectFlow({
   const terminalFallbackRun = terminalFallback !== undefined && !isBrowserFlow;
   // A community agent's links wait for a click: Threadlines hasn't tested
   // the agent, and the address is the agent's own.
-  const isCommunityAgent = useIsCommunityAgent(instanceId);
+  const isCommunityAgent = useIsCommunityAgent(instanceId, environmentId);
 
   useEffect(() => {
     if (isBrowserFlow) return;
@@ -427,6 +389,15 @@ export function ProviderConnectFlow({
     setShowTerminal(false);
     start(options);
   };
+
+  // Once per panel, even when the effect runs twice.
+  const autoStartedRef = useRef(false);
+  const startOnOpen = useEffectEvent(() => startFlow());
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    startOnOpen();
+  }, [autoStart]);
 
   // Cancel and Dismiss both clear the server-side session too, so a finished
   // run doesn't replay a stale success/failure panel on the next visit.
@@ -479,6 +450,11 @@ export function ProviderConnectFlow({
       )}
       {statusRow && description && !panelOpen ? (
         <p className="text-xs text-muted-foreground">{description}</p>
+      ) : null}
+      {startErrorInline && startError && !isActive && !isStarting ? (
+        <p role="alert" className="text-xs text-destructive">
+          {`${displayName} sign-in couldn't start. ${startError}`}
+        </p>
       ) : null}
 
       {panelOpen ? (
@@ -551,11 +527,14 @@ export function ProviderConnectFlow({
           ) : null}
 
           {showTerminal && !isBrowserFlow ? (
-            <ProviderConnectTerminal
-              instanceId={instanceId}
-              bufferRef={outputBufferRef}
-              writeRef={terminalWriteRef}
-            />
+            <Suspense fallback={<div className={PROVIDER_CONNECT_TERMINAL_CLASS} />}>
+              <ProviderConnectTerminal.Component
+                bufferRef={outputBufferRef}
+                writeRef={terminalWriteRef}
+                onInput={writeTerminal}
+                onResize={resizeTerminal}
+              />
+            </Suspense>
           ) : null}
 
           {isActive && state.question ? (
@@ -574,7 +553,7 @@ export function ProviderConnectFlow({
             )
           ) : null}
 
-          {isBrowserFlow && acceptsRedirect && !isCommunityAgent && isActive && state.signInUrl ? (
+          {takesPastedAddress && (!isBrowserFlow || acceptsRedirect) && !isCommunityAgent ? (
             <BrowserRedirectField onSubmit={submitRedirect} />
           ) : null}
         </div>
@@ -582,7 +561,9 @@ export function ProviderConnectFlow({
 
       {/* A community agent's login command lives in Threadlines' own tools
           folder: there is nothing to copy into another terminal. */}
-      {isCommunityAgent || (isBrowserFlow && terminalFallback === undefined) ? null : (
+      {!offerCommandFallback ||
+      isCommunityAgent ||
+      (isBrowserFlow && terminalFallback === undefined) ? null : (
         <details
           className="group"
           open={showFallback}

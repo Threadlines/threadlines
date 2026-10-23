@@ -6,7 +6,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { updateSettings } from "../hooks/useSettings";
@@ -722,6 +722,267 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     },
   );
 
+  it("shows why the agent asks and leaves out Always allow when the agent says so", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-approval-words" as MessageId,
+      targetText: "approval words target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-approval-words" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-approval-words"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "File-read approval requested",
+                    payload: {
+                      requestId: "req-approval-words",
+                      requestKind: "file-read",
+                      toolName: "Read",
+                      detail: "/Users/me/.ssh/config",
+                      title: "Claude wants to read a file outside this project",
+                      reason: "Path is outside the allowed working directories",
+                      description: "Claude will have read access to files in ~/.ssh",
+                      // Exactly the detail above: not repeated.
+                      blockedPath: "/Users/me/.ssh/config",
+                      availableDecisions: ["accept", "decline", "cancel"],
+                      defaultToNo: true,
+                    },
+                    turnId: "turn-approval-words" as TurnId,
+                    sequence: 2,
+                    createdAt: isoAt(1_001),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    try {
+      await expect
+        .element(page.getByTestId("pending-approval-heading"))
+        .toHaveTextContent("Claude wants to read a file outside this project");
+      await expect
+        .element(page.getByTestId("pending-approval-detail"))
+        .toHaveTextContent("/Users/me/.ssh/config");
+      const notes = document.querySelector<HTMLElement>('[data-pending-approval-notes="true"]');
+      expect(notes?.textContent).toContain("Why: Path is outside the allowed working directories");
+      expect(notes?.textContent).toContain("Claude will have read access to files in ~/.ssh");
+      expect(notes?.textContent).not.toContain("Path:");
+      await expect.element(page.getByRole("button", { name: "Approve once" })).toBeVisible();
+      expect(
+        [...document.querySelectorAll("button")].some(
+          (button) => button.textContent === "Always allow this session",
+        ),
+      ).toBe(false);
+
+      // Focus left on Approve must not carry to the next request: answered
+      // elsewhere, this one gives way to another the agent wants said no to.
+      const appendActivity = (sequence: number, kind: string, payload: Record<string, unknown>) =>
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + sequence,
+            eventId: EventId.make(`evt-approval-words-${sequence}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.activity-appended",
+            payload: {
+              threadId: THREAD_ID,
+              activity: {
+                id: EventId.make(`activity-approval-words-${sequence}`),
+                kind,
+                tone: "info",
+                summary: kind,
+                payload,
+                turnId: "turn-approval-words" as TurnId,
+                createdAt: isoAt(1_001 + sequence),
+              },
+            },
+          },
+        });
+      (await waitForButtonByText("Approve once")).focus();
+      appendActivity(1, "approval.requested", {
+        requestId: "req-approval-next",
+        requestKind: "command",
+        detail: "git push --force",
+        defaultToNo: true,
+      });
+      appendActivity(2, "approval.resolved", { requestId: "req-approval-words" });
+      await expect
+        .element(page.getByTestId("pending-approval-detail"))
+        .toHaveTextContent("git push --force");
+      expect(document.activeElement?.textContent).not.toBe("Approve once");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("declines a waiting approval and steers the turn with a message typed meanwhile", async () => {
+    // "Send when done" is picked, and still the message steers: the turn is
+    // waiting on the user, so waiting for it to finish would never send.
+    updateSettings({ followUpDelivery: "queue" });
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-approval-redirect" as MessageId,
+      targetText: "approval redirect target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-approval-redirect" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-approval-redirect"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "Approval requested",
+                    payload: {
+                      requestId: "req-approval-redirect",
+                      requestKind: "command",
+                      detail: "rm -rf build",
+                    },
+                    turnId: "turn-approval-redirect" as TurnId,
+                    sequence: 2,
+                    createdAt: isoAt(1_001),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    const dispatchIndex = (type: string) =>
+      wsRequests.findIndex(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      const editor = await waitForComposerEditor();
+      expect(editor.getAttribute("aria-placeholder")).toBe(
+        "Type to decline and tell the agent what to do instead",
+      );
+      await waitForButtonByAriaLabel("Stop generation");
+
+      await page
+        .getByTestId("composer-editor")
+        .fill("Use the clean script instead", { timeout: 5_000 });
+      await waitForComposerText("Use the clean script instead");
+      (await waitForButtonByAriaLabel("Decline and send")).click();
+
+      await vi.waitFor(() => {
+        expect(wsRequests[dispatchIndex("thread.approval.respond")]).toMatchObject({
+          requestId: "req-approval-redirect",
+          decision: "decline",
+        });
+        expect(wsRequests[dispatchIndex("thread.follow-up.submit")]).toMatchObject({
+          turnId: "turn-approval-redirect",
+          delivery: "steer",
+          message: { text: "Use the clean script instead" },
+        });
+      });
+      // The agent hears "no" before it reads what to do instead.
+      expect(dispatchIndex("thread.approval.respond")).toBeLessThan(
+        dispatchIndex("thread.follow-up.submit"),
+      );
+    } finally {
+      updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not implement a plan on Enter while an approval waits, and declines it for feedback", async () => {
+    // A background agent asked after the plan turn settled.
+    const snapshot = createSnapshotWithPlanFollowUpPrompt();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-plan-approval"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "Approval requested",
+                    payload: {
+                      requestId: "req-plan-approval",
+                      requestKind: "command",
+                      detail: "npm run lint",
+                    },
+                    turnId: null,
+                    sequence: 90,
+                    createdAt: isoAt(1_090),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    const dispatchIndex = (type: string) =>
+      wsRequests.findIndex(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      (await waitForComposerEditor()).focus();
+      await userEvent.keyboard("{Enter}");
+
+      await page.getByTestId("composer-editor").fill("Skip the second step", { timeout: 5_000 });
+      await waitForComposerText("Skip the second step");
+      (await waitForButtonByAriaLabel("Decline and send")).click();
+      await vi.waitFor(() => {
+        expect(wsRequests[dispatchIndex("thread.approval.respond")]).toMatchObject({
+          requestId: "req-plan-approval",
+          decision: "decline",
+        });
+        expect(wsRequests[dispatchIndex("thread.turn.start")]).toMatchObject({
+          message: { text: expect.stringContaining("Skip the second step") },
+        });
+      });
+      expect(dispatchIndex("thread.approval.respond")).toBeLessThan(
+        dispatchIndex("thread.turn.start"),
+      );
+      // The empty Enter sent nothing: the one turn is the feedback.
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.start",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("stops one background command through the agent from the runs list", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-stop-one-task" as MessageId,
@@ -917,6 +1178,48 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       await waitForComposerText("then run the tests");
     } finally {
       updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
+
+  it("names the agent on the working row while its program starts", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-launching-agent" as MessageId,
+      targetText: "launching agent target",
+      sessionStatus: "starting",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.session
+            ? {
+                ...thread,
+                session: {
+                  ...thread.session,
+                  startup: {
+                    phase: "launching",
+                    providerInstanceId: ProviderInstanceId.make("codex"),
+                  },
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          const anchor = document.querySelector<HTMLElement>('[data-turn-working-anchor="true"]');
+          expect(
+            anchor?.querySelector('[data-turn-working-label="true"]')?.textContent?.trim(),
+          ).toMatch(/^Starting Codex/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
       await mounted.cleanup();
     }
   });

@@ -1,16 +1,18 @@
 import "../../index.css";
 
 import {
+  ChildRequestId,
   EnvironmentId,
   MessageId,
   SideTurnId,
+  ThreadId,
   ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
@@ -1308,6 +1310,62 @@ describe("MessagesTimeline", () => {
       expect(messageBody?.className).toContain("max-h-44");
       expect(messageBody?.getAttribute("data-user-message-fade")).toBe("true");
       expect((messageBody as HTMLDivElement | null)?.style.maskImage).toContain("linear-gradient");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("folds a thread's report to its first line, and keeps it open once opened", async () => {
+    const report = {
+      id: MessageId.make("message-report"),
+      role: "user" as const,
+      text: "The **fix** is in, see [the pull request](https://github.com/o/r/pull/1).\n\n- The tests pass\n- The docs say so",
+      fromThread: {
+        threadId: ThreadId.make("thread-child"),
+        requestId: ChildRequestId.make("request-child"),
+        kind: "report" as const,
+      },
+      createdAt: MESSAGE_CREATED_AT,
+      streaming: false,
+    };
+    const timeline = () => (
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          { id: report.id, kind: "message", createdAt: MESSAGE_CREATED_AT, message: report },
+        ]}
+      />
+    );
+    let screen = await renderTimeline(timeline());
+
+    try {
+      // Its first line as the chat draws it, no markdown marks; nothing else.
+      const folded = page.getByRole("button", { name: "The fix is in, see #1 the pull request." });
+      await expect.element(folded).toHaveAttribute("aria-expanded", "false");
+      expect(document.body.textContent).not.toContain("The docs say so");
+      expect(document.querySelector('[aria-label="Copy message"]')).toBeNull();
+
+      // Opened from the keyboard, focus moves to the message the line gave way to.
+      (folded.element() as HTMLElement).focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByText("The docs say so")).toBeVisible();
+      expect(document.querySelector(".chat-markdown li")).not.toBeNull();
+      expect(document.activeElement?.contains(page.getByText("The docs say so").element())).toBe(
+        true,
+      );
+
+      // The list drops a row it scrolls past and draws it again: still open.
+      await screen.unmount();
+      screen = await renderTimeline(timeline());
+      await expect.element(page.getByText("The docs say so")).toBeVisible();
+
+      await page.getByRole("button", { name: "Show less" }).click();
+      const foldedAgain = page.getByRole("button", {
+        name: "The fix is in, see #1 the pull request.",
+      });
+      await expect.element(foldedAgain).toBeVisible();
+      await expect.element(foldedAgain).toHaveFocus();
+      expect(document.body.textContent).not.toContain("The docs say so");
     } finally {
       await screen.unmount();
     }

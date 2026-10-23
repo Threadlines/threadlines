@@ -1,6 +1,7 @@
 import {
   type AuthClientMetadataDeviceType,
   type AuthSessionId,
+  RELAY_CLOSE_CODE_ACCESS_REMOVED,
   RELAY_CLOSE_CODE_REPLACED,
   RELAY_DEVICE_SESSION_SUBJECT,
   RELAY_INVITE_TTL_SECONDS,
@@ -39,7 +40,6 @@ import {
   claimSecrets,
   decodePublicKey,
   fromBase64Url,
-  generateStoredKeyPair,
   loadStoredKeyPair,
   type NoiseKeyPair,
   PAIRING_NONCE_BYTES,
@@ -61,19 +61,27 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import {
   DEFAULT_RELAY_URL,
+  isTransientRelayError,
   RelayApiError,
   relayApi,
   relayOriginFrom,
   relaySocketUrl,
 } from "./relayApi.ts";
 import {
+  grantForInvitePurpose,
   RelayDeviceRepository,
+  type RelayDeviceGrant,
   type RelayDeviceRow,
+  type RelayInvitePurpose,
   type RelayPairingRow,
 } from "./RelayDeviceRepository.ts";
-import { computeDirectRoutes } from "./directRoutes.ts";
+import { computeDirectOrigins, computeDirectRoutes } from "./directRoutes.ts";
+import { RelayHooks } from "./RelayHooks.ts";
+import { makeRelayHooks, RelayHookRegisterError, type RelayHooksClient } from "./RelayHooksLive.ts";
+import { RelayHookStateRepositoryLive } from "./RelayHookStateRepository.ts";
 import { openLoopbackSocket, openRelayPipeSocket } from "./relayPipe.ts";
 import { openSecurePipe, type SecureDuplex, type SecurePipeHandle } from "./securePipe.ts";
+import { loadOrCreateStoredKeyPair } from "./storedKeys.ts";
 
 const isRelayAccessError = Schema.is(RelayAccessError);
 
@@ -101,10 +109,27 @@ const SESSION_REFRESH_INTERVAL_MS = 6 * 60 * 60_000;
 const TERMINAL_REQUEST_LINGER_MS = 60_000;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
+/** A computer-link invite as made (ComputerLinkInvite adds this computer's identity). */
+export interface RelayLinkInvite {
+  readonly invite: RelayOpenInvite;
+  /** Where this server listens without the relay (`ws://address:port`). */
+  readonly directOrigins: ReadonlyArray<string>;
+}
+
 export interface RelayHostShape {
   /** Owner-facing state: open code, live requests, today's allowance. Current value first. */
   readonly snapshots: Stream.Stream<RelayAccessSnapshot>;
   readonly createInvite: Effect.Effect<RelayOpenInvite, RelayAccessError>;
+  /**
+   * A single-use invite for another computer's server (a computer link):
+   * claims of it are approved on their own and get the `peer` role, recorded
+   * as `joinerEnvironmentId`'s link for good. It never shows as the open code.
+   */
+  readonly createLinkInvite: (
+    joinerEnvironmentId: string,
+  ) => Effect.Effect<RelayLinkInvite, RelayAccessError>;
+  /** Whether this server removed the device (so its far end can tell that from a wrong address). */
+  readonly isRevokedDevice: (deviceId: string) => Effect.Effect<boolean>;
   readonly cancelInvite: (inviteId: RelayInviteId) => Effect.Effect<void, RelayAccessError>;
   readonly respondToJoinRequest: (
     input: RelayRespondToJoinRequestInput,
@@ -139,11 +164,6 @@ export class RelayHost extends Context.Service<RelayHost, RelayHostShape>()(
 ) {}
 
 const decodeControlEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RelayControlEvent));
-const StoredKeyPairJson = Schema.fromJsonString(
-  Schema.Struct({ privateKey: Schema.String, publicKey: Schema.String }),
-);
-const decodeStoredKeyPair = Schema.decodeUnknownOption(StoredKeyPairJson);
-const encodeStoredKeyPair = Schema.encodeSync(StoredKeyPairJson);
 
 function deviceTypeFor(kind: string): AuthClientMetadataDeviceType {
   if (kind === "phone") return "mobile";
@@ -251,12 +271,20 @@ const make = Effect.gen(function* () {
     {
       readonly macKey: Bytes;
       readonly expiresAt: number;
+      /** Set by this server when it made the invite; decides the claimer's grant. */
+      readonly purpose: RelayInvitePurpose;
+      /** Computer links: the computer it is for, pinned on the device it approves. */
+      readonly joinerEnvironmentId: string | null;
       claimedBy: string | null;
       approved: boolean;
     }
   >();
   const pairingLock = yield* Semaphore.make(1);
   const hostKeyLock = yield* Semaphore.make(1);
+  /** One registration at a time, so two callers can't each register a host. */
+  const registerLock = yield* Semaphore.make(1);
+  /** One control-socket attempt at a time, so two can't both open one. */
+  const controlLock = yield* Semaphore.make(1);
   let hostKeyCache: { readonly stored: StoredKeyPair; readonly pair: NoiseKeyPair } | null = null;
   let tailscaleCache: { readonly value: string | null; readonly at: number } | null = null;
 
@@ -290,15 +318,7 @@ const make = Effect.gen(function* () {
     .withPermits(1)(
       Effect.gen(function* () {
         if (hostKeyCache) return hostKeyCache;
-        const existing = yield* secrets.get(HOST_KEY_NAME);
-        let stored = existing
-          ? Option.getOrNull(decodeStoredKeyPair(new TextDecoder().decode(existing)))
-          : null;
-        if (!stored) {
-          stored = yield* Effect.promise(() => generateStoredKeyPair());
-          yield* secrets.set(HOST_KEY_NAME, utf8(encodeStoredKeyPair(stored)));
-        }
-        const keyPair = stored;
+        const keyPair = yield* loadOrCreateStoredKeyPair(secrets, HOST_KEY_NAME);
         const pair = yield* Effect.tryPromise(() => loadStoredKeyPair(keyPair));
         hostKeyCache = { stored: keyPair, pair };
         return hostKeyCache;
@@ -332,26 +352,69 @@ const make = Effect.gen(function* () {
     return null;
   });
 
-  const ensureRegistered = Effect.gen(function* () {
-    const existing = yield* loadCredentials;
-    if (existing) return existing;
-    const origin = relayOrigin!;
-    const registered = yield* relayApi
-      .registerHost(origin, {
-        label: hostLabel,
-        environmentId: descriptor.environmentId,
-      })
-      .pipe(
-        Effect.mapError((error) => {
-          if (error.status !== 404) return error;
-          setStatus("unsupported", "This relay doesn't support device codes yet.");
-          return new RelayAccessError({ detail: "This relay doesn't support device codes yet." });
+  const ensureRegistered = registerLock.withPermits(1)(
+    Effect.gen(function* () {
+      const existing = yield* loadCredentials;
+      if (existing) return existing;
+      const origin = relayOrigin!;
+      const registered = yield* relayApi
+        .registerHost(origin, {
+          label: hostLabel,
+          environmentId: descriptor.environmentId,
+        })
+        .pipe(
+          Effect.mapError((error) => {
+            if (error.status !== 404) return error;
+            setStatus("unsupported", "This relay doesn't support device codes yet.");
+            return new RelayAccessError({ detail: "This relay doesn't support device codes yet." });
+          }),
+        );
+      yield* secrets.set(HOST_SECRET_NAME, new TextEncoder().encode(registered.hostSecret));
+      yield* repo.saveHost({ hostId: registered.hostId, relayOrigin: origin, createdAt: nowIso() });
+      credentials = { hostId: registered.hostId, hostSecret: registered.hostSecret };
+      return credentials;
+    }),
+  );
+
+  /**
+   * The relay confirmed it doesn't know `hostId` (not a network error): drop
+   * its credentials so the next registration makes a new host. Paired
+   * devices of the lost host keep their rows; they had to pair again anyway.
+   */
+  const forgetHost = (hostId: string) =>
+    registerLock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          const stored = yield* repo.getHost;
+          if (Option.isSome(stored) && stored.value.hostId !== hostId) return;
+          if (credentials && credentials.hostId !== hostId) return;
+          credentials = null;
+          yield* secrets.remove(HOST_SECRET_NAME);
+          yield* repo.clearHost;
+          dropControl("Registering this computer with the relay again.");
         }),
-      );
-    yield* secrets.set(HOST_SECRET_NAME, new TextEncoder().encode(registered.hostSecret));
-    yield* repo.saveHost({ hostId: registered.hostId, relayOrigin: origin, createdAt: nowIso() });
-    credentials = { hostId: registered.hostId, hostSecret: registered.hostSecret };
-    return credentials;
+      )
+      .pipe(Effect.catchCause((cause) => Effect.logWarning("relay.host.forget-failed", { cause })));
+
+  // Event tasks' hooks ride on this registration and control socket.
+  const hooks: RelayHooksClient = yield* makeRelayHooks({
+    relayOrigin,
+    credentials: Effect.suspend(() => loadCredentials).pipe(Effect.orElseSucceed(() => null)),
+    register: Effect.suspend(() => ensureRegistered).pipe(
+      Effect.mapError(
+        (error) =>
+          new RelayHookRegisterError({
+            detail: toAccessError(error, "Couldn't register this computer with the relay.").detail,
+            transient: error instanceof RelayApiError && isTransientRelayError(error),
+          }),
+      ),
+    ),
+    forgetHost,
+    sendControl: (message) => sendControl(message),
+    isConnected: () => control !== null && control.readyState === WebSocket.OPEN,
+    wake: () => {
+      runFork(ensureControl);
+    },
   });
 
   // ----- control socket -----------------------------------------------------------
@@ -359,6 +422,13 @@ const make = Effect.gen(function* () {
   const hasRelayWork = Effect.gen(function* () {
     if (invite || [...requests.values()].some((request) => request.state === "pending"))
       return true;
+    // Event tasks wait for deliveries, and a hook change waits to be sent.
+    if (yield* hooks.wantsRelay) return true;
+    // A computer-link invite is never the open code, but its claim still
+    // arrives over the control socket.
+    for (const inviteId of localInvites.keys()) {
+      if (liveInvite(inviteId) !== null) return true;
+    }
     const devices = yield* repo.listDevices;
     return devices.some((device) => device.state !== "revoked");
   });
@@ -391,13 +461,19 @@ const make = Effect.gen(function* () {
     }, delay);
   }
 
-  function sendControl(message: unknown): void {
+  function sendControl(message: unknown): boolean {
     if (control && control.readyState === WebSocket.OPEN) {
       control.send(JSON.stringify(message));
+      return true;
     }
+    return false;
   }
 
-  /** Opens the control socket if there is anything for it to do. */
+  /**
+   * Opens the control socket if there is anything for it to do. With event
+   * tasks it also registers this computer first when it isn't (pairing
+   * flows register on their own).
+   */
   const ensureControl: Effect.Effect<void> = Effect.gen(function* () {
     if (!localOrigin || !relayOrigin) return;
     if (control && control.readyState <= WebSocket.OPEN) return;
@@ -405,6 +481,12 @@ const make = Effect.gen(function* () {
       if (status !== "unsupported") setStatus("idle");
       return;
     }
+    if (!(yield* loadCredentials)) {
+      if (!(yield* hooks.wantsRelay)) return;
+      yield* ensureRegistered;
+    }
+    yield* hooks.beforeConnect;
+    // Read after the hook client had its say: it may have registered again.
     const creds = yield* loadCredentials;
     if (!creds) return;
 
@@ -414,9 +496,11 @@ const make = Effect.gen(function* () {
       `${RELAY_TOKEN_PROTOCOL_PREFIX}${creds.hostSecret}`,
     ]);
     control = socket;
+    let opened = false;
 
     socket.addEventListener("open", () => {
       if (control !== socket) return;
+      opened = true;
       reconnectAttempt = 0;
       lastPongAt = Date.now();
       setStatus("online");
@@ -446,7 +530,13 @@ const make = Effect.gen(function* () {
       lastPongAt = Date.now();
       const decoded = decodeControlEvent(event.data);
       if (Option.isSome(decoded)) {
-        void runPromise(handleControlEvent(decoded.value)).catch((error) => {
+        const controlEvent = decoded.value;
+        if (controlEvent.type === "hook.delivery" || controlEvent.type === "hook.pending") {
+          // Handed over in arrival order; the hook client takes them one at a time.
+          hooks.receive(controlEvent);
+          return;
+        }
+        void runPromise(handleControlEvent(controlEvent)).catch((error) => {
           void runPromise(
             Effect.logWarning("relay.control.event-failed", { error: String(error) }),
           );
@@ -457,6 +547,11 @@ const make = Effect.gen(function* () {
       if (control !== socket) return;
       clearControlTimers();
       control = null;
+      if (!opened) {
+        // Refused before it opened: with event tasks, ask the relay whether
+        // it still knows this computer, and register again if it doesn't.
+        runFork(hooks.refused(creds));
+      }
       if (event?.code === RELAY_CLOSE_CODE_REPLACED) {
         // Another process registered as this host took over; don't fight it.
         setStatus("offline", "Another Threadlines on this computer took over the relay link.");
@@ -472,6 +567,7 @@ const make = Effect.gen(function* () {
     socket.addEventListener("close", (event) => onGone(event));
     socket.addEventListener("error", () => onGone());
   }).pipe(
+    controlLock.withPermits(1),
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         yield* Effect.logWarning("relay.control.connect-failed", { cause });
@@ -561,6 +657,7 @@ const make = Effect.gen(function* () {
             trackRequest(request);
           }
           publish();
+          runFork(hooks.connected);
           yield* reconcile(event.devices);
           for (const request of event.requests) {
             yield* processRequest(request);
@@ -588,6 +685,11 @@ const make = Effect.gen(function* () {
         }
         case "device.connecting": {
           yield* handleDeviceConnecting(event.deviceId, event.pipeId);
+          return;
+        }
+        case "hook.delivery":
+        case "hook.pending": {
+          hooks.receive(event);
           return;
         }
       }
@@ -645,11 +747,36 @@ const make = Effect.gen(function* () {
             );
             if (!valid) return yield* refuse(request.requestId, "bad claim proof");
             local.claimedBy = request.requestId;
-            const decision = yield* approveVerified(request.requestId, request.devicePublicKey);
-            if (decision.state === "approved") local.approved = true;
+            yield* repo
+              .updateInvite({
+                inviteId: request.inviteId,
+                claimedBy: request.requestId,
+                approved: false,
+              })
+              .pipe(Effect.ignore);
+            const decision = yield* approveVerified(
+              request.requestId,
+              request.devicePublicKey,
+              grantForInvitePurpose(local.purpose),
+              local.joinerEnvironmentId,
+            );
+            if (decision.state === "approved") {
+              local.approved = true;
+              yield* repo
+                .updateInvite({
+                  inviteId: request.inviteId,
+                  claimedBy: request.requestId,
+                  approved: true,
+                })
+                .pipe(Effect.ignore);
+            }
             return;
           }
 
+          // A computer link is claimed only with its invite's secret, never a typed code.
+          if (local.purpose !== "device") {
+            return yield* refuse(request.requestId, "code join on a computer-link invite");
+          }
           if (!request.commitment) return yield* refuse(request.requestId, "missing commitment");
           const existing = yield* repo.getPairingByInvite(request.inviteId);
           const stored: RelayPairingRow = Option.isSome(existing)
@@ -771,11 +898,21 @@ const make = Effect.gen(function* () {
           detail: "That code ran out. Make a new one and try again.",
         });
       }
-      return yield* approveVerified(requestId, pairing.value.devicePublicKey);
+      return yield* approveVerified(requestId, pairing.value.devicePublicKey, "client", null);
     });
 
-  /** Approves a join whose device key this server already checked. */
-  const approveVerified = (requestId: string, devicePublicKey: string) =>
+  /**
+   * Approves a join whose device key this server already checked. `grant`
+   * (and a computer link's pinned `linkEnvironmentId`) come from the invite
+   * this server made and go into the device row in the same insert, before
+   * any session exists.
+   */
+  const approveVerified = (
+    requestId: string,
+    devicePublicKey: string,
+    grant: RelayDeviceGrant,
+    linkEnvironmentId: string | null,
+  ) =>
     Effect.gen(function* () {
       const request = requests.get(requestId);
       if (!request) {
@@ -790,6 +927,8 @@ const make = Effect.gen(function* () {
         kind: request.joiner.kind,
         platform: request.joiner.platform ?? null,
         devicePublicKey,
+        grant,
+        linkEnvironmentId,
         now: nowIso(),
       });
       if (row.state === "revoking" || row.state === "revoked") {
@@ -809,11 +948,13 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       if (row.sessionId === null) {
+        // The role comes from the row only: what this server granted when it
+        // checked the invite, never what the joiner said it was.
         const issued = yield* sessions.issue({
           ttl: RELAY_DEVICE_SESSION_TTL,
           subject: RELAY_DEVICE_SUBJECT,
           method: "bearer-session-token",
-          role: "client",
+          role: row.grant,
           client: {
             label: row.label,
             deviceType: deviceTypeFor(row.kind),
@@ -945,7 +1086,7 @@ const make = Effect.gen(function* () {
     for (const [pipeId, pipe] of pipes) {
       if (pipe.deviceId === deviceId) {
         pipes.delete(pipeId);
-        pipe.handle.close("Access removed.");
+        pipe.handle.close("Access removed.", RELAY_CLOSE_CODE_ACCESS_REMOVED);
       }
     }
   }
@@ -984,6 +1125,7 @@ const make = Effect.gen(function* () {
       const key = yield* hostKey;
       const creds = credentials;
       const origin = relayOrigin;
+      const grant = Option.isSome(row) ? row.value.grant : "client";
       const socket = yield* Effect.tryPromise(() =>
         openRelayPipeSocket({
           relayPipeUrl: relaySocketUrl(origin, `/v2/hosts/${creds.hostId}/pipes/${pipeId}`),
@@ -1006,7 +1148,7 @@ const make = Effect.gen(function* () {
         hostId: creds.hostId,
         deviceId,
         handshakeTimeoutMs: RELAY_HANDSHAKE_TIMEOUT_MS,
-        openLocal: () => runPromise(openDeviceSession(sessionId)),
+        openLocal: () => runPromise(openDeviceSession(sessionId, grant)),
         onClosed: () => {
           pipes.delete(pipeId);
         },
@@ -1022,10 +1164,12 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * The loopback `/ws` for a device's session, opened only once the device
-   * proved its key. The session must still be usable; each use extends it.
+   * The loopback socket for a device's session, opened only once the device
+   * proved its key: `/ws` for an app, `/peer` for a linked computer (which
+   * serves only the peer methods). The session must still be usable; each
+   * use extends it.
    */
-  const openDeviceSession = (sessionId: AuthSessionId) =>
+  const openDeviceSession = (sessionId: AuthSessionId, grant: RelayDeviceGrant) =>
     Effect.gen(function* () {
       const usable = yield* sessions
         .extendExpiry(sessionId, RELAY_DEVICE_SESSION_TTL)
@@ -1034,7 +1178,7 @@ const make = Effect.gen(function* () {
         return yield* Effect.fail(new RelayAccessError({ detail: "This device's access ended." }));
       }
       const token = yield* sessions.issueWebSocketToken(sessionId);
-      const localUrl = new URL("/ws", localOrigin);
+      const localUrl = new URL(grant === "peer" ? "/peer" : "/ws", localOrigin);
       localUrl.protocol = localUrl.protocol === "https:" ? "wss:" : "ws:";
       localUrl.searchParams.set("wsToken", token.token);
       return yield* Effect.tryPromise(() => openLoopbackSocket(localUrl.toString()));
@@ -1076,6 +1220,7 @@ const make = Effect.gen(function* () {
         return null;
       }
       const key = yield* hostKey;
+      const grant = Option.isSome(row) ? row.value.grant : "client";
       directCounter += 1;
       const pipeId = `direct:${directCounter}`;
       const handle = openSecurePipe({
@@ -1086,7 +1231,7 @@ const make = Effect.gen(function* () {
         hostId: creds.hostId,
         deviceId: input.deviceId,
         handshakeTimeoutMs: DIRECT_HANDSHAKE_TIMEOUT_MS,
-        openLocal: () => runPromise(openDeviceSession(sessionId)),
+        openLocal: () => runPromise(openDeviceSession(sessionId, grant)),
         onHandshake: () => input.admission.release(),
         onClosed: () => {
           input.admission.release();
@@ -1135,53 +1280,97 @@ const make = Effect.gen(function* () {
 
   // ----- public API ---------------------------------------------------------------
 
+  const makeInvite = (purpose: RelayInvitePurpose, joinerEnvironmentId: string | null = null) =>
+    Effect.gen(function* () {
+      const creds = yield* ensureRegistered;
+      const key = yield* hostKey;
+      // The QR secret is made here; the relay only ever sees a hash of the
+      // claim token derived from it, never the key claim proofs are made with.
+      const inviteSecret = randomBytes(32);
+      const { claimToken, macKey } = yield* Effect.promise(() => claimSecrets(inviteSecret));
+      const claimTokenHash = toBase64Url(yield* Effect.promise(() => sha256(utf8(claimToken))));
+      const created = yield* relayApi.createInvite(relayOrigin!, creds.hostId, creds.hostSecret, {
+        hostLabel,
+        claimTokenHash,
+      });
+      const now = Date.now();
+      for (const [inviteId, local] of localInvites) {
+        if (local.expiresAt + JOIN_GRACE_MS < now) localInvites.delete(inviteId);
+      }
+      // This server's own clock decides how long the invite counts here; the
+      // relay's expiry is only for display (a relay could report any date).
+      const relayExpiry = Date.parse(created.expiresAt);
+      const ownExpiry = now + RELAY_INVITE_TTL_SECONDS * 1000;
+      const expiresAt = Number.isFinite(relayExpiry) ? Math.min(relayExpiry, ownExpiry) : ownExpiry;
+      localInvites.set(created.inviteId, {
+        macKey,
+        expiresAt,
+        purpose,
+        joinerEnvironmentId,
+        claimedBy: null,
+        approved: false,
+      });
+      yield* repo.insertInvite({
+        inviteId: created.inviteId,
+        purpose,
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
+        claimedBy: null,
+        approved: false,
+        joinerEnvironmentId,
+        createdAt: nowIso(),
+      });
+      const made: RelayOpenInvite = {
+        inviteId: created.inviteId,
+        hostId: creds.hostId as RelayOpenInvite["hostId"],
+        relayOrigin: relayOrigin!,
+        code: created.code,
+        inviteSecret: toBase64Url(inviteSecret),
+        hostPublicKey: key.stored.publicKey,
+        expiresAt: created.expiresAt,
+      };
+      return made;
+    });
+
   const createInvite: RelayHostShape["createInvite"] = Effect.gen(function* () {
-    const creds = yield* ensureRegistered;
-    const key = yield* hostKey;
-    // The QR secret is made here; the relay only ever sees a hash of the
-    // claim token derived from it, never the key claim proofs are made with.
-    const inviteSecret = randomBytes(32);
-    const { claimToken, macKey } = yield* Effect.promise(() => claimSecrets(inviteSecret));
-    const claimTokenHash = toBase64Url(yield* Effect.promise(() => sha256(utf8(claimToken))));
-    const created = yield* relayApi.createInvite(relayOrigin!, creds.hostId, creds.hostSecret, {
-      hostLabel,
-      claimTokenHash,
-    });
-    const now = Date.now();
-    for (const [inviteId, local] of localInvites) {
-      if (local.expiresAt + JOIN_GRACE_MS < now) localInvites.delete(inviteId);
-    }
-    // This server's own clock decides how long the invite counts here; the
-    // relay's expiry is only for display (a relay could report any date).
-    const relayExpiry = Date.parse(created.expiresAt);
-    const ownExpiry = now + RELAY_INVITE_TTL_SECONDS * 1000;
-    localInvites.set(created.inviteId, {
-      macKey,
-      expiresAt: Number.isFinite(relayExpiry) ? Math.min(relayExpiry, ownExpiry) : ownExpiry,
-      claimedBy: null,
-      approved: false,
-    });
-    invite = {
-      inviteId: created.inviteId,
-      hostId: creds.hostId as RelayOpenInvite["hostId"],
-      relayOrigin: relayOrigin!,
-      code: created.code,
-      inviteSecret: toBase64Url(inviteSecret),
-      hostPublicKey: key.stored.publicKey,
-      expiresAt: created.expiresAt,
-    };
+    const openInvite = yield* makeInvite("device");
+    invite = openInvite;
     if (inviteTimer) clearTimeout(inviteTimer);
-    const openInvite = invite;
     inviteTimer = setTimeout(
       () => {
         if (invite?.inviteId === openInvite.inviteId) clearInvite();
       },
-      Math.max(0, Date.parse(created.expiresAt) - Date.now()),
+      Math.max(0, Date.parse(openInvite.expiresAt) - Date.now()),
     );
     publish();
     yield* ensureControl;
     return openInvite;
   }).pipe(Effect.mapError((error) => toAccessError(error, "Couldn't make a code.")));
+
+  const createLinkInvite: RelayHostShape["createLinkInvite"] = (joinerEnvironmentId) =>
+    Effect.gen(function* () {
+      const made = yield* makeInvite("computer-link", joinerEnvironmentId);
+      // The control socket has to be up to hear the claim.
+      yield* ensureControl;
+      const port = localOrigin ? Number(new URL(localOrigin).port) : Number.NaN;
+      const directOrigins =
+        Number.isInteger(port) && port > 0
+          ? computeDirectOrigins({
+              bindHost: config.host,
+              port,
+              tailscaleHttpsBaseUrl: yield* tailscaleHttpsBaseUrl,
+            })
+          : [];
+      return { invite: made, directOrigins };
+    }).pipe(Effect.mapError((error) => toAccessError(error, "Couldn't make a link invite.")));
+
+  const isRevokedDevice: RelayHostShape["isRevokedDevice"] = (deviceId) =>
+    repo.getDevice(deviceId).pipe(
+      Effect.map(
+        (row) =>
+          Option.isSome(row) && (row.value.state === "revoked" || row.value.state === "revoking"),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
 
   const cancelInvite: RelayHostShape["cancelInvite"] = (inviteId) =>
     Effect.gen(function* () {
@@ -1257,6 +1446,7 @@ const make = Effect.gen(function* () {
         DateTime.formatIso(DateTime.makeUnsafe(Date.now() - PAIRING_RETENTION_MS)),
       ),
       repo.pruneRevoked(DateTime.formatIso(DateTime.makeUnsafe(Date.now() - REVOKED_RETENTION_MS))),
+      repo.pruneInvites(DateTime.formatIso(DateTime.makeUnsafe(Date.now() - PAIRING_RETENTION_MS))),
     ]),
   ).pipe(Effect.ignore);
 
@@ -1312,17 +1502,28 @@ const make = Effect.gen(function* () {
     }
   }).pipe(Effect.catchCause((cause) => Effect.logWarning("relay.cleanup.failed", { cause })));
 
-  return RelayHost.of({
-    snapshots: SubscriptionRef.changes(snapshotRef),
-    createInvite,
-    cancelInvite,
-    respondToJoinRequest,
-    submitJoin,
-    start,
-    admitDirect,
-    acceptDirect,
-    directRoutes,
-  });
+  return Context.make(
+    RelayHost,
+    RelayHost.of({
+      snapshots: SubscriptionRef.changes(snapshotRef),
+      createInvite,
+      createLinkInvite,
+      isRevokedDevice,
+      cancelInvite,
+      respondToJoinRequest,
+      submitJoin,
+      start,
+      admitDirect,
+      acceptDirect,
+      directRoutes,
+    }),
+  ).pipe(Context.add(RelayHooks, hooks.service));
 });
 
-export const RelayHostLive = Layer.effect(RelayHost, make);
+/**
+ * The server's end of the relay: "Connect a device" (RelayHost) and event
+ * tasks' hooks (RelayHooks), which share its registration and control socket.
+ */
+export const RelayHostLive = Layer.effectContext(make).pipe(
+  Layer.provide(RelayHookStateRepositoryLive),
+);

@@ -29,17 +29,20 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   BotIcon,
+  ChartColumnIcon,
   CornerLeftUpIcon,
   EraserIcon,
   FileTextIcon,
   FolderIcon,
   FolderPlusIcon,
-  GaugeIcon,
   GitPullRequestIcon,
   HomeIcon,
+  LaptopIcon,
   LinkIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
+  PanelLeftCloseIcon,
+  PanelLeftIcon,
   PlusIcon,
   RotateCcwIcon,
   SearchIcon,
@@ -49,6 +52,17 @@ import {
   TerminalSquareIcon,
   Trash2Icon,
   UsersRoundIcon,
+  MonitorUpIcon,
+  FolderSyncIcon,
+  WaypointsIcon,
+  CalendarClockIcon,
+  CalendarPlusIcon,
+  ArchiveIcon,
+  CheckIcon,
+  CopyIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -74,7 +88,12 @@ import {
   requireEnvironmentConnection,
 } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useInboxThreads } from "../hooks/useInboxThreads";
+import { useThreadMenu } from "../hooks/useThreadMenu";
+import type { ThreadMenuAction } from "./threadMenu.logic";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { useUiStateStore } from "../uiStateStore";
 import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
 import { readLocalApi } from "../localApi";
 import { closeRightPanelSearchParams } from "../diffRouteSearch";
@@ -111,6 +130,7 @@ import {
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
+import { useScheduledTaskEnvironments } from "../lib/scheduledTasksState";
 import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
 import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
 import {
@@ -149,6 +169,12 @@ import {
 import { isHostedStaticApp } from "../hostedPairing";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
+import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
+import { openThreadMoveDialog } from "./ThreadMoveDialog";
+import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
+import { useThreadMoveOffered } from "../environments/links/threadMoves";
+import { threadMoveStatus } from "../threadMove";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
@@ -426,6 +452,64 @@ function getAddProjectCloneDirectoryName(
  * The open palette: search, actions and the add-project flows. Loaded on
  * demand by CommandPalette, which owns the open state and the shortcut.
  */
+/**
+ * The thread menu's actions the palette offers for the open thread, by what
+ * they are called here. Mark unread, the family's and Move (its own entry)
+ * stay in the menu.
+ */
+const PALETTE_THREAD_ACTIONS: Partial<
+  Record<
+    ThreadMenuAction,
+    { readonly title: string; readonly searchTerms: string[]; readonly icon: ReactNode }
+  >
+> = {
+  rename: {
+    title: "Rename thread",
+    searchTerms: ["rename", "title", "name"],
+    icon: <PencilIcon className={ITEM_ICON_CLASS} />,
+  },
+  pin: {
+    title: "Pin thread",
+    searchTerms: ["pin", "keep", "top"],
+    icon: <PinIcon className={ITEM_ICON_CLASS} />,
+  },
+  unpin: {
+    title: "Unpin thread",
+    searchTerms: ["unpin"],
+    icon: <PinOffIcon className={ITEM_ICON_CLASS} />,
+  },
+  "wrap-up": {
+    title: "Wrap up thread",
+    searchTerms: ["wrap up", "done", "finish", "file away"],
+    icon: <CheckIcon className={ITEM_ICON_CLASS} />,
+  },
+  reopen: {
+    title: "Reopen thread",
+    searchTerms: ["reopen", "active", "unwrap"],
+    icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+  },
+  "copy-path": {
+    title: "Copy thread path",
+    searchTerms: ["copy", "path", "folder", "directory"],
+    icon: <CopyIcon className={ITEM_ICON_CLASS} />,
+  },
+  "copy-thread-id": {
+    title: "Copy thread ID",
+    searchTerms: ["copy", "id"],
+    icon: <CopyIcon className={ITEM_ICON_CLASS} />,
+  },
+  archive: {
+    title: "Archive thread",
+    searchTerms: ["archive", "hide", "put away"],
+    icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
+  },
+  delete: {
+    title: "Delete thread",
+    searchTerms: ["delete", "remove", "trash"],
+    icon: <Trash2Icon className={ITEM_ICON_CLASS} />,
+  },
+};
+
 export function OpenCommandPaletteDialog() {
   const navigate = useNavigate();
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
@@ -454,6 +538,8 @@ export function OpenCommandPaletteDialog() {
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
+  const isMobile = useIsMobile();
+  const sidebarListOpen = useUiStateStore((state) => state.sidebarListOpen);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -472,6 +558,7 @@ export function OpenCommandPaletteDialog() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const pullRequestEnvironments = usePullRequestEnvironments();
+  const scheduledTaskEnvironments = useScheduledTaskEnvironments();
   // The active thread's pull request, so the palette can offer its tab. Both
   // reads are the sidebar's: the same refcounted git status and the same open
   // listing key, and neither runs on a thread with no branch to match.
@@ -485,6 +572,21 @@ export function OpenCommandPaletteDialog() {
   const activeThreadRoomsEnabled = useRoomsEnabled(
     activeThread?.environmentId ?? activeDraftThread?.environmentId,
   );
+  // The open thread's project, where another computer could take a copy of it.
+  const openThreadProjectRef = activeThread
+    ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
+    : activeDraftThread
+      ? scopeProjectRef(activeDraftThread.environmentId, activeDraftThread.projectId)
+      : null;
+  const projectSetupTargets = useProjectSetupTargets(openThreadProjectRef);
+  const activeThreadMoveOffered = useThreadMoveOffered(
+    activeThread?.environmentId ?? null,
+    threadMoveStatus(activeThread?.move),
+  );
+  // The open thread's own actions are its menu's (useThreadMenu); the inbox
+  // says whether it offers Wrap up or Reopen. This mounts only while open.
+  const threadMenu = useThreadMenu();
+  const { entries: inboxEntries } = useInboxThreads();
   const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
   const activeThreadGitStatus = useGitStatus({
     environmentId: activeThreadHasBranch ? (activeThread?.environmentId ?? null) : null,
@@ -1603,7 +1705,106 @@ export function OpenCommandPaletteDialog() {
     });
   }
 
-  // Registered only where the sidebar row is: an action that lands on
+  actionItems.push({
+    kind: "action",
+    value: "action:general-chats",
+    searchTerms: ["general chats", "chats", "conversations", "no project"],
+    title: "Open general chats",
+    icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/chats" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:fleet",
+    searchTerms: ["fleet", "computers", "machines", "devices", "phone", "graph", "running"],
+    title: "Open Fleet",
+    description: "Your computers and what runs on them",
+    icon: <WaypointsIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "navigate.fleet",
+    run: async () => {
+      await navigate({ to: "/fleet" });
+    },
+  });
+
+  // Only where a connected computer runs scheduled tasks, like the rail's button.
+  if (scheduledTaskEnvironments.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:scheduled",
+      searchTerms: ["scheduled", "schedule", "tasks", "automations", "cron", "recurring", "daily"],
+      title: "Open Scheduled",
+      description: "Tasks agents start at set times",
+      icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "navigate.scheduled",
+      run: async () => {
+        await navigate({ to: "/scheduled" });
+      },
+    });
+    actionItems.push({
+      kind: "action",
+      value: "action:new-scheduled-task",
+      searchTerms: ["new scheduled task", "schedule", "automation", "cron", "recurring"],
+      title: "New scheduled task",
+      icon: <CalendarPlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/scheduled", search: { view: "new" } });
+      },
+    });
+  }
+  actionItems.push({
+    kind: "action",
+    value: "action:connect-computer",
+    searchTerms: ["connect", "computer", "add computer", "pair", "code", "ssh", "link computers"],
+    title: "Connect to a computer",
+    description: "Use projects from another computer that runs Threadlines",
+    icon: <LaptopIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openConnectComputerDialog();
+    },
+  });
+
+  // Each computer's Fleet page, once there is more than one to choose from.
+  if (addProjectEnvironmentOptions.length > 1) {
+    for (const option of addProjectEnvironmentOptions) {
+      actionItems.push({
+        kind: "action",
+        value: `action:fleet-computer:${option.environmentId}`,
+        searchTerms: ["fleet", "computer", "link", "unlink", option.label],
+        title: `Open ${option.label} in Fleet`,
+        icon: <WaypointsIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/fleet/$environmentId",
+            params: { environmentId: option.environmentId },
+          });
+        },
+      });
+    }
+  }
+
+  // The thread list beside the rail; a phone shows it as a sheet instead.
+  if (!isMobile) {
+    actionItems.push({
+      kind: "action",
+      value: "action:toggle-sidebar",
+      searchTerms: ["sidebar", "thread list", "hide", "show", "toggle", "rail"],
+      title: sidebarListOpen ? "Hide sidebar" : "Show sidebar",
+      icon: sidebarListOpen ? (
+        <PanelLeftCloseIcon className={ITEM_ICON_CLASS} />
+      ) : (
+        <PanelLeftIcon className={ITEM_ICON_CLASS} />
+      ),
+      shortcutCommand: "sidebar.toggle",
+      run: async () => {
+        useUiStateStore.getState().toggleSidebarListOpen();
+      },
+    });
+  }
+
+  // Registered only where the rail's button is: an action that lands on
   // "unsupported" is worse than one the palette never offers.
   if (pullRequestEnvironments.length > 0) {
     actionItems.push({
@@ -1770,12 +1971,67 @@ export function OpenCommandPaletteDialog() {
     });
   }
 
+  // Where its computer can move it: one linked computer at least, and the
+  // thread not already on its way. The dialog says why one can't go.
+  if (activeThread && activeThreadMoveOffered) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:move-thread",
+      searchTerms: ["move", "computer", "linked", "transfer", "send", "another machine"],
+      title: "Move to another computer",
+      description: "Move this thread and its changes to a linked computer",
+      icon: <MonitorUpIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openThreadMoveDialog(threadRef);
+      },
+    });
+  }
+
+  if (openThreadProjectRef !== null && projectSetupTargets.length > 0) {
+    const projectRef = openThreadProjectRef;
+    actionItems.push({
+      kind: "action",
+      value: "action:set-up-project-elsewhere",
+      searchTerms: ["set up", "project", "computer", "clone", "copy", "another machine"],
+      title: "Set up project on another computer",
+      description: "Clone this project on another computer, with the ignored files you pick",
+      icon: <FolderSyncIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openProjectSetupDialog({ project: projectRef });
+      },
+    });
+  }
+
+  if (activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const inboxEntry = inboxEntries.find((entry) => entry.threadKey === scopedThreadKey(threadRef));
+    const target = {
+      threadRef,
+      inbox: inboxEntry ? { isDone: inboxEntry.isDone, canMarkDone: inboxEntry.canMarkDone } : null,
+    };
+    for (const item of threadMenu.describe(target) ?? []) {
+      const offered = PALETTE_THREAD_ACTIONS[item.id];
+      if (!offered || item.disabled) continue;
+      actionItems.push({
+        kind: "action",
+        value: `action:thread-${item.id}`,
+        searchTerms: offered.searchTerms,
+        title: offered.title,
+        icon: offered.icon,
+        run: async () => {
+          await threadMenu.run(item.id, target);
+        },
+      });
+    }
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:usage",
     searchTerms: ["usage", "tokens", "cost", "spend", "spending", "price", "billing"],
     title: "Open usage",
-    icon: <GaugeIcon className={ITEM_ICON_CLASS} />,
+    icon: <ChartColumnIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/usage" });
     },

@@ -43,6 +43,14 @@
       "types": "./src/relaySecure.ts",
       "import": "./src/relaySecure.ts"
     },
+    "./relaySecureSocket": {
+      "types": "./src/relaySecureSocket.ts",
+      "import": "./src/relaySecureSocket.ts"
+    },
+    "./relayJoin": {
+      "types": "./src/relayJoin.ts",
+      "import": "./src/relayJoin.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
@@ -127,6 +135,10 @@
       "types": "./src/cronSchedule.ts",
       "import": "./src/cronSchedule.ts"
     },
+    "./scheduledTasks": {
+      "types": "./src/scheduledTasks.ts",
+      "import": "./src/scheduledTasks.ts"
+    },
     "./Net": {
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"
@@ -194,6 +206,10 @@
     "./providerAuthCommands": {
       "types": "./src/providerAuthCommands.ts",
       "import": "./src/providerAuthCommands.ts"
+    },
+    "./signInRedirect": {
+      "types": "./src/signInRedirect.ts",
+      "import": "./src/signInRedirect.ts"
     },
     "./antigravitySignIn": {
       "types": "./src/antigravitySignIn.ts",
@@ -338,6 +354,14 @@
     "./runtimeMode": {
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
+    },
+    "./webhookTasks": {
+      "types": "./src/webhookTasks.ts",
+      "import": "./src/webhookTasks.ts"
+    },
+    "./relayHookSeal": {
+      "types": "./src/relayHookSeal.ts",
+      "import": "./src/relayHookSeal.ts"
     }
   },
   "scripts": {

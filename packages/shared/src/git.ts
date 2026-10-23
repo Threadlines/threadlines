@@ -10,6 +10,7 @@ import type {
 import { randomUUIDv4 } from "./uuid.ts";
 import * as Effect from "effect/Effect";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
+import { trimMatchingCharacters, trimMatchingCharactersEnd } from "./String.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "threadlines";
 const LEGACY_WORKTREE_BRANCH_PREFIXES = ["t3code"] as const;
@@ -18,19 +19,7 @@ const TEMP_WORKTREE_BRANCH_PATTERNS = [
   ...LEGACY_WORKTREE_BRANCH_PREFIXES,
 ].map((prefix) => new RegExp(`^${prefix}\\/[0-9a-f]{8}$`));
 
-function trimMatchingCharacters(value: string, shouldTrim: (character: string) => boolean): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && shouldTrim(value[start] ?? "")) start += 1;
-  while (end > start && shouldTrim(value[end - 1] ?? "")) end -= 1;
-  return value.slice(start, end);
-}
-
-function trimTrailingCharacter(value: string, character: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === character) end -= 1;
-  return value.slice(0, end);
-}
+const isSlash = (character: string) => character === "/";
 
 function stripGitSuffix(value: string): string {
   return value.toLowerCase().endsWith(".git") ? value.slice(0, -4) : value;
@@ -199,10 +188,13 @@ export function buildWorkBranchName(raw: string): string {
 }
 
 /**
- * Normalize a git remote URL into a stable comparison key.
+ * Normalize a git remote URL into a stable comparison key: `host/path`,
+ * lowercased, without `.git`, credentials or a port, so the SSH and HTTPS
+ * forms of one repository match. Credentials never reach the key, whatever
+ * the URL's shape.
  */
 export function normalizeGitRemoteUrl(value: string): string {
-  const normalized = stripGitSuffix(trimTrailingCharacter(value.trim(), "/")).toLowerCase();
+  const normalized = stripGitSuffix(trimMatchingCharactersEnd(value.trim(), isSlash)).toLowerCase();
 
   if (/^(?:ssh|https?|git):\/\//i.test(normalized)) {
     try {
@@ -211,20 +203,114 @@ export function normalizeGitRemoteUrl(value: string): string {
         .split("/")
         .filter((segment) => segment.length > 0)
         .join("/");
-      if (url.hostname && repositoryPath.includes("/")) {
+      if (url.hostname && repositoryPath.length > 0) {
         return `${url.hostname}/${repositoryPath}`;
       }
     } catch {
-      return normalized;
+      // Not a URL after all: fall through, without its credentials.
     }
+    return normalized.replace(/^([a-z+]+:\/\/)[^/]*@/, "$1");
   }
 
-  const scpStyleHostAndPath = /^git@([^:/\s]+)[:/]([^/\s]+(?:\/[^/\s]+)+)$/i.exec(normalized);
+  // scp-style `user@host:path`, whatever the user's name, one path part or more.
+  const scpStyleHostAndPath = /^[^@\s/:]+@([^:/\s]+):\/?([^/\s]+(?:\/[^/\s]+)*)$/i.exec(normalized);
   if (scpStyleHostAndPath?.[1] && scpStyleHostAndPath[2]) {
     return `${scpStyleHostAndPath[1]}/${scpStyleHostAndPath[2]}`;
   }
 
   return normalized;
+}
+
+const GIT_SIZE_UNITS: Record<string, number> = {
+  bytes: 1,
+  kib: 1024,
+  mib: 1024 ** 2,
+  gib: 1024 ** 3,
+};
+
+const gitSize = (amount: string, unit: string) => {
+  const value = Number(amount);
+  const scale = GIT_SIZE_UNITS[unit.toLowerCase()];
+  return Number.isFinite(value) && scale !== undefined ? Math.round(value * scale) : null;
+};
+
+/**
+ * What a clone's "Receiving objects" line says it has transferred: the part
+ * after the counts, "286.46 MiB | 19.23 MiB/s". Null when it says no amount.
+ */
+export function parseGitTransferProgress(
+  detail: string | null,
+): { readonly receivedBytes: number; readonly bytesPerSecond: number | null } | null {
+  const match =
+    /^([\d.]+)\s*(bytes|KiB|MiB|GiB)\b(?:\s*\|\s*([\d.]+)\s*(bytes|KiB|MiB|GiB)\/s)?/i.exec(
+      detail?.trim() ?? "",
+    );
+  if (match === null) return null;
+  const receivedBytes = gitSize(match[1]!, match[2]!);
+  if (receivedBytes === null) return null;
+  const bytesPerSecond =
+    match[3] !== undefined && match[4] !== undefined ? gitSize(match[3], match[4]) : null;
+  return { receivedBytes, bytesPerSecond };
+}
+
+export type GitRemoteProtocol = "ssh" | "https" | "other";
+
+const SCP_REMOTE = /^([^@\s/:]+)@([^:/\s]+):(?!\/\/)(.+)$/;
+
+/** How a remote URL is reached: SSH (`ssh://` or scp-style), HTTPS, or anything else. */
+export function gitRemoteProtocol(url: string): GitRemoteProtocol {
+  const trimmed = url.trim();
+  if (/^ssh:\/\//i.test(trimmed) || SCP_REMOTE.test(trimmed)) return "ssh";
+  if (/^https?:\/\//i.test(trimmed)) return "https";
+  return "other";
+}
+
+/**
+ * A remote URL with what could be a secret taken out: all of an HTTP(S)
+ * URL's user part (tokens hide there), an `ssh://` URL's password. The SSH
+ * user (`git@`) stays: it names the account, it isn't a secret.
+ */
+export function stripGitRemoteCredentials(url: string): string {
+  const trimmed = url.trim();
+  // A password may hold "@": the user part runs to the last "@" before the path.
+  if (/^(?:https?|git):\/\//i.test(trimmed)) {
+    return trimmed.replace(/^([a-z+]+:\/\/)[^/]*@/i, "$1");
+  }
+  if (/^ssh:\/\//i.test(trimmed)) {
+    return trimmed.replace(/^(ssh:\/\/[^:@/]+):[^/]*@/i, "$1@");
+  }
+  return trimmed;
+}
+
+/**
+ * The same repository over the other protocol, or null when there's no plain
+ * equivalent (a custom port, a local path, another scheme). SSH comes out
+ * scp-style as `git@host:path`; HTTPS as `https://host/path`.
+ */
+export function convertGitRemoteUrl(url: string, to: "ssh" | "https"): string | null {
+  const trimmed = stripGitRemoteCredentials(url);
+  const from = gitRemoteProtocol(trimmed);
+  if (from === "other") return null;
+  if (from === to) return trimmed;
+  if (from === "ssh") {
+    const scp = SCP_REMOTE.exec(trimmed);
+    if (scp?.[2] && scp[3]) return `https://${scp[2]}/${scp[3].replace(/^\//, "")}`;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.port !== "" || !parsed.hostname) return null;
+      return `https://${parsed.hostname}${parsed.pathname}`;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/^\//, "");
+    if (parsed.port !== "" || !parsed.hostname || path.length === 0) return null;
+    return `git@${parsed.hostname}:${path}`;
+  } catch {
+    return null;
+  }
 }
 
 const HTTPS_REMOTE_IN_MESSAGE = /['"](https?:\/\/[^'"]+)['"]/i;
@@ -372,7 +458,7 @@ export function parseGitRemoteEndpoint(url: string): GitRemoteEndpoint | null {
   }
   const scpStyle = /^[a-z0-9._-]+@([a-z0-9.-]+):([^/\s].*)$/i.exec(trimmed);
   if (scpStyle?.[1] && scpStyle[2]) {
-    const path = stripGitSuffix(trimTrailingCharacter(scpStyle[2], "/"));
+    const path = stripGitSuffix(trimMatchingCharactersEnd(scpStyle[2], isSlash));
     return path.length > 0 ? { scheme: "ssh", host: scpStyle[1].toLowerCase(), path } : null;
   }
   return null;

@@ -13,6 +13,19 @@ export interface DesktopStateShape {
    */
   readonly localRunningThreadCount: Ref.Ref<number>;
   /**
+   * Active scheduled tasks with a schedule on this computer's own server, as
+   * the page last reported: they keep the computer awake when the user asked
+   * for that, and quitting stops them.
+   */
+  readonly activeScheduledTaskCount: Ref.Ref<number>;
+  /** Scheduled runs working on this computer's own server, as the page last reported. */
+  readonly workingScheduledRunCount: Ref.Ref<number>;
+  /**
+   * Windows and Linux: closing the window hides it to the tray instead of
+   * quitting (Settings › General, "Keep running in the background").
+   */
+  readonly runInBackground: Ref.Ref<boolean>;
+  /**
    * Terminals on this computer's own server running a command, as the page
    * last reported. Quitting stops them too, so they also make it ask.
    */
@@ -29,6 +42,9 @@ export const layer = Layer.effect(
     backendReady: Ref.make(false),
     quitting: Ref.make(false),
     localRunningThreadCount: Ref.make(0),
+    activeScheduledTaskCount: Ref.make(0),
+    workingScheduledRunCount: Ref.make(0),
+    runInBackground: Ref.make(false),
     localBusyTerminalCount: Ref.make(0),
   }),
 );

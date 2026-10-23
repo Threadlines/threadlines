@@ -34,16 +34,31 @@ import type { LiveAgentIndicator } from "./agentsPanel.logic";
 import { HeaderAgentFaces } from "./HeaderAgentFaces";
 import type { WorkingTreeChanges } from "../ChatView.logic";
 import { cn } from "../../lib/utils";
+import { useComputerLabel } from "../sidebar/linkedComputers";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
   readonly sourceThreadTitle: string;
 }
 
-/** Child threads: the thread whose agent started this one. */
+/** Child threads: the thread whose agent started this one, on whichever computer. */
 export interface ParentThreadHeaderContext {
-  readonly parentThreadId: ThreadId;
+  readonly parentThreadRef: ScopedThreadRef;
   readonly parentThreadTitle: string;
+  /**
+   * The parent's computer when it runs on another one than this thread
+   * ("Started by Ship the release on Mac mini"), with the name the thread was
+   * told when it started; null on the same computer.
+   */
+  readonly parentComputer: {
+    readonly environmentId: EnvironmentId;
+    readonly lastKnownLabel: string;
+  } | null;
+  /**
+   * Whether the app has the parent thread to open. False for a parent on a
+   * computer this app isn't connected to: the chip then only names it.
+   */
+  readonly canOpen: boolean;
 }
 
 interface ChatHeaderProps {
@@ -111,8 +126,8 @@ interface ChatHeaderProps {
   onImplementProposedPlan?: (() => void) | undefined;
   onDismissProposedPlan?: (() => void) | undefined;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
-  /** Opens the thread that started this one. */
-  onOpenParentThread?: ((threadId: ThreadId) => void) | undefined;
+  /** Opens the thread that started this one, on its own computer. */
+  onOpenParentThread?: ((parent: ScopedThreadRef) => void) | undefined;
   onToggleTerminal: () => void;
   onToggleRail: () => void;
   onToggleBrowser: () => void;
@@ -184,6 +199,74 @@ export function formatSourceChangesLabel(input: {
 function formatFileCount(count: number): string {
   if (count === 0) return "the working tree";
   return count === 1 ? "1 file" : `${count} files`;
+}
+
+const STARTED_BY_CHIP_CLASS =
+  "translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md border border-border/70 bg-muted/45 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors";
+
+/**
+ * Child threads: the thread whose agent started this one, as a chip after the
+ * title ("Started by Ship the release on Mac mini" when it runs on another
+ * computer). It opens that thread while the app has it; a parent on a
+ * computer this app isn't connected to is only named.
+ */
+function StartedByChip({
+  parent,
+  onOpen,
+}: {
+  parent: ParentThreadHeaderContext;
+  onOpen: ((parent: ScopedThreadRef) => void) | undefined;
+}) {
+  const computerLabel = useComputerLabel();
+  const parentComputerLabel =
+    parent.parentComputer === null
+      ? null
+      : computerLabel(parent.parentComputer.environmentId, parent.parentComputer.lastKnownLabel);
+  const sentence =
+    parentComputerLabel === null
+      ? `Started by ${parent.parentThreadTitle}`
+      : `Started by ${parent.parentThreadTitle} on ${parentComputerLabel}`;
+  const content = (
+    <span className="inline-flex min-w-0 items-center gap-1">
+      <CornerDownRightIcon aria-hidden="true" className="size-3 shrink-0" />
+      <span className="hidden sm:inline">Started by</span>
+      <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">
+        {parent.parentThreadTitle}
+      </span>
+      {parentComputerLabel !== null ? (
+        <span className="hidden max-w-32 truncate sm:inline">on {parentComputerLabel}</span>
+      ) : null}
+    </span>
+  );
+  if (!parent.canOpen || onOpen === undefined) {
+    return (
+      <span
+        data-testid="chat-header-started-by"
+        className={cn(STARTED_BY_CHIP_CLASS, "cursor-default")}
+        title={sentence}
+      >
+        <span className="sr-only">{sentence}</span>
+        <span aria-hidden="true" className="inline-flex min-w-0">
+          {content}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="chat-header-started-by"
+      className={cn(
+        STARTED_BY_CHIP_CLASS,
+        "hover:border-border hover:bg-muted/70 hover:text-foreground",
+      )}
+      onClick={() => onOpen(parent.parentThreadRef)}
+      aria-label={`Open the thread that started this one: ${parent.parentThreadTitle}`}
+      title={sentence}
+    >
+      {content}
+    </button>
+  );
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -315,23 +398,8 @@ export const ChatHeader = memo(function ChatHeader({
             </span>
           </button>
         ) : null}
-        {parentContext && onOpenParentThread ? (
-          <button
-            type="button"
-            data-testid="chat-header-started-by"
-            className="translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md border border-border/70 bg-muted/45 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground"
-            onClick={() => onOpenParentThread(parentContext.parentThreadId)}
-            aria-label={`Open the thread that started this one: ${parentContext.parentThreadTitle}`}
-            title={`Started by ${parentContext.parentThreadTitle}`}
-          >
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <CornerDownRightIcon aria-hidden="true" className="size-3 shrink-0" />
-              <span className="hidden sm:inline">Started by</span>
-              <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">
-                {parentContext.parentThreadTitle}
-              </span>
-            </span>
-          </button>
+        {parentContext ? (
+          <StartedByChip parent={parentContext} onOpen={onOpenParentThread} />
         ) : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (
           <TooltipWrapper tooltip="This folder isn't a git repository. Chat works; source control, diffs, and refs need git. Run git init to enable them.">

@@ -47,6 +47,19 @@ describe("findableRowBlocks", () => {
         context,
       ),
     ).toEqual(["Please look"]);
+    // An agent's message to another reads as the markdown it is drawn as.
+    expect(
+      findableRowBlocks(
+        messageRow({
+          id: "m5" as ChatMessage["id"],
+          role: "user",
+          text: "Done, **merged**.\n\n- Tests pass",
+          fromAgent: { participantId: null },
+          requestKind: "hand_off",
+        }),
+        context,
+      ),
+    ).toEqual(["Done, merged.", "Tests pass"]);
   });
 
   it("skips rows that only say where an answer already in the chat went", () => {

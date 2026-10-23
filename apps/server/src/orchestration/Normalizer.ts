@@ -154,15 +154,21 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       });
 
     // Child threads: only the server starts a thread as another thread's
-    // child (an agent's thread_start); a client can't claim that lineage.
+    // child (an agent's thread_start), as one a linked computer's agent
+    // asked for (the link handler, docs/design/fleet.md "Fence"), or as a
+    // scheduled task's run (the scheduler); a client can't claim any of them.
     const claimsLineage = (fields: {
       readonly parentThreadId?: unknown;
       readonly parentTurnId?: unknown;
       readonly attachedToParent?: unknown;
+      readonly remoteOrigin?: unknown;
+      readonly scheduledRun?: unknown;
     }) =>
       fields.parentThreadId !== undefined ||
       fields.parentTurnId !== undefined ||
-      fields.attachedToParent !== undefined;
+      fields.attachedToParent !== undefined ||
+      fields.remoteOrigin !== undefined ||
+      fields.scheduledRun !== undefined;
     if (
       (command.type === "thread.create" && claimsLineage(command)) ||
       (command.type === "thread.turn.start" &&

@@ -13,8 +13,11 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveModelFallbackState,
   deriveActiveStatusLabel,
+  deriveThreadComputerName,
+  describeLaunchingAgent,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  approvalDeclineDecision,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveRevertTurnCountByUserMessageId,
@@ -25,6 +28,7 @@ import {
   deriveSubagentResultEntries,
   deriveThreadSubagentHistory,
   deriveForkContextEntries,
+  deriveMovedInEntries,
   deriveTimelineEntries,
   deriveTurnDispatchedModelSelections,
   deriveWorkLogEntries,
@@ -664,6 +668,18 @@ it("keeps pending approvals and questions in request order after a clock rollbac
     ];
     expect(derive(activities).map((request) => request.requestId)).toEqual(["first", "second"]);
   }
+});
+
+describe("approvalDeclineDecision", () => {
+  it("says no where it can, and stops an agent that can only be stopped", () => {
+    expect(approvalDeclineDecision({})).toBe("decline");
+    expect(approvalDeclineDecision({ availableDecisions: ["accept", "decline", "cancel"] })).toBe(
+      "decline",
+    );
+    // An ACP agent that offered only "allow" options.
+    expect(approvalDeclineDecision({ availableDecisions: ["cancel", "accept"] })).toBe("cancel");
+    expect(approvalDeclineDecision({ availableDecisions: ["accept"] })).toBeNull();
+  });
 });
 
 describe("derivePendingApprovals", () => {
@@ -3907,9 +3923,9 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
-  it("keeps what an MCP call answered, from Codex's item or Claude's tool_result", () => {
+  it("keeps what an MCP call answered, from Codex's item, Claude's tool_result or an ACP agent's output", () => {
     const answer = { outcome: "started", threads: [{ threadId: "thread-a", title: "A" }] };
-    const [codex, claude] = deriveWorkLogEntries([
+    const [codex, claude, acp] = deriveWorkLogEntries([
       makeActivity({
         id: "codex-start",
         sequence: 1,
@@ -3946,10 +3962,25 @@ describe("deriveWorkLogEntries", () => {
           },
         },
       }),
+      makeActivity({
+        id: "acp-start",
+        sequence: 3,
+        kind: "tool.completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "mcp__threadlines_room__thread_start",
+          data: {
+            toolCallId: "call-1",
+            kind: "other",
+            content: [{ type: "content", content: { type: "text", text: JSON.stringify(answer) } }],
+          },
+        },
+      }),
     ]);
 
     expect(JSON.parse(codex!.toolResult!)).toEqual(answer);
     expect(JSON.parse(claude!.toolResult!)).toEqual(answer);
+    expect(JSON.parse(acp!.toolResult!)).toEqual(answer);
   });
 
   it("keeps a long Claude call to one step, without its stored still-running pings", () => {
@@ -5157,6 +5188,101 @@ describe("deriveRevertTurnCountByUserMessageId", () => {
       ["prompt-1", 0],
       ["prompt-2", 1],
     ]);
+  });
+
+  it("offers no revert on history a move brought, even when this computer's turn follows it", () => {
+    const reverts = deriveRevertTurnCountByUserMessageId({
+      timelineEntries: [
+        messageEntry("imported-prompt", "user", null, { imported: true }),
+        messageEntry("imported-answer", "assistant", "turn-there", { imported: true }),
+        // Never answered there: the agent here picked it up on its own.
+        messageEntry("imported-unanswered", "user", null, { imported: true }),
+        messageEntry("answer-here", "assistant", "turn-1"),
+        messageEntry("prompt-here", "user", null),
+        messageEntry("answer-here-2", "assistant", "turn-2"),
+      ],
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [MessageId.make("answer-here"), summary("turn-1", 1)],
+        [MessageId.make("answer-here-2"), summary("turn-2", 2)],
+      ]),
+      inferredCheckpointTurnCountByTurnId: {},
+    });
+    expect([...reverts]).toEqual([["prompt-here", 1]]);
+  });
+});
+
+describe("a thread that moved here from another computer", () => {
+  it("draws the boundary after the history it brought, and never as a step", () => {
+    const movedIn = makeActivity({
+      id: "moved-in",
+      createdAt: "2026-02-23T00:05:00.000Z",
+      kind: "thread.moved-in",
+      summary: "Moved here from Mac mini",
+      tone: "info",
+      eventSequence: 3,
+      payload: {
+        fromEnvironmentId: "environment-mac-mini",
+        fromLabel: "Mac mini",
+        fromThreadId: "thread-there",
+        movedAt: "2026-02-23T00:04:00.000Z",
+      },
+    });
+    const entries = deriveMovedInEntries([movedIn]);
+    expect(entries).toEqual([
+      expect.objectContaining({ fromLabel: "Mac mini", movedAt: "2026-02-23T00:04:00.000Z" }),
+    ]);
+    expect(deriveWorkLogEntries([movedIn])).toEqual([]);
+
+    const message = (id: string, eventSequence: number, createdAt: string) => ({
+      id: MessageId.make(id),
+      role: "user" as const,
+      text: id,
+      createdAt,
+      eventSequence,
+      streaming: false,
+    });
+    const timeline = deriveTimelineEntries(
+      [
+        message("imported-1", 1, "2026-02-20T00:00:00.000Z"),
+        message("imported-2", 2, "2026-02-21T00:00:00.000Z"),
+        message("here-1", 4, "2026-02-23T00:06:00.000Z"),
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      entries,
+    );
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      "imported-1",
+      "imported-2",
+      "moved-in",
+      "here-1",
+    ]);
+  });
+
+  it("tells a dropped move as a failed step that says why", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "move-failed",
+        kind: "thread.move-failed",
+        summary: "Couldn't move to Mac mini",
+        tone: "error",
+        payload: {
+          targetLabel: "Mac mini",
+          reason: "Mac mini has no project for this repository.",
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      label: "Couldn't move to Mac mini",
+      tone: "error",
+      detail: "Mac mini has no project for this repository.",
+    });
   });
 });
 
@@ -7962,6 +8088,67 @@ describe("deriveActiveStatusLabel", () => {
         isSessionStarting: true,
       }),
     ).toBe("Preparing turn");
+  });
+
+  it("names the agent while its program starts, with its computer when worth naming", () => {
+    const starting = (launchingAgent: string | null) =>
+      deriveActiveStatusLabel({
+        phase: "connecting",
+        workLogEntries: [],
+        isSessionStarting: true,
+        launchingAgent,
+      });
+    expect(starting(describeLaunchingAgent({ agentName: "Codex", computerName: null }))).toBe(
+      "Starting Codex",
+    );
+    expect(starting(describeLaunchingAgent({ agentName: "Codex", computerName: "Mac mini" }))).toBe(
+      "Starting Codex on Mac mini",
+    );
+    // An instance that is gone has no name to give.
+    expect(starting(describeLaunchingAgent({ agentName: null, computerName: null }))).toBe(
+      "Starting the agent",
+    );
+    // A warm turn's session starts too, but nothing is launching.
+    expect(starting(null)).toBe("Preparing turn");
+  });
+
+  it("names the thread's computer only when it is another of several connected ones", () => {
+    const name = (input: {
+      readonly threadEnvironmentId: string;
+      readonly primaryEnvironmentId: string | null;
+      readonly connectedEnvironmentIds: ReadonlyArray<string>;
+    }) => deriveThreadComputerName({ ...input, computerLabel: " Mac mini " });
+
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: "laptop",
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBe("Mac mini");
+    // The thread is on this device's own computer.
+    expect(
+      name({
+        threadEnvironmentId: "laptop",
+        primaryEnvironmentId: "laptop",
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBeNull();
+    // The only computer the app is connected to (a phone linked to one Mac).
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: null,
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBeNull();
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: null,
+        connectedEnvironmentIds: ["mac", "studio"],
+      }),
+    ).toBe("Mac mini");
   });
 
   it("prioritizes pending approvals over generic running state", () => {

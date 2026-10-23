@@ -104,6 +104,7 @@ import {
   THREADLINES_CLAUDE_MCP_SERVER_NAME,
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
+import { nonEmptyTrimmed } from "../providerSnapshot.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import {
   buildAgentPageInstructions,
@@ -160,10 +161,10 @@ import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import {
   claudeRoomToolId,
   ROOM_MCP_SERVER_NAME,
-  ROOM_TOOL_NAMES,
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import {
   applyClaudeGoalRecord,
   CLAUDE_GOAL_CLEAR_ARGS,
@@ -8646,12 +8647,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               )
             : undefined;
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
+        // A rule from "Always allow" would grant more than this one ask: Claude
+        // says so, and then neither the answer nor the rule is offered.
+        const offersAlwaysAllow = callbackOptions.suppressAlwaysAllowRule !== true;
         const pendingApproval: PendingApproval = {
           requestType,
           detail,
           decision: decisionDeferred,
-          ...(callbackOptions.suggestions ? { suggestions: callbackOptions.suggestions } : {}),
+          ...(callbackOptions.suggestions && offersAlwaysAllow
+            ? { suggestions: callbackOptions.suggestions }
+            : {}),
         };
+        // Claude's own words about the ask, shown with it.
+        const title = nonEmptyTrimmed(callbackOptions.title);
+        const reason = nonEmptyTrimmed(callbackOptions.decisionReason);
+        const description = nonEmptyTrimmed(callbackOptions.description);
+        const blockedPath = nonEmptyTrimmed(callbackOptions.blockedPath);
 
         const requestedStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -8665,6 +8676,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             requestType,
             detail,
+            ...(offersAlwaysAllow
+              ? {}
+              : { availableDecisions: ["accept", "decline", "cancel"] as const }),
+            ...(title ? { title } : {}),
+            ...(reason ? { reason } : {}),
+            ...(description ? { description } : {}),
+            ...(blockedPath ? { blockedPath } : {}),
+            ...(callbackOptions.defaultToNo === true ? { defaultToNo: true } : {}),
             args: {
               toolName,
               input: toolInput,
@@ -8862,6 +8881,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               pages: agentPages,
               commands: commandRequests,
               sideKind,
+              scheduledRun: input.scheduledRunTools === true,
             })
           : undefined;
       const revokeCredential =
@@ -8937,6 +8957,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(credential !== undefined && commandRequests
               ? [buildCommandRequestInstructions({})]
               : []),
+            ...(roomServer !== undefined && input.scheduleTools === true
+              ? [
+                  buildScheduleInstructions({
+                    toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__`,
+                    claude: true,
+                  }),
+                ]
+              : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -8955,7 +8983,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           "TaskUpdate",
           "TaskList",
           MARK_LONG_RUNNING_TOOL_ID,
-          ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
+          // A scheduled run's thread also has scheduled_run_finish.
+          ...(roomServer !== undefined
+            ? roomToolsFor(undefined, { scheduledRun: input.scheduledRunTools === true }).map(
+                claudeRoomToolId,
+              )
+            : []),
           // A page shows only in the caller's own thread; nothing to approve.
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
           // Asking the user to run a command only shows a card; they decide.
@@ -9034,7 +9067,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               forkSessionId: newSessionId,
             },
             roomServer !== undefined
-              ? { server: roomServer, toolIds: roomToolsFor(sideKind).map(claudeRoomToolId) }
+              ? {
+                  server: roomServer,
+                  toolIds: roomToolsFor(sideKind, {
+                    scheduledRun: input.scheduledRunTools === true,
+                  }).map(claudeRoomToolId),
+                }
               : undefined,
           )
         : normalQueryOptions;

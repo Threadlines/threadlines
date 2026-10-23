@@ -106,11 +106,14 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
+  approvalDeclineDecision,
   derivePendingApprovals,
   derivePendingUserInputs,
   isBlockingUserInput,
   derivePhase,
   deriveActiveStatusLabel,
+  deriveThreadComputerName,
+  describeLaunchingAgent,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   findSidebarProposedPlan,
@@ -121,6 +124,7 @@ import {
   describedAwaitedTasks,
   isWaitingOnBackgroundTasks,
   type McpAuthReconnectAction,
+  type PendingApproval,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
 } from "../session-logic";
@@ -192,7 +196,6 @@ import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { isPageAttended, onPageAttentionChange } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
@@ -208,6 +211,7 @@ import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
   applyMovedDraftDefaults,
   buildNewThreadParticipants,
+  moveDraftToSetUpProject,
   canRunOnComputer,
   resolveNewThreadDefaults,
 } from "../newThreadDefaults";
@@ -216,6 +220,7 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
 } from "../modelSelection";
+import { useScheduledRunLabel } from "../lib/scheduledTasksState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { stopThreadSession } from "../lib/threadSessionCommands";
 import {
@@ -305,10 +310,14 @@ import {
 import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
 import { useNoAgentReady } from "./setup/firstRunGateState";
-import { toProviderSignInFlowView } from "./chat/providerSignIn";
-import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
+import { useThreadProviderSignIn } from "./chat/useThreadProviderSignIn";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
+import { useThreadMoveNotice } from "./chat/threadMoveNotice";
+import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
+import { useComputerLabel } from "./sidebar/linkedComputers";
+import { threadMoveLockReason } from "../threadMove";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   DEFAULT_SCROLL_END_TOLERANCE_PX,
@@ -363,6 +372,7 @@ import {
   deriveOwnThreadActivities,
   deriveSubagentSpawnCallIds,
   deriveThreadForkContextEntries,
+  deriveThreadMovedInEntries,
   deriveThreadProviderBackgroundRuns,
   deriveThreadSideAnswers,
   deriveThreadSubagentActivityState,
@@ -378,11 +388,12 @@ import { BrowserPanel } from "./browser/BrowserPanel";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
-  applyProvidersUpdated,
   useServerAvailableEditors,
   useServerConfig,
   useServerKeybindings,
 } from "~/rpc/serverState";
+import { isAppBackendEnvironment } from "../environments/providerComputer";
+import { refreshProviderStatus } from "../environments/providerStatusRefresh";
 import {
   selectOptimisticThreadMessages,
   useOptimisticThreadMessagesStore,
@@ -404,6 +415,8 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Checkbox } from "./ui/checkbox";
+import { HeaderEdgeFade } from "./HeaderEdgeFade";
+import { TitleBarContent } from "./sidebar/titleBarSlot";
 import {
   canRequestProviderRateLimitResetCredit,
   isProviderUsageLimitErrorMessage,
@@ -419,6 +432,7 @@ import {
 import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 import {
   deriveDisplayProviderInstanceEntries,
+  getProviderInstanceEntry,
   type ProviderInstanceEntry,
   resolveComposerProviderSelection,
 } from "../providerInstances";
@@ -658,6 +672,8 @@ function ForkThreadDialog(props: {
   readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
   readonly keybindings?: ResolvedKeybindingsConfig;
   readonly terminalOpen: boolean;
+  /** Settings shows the computer the thread runs on. */
+  readonly providerSettingsShown: boolean;
   readonly disabled: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onInstructionChange: (instruction: string) => void;
@@ -743,6 +759,7 @@ function ForkThreadDialog(props: {
               {...(props.keybindings ? { keybindings: props.keybindings } : {})}
               modelOptionsByInstance={props.modelOptionsByInstance}
               terminalOpen={props.terminalOpen}
+              providerSettingsShown={props.providerSettingsShown}
               side="top"
               triggerVariant="outline"
               triggerClassName="w-full max-w-none"
@@ -853,7 +870,6 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       /**
        * The thread's pull requests, resolved by the route that owns the Pull
@@ -867,11 +883,15 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       routeKind: "draft";
       draftId: DraftId;
     };
+
+/** The same items in the same order: a draft list nobody touched. */
+function sameItems<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
 
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
@@ -1200,14 +1220,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 });
 
 export default function ChatView(props: ChatViewProps) {
-  const {
-    environmentId,
-    threadId,
-    routeKind,
-    onDiffPanelOpen,
-    reserveTitleBarControlInset = true,
-    composerFocusRequest = 0,
-  } = props;
+  const { environmentId, threadId, routeKind, onDiffPanelOpen, composerFocusRequest = 0 } = props;
   const composerPullRequests =
     routeKind === "server"
       ? (props.composerPullRequests ?? NO_COMPOSER_PULL_REQUESTS)
@@ -1478,6 +1491,11 @@ export default function ChatView(props: ChatViewProps) {
   const activeThread = isServerThread
     ? serverThread
     : mergeLocalDraftThreadWithServerThread(localDraftThread, serverThread);
+  // A scheduled task's run thread: its first message folds to this line.
+  const scheduledRunLabel = useScheduledRunLabel(
+    activeThread?.environmentId,
+    activeThread?.scheduledRun,
+  );
   const runtimeMode =
     composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_COMPOSER_RUNTIME_MODE;
   const interactionMode =
@@ -1842,6 +1860,13 @@ export default function ChatView(props: ChatViewProps) {
     primaryEnvironmentId && activeThread?.environmentId === primaryEnvironmentId
       ? primaryServerConfig
       : (activeEnvRuntimeState?.serverConfig ?? primaryServerConfig);
+  // The computer the thread runs on, which a provider refresh asks, also
+  // while its config hasn't arrived and the one above stands in; null is the
+  // app's own backend.
+  const threadComputerEnvironmentId =
+    activeThread !== undefined && activeThread.environmentId !== primaryEnvironmentId
+      ? activeThread.environmentId
+      : null;
   // Rooms follows the computer the thread lives on.
   const roomsEnabled = roomsEnabledFor(serverConfig?.settings);
   // Agents added before the first message: the thread is created with them.
@@ -2105,6 +2130,10 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveThreadForkContextEntries(derivationThreadKey, threadActivities),
     [derivationThreadKey, threadActivities],
   );
+  const movedInEntries = useMemo(
+    () => deriveThreadMovedInEntries(derivationThreadKey, threadActivities),
+    [derivationThreadKey, threadActivities],
+  );
   const forkHeaderContext = useMemo<ForkHeaderContext | null>(() => {
     const payload = forkContextEntries[0]?.payload;
     if (!payload) {
@@ -2117,14 +2146,47 @@ export default function ChatView(props: ChatViewProps) {
   }, [forkContextEntries]);
   // Child threads: the thread whose agent started this one, while this
   // device knows it. "Started by" stays true after the thread is separated.
-  const parentThreadId = activeThread?.parentThreadId ?? null;
-  const parentThreadTitle = useThreadTitle(environmentId, parentThreadId);
-  const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(
-    () =>
-      parentThreadId !== null && parentThreadTitle !== null
-        ? { parentThreadId, parentThreadTitle }
-        : null,
-    [parentThreadId, parentThreadTitle],
+  // One an agent on another computer started names that computer, from what
+  // the thread was told when it started, and opens its parent only while the
+  // app has that computer's threads.
+  const remoteOrigin = activeThread?.remoteOrigin ?? null;
+  const parentEnvironmentId = remoteOrigin?.environmentId ?? environmentId;
+  const parentThreadId = remoteOrigin?.threadId ?? activeThread?.parentThreadId ?? null;
+  const knownParentTitle = useThreadTitle(parentEnvironmentId, parentThreadId);
+  const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(() => {
+    if (parentThreadId === null) return null;
+    const parentThreadRef = scopeThreadRef(parentEnvironmentId, parentThreadId);
+    if (remoteOrigin === null) {
+      return knownParentTitle === null
+        ? null
+        : {
+            parentThreadRef,
+            parentThreadTitle: knownParentTitle,
+            parentComputer: null,
+            canOpen: true,
+          };
+    }
+    return {
+      parentThreadRef,
+      parentThreadTitle: knownParentTitle ?? remoteOrigin.threadTitle,
+      parentComputer: {
+        environmentId: remoteOrigin.environmentId,
+        lastKnownLabel: remoteOrigin.environmentLabel,
+      },
+      canOpen: knownParentTitle !== null,
+    };
+  }, [knownParentTitle, parentEnvironmentId, parentThreadId, remoteOrigin]);
+  const onOpenParentThread = useCallback(
+    (parentThreadRef: ScopedThreadRef) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: parentThreadRef.environmentId,
+          threadId: parentThreadRef.threadId,
+        },
+      });
+    },
+    [navigate],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -2228,6 +2290,11 @@ export default function ChatView(props: ChatViewProps) {
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
+  // What a send that awaited a decline reads afterwards: the requests now.
+  const pendingApprovalsRef = useRef(pendingApprovals);
+  pendingApprovalsRef.current = pendingApprovals;
+  const pendingUserInputsRef = useRef(pendingUserInputs);
+  pendingUserInputsRef.current = pendingUserInputs;
   const {
     beginLocalDispatch,
     markLocalDispatchAccepted,
@@ -2278,6 +2345,47 @@ export default function ChatView(props: ChatViewProps) {
     latestTurnSettled,
     phase,
   ]);
+  // While the agent's own program starts, the working row and the slow-start
+  // notice name it, and its computer when the app is connected to more than
+  // one. During a hand-over the instance starting is not yet the session's.
+  const launchingInstanceId = isSessionStarting
+    ? (activeThread?.session?.launchingInstanceId ?? null)
+    : null;
+  const launchingAgentName = useMemo(
+    () =>
+      launchingInstanceId === null
+        ? null
+        : (getProviderInstanceEntry(providerStatuses, launchingInstanceId)?.displayName ?? null),
+    [launchingInstanceId, providerStatuses],
+  );
+  const launchingComputerName = useMemo(() => {
+    if (launchingInstanceId === null || !activeThread) return null;
+    const environmentId = activeThread.environmentId;
+    return deriveThreadComputerName({
+      threadEnvironmentId: environmentId,
+      primaryEnvironmentId,
+      connectedEnvironmentIds: Object.entries(savedEnvironmentRuntimeById).flatMap(
+        ([savedEnvironmentId, runtime]) =>
+          runtime?.connectionState === "connected" ? [savedEnvironmentId] : [],
+      ),
+      computerLabel:
+        savedEnvironmentRuntimeById[environmentId]?.descriptor?.label ??
+        savedEnvironmentRegistry[environmentId]?.label ??
+        serverConfig?.environment.label,
+    });
+  }, [
+    activeThread,
+    launchingInstanceId,
+    primaryEnvironmentId,
+    savedEnvironmentRegistry,
+    savedEnvironmentRuntimeById,
+    serverConfig?.environment.label,
+  ]);
+  // A new object only when the name changes, so the notice keeps its memo.
+  const launchingStartupNotice = useMemo(
+    () => (launchingInstanceId === null ? null : { agentName: launchingAgentName }),
+    [launchingAgentName, launchingInstanceId],
+  );
   const activeStatusLabel = deriveActiveStatusLabel({
     phase,
     workLogEntries,
@@ -2286,6 +2394,13 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isPreparingWorktree,
     isSessionStarting,
+    launchingAgent:
+      launchingInstanceId === null
+        ? null
+        : describeLaunchingAgent({
+            agentName: launchingAgentName,
+            computerName: launchingComputerName,
+          }),
     isRevertingCheckpoint,
     pendingApprovalCount: pendingApprovals.length,
     // A non-blocking question does not hold the turn, so it must not read as
@@ -2660,6 +2775,7 @@ export default function ChatView(props: ChatViewProps) {
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
         activeThread?.commandRequests ?? EMPTY_COMMAND_REQUESTS,
         workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
+        movedInEntries,
       ),
     [
       activeThread?.commandRequests,
@@ -2667,6 +2783,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread?.workflowRuns,
       activeThread?.proposedPlans,
       forkContextEntries,
+      movedInEntries,
       subagentActivityState.liveEntries,
       subagentActivityState.resultEntries,
       timelineMessages,
@@ -2694,6 +2811,14 @@ export default function ChatView(props: ChatViewProps) {
     (activeThread?.agentRequests?.open.length ?? 0) > 0 ||
     (activeThread?.childRequests?.open.length ?? 0) > 0 ||
     (activeThread?.queuedFollowUps ?? []).some(isAgentOrigin);
+  // Moving or moved to another computer: read-only here, so nothing to revert.
+  const activeThreadMove = activeThread?.move ?? null;
+  const threadMoveLocked = activeThreadMove !== null;
+  const threadMoveLockText = activeThreadMove ? threadMoveLockReason(activeThreadMove) : null;
+  const threadMoveComposerLock = useMemo(
+    () => (threadMoveLockText === null ? null : { reason: threadMoveLockText }),
+    [threadMoveLockText],
+  );
   const revertTurnCountByUserMessageId = useMemo(
     () =>
       deriveThreadRevertTurnCountByUserMessageId(
@@ -2701,7 +2826,7 @@ export default function ChatView(props: ChatViewProps) {
         timelineEntries,
         turnDiffSummaryByAssistantMessageId,
         inferredCheckpointTurnCountByTurnId,
-        threadHasRoomHistory || agentRequestsInFlight,
+        threadHasRoomHistory || agentRequestsInFlight || threadMoveLocked,
       ),
     [
       inferredCheckpointTurnCountByTurnId,
@@ -2709,6 +2834,7 @@ export default function ChatView(props: ChatViewProps) {
       turnDiffSummaryByAssistantMessageId,
       threadHasRoomHistory,
       agentRequestsInFlight,
+      threadMoveLocked,
       derivationThreadKey,
     ],
   );
@@ -2888,9 +3014,11 @@ export default function ChatView(props: ChatViewProps) {
     providerSendPreflight?.instanceId ?? activeProviderStatus?.instanceId ?? null;
   const hasHeldSendRef = useRef(false);
   hasHeldSendRef.current = providerSendPreflight !== null;
-  const composerSignInController = useProviderConnectFlow({
+  const composerSignInView = useThreadProviderSignIn({
     instanceId: composerSignInInstanceId,
-    flow: "login",
+    // The thread's agent signs in on the computer the thread runs on.
+    environmentId: threadComputerEnvironmentId,
+    providerLabel: providerSendPreflight?.providerLabel ?? activeProviderLabel,
     // A held message is waiting on exactly this: re-probe and, if the provider
     // agrees, send it. Without this the user would sign in and then still have
     // to click "I've signed in".
@@ -2900,14 +3028,6 @@ export default function ChatView(props: ChatViewProps) {
       }
     },
   });
-  const composerSignInView = useMemo(
-    () =>
-      toProviderSignInFlowView({
-        instanceId: composerSignInInstanceId,
-        controller: composerSignInController,
-      }),
-    [composerSignInController, composerSignInInstanceId],
-  );
   useEffect(() => {
     // The notice belongs to the send it interrupted, so it must not follow the
     // user into another thread.
@@ -3199,6 +3319,39 @@ export default function ChatView(props: ChatViewProps) {
     },
     [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
   );
+
+  // A new thread can also go to a computer that hasn't got the project yet:
+  // the picker offers to set it up there, and once that's done the draft
+  // moves to the new copy if it is still on this project.
+  const setupTargets = useProjectSetupTargets(
+    !envLocked && draftId && activeProject
+      ? scopeProjectRef(activeProject.environmentId, activeProject.id)
+      : null,
+  );
+  // Which draft is on screen now: a setup that ends later moves only that one.
+  const openDraftIdRef = useRef(draftId);
+  openDraftIdRef.current = draftId;
+  useEffect(
+    () => () => {
+      openDraftIdRef.current = null;
+    },
+    [],
+  );
+  const onSetUpElsewhere = useCallback(() => {
+    if (!draftId || !activeProject) return;
+    if (!useComposerDraftStore.getState().getDraftSession(draftId)) return;
+    const from = scopeProjectRef(activeProject.environmentId, activeProject.id);
+    openProjectSetupDialog({
+      project: from,
+      onDone: (result) =>
+        void moveDraftToSetUpProject({
+          draftId,
+          from,
+          to: scopeProjectRef(result.environmentId, result.projectId),
+          isOpen: () => openDraftIdRef.current === draftId,
+        }),
+    });
+  }, [activeProject, draftId]);
 
   const activeTerminalGroup =
     terminalState.terminalGroups.find(
@@ -5096,6 +5249,76 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   ]);
 
+  /**
+   * Declines the approvals waiting in this thread for a message the user typed
+   * meanwhile, so the agent reads the message as what to do instead. One that
+   * arrives while the first are declined is declined too. False, with the
+   * reason shown where there is one, when the message must not go out: an
+   * approval can't be declined, a decline could not be sent, approvals keep
+   * coming, the user moved to another thread, or a question now holds the
+   * turn.
+   */
+  const declineApprovalsBeforeSend = async (
+    api: NonNullable<ReturnType<typeof readEnvironmentApi>>,
+    threadId: ThreadId,
+    approvals: ReadonlyArray<PendingApproval>,
+  ): Promise<boolean> => {
+    const threadKeyAtSend = activeThreadKeyRef.current;
+    const declined = new Set<ApprovalRequestId>();
+    let waiting = approvals;
+    for (let round = 0; round < 3 && waiting.length > 0; round += 1) {
+      if (waiting.some((approval) => approvalDeclineDecision(approval) === null)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Answer the approval first",
+            description: "This agent can't be told no here. Approve it, or stop the turn.",
+          }),
+        );
+        return false;
+      }
+      const requestIds = waiting.map((approval) => approval.requestId);
+      setRespondingRequestIds((existing) => [
+        ...existing,
+        ...requestIds.filter((requestId) => !existing.includes(requestId)),
+      ]);
+      try {
+        const createdAt = new Date().toISOString();
+        await Promise.all(
+          waiting.map((approval) =>
+            api.orchestration.dispatchCommand({
+              type: "thread.approval.respond",
+              commandId: newCommandId(),
+              threadId,
+              requestId: approval.requestId,
+              decision: approvalDeclineDecision(approval) ?? "decline",
+              createdAt,
+            }),
+          ),
+        );
+      } catch (err) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Message not sent",
+            description: describeDispatchFailure(err, "The approval could not be declined."),
+          }),
+        );
+        return false;
+      } finally {
+        setRespondingRequestIds((existing) =>
+          existing.filter((requestId) => !requestIds.includes(requestId)),
+        );
+      }
+      // The refs follow the thread on screen; another thread's requests are
+      // not this message's to answer.
+      if (activeThreadKeyRef.current !== threadKeyAtSend) return false;
+      for (const requestId of requestIds) declined.add(requestId);
+      waiting = pendingApprovalsRef.current.filter((approval) => !declined.has(approval.requestId));
+    }
+    return waiting.length === 0 && !pendingUserInputsRef.current.some(isBlockingUserInput);
+  };
+
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const api = readEnvironmentApi(environmentId);
@@ -5116,6 +5339,7 @@ export default function ChatView(props: ChatViewProps) {
       (isSendBusy && !canSubmitSteeringFollowUp) ||
       isConnecting ||
       activeEnvironmentUnavailable ||
+      activeThread.move ||
       sendInFlightRef.current
     )
       return;
@@ -5149,7 +5373,36 @@ export default function ChatView(props: ChatViewProps) {
       pickedElementContextCount: composerPickedElementContexts.length,
       drawingContextCount: composerDrawingContexts.length,
     });
+    // A message for the agent whose turn waits on approvals answers them
+    // first. Only the draft that was sent goes out afterwards, to the agent it
+    // was for: one edited, or readdressed, meanwhile stays in the box, and its
+    // next send goes as usual.
+    const roomRecipientNow = () =>
+      resolveRoomSend({
+        enabled: roomsEnabled,
+        thread: activeThread,
+        threadRef: scopeThreadRef(environmentId, activeThread.id),
+      }).recipient?.id ?? null;
+    const declineBeforeSend = async (approvals: ReadonlyArray<PendingApproval>) => {
+      const recipientAtSend = roomRecipientNow();
+      if (!(await declineApprovalsBeforeSend(api, activeThread.id, approvals))) return false;
+      const draftNow = composerRef.current?.getSendContext();
+      return (
+        roomRecipientNow() === recipientAtSend &&
+        draftNow !== undefined &&
+        promptRef.current === promptForSend &&
+        sameItems(draftNow.images, composerAttachments) &&
+        sameItems(draftNow.terminalContexts, composerTerminalContexts) &&
+        sameItems(draftNow.transcriptHighlightContexts, composerTranscriptHighlightContexts) &&
+        sameItems(draftNow.fileSelectionContexts, composerFileSelectionContexts) &&
+        sameItems(draftNow.pickedElementContexts, composerPickedElementContexts) &&
+        sameItems(draftNow.drawingContexts, composerDrawingContexts)
+      );
+    };
     if (showPlanFollowUpPrompt && activeProposedPlan) {
+      // While an approval waits, an empty box implements nothing: Enter there
+      // is not the go-ahead for the plan.
+      if (pendingApprovals.length > 0 && trimmed.length === 0) return;
       // In a room, plan feedback for another agent carries the plan with it,
       // so it can not wait in the queue while the agent holding the thread
       // is still waiting on background work. It stays in the box instead.
@@ -5171,6 +5424,12 @@ export default function ChatView(props: ChatViewProps) {
           }),
         );
         return;
+      }
+      if (pendingApprovals.length > 0) {
+        sendInFlightRef.current = true;
+        const declined = await declineBeforeSend(pendingApprovals);
+        sendInFlightRef.current = false;
+        if (!declined) return;
       }
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -5360,9 +5619,18 @@ export default function ChatView(props: ChatViewProps) {
       !askOnTheSide &&
       (canSubmitSteeringFollowUp || queueForAnotherAgent) &&
       steeringThreadKey !== null;
+    // An approval holds the agent's turn. A message for that agent answers
+    // it: every waiting approval is declined and the message steers the turn,
+    // whatever "Send when done" says. A side question, or a message waiting
+    // for another agent, leaves the approvals alone.
+    const approvalDeclines = askOnTheSide || queueForAnotherAgent ? [] : pendingApprovals;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
-    const followUpDelivery = queueForAnotherAgent ? "queue" : settings.followUpDelivery;
+    const followUpDelivery = queueForAnotherAgent
+      ? "queue"
+      : approvalDeclines.length > 0
+        ? "steer"
+        : settings.followUpDelivery;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -5378,6 +5646,10 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
+    if (approvalDeclines.length > 0 && !(await declineBeforeSend(approvalDeclines))) {
+      sendInFlightRef.current = false;
+      return;
+    }
     if (!isSteeringFollowUp && !askOnTheSide) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
     }
@@ -5781,10 +6053,10 @@ export default function ChatView(props: ChatViewProps) {
     }
     setIsRecheckingProviderSendPreflight(true);
     try {
-      const payload = await ensureLocalApi().server.refreshProviders({
+      const payload = await refreshProviderStatus({
+        environmentId: threadComputerEnvironmentId,
         instanceId: prompt.instanceId,
       });
-      applyProvidersUpdated(payload);
       providerStatusesRef.current = payload.providers;
       const stillUnusable = deriveProviderSendPreflight({
         instanceId: prompt.instanceId,
@@ -6381,6 +6653,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
+    environmentId: threadComputerEnvironmentId,
     activeTurnInProgress,
     signIn: composerSignInView,
     // The held-send notice already states this provider's problem with the
@@ -6394,7 +6667,12 @@ export default function ChatView(props: ChatViewProps) {
     isSessionStarting,
     startedAt: activeWorkStartedAt,
     suppressed: providerStatusNoticeVisible || threadErrorNoticeVisible,
-    providerStatus: activeProviderStatus,
+    providerStatus:
+      (launchingInstanceId !== null
+        ? providerStatuses.find((status) => status.instanceId === launchingInstanceId)
+        : undefined) ?? activeProviderStatus,
+    launching: launchingStartupNotice,
+    environmentId: threadComputerEnvironmentId,
   });
   const threadErrorNotice = useMemo(
     () =>
@@ -6988,6 +7266,25 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  // Moving to a linked computer (docs/design/fleet.md, Part 3). From the
+  // move's start the thread is frozen here: its notice is the dock's only
+  // one, and a move that can't go on offers a fork to keep working here.
+  const resolveComputerLabel = useComputerLabel();
+  const activeThreadComputerLabel = resolveComputerLabel(environmentId, environmentId);
+  const continueHereAsNewThread = useCallback(() => {
+    const lastMessage = activeThread?.messages.at(-1);
+    if (lastMessage) onContinueMessageInNewThread(lastMessage.id);
+  }, [activeThread?.messages, onContinueMessageInNewThread]);
+  const threadMoveNotice = useThreadMoveNotice({
+    thread: activeThread,
+    computerLabel: activeThreadComputerLabel,
+    onContinueHere: continueHereAsNewThread,
+  });
+  const dockedComposerNotices = useMemo(
+    () => (threadMoveNotice ? [threadMoveNotice] : composerNotices),
+    [composerNotices, threadMoveNotice],
+  );
+
   const updateForkDialogInstruction = useCallback((instruction: string) => {
     setForkDialogState((current) => (current ? { ...current, instruction } : current));
   }, []);
@@ -7495,14 +7792,14 @@ export default function ChatView(props: ChatViewProps) {
     void onRevertToTurnCountRef.current(targetTurnCount, revertedMessageText);
   }, []);
   const onOpenForkSourceThread = useCallback(
-    (sourceThreadId: ThreadId) => {
+    (sourceThreadId: ThreadId, environmentId?: EnvironmentId) => {
       if (!activeThread) {
         return;
       }
       void navigate({
         to: "/$environmentId/$threadId",
         params: {
-          environmentId: activeThread.environmentId,
+          environmentId: environmentId ?? activeThread.environmentId,
           threadId: sourceThreadId,
         },
       });
@@ -7618,6 +7915,77 @@ export default function ChatView(props: ChatViewProps) {
 
   const chatHeaderBottomVarRef = useChatHeaderBottomVarRef();
 
+  const chatHeader = activeThread ? (
+    <ChatHeader
+      activeThreadEnvironmentId={activeThread.environmentId}
+      activeThreadTitle={
+        isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
+      }
+      // "General Chats" is the backing project, not a place the user chose
+      // to be. Chats present as their own mode, so the crumb says so.
+      activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
+      isGitRepo={isGitRepo}
+      openInCwd={isGeneralChatThread ? null : gitCwd}
+      projectCwd={isGeneralChatThread ? null : (activeProject?.cwd ?? null)}
+      activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
+      preferredScriptId={
+        activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+      }
+      keybindings={keybindings}
+      availableEditors={availableEditors}
+      terminalAvailable={activeProject !== undefined}
+      terminalOpen={terminalState.terminalOpen}
+      terminalToggleShortcutLabel={terminalToggleShortcutLabel}
+      railToggleShortcutLabel={sourceControlPanelShortcutLabel}
+      railOpen={rightPanelEngaged}
+      sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+      browserAvailable={browserAvailable}
+      browserOpen={browserOpen}
+      onToggleBrowser={handleToggleBrowser}
+      workingTreeChanges={workingTreeChanges}
+      remoteBehindCount={remoteBehindCount}
+      liveAgents={headerLiveAgents}
+      agentProviderInstanceId={activeProviderInstanceId}
+      agentProviderDriverKind={activeProviderDriver}
+      fileBrowserAvailable={!isGeneralChatThread}
+      taskProgress={taskProgress}
+      forkContext={forkHeaderContext}
+      parentContext={parentHeaderContext}
+      onOpenParentThread={onOpenParentThread}
+      backgroundRuns={backgroundRuns}
+      activeThreadRef={activeThreadRef}
+      onRunProjectScript={runProjectScript}
+      onAddProjectScript={saveProjectScript}
+      onUpdateProjectScript={updateProjectScript}
+      onDeleteProjectScript={deleteProjectScript}
+      onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
+      onStopBackgroundRun={stopBackgroundRun}
+      workflowRuns={runningWorkflowRuns}
+      onOpenWorkflowRun={openWorkflowRun}
+      onStopWorkflowRun={stopWorkflowRun}
+      onViewProposedPlan={
+        taskProgressProposedPlan !== null && !isGeneralChatThread ? onViewProposedPlan : undefined
+      }
+      onImplementProposedPlan={
+        canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
+      }
+      onDismissProposedPlan={
+        canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
+      }
+      onOpenForkSourceThread={onOpenForkSourceThread}
+      onToggleTerminal={toggleTerminalVisibility}
+      onToggleRail={onToggleRail}
+      onOpenSourceTab={onOpenHeaderSourceTab}
+      onOpenAgentsTab={onOpenHeaderAgentsTab}
+      onContinueInProject={
+        isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
+          ? onContinueInProject
+          : undefined
+      }
+      continueInProjectDisabledReason={continueInProjectDisabledReason}
+    />
+  ) : null;
+
   // Empty state: no active thread
   if (!activeThread) {
     return <NoActiveThreadState />;
@@ -7625,94 +7993,27 @@ export default function ChatView(props: ChatViewProps) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-      {/* Top bar */}
-      <header
-        ref={chatHeaderBottomVarRef}
-        data-find-region="chat"
-        className={cn(
-          "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-          isElectron
-            ? cn(
-                "drag-region flex items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
-                ELECTRON_HEADER_HEIGHT_CLASS,
-                reserveTitleBarControlInset &&
-                  "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
-              )
-            : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
-          COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-        )}
+      {/* Top bar: up in the window's title row while there is one, else here. */}
+      <TitleBarContent
+        measureRef={chatHeaderBottomVarRef}
+        findRegion="chat"
+        fallback={
+          <header
+            ref={chatHeaderBottomVarRef}
+            data-find-region="chat"
+            className={cn(
+              "relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+              isElectron
+                ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
+                : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+            )}
+          >
+            {chatHeader}
+          </header>
+        }
       >
-        <ChatHeader
-          activeThreadEnvironmentId={activeThread.environmentId}
-          activeThreadTitle={
-            isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
-          }
-          // "General Chats" is the backing project, not a place the user chose
-          // to be. Chats present as their own mode, so the crumb says so.
-          activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
-          isGitRepo={isGitRepo}
-          openInCwd={isGeneralChatThread ? null : gitCwd}
-          projectCwd={isGeneralChatThread ? null : (activeProject?.cwd ?? null)}
-          activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
-          preferredScriptId={
-            activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-          }
-          keybindings={keybindings}
-          availableEditors={availableEditors}
-          terminalAvailable={activeProject !== undefined}
-          terminalOpen={terminalState.terminalOpen}
-          terminalToggleShortcutLabel={terminalToggleShortcutLabel}
-          railToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          railOpen={rightPanelEngaged}
-          sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
-          browserAvailable={browserAvailable}
-          browserOpen={browserOpen}
-          onToggleBrowser={handleToggleBrowser}
-          workingTreeChanges={workingTreeChanges}
-          remoteBehindCount={remoteBehindCount}
-          liveAgents={headerLiveAgents}
-          agentProviderInstanceId={activeProviderInstanceId}
-          agentProviderDriverKind={activeProviderDriver}
-          fileBrowserAvailable={!isGeneralChatThread}
-          taskProgress={taskProgress}
-          forkContext={forkHeaderContext}
-          parentContext={parentHeaderContext}
-          onOpenParentThread={onOpenForkSourceThread}
-          backgroundRuns={backgroundRuns}
-          activeThreadRef={activeThreadRef}
-          onRunProjectScript={runProjectScript}
-          onAddProjectScript={saveProjectScript}
-          onUpdateProjectScript={updateProjectScript}
-          onDeleteProjectScript={deleteProjectScript}
-          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
-          onStopBackgroundRun={stopBackgroundRun}
-          workflowRuns={runningWorkflowRuns}
-          onOpenWorkflowRun={openWorkflowRun}
-          onStopWorkflowRun={stopWorkflowRun}
-          onViewProposedPlan={
-            taskProgressProposedPlan !== null && !isGeneralChatThread
-              ? onViewProposedPlan
-              : undefined
-          }
-          onImplementProposedPlan={
-            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
-          }
-          onDismissProposedPlan={
-            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
-          }
-          onOpenForkSourceThread={onOpenForkSourceThread}
-          onToggleTerminal={toggleTerminalVisibility}
-          onToggleRail={onToggleRail}
-          onOpenSourceTab={onOpenHeaderSourceTab}
-          onOpenAgentsTab={onOpenHeaderAgentsTab}
-          onContinueInProject={
-            isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
-              ? onContinueInProject
-              : undefined
-          }
-          continueInProjectDisabledReason={continueInProjectDisabledReason}
-        />
-      </header>
+        {chatHeader}
+      </TitleBarContent>
 
       {threadErrorRateLimitResetCreditDialog}
       <ForkThreadDialog
@@ -7721,6 +8022,10 @@ export default function ChatView(props: ChatViewProps) {
         modelOptionsByInstance={modelOptionsByInstance}
         keybindings={keybindings}
         terminalOpen={Boolean(terminalState.terminalOpen)}
+        providerSettingsShown={
+          threadComputerEnvironmentId === null ||
+          isAppBackendEnvironment(threadComputerEnvironmentId)
+        }
         disabled={isSendBusy || isConnecting || activeEnvironmentUnavailable}
         onOpenChange={(open) => {
           if (!open) {
@@ -7761,6 +8066,7 @@ export default function ChatView(props: ChatViewProps) {
         >
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
+            <HeaderEdgeFade at="top" />
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <CommandRunActionsContext value={commandRunActions}>
               <MessagesTimeline
@@ -7824,6 +8130,8 @@ export default function ChatView(props: ChatViewProps) {
                 onOpenAgentsPanel={onOpenAgentsPanel}
                 workflowRunActions={workflowRunActions}
                 onOpenThread={onOpenForkSourceThread}
+                scheduledRunLabel={scheduledRunLabel}
+                scheduledRunEvent={activeThread.scheduledRun?.event === true}
               />
             </CommandRunActionsContext>
             {/* An MCP app open beside the chat: outside the timeline, so it keeps
@@ -7880,6 +8188,7 @@ export default function ChatView(props: ChatViewProps) {
                   isSendBusy={isSendBusy}
                   isPreparingWorktree={isPreparingWorktree}
                   environmentUnavailable={activeEnvironmentUnavailableState}
+                  threadLocked={threadMoveComposerLock}
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
                   pendingUserInputs={pendingUserInputs}
@@ -7905,7 +8214,7 @@ export default function ChatView(props: ChatViewProps) {
                     isLocalDraftThread ? null : activeThread?.modelSelection
                   }
                   activeThreadActivities={activeThread ? threadActivities : undefined}
-                  notices={composerNotices}
+                  notices={dockedComposerNotices}
                   pullRequests={composerPullRequests}
                   stackedAbove={
                     <ComposerFollowUpQueue
@@ -8035,7 +8344,10 @@ export default function ChatView(props: ChatViewProps) {
                 {...(canCheckoutPullRequestIntoThread
                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                   : {})}
-                {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
+                {...(hasMultipleEnvironments || setupTargets.length > 0
+                  ? { onEnvironmentChange }
+                  : {})}
+                {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
                 availableEnvironments={logicalProjectEnvironments}
               />
             )}

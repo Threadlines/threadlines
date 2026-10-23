@@ -1,9 +1,11 @@
 import "../../index.css";
 
 import {
+  type ChildRequestId,
   EnvironmentId,
   type OrchestrationThreadActivity,
   SideTurnId,
+  type ThreadId,
   ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -1489,6 +1491,112 @@ describe("find in chat with the real virtual list", () => {
       await vi.waitFor(() => {
         expect(body()?.dataset.userMessageCollapsed).toBe("false");
         expect(currentFindHighlight()?.text).toBe("walrus");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a report folded to its first line on the way to a match further down", async () => {
+    const props = buildProps();
+    const report: ChatMessage = {
+      ...chatMessage(
+        "message-report",
+        "user",
+        "The release is ready.\n\n- The **installer** builds\n- The otter test passes",
+        0,
+      ),
+      fromThread: {
+        threadId: "thread-child" as ThreadId,
+        requestId: "request-child" as ChildRequestId,
+        kind: "report",
+      },
+    };
+    const screen = await renderTimeline(
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={messageEntries([
+            report,
+            chatMessage("message-after", "assistant", FILLER, 1),
+          ])}
+        />
+      </div>,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-agent-message-fold]")?.textContent).toBe(
+          "The release is ready.",
+        );
+      });
+      await openFind("otter");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      // Opened, with the match painted in the list item it is in.
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-agent-message-fold]")).toBeNull();
+        const current = currentFindHighlight();
+        expect(current?.text).toBe("otter");
+        const item = [
+          ...document.querySelectorAll<HTMLElement>('[data-message-id="message-report"] li'),
+        ].find((li) => li.textContent?.includes("otter"))!;
+        const itemRect = item.getBoundingClientRect();
+        expect(current!.rect.top).toBeGreaterThanOrEqual(itemRect.top - 1);
+        expect(current!.rect.bottom).toBeLessThanOrEqual(itemRect.bottom + 1);
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("folds a run's first message to its task's line, and opens it for a match inside", async () => {
+    const props = { ...buildProps(), routeThreadKey: "environment-local:thread-run" };
+    const runMessage = chatMessage(
+      "message-run",
+      "user",
+      "Event task: Triage labeled issues.\n\nRead the issue about the narwhal and propose a fix.",
+      0,
+    );
+    const screen = await renderTimeline(
+      <div style={{ height: 500, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          scheduledRunLabel="Event · Triage labeled issues"
+          scheduledRunEvent
+          timelineEntries={messageEntries([
+            runMessage,
+            chatMessage("message-answer", "assistant", FILLER, 1),
+            chatMessage("message-later", "user", "And the otter?", 2),
+          ])}
+        />
+      </div>,
+    );
+    try {
+      // One line naming the task; the instructions wait behind it.
+      const fold = page.getByRole("button", { name: "Event · Triage labeled issues" });
+      await expect.element(fold).toHaveAttribute("aria-expanded", "false");
+      expect(document.body.textContent).not.toContain("narwhal");
+      // Only the run's own message folds; later ones show whole.
+      await expect.element(page.getByText("And the otter?")).toBeVisible();
+
+      // Opened on click, and folded again with Show less.
+      await fold.click();
+      await expect.element(page.getByText(/about the narwhal/)).toBeVisible();
+      await page.getByRole("button", { name: "Show less" }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Event · Triage labeled issues" }))
+        .toBeVisible();
+      expect(document.body.textContent).not.toContain("narwhal");
+
+      // Find counts the whole message and opens it to show the match.
+      await openFind("narwhal");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-run-message-fold]")).toBeNull();
+        expect(currentFindHighlight()?.text).toBe("narwhal");
       });
     } finally {
       await screen.unmount();

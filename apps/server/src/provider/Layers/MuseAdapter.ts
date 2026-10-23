@@ -89,6 +89,7 @@ import {
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import {
@@ -301,6 +302,8 @@ interface SessionContext {
   readonly scope: Scope.Closeable;
   readonly runtimeMode: RuntimeMode;
   readonly roomTools: boolean;
+  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  readonly scheduleTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
   readonly managedWorktree: boolean;
@@ -1783,6 +1786,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           : []),
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.scheduleTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2187,6 +2191,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -2217,6 +2222,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             scope,
             runtimeMode: input.runtimeMode,
             roomTools,
+            scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests,
             managedWorktree,
