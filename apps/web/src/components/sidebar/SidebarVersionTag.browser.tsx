@@ -85,6 +85,15 @@ function checkNowAction() {
   return page.getByRole("button", { name: "Check now" });
 }
 
+/**
+ * The card's laid-out size. The popup scales in as it opens, and an on-screen
+ * rect taken before that settles reads smaller; the layout size never moves.
+ */
+function cardFootprint() {
+  const card = versionCard().element() as HTMLElement;
+  return { width: card.offsetWidth, height: card.offsetHeight };
+}
+
 describe("SidebarVersionTag", () => {
   afterEach(async () => {
     await mounted?.unmount();
@@ -161,16 +170,13 @@ describe("SidebarVersionTag", () => {
 
     await versionChip().click();
     await expect.element(checkNowAction()).toBeVisible();
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const before = versionCard().element().getBoundingClientRect();
+    const before = cardFootprint();
 
     await checkNowAction().click();
 
     expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
     await expect.element(page.getByText(/Checked just now/)).toBeVisible();
-    const after = versionCard().element().getBoundingClientRect();
-    expect(Math.round(after.width)).toBe(Math.round(before.width));
-    expect(Math.round(after.height)).toBe(Math.round(before.height));
+    expect(cardFootprint()).toEqual(before);
   });
 
   it("keeps the card footprint stable while checking for updates", async () => {
@@ -195,16 +201,13 @@ describe("SidebarVersionTag", () => {
 
     await versionChip().click();
     await expect.element(checkNowAction()).toBeVisible();
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const before = versionCard().element().getBoundingClientRect();
+    const before = cardFootprint();
 
     await checkNowAction().click();
 
     expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
     await expect.element(page.getByText("Checking for updates…")).toBeVisible();
-    const after = versionCard().element().getBoundingClientRect();
-    expect(Math.round(after.width)).toBe(Math.round(before.width));
-    expect(Math.round(after.height)).toBe(Math.round(before.height));
+    expect(cardFootprint()).toEqual(before);
   });
 
   it("holds the chip width and keeps the card status-only through an update", async () => {
@@ -231,19 +234,14 @@ describe("SidebarVersionTag", () => {
     };
     const widthOf = (locator: ReturnType<typeof versionChip>) =>
       Math.round(locator.element().getBoundingClientRect().width);
-    const heightOf = (locator: ReturnType<typeof versionCard>) =>
-      Math.round(locator.element().getBoundingClientRect().height);
 
     // Hover, not click: with an update pending, clicking the chip runs it.
     await versionChip().hover();
     await expect.element(versionCard().getByText("v1.0.1 available")).toBeVisible();
     // The chip owns the pending action; the card only reports status.
     await expect.element(versionCard().getByRole("button")).not.toBeInTheDocument();
-    // Let the popup's opening scale transition settle before taking the
-    // reference footprint (same guard as the check-flow footprint tests).
-    await new Promise((resolve) => setTimeout(resolve, 300));
     const chipWidth = widthOf(versionChip());
-    const cardHeight = heightOf(versionCard());
+    const cardHeight = cardFootprint().height;
 
     emitUpdateState({
       ...idleUpdateState,
@@ -254,7 +252,7 @@ describe("SidebarVersionTag", () => {
     await expect.element(versionChip()).toMatchTextContent("42%");
     await expect.element(page.getByText("Downloading v1.0.1 · 42%")).toBeVisible();
     expect(widthOf(versionChip())).toBe(chipWidth);
-    expect(Math.abs(heightOf(versionCard()) - cardHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(cardFootprint().height - cardHeight)).toBeLessThanOrEqual(1);
 
     emitUpdateState({
       ...idleUpdateState,
@@ -267,7 +265,7 @@ describe("SidebarVersionTag", () => {
     await expect.element(versionCard().getByText("v1.0.1 downloaded")).toBeVisible();
     await expect.element(versionCard().getByRole("button")).not.toBeInTheDocument();
     expect(widthOf(versionChip())).toBe(chipWidth);
-    expect(Math.abs(heightOf(versionCard()) - cardHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(cardFootprint().height - cardHeight)).toBeLessThanOrEqual(1);
   });
 
   it("downloads in one click from the chip but confirms before restarting", async () => {
