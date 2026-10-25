@@ -2995,17 +2995,32 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       deriveProviderAuthReconnectPrompt({
         provider: activeProviderDriver,
+        providerStatus: activeProviderStatus,
         threadError: activeThread?.error ?? activeThread?.session?.lastError ?? null,
         activities: threadActivities,
         messages: timelineMessages,
       }),
     [
       activeProviderDriver,
+      activeProviderStatus,
       activeThread?.error,
       activeThread?.session?.lastError,
       threadActivities,
       timelineMessages,
     ],
+  );
+  // The in-chat card runs the provider's terminal sign-in. A provider
+  // Threadlines signs in itself has none: the composer notice's Sign in is its way.
+  const providerAuthReconnectAction = useMemo<ProviderAuthReconnectAction | null>(
+    () =>
+      providerAuthReconnectPrompt?.command
+        ? {
+            provider: providerAuthReconnectPrompt.provider,
+            command: providerAuthReconnectPrompt.command,
+            message: providerAuthReconnectPrompt.message,
+          }
+        : null,
+    [providerAuthReconnectPrompt],
   );
   // Set when a send was held back because the selected provider instance is
   // already known to be unusable. Cleared by dismissing the notice, by a clean
@@ -3050,12 +3065,10 @@ export default function ChatView(props: ChatViewProps) {
   });
   const hasInlineProviderAuthError = useMemo(
     () =>
-      providerAuthReconnectPrompt !== null &&
+      providerAuthReconnectAction !== null &&
       (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
-        timelineMessages.some(
-          (message) => message.role === "assistant" && isProviderAuthErrorChatMessage(message),
-        )),
-    [providerAuthReconnectPrompt, timelineMessages, workLogEntries],
+        timelineMessages.some(isProviderAuthErrorChatMessage)),
+    [providerAuthReconnectAction, timelineMessages, workLogEntries],
   );
   const threadErrorNoticeVisible = shouldShowThreadErrorNotice({
     threadError: activeThread?.error,
@@ -4325,7 +4338,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const runProviderAuthReconnect = useCallback(
     async (action?: ProviderAuthReconnectAction) => {
-      const reconnectAction = action ?? providerAuthReconnectPrompt;
+      const reconnectAction = action ?? providerAuthReconnectAction;
       if (!reconnectAction) {
         return;
       }
@@ -4346,7 +4359,7 @@ export default function ChatView(props: ChatViewProps) {
         },
       );
     },
-    [activeProviderDriver, activeProviderLabel, providerAuthReconnectPrompt, runProjectScript],
+    [activeProviderDriver, activeProviderLabel, providerAuthReconnectAction, runProjectScript],
   );
 
   const runMcpAuthReconnect = useCallback(
@@ -8157,7 +8170,7 @@ export default function ChatView(props: ChatViewProps) {
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-                providerAuthReconnect={providerAuthReconnectPrompt}
+                providerAuthReconnect={providerAuthReconnectAction}
                 failedTurnRetry={failedTurnRetryAction}
                 onRunProviderAuthReconnect={runProviderAuthReconnect}
                 mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}

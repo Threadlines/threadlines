@@ -547,7 +547,7 @@ const READINESS_DRIVER_KEYS: Readonly<Record<string, string>> = {
 };
 
 /** Same order of evidence the Settings status line uses. */
-function signInState(snapshot: ServerProvider): AnalyticsSignInState {
+export function providerSignInState(snapshot: ServerProvider): AnalyticsSignInState {
   const chat = snapshot.auth.capabilities?.chat?.status;
   if (chat === "verified" || chat === "configured") return "yes";
   if (chat === "unavailable") return "no";
@@ -578,11 +578,16 @@ export function providerChecksSettled(providers: ReadonlyArray<ServerProvider>):
  * Answers about whether this machine can chat with an agent: per known
  * driver whether it is turned on, installed, and signed in (yes, no, or
  * unknown), plus totals across every driver. Account names, emails, and
- * versions never leave.
+ * versions never leave. `options.signInState` reads each provider's sign-in;
+ * the reporter passes one that remembers the last answer a check could give.
  */
 export function providerReadinessProperties(
   providers: ReadonlyArray<ServerProvider>,
+  options?: {
+    readonly signInState?: (provider: ServerProvider) => AnalyticsSignInState;
+  },
 ): Record<string, string | boolean> {
+  const signInState = options?.signInState ?? providerSignInState;
   const live = providers.filter((provider) => provider.enabled && isProviderAvailable(provider));
   // A probe that is still running or timed out never verified anything, so
   // it can't vouch for readiness even when its placeholder looks hopeful.

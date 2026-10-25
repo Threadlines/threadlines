@@ -9,7 +9,12 @@
  * keeps its identity from last time while what it holds is the same, and a
  * live update redraws only the rows it changed.
  */
-import type { MessageId, RoomAgentRequestId, SideTurnId } from "@threadlines/contracts";
+import type {
+  MessageId,
+  RoomAgentRequestId,
+  SideTurnId,
+  ThreadParticipantId,
+} from "@threadlines/contracts";
 import { shallow } from "zustand/vanilla/shallow";
 
 import { parseThreadStartResult, type ThreadStartCall } from "../../childThreads";
@@ -171,36 +176,56 @@ function collectThreadStartCalls(
   return byTurn;
 }
 
-function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean {
-  if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
-    return false;
+/**
+ * The agent a finished reply proves can sign in: the added agent that wrote
+ * it, or null for the thread's own. Undefined for anything else: a reply
+ * still being written, an empty one, a sign-in error.
+ */
+function providerAuthRecoveredAgent(
+  row: MessagesTimelineRow,
+): ThreadParticipantId | null | undefined {
+  if (
+    row.kind !== "message" ||
+    row.message.role !== "assistant" ||
+    row.message.streaming ||
+    row.message.text.trim().length === 0 ||
+    isProviderAuthErrorChatMessage(row.message)
+  ) {
+    return undefined;
   }
-  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
+  return row.message.participantId ?? null;
 }
 
+/**
+ * The sign-in errors a later reply shows are fixed: one from the agent whose
+ * sign-in failed. A sign-in error reply is always the thread's own agent's; a
+ * reconnect step names its agent. A side answer counts for the agent that
+ * wrote it, so a reviewer's answer never resolves the thread's own agent.
+ */
 function collectResolvedProviderAuthReconnectIds(
   rows: ReadonlyArray<MessagesTimelineRow>,
 ): Set<string> {
   const resolvedIds = new Set<string>();
-  let hasLaterAssistantSuccess = false;
+  const recoveredAgents = new Set<ThreadParticipantId | null>();
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
-    if (isResolvedProviderAuthRecoverySignal(row)) {
-      hasLaterAssistantSuccess = true;
+    const recoveredAgent = providerAuthRecoveredAgent(row);
+    if (recoveredAgent !== undefined) {
+      recoveredAgents.add(recoveredAgent);
       continue;
     }
-    if (!hasLaterAssistantSuccess) {
+    if (recoveredAgents.size === 0) {
       continue;
     }
-    if (row.kind === "message" && row.message.role === "assistant") {
-      if (isProviderAuthErrorChatMessage(row.message)) {
+    if (row.kind === "message") {
+      if (recoveredAgents.has(null) && isProviderAuthErrorChatMessage(row.message)) {
         resolvedIds.add(row.id);
       }
       continue;
     }
     if (row.kind === "work") {
       for (const entry of row.groupedEntries) {
-        if (entry.authReconnect) {
+        if (entry.authReconnect && recoveredAgents.has(entry.authReconnect.participantId ?? null)) {
           resolvedIds.add(entry.id);
         }
       }
