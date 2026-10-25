@@ -21,6 +21,7 @@ import {
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
+  providerCanSignIn,
   serverProviderCanSignIn,
 } from "@threadlines/shared/providerAuth";
 import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
@@ -1796,9 +1797,15 @@ export function deriveComposerSendState(options: {
   };
 }
 
+/**
+ * A failed turn that signing in again would fix. `command` is the provider's
+ * terminal sign-in, for the in-chat card that runs it; null when Threadlines
+ * signs the provider in itself (Pi's guided sign-in, Antigravity's and Grok's
+ * browser one, a community agent's) and only the composer's Sign in applies.
+ */
 export interface ProviderAuthReconnectPrompt {
   readonly provider: ProviderDriverKind;
-  readonly command: string;
+  readonly command: string | null;
   readonly message: string;
 }
 
@@ -1886,8 +1893,44 @@ function authMessageFromActivity(activity: OrchestrationThreadActivity): string 
   return isProviderAuthErrorMessage(message) ? message : null;
 }
 
+/**
+ * Whether the error the thread shows is one signing in fixes, as the agent
+ * itself said: the newest runtime error whose message is the thread's error,
+ * marked as a sign-in failure or given another failure category. Undefined when
+ * no runtime error says (none is that error, or it's a bare provider error), and
+ * the wording decides. So a 403 an agent filed under permission doesn't ask to
+ * sign in even when it mentions credentials.
+ */
+function shownErrorNeedsSignIn(
+  threadError: string | undefined,
+  activities: ReadonlyArray<OrchestrationThreadActivity> | null | undefined,
+): boolean | undefined {
+  if (!threadError) {
+    return undefined;
+  }
+  const list = activities ?? [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const activity = list[index];
+    if (!activity || activity.kind !== "runtime.error") {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    if (asString(payload?.message)?.trim() !== threadError) {
+      continue;
+    }
+    const category = asString(payload?.failureCategory);
+    if (asString(payload?.class) === "authentication_error" || category === "auth") {
+      return true;
+    }
+    return category === null ? undefined : false;
+  }
+  return undefined;
+}
+
 export function deriveProviderAuthReconnectPrompt(input: {
   readonly provider: ProviderDriverKind | null | undefined;
+  /** The thread's provider instance as its server reports it: whether Threadlines can sign it in. */
+  readonly providerStatus?: Pick<ServerProvider, "driver" | "community"> | null | undefined;
   readonly threadError?: string | null | undefined;
   readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
   readonly messages?: ReadonlyArray<Pick<ChatMessage, "role" | "text">> | null | undefined;
@@ -1897,12 +1940,19 @@ export function deriveProviderAuthReconnectPrompt(input: {
     return null;
   }
 
-  const command = providerAuthReconnectCommand(provider);
-  if (!command) {
+  const command = providerAuthReconnectCommand(provider) ?? null;
+  const canSignIn = input.providerStatus
+    ? serverProviderCanSignIn(input.providerStatus)
+    : providerCanSignIn(provider);
+  if (!command && !canSignIn) {
     return null;
   }
 
   const threadError = input.threadError?.trim();
+  const shownNeedsSignIn = shownErrorNeedsSignIn(threadError, input.activities);
+  if (threadError && shownNeedsSignIn !== undefined) {
+    return shownNeedsSignIn ? { provider, command, message: threadError } : null;
+  }
   if (threadError && isProviderAuthErrorMessage(threadError)) {
     return {
       provider,
@@ -2017,7 +2067,14 @@ export function isRetryableThreadError(input: {
   if (!threadError) {
     return false;
   }
-  if (isProviderAuthErrorMessage(threadError) || isProviderUsageLimitErrorMessage(threadError)) {
+  if (isProviderUsageLimitErrorMessage(threadError)) {
+    return false;
+  }
+  const shownNeedsSignIn = shownErrorNeedsSignIn(threadError, input.activities);
+  if (shownNeedsSignIn === true) {
+    return false;
+  }
+  if (shownNeedsSignIn === undefined && isProviderAuthErrorMessage(threadError)) {
     return false;
   }
 

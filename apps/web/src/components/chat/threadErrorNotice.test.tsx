@@ -61,7 +61,7 @@ describe("buildThreadErrorNotice", () => {
     );
 
     expect(markup).toContain("Claude needs sign-in.");
-    expect(markup).toContain("Complete the browser step and come back here.");
+    expect(markup).toContain("Sign in, then retry your message.");
     expect(markup).toContain("Last error: Failed to authenticate.");
     expect(markup).toContain(">Sign in<");
     // The command never reaches the user: Threadlines runs it for them.

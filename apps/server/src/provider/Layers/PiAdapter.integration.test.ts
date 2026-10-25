@@ -3,7 +3,7 @@
  * `cli.js` is available (THREADLINES_PI_CLI, or the server's pinned dev
  * dependency).
  */
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,67 +43,72 @@ const testLayer = ServerConfig.layerTest(process.cwd(), { prefix: "pi-adapter-" 
 
 const folder = () => realpathSync(mkdtempSync(join(tmpdir(), "threadlines-pi-project-")));
 
-const setup = Effect.gen(function* () {
-  const model = yield* Effect.acquireRelease(
-    Effect.promise(() => startTestModelServer()),
-    (server) => Effect.promise(() => server.close()),
-  );
-  const home = makeTestPiHome(model.url);
-  const adapter = yield* makePiAdapter({
-    instanceId: INSTANCE_ID,
-    settings: { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
-    launch: Effect.succeed({ command: process.execPath, prefixArgs: [piCli!] }),
-    instanceEnvironment: undefined,
-    baseEnvironment: testPiEnvironment(home.agentDir),
-    extensionDir: mkdtempSync(join(tmpdir(), "threadlines-pi-ext-")),
-    models: () => [],
+/** `withoutEnv`: variables the test Pi must not see, such as a provider's key. */
+const setupWith = (withoutEnv: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const model = yield* Effect.acquireRelease(
+      Effect.promise(() => startTestModelServer()),
+      (server) => Effect.promise(() => server.close()),
+    );
+    const home = makeTestPiHome(model.url);
+    const environment = testPiEnvironment(home.agentDir);
+    for (const name of withoutEnv) delete environment[name];
+    const adapter = yield* makePiAdapter({
+      instanceId: INSTANCE_ID,
+      settings: { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
+      launch: Effect.succeed({ command: process.execPath, prefixArgs: [piCli!] }),
+      instanceEnvironment: undefined,
+      baseEnvironment: environment,
+      extensionDir: mkdtempSync(join(tmpdir(), "threadlines-pi-ext-")),
+      models: () => [],
+    });
+    const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+    yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) => Queue.offer(events, event)),
+      Effect.forkScoped,
+    );
+    const seen: Array<ProviderRuntimeEvent> = [];
+    const nextEvent = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+      Effect.gen(function* () {
+        while (true) {
+          const event = yield* Queue.take(events);
+          seen.push(event);
+          if (predicate(event)) return event;
+        }
+      }).pipe(Effect.timeout(Duration.seconds(30)));
+    const turnEnd = (threadId: ThreadId) =>
+      nextEvent((event) => event.type === "turn.completed" && event.threadId === threadId);
+    const start = (
+      threadId: ThreadId,
+      input: {
+        readonly runtimeMode?: RuntimeMode;
+        readonly cwd?: string;
+        readonly resumeCursor?: unknown;
+        readonly forkFrom?: { readonly providerThreadId: string; readonly lastTurnId?: string };
+      } = {},
+    ) =>
+      adapter.startSession({
+        threadId,
+        cwd: input.cwd ?? folder(),
+        runtimeMode: input.runtimeMode ?? "full-access",
+        ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}),
+      });
+    const send = (threadId: ThreadId, text: string, interactionMode?: "plan") =>
+      adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make(`m-${text.slice(0, 20)}`),
+        input: text,
+        ...(interactionMode ? { interactionMode } : {}),
+      });
+    /** The user messages the model saw on its last request. */
+    const lastUserMessages = () =>
+      ((model.requests.at(-1)?.messages ?? []) as Array<{ role: string; content: unknown }>)
+        .filter((message) => message.role === "user")
+        .map((message) => JSON.stringify(message.content));
+    return { adapter, model, home, nextEvent, turnEnd, start, send, seen, lastUserMessages };
   });
-  const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
-  yield* adapter.streamEvents.pipe(
-    Stream.runForEach((event) => Queue.offer(events, event)),
-    Effect.forkScoped,
-  );
-  const seen: Array<ProviderRuntimeEvent> = [];
-  const nextEvent = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
-    Effect.gen(function* () {
-      while (true) {
-        const event = yield* Queue.take(events);
-        seen.push(event);
-        if (predicate(event)) return event;
-      }
-    }).pipe(Effect.timeout(Duration.seconds(30)));
-  const turnEnd = (threadId: ThreadId) =>
-    nextEvent((event) => event.type === "turn.completed" && event.threadId === threadId);
-  const start = (
-    threadId: ThreadId,
-    input: {
-      readonly runtimeMode?: RuntimeMode;
-      readonly cwd?: string;
-      readonly resumeCursor?: unknown;
-      readonly forkFrom?: { readonly providerThreadId: string; readonly lastTurnId?: string };
-    } = {},
-  ) =>
-    adapter.startSession({
-      threadId,
-      cwd: input.cwd ?? folder(),
-      runtimeMode: input.runtimeMode ?? "full-access",
-      ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-      ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}),
-    });
-  const send = (threadId: ThreadId, text: string, interactionMode?: "plan") =>
-    adapter.sendTurn({
-      threadId,
-      messageId: MessageId.make(`m-${text.slice(0, 20)}`),
-      input: text,
-      ...(interactionMode ? { interactionMode } : {}),
-    });
-  /** The user messages the model saw on its last request. */
-  const lastUserMessages = () =>
-    ((model.requests.at(-1)?.messages ?? []) as Array<{ role: string; content: unknown }>)
-      .filter((message) => message.role === "user")
-      .map((message) => JSON.stringify(message.content));
-  return { adapter, model, nextEvent, turnEnd, start, send, seen, lastUserMessages };
-});
+const setup = setupWith([]);
 
 const run = <A, E, R extends Layer.Success<typeof testLayer> | Scope.Scope>(
   body: Effect.Effect<A, E, R>,
@@ -191,6 +196,66 @@ describe.skipIf(!piCli)("PiAdapter with a real Pi", () => {
         }),
       ),
     90_000,
+  );
+
+  it.live(
+    "says a provider refusing Pi's key as a sign-in failure, not a turn to retry",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const { nextEvent, turnEnd, start, send } = yield* setup;
+          const threadId = ThreadId.make("pi-e");
+          yield* start(threadId);
+          yield* send(
+            threadId,
+            'STATUS 401 {"error":{"message":"Invalid API key","type":"invalid_request_error"}}',
+          );
+          const done = yield* turnEnd(threadId);
+          expect(done.type === "turn.completed" && done.payload).toMatchObject({
+            state: "failed",
+            failureCategory: "auth",
+            errorMessage:
+              "test rejected Pi's key or sign-in: Invalid API key. Sign in again from Settings → Pi → Sign in, then retry.",
+          });
+          // After the turn's end, outside it: the chat reads it for Sign in.
+          const error = yield* nextEvent((event) => event.type === "runtime.error");
+          expect(error.turnId).toBeUndefined();
+          expect(error.type === "runtime.error" && error.payload).toMatchObject({
+            class: "authentication_error",
+            failureCategory: "auth",
+          });
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "says plainly that a model's key is gone when Pi refuses to switch to it",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const { adapter, home, start } = yield* setupWith(["ZAI_API_KEY"]);
+          const auth = join(home.agentDir, "auth.json");
+          writeFileSync(auth, JSON.stringify({ zai: { type: "api_key", key: "not-a-real-key" } }));
+          const threadId = ThreadId.make("pi-f");
+          yield* start(threadId);
+          // Signed out of Z.AI while this chat's Pi runs: Pi refuses its model when it's chosen.
+          rmSync(auth);
+          const refused = yield* adapter
+            .sendTurn({
+              threadId,
+              messageId: MessageId.make("m-no-key"),
+              input: "hello",
+              modelSelection: { instanceId: INSTANCE_ID, model: "zai/glm-4.7" },
+            })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            detail:
+              "Pi has no key or sign-in for Z.AI, which this chat's model needs. Sign in to Z.AI from Settings → Pi → Sign in, or pick another model.",
+          });
+        }),
+      ),
+    60_000,
   );
 
   it.live(

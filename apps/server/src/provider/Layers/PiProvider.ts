@@ -44,6 +44,7 @@ import {
   PiCommands,
   type PiModel,
   piModelSlug,
+  piProviderName,
   PiState,
 } from "../pi/PiProtocol.ts";
 import { startPiRpc } from "../pi/PiRpc.ts";
@@ -77,56 +78,6 @@ const LEVEL_LABELS: Readonly<Record<string, string>> = {
   xhigh: "Extra High",
   max: "Max",
 };
-
-/**
- * Pi's names for its built-in providers (from pi-ai's provider list). A
- * provider an extension or `models.json` adds shows by its id.
- */
-const PROVIDER_NAMES: Readonly<Record<string, string>> = {
-  "amazon-bedrock": "Amazon Bedrock",
-  "ant-ling": "Ant Ling",
-  anthropic: "Anthropic",
-  azure: "Azure",
-  baseten: "Baseten",
-  cerebras: "Cerebras",
-  "cloudflare-ai-gateway": "Cloudflare AI Gateway",
-  "cloudflare-workers-ai": "Cloudflare Workers AI",
-  deepseek: "DeepSeek",
-  fireworks: "Fireworks",
-  "github-copilot": "GitHub Copilot",
-  google: "Google",
-  "google-vertex": "Google Vertex AI",
-  groq: "Groq",
-  huggingface: "Hugging Face",
-  "kimi-coding": "Kimi For Coding",
-  meta: "Meta",
-  minimax: "MiniMax",
-  "minimax-cn": "MiniMax CN",
-  mistral: "Mistral",
-  moonshotai: "Moonshot AI",
-  "moonshotai-cn": "Moonshot AI CN",
-  nvidia: "NVIDIA",
-  openai: "OpenAI",
-  "openai-codex": "OpenAI Codex",
-  opencode: "OpenCode Zen",
-  "opencode-go": "OpenCode Go",
-  openrouter: "OpenRouter",
-  "qwen-token-plan": "Qwen Token Plan",
-  "qwen-token-plan-cn": "Qwen Token Plan CN",
-  "qwen-token-plan-individual": "Qwen Token Plan Individual",
-  together: "Together",
-  typesafe: "TypeSafe",
-  "vercel-ai-gateway": "Vercel AI Gateway",
-  xai: "xAI",
-  xiaomi: "Xiaomi",
-  "xiaomi-token-plan-ams": "Xiaomi Token Plan AMS",
-  "xiaomi-token-plan-cn": "Xiaomi Token Plan CN",
-  "xiaomi-token-plan-sgp": "Xiaomi Token Plan SGP",
-  zai: "Z.AI",
-  "zai-coding-cn": "Z.AI Coding CN",
-};
-
-export const piProviderName = (providerId: string) => PROVIDER_NAMES[providerId] ?? providerId;
 
 /** The levels a model supports, as Pi decides them (pi-ai's `getSupportedThinkingLevels`). */
 export function piThinkingLevels(

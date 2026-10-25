@@ -59,7 +59,11 @@ const textOf = (content: unknown): string =>
           .join("")
       : "";
 
-/** An OpenAI chat-completions server that answers from a script in the prompt. */
+/**
+ * An OpenAI chat-completions server that answers from a script in the prompt:
+ * `REPLY <text>`, `SLOW <ms> <text>`, `TOOL <name> <json args>`, or
+ * `STATUS <code> <body>` for a refused request.
+ */
 export async function startTestModelServer(): Promise<TestServer> {
   const requests: Array<Record<string, unknown>> = [];
   let calls = 0;
@@ -75,6 +79,12 @@ export async function startTestModelServer(): Promise<TestServer> {
     const messages = (body.messages ?? []) as Array<{ role: string; content: unknown }>;
     const last = messages.at(-1);
     const lastUser = messages.findLast((message) => message.role === "user");
+    const refused = /^STATUS (\d{3}) ([\s\S]*)$/u.exec(textOf(lastUser?.content).trim());
+    if (refused && last?.role !== "tool") {
+      response.writeHead(Number(refused[1]), { "content-type": "application/json" });
+      response.end(refused[2]);
+      return;
+    }
     const base = {
       id: `chatcmpl-${calls}`,
       object: "chat.completion.chunk",

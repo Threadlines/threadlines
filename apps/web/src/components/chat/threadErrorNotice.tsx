@@ -7,7 +7,7 @@ import { isProviderPlanGateMessage } from "@threadlines/shared/providerPlan";
 import { ExternalLinkIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 
 import { openExternalUrl } from "../../lib/externalLinks";
-import type { ProviderAuthReconnectAction } from "../../session-logic";
+import type { ProviderAuthReconnectPrompt } from "../ChatView.logic";
 import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitResetCredit";
 import { Button } from "../ui/button";
 import type { ComposerNotice } from "./composerNotices";
@@ -43,7 +43,8 @@ export function buildThreadErrorNotice({
   onDismiss,
 }: {
   error: string | null;
-  authReconnect?: ProviderAuthReconnectAction | null;
+  /** Set when signing in again would fix the failure; the notice offers the composer's Sign in. */
+  authReconnect?: ProviderAuthReconnectPrompt | null;
   usageReset?: UsageResetAction | null;
   usageResetLink?: UsageResetLink | null;
   retry?: TurnRetryAction | null;
@@ -85,6 +86,7 @@ export function buildThreadErrorNotice({
     return buildProviderSignInNotice({
       id: "thread-error-auth",
       providerLabel: providerLabel?.trim() || "Provider",
+      instruction: "Sign in, then retry your message.",
       detailSuffix: `Last error: ${error}`,
       signIn,
       ...(onDismiss ? { onDismiss } : {}),
