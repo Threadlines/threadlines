@@ -757,7 +757,35 @@ export function mergeThreadLastSeenAt(input: {
   readonly serverLastSeenAt?: string | null | undefined;
   readonly seedAt?: string | undefined;
 }): string | undefined {
-  return input.overlayAt ?? input.serverLastSeenAt ?? input.seedAt ?? undefined;
+  return resolveThreadSeenAt(input.overlayAt, input.serverLastSeenAt) ?? input.seedAt ?? undefined;
+}
+
+/**
+ * When the user surely saw a thread: a visit this device has sent, else the
+ * server's stamp. Without the seed, which is this device's guess for threads
+ * the server never recorded a visit for, made again on every load: it keeps
+ * a fresh load from calling everything unread, but is no proof of a visit.
+ */
+export function resolveThreadSeenAt(
+  overlayAt: string | undefined,
+  serverLastSeenAt: string | null | undefined,
+): string | undefined {
+  return overlayAt ?? serverLastSeenAt ?? undefined;
+}
+
+/**
+ * The user's word on a thread while it still stands: one older than the
+ * thread's last activity is stale, since new work outranks an old word.
+ */
+export function freshThreadDoneOverride(
+  thread: DoneSortInput,
+  override: ThreadDoneOverride | null | undefined,
+): ThreadDoneOverride | null {
+  if (override == null) return null;
+  const lastActivityAt = resolveDoneTimestamp(thread, null);
+  return lastActivityAt !== null && Date.parse(lastActivityAt) > Date.parse(override.at)
+    ? null
+    : override;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -827,13 +855,9 @@ export function isThreadDone(
       latestTurn: thread.latestTurn,
     });
   if (!canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen })) return false;
-  const lastActivityAt = resolveDoneTimestamp(thread, null);
-  const overrideIsStale =
-    override != null &&
-    lastActivityAt !== null &&
-    Date.parse(lastActivityAt) > Date.parse(override.at);
-  if (override != null && !overrideIsStale) {
-    return override.state === "done";
+  const freshOverride = freshThreadDoneOverride(thread, override);
+  if (freshOverride !== null) {
+    return freshOverride.state === "done";
   }
   if (thread.pinnedAt !== null) return false;
   if (childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone)) {
@@ -847,6 +871,7 @@ export function isThreadDone(
   }
   if (options.autoDoneAfterDays == null) return false;
   if (hasUnseenCompletion(thread)) return false;
+  const lastActivityAt = resolveDoneTimestamp(thread, null);
   if (lastActivityAt === null) return false;
   return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
 }
@@ -877,6 +902,12 @@ export interface FiledInboxThread {
   readonly thread: SidebarThreadSummary;
   readonly threadKey: string;
   readonly lastVisitedAt: string | undefined;
+  /**
+   * When the user surely saw it: a visit this device sent, or the server's
+   * stamp. Never this device's first-load guess, which `lastVisitedAt` falls
+   * back on and every load makes again.
+   */
+  readonly seenAt: string | undefined;
   readonly status: ThreadStatusPill | null;
   readonly override: ThreadDoneOverride | null;
   readonly isDone: boolean;
@@ -904,8 +935,12 @@ export function fileInboxThreads(input: {
   const prepared = input.threads.map((thread) => {
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
     const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, input.seenSources);
+    const seenAt = resolveThreadSeenAt(
+      input.seenSources.seenThreadOverlays[threadKey]?.at,
+      thread.lastSeenAt,
+    );
     const override = mergeThreadDoneOverride(input.doneOverlays[threadKey], thread.doneOverride);
-    return { thread, threadKey, lastVisitedAt, status, override };
+    return { thread, threadKey, lastVisitedAt, seenAt, status, override };
   });
   const preparedByKey = new Map(prepared.map((item) => [item.threadKey, item] as const));
   const doneByKey = new Map<string, boolean>();
@@ -1215,10 +1250,63 @@ export interface InboxFamilyStatus {
   readonly isDone: boolean;
 }
 
+/** What decides when a wrapped child leaves its live parent's family ({@link hasLeftLiveFamily}). */
+export interface InboxFamilyExit extends InboxFamilyStatus {
+  /** When its work last moved: what the user must have seen for it to go. */
+  readonly settledAt: string | null;
+  /** When the user surely saw it (`FiledInboxThread.seenAt`); absent for a child this app can't open. */
+  readonly seenAt?: string | undefined;
+  /**
+   * When its answer last reached the parent (handed back). Background work
+   * can deliver a turn well after it ended, and a parent seen before the
+   * delivery has not shown that answer.
+   */
+  readonly deliveredAt?: string | null | undefined;
+  /** The user wrapped it themselves, not a wrap-up rule. */
+  readonly wrappedByUser?: boolean | undefined;
+}
+
 /** What the family rules read about each inbox thread. */
-export interface InboxFamilyEntry extends InboxFamilyStatus {
+export interface InboxFamilyEntry extends InboxFamilyExit {
   readonly threadKey: string;
   readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+  readonly seenAt: string | undefined;
+  readonly wrappedByUser: boolean;
+}
+
+/**
+ * Whether a wrapped child has left its live parent's family for Wrapped,
+ * where it stands on its own and names the parent. Finished children
+ * otherwise pile up under a parent still in use, for as long as it lives.
+ * The user wrapping it is their word, so it goes at once. One that wrapped
+ * itself (its answer went back, its pull request landed, it sat idle) stays
+ * until the user has seen what it finished, so coming back still shows
+ * "1 thread finished" under the parent: in the child, or in a parent turn
+ * that ended after its answer reached the parent (seen stamps are turn
+ * completions, and a handed-back answer starts one). It waits no longer than
+ * a quiet thread waits in the live list, so a parent that never ran again
+ * cannot hold it there.
+ */
+export function hasLeftLiveFamily(
+  child: InboxFamilyExit,
+  parent: { readonly seenAt: string | undefined },
+  now: string,
+): boolean {
+  if (!child.isDone) return false;
+  if (child.wrappedByUser === true) return true;
+  const settledMs = child.settledAt === null ? Number.NaN : Date.parse(child.settledAt);
+  if (Number.isNaN(settledMs)) return true;
+  if (settledMs < Date.parse(now) - INBOX_AUTO_DONE_AFTER_DAYS * DAY_MS) return true;
+  const seenSince = (seenAt: string | undefined, sinceMs: number) =>
+    seenAt !== undefined && Date.parse(seenAt) >= sinceMs;
+  const deliveredMs = child.deliveredAt == null ? Number.NaN : Date.parse(child.deliveredAt);
+  return (
+    seenSince(child.seenAt, settledMs) ||
+    seenSince(
+      parent.seenAt,
+      Number.isNaN(deliveredMs) ? settledMs : Math.max(settledMs, deliveredMs),
+    )
+  );
 }
 
 /**
@@ -1232,9 +1320,10 @@ export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestSt
  * A child in a parent's family that runs on a computer this app can't see
  * (no thread list for it), shown from the parent's own record of it: its
  * last known status, or a start that has no thread there yet. It can't be
- * opened: the app has no thread to open.
+ * opened: the app has no thread to open, so once wrapped and seen through
+ * the parent it has no row until the parent wraps and holds it.
  */
-export interface InboxRemoteChild extends InboxFamilyStatus {
+export interface InboxRemoteChild extends InboxFamilyExit {
   /**
    * The key its thread would have in this app (environment-scoped), or
    * `start:<environmentId>:<requestId>` for a start with no thread yet.
@@ -1279,6 +1368,12 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
   readonly remoteChildren: readonly InboxRemoteChild[];
   /** A wrapped child of this wrapped parent that is open in the chat. */
   readonly openChild: E | null;
+  /**
+   * The thread that started it, when it stands here apart from that thread's
+   * family: it left a live parent's family, or the machine filter hides the
+   * parent.
+   */
+  readonly startedBy: E | null;
 }
 
 const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
@@ -1363,9 +1458,10 @@ export function countThreadAttention(
  * from a parent it hides (the machine filter showing a child's computer but
  * not its parent's). `remoteChildrenOf` adds a parent's children on
  * computers this app can't see; one whose thread is in the list is the
- * thread, never both. The live and wrapped orders come from the caller's
- * sorts, applied to the rows that stand on their own; children keep creation
- * order and are never re-sorted.
+ * thread, never both. A wrapped child leaves a live parent's family once
+ * {@link hasLeftLiveFamily} says so, unless it is open in the chat. The live
+ * and wrapped orders come from the caller's sorts, applied to the rows that
+ * stand on their own; children keep creation order and are never re-sorted.
  */
 export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly entries: readonly E[];
@@ -1375,6 +1471,8 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly remoteChildrenOf?: ((parent: E) => readonly InboxRemoteChild[]) | undefined;
   readonly isFamilyOpen: (parentKey: string) => boolean;
   readonly activeThreadKey: string | null;
+  /** The inbox clock, for {@link hasLeftLiveFamily}. */
+  readonly now: string;
   readonly sortLive: (entries: readonly E[]) => E[];
   readonly sortDone: (entries: readonly E[]) => E[];
 }): { readonly live: InboxLiveRow<E>[]; readonly done: InboxDoneRow<E>[] } {
@@ -1419,6 +1517,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   const doneHeads: E[] = [];
   const wrappedParentByKey = new Map<string, E>();
   const scopedOutParentByKey = new Map<string, E>();
+  const liveParentByKey = new Map<string, E>();
   for (const entry of input.entries) {
     const parent = parentOf(entry);
     if (parent === null) {
@@ -1434,8 +1533,19 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       }
       continue;
     }
-    // In a live family, or inside its wrapped parent: not a row of its own.
-    if (!wrapped(parent) || entry.isDone) continue;
+    if (!wrapped(parent)) {
+      // Finished with, it moves to Wrapped; otherwise it is in the family.
+      if (
+        entry.threadKey !== input.activeThreadKey &&
+        hasLeftLiveFamily(entry, parent, input.now)
+      ) {
+        doneHeads.push(entry);
+        liveParentByKey.set(entry.threadKey, parent);
+      }
+      continue;
+    }
+    // Inside its wrapped parent: not a row of its own.
+    if (entry.isDone) continue;
     liveHeads.push(entry);
     wrappedParentByKey.set(entry.threadKey, parent);
   }
@@ -1444,8 +1554,14 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     const wrappedParent = wrappedParentByKey.get(entry.threadKey) ?? null;
     const scopedOutParent = scopedOutParentByKey.get(entry.threadKey) ?? null;
     const heads = wrappedParent === null && scopedOutParent === null;
-    const children = heads ? (childrenByParentKey.get(entry.threadKey) ?? []) : [];
-    const remoteChildren = heads ? remoteChildrenOf(entry) : [];
+    const children = heads
+      ? (childrenByParentKey.get(entry.threadKey) ?? []).filter(
+          (child) => !liveParentByKey.has(child.threadKey),
+        )
+      : [];
+    const remoteChildren = heads
+      ? remoteChildrenOf(entry).filter((child) => !hasLeftLiveFamily(child, entry, input.now))
+      : [];
     const open = input.isFamilyOpen(entry.threadKey);
     const shownChildren = open
       ? children
@@ -1466,7 +1582,9 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     };
   });
   const done = input.sortDone(doneHeads).map((entry): InboxDoneRow<E> => {
-    const standsApart = scopedOutParentByKey.has(entry.threadKey);
+    const startedBy =
+      liveParentByKey.get(entry.threadKey) ?? scopedOutParentByKey.get(entry.threadKey) ?? null;
+    const standsApart = startedBy !== null;
     const children = standsApart ? [] : (childrenByParentKey.get(entry.threadKey) ?? []);
     return {
       entry,
@@ -1474,6 +1592,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       remoteChildren: standsApart ? [] : remoteChildrenOf(entry),
       openChild:
         children.find((child) => child.isDone && child.threadKey === input.activeThreadKey) ?? null,
+      startedBy,
     };
   });
   return { live, done };
@@ -1818,6 +1937,7 @@ export function resolveRemoteFamilyChildren(input: {
       phase: start.status,
       status: REMOTE_PHASE_PILLS[start.status],
       isDone: false,
+      settledAt: null,
     }));
   return [...children, ...starts];
 }
@@ -1841,6 +1961,7 @@ export function remoteChildEntry(
     phase,
     status: REMOTE_PHASE_PILLS[phase],
     isDone: phase === "wrapped",
+    settledAt: child.updatedAt,
   };
 }
 

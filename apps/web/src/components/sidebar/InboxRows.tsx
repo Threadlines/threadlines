@@ -1762,6 +1762,8 @@ export interface InboxDoneRowProps {
   ) => void;
   /** How many threads its agent started that are still in its family; they wrap inside it. */
   childCount?: number | undefined;
+  /** A child standing apart from its parent's family (InboxDoneRow.startedBy): the parent's title. */
+  startedByTitle?: string | null | undefined;
   /** See ThreadHoverCardPayload.lineage. */
   lineage?: ThreadHoverCardLineage | undefined;
   /** See InboxThreadRowProps.onSwipeAction. */
@@ -1791,6 +1793,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     linkedPullRequests,
     openPrLink,
     childCount = 0,
+    startedByTitle = null,
     lineage,
     onSwipeAction,
   } = props;
@@ -1978,6 +1981,20 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 className="inline-flex shrink-0 items-center text-muted-foreground/60"
               >
                 <PlugIcon className="size-3" />
+              </span>
+            ) : null}
+            {/* A child standing here apart from its parent's family: the
+              arrow marks it as started by another thread, which the hover card
+              names. */}
+            {startedByTitle !== null ? (
+              <span
+                role="img"
+                aria-label={`Started by ${startedByTitle}`}
+                title={`Started by ${startedByTitle}`}
+                data-testid={`done-started-by-${thread.id}`}
+                className="-mr-1 inline-flex shrink-0 items-center text-muted-foreground/60"
+              >
+                <CornerDownRightIcon className="size-3" />
               </span>
             ) : null}
             <span

@@ -17,7 +17,11 @@ import { parseScopedThreadKey, scopeThreadRef, scopedThreadKey } from "@threadli
 import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
 import { useShallow } from "zustand/react/shallow";
 
-import { mergeThreadDoneOverride, mergeThreadLastSeenAt } from "../components/Sidebar.logic";
+import {
+  mergeThreadDoneOverride,
+  mergeThreadLastSeenAt,
+  resolveThreadSeenAt,
+} from "../components/Sidebar.logic";
 import type { ThreadDoneOverride, ThreadSeenSources } from "../components/Sidebar.logic";
 import { readEnvironmentApi } from "../environmentApi";
 import {
@@ -66,6 +70,18 @@ export function selectThreadLastSeenAt(
     serverLastSeenAt,
     seedAt: uiState.threadSeedVisitedAtById[threadKey],
   });
+}
+
+/**
+ * When the user surely saw a thread: overlay, then server, never the seed
+ * (`resolveThreadSeenAt`). What a visit is weighed against before it is sent.
+ */
+export function selectThreadSeenAt(
+  uiState: UiState,
+  threadKey: string,
+  serverLastSeenAt: string | null | undefined,
+): string | undefined {
+  return resolveThreadSeenAt(uiState.seenThreadOverlays[threadKey]?.at, serverLastSeenAt);
 }
 
 function readServerLifecycle(threadRef: ScopedThreadRef): {
@@ -151,19 +167,16 @@ export function reopenThreadByKey(threadKey: string, at?: string): void {
 }
 
 /**
- * Record a visit. Only dispatched when it actually moves this device's answer
- * forward, so scrolling through a thread does not chatter at the server.
+ * Record a visit. Only dispatched when it moves the recorded visit forward,
+ * so scrolling through a thread does not chatter at the server. The seed is
+ * no visit: a thread only it covers still records this one.
  */
 export function markThreadSeen(threadRef: ScopedThreadRef, visitedAt: string): void {
   const threadKey = scopedThreadKey(threadRef);
   const visitedAtMs = Date.parse(visitedAt);
   if (Number.isNaN(visitedAtMs)) return;
   const server = readServerLifecycle(threadRef);
-  const currentAt = selectThreadLastSeenAt(
-    useUiStateStore.getState(),
-    threadKey,
-    server.lastSeenAt,
-  );
+  const currentAt = selectThreadSeenAt(useUiStateStore.getState(), threadKey, server.lastSeenAt);
   const currentMs = currentAt ? Date.parse(currentAt) : Number.NaN;
   if (Number.isFinite(currentMs) && currentMs >= visitedAtMs) return;
   writeSeen(threadRef, threadKey, visitedAt, server.lastSeenAt);

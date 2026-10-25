@@ -950,6 +950,84 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
+  it("files a finished child under Wrapped once its parent was seen since, naming the parent", async () => {
+    const parentThreadId = "thread-family-parent" as ThreadId;
+    const childThreadId = "thread-family-finished" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: "msg-user-family-exit" as MessageId,
+            targetText: "family exit",
+          }),
+          parentThreadId,
+        ),
+        childThreadId,
+      ),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      // The child's answer went back to its parent an hour ago, so it
+      // wrapped itself.
+      const finishedAt = isoAt(-3_600);
+      const handedBackTurnId = `turn-${childThreadId}` as TurnId;
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, childThreadId, "working", {
+        title: "Check the changelog",
+        parentThreadId,
+        attachedToParent: true,
+        handedBackAt: finishedAt,
+        handedBackTurnId,
+        latestTurn: {
+          turnId: handedBackTurnId,
+          state: "completed",
+          requestedAt: finishedAt,
+          startedAt: finishedAt,
+          completedAt: finishedAt,
+          assistantMessageId: null,
+        },
+        session: null,
+        // Last opened while it worked, so the answer is still unread.
+        lastSeenAt: isoAt(-7_200),
+      });
+      // The user last saw the parent before that: the child waits under it.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, parentThreadId, "working", {
+        title: "Review the release",
+        lastSeenAt: isoAt(-7_200),
+      });
+      await expect
+        .element(page.getByTestId(`thread-family-text-${parentThreadId}`))
+        .toHaveTextContent("1 thread finished");
+
+      // The answer started a parent turn, and the user saw it end: the
+      // family line goes, and the child stands in Wrapped.
+      const parentTurnEndedAt = isoAt(-1_800);
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, parentThreadId, "working", {
+        latestTurn: {
+          turnId: `turn-${parentThreadId}` as TurnId,
+          state: "completed",
+          requestedAt: finishedAt,
+          startedAt: finishedAt,
+          completedAt: parentTurnEndedAt,
+          assistantMessageId: null,
+        },
+        session: null,
+        lastSeenAt: parentTurnEndedAt,
+      });
+      await expect
+        .element(page.getByTestId(`thread-family-${parentThreadId}`))
+        .not.toBeInTheDocument();
+      await page.getByTestId("inbox-done-toggle").click();
+      await expect.element(page.getByTestId(`done-row-${childThreadId}`)).toBeInTheDocument();
+      await expect
+        .element(page.getByTestId(`done-started-by-${childThreadId}`))
+        .toHaveAccessibleName("Started by Review the release");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps idle threads in the list once Wrap up idle threads is off", async () => {
     const idleThreadId = "thread-idle-for-days" as ThreadId;
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();

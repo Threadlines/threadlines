@@ -575,6 +575,7 @@ function sidebarLineage(
     | "parentThreadId"
     | "parentTurnId"
     | "attachedToParent"
+    | "handedBackAt"
     | "handedBackTurnId"
     | "awaitedChildThreadCount"
     | "pendingChildApproval"
@@ -591,6 +592,7 @@ function sidebarLineage(
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "handedBackAt"
   | "handedBackTurnId"
   | "awaitedChildThreadCount"
   | "pendingChildApproval"
@@ -609,6 +611,7 @@ function sidebarLineage(
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
+    handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
     pendingChildApproval: thread.pendingChildApproval ?? false,
@@ -1153,6 +1156,7 @@ function sidebarThreadSummariesEqual(
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
