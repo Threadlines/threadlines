@@ -4,7 +4,10 @@
  * agent installed, installed but signed out, or ready and still unused.
  *
  * Reports once the provider checks settle after launch, then again only when
- * the answer changes (someone installs a CLI or signs in).
+ * the answer changes (someone installs a CLI or signs in). A check that can't
+ * tell for now isn't a change: Claude's, for one, says "unknown" while its
+ * sign-in is due for renewal (it doesn't ask then), which came round about
+ * hourly and re-sent the same answer each time.
  *
  * @module ProviderReadinessTelemetry
  */
@@ -12,8 +15,15 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import type { ServerProvider } from "@threadlines/contracts";
+
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
-import { providerChecksSettled, providerReadinessProperties } from "../AnalyticsProperties.ts";
+import {
+  type AnalyticsSignInState,
+  providerChecksSettled,
+  providerReadinessProperties,
+  providerSignInState,
+} from "../AnalyticsProperties.ts";
 import { AnalyticsService } from "../Services/AnalyticsService.ts";
 
 export const PROVIDER_READINESS_EVENT = "provider.readiness";
@@ -31,12 +41,26 @@ export const reportProviderReadiness = Effect.gen(function* () {
   const registry = yield* ProviderRegistry;
   const analytics = yield* AnalyticsService;
 
+  // Each instance's last yes or no: an "unknown" from a check that can't tell
+  // for now keeps it, so only a real change (a sign-in or sign-out) is reported.
+  const lastKnownSignIn = new Map<string, AnalyticsSignInState>();
+  const settledSignIn = (provider: ServerProvider): AnalyticsSignInState => {
+    const state = providerSignInState(provider);
+    if (state !== "unknown") {
+      lastKnownSignIn.set(provider.instanceId, state);
+      return state;
+    }
+    return lastKnownSignIn.get(provider.instanceId) ?? state;
+  };
+
   const rereads = Stream.tick(READINESS_REREAD_INTERVAL).pipe(
     Stream.mapEffect(() => registry.getProviders),
   );
   yield* Stream.merge(rereads, registry.streamChanges).pipe(
     Stream.filter(providerChecksSettled),
-    Stream.map(providerReadinessProperties),
+    Stream.map((providers) =>
+      providerReadinessProperties(providers, { signInState: settledSignIn }),
+    ),
     Stream.changesWith((previous, next) => JSON.stringify(previous) === JSON.stringify(next)),
     Stream.runForEach((properties) => analytics.record(PROVIDER_READINESS_EVENT, properties)),
   );

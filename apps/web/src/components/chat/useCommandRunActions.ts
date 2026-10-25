@@ -13,6 +13,7 @@ import {
   type ThreadId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
+import { shortenHomePath } from "@threadlines/shared/path";
 import { projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { useCallback, useMemo } from "react";
 
@@ -27,11 +28,6 @@ import type { CommandRunActions } from "./CommandRuns";
 const RUN_TERMINAL_COLS = 120;
 const RUN_TERMINAL_ROWS = 30;
 const EMPTY_RUNS: ReadonlyArray<OrchestrationCommandRun> = [];
-
-function shortenHome(path: string): string {
-  const home = /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)/.exec(path)?.[1];
-  return home === undefined ? path : `~${path.slice(home.length)}`;
-}
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
@@ -174,7 +170,7 @@ export function useCommandRunActions(input: {
       supported,
       followsInserts,
       dialect,
-      cwdLabel: cwd === null ? null : shortenHome(cwd),
+      cwdLabel: cwd === null ? null : shortenHomePath(cwd),
       runs,
       startRun,
       sendOutput,

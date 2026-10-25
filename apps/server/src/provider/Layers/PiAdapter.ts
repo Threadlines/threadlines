@@ -33,6 +33,7 @@ import {
   EventId,
   type PiSettings,
   type ProviderApprovalDecision,
+  type ProviderFailureCategory,
   ProviderDriverKind,
   type ProviderInstanceEnvironment,
   type ProviderInstanceId,
@@ -129,6 +130,7 @@ import {
   type PiSessionTarget,
   type PiToolServer,
 } from "../pi/PiLaunch.ts";
+import { PI_PROMPT_REFUSED_PREFIX, piTurnFailure } from "../pi/PiFailure.ts";
 import { removePiSecretsFile, writePiSecretsFile } from "../pi/PiSecrets.ts";
 import {
   decodePi,
@@ -170,13 +172,13 @@ import {
   type PiToolIdentity,
 } from "../pi/PiToolItems.ts";
 import { buildPreviewPanelInstructions } from "../previewPanelInstructions.ts";
+import { withFailureCategory } from "../providerFailureCategory.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 /** How long each Stop step waits before the next, harder one. */
 const STOP_STEP_TIMEOUT = Duration.seconds(5);
-const AUTH_HINT = "Sign in to Pi (Settings → Pi → Sign in, or run `pi` and type /login).";
 /** Pi's own terminal commands make no sense in Threadlines; ours are internal. */
 const HIDDEN_COMMAND_SOURCES = new Set(["builtin"]);
 
@@ -210,7 +212,11 @@ export interface PiAdapterOptions {
 
 type Terminal =
   | { readonly kind: "completed" }
-  | { readonly kind: "failed"; readonly message: string }
+  | {
+      readonly kind: "failed";
+      readonly message: string;
+      readonly category?: ProviderFailureCategory | undefined;
+    }
   | { readonly kind: "interrupted"; readonly reason: string };
 
 interface ProcessState {
@@ -336,16 +342,6 @@ function withoutNonce<T extends Readonly<Record<string, unknown>>>(record: T, no
 
 const errorText = (error: unknown) =>
   error instanceof Error && error.message ? error.message : String(error);
-
-/** A Pi failure in the words the chat shows. */
-export function piTurnErrorMessage(message: string | undefined): string {
-  const text = message?.trim();
-  if (!text) return "Pi reported the turn failed.";
-  if (/no model|no api key|credentials|not authenticated|unauthorized|login/iu.test(text)) {
-    return `${text} ${AUTH_HINT}`;
-  }
-  return text;
-}
 
 /** The approval type a gated tool call shows as. */
 function requestTypeForTool(toolName: string): CanonicalRequestType {
@@ -652,9 +648,30 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 terminal.kind === "completed"
                   ? { state: "completed" }
                   : terminal.kind === "failed"
-                    ? { state: "failed", errorMessage: terminal.message }
+                    ? {
+                        state: "failed",
+                        errorMessage: terminal.message,
+                        ...withFailureCategory(terminal.category),
+                      }
                     : { state: "interrupted", stopReason: terminal.reason },
             });
+            // Said as a runtime error too, the way other agents say theirs: the
+            // chat reads the error it shows for whether signing in fixes it, so a
+            // refused key offers Sign in and a later, different failure doesn't.
+            // After the turn's end and outside it, so the end is seen as a turn
+            // ending (requests tied to the turn close) and the session keeps no
+            // active turn.
+            if (terminal.kind === "failed") {
+              yield* emit({
+                type: "runtime.error",
+                ...(yield* eventBase(ctx, undefined)),
+                payload: {
+                  message: terminal.message,
+                  class: terminal.category === "auth" ? "authentication_error" : "provider_error",
+                  ...withFailureCategory(terminal.category),
+                },
+              });
+            }
           }),
         );
         // Where the turn ended, before the next turn can start (it waits for
@@ -669,11 +686,17 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* reportContextUsage(ctx);
       });
 
-    const terminalFor = (turn: ActiveTurn): Terminal =>
+    const terminalFor = (ctx: SessionContext, turn: ActiveTurn): Terminal =>
       turn.stopRequested
         ? { kind: "interrupted", reason: "user" }
         : turn.failure !== undefined
-          ? { kind: "failed", message: piTurnErrorMessage(turn.failure) }
+          ? {
+              kind: "failed",
+              ...piTurnFailure(
+                turn.failure,
+                ctx.model ? parsePiModelSlug(ctx.model)?.provider : undefined,
+              ),
+            }
           : { kind: "completed" };
 
     /**
@@ -710,7 +733,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         if ([...ctx.dialogs.values()].some((pending) => pending.turnId === turn.turnId)) return;
         const { isStreaming, isCompacting, pendingMessageCount } = state.value;
         if (isStreaming || isCompacting === true || (pendingMessageCount ?? 0) > 0) return;
-        yield* finishTurn(ctx, turn, terminalFor(turn));
+        yield* finishTurn(ctx, turn, terminalFor(ctx, turn));
       });
 
     const reportContextUsage = (ctx: SessionContext) =>
@@ -1998,9 +2021,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             if (Exit.isFailure(sent)) {
               const error = Option.getOrUndefined(Exit.findErrorOption(sent));
               if (ctx.activeTurn === turn) {
-                turn.failure = piTurnErrorMessage(
-                  `Pi did not accept the message: ${error?.detail ?? "it stopped first."}`,
-                );
+                turn.failure = `${PI_PROMPT_REFUSED_PREFIX}${error?.detail ?? "it stopped first."}`;
               }
             }
             // Whatever the ack says, whether the turn is over is Pi's state's call:
@@ -2053,7 +2074,24 @@ export function makePiAdapter(options: PiAdapterOptions) {
               input.modelSelection?.instanceId === boundInstanceId
                 ? input.modelSelection
                 : undefined;
-            if (selection) yield* applyModel(ctx, selection);
+            // Pi refuses a model whose provider it no longer holds a key for (signed
+            // out while this chat's Pi ran) when it's chosen: said as plainly as a
+            // failed turn would say it.
+            if (selection) {
+              yield* applyModel(ctx, selection).pipe(
+                Effect.mapError((error) => {
+                  const failure = piTurnFailure(error.detail);
+                  return failure.category === "auth"
+                    ? new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: error.method,
+                        detail: failure.message,
+                        cause: error,
+                      })
+                    : error;
+                }),
+              );
+            }
             const turnId = TurnId.make(yield* randomUUIDv4);
             // Where revert and fork cut; after any drop that couldn't be marked before.
             yield* retryDropped(ctx, proc);

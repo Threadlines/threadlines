@@ -32,6 +32,7 @@ import {
   ProviderInstanceId,
   ProviderRequestKind,
   type ThreadForkContextPayload,
+  type ThreadParticipantId,
   ThreadForkSeedOutcomeActivityKind,
   type ThreadForkSeedOutcomePayload,
   type ToolLifecycleItemType,
@@ -135,6 +136,8 @@ export interface ProviderAuthReconnectAction {
   provider: ProviderDriverKind;
   command: string;
   message: string;
+  /** The added agent whose sign-in failed; absent for the thread's own. */
+  participantId?: ThreadParticipantId | undefined;
 }
 
 export interface McpAuthReconnectAction {
@@ -4252,6 +4255,7 @@ function deriveAuthReconnectAction(
     provider,
     command,
     message,
+    ...(activity.participantId != null ? { participantId: activity.participantId } : {}),
   };
 }
 

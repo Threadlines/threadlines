@@ -5,6 +5,7 @@ import {
   addProviderAuthHint,
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
+  isProviderAuthErrorReply,
   providerAuthReconnectCommand,
 } from "./providerAuth.ts";
 
@@ -57,6 +58,51 @@ describe("provider auth helpers", () => {
     expect(addProviderAuthHint(ProviderDriverKind.make("claudeAgent"), refused)).toBe(refused);
   });
 
+  it("reads a reply as a sign-in error only when the thread's own agent wrote just the error", () => {
+    const reply = (
+      text: string,
+      origin: { participantId?: string; sideTurnId?: string; streaming?: boolean } = {},
+    ) => isProviderAuthErrorReply({ role: "assistant", text, ...origin });
+
+    expect(reply("Failed to authenticate. API Error: 401 Invalid authentication credentials")).toBe(
+      true,
+    );
+    expect(reply("Not logged in · Please run /login")).toBe(true);
+    expect(reply("Not logged in. Run `codex login` in a terminal, then retry.")).toBe(true);
+    expect(
+      reply(
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+      ),
+    ).toBe(true);
+
+    // An agent explaining a sign-in error: it quotes it, or says more than a line.
+    expect(
+      reply(
+        'I reproduced `403: {"error":{"message":"Invalid authentication credentials"}}` yielding `permission` on the server.',
+      ),
+    ).toBe(false);
+    expect(
+      reply(
+        "The narrow fix is to keep real errors like “not logged in” and “401 Invalid authentication credentials,” while dropping prose.",
+      ),
+    ).toBe(false);
+    expect(
+      reply('Checking why the probe still says "401 Invalid authentication credentials" here.'),
+    ).toBe(false);
+    expect(
+      reply(
+        "I found it. Nothing was wrong with your sign-in.\n\nThe review quoted 401 Invalid authentication credentials as an example.",
+      ),
+    ).toBe(false);
+
+    // Another agent's words never stand for the thread's own agent's sign-in.
+    const error = "Failed to authenticate. API Error: 401 Invalid authentication credentials";
+    expect(reply(error, { participantId: "participant-sol" })).toBe(false);
+    expect(reply(error, { sideTurnId: "side-turn-review" })).toBe(false);
+    // Nor is a reply still being written: its first line is not the whole of it.
+    expect(reply(error, { streaming: true })).toBe(false);
+  });
+
   it("targets only the user message immediately followed by a terminal auth response", () => {
     expect(
       findProviderAuthRetryUserMessageIndex([
@@ -72,6 +118,16 @@ describe("provider auth helpers", () => {
         { role: "assistant", text: "Not logged in · Please run /login" },
         { role: "user", text: "later request" },
         { role: "assistant", text: "later response succeeded" },
+      ]),
+    ).toBeNull();
+    // An answer that explains a sign-in error is not a failed turn to retry.
+    expect(
+      findProviderAuthRetryUserMessageIndex([
+        { role: "user", text: "why did the card show?" },
+        {
+          role: "assistant",
+          text: "It was a false alarm.\n\nThe review quoted `401 Invalid authentication credentials`.",
+        },
       ]),
     ).toBeNull();
   });

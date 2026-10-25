@@ -77,6 +77,12 @@ it.effect("reports readiness once checks settle, then only when it changes", () 
     assert.strictEqual(recorded[0]?.event, PROVIDER_READINESS_EVENT);
     assert.strictEqual(recorded[0]?.properties.codexSignedIn, "yes");
 
+    // A check that can't tell for now (Claude's while its sign-in is due for
+    // renewal) is no news: the last answer stands.
+    yield* publish([codex({ status: "warning", auth: { status: "unknown" } })]);
+    yield* settle;
+    assert.lengthOf(recorded, 1, "an unknown after a known answer is not reported");
+
     yield* publish([codex({ auth: { status: "unauthenticated" } })]);
     yield* settle;
     assert.lengthOf(recorded, 2);

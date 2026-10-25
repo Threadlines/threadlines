@@ -5810,9 +5810,28 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
   });
 
-  it("maps runtime.error into errored session state", async () => {
+  it("maps runtime.error into errored session state, keeping the conversation", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-before-runtime-error"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: ProviderDriverKind.make("codex"),
+          providerThreadId: "codex-conversation",
+          runtimeMode: "approval-required",
+          checkoutCwd: "/repo/worktree",
+          activeTurnId: asTurnId("turn-3"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
 
     harness.emit({
       type: "runtime.error",
@@ -5835,6 +5854,9 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime exploded");
+    // A fork or resume after the error still finds the conversation.
+    expect(thread.session?.providerThreadId).toBe("codex-conversation");
+    expect(thread.session?.checkoutCwd).toBe("/repo/worktree");
   });
 
   it("records runtime.error activities from the typed payload message", async () => {

@@ -73,9 +73,11 @@ interface ChatHeaderProps {
    *  has one. Null for General Chats and threads without a project, whose
    *  crumb is a label rather than a menu. */
   openInCwd: string | null;
-  /** The project's own folder, which the crumb's icon is read from. Null
-   *  wherever `openInCwd` is. */
+  /** The project's own folder, which the crumb's icon is read from and its
+   *  menu offers as "Main project" from a worktree. Null wherever `openInCwd` is. */
   projectCwd: string | null;
+  /** The branch checked out in `openInCwd`, naming the worktree in the menu. */
+  checkoutBranch: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -303,6 +305,7 @@ export const ChatHeader = memo(function ChatHeader({
   isGitRepo,
   openInCwd,
   projectCwd,
+  checkoutBranch,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -383,6 +386,7 @@ export const ChatHeader = memo(function ChatHeader({
                 environmentId={activeThreadEnvironmentId}
                 projectCwd={projectCwd}
                 cwd={openInCwd}
+                checkoutBranch={checkoutBranch}
                 canOpenInEditor={canOpenInEditor}
                 keybindings={keybindings}
                 availableEditors={availableEditors}
