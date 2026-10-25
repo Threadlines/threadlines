@@ -484,6 +484,86 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     });
   });
 
+  it("asks a provider Threadlines signs in itself to sign in, with no terminal command", () => {
+    const piProvider = ProviderDriverKind.make("pi");
+    const message =
+      "DeepSeek rejected Pi's key or sign-in: Authentication Fails. Sign in again from Settings → Pi → Sign in, then retry.";
+    const signInFailure = (provider: ProviderDriverKind): OrchestrationThreadActivity => ({
+      id: EventId.make(`evt-${provider}-auth`),
+      tone: "error",
+      kind: "runtime.error",
+      summary: "Runtime error",
+      payload: { message, class: "authentication_error", failureCategory: "auth", provider },
+      turnId: null,
+      createdAt: "2026-10-25T08:13:00.250Z",
+    });
+
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: piProvider,
+        providerStatus: { driver: piProvider },
+        threadError: message,
+        activities: [signInFailure(piProvider)],
+      }),
+    ).toEqual({ provider: piProvider, command: null, message });
+
+    // The failure the thread shows says for itself whether signing in fixes it: a
+    // later 403 filed under permission is not a sign-in problem though it mentions
+    // credentials, and the earlier sign-in failure doesn't make it one.
+    const refused =
+      '403: {"error":{"message":"Invalid authentication credentials for this region"}}';
+    const refusal: OrchestrationThreadActivity = {
+      ...signInFailure(piProvider),
+      id: EventId.make("evt-pi-refused"),
+      payload: {
+        message: refused,
+        class: "provider_error",
+        failureCategory: "permission",
+        provider: piProvider,
+      },
+      createdAt: "2026-10-25T09:00:00.000Z",
+    };
+    const afterSignInFailure = [signInFailure(piProvider), refusal];
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: piProvider,
+        providerStatus: { driver: piProvider },
+        threadError: refused,
+        activities: afterSignInFailure,
+      }),
+    ).toBeNull();
+    expect(isRetryableThreadError({ threadError: refused, activities: afterSignInFailure })).toBe(
+      true,
+    );
+
+    // A bare provider error says nothing either way, so its wording still decides.
+    const museProvider = ProviderDriverKind.make("muse");
+    const hostExit = "Muse host exited: 401 Unauthorized";
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: museProvider,
+        threadError: hostExit,
+        activities: [
+          {
+            ...signInFailure(museProvider),
+            payload: { message: hostExit, class: "provider_error", provider: museProvider },
+          },
+        ],
+      }),
+    ).toEqual({ provider: museProvider, command: "muse login", message: hostExit });
+
+    // A community agent whose sign-in Threadlines can't run has nothing to offer.
+    const communityProvider = ProviderDriverKind.make("acpRegistry");
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: communityProvider,
+        providerStatus: { driver: communityProvider },
+        threadError: message,
+        activities: [signInFailure(communityProvider)],
+      }),
+    ).toBeNull();
+  });
+
   it("detects authentication failures from assistant messages", () => {
     expect(
       deriveProviderAuthReconnectPrompt({

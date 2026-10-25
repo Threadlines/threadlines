@@ -20,7 +20,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { piTurnErrorMessage } from "../provider/Layers/PiAdapter.ts";
+import { piTurnFailure } from "../provider/pi/PiFailure.ts";
 import { type PiLaunch, piProcessArgs, piProcessEnvironment } from "../provider/pi/PiLaunch.ts";
 import {
   decodePi,
@@ -140,7 +140,9 @@ export const makePiTextGeneration = (options: PiTextGenerationOptions) =>
             Effect.timeoutOption(GENERATION_TIMEOUT),
           );
           if (Option.isNone(finished)) return yield* failure("Pi did not answer in time.");
-          if (modelError !== undefined) return yield* failure(piTurnErrorMessage(modelError));
+          if (modelError !== undefined) {
+            return yield* failure(piTurnFailure(modelError, model?.provider).message);
+          }
           const last = yield* ask({ type: "get_last_assistant_text" });
           const text =
             typeof last === "object" && last !== null && "text" in last ? last.text : null;

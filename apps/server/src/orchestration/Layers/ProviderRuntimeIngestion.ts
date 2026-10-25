@@ -4109,7 +4109,11 @@ const make = Effect.gen(function* () {
               ...(event.providerInstanceId !== undefined
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
+              // An error doesn't end the conversation: forks and resumes still need it.
+              providerSessionId: thread.session?.providerSessionId ?? null,
+              providerThreadId: thread.session?.providerThreadId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              checkoutCwd: thread.session?.checkoutCwd ?? null,
               activeTurnId: eventTurnId ?? null,
               ...carriedBackgroundTasks(thread.session),
               lastError: runtimeErrorMessage,
