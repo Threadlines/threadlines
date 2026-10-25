@@ -101,11 +101,61 @@ export function isProviderAuthErrorMessage(message: string | null | undefined): 
   );
 }
 
+/** The hint `addProviderAuthHint` puts after a sign-in error. */
+// No leading \s* in the pattern: on a long run of spaces it would retry from each one.
+const AUTH_HINT_SUFFIX_PATTERN = /Run `[^`]+` in a terminal, then retry\.\s*$/u;
+
+/** Code marks and quotes: text that quotes an error, not one. */
+const QUOTING_PATTERN = /[`"“”]/u;
+
+/** A service error's own words, before the JSON body it can end with. */
+function beforeTrailingJsonBody(error: string): string {
+  const body = error.indexOf("{");
+  return body >= 0 && error.endsWith("}") ? error.slice(0, body) : error;
+}
+
+/** A chat reply, as `isProviderAuthErrorReply` reads it. */
+export interface ProviderAuthReplyInput {
+  readonly role: string;
+  readonly text: string;
+  readonly participantId?: unknown;
+  readonly sideTurnId?: unknown;
+  readonly streaming?: boolean;
+}
+
+/**
+ * Whether a chat reply is a provider's sign-in error, written where the
+ * agent's answer would be (Claude Code did this before its API errors were
+ * kept out of the transcript). Only the thread's own agent, in a turn of its
+ * own, writes one: a room agent's message or a side answer is never one, and
+ * a sign-in error it hits comes as a runtime error naming its provider.
+ *
+ * The reply must also be the error and nothing else: one finished line that
+ * quotes nothing outside the JSON body a service's error can end with. An
+ * agent explaining a sign-in error quotes it or says more, and that reply
+ * must stay readable, not turn into a sign-in card. A reply still being
+ * written is not judged yet: its first line can read like an error until the
+ * rest arrives.
+ */
+export function isProviderAuthErrorReply(message: ProviderAuthReplyInput): boolean {
+  if (
+    message.role !== "assistant" ||
+    message.participantId != null ||
+    message.sideTurnId != null ||
+    message.streaming === true
+  ) {
+    return false;
+  }
+  const error = message.text.trim().replace(AUTH_HINT_SUFFIX_PATTERN, "").trimEnd();
+  return (
+    !error.includes("\n") &&
+    !QUOTING_PATTERN.test(beforeTrailingJsonBody(error)) &&
+    isProviderAuthErrorMessage(message.text)
+  );
+}
+
 export function findProviderAuthRetryUserMessageIndex(
-  messages: ReadonlyArray<{
-    readonly role: string;
-    readonly text: string;
-  }>,
+  messages: ReadonlyArray<ProviderAuthReplyInput>,
 ): number | null {
   let lastUserMessageIndex = -1;
   let lastAssistantMessageIndex = -1;
@@ -126,10 +176,12 @@ export function findProviderAuthRetryUserMessageIndex(
     }
   }
 
+  const lastAssistantMessage = messages[lastAssistantMessageIndex];
   if (
     lastUserMessageIndex < 0 ||
     lastAssistantMessageIndex <= lastUserMessageIndex ||
-    !isProviderAuthErrorMessage(messages[lastAssistantMessageIndex]?.text)
+    !lastAssistantMessage ||
+    !isProviderAuthErrorReply(lastAssistantMessage)
   ) {
     return null;
   }
@@ -157,8 +209,7 @@ export function addProviderAuthHint(provider: ProviderDriverKind, message: strin
  */
 export function hasProviderAuthError(text: string | null | undefined): boolean {
   return (text ?? "").split("\n").some((line) => {
-    // No leading \s* in the pattern: on a long run of spaces it would retry from each one.
-    const withoutHint = line.replace(/Run `[^`]+` in a terminal, then retry\.\s*$/u, "").trimEnd();
+    const withoutHint = line.replace(AUTH_HINT_SUFFIX_PATTERN, "").trimEnd();
     return isProviderAuthErrorMessage(withoutHint) || isProviderAuthErrorMessage(line);
   });
 }

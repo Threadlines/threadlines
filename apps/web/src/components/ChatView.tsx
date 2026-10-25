@@ -3067,9 +3067,7 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       providerAuthReconnectAction !== null &&
       (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
-        timelineMessages.some(
-          (message) => message.role === "assistant" && isProviderAuthErrorChatMessage(message),
-        )),
+        timelineMessages.some(isProviderAuthErrorChatMessage)),
     [providerAuthReconnectAction, timelineMessages, workLogEntries],
   );
   const threadErrorNoticeVisible = shouldShowThreadErrorNotice({
