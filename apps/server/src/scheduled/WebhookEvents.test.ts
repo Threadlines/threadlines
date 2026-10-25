@@ -485,10 +485,17 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         yield* deliver(computer, task.id, { deliveryId: "d-5", headers, body });
         assert.equal((yield* eventsOf(computer, task.id)).length, 1);
         assert.equal((yield* computer.runs(task.id)).length, 1);
-        // Both copies are acknowledged, together.
-        yield* TestClock.adjust("1 second");
+        // Both copies are acknowledged. Acks go out in once-a-second batches on
+        // the test clock, and a copy can reach the batch just after one second
+        // passed (a slow machine), so the clock keeps moving while this waits.
         yield* eventually(
-          Effect.sync(() => computer.relay.state.acked.filter((id) => id === "d-5").length === 2),
+          TestClock.adjust("1 second").pipe(
+            Effect.andThen(
+              Effect.sync(
+                () => computer.relay.state.acked.filter((id) => id === "d-5").length === 2,
+              ),
+            ),
+          ),
           "both copies were acknowledged",
         );
         // The log forgets it; GitHub resends it under a new delivery: still a duplicate.
