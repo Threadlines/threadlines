@@ -517,7 +517,12 @@ function DestinationTooltip({ destination }: { readonly destination: NavigationD
   );
 }
 
-/** A destination's button, with its counts. */
+/**
+ * A destination's button, with its counts. Every count is part of the button,
+ * so a click on one goes where the icon does: in the rail the working count
+ * sits inside it, under the icon, and the button grows to hold it; on a phone
+ * the button reaches down over its name and count.
+ */
 function DestinationButton({
   destination,
   side,
@@ -537,14 +542,29 @@ function DestinationButton({
   const Icon = destination.icon;
   const working = destination.ownListShowing ? 0 : destination.working;
   const unread = destination.unread && !destination.ownListShowing;
-  // The corner marks are drawn for the eye; the name says them for a reader.
+  // The marks and counts are drawn for the eye; the name says them for a reader.
   const label = [
     destination.label,
     destination.needsYou > 0 ? describeNeedsYou(destination.needsYou) : null,
+    describeWorking(working),
     unread ? "unread" : null,
   ]
     .filter((part): part is string => part !== null)
     .join(", ");
+  const workingCount =
+    working > 0 ? (
+      <span
+        aria-hidden="true"
+        data-testid={`rail-${destination.id}-working`}
+        className="mt-0.5 flex h-3 items-center gap-1 font-mono text-[10px] leading-none text-muted-foreground tabular-nums"
+      >
+        <span className="size-1.5 rounded-full bg-primary-graph" />
+        {working}
+      </span>
+    ) : null;
+  // The icon keeps the place it has in an empty 34px button, the count sits
+  // under it, and the bottom gap matches the top one to the eye.
+  const holdsCount = !named && workingCount !== null;
   return (
     <div className="flex flex-col items-center">
       <ChromeIconButton
@@ -556,32 +576,34 @@ function DestinationButton({
         glide={glide}
         side={side}
         testId={`rail-${destination.id}`}
+        className={cn(
+          holdsCount && "h-auto flex-col justify-start pt-[9px] pb-[7px]",
+          // A finger lands on the name or count as often as on the icon.
+          named &&
+            cn(
+              "after:absolute after:-inset-x-1.5 after:top-0",
+              workingCount !== null ? "after:-bottom-7" : "after:-bottom-3.5",
+            ),
+        )}
         onClick={(event) => onSelect(destination.id, event.detail)}
       >
         <Icon aria-hidden="true" />
+        {holdsCount ? workingCount : null}
         <CornerMarks needsYou={destination.needsYou} unread={unread} />
       </ChromeIconButton>
       {named ? (
-        // The button already says its full name to a screen reader.
-        <span
-          aria-hidden="true"
-          className={cn(
-            "mt-1 text-[10px] leading-none whitespace-nowrap select-none",
-            destination.selected ? "text-foreground" : "text-muted-foreground",
-          )}
-        >
-          {destination.shortLabel}
-        </span>
-      ) : null}
-      {working > 0 ? (
-        <span
-          data-testid={`rail-${destination.id}-working`}
-          className="mt-0.5 flex h-3 items-center gap-1 font-mono text-[10px] leading-none text-muted-foreground tabular-nums"
-        >
-          <span aria-hidden="true" className="size-1.5 rounded-full bg-primary-graph" />
-          {working}
-          <span className="sr-only"> working</span>
-        </span>
+        <>
+          <span
+            aria-hidden="true"
+            className={cn(
+              "mt-1 text-[10px] leading-none whitespace-nowrap select-none",
+              destination.selected ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {destination.shortLabel}
+          </span>
+          {workingCount}
+        </>
       ) : null}
     </div>
   );
@@ -596,11 +618,11 @@ function DestinationButton({
  */
 /**
  * The rail's selection: one soft fill that slides to the selected button (a
- * transform, so the rail never repaints for it). The first placement, and any
- * after nothing was selected, snaps into place instead of sweeping in from the
- * top. It re-measures when the rail resizes or its buttons change (a working
- * count appearing, the update button showing), so it never sits on a stale
- * spot.
+ * transform, so the rail never repaints for it) and takes its height, taller
+ * while the button holds a working count. The first placement, and any after
+ * nothing was selected, snaps into place instead of sweeping in from the top.
+ * It re-measures when the rail resizes or its buttons change (a working count
+ * appearing, the update button showing), so it never sits on a stale spot.
  */
 function RailSelectionHighlight({
   rail,
@@ -611,9 +633,11 @@ function RailSelectionHighlight({
   readonly rail: HTMLElement | null;
   readonly selectedKey: string | null;
 }) {
-  const [place, setPlace] = useState<{ readonly y: number; readonly animate: boolean } | null>(
-    null,
-  );
+  const [place, setPlace] = useState<{
+    readonly y: number;
+    readonly height: number;
+    readonly animate: boolean;
+  } | null>(null);
   useLayoutEffect(() => {
     if (!rail) return;
     const measure = () => {
@@ -622,9 +646,13 @@ function RailSelectionHighlight({
         setPlace(null);
         return;
       }
-      const y = Math.round(target.getBoundingClientRect().top - rail.getBoundingClientRect().top);
+      const box = target.getBoundingClientRect();
+      const y = Math.round(box.top - rail.getBoundingClientRect().top);
+      const height = Math.round(box.height);
       setPlace((current) =>
-        current !== null && current.y === y ? current : { y, animate: current !== null },
+        current !== null && current.y === y && current.height === height
+          ? current
+          : { y, height, animate: current !== null },
       );
     };
     measure();
@@ -643,11 +671,11 @@ function RailSelectionHighlight({
       aria-hidden="true"
       data-testid="rail-selection"
       className={cn(
-        "pointer-events-none absolute top-0 left-[7px] size-[34px] rounded-lg bg-sidebar-accent",
+        "pointer-events-none absolute top-0 left-[7px] w-[34px] rounded-lg bg-sidebar-accent",
         place.animate &&
-          "transition-transform duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
+          "transition-[transform,height] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
       )}
-      style={{ transform: `translateY(${place.y}px)` }}
+      style={{ transform: `translateY(${place.y}px)`, height: place.height }}
     />
   );
 }

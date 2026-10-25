@@ -443,6 +443,15 @@ describe("ChatView (full app): app shell", () => {
       await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
       // Hiding the list moves no button in the frame; only the page's edge moves.
       expect(frameButtons.map(placeOf)).toEqual(placesBefore);
+      // The selection grows with the button to take in its count.
+      await vi.waitFor(() => {
+        const button = document
+          .querySelector('[data-testid="rail-threads"]')!
+          .getBoundingClientRect();
+        const fill = document.querySelector('[data-testid="rail-selection"]')!;
+        expect(button.height).toBeGreaterThan(34);
+        expect(fill.getBoundingClientRect().height).toBe(button.height);
+      });
       await vi.waitFor(() => {
         const thread = document.querySelector('[data-slot="sidebar-inset"]')!;
         expect(
