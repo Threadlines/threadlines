@@ -25,6 +25,7 @@ function renderChatHeader(overrides: Partial<ComponentProps<typeof ChatHeader>> 
     isGitRepo: false,
     openInCwd: null,
     projectCwd: null,
+    checkoutBranch: null,
     activeProjectScripts: undefined,
     preferredScriptId: null,
     keybindings: [],

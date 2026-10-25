@@ -42,6 +42,12 @@ export function areFilesystemPathsEqual(left: string, right: string): boolean {
   return normalizeFilesystemPathForComparison(left) === normalizeFilesystemPathForComparison(right);
 }
 
+/** `path` with its user home folder written as `~`, for display (`~/badcode`). */
+export function shortenHomePath(path: string): string {
+  const home = /^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)/.exec(path)?.[1];
+  return home === undefined ? path : `~${path.slice(home.length)}`;
+}
+
 /** Whether `path` is `root` or sits inside it, however the separators are spelled. */
 export function isFilesystemPathWithin(path: string, root: string): boolean {
   const inner = normalizeFilesystemPathForComparison(path);

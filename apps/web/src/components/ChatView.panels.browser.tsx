@@ -1239,6 +1239,61 @@ describe("ChatView (full app): right panel and header actions", () => {
     }
   });
 
+  it("opens a worktree thread's worktree, and the main project from its side menu", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-crumb-worktree-target" as MessageId,
+      targetText: "crumb menu follows the worktree",
+    });
+    const targetThread = snapshot.threads.find((thread) => thread.id === THREAD_ID);
+    if (targetThread) {
+      Object.assign(targetThread, {
+        branch: "feature/branch",
+        worktreePath: "/repo/worktrees/feature-branch",
+      });
+    }
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          availableEditors: ["vscode"],
+        };
+      },
+    });
+    const openedFolders = () =>
+      wsRequests
+        .filter((request) => request._tag === WS_METHODS.shellOpenInEditor)
+        .map((request) => (request as { cwd?: string }).cwd);
+
+    try {
+      await waitForServerConfigToApply();
+      await openProjectMenu();
+      await page
+        .getByRole("group", { name: "Worktree feature/branch" })
+        .getByRole("menuitem", { name: "Open in VS Code" })
+        .click();
+      await vi.waitFor(() => expect(openedFolders()).toEqual(["/repo/worktrees/feature-branch"]), {
+        timeout: 8_000,
+        interval: 16,
+      });
+
+      await openProjectMenu();
+      await page.getByRole("menuitem", { name: "Main project" }).click();
+      await page
+        .getByRole("group", { name: "/repo/project" })
+        .getByRole("menuitem", { name: "Open in VS Code" })
+        .click();
+      await vi.waitFor(
+        () => expect(openedFolders()).toEqual(["/repo/worktrees/feature-branch", "/repo/project"]),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("selects the file manager as the sticky open target without opening it immediately", async () => {
     setDraftThreadWithoutWorktree();
     const fileManagerName = isMacPlatform(navigator.platform)
