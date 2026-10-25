@@ -590,7 +590,8 @@ describe("ChatView (full app): sidebar", () => {
       ).toBeNull();
       expect(document.querySelector(`[data-testid="thread-row-${workingChatId}"]`)).toBeNull();
 
-      await chatsButton.click();
+      // The count is part of the button: clicking it goes where the icon does.
+      await page.getByTestId("rail-chats-working").click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === "/chats",
