@@ -788,13 +788,18 @@ export default function Sidebar() {
         inScope(child),
       remoteChildrenOf: (parent) =>
         (parent.thread.remoteChildren?.length ?? 0) +
-          (parent.thread.remoteChildStarts?.length ?? 0) ===
+          (parent.thread.remoteChildStarts?.length ?? 0) +
+          (parent.thread.settingUpChildren?.length ?? 0) ===
         0
           ? NO_REMOTE_CHILDREN
           : resolveRemoteFamilyChildren({
               parent: parent.thread,
               canSeeComputer,
               computerLabel,
+              hasThread: (threadId) =>
+                entryByThreadKey.has(
+                  scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
+                ),
             }),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,

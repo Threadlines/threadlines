@@ -2054,6 +2054,53 @@ export function buildExpiredTerminalContextToastCopy(
   };
 }
 
+/**
+ * New worktrees whose setup script this device asked to bring forward when it
+ * starts, by scoped thread key, with when it asked. Kept outside ChatView: a
+ * first send's thread arrives together with its first turn, which promotes
+ * the draft and mounts a new ChatView before the script has started
+ * (docs/design/thread-setup-state.md).
+ */
+const setupTerminalRevealsByThreadKey = new Map<string, string>();
+
+export function requestSetupTerminalReveal(threadKey: string, since: string): void {
+  setupTerminalRevealsByThreadKey.set(threadKey, since);
+}
+
+/**
+ * The terminal to bring forward for a reveal this device asked for, once the
+ * thread's setup script started; null while it hasn't. A script that was
+ * skipped or failed to start ends the wait with nothing to show.
+ */
+export function settleSetupTerminalReveal(
+  threadKey: string,
+  activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly createdAt: string;
+    readonly payload: unknown;
+  }>,
+): string | null {
+  const since = setupTerminalRevealsByThreadKey.get(threadKey);
+  if (since === undefined) return null;
+  const settled = activities.findLast(
+    (activity) =>
+      (activity.kind === "setup-script.started" ||
+        activity.kind === "setup-script.skipped" ||
+        activity.kind === "setup-script.failed") &&
+      activity.createdAt >= since,
+  );
+  if (settled === undefined) return null;
+  setupTerminalRevealsByThreadKey.delete(threadKey);
+  const payload = settled.payload;
+  return settled.kind === "setup-script.started" &&
+    typeof payload === "object" &&
+    payload !== null &&
+    "terminalId" in payload &&
+    typeof payload.terminalId === "string"
+    ? payload.terminalId
+    : null;
+}
+
 export function threadHasStarted(thread: Thread | null | undefined): boolean {
   return Boolean(
     thread && (thread.latestTurn !== null || thread.messages.length > 0 || thread.session !== null),

@@ -1224,15 +1224,17 @@ export interface InboxFamilyEntry extends InboxFamilyStatus {
 /**
  * Where a child on another computer stands, as its parent last heard: one of
  * that computer's status words for a thread it runs, or how far a start has
- * got before there is a thread (`RemoteChildRequestStatus`).
+ * got before there is a thread (`RemoteChildRequestStatus`). `setting_up`:
+ * a child started here whose thread isn't made yet (its worktree is cut
+ * first, docs/design/thread-setup-state.md).
  */
-export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestStatus;
+export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestStatus | "setting_up";
 
 /**
- * A child in a parent's family that runs on a computer this app can't see
- * (no thread list for it), shown from the parent's own record of it: its
- * last known status, or a start that has no thread there yet. It can't be
- * opened: the app has no thread to open.
+ * A child in a parent's family the app has no thread for, shown from the
+ * parent's own record of it: one on a computer this app can't see (its last
+ * known status, or a start that has no thread there yet), or one started here
+ * that is still being set up. It can't be opened: there is no thread to open.
  */
 export interface InboxRemoteChild extends InboxFamilyStatus {
   /**
@@ -1243,7 +1245,10 @@ export interface InboxRemoteChild extends InboxFamilyStatus {
   readonly environmentId: EnvironmentId;
   /** Null for a start with no thread there yet. */
   readonly threadId: ThreadId | null;
-  /** The computer it runs on, by the name this app knows it by. */
+  /**
+   * The computer it runs on, by the name this app knows it by (this
+   * computer's, for one being set up here).
+   */
   readonly computerLabel: string;
   readonly title: string;
   readonly phase: InboxRemoteChildPhase;
@@ -1782,21 +1787,34 @@ const REMOTE_PHASE_PILLS: Record<InboxRemoteChildPhase, ThreadStatusPill | null>
     dotClass: THREAD_STATUS_DOT_CLASSES.amber,
     pulse: false,
   },
+  setting_up: {
+    label: "Starting",
+    colorClass: "text-primary-readable",
+    dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+    pulse: true,
+  },
 };
 
 /**
- * A parent's children on computers this app can't see, from the parent's
- * record (its `remoteChildren` and `remoteChildStarts`), in that order. A
- * child on a computer whose threads the app has is left out: its thread
- * speaks for it, or it is gone there. So is a start that computer already
- * took, since its thread shows up there; a start it hasn't taken yet has no
- * thread anywhere, so it stays. `computerLabel` names a computer the way
- * this app knows it, falling back to the name the parent last heard.
+ * A parent's children the app has no thread for, from the parent's record:
+ * its children on computers this app can't see (`remoteChildren`, then
+ * `remoteChildStarts`), then the ones it started here that are still being
+ * set up (`settingUpChildren`). A child on a computer whose threads the app
+ * has is left out: its thread speaks for it, or it is gone there. So is a
+ * start that computer already took, since its thread shows up there; a start
+ * it hasn't taken yet has no thread anywhere, so it stays. A child being set
+ * up here is left out once its thread is in the list (`hasThread`).
+ * `computerLabel` names a computer the way this app knows it, falling back to
+ * the name the parent last heard.
  */
 export function resolveRemoteFamilyChildren(input: {
-  readonly parent: Pick<SidebarThreadSummary, "remoteChildren" | "remoteChildStarts">;
+  readonly parent: Pick<
+    SidebarThreadSummary,
+    "environmentId" | "remoteChildren" | "remoteChildStarts" | "settingUpChildren"
+  >;
   readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
   readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
+  readonly hasThread: (threadId: ThreadId) => boolean;
 }): InboxRemoteChild[] {
   const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] =>
     input.canSeeComputer(child.environmentId)
@@ -1819,7 +1837,19 @@ export function resolveRemoteFamilyChildren(input: {
       status: REMOTE_PHASE_PILLS[start.status],
       isDone: false,
     }));
-  return [...children, ...starts];
+  const settingUp = (input.parent.settingUpChildren ?? [])
+    .filter((child) => !input.hasThread(child.childThreadId))
+    .map((child): InboxRemoteChild => ({
+      threadKey: `setup:${child.requestId}`,
+      environmentId: input.parent.environmentId,
+      threadId: null,
+      computerLabel: input.computerLabel(input.parent.environmentId, "This computer"),
+      title: child.title,
+      phase: "setting_up",
+      status: REMOTE_PHASE_PILLS.setting_up,
+      isDone: false,
+    }));
+  return [...children, ...starts, ...settingUp];
 }
 
 /**
@@ -1859,6 +1889,8 @@ export function remoteChildStatusText(
       return `Starting on ${child.computerLabel}`;
     case "awaiting_approval":
       return `Waiting for ${child.computerLabel} to allow it`;
+    case "setting_up":
+      return "Setting up";
     case "needs the user":
       return "needs you";
     default:

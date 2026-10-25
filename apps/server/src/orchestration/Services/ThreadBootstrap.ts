@@ -1,19 +1,22 @@
 /**
  * ThreadBootstrap - setting a thread up and starting its first turn.
  *
- * Two callers, one sequence (create the thread, cut its worktree, launch the
- * setup script, start the turn):
+ * Two callers, one staged run (docs/design/thread-setup-state.md): cut the
+ * worktree, then make the thread with its first turn in one decision
+ * (`thread.start`), then launch the setup script it claimed. No thread
+ * exists before it can work where it should, and every stage checks durable
+ * state first, so running the setup again after a cut (a crash, a restart)
+ * finishes it and never makes a second thread, worktree or turn.
  *
- * - `runTurnStart` is a client's first send with a `bootstrap` (ws.ts). It
- *   keeps the client's command id for the final turn start and random ids for
- *   the steps before it; a retry of the same command joins the run in flight
- *   or is answered from the receipt.
+ * - `runTurnStart` is a client's first send with a `bootstrap` (ws.ts, and
+ *   outside agents' `thread_start`). Its ids derive from the client's command
+ *   id, whose receipt is the start's; a retry of the same command joins the
+ *   run in flight, finishes an interrupted one, or is answered from the
+ *   receipt.
  * - `startChild` sets up a thread an agent started (child threads,
- *   docs/design/child-threads.md), or a scheduled task's run
- *   (docs/design/fleet.md, Part 6). It runs as stages, each checked against
- *   durable state before it acts and each with ids derived from the request,
- *   so a run cut off anywhere (a crash, a restart) is resumed by running it
- *   again and never makes a second thread, worktree or turn.
+ *   docs/design/child-threads.md), a scheduled task's run, or one a linked
+ *   computer asked for (docs/design/fleet.md). Its ids derive from the
+ *   request; its owner runs it again after a restart.
  *
  * @module ThreadBootstrap
  */
@@ -38,8 +41,13 @@ import * as Schema from "effect/Schema";
 /** A turn start, as the client sends it (with an optional `bootstrap`). */
 export type ThreadTurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
 
-/** The stages of a child's setup, in order. */
-export const ChildBootstrapStage = Schema.Literals(["create", "worktree", "setup", "turn"]);
+/**
+ * The stages of a child's setup, in order: its worktree, then its start (the
+ * thread and its first turn together). The setup script after the start is
+ * not a stage: nothing can stop it once the thread exists, and it never
+ * fails the setup.
+ */
+export const ChildBootstrapStage = Schema.Literals(["worktree", "turn"]);
 export type ChildBootstrapStage = typeof ChildBootstrapStage.Type;
 
 /**
@@ -91,7 +99,8 @@ export interface ChildBootstrapInput {
   readonly createdAt: IsoDateTime;
   /**
    * Asked before each stage: false stops the setup there (a request
-   * cancelled meanwhile, docs/design/fleet.md rev 3). Absent: always go on.
+   * cancelled meanwhile, docs/design/fleet.md rev 3); nothing is made after
+   * the last one but the thread itself. Absent: always go on.
    */
   readonly checkpoint?: (stage: ChildBootstrapStage) => Effect.Effect<boolean>;
 }
@@ -99,8 +108,9 @@ export interface ChildBootstrapInput {
 export interface ThreadBootstrapShape {
   /**
    * A client's turn start carrying a `bootstrap`: run it once per command id
-   * (joining a run already in flight, or answering from the receipt), record
-   * a failure on the thread, and resolve with the final turn start's sequence.
+   * (joining a run already in flight, finishing one a restart cut off, or
+   * answering from the receipt) and resolve with the start's sequence. A
+   * failure before the start leaves no thread; the caller has the reason.
    */
   readonly runTurnStart: (
     command: ThreadTurnStartCommand,

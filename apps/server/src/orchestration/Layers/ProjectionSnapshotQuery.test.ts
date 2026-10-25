@@ -790,7 +790,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             status: "running",
             remote: { ...macMini, threadId: ThreadId.make("remote-thread"), status: "accepted" },
           }),
-          // A message to a thread there, and a child on this computer.
+          // A message to a thread there, and a child on this computer still
+          // being set up (its thread isn't made yet).
           withoutLaunch(
             request("send", {
               kind: "send",
@@ -842,14 +843,24 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           createdAt: "2026-10-21T00:00:01.000Z",
         },
       ];
+      const expectedSettingUp = [
+        {
+          requestId: ChildRequestId.make("local"),
+          childThreadId: ThreadId.make("child-local"),
+          title: "Thread local",
+          createdAt: "2026-10-21T00:00:01.000Z",
+        },
+      ];
       const shell = yield* snapshotQuery.getShellSnapshot();
       const parent = shell.threads.find((thread) => thread.id === ThreadId.make("thread-parent"));
       assert.deepEqual(parent?.remoteChildren, [remoteChild, startedChild]);
       assert.deepEqual(parent?.remoteChildStarts, expectedStarts);
-      // A thread with none carries neither.
+      assert.deepEqual(parent?.settingUpChildren, expectedSettingUp);
+      // A thread with none carries none of them.
       const plain = shell.threads.find((thread) => thread.id === ThreadId.make("thread-plain"));
       assert.isFalse(plain !== undefined && "remoteChildren" in plain);
       assert.isFalse(plain !== undefined && "remoteChildStarts" in plain);
+      assert.isFalse(plain !== undefined && "settingUpChildren" in plain);
 
       // The single-thread read the live shell stream uses agrees.
       const one = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-parent"));
@@ -857,6 +868,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (one._tag === "Some") {
         assert.deepEqual(one.value.remoteChildren, [remoteChild, startedChild]);
         assert.deepEqual(one.value.remoteChildStarts, expectedStarts);
+        assert.deepEqual(one.value.settingUpChildren, expectedSettingUp);
       }
     }),
   );

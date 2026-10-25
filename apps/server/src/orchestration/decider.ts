@@ -376,6 +376,22 @@ function isQuietAfterTurn(
 }
 
 /**
+ * Whether a thread already has the user's work in it: a user message, or a
+ * turn running or about to. A thread made without a message (the goal flow's,
+ * or one an older build left half-made) can still take a first send's start.
+ */
+function hasThreadStarted(thread: OrchestrationThread): boolean {
+  const session = thread.session;
+  return (
+    thread.messages.some((message) => message.role === "user") ||
+    (session !== null &&
+      (session.status === "running" ||
+        session.status === "starting" ||
+        (session.activeTurnId ?? null) !== null))
+  );
+}
+
+/**
  * A message for the agent at work: steers into its turn when it can, else waits
  * in the queue for its agent, like a message the user typed while it worked.
  */
@@ -1760,6 +1776,75 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.type,
         decideThreadImport(readModel, command, childEventBase(command, command.createdAt)),
       );
+    }
+
+    // A first send once its worktree is ready: the thread, its checkout, the
+    // first turn and the setup script's claim in one decision, so nothing can
+    // reach the thread before it is ready (docs/design/thread-setup-state.md).
+    // The claim comes after the turn so the setup rows sit with the agent's
+    // first reply, not ahead of the user's message.
+    case "thread.start": {
+      const { turn } = command;
+      const refuse = (detail: string) =>
+        new OrchestrationCommandInvariantError({ commandType: command.type, detail });
+      if (turn.commandId !== command.commandId || turn.threadId !== command.threadId) {
+        return yield* refuse("A thread's start must carry its own first turn.");
+      }
+      if (command.create !== undefined) {
+        if (command.checkout !== undefined) {
+          return yield* refuse("A new thread gets its checkout when it is created.");
+        }
+        yield* requireThreadAbsent({ readModel, command, threadId: command.threadId });
+      } else {
+        const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+        if (hasThreadStarted(thread)) {
+          return yield* refuse("This thread already started.");
+        }
+      }
+      // A parent's request it answers must still be open, whether or not the
+      // child reports back, so a Stop after the setup's last check wins.
+      if (turn.fromThread?.kind === "request" && !isOpenParentRequest(readModel, turn.fromThread)) {
+        return yield* refuse("The request this turn answers was cancelled.");
+      }
+      const { bootstrap: _bootstrap, ...turnStart } = turn;
+      return yield* decideCommandSequence({
+        readModel,
+        commands: [
+          ...(command.create !== undefined
+            ? [
+                {
+                  ...command.create,
+                  type: "thread.create" as const,
+                  commandId: command.commandId,
+                  threadId: command.threadId,
+                },
+              ]
+            : []),
+          ...(command.checkout !== undefined
+            ? [
+                {
+                  type: "thread.meta.update" as const,
+                  commandId: command.commandId,
+                  threadId: command.threadId,
+                  branch: command.checkout.branch,
+                  worktreePath: command.checkout.worktreePath,
+                },
+              ]
+            : []),
+          turnStart,
+          ...(command.setupScriptClaim !== undefined
+            ? [
+                {
+                  type: "thread.activity.append" as const,
+                  commandId: command.commandId,
+                  threadId: command.threadId,
+                  activity: command.setupScriptClaim,
+                  createdAt: command.setupScriptClaim.createdAt,
+                },
+              ]
+            : []),
+        ],
+      });
     }
 
     case "thread.move.start":

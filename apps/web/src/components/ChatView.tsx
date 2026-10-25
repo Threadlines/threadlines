@@ -382,6 +382,8 @@ import {
   deriveThreadRevertTurnCountByUserMessageId,
   deriveTurnDiffSummaryByAssistantMessageId,
   deriveThreadContextCompactionInProgress,
+  requestSetupTerminalReveal,
+  settleSetupTerminalReveal,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -3488,25 +3490,13 @@ export default function ChatView(props: ChatViewProps) {
   );
   // A new worktree's setup script, asked for on this device, comes forward
   // when it starts. Other devices only see its tab appear in the list.
-  const setupRevealRef = useRef<{ threadId: ThreadId; since: string } | null>(null);
   useEffect(() => {
-    const pending = setupRevealRef.current;
-    if (!pending || pending.threadId !== activeThreadId) return;
-    const started = threadActivities.findLast(
-      (activity) => activity.kind === "setup-script.started" && activity.createdAt >= pending.since,
-    );
-    const payload = started?.payload;
-    const terminalId =
-      typeof payload === "object" &&
-      payload !== null &&
-      "terminalId" in payload &&
-      typeof payload.terminalId === "string"
-        ? payload.terminalId
-        : null;
-    if (terminalId === null) return;
-    setupRevealRef.current = null;
-    showTerminalTab(terminalId);
-  }, [activeThreadId, showTerminalTab, threadActivities]);
+    if (activeThreadKey === null) return;
+    const terminalId = settleSetupTerminalReveal(activeThreadKey, threadActivities);
+    if (terminalId !== null) {
+      showTerminalTab(terminalId);
+    }
+  }, [activeThreadKey, showTerminalTab, threadActivities]);
   const commandRunAgentLabel = useCallback(
     (participantId: ThreadParticipantId | null) =>
       roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? activeProviderLabel,
@@ -5904,7 +5894,7 @@ export default function ChatView(props: ChatViewProps) {
 
       const turnAttachments = await turnAttachmentsPromise;
       if (baseBranchForWorktree) {
-        setupRevealRef.current = { threadId: threadIdForSend, since: new Date().toISOString() };
+        requestSetupTerminalReveal(scopedThreadKey(threadRefForSend), new Date().toISOString());
       }
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
@@ -7497,42 +7487,41 @@ export default function ChatView(props: ChatViewProps) {
       resetLocalDispatch();
     };
 
+    // The thread is made with its first turn in one step on the server, so a
+    // failure leaves nothing behind (docs/design/thread-setup-state.md).
     await api.orchestration
       .dispatchCommand({
-        type: "thread.create",
+        type: "thread.turn.start",
         commandId: newCommandId(),
         threadId: nextThreadId,
-        projectId: activeProject.id,
-        title: nextThreadTitle,
-        modelSelection: nextThreadModelSelection,
-        ...(startingAgents.length > 0 ? { participants: startingAgents } : {}),
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: outgoingImplementationPrompt,
+          attachments: [],
+        },
+        modelSelection: ctxSelectedModelSelection,
+        titleSeed: nextThreadTitle,
         runtimeMode,
         interactionMode: "default",
-        branch: activeThreadBranch,
-        worktreePath: activeThread.worktreePath,
+        sourceProposedPlan: {
+          threadId: activeThread.id,
+          planId: activeProposedPlan.id,
+        },
+        bootstrap: {
+          createThread: {
+            projectId: activeProject.id,
+            title: nextThreadTitle,
+            modelSelection: nextThreadModelSelection,
+            ...(startingAgents.length > 0 ? { participants: startingAgents } : {}),
+            runtimeMode,
+            interactionMode: "default",
+            branch: activeThreadBranch,
+            worktreePath: activeThread.worktreePath,
+            createdAt,
+          },
+        },
         createdAt,
-      })
-      .then(() => {
-        return api.orchestration.dispatchCommand({
-          type: "thread.turn.start",
-          commandId: newCommandId(),
-          threadId: nextThreadId,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: outgoingImplementationPrompt,
-            attachments: [],
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: nextThreadTitle,
-          runtimeMode,
-          interactionMode: "default",
-          sourceProposedPlan: {
-            threadId: activeThread.id,
-            planId: activeProposedPlan.id,
-          },
-          createdAt,
-        });
       })
       .then(() => {
         return waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId));
@@ -7546,14 +7535,7 @@ export default function ChatView(props: ChatViewProps) {
           },
         });
       })
-      .catch(async (err: unknown) => {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.delete",
-            commandId: newCommandId(),
-            threadId: nextThreadId,
-          })
-          .catch(() => undefined);
+      .catch((err: unknown) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",

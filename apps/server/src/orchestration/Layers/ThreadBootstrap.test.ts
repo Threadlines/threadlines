@@ -22,7 +22,7 @@ import * as Stream from "effect/Stream";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
-import { childWorktreeBranch } from "../childRequestIds.ts";
+import { childWorktreeBranch, firstSendWorktreeBranch } from "../childRequestIds.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -34,6 +34,7 @@ import {
 import { ThreadBootstrapLive } from "./ThreadBootstrap.ts";
 
 const AT = "2026-10-04T10:00:00.000Z";
+const PROJECT = ProjectId.make("project-1");
 const PARENT = ThreadId.make("parent-thread");
 const CHILD = ThreadId.make("2f6c1d7e-9a4b-5c3d-8e2f-1a0b9c8d7e6f");
 const REQUEST = ChildRequestId.make("7d1e2f3a-4b5c-5d6e-8f70-819a2b3c4d5e");
@@ -54,7 +55,7 @@ const launch = (patch: Partial<ChildThreadLaunch> = {}): ChildThreadLaunch => ({
 
 const input = (patch: Partial<ChildBootstrapInput> = {}): ChildBootstrapInput => ({
   lineage: { kind: "local", parentThreadId: PARENT, parentTurnId: TurnId.make("parent-turn") },
-  projectId: ProjectId.make("project-1"),
+  projectId: PROJECT,
   requestId: REQUEST,
   childThreadId: CHILD,
   childMessageId: MessageId.make("child-message"),
@@ -64,54 +65,75 @@ const input = (patch: Partial<ChildBootstrapInput> = {}): ChildBootstrapInput =>
   ...patch,
 });
 
+type ThreadStart = Extract<OrchestrationCommand, { type: "thread.start" }>;
+type FailHow = "interrupt" | "refuse" | NonNullable<OrchestrationCommandInvariantError["refusal"]>;
+
+/** The worktree path the mock git gives a branch. */
+const worktreePathFor = (branch: string) => `/worktrees/repo/${branch.split("/").at(-1)}`;
+
 /**
  * Durable state as the engine, the read model and git keep it, shared by
  * every run so a second run sees what an interrupted first one left.
- * `crashOn` makes the next matching command fail before it lands, the way a
- * process dying at that moment would leave things.
+ * `failOn` makes the next matching command fail before it lands: refused by
+ * the decider, or cut off the way the server stopping would cut it.
  */
 const makeWorld = () => {
   const receipts = new Map<string, number>();
   const threads = new Map<string, OrchestrationThread>();
   const accepted: OrchestrationCommand[] = [];
   const worktrees: Array<{ path: string; branch: string }> = [];
+  /** Worktrees git still holds locked, by path: an add a crash cut short. */
+  const locks = new Map<string, string>();
   const branches = new Set<string>();
   const createWorktreeCalls: unknown[] = [];
+  const removedWorktrees: string[] = [];
+  const deletedBranches: string[] = [];
   const setupRuns: unknown[] = [];
-  let crashOn: ((command: OrchestrationCommand) => boolean) | undefined;
-  let refuseWith: OrchestrationCommandInvariantError["refusal"];
+  /** Whether any thread existed while each worktree was cut. */
+  const threadsWhileCutting: boolean[] = [];
+  let failNext:
+    | { readonly matches: (command: OrchestrationCommand) => boolean; readonly how: FailHow }
+    | undefined;
+
+  const appendActivity = (threadId: string, activity: OrchestrationThreadActivity) => {
+    const thread = threads.get(threadId)!;
+    threads.set(threadId, { ...thread, activities: [...thread.activities, activity] });
+  };
 
   const apply = (command: OrchestrationCommand) => {
     switch (command.type) {
-      case "thread.create":
-        threads.set(command.threadId, {
-          id: command.threadId,
-          projectId: command.projectId,
-          title: command.title,
-          branch: command.branch,
-          worktreePath: command.worktreePath,
-          ...(command.outsideOrigin !== undefined ? { outsideOrigin: command.outsideOrigin } : {}),
-          activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
-          messages: [],
-        } as unknown as OrchestrationThread);
-        return;
-      case "thread.meta.update": {
+      case "thread.start": {
+        if (command.create !== undefined) {
+          threads.set(command.threadId, {
+            id: command.threadId,
+            projectId: command.create.projectId,
+            title: command.create.title,
+            branch: command.create.branch,
+            worktreePath: command.create.worktreePath,
+            runtimeMode: command.create.runtimeMode,
+            interactionMode: command.create.interactionMode,
+            ...(command.create.outsideOrigin !== undefined
+              ? { outsideOrigin: command.create.outsideOrigin }
+              : {}),
+            activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
+            messages: [],
+          } as unknown as OrchestrationThread);
+        }
         const thread = threads.get(command.threadId)!;
         threads.set(command.threadId, {
           ...thread,
-          ...(command.branch !== undefined ? { branch: command.branch } : {}),
-          ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.checkout !== undefined
+            ? { branch: command.checkout.branch, worktreePath: command.checkout.worktreePath }
+            : {}),
         });
+        if (command.setupScriptClaim !== undefined) {
+          appendActivity(command.threadId, command.setupScriptClaim);
+        }
         return;
       }
-      case "thread.activity.append": {
-        const thread = threads.get(command.threadId)!;
-        threads.set(command.threadId, {
-          ...thread,
-          activities: [...thread.activities, command.activity],
-        });
+      case "thread.activity.append":
+        appendActivity(command.threadId, command.activity);
         return;
-      }
       default:
         return;
     }
@@ -141,12 +163,16 @@ const makeWorld = () => {
         if (known !== undefined) {
           return { sequence: known };
         }
-        if (crashOn?.(command)) {
-          crashOn = undefined;
+        if (failNext?.matches(command)) {
+          const { how } = failNext;
+          failNext = undefined;
+          if (how === "interrupt") {
+            return yield* Effect.interrupt;
+          }
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "The server went away.",
-            ...(refuseWith !== undefined ? { refusal: refuseWith } : {}),
+            detail: "The decider said no.",
+            ...(how !== "refuse" ? { refusal: how } : {}),
           });
         }
         apply(command);
@@ -163,6 +189,20 @@ const makeWorld = () => {
         Layer.mock(ProjectionSnapshotQuery)({
           getThreadDetailById: (threadId) =>
             Effect.succeed(Option.fromNullishOr(threads.get(threadId))),
+          getProjectShellById: () =>
+            Effect.succeed(
+              Option.some({
+                scripts: [
+                  {
+                    id: "setup",
+                    name: "Install",
+                    command: "bun install",
+                    icon: "configure",
+                    runOnWorktreeCreate: true,
+                  },
+                ],
+              } as never),
+            ),
         }),
         Layer.mock(GitWorkflowService)({
           listWorktrees: () => Effect.succeed(worktrees.map((entry) => ({ ...entry }))),
@@ -179,14 +219,44 @@ const makeWorld = () => {
               nextCursor: null,
               totalCount: branches.size,
             }),
+          listWorktreeStatuses: () =>
+            Effect.succeed({
+              worktrees: worktrees.map((entry) => ({
+                path: entry.path,
+                refName: entry.branch,
+                isRoot: false,
+                dirty: false,
+                dirtyUnknown: false,
+                unmergedCommitCount: 0,
+                unrelatedHistory: false,
+                mergedByContent: false,
+                missing: false,
+                lockReason: locks.get(entry.path) ?? null,
+              })),
+            }),
+          resolveFreshWorktreeBase: (request) =>
+            Effect.succeed({ refName: `origin/${request.branch}` } as never),
           createWorktree: (request) =>
             Effect.sync(() => {
+              threadsWhileCutting.push(threads.size > 0);
               createWorktreeCalls.push(request);
               const branch = request.newRefName ?? request.refName;
               branches.add(branch);
-              const path = `/worktrees/repo/${branch.split("/").at(-1)}`;
+              const path = request.path ?? worktreePathFor(branch);
               worktrees.push({ path, branch });
               return { worktree: { path, refName: branch } };
+            }),
+          removeWorktree: (request) =>
+            Effect.sync(() => {
+              removedWorktrees.push(request.path);
+              const index = worktrees.findIndex((entry) => entry.path === request.path);
+              if (index !== -1) worktrees.splice(index, 1);
+              locks.delete(request.path);
+            }),
+          deleteBranch: (request) =>
+            Effect.sync(() => {
+              deletedBranches.push(request.branchName);
+              return { branchName: request.branchName };
             }),
         }),
         Layer.mock(VcsStatusBroadcaster)({
@@ -215,16 +285,17 @@ const makeWorld = () => {
     accepted,
     worktrees,
     branches,
+    locks,
     createWorktreeCalls,
+    removedWorktrees,
+    deletedBranches,
     setupRuns,
-    crashOn: (
-      predicate: (command: OrchestrationCommand) => boolean,
-      refusal?: OrchestrationCommandInvariantError["refusal"],
-    ) => {
-      crashOn = predicate;
-      refuseWith = refusal;
+    threadsWhileCutting,
+    failOn: (matches: (command: OrchestrationCommand) => boolean, how: FailHow = "refuse") => {
+      failNext = { matches, how };
     },
-    of: (type: OrchestrationCommand["type"]) => accepted.filter((command) => command.type === type),
+    starts: () =>
+      accepted.filter((command): command is ThreadStart => command.type === "thread.start"),
   };
 };
 
@@ -234,149 +305,282 @@ const startChild = (request: ChildBootstrapInput = input()) =>
     return yield* bootstrap.startChild(request);
   });
 
+const isStart = (command: OrchestrationCommand) => command.type === "thread.start";
+
 describe("ThreadBootstrap.startChild", () => {
-  it.effect("sets a child up in its own worktree and starts its first turn", () => {
-    const world = makeWorld();
-    return Effect.gen(function* () {
-      yield* startChild();
+  it.effect(
+    "cuts a child's worktree first, then makes it with its first turn and setup claim",
+    () => {
+      const world = makeWorld();
+      const branch = childWorktreeBranch(REQUEST);
+      return Effect.gen(function* () {
+        yield* startChild();
 
-      const [create] = world.of("thread.create");
-      expect(create).toMatchObject({
-        threadId: CHILD,
-        parentThreadId: PARENT,
-        attachedToParent: true,
-        runtimeMode: "auto-accept-edits",
-      });
-      expect(world.createWorktreeCalls).toEqual([
-        { cwd: PROJECT_CWD, refName: BASE, newRefName: childWorktreeBranch(REQUEST), path: null },
-      ]);
-      expect(world.threads.get(CHILD)?.branch).toMatch(/^threadlines\/[0-9a-f]{8}$/);
-      expect(world.setupRuns).toHaveLength(1);
-      const [turn] = world.of("thread.turn.start");
-      expect(turn).toMatchObject({
-        threadId: CHILD,
-        message: { messageId: "child-message", text: launch().prompt },
-        fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
-      });
+        expect(world.createWorktreeCalls).toEqual([
+          { cwd: PROJECT_CWD, refName: BASE, newRefName: branch, path: null },
+        ]);
+        // Nothing could reach the thread while its worktree was cut: it didn't exist.
+        expect(world.threadsWhileCutting).toEqual([false]);
+        const [start] = world.starts();
+        expect(start?.create).toMatchObject({
+          parentThreadId: PARENT,
+          attachedToParent: true,
+          runtimeMode: "auto-accept-edits",
+          branch,
+          worktreePath: worktreePathFor(branch),
+        });
+        expect(start?.setupScriptClaim?.kind).toBe("setup-script.requested");
+        expect(start?.turn).toMatchObject({
+          threadId: CHILD,
+          message: { messageId: "child-message", text: launch().prompt },
+          fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
+        });
+        expect(world.setupRuns).toHaveLength(1);
+        expect(world.threads.get(CHILD)?.activities.map((activity) => activity.kind)).toEqual([
+          "setup-script.requested",
+          "setup-script.started",
+        ]);
+      }).pipe(Effect.provide(world.layer));
+    },
+  );
+
+  it.effect(
+    "resumes after a cut at any stage with one worktree, one thread, one setup script",
+    () => {
+      const world = makeWorld();
+      return Effect.gen(function* () {
+        // Cut off after its worktree, before its start.
+        const cutBeforeStart = yield* Effect.exit(
+          startChild(
+            input({
+              checkpoint: (stage) => (stage === "turn" ? Effect.interrupt : Effect.succeed(true)),
+            }),
+          ),
+        );
+        expect(Exit.isFailure(cutBeforeStart)).toBe(true);
+        expect(world.threads.has(CHILD)).toBe(false);
+        // Cut off as the start was sent.
+        world.failOn(isStart, "interrupt");
+        expect(Exit.isFailure(yield* Effect.exit(startChild()))).toBe(true);
+        // Cut off after the start, as the script's launch was recorded: the
+        // run stops (it is never reported done), and its script never runs again.
+        world.failOn(
+          (command) =>
+            command.type === "thread.activity.append" &&
+            command.activity.kind === "setup-script.started",
+          "interrupt",
+        );
+        expect(Exit.isFailure(yield* Effect.exit(startChild()))).toBe(true);
+        // Run once more after it finished: answered from the start's receipt.
+        const before = world.accepted.length;
+        yield* startChild();
+
+        expect(world.accepted.length).toBe(before);
+        expect(world.createWorktreeCalls).toHaveLength(1);
+        expect(world.worktrees).toHaveLength(1);
+        expect(world.starts()).toHaveLength(1);
+        expect(world.setupRuns).toHaveLength(1);
+        expect(world.removedWorktrees).toEqual([]);
+      }).pipe(Effect.provide(world.layer));
+    },
+  );
+
+  it.effect("removes the worktree a refused start made, and never one it found", () => {
+    const world = makeWorld();
+    const branch = childWorktreeBranch(REQUEST);
+    return Effect.gen(function* () {
+      world.failOn(isStart);
+      const refused = yield* Effect.flip(startChild());
+      expect(refused.stage).toBe("turn");
+      expect(refused.message).toBe("Couldn't start its first turn: The decider said no.");
+      expect(world.removedWorktrees).toEqual([worktreePathFor(branch)]);
+      expect(world.deletedBranches).toEqual([branch]);
+
+      // A worktree already on the request's branch (an earlier run's) stays.
+      world.removedWorktrees.length = 0;
+      world.deletedBranches.length = 0;
+      world.worktrees.push({ path: worktreePathFor(branch), branch });
+      world.failOn(isStart);
+      yield* Effect.flip(startChild());
+      expect(world.removedWorktrees).toEqual([]);
+      expect(world.deletedBranches).toEqual([]);
     }).pipe(Effect.provide(world.layer));
   });
 
-  it.effect("resumes after a crash at any stage with one thread, one worktree, one turn", () => {
+  it.effect("makes again a worktree whose add a crash cut short, rather than work in it", () => {
     const world = makeWorld();
-    const crashes: Array<(command: OrchestrationCommand) => boolean> = [
-      // After the thread exists, before its worktree is recorded on it.
-      (command) => command.type === "thread.meta.update",
-      // After the setup script started, before the turn.
-      (command) => command.type === "thread.turn.start",
-    ];
+    const branch = childWorktreeBranch(REQUEST);
+    const halfMade = "/worktrees/repo/half-made";
+    world.worktrees.push({ path: halfMade, branch });
+    world.branches.add(branch);
+    world.locks.set(halfMade, "initializing");
     return Effect.gen(function* () {
-      for (const crash of crashes) {
-        world.crashOn(crash);
-        const exit = yield* Effect.exit(startChild());
-        expect(Exit.isFailure(exit)).toBe(true);
-      }
-      yield* startChild();
-      // Run once more after it finished: answered from the turn's receipt.
-      const before = world.accepted.length;
       yield* startChild();
 
-      expect(world.accepted.length).toBe(before);
-      expect(world.of("thread.create")).toHaveLength(1);
-      expect(world.createWorktreeCalls).toHaveLength(1);
-      expect(world.worktrees).toHaveLength(1);
-      expect(world.of("thread.meta.update")).toHaveLength(1);
-      expect(world.setupRuns).toHaveLength(1);
-      expect(world.of("thread.turn.start")).toHaveLength(1);
+      expect(world.removedWorktrees).toEqual([halfMade]);
+      // A folder of its own: a cut-off git still running cleans up only the old one.
+      const [made] = world.createWorktreeCalls as Array<{ readonly path: string }>;
+      expect(made).toMatchObject({ cwd: PROJECT_CWD, refName: branch });
+      expect(made?.path).toMatch(new RegExp(`^${halfMade}-[0-9a-f]{4}$`));
+      expect(world.starts()[0]?.create?.worktreePath).toBe(made?.path);
     }).pipe(Effect.provide(world.layer));
   });
 
-  it.effect("names the stage that failed", () => {
-    const world = makeWorld();
-    world.crashOn((command) => command.type === "thread.create");
-    return Effect.gen(function* () {
-      const error = yield* Effect.flip(startChild());
-      expect(error.stage).toBe("create");
-      expect(error.message).toBe("Couldn't create the thread: The server went away.");
-    }).pipe(Effect.provide(world.layer));
-  });
-
-  it.effect("skips the worktree and setup for a child in the project folder", () => {
+  it.effect("makes a child in the project folder with no worktree and no setup script", () => {
     const world = makeWorld();
     return Effect.gen(function* () {
       yield* startChild(input({ launch: launch({ workspace: { kind: "project_folder" } }) }));
 
       expect(world.createWorktreeCalls).toHaveLength(0);
       expect(world.setupRuns).toHaveLength(0);
-      expect(world.threads.get(CHILD)?.activities.map((activity) => activity.kind)).toEqual([
-        "setup-script.skipped",
-      ]);
-      expect(world.of("thread.turn.start")).toHaveLength(1);
+      const [start] = world.starts();
+      expect(start?.create).toMatchObject({ branch: null, worktreePath: null });
+      expect(start?.setupScriptClaim).toBeUndefined();
     }).pipe(Effect.provide(world.layer));
   });
+
+  it.effect(
+    "finishes a child an older build made without its first turn, never claiming its setup twice",
+    () => {
+      const world = makeWorld();
+      world.threads.set(CHILD, {
+        id: CHILD,
+        projectId: PROJECT,
+        branch: null,
+        worktreePath: null,
+        runtimeMode: "auto-accept-edits",
+        interactionMode: "default",
+        activities: [
+          {
+            id: "older-claim",
+            tone: "info",
+            kind: "setup-script.requested",
+            summary: "Starting setup script",
+            payload: {},
+            turnId: null,
+            createdAt: AT,
+          },
+        ],
+        messages: [],
+      } as unknown as OrchestrationThread);
+      return Effect.gen(function* () {
+        yield* startChild();
+
+        const [start] = world.starts();
+        expect(start?.create).toBeUndefined();
+        expect(start?.checkout?.branch).toBe(childWorktreeBranch(REQUEST));
+        expect(start?.setupScriptClaim).toBeUndefined();
+        expect(world.setupRuns).toHaveLength(0);
+      }).pipe(Effect.provide(world.layer));
+    },
+  );
 });
 
 describe("ThreadBootstrap.runTurnStart", () => {
-  const OUTSIDE_THREAD = ThreadId.make("outside-thread");
+  const NEW_THREAD = ThreadId.make("new-thread");
   const AGENT = {
     connectionId: OutsideAgentConnectionId.make("connection-1"),
     name: "Claude Code",
   };
-  const outsideStart: ThreadTurnStartCommand = {
+  const createThread = {
+    projectId: PROJECT,
+    title: "Fix the flaky test",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+    runtimeMode: "approval-required" as const,
+    interactionMode: "default" as const,
+    branch: "main",
+    worktreePath: null,
+    createdAt: AT,
+  };
+  const firstSend = (patch: Partial<ThreadTurnStartCommand> = {}): ThreadTurnStartCommand => ({
     type: "thread.turn.start",
-    commandId: CommandId.make("server:outside:start"),
-    threadId: OUTSIDE_THREAD,
+    commandId: CommandId.make("client-first-send"),
+    threadId: NEW_THREAD,
     message: {
-      messageId: MessageId.make("outside-message"),
+      messageId: MessageId.make("first-message"),
       role: "user",
       text: "Go",
       attachments: [],
     },
     runtimeMode: "approval-required",
     interactionMode: "default",
-    fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
     bootstrap: {
-      createThread: {
-        projectId: ProjectId.make("project-1"),
-        title: "Fix the flaky test",
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        outsideOrigin: AGENT,
-        createdAt: AT,
+      createThread,
+      prepareWorktree: {
+        projectCwd: PROJECT_CWD,
+        baseBranch: "main",
+        branch: "threadlines/1a2b3c4d",
       },
+      runSetupScript: true,
     },
     createdAt: AT,
-  };
+    ...patch,
+  });
+  const outsideStart = firstSend({
+    fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+    bootstrap: { createThread: { ...createThread, branch: null, outsideOrigin: AGENT } },
+  });
   const runTurnStart = (command: ThreadTurnStartCommand) =>
     Effect.gen(function* () {
       const bootstrap = yield* ThreadBootstrap;
       return yield* bootstrap.runTurnStart(command);
     });
 
-  it.effect("labels an outside agent's thread before its first turn is asked for", () => {
+  it.effect("makes the thread in its fresh worktree with its first turn, after cutting it", () => {
     const world = makeWorld();
     return Effect.gen(function* () {
-      yield* runTurnStart(outsideStart);
-      // The reactor gives a session its tools when it takes the turn; the
-      // thread it reads by then is already the agent's.
-      const order = world.accepted.map((command) => command.type);
-      expect(order.indexOf("thread.create")).toBeLessThan(order.indexOf("thread.turn.start"));
-      expect(world.of("thread.create")[0]).toMatchObject({ outsideOrigin: AGENT });
-      expect(world.threads.get(OUTSIDE_THREAD)?.outsideOrigin).toEqual(AGENT);
-      expect(world.of("thread.turn.start")[0]).toMatchObject({
-        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
-      });
+      yield* runTurnStart(firstSend());
+
+      // Named by the command, whatever placeholder the client sent.
+      const branch = firstSendWorktreeBranch("client-first-send");
+      expect(world.createWorktreeCalls).toEqual([
+        { cwd: PROJECT_CWD, refName: "origin/main", newRefName: branch, path: null },
+      ]);
+      expect(world.threadsWhileCutting).toEqual([false]);
+      const [start] = world.starts();
+      expect(start?.commandId).toBe("client-first-send");
+      expect(start?.create).toMatchObject({ branch, worktreePath: worktreePathFor(branch) });
+      expect(start?.turn).not.toHaveProperty("bootstrap");
+      expect(world.setupRuns).toHaveLength(1);
     }).pipe(Effect.provide(world.layer));
   });
 
-  it.effect("keeps the decider's typed refusal of the first turn", () => {
+  it.effect("finishes a first send a restart cut off when its client sends it again", () => {
     const world = makeWorld();
-    world.crashOn((command) => command.type === "thread.turn.start", "above_ceiling");
+    return Effect.gen(function* () {
+      world.failOn(isStart, "interrupt");
+      expect(Exit.isFailure(yield* Effect.exit(runTurnStart(firstSend())))).toBe(true);
+      // No half-made thread: only the worktree, which the retry reuses.
+      expect(world.threads.size).toBe(0);
+      yield* runTurnStart(firstSend());
+      yield* runTurnStart(firstSend());
+
+      expect(world.createWorktreeCalls).toHaveLength(1);
+      expect(world.starts()).toHaveLength(1);
+      expect(world.setupRuns).toHaveLength(1);
+    }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("labels an outside agent's thread in the same decision as its first turn", () => {
+    const world = makeWorld();
+    return Effect.gen(function* () {
+      yield* runTurnStart(outsideStart);
+      const [start] = world.starts();
+      expect(start?.create).toMatchObject({ outsideOrigin: AGENT });
+      expect(start?.turn).toMatchObject({
+        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+      });
+      expect(world.threads.get(NEW_THREAD)?.outsideOrigin).toEqual(AGENT);
+    }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("keeps the decider's typed refusal, and makes no thread", () => {
+    const world = makeWorld();
+    world.failOn(isStart, "above_ceiling");
     return Effect.gen(function* () {
       const error = yield* Effect.flip(runTurnStart(outsideStart));
       expect(error.refusal).toBe("above_ceiling");
+      expect(world.threads.size).toBe(0);
     }).pipe(Effect.provide(world.layer));
   });
 });

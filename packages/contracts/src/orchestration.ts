@@ -1872,6 +1872,20 @@ export const RemoteChildStart = Schema.Struct({
 export type RemoteChildStart = typeof RemoteChildStart.Type;
 
 /**
+ * A child a parent's agent started on this computer whose thread isn't made
+ * yet: its worktree is being cut, and the thread appears with its first turn
+ * (docs/design/thread-setup-state.md). The sidebar shows it in the parent's
+ * family until then.
+ */
+export const SettingUpChild = Schema.Struct({
+  requestId: ChildRequestId,
+  childThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export type SettingUpChild = typeof SettingUpChild.Type;
+
+/**
  * Something still owed to a linked computer, in the parent's outbox: drop a
  * request (`cancelRequest`, Stop, a wrap, thread_stop), stop a child's
  * session there (`stopThread`), or both. Recorded in the same decision that
@@ -2332,6 +2346,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** On a parent: starts asked of linked computers with no thread there yet. Absent: none. */
   remoteChildStarts: Schema.optional(Schema.Array(RemoteChildStart)),
+  /** On a parent: children started here whose thread isn't made yet. Absent: none. */
+  settingUpChildren: Schema.optional(Schema.Array(SettingUpChild)),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
@@ -2817,6 +2833,11 @@ export type ThreadBootstrapCreateThread = typeof ThreadBootstrapCreateThread.Typ
 const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
+  /**
+   * The placeholder branch an older server names the worktree with. This
+   * one names it from the command id instead, so a retry finds the worktree
+   * an interrupted run made and no other setup can touch it.
+   */
   branch: Schema.optional(TrimmedNonEmptyString),
 });
 
@@ -4007,6 +4028,35 @@ const ThreadImportCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A new thread's first send, once its worktree is ready
+ * (docs/design/thread-setup-state.md): the thread is created (or, one made
+ * earlier without a message, given its checkout), the setup script claimed
+ * and the first turn started in one decision, so no thread exists before it
+ * can work where it should. `commandId` and `threadId` are the turn's; the
+ * receipt is the turn's. Only ThreadBootstrap dispatches it.
+ */
+const ThreadStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /** The thread to create; absent when it already exists. */
+  create: Schema.optional(ThreadBootstrapCreateThread),
+  /** An existing thread's new worktree. */
+  checkout: Schema.optional(
+    Schema.Struct({
+      branch: TrimmedNonEmptyString,
+      worktreePath: TrimmedNonEmptyString,
+    }),
+  ),
+  /**
+   * The setup script's `setup-script.requested` claim, recorded with the
+   * start so the script launches at most once, after it.
+   */
+  setupScriptClaim: Schema.optional(OrchestrationThreadActivity),
+  turn: ThreadTurnStartCommand,
+});
+
 /** A moved thread's agent was given the conversation: see OrchestrationThread.historySeedOwed. */
 const ThreadHistorySeedDeliveredCommand = Schema.Struct({
   type: Schema.Literal("thread.history-seed.delivered"),
@@ -4025,6 +4075,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMoveAbortCommand,
   ThreadMoveCompleteCommand,
   ThreadImportCommand,
+  ThreadStartCommand,
   ThreadHistorySeedDeliveredCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,

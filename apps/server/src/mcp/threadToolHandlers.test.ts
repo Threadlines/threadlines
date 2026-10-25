@@ -560,6 +560,41 @@ describe("thread_stop", () => {
   );
 });
 
+describe("a thread still being set up", () => {
+  it.effect("is listed and read as setting up, takes no message, and stops by its request", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({});
+      const started = yield* tools.handlers.thread_start(mainCaller(), oneThread);
+      const childId = started.threads?.[0]?.threadId;
+      if (childId === undefined) throw new Error("no thread started");
+      // Its thread isn't made until its worktree is ready; its request is all there is.
+      const listed = yield* tools.handlers.thread_list(mainCaller(), {});
+      expect(listed.threads).toContainEqual(
+        expect.objectContaining({
+          threadId: childId,
+          title: "Check the migration",
+          status: "working",
+        }),
+      );
+      const read = yield* tools.handlers.thread_read(mainCaller(), { threadId: childId });
+      expect(read).toMatchObject({ outcome: "ok", messages: [] });
+      expect(read.detail).toMatch(/still being set up/);
+      const sent = yield* tools.handlers.thread_send(mainCaller(), {
+        threadId: childId,
+        message: "Also check the rollback.",
+      });
+      expect(sent.outcome).toBe("refused");
+      expect(ofType(tools.dispatched, "thread.child.send")).toEqual([]);
+      const stopped = yield* tools.handlers.thread_stop(mainCaller(), { threadId: childId });
+      expect(stopped.outcome).toBe("stopped");
+      expect(ofType(tools.dispatched, "thread.children.stop")[0]).toMatchObject({
+        threadId: PARENT,
+        childThreadIds: [childId],
+      });
+    }),
+  );
+});
+
 describe("thread_read", () => {
   it.effect("never labels another thread's request or report as the user's", () =>
     Effect.gen(function* () {

@@ -33,6 +33,7 @@ import {
   childSendRefusal,
   childStartRefusal,
   isAttachedChild,
+  isSettingUpChildStart,
   ownChildRefusal,
   remoteChildOf,
 } from "@threadlines/shared/childThreads";
@@ -121,8 +122,24 @@ export function claimsServerLineage(fields: {
 }
 
 /**
- * Whether a child is still being set up (its start request is `starting`):
- * nothing may run in it yet, or it would run before its worktree exists.
+ * The parent's request that is still setting a child on this computer up,
+ * if any. The child only exists once its start commits, with its first turn
+ * (docs/design/thread-setup-state.md), so until then the request is all
+ * there is of it; an older build made the thread first, so one may exist.
+ */
+export function pendingChildRequest(
+  parent: Pick<OrchestrationThread, "childRequests">,
+  childThreadId: ThreadId,
+) {
+  return parent.childRequests.open.find(
+    (request) => request.childThreadId === childThreadId && isSettingUpChildStart(request),
+  );
+}
+
+/**
+ * Whether a child an older build made before its first turn is still being
+ * set up: nothing may run in it yet, or it would run before its worktree
+ * exists.
  */
 export function isChildBeingSetUp(
   readModel: OrchestrationReadModel,
@@ -132,14 +149,7 @@ export function isChildBeingSetUp(
     return false;
   }
   const parent = readModel.threads.find((entry) => entry.id === thread.parentThreadId);
-  return (
-    parent?.childRequests.open.some(
-      (request) =>
-        request.childThreadId === thread.id &&
-        request.kind === "start" &&
-        request.status === "starting",
-    ) ?? false
-  );
+  return parent !== undefined && pendingChildRequest(parent, thread.id) !== undefined;
 }
 
 /**
@@ -441,6 +451,9 @@ export function decideChildSend(
   if (remoteChild !== undefined) {
     return decideRemoteChildSend(parent, command, baseFor, remoteChild);
   }
+  if (pendingChildRequest(parent, command.childThreadId) !== undefined) {
+    return refuse("That thread is still being set up. Send it a message once it has started.");
+  }
   const child = findThread(readModel, command.childThreadId);
   const refusal = childSendRefusal(parent, child, {
     from: command.from,
@@ -448,9 +461,6 @@ export function decideChildSend(
   });
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
-  }
-  if (isChildBeingSetUp(readModel, child)) {
-    return refuse("That thread is still being set up. Send it a message once it has started.");
   }
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
@@ -1088,12 +1098,27 @@ export function decideChildrenStop(
     command.childThreadIds === undefined
       ? remoteChildren.filter((entry) => requestsFor(parent, entry.threadId).length > 0)
       : remoteChildren.filter((entry) => command.childThreadIds!.includes(entry.threadId));
+  // Children still being set up have no thread yet: stopping one settles
+  // its request, so its setup never makes it.
+  const isPending = (id: ThreadId) =>
+    findThread(readModel, id) === null && pendingChildRequest(parent, id) !== undefined;
+  const pendingIds =
+    command.childThreadIds === undefined
+      ? parent.childRequests.open
+          .map((request) => request.childThreadId)
+          .filter((id, index, ids) => ids.indexOf(id) === index && isPending(id))
+      : command.childThreadIds.filter((id) => !isRemote(id) && isPending(id));
+  if (pendingIds.length > 0 && isAttachedChild(parent)) {
+    return refuse("This thread was started by another thread, so it cannot stop threads itself.");
+  }
   const targets =
     command.childThreadIds === undefined
       ? attachedChildrenOf(readModel, parent.id).filter(
           (child) => childHasLiveWork(child) || requestsFor(parent, child.id).length > 0,
         )
-      : command.childThreadIds.filter((id) => !isRemote(id)).map((id) => findThread(readModel, id));
+      : command.childThreadIds
+          .filter((id) => !isRemote(id) && !pendingIds.includes(id))
+          .map((id) => findThread(readModel, id));
   const children: OrchestrationThread[] = [];
   for (const child of targets) {
     const refusal = ownChildRefusal(parent, child);
@@ -1105,12 +1130,13 @@ export function decideChildrenStop(
   if (remoteTargets.length > 0 && isAttachedChild(parent)) {
     return refuse("This thread was started by another thread, so it cannot stop threads itself.");
   }
-  if (children.length === 0 && remoteTargets.length === 0) {
+  if (children.length === 0 && remoteTargets.length === 0 && pendingIds.length === 0) {
     return refuse("None of its threads are working.");
   }
   const stoppedIds = new Set([
     ...children.map((child) => child.id),
     ...remoteTargets.map((entry) => entry.threadId),
+    ...pendingIds,
   ]);
   const remoteRequests = parent.childRequests.open.filter(
     (request) => request.remote !== undefined && stoppedIds.has(request.childThreadId),

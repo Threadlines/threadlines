@@ -49,3 +49,11 @@ export const childRequestCommandId = (id: string, step: string): CommandId =>
  */
 export const childWorktreeBranch = (requestId: string): string =>
   `${WORKTREE_BRANCH_PREFIX}/${digest(["child-worktree", requestId]).slice(0, 8)}`;
+
+/**
+ * A first send's worktree branch: fixed by the command id for the same
+ * reason, so a retry of the command finds the worktree an interrupted run
+ * made, and no other command's setup ever shares it.
+ */
+export const firstSendWorktreeBranch = (commandId: string): string =>
+  `${WORKTREE_BRANCH_PREFIX}/${digest(["first-send-worktree", commandId]).slice(0, 8)}`;

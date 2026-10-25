@@ -20,6 +20,7 @@ import {
   type RemoteChildStart,
   type RemoteChildThread,
   type RoomAgentRef,
+  type SettingUpChild,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
@@ -291,6 +292,36 @@ export const remoteChildStartsOf = (
             label: request.remote.label,
             title: request.launch.title,
             status: request.remote.status,
+            createdAt: request.createdAt,
+          },
+        ]
+      : [],
+  );
+
+/**
+ * Whether a request is a start on this computer that is still setting its
+ * child up: the child's thread is made only when its start commits, with its
+ * first turn (docs/design/thread-setup-state.md), which moves the request on.
+ */
+export const isSettingUpChildStart = (request: OrchestrationChildRequest): boolean =>
+  request.kind === "start" && request.remote === undefined && request.status === "starting";
+
+/**
+ * The children a parent started here that are still being set up, oldest
+ * first, as its family shows them until their threads appear. The thread
+ * shell carries these, and the web store derives them the same way from a
+ * loaded thread.
+ */
+export const settingUpChildrenOf = (
+  state: OrchestrationChildRequestState,
+): ReadonlyArray<SettingUpChild> =>
+  state.open.flatMap((request): SettingUpChild[] =>
+    isSettingUpChildStart(request) && request.launch !== undefined
+      ? [
+          {
+            requestId: request.requestId,
+            childThreadId: request.childThreadId,
+            title: request.launch.title,
             createdAt: request.createdAt,
           },
         ]

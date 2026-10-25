@@ -122,6 +122,7 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
+import { firstSendWorktreeBranch } from "./orchestration/childRequestIds.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
@@ -5002,8 +5003,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  /** A project whose setup script runs on every new worktree. */
+  const withSetupScript = {
+    getProjectShellById: () =>
+      Effect.succeed(
+        Option.some({
+          scripts: [
+            {
+              id: "setup",
+              name: "Setup",
+              command: "bun install",
+              icon: "configure",
+              runOnWorktreeCreate: true,
+            },
+          ],
+        } as never),
+      ),
+  } satisfies Partial<ProjectionSnapshotQueryShape>;
+
   it.effect(
-    "bootstraps first-send worktree turns on the server before dispatching turn start",
+    "makes a first send's thread once its worktree is cut, with its agents, setup claim and first turn in one start",
     () =>
       Effect.gen(function* () {
         const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -5066,6 +5085,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             projectSetupScriptRunner: {
               runForThread,
             },
+            projectionSnapshotQuery: withSetupScript,
           },
         });
 
@@ -5113,28 +5133,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ),
         );
 
-        assert.equal(response.sequence, 5);
+        // The start's receipt is the client's command's.
+        assert.equal(response.sequence, 1);
         assert.deepEqual(
           dispatchedCommands.map((command) => command.type),
-          [
-            "thread.create",
-            "thread.meta.update",
-            "thread.activity.append",
-            "thread.activity.append",
-            "thread.turn.start",
-          ],
+          ["thread.start", "thread.activity.append"],
         );
-        // The thread is created with its agents in the same command.
-        const createCommand = dispatchedCommands[0];
-        assertTrue(createCommand?.type === "thread.create");
-        if (createCommand?.type === "thread.create") {
-          assert.deepEqual(createCommand.participants, [bootstrapAgent]);
-          assert.equal(createCommand.agentRole, "Builder");
+        const start = dispatchedCommands[0];
+        assertTrue(start?.type === "thread.start");
+        if (start?.type === "thread.start") {
+          assert.equal(start.commandId, CommandId.make("cmd-bootstrap-turn-start"));
+          // The thread is made with its agents and its worktree.
+          assert.deepEqual(start.create?.participants, [bootstrapAgent]);
+          assert.equal(start.create?.agentRole, "Builder");
+          assert.equal(start.create?.branch, "threadlines/bootstrap-refName");
+          assert.equal(start.create?.worktreePath, "/tmp/bootstrap-worktree");
+          assert.equal(start.setupScriptClaim?.kind, "setup-script.requested");
+          assert.equal(start.turn.bootstrap, undefined);
+          // The first message of a new thread is the user's own too.
+          assert.equal(start.turn.composer, "typed");
         }
         assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           refName: "main",
-          newRefName: "threadlines/bootstrap-refName",
+          newRefName: firstSendWorktreeBranch("cmd-bootstrap-turn-start"),
           path: null,
         });
         assert.deepEqual(runForThread.mock.calls[0]?.[0], {
@@ -5144,22 +5166,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           worktreePath: "/tmp/bootstrap-worktree",
         });
         assert.deepEqual(refreshStatus.mock.calls[0]?.[0], "/tmp/bootstrap-worktree");
-
-        const setupActivities = dispatchedCommands.filter(
-          (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-            command.type === "thread.activity.append",
+        const started = dispatchedCommands[1];
+        assertTrue(
+          started?.type === "thread.activity.append" &&
+            started.activity.kind === "setup-script.started",
         );
-        assert.deepEqual(
-          setupActivities.map((command) => command.activity.kind),
-          ["setup-script.requested", "setup-script.started"],
-        );
-        const finalCommand = dispatchedCommands[4];
-        assertTrue(finalCommand?.type === "thread.turn.start");
-        if (finalCommand?.type === "thread.turn.start") {
-          assert.equal(finalCommand.bootstrap, undefined);
-          // The first message of a new thread is the user's own too.
-          assert.equal(finalCommand.composer, "typed");
-        }
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5399,6 +5410,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectSetupScriptRunner: {
             runForThread,
           },
+          projectionSnapshotQuery: withSetupScript,
         },
       });
 
@@ -5442,10 +5454,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
 
-      assert.equal(response.sequence, 4);
+      assert.equal(response.sequence, 1);
       assert.deepEqual(
         dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.meta.update", "thread.activity.append", "thread.turn.start"],
+        ["thread.start", "thread.activity.append"],
       );
       const setupFailureActivity = dispatchedCommands.find(
         (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
@@ -5570,19 +5582,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           Fiber.join(retry),
         ]);
 
-        assert.equal(firstResponse.sequence, 3);
-        assert.equal(retryResponse.sequence, 3);
+        assert.equal(firstResponse.sequence, 1);
+        assert.equal(retryResponse.sequence, 1);
         assert.deepEqual(
           dispatchedCommands.map((command) => command.type),
-          ["thread.create", "thread.meta.update", "thread.turn.start"],
+          ["thread.start"],
         );
         assert.equal(createWorktree.mock.calls.length, 1);
 
         // A retry after the run finished is answered from the receipt without
         // touching the thread again.
         const lateResponse = yield* dispatch();
-        assert.equal(lateResponse.sequence, 3);
-        assert.equal(dispatchedCommands.length, 3);
+        assert.equal(lateResponse.sequence, 1);
+        assert.equal(dispatchedCommands.length, 1);
         assert.equal(createWorktree.mock.calls.length, 1);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -5625,7 +5637,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 command.activity.kind.startsWith("setup-script.")
               ) {
                 setupActivityAppendAttempt += 1;
-                if (setupActivityAppendAttempt === 2) {
+                if (setupActivityAppendAttempt === 1) {
                   return Effect.fail(
                     new OrchestrationListenerCallbackError({
                       listener: "domain-event",
@@ -5645,6 +5657,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectSetupScriptRunner: {
             runForThread,
           },
+          projectionSnapshotQuery: withSetupScript,
         },
       });
 
@@ -5688,27 +5701,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
 
-      assert.equal(response.sequence, 4);
+      // Recording the launch failed after the script started: the start
+      // stands, and nothing claims the launch itself failed.
+      assert.equal(response.sequence, 1);
+      assert.equal(runForThread.mock.calls.length, 1);
       assert.deepEqual(
         dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.meta.update", "thread.activity.append", "thread.turn.start"],
-      );
-      const setupActivities = dispatchedCommands.filter(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append",
-      );
-      assert.deepEqual(
-        setupActivities.map((command) => command.activity.kind),
-        ["setup-script.requested"],
-      );
-      assertTrue(
-        setupActivities.every((command) => command.activity.kind !== "setup-script.failed"),
+        ["thread.start"],
       );
       assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("keeps created bootstrap threads when worktree creation defects", () =>
+  it.effect("makes no thread when cutting its worktree fails, and says why", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
       const createWorktree = vi.fn(
@@ -5777,29 +5782,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "OrchestrationDispatchCommandError");
       assert.include(result.failure.message, "worktree exploded");
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.activity.append", "thread.session.set"],
-      );
-      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
-      const failureActivity = dispatchedCommands.find(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append",
-      );
-      assertTrue(failureActivity !== undefined);
-      assert.equal(failureActivity.activity.kind, "bootstrap.turn-start.failed");
-      assert.equal(failureActivity.activity.summary, "Thread bootstrap failed");
-      const failurePayload = failureActivity.activity.payload as {
-        message?: { text?: string };
-      };
-      assert.equal(failurePayload.message?.text, "hello");
-      const sessionSet = dispatchedCommands.find(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.session.set" }> =>
-          command.type === "thread.session.set",
-      );
-      assertTrue(sessionSet !== undefined);
-      assert.equal(sessionSet.session.status, "error");
-      assert.include(sessionSet.session.lastError ?? "", "worktree exploded");
+      // Nothing was made: no half-made thread for the user to clean up.
+      assert.deepEqual(dispatchedCommands, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
