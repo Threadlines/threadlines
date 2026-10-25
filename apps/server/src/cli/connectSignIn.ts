@@ -48,6 +48,9 @@ export const CLI_CLIENT_NAME = "Threadlines command";
 export const CLI_SOFTWARE_ID = "threadlines-cli";
 const CALLBACK_PATH = "/callback";
 const SCOPE = OUTSIDE_AGENT_SCOPES.join(" ");
+/** How long a closing listener lets an answer still being written finish. */
+const CLOSE_GRACE = Duration.millis(300);
+
 /** As long as Threadlines keeps a sign-in waiting for the user. */
 export const APPROVAL_WAIT = Duration.minutes(5);
 /** Each request to Threadlines other than the wait for the user. */
@@ -159,7 +162,8 @@ interface CallbackOutcome {
 const listenForCallback = Effect.fn("cli.connect.listenForCallback")(function* (state: string) {
   const arrived = yield* Deferred.make<CallbackOutcome>();
   const finished = yield* Deferred.make<{ readonly heading: string; readonly text: string }>();
-  const server = yield* NodeHttpServer.make(() => NodeHttp.createServer(), {
+  const nodeServer = NodeHttp.createServer();
+  const server = yield* NodeHttpServer.make(() => nodeServer, {
     host: "127.0.0.1",
     port: 0,
     gracefulShutdownTimeout: Duration.seconds(2),
@@ -169,7 +173,9 @@ const listenForCallback = Effect.fn("cli.connect.listenForCallback")(function* (
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.url, "http://127.0.0.1");
       if (url.pathname !== CALLBACK_PATH) {
-        return HttpServerResponse.text("Not found", { status: 404 });
+        return HttpServerResponse.text("Not found", { status: 404 }).pipe(
+          HttpServerResponse.setHeader("connection", "close"),
+        );
       }
       if (url.searchParams.get("state") !== state) {
         return HttpServerResponse.html(
@@ -199,6 +205,18 @@ const listenForCallback = Effect.fn("cli.connect.listenForCallback")(function* (
         HttpServerResponse.setHeader("cache-control", "no-store"),
       );
     }),
+  );
+  // Closing the listener waits for every connection to end, and a browser
+  // keeps a spare one open to a page it just loaded (Chrome does), which held
+  // the command after its sign-in. Added after `serve`, so it runs before
+  // serve's and the server's own closing (finalizers run in reverse): idle
+  // connections go at once, the rest after a moment for an answer still
+  // being written.
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => nodeServer.closeIdleConnections()).pipe(
+      Effect.andThen(Effect.sleep(CLOSE_GRACE)),
+      Effect.andThen(Effect.sync(() => nodeServer.closeAllConnections())),
+    ),
   );
   if (server.address._tag !== "TcpAddress") {
     return yield* failed("Couldn't listen on this computer for the sign-in.");

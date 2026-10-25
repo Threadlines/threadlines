@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - NodeHttpServer.layer takes a Node server
 import * as NodeHttp from "node:http";
 import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { connect as connectSocket, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -376,7 +377,13 @@ const serveThreadlines = Effect.gen(function* () {
  * back to the command once Threadlines says where.
  */
 const browserAndUser =
-  (signInService: OutsideAgentSignInShape, answer: "allow" | "deny") => (url: string) =>
+  (
+    signInService: OutsideAgentSignInShape,
+    answer: "allow" | "deny",
+    /** Like Chrome: keeps a spare connection open to the page it comes back to. */
+    spareSockets?: Array<Socket>,
+  ) =>
+  (url: string) =>
     Effect.gen(function* () {
       const page = yield* Effect.promise(() => fetch(url).then((response) => response.text()));
       const config = /<script type="application\/json" id="sign-in-config">(.*?)<\/script>/su.exec(
@@ -400,6 +407,12 @@ const browserAndUser =
           (response) => response.json() as Promise<{ readonly redirect?: string }>,
         ),
       );
+      if (spareSockets !== undefined) {
+        const back = new URL(String(polled.redirect));
+        const socket = connectSocket(Number(back.port), back.hostname);
+        socket.on("error", () => {});
+        spareSockets.push(socket);
+      }
       yield* Effect.promise(() =>
         fetch(String(polled.redirect)).then((response) => response.text()),
       );
@@ -470,6 +483,41 @@ describe("threadlines connect", () => {
         ),
         Effect.scoped,
       ),
+  );
+});
+
+describe("threadlines connect with a browser that keeps connections open", () => {
+  it.live("finishes as soon as the sign-in is stored", () =>
+    Effect.gen(function* () {
+      const threadlines = yield* serveThreadlines;
+      const base = dataFolder(threadlines.port, null);
+      const resource = `http://127.0.0.1:${threadlines.port}/mcp/connect`;
+      const spare: Array<Socket> = [];
+      const signedIn = yield* signIn({
+        target: { origin: `http://127.0.0.1:${threadlines.port}`, resource },
+        credentialsPath: join(base, "userdata", "cli", "connections.json"),
+        clientVersion: "0.0.0",
+        noBrowser: false,
+        openBrowser: browserAndUser(threadlines.signIn, "allow", spare),
+        say: () => Effect.void,
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(FetchHttpClient.layer),
+        // Effect's listener waits for every connection to end when it closes;
+        // the spare one would hold the command after its sign-in.
+        Effect.timeoutOption("5 seconds"),
+        Effect.ensuring(Effect.sync(() => spare.forEach((socket) => socket.destroy()))),
+      );
+      assert.isTrue(Option.isSome(signedIn));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0, host: "127.0.0.1" }),
+          NodeServices.layer,
+        ),
+      ),
+      Effect.scoped,
+    ),
   );
 });
 
