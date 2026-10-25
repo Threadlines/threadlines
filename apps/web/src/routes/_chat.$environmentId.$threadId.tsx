@@ -4,10 +4,14 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import ChatView from "../components/ChatView";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
-import { HostedStaticLoadingState } from "../components/ConnectionStatusStates";
+import {
+  HostedStaticLinkNotPairedState,
+  HostedStaticLoadingState,
+} from "../components/ConnectionStatusStates";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
@@ -17,6 +21,7 @@ import {
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
+import { deriveHostedStaticThreadRouteState } from "./-chatIndexState";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
 import {
@@ -168,8 +173,15 @@ function ChatThreadRouteView() {
   const threadRef = Route.useParams({
     select: (params) => resolveThreadRouteRef(params),
   });
-  const savedEnvironmentLabel = useSavedEnvironmentRegistryStore((state) =>
-    threadRef ? (state.byId[threadRef.environmentId]?.label ?? null) : null,
+  const hostedRouteState = useSavedEnvironmentRegistryStore(
+    useShallow((state) =>
+      threadRef
+        ? deriveHostedStaticThreadRouteState({
+            environmentId: threadRef.environmentId,
+            savedEnvironments: Object.values(state.byId),
+          })
+        : null,
+    ),
   );
   const search = Route.useSearch();
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
@@ -881,7 +893,11 @@ function ChatThreadRouteView() {
     // Rendering nothing reads as a broken empty page; show the same loading
     // surface the index route uses until the bootstrap resolves the thread.
     if (authGateState.status === "hosted-static" && !bootstrapComplete) {
-      return <HostedStaticLoadingState label={savedEnvironmentLabel} />;
+      return hostedRouteState?.kind === "link-not-paired" ? (
+        <HostedStaticLinkNotPairedState pairedElsewhere={hostedRouteState.pairedElsewhere} />
+      ) : (
+        <HostedStaticLoadingState label={hostedRouteState?.label ?? null} />
+      );
     }
     return null;
   }

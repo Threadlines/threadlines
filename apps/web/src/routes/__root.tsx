@@ -16,7 +16,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -51,6 +51,7 @@ import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLa
 import { ProviderUpdateProgress } from "../components/ProviderUpdateProgress";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
+import { AppReloadingState, AppReloadNeededState } from "../components/ConnectionStatusStates";
 import {
   WebSocketConnectionCoordinator,
   WebSocketConnectionSurface,
@@ -134,6 +135,12 @@ import { hasHostedPairingRouteIntent, isHostedStaticApp } from "../hostedPairing
 import { readLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
 import { isLaunchVisitConsumed } from "../launchVisit";
 import { resolveThreadRouteRef } from "../threadRoutes";
+import {
+  isStaleBuildError,
+  resolveStaleBuildRecovery,
+  STALE_BUILD_RECHECK_MS,
+  type StaleBuildRecovery,
+} from "../staleBuild";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -546,7 +553,69 @@ function HostedStaticServerStateBridge() {
   return null;
 }
 
-function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
+function RootRouteErrorView(props: ErrorComponentProps) {
+  return isStaleBuildError(props.error) ? <StaleBuildErrorView /> : <RouteErrorView {...props} />;
+}
+
+/**
+ * A part of the app failed to load because the page outlived its build (see
+ * staleBuild.ts). Trying again can't fetch it, so this reloads on its own
+ * once the app can be reached, checking again while it can't.
+ */
+function StaleBuildErrorView() {
+  const [recovery, setRecovery] = useState<StaleBuildRecovery | "checking">("checking");
+
+  useEffect(() => {
+    let disposed = false;
+    let checking = false;
+    const stopWatching = () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("online", check);
+      document.removeEventListener("visibilitychange", checkWhenShown);
+    };
+    async function check() {
+      if (checking) {
+        return;
+      }
+      checking = true;
+      const next = await resolveStaleBuildRecovery();
+      checking = false;
+      if (disposed) {
+        return;
+      }
+      if (next !== "unreachable") {
+        stopWatching();
+      }
+      if (next === "reload") {
+        window.location.reload();
+      }
+      setRecovery(next);
+    }
+    function checkWhenShown() {
+      if (document.visibilityState === "visible") {
+        void check();
+      }
+    }
+    // While the app can't be reached: again on a timer, when the device says
+    // it is back online, and when the page is shown again.
+    const intervalId = window.setInterval(() => void check(), STALE_BUILD_RECHECK_MS);
+    window.addEventListener("online", check);
+    document.addEventListener("visibilitychange", checkWhenShown);
+    void check();
+    return () => {
+      disposed = true;
+      stopWatching();
+    };
+  }, []);
+
+  return recovery === "checking" || recovery === "reload" ? (
+    <AppReloadingState />
+  ) : (
+    <AppReloadNeededState unreachable={recovery === "unreachable"} />
+  );
+}
+
+function RouteErrorView({ error, reset }: ErrorComponentProps) {
   const message = errorMessage(error);
   const details = errorDetails(error);
 

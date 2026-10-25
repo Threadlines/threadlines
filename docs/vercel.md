@@ -8,6 +8,10 @@ roots separate so unrelated commits do not trigger the marketing site build.
 - Root Directory: repository root
 - Config: `vercel.json`
 - Purpose: hosted app shell for `app.threadlines.dev`
+- Every address falls back to `index.html` except `/assets/`. A tab opened
+  before a deploy asks for build files the deploy replaced; a 404 lets it see
+  it is out of date and reload (`apps/web/src/staleBuild.ts`), where the app
+  page in their place would fail as code with the wrong type.
 
 ## `threadlines`
 
