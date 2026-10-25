@@ -89,3 +89,26 @@ export function deriveHostedStaticIndexState(input: {
 
   return { kind: "ready" };
 }
+
+export type HostedStaticThreadRouteState =
+  | { readonly kind: "loading"; readonly label: string | null }
+  /** The address names a computer this browser isn't paired with. */
+  | { readonly kind: "link-not-paired"; readonly pairedElsewhere: boolean };
+
+/**
+ * What a hosted thread address shows until its computer's first workspace
+ * snapshot arrives. Only a computer saved in this browser ever sends one, and
+ * each browser keeps its own pairings, so an address copied from another
+ * browser says it needs pairing here instead of loading forever.
+ */
+export function deriveHostedStaticThreadRouteState(input: {
+  readonly environmentId: EnvironmentId;
+  readonly savedEnvironments: ReadonlyArray<HostedStaticSavedEnvironment>;
+}): HostedStaticThreadRouteState {
+  const saved = input.savedEnvironments.find(
+    (environment) => environment.environmentId === input.environmentId,
+  );
+  return saved
+    ? { kind: "loading", label: saved.label || null }
+    : { kind: "link-not-paired", pairedElsewhere: input.savedEnvironments.length > 0 };
+}

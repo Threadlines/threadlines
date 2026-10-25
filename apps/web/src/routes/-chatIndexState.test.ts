@@ -3,7 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { SavedEnvironmentRuntimeState } from "../environments/runtime";
 import type { EnvironmentState } from "../store";
-import { deriveChatIndexState, deriveHostedStaticIndexState } from "./-chatIndexState";
+import {
+  deriveChatIndexState,
+  deriveHostedStaticIndexState,
+  deriveHostedStaticThreadRouteState,
+} from "./-chatIndexState";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -162,5 +166,28 @@ describe("deriveChatIndexState", () => {
         projectCount: 0,
       }),
     ).toEqual({ kind: "unpaired" });
+  });
+});
+
+describe("deriveHostedStaticThreadRouteState", () => {
+  it("asks to pair instead of loading forever when the link's computer isn't saved here", () => {
+    // A thread address copied from another browser: that browser's pairing
+    // stays behind, and nothing would ever send this one a snapshot.
+    expect(deriveHostedStaticThreadRouteState({ environmentId, savedEnvironments: [] })).toEqual({
+      kind: "link-not-paired",
+      pairedElsewhere: false,
+    });
+    expect(
+      deriveHostedStaticThreadRouteState({
+        environmentId: EnvironmentId.make("environment-2"),
+        savedEnvironments: [savedEnvironment()],
+      }),
+    ).toEqual({ kind: "link-not-paired", pairedElsewhere: true });
+    expect(
+      deriveHostedStaticThreadRouteState({
+        environmentId,
+        savedEnvironments: [savedEnvironment()],
+      }),
+    ).toEqual({ kind: "loading", label: "Will's Mac" });
   });
 });
