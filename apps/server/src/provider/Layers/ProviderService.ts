@@ -1520,6 +1520,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       if (input.telemetryContext?.kind === "thread_fork") {
         const sourceModelSelection = input.telemetryContext.sourceModelSelection;
+        // Model names are read by agent kind (Pi's own list applies to every Pi instance).
+        const sourceDriver = sourceModelSelection
+          ? yield* registry.getByInstance(sourceModelSelection.instanceId).pipe(
+              Effect.map((adapter) => adapter.provider),
+              Effect.orElseSucceed(() => undefined),
+            )
+          : undefined;
         yield* analytics.record("thread.fork.created", {
           sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
           targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
@@ -1539,12 +1546,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
           ...analyticsModelProperties({
             model: sourceModelSelection?.model,
-            provider: sourceModelSelection?.instanceId,
+            provider: sourceDriver,
             prefix: "source",
           }),
           ...analyticsModelProperties({
             model: input.modelSelection?.model,
-            provider: input.modelSelection?.instanceId,
+            provider: routed.adapter.provider,
             prefix: "target",
           }),
         });

@@ -52,6 +52,14 @@ describe("AnalyticsProperties", () => {
       modelKind: "known",
       modelFamily: "claude",
     });
+    // A version may end in a letter.
+    assert.strictEqual(normalizeAnalyticsModel("gpt-4o").model, "gpt-4o");
+    assert.strictEqual(normalizeAnalyticsModel("gpt-4o-mini").model, "gpt-4o-mini");
+    assert.strictEqual(
+      normalizeAnalyticsModel("openai/gpt-4o-2024-08-06").model,
+      "gpt-4o-2024-08-06",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("grok-4.7-build-fast").model, "grok-4.7-build-fast");
   });
 
   it("redacts custom and provider-prefixed model strings", () => {
@@ -70,8 +78,12 @@ describe("AnalyticsProperties", () => {
       "acme-gateway/claude-sonnet-5-5",
       "azure/gpt-5.4",
       "openrouter/acme/claude-sonnet-5-5",
-      // A user's own model added under a public provider's name.
+      // A user's own model added under a public provider's name, or named
+      // like a public one with no provider at all.
       "openai/gpt-5.4-acme-payroll",
+      "gpt-5.4-acme-payroll",
+      "gpt-4o-acme-payroll",
+      "gpt-5x-sol",
       "google/gemini-2.5-acme-payroll",
       "openai/gpt-5.4-123456789012",
       // Whatever made a long name private may be past the cut.
@@ -108,6 +120,33 @@ describe("AnalyticsProperties", () => {
     assert.strictEqual(
       normalizeAnalyticsModel("anthropic/claude-sonnet-4-5-20250929").model,
       "claude-sonnet-4-5-20250929",
+    );
+  });
+
+  it("names a Pi model when Pi itself ships it, whatever its words", () => {
+    assert.deepStrictEqual(normalizeAnalyticsModel("deepseek/deepseek-v4-pro", "pi"), {
+      model: "deepseek-v4-pro",
+      modelKind: "known",
+      modelFamily: "other",
+    });
+    assert.strictEqual(normalizeAnalyticsModel("zai/GLM-4.7", "pi").model, "glm-4.7");
+    assert.strictEqual(
+      normalizeAnalyticsModel("google/gemini-4-argon", "pi").model,
+      "gemini-4-argon",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("amazon-bedrock/global.openai.gpt-6-sol", "pi").model,
+      "global.openai.gpt-6-sol",
+    );
+    // A model the user added to Pi isn't on Pi's list.
+    assert.strictEqual(
+      normalizeAnalyticsModel("deepseek/deepseek-acme-payroll", "pi").model,
+      "custom",
+    );
+    // Pi's list vouches for Pi's models only.
+    assert.strictEqual(
+      normalizeAnalyticsModel("deepseek/deepseek-v4-pro", "opencode").model,
+      "custom",
     );
   });
 
