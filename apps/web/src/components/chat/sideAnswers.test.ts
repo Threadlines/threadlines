@@ -645,6 +645,52 @@ describe("side exchanges in the timeline", () => {
       ]);
     });
 
+    it("names the thread's own agent when it answers on the side inside another agent's stretch", () => {
+      const ownQuestion = {
+        ...question(sideTurnId, at(5)),
+        participantId: undefined,
+        fromAgent: { participantId: astra },
+        requestKind: "ask" as const,
+      };
+      const ownAnswer = {
+        ...answer(sideTurnId, at(7)),
+        participantId: undefined,
+        completedAt: at(8),
+      };
+      const rows = derive(
+        [userEntry, step("read", 2), step("ask-call", 4)],
+        [
+          exchange({
+            participantId: null,
+            askedBy: { participantId: astra },
+            question: ownQuestion,
+            steps: [{ ...step("side-read", 6).entry, turnId: null }],
+            answer: ownAnswer,
+            state: "answered",
+          }),
+        ],
+        { agent: astra },
+      );
+      expect(layout(rows)).toEqual([
+        "user-entry",
+        "read",
+        "question-side-1",
+        "side-steps:side-1",
+        "side-answer:side-1",
+        "working-indicator-row",
+      ]);
+      // Astra's line runs past; the answer set in under its question is the
+      // thread's own agent's, named as such.
+      expect(lines(rows)).toEqual([
+        null,
+        "start agent-astra named",
+        "through agent-astra",
+        "through own named nested-start",
+        "through own nested-end",
+        "end agent-astra",
+      ]);
+    });
+
     it("starts a line where the speaker changes, and a hand-off's repeated reply is one line", () => {
       const message = (
         id: string,
