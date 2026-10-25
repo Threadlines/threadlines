@@ -7979,6 +7979,7 @@ export default function ChatView(props: ChatViewProps) {
       isGitRepo={isGitRepo}
       openInCwd={isGeneralChatThread ? null : gitCwd}
       projectCwd={isGeneralChatThread ? null : (activeProject?.cwd ?? null)}
+      checkoutBranch={gitStatusQuery.data?.refName ?? activeThread.branch ?? null}
       activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
       preferredScriptId={
         activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
