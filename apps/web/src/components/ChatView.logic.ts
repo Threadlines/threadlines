@@ -20,6 +20,7 @@ import { backgroundOutputFileFromText } from "@threadlines/shared/backgroundRunO
 import {
   findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
+  type ProviderAuthReplyInput,
   providerAuthReconnectCommand,
   providerCanSignIn,
   serverProviderCanSignIn,
@@ -1933,7 +1934,7 @@ export function deriveProviderAuthReconnectPrompt(input: {
   readonly providerStatus?: Pick<ServerProvider, "driver" | "community"> | null | undefined;
   readonly threadError?: string | null | undefined;
   readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
-  readonly messages?: ReadonlyArray<Pick<ChatMessage, "role" | "text">> | null | undefined;
+  readonly messages?: ReadonlyArray<ProviderAuthReplyInput> | null | undefined;
 }): ProviderAuthReconnectPrompt | null {
   const provider = input.provider ?? null;
   if (!provider) {
@@ -1985,7 +1986,7 @@ export function deriveProviderAuthReconnectPrompt(input: {
   const messages = input.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (!message || message.role !== "assistant" || !isProviderAuthErrorChatMessage(message)) {
+    if (!message || !isProviderAuthErrorChatMessage(message)) {
       continue;
     }
     return {
@@ -2011,13 +2012,15 @@ export function deriveFailedTurnRetryMessageId(input: {
       | "id"
       | "role"
       | "text"
+      | "participantId"
       | "turnId"
       | "sideTurnId"
       | "requestKind"
       | "requestOutcome"
       | "fromAgent"
       | "fromThread"
-    >
+    > &
+      Pick<ProviderAuthReplyInput, "streaming">
   >;
   readonly sessionLastError: string | null | undefined;
 }): MessageId | null {

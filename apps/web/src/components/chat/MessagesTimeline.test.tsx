@@ -696,6 +696,109 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Sign in in terminal");
   });
 
+  it("keeps another agent's replies from hiding or resolving the thread's sign-in error", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const signInError = "Failed to authenticate. API Error: 401 Invalid authentication credentials";
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        providerAuthReconnect={{
+          provider: ProviderDriverKind.make("claudeAgent"),
+          command: "claude auth login",
+          message: signInError,
+        }}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-auth-step",
+            kind: "work",
+            createdAt: "2026-10-25T21:19:00.000Z",
+            entry: {
+              id: "work-auth",
+              createdAt: "2026-10-25T21:19:00.000Z",
+              label: "Authentication required",
+              detail: signInError,
+              tone: "error",
+              authReconnect: {
+                provider: ProviderDriverKind.make("claudeAgent"),
+                command: "claude auth login",
+                message: signInError,
+              },
+            },
+          },
+          {
+            id: "entry-auth-message",
+            kind: "message",
+            createdAt: "2026-10-25T21:20:00.000Z",
+            message: {
+              id: MessageId.make("message-auth"),
+              role: "assistant",
+              text: signInError,
+              createdAt: "2026-10-25T21:20:00.000Z",
+              completedAt: "2026-10-25T21:20:01.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-review",
+            kind: "message",
+            createdAt: "2026-10-25T21:28:21.000Z",
+            message: {
+              id: MessageId.make("side-answer:review"),
+              role: "assistant",
+              text: 'Found one defect.\n\nI reproduced `403: {"error":{"message":"Invalid authentication credentials"}}` yielding a sign-in prompt.',
+              participantId: ThreadParticipantId.make("participant-sol"),
+              sideTurnId: SideTurnId.make("side-turn-review"),
+              createdAt: "2026-10-25T21:28:21.000Z",
+              completedAt: "2026-10-25T21:28:30.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-room-auth-step",
+            kind: "work",
+            createdAt: "2026-10-25T21:29:00.000Z",
+            entry: {
+              id: "work-room-auth",
+              createdAt: "2026-10-25T21:29:00.000Z",
+              label: "Authentication required",
+              detail: "Not logged in",
+              tone: "error",
+              authReconnect: {
+                provider: ProviderDriverKind.make("codex"),
+                command: "codex login",
+                message: "Not logged in",
+                participantId: ThreadParticipantId.make("participant-sol"),
+              },
+            },
+          },
+          {
+            id: "entry-room-turn",
+            kind: "message",
+            createdAt: "2026-10-25T21:30:00.000Z",
+            message: {
+              id: MessageId.make("message-room-turn"),
+              role: "assistant",
+              text: "Took over the turn and finished it.",
+              participantId: ThreadParticipantId.make("participant-sol"),
+              turnId: TurnId.make("turn-room"),
+              createdAt: "2026-10-25T21:30:00.000Z",
+              completedAt: "2026-10-25T21:30:05.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    // The thread's own error and step stay open; only the room agent's own
+    // step is resolved, by its own later reply.
+    expect(markup.match(/data-provider-auth-reconnect-resolved="false"/g)).toHaveLength(2);
+    expect(markup.match(/data-provider-auth-reconnect-resolved="true"/g)).toHaveLength(1);
+    expect(markup).toContain("Codex sign-in refreshed");
+    expect(markup).toContain("Found one defect.");
+  });
+
   it("renders assistant authentication messages as provider sign-in guidance", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(
