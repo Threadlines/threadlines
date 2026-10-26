@@ -24,6 +24,8 @@ If you want a log message to show up in the trace file, emit it inside an active
 
 Completed spans are written as NDJSON records to `serverTracePath` (by default, `~/.threadlines/userdata/logs/server.trace.ndjson`).
 
+A few high-volume spans are sampled there (SQL statements, projector steps, and the Claude driver's per-message handlers; see `shouldRecordServerLocalTrace`), so their counts and totals in the file are partial. A sampled span is still always written when it runs a second or longer, fails, or carries a warning or error (the per-message handlers: any log line).
+
 Important fields in each record:
 
 - `name`: span name
