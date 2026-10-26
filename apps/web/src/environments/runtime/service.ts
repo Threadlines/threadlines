@@ -82,9 +82,11 @@ import {
   THREAD_INTENT_GRACE_MS,
 } from "./threadDetailSubscriptions";
 import {
+  deferStoreNotifications,
   useStore,
   selectProjectsAcrossEnvironments,
   selectThreadByRef,
+  selectThreadShellsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
@@ -1094,7 +1096,9 @@ function syncProjectUiFromStore() {
 
 function syncThreadUiFromStore() {
   const appState = useStore.getState();
-  const threads = selectThreadsAcrossEnvironments(appState);
+  // The shells carry everything read here; whole threads would rebuild every
+  // changed thread's detail on each of the shell stream's frequent events.
+  const threads = selectThreadShellsAcrossEnvironments(appState);
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1225,11 +1229,31 @@ function applyRecoveredEventBatch(
   threadDetails.reconcileEvictionForEnvironment(environmentId);
 }
 
+/**
+ * Writes the store for one thread. A thread no open chat shows reaches the
+ * screen only through lists (sidebar, inbox, the rail's counts), which read
+ * it by the next frame anyway: its writes are deferred, so a thread streaming
+ * in the background costs one render per frame rather than one per event.
+ */
+function writeThreadStore(
+  environmentId: EnvironmentId,
+  threadId: ThreadId | null,
+  write: () => void,
+): void {
+  if (threadId !== null && !threadDetails.isShown(environmentId, threadId)) {
+    deferStoreNotifications(write);
+    return;
+  }
+  write();
+}
+
 export function applyEnvironmentThreadDetailEvent(
   event: OrchestrationEvent,
   environmentId: EnvironmentId,
 ) {
-  applyRecoveredEventBatch([event], environmentId);
+  writeThreadStore(environmentId, "threadId" in event.payload ? event.payload.threadId : null, () =>
+    applyRecoveredEventBatch([event], environmentId),
+  );
 }
 
 function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) {
@@ -1251,7 +1275,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
   const threadRef = threadId ? scopeThreadRef(environmentId, threadId) : null;
   const previousThread = threadRef ? selectThreadByRef(useStore.getState(), threadRef) : undefined;
 
-  useStore.getState().applyShellEvent(event, environmentId);
+  writeThreadStore(environmentId, threadId, () =>
+    useStore.getState().applyShellEvent(event, environmentId),
+  );
   markAppliedProjectionEvent(environmentId, event.sequence);
 
   switch (event.kind) {

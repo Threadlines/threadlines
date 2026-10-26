@@ -2299,23 +2299,9 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         },
       ]),
     ),
-    messageIdsByThreadId: Object.fromEntries(
-      threads.map((thread) => [thread.id, thread.messages.map((message) => message.id)]),
-    ),
-    messageByThreadId: Object.fromEntries(
-      threads.map((thread) => [
-        thread.id,
-        Object.fromEntries(thread.messages.map((message) => [message.id, message])),
-      ]),
-    ),
-    activityIdsByThreadId: Object.fromEntries(
-      threads.map((thread) => [thread.id, thread.activities.map((activity) => activity.id)]),
-    ),
-    activityByThreadId: Object.fromEntries(
-      threads.map((thread) => [
-        thread.id,
-        Object.fromEntries(thread.activities.map((activity) => [activity.id, activity])),
-      ]),
+    messagesByThreadId: Object.fromEntries(threads.map((thread) => [thread.id, thread.messages])),
+    activitiesByThreadId: Object.fromEntries(
+      threads.map((thread) => [thread.id, thread.activities]),
     ),
     proposedPlanIdsByThreadId: Object.fromEntries(
       threads.map((thread) => [thread.id, thread.proposedPlans.map((plan) => plan.id)]),

@@ -1,9 +1,4 @@
-import {
-  EMPTY_AGENT_REQUEST_STATE,
-  type MessageId,
-  type ThreadId,
-  type TurnId,
-} from "@threadlines/contracts";
+import { EMPTY_AGENT_REQUEST_STATE, type ThreadId, type TurnId } from "@threadlines/contracts";
 import type { EnvironmentState } from "./store";
 import type {
   ChatMessage,
@@ -19,8 +14,6 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Thread["activities"] = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_TURN_DIFF_SUMMARIES: TurnDiffSummary[] = [];
-const EMPTY_MESSAGE_MAP: Record<MessageId, ChatMessage> = {};
-const EMPTY_ACTIVITY_MAP: Record<string, Thread["activities"][number]> = {};
 const EMPTY_PROPOSED_PLAN_MAP: Record<string, ProposedPlan> = {};
 const EMPTY_TURN_DIFF_MAP: Record<TurnId, TurnDiffSummary> = {};
 
@@ -73,19 +66,11 @@ function collectByIds<TKey extends string, TValue>(
 }
 
 function selectThreadMessages(state: EnvironmentState, threadId: ThreadId): Thread["messages"] {
-  return collectByIds(
-    state.messageIdsByThreadId[threadId],
-    state.messageByThreadId[threadId] ?? EMPTY_MESSAGE_MAP,
-    EMPTY_MESSAGES,
-  );
+  return state.messagesByThreadId[threadId] ?? EMPTY_MESSAGES;
 }
 
 function selectThreadActivities(state: EnvironmentState, threadId: ThreadId): Thread["activities"] {
-  return collectByIds(
-    state.activityIdsByThreadId[threadId],
-    state.activityByThreadId[threadId] ?? EMPTY_ACTIVITY_MAP,
-    EMPTY_ACTIVITIES,
-  );
+  return state.activitiesByThreadId[threadId] ?? EMPTY_ACTIVITIES;
 }
 
 function selectThreadProposedPlans(

@@ -1336,6 +1336,83 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("tells the screen about the open chat's events at once and a background thread's by the next frame", async () => {
+    const frames: Array<() => void> = [];
+    vi.stubGlobal("document", { visibilityState: "visible", addEventListener: () => undefined });
+    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => frames.push(callback));
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    const {
+      resetEnvironmentServiceForTests,
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("../../store");
+    const environmentId = EnvironmentId.make("env-1");
+    const openThreadId = ThreadId.make("thread-open");
+    const backgroundThreadId = ThreadId.make("thread-background");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshot([
+        { threadId: openThreadId, sessionStatus: "running" },
+        { threadId: backgroundThreadId, sessionStatus: "running" },
+      ]),
+      environmentId,
+    );
+    const release = retainThreadDetailSubscription(environmentId, openThreadId);
+    deliverThreadSnapshot(openThreadId);
+    deliverThreadSnapshot(backgroundThreadId);
+    let notifications = 0;
+    const unsubscribe = useStore.subscribe(() => {
+      notifications += 1;
+    });
+    const deliverText = (threadId: ThreadId, sequence: number, text: string) =>
+      mockSubscribeThread.mock.calls.findLast(([input]) => input.threadId === threadId)?.[1]({
+        kind: "event",
+        event: {
+          sequence,
+          eventId: EventId.make(`event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-04-13T00:00:02.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId,
+            messageId: `message-${threadId}`,
+            role: "assistant",
+            text,
+            turnId: TurnId.make("turn-1"),
+            streaming: true,
+            createdAt: "2026-04-13T00:00:02.000Z",
+            updatedAt: "2026-04-13T00:00:02.000Z",
+          },
+        },
+      });
+    const textOf = (threadId: ThreadId) =>
+      selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId))?.messages[0]
+        ?.text;
+
+    deliverText(backgroundThreadId, 2, "Working");
+    deliverText(backgroundThreadId, 3, " on it");
+    expect(textOf(backgroundThreadId)).toBe("Working on it");
+    expect(notifications).toBe(0);
+    for (const frame of frames.splice(0)) frame();
+    expect(notifications).toBe(1);
+
+    deliverText(openThreadId, 4, "Done");
+    expect(textOf(openThreadId)).toBe("Done");
+    expect(notifications).toBe(2);
+
+    unsubscribe();
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("lets held warm threads through when their own environment reconnects", async () => {
     const environmentId = EnvironmentId.make("env-remote");
     const launchThreadId = ThreadId.make("thread-launch");

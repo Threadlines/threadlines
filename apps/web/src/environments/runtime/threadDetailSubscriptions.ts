@@ -1037,6 +1037,12 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     evaluateScheduling();
   }
 
+  /** Whether a mounted chat shows this thread (holds it at foreground). */
+  function isShown(environmentId: EnvironmentId, threadId: ThreadId): boolean {
+    const entry = entries.get(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
+    return entry !== undefined && entry.refsByPriority.foreground > 0;
+  }
+
   function reconcileEvictionForThread(environmentId: EnvironmentId, threadId: ThreadId): void {
     const entry = entries.get(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
     if (entry) {
@@ -1101,6 +1107,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     disposeThread,
     evictIdleToCapacity,
     holdIntent,
+    isShown,
     reconcileEvictionForEnvironment,
     reconcileEvictionForThread,
     reconcileForEnvironment,

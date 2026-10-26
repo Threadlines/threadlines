@@ -209,6 +209,7 @@ vi.mock("~/composerDraftStore", async () => {
 });
 
 vi.mock("~/store", () => ({
+  deferStoreNotifications: (write: () => void) => write(),
   selectEnvironmentState: (
     state: { environmentStateById: Record<string, unknown> },
     environmentId: string | null,
@@ -252,10 +253,8 @@ vi.mock("~/store", () => ({
             : {},
           threadSessionById: {},
           threadTurnStateById: {},
-          messageIdsByThreadId: {},
-          messageByThreadId: {},
-          activityIdsByThreadId: {},
-          activityByThreadId: {},
+          messagesByThreadId: {},
+          activitiesByThreadId: {},
           proposedPlanIdsByThreadId: {},
           proposedPlanByThreadId: {},
           turnDiffIdsByThreadId: {},
@@ -275,10 +274,8 @@ vi.mock("~/store", () => ({
             : {},
           threadSessionById: {},
           threadTurnStateById: {},
-          messageIdsByThreadId: {},
-          messageByThreadId: {},
-          activityIdsByThreadId: {},
-          activityByThreadId: {},
+          messagesByThreadId: {},
+          activitiesByThreadId: {},
           proposedPlanIdsByThreadId: {},
           proposedPlanByThreadId: {},
           turnDiffIdsByThreadId: {},

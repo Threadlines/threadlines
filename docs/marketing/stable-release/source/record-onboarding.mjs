@@ -101,9 +101,8 @@ try {
                 threadSessionById: {},
                 threadTurnStateById: {},
                 sidebarThreadSummaryById: {},
-                messageByThreadId: {},
-                activityByThreadId: {},
-                activityIdsByThreadId: {},
+                messagesByThreadId: {},
+                activitiesByThreadId: {},
               },
             },
           }));

@@ -4179,7 +4179,7 @@ export default function ChatView(props: ChatViewProps) {
   // state below reflects loaded data" signal for consumers of the publish.
   const threadDetailHydrated = useStore((state) =>
     activeThreadRef
-      ? selectEnvironmentState(state, activeThreadRef.environmentId).activityIdsByThreadId[
+      ? selectEnvironmentState(state, activeThreadRef.environmentId).activitiesByThreadId[
           activeThreadRef.threadId
         ] !== undefined
       : false,
