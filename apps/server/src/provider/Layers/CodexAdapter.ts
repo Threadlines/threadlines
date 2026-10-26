@@ -113,6 +113,17 @@ const CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS = 1_000;
 const CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH = 32;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE = 20;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE_MAX = 50;
+/**
+ * Notifications that are one piece of an item's text. The `item/completed`
+ * that ends the item carries the whole text, so the native log keeps that one.
+ * Command and file-change output pieces stay: their completed items may not.
+ */
+const CODEX_STREAM_FRAGMENT_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "item/plan/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+]);
 const CODEX_EXTERNAL_THREAD_SOURCE_KINDS = [
   "cli",
   "vscode",
@@ -4173,7 +4184,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (!nativeEventLogger) {
       return;
     }
-    yield* nativeEventLogger.write(event, event.threadId).pipe(Effect.withTracerEnabled(false));
+    yield* nativeEventLogger
+      .write(event, event.threadId, {
+        streamFragment: CODEX_STREAM_FRAGMENT_METHODS.has(event.method),
+      })
+      .pipe(Effect.withTracerEnabled(false));
   });
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (

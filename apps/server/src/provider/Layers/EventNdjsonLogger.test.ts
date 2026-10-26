@@ -153,6 +153,50 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("leaves stream fragments out unless the logger keeps them", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const threadId = ThreadId.make("thread-1");
+
+      try {
+        const writeThree = (logger: EventNdjsonLogger) =>
+          Effect.gen(function* () {
+            yield* logger.write({ id: "piece-1" }, threadId, { streamFragment: true });
+            yield* logger.write({ id: "whole" }, threadId);
+            yield* logger.write({ id: "piece-2" }, threadId, { streamFragment: true });
+            yield* logger.close();
+          });
+        const readIds = (directory: string) =>
+          fs
+            .readFileSync(path.join(directory, "thread-1.log"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => (JSON.parse(parseLogLine(line).payload) as { id: string }).id);
+
+        const plainDir = path.join(tempDir, "plain");
+        const plain = yield* makeEventNdjsonLogger(path.join(plainDir, "events.log"), {
+          stream: "native",
+        });
+        assert.notEqual(plain, undefined);
+        if (!plain) return;
+        yield* writeThree(plain);
+        assert.deepEqual(readIds(plainDir), ["whole"]);
+
+        const keepingDir = path.join(tempDir, "keeping");
+        const keeping = yield* makeEventNdjsonLogger(path.join(keepingDir, "events.log"), {
+          stream: "native",
+          keepStreamFragments: true,
+        });
+        assert.notEqual(keeping, undefined);
+        if (!keeping) return;
+        yield* writeThree(keeping);
+        assert.deepEqual(readIds(keepingDir), ["piece-1", "whole", "piece-2"]);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("flushes after the batch window and re-arms for later writes", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));

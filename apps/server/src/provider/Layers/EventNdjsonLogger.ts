@@ -34,14 +34,31 @@ const PROVIDER_LOG_FILE_NAME_PATTERN = /\.log(?:\.\d+)?$/;
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
+export interface EventLogWriteOptions {
+  /**
+   * The record is one piece of a stream (a token's worth of text, a thinking
+   * counter tick) whose content the log also holds whole. Several land per
+   * second for every streaming agent, so they are left out unless the logger
+   * keeps stream fragments. Mark only pieces with a complete copy elsewhere in
+   * the log, or that carry no content at all.
+   */
+  readonly streamFragment?: boolean;
+}
+
 export interface EventNdjsonLogger {
   readonly filePath: string;
-  write: (event: unknown, threadId: ThreadId | null) => Effect.Effect<void>;
+  write: (
+    event: unknown,
+    threadId: ThreadId | null,
+    options?: EventLogWriteOptions,
+  ) => Effect.Effect<void>;
   close: () => Effect.Effect<void>;
 }
 
 export interface EventNdjsonLoggerOptions {
   readonly stream: EventNdjsonStream;
+  /** Write records marked as stream fragments too, for debugging streaming. */
+  readonly keepStreamFragments?: boolean;
   readonly maxBytes?: number;
   readonly maxFiles?: number;
   readonly batchWindowMs?: number;
@@ -691,9 +708,14 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
     );
   });
 
+  const keepStreamFragments = options.keepStreamFragments === true;
+
   return {
     filePath,
-    write: (event, threadId) => write(event, threadId).pipe(Effect.withTracerEnabled(false)),
+    write: (event, threadId, writeOptions) =>
+      writeOptions?.streamFragment === true && !keepStreamFragments
+        ? Effect.void
+        : write(event, threadId).pipe(Effect.withTracerEnabled(false)),
     close,
   } satisfies EventNdjsonLogger;
 });

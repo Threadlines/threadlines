@@ -3872,6 +3872,18 @@ function sdkNativeMethod(message: SDKMessage): string {
   return `claude/${message.type}`;
 }
 
+/**
+ * Native methods that are one piece of a streamed block (its text, thinking,
+ * tool input or signature) or a thinking-token tick. The assistant message
+ * that ends the block carries all of it, so the log keeps that one.
+ */
+function isSdkStreamFragmentMethod(method: string): boolean {
+  return (
+    method.startsWith("claude/stream_event/content_block_delta") ||
+    method === "claude/system/thinking_tokens"
+  );
+}
+
 function sdkNativeItemId(message: SDKMessage): string | undefined {
   if (message.type === "assistant") {
     const maybeId = (message.message as { id?: unknown }).id;
@@ -4098,6 +4110,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const observedAt = yield* nowIso;
     const itemId = sdkNativeItemId(message);
+    const method = sdkNativeMethod(message);
 
     yield* nativeEventLogger.write(
       {
@@ -4110,7 +4123,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           kind: "notification",
           provider: PROVIDER,
           createdAt: observedAt,
-          method: sdkNativeMethod(message),
+          method,
           ...(typeof message.session_id === "string"
             ? { providerThreadId: message.session_id }
             : {}),
@@ -4124,6 +4137,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       },
       context.session.threadId,
+      { streamFragment: isSdkStreamFragmentMethod(method) },
     );
   });
 

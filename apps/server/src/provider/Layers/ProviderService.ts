@@ -511,16 +511,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.succeed(event).pipe(
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
-          ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("provider canonical event log write failed", {
-                  eventId: canonicalEvent.eventId,
-                  eventType: canonicalEvent.type,
-                  threadId: canonicalEvent.threadId,
-                  cause: Cause.pretty(cause),
-                }),
-              ),
-            )
+          ? canonicalEventLogger
+              .write(canonicalEvent, canonicalEvent.threadId, {
+                // The driver's native log already holds this text: whole in its
+                // completed item, or piece by piece where it has no whole copy.
+                streamFragment: canonicalEvent.type === "content.delta",
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("provider canonical event log write failed", {
+                    eventId: canonicalEvent.eventId,
+                    eventType: canonicalEvent.type,
+                    threadId: canonicalEvent.threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              )
           : Effect.void,
       ),
       Effect.flatMap((canonicalEvent) =>

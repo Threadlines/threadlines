@@ -177,6 +177,11 @@ import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+/** Pieces of a message or a tool's output; `message_end` and `tool_execution_end` carry them whole. */
+const PI_STREAM_FRAGMENT_TYPES: ReadonlySet<string> = new Set([
+  "message_update",
+  "tool_execution_update",
+]);
 /** How long each Stop step waits before the next, harder one. */
 const STOP_STEP_TIMEOUT = Duration.seconds(5);
 /** Pi's own terminal commands make no sense in Threadlines; ours are internal. */
@@ -399,6 +404,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 },
               },
               ctx.threadId,
+              { streamFragment: PI_STREAM_FRAGMENT_TYPES.has(record.type) },
             ),
           ).pipe(Effect.ignore)
         : Effect.void;
@@ -1134,9 +1140,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const handleRecord = (ctx: SessionContext, proc: ProcessState, record: PiRecord) =>
       Effect.gen(function* () {
         if (ctx.stopped || ctx.proc !== proc) return;
-        if (record.type !== "message_update" && record.type !== "tool_execution_update") {
-          yield* logNative(ctx, proc, record);
-        }
+        yield* logNative(ctx, proc, record);
         switch (record.type) {
           case "agent_start": {
             if (ctx.activeTurn) return;

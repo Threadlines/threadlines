@@ -11014,12 +11014,16 @@ describe("ClaudeAdapterLive", () => {
       };
     }> = [];
     const nativeThreadIds: Array<string | null> = [];
+    const fragmentMethods: Array<string | undefined> = [];
     const harness = makeHarness({
       nativeEventLogger: {
         filePath: "memory://claude-native-events",
-        write: (event, threadId) => {
+        write: (event, threadId, options) => {
           nativeEvents.push(event as (typeof nativeEvents)[number]);
           nativeThreadIds.push(threadId ?? null);
+          if (options?.streamFragment === true) {
+            fragmentMethods.push((event as (typeof nativeEvents)[number]).event?.method);
+          }
           return Effect.void;
         },
         close: () => Effect.void,
@@ -11096,6 +11100,9 @@ describe("ClaudeAdapterLive", () => {
         ),
         true,
       );
+      // The text piece is offered as a stream fragment, which the shared logger
+      // leaves out by default; the result that ends the turn is written as is.
+      assert.deepEqual(fragmentMethods, ["claude/stream_event/content_block_delta/text_delta"]);
       assert.equal(
         nativeThreadIds.every((threadId) => threadId === String(THREAD_ID)),
         true,
