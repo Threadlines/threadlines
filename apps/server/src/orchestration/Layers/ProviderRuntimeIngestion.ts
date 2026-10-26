@@ -906,6 +906,15 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+/**
+ * Whether text has a word in it, not only markdown punctuation. A reply's
+ * first words skip the flush interval only then: a lone `**` or `- ` sent
+ * ahead of the word it formats would show as raw characters.
+ */
+function hasAssistantWords(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
 /** Providers whose file-change items carry exact per-edit stats and no turn diff. */
 const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -2010,14 +2019,20 @@ const make = Effect.gen(function* () {
   const clearStreamingAssistantTableState = (messageId: MessageId) =>
     setStreamingAssistantTableActive(messageId, false);
 
-  const flushPendingStreamingAssistantMessage = (input: PendingStreamingAssistantMessage) =>
+  const flushPendingStreamingAssistantMessage = (
+    input: PendingStreamingAssistantMessage,
+    options?: { readonly onlyWithWords?: boolean },
+  ) =>
     Effect.gen(function* () {
       const bufferedText = yield* peekBufferedAssistantText(input.messageId);
       const continuingTable = yield* isStreamingAssistantTableActive(input.messageId);
       const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(bufferedText, {
         continuingTable,
       });
-      if (!hasRenderableAssistantText(readyText)) {
+      if (
+        !hasRenderableAssistantText(readyText) ||
+        (options?.onlyWithWords === true && !hasAssistantWords(readyText))
+      ) {
         return false;
       }
 
@@ -2084,7 +2099,7 @@ const make = Effect.gen(function* () {
       // interval never delays them; what is held back waits for the next tick.
       if (
         !(yield* Cache.has(streamedAssistantMessageIds, input.messageId)) &&
-        (yield* flushPendingStreamingAssistantMessage(input))
+        (yield* flushPendingStreamingAssistantMessage(input, { onlyWithWords: true }))
       ) {
         return;
       }

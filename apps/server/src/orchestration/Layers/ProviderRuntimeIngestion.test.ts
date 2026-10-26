@@ -5075,6 +5075,65 @@ describe("ProviderRuntimeIngestion", () => {
     expect(assistantEvents.every((event) => event.payload.streaming)).toBe(true);
   });
 
+  it("does not rush out a reply's opening markdown ahead of its first word", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-opening-markup"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-opening-markup"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-opening-markup",
+    );
+
+    for (const [index, delta] of ["**", "Done", "**", " now"].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-message-delta-streaming-opening-markup-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-opening-markup"),
+        itemId: asItemId("item-streaming-opening-markup"),
+        payload: {
+          streamKind: "assistant_text",
+          delta,
+        },
+      });
+    }
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming-opening-markup" &&
+          message.text === "**Done** now",
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const sentTexts = events
+      .filter(
+        (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === "assistant:item-streaming-opening-markup",
+      )
+      .map((event) => event.payload.text);
+    // The first event carries the formatted word, never the bare `**`.
+    expect(sentTexts[0]).toBe("**Done**");
+  });
+
   it("holds incomplete inline code markdown while streaming assistant deltas", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
