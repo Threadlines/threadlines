@@ -14,7 +14,7 @@ import type {
   DiffLineAnnotation,
   SelectedLineRange,
 } from "@pierre/diffs";
-import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
+import { CodeView, type CodeViewAnnotationArgs, type CodeViewHandle } from "@pierre/diffs/react";
 import { useCallback, useMemo, type ReactNode, type Ref } from "react";
 
 import { useSettings } from "~/hooks/useSettings";
@@ -49,7 +49,7 @@ const ANNOTATED_DIFF_UNSAFE_CSS = `
 }
 `;
 
-export type AnnotatedDiffViewHandle<TAnnotation> = CodeViewHandle<TAnnotation>;
+export type AnnotatedDiffViewHandle<TAnnotation> = CodeViewHandle<TAnnotation, undefined>;
 
 export function AnnotatedDiffView<TAnnotation>({
   items,
@@ -108,7 +108,7 @@ export function AnnotatedDiffView<TAnnotation>({
   );
 
   const renderItemAnnotation = useCallback(
-    (annotation: DiffLineAnnotation<TAnnotation> | { lineNumber: number }) =>
+    (...[annotation]: CodeViewAnnotationArgs<TAnnotation>) =>
       "side" in annotation ? renderAnnotation(annotation) : null,
     [renderAnnotation],
   );

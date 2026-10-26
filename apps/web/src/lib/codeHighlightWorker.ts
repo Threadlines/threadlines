@@ -2,8 +2,8 @@ import {
   attachResolvedLanguages,
   attachResolvedThemes,
   getSharedHighlighter,
-  ShikiStreamTokenizer,
   type DiffsHighlighter,
+  type DiffsStreamTokenizer,
   type ThemedToken,
 } from "@pierre/diffs";
 
@@ -91,7 +91,7 @@ async function handleRequest(request: CodeHighlightRequest): Promise<void> {
  */
 interface StreamEntry {
   queue: Promise<void>;
-  tokenizer: ShikiStreamTokenizer | null;
+  tokenizer: DiffsStreamTokenizer | null;
   lastSeq: number;
 }
 
@@ -120,8 +120,7 @@ function openStream(request: Extract<CodeHighlightStreamRequest, { kind: "stream
     if (request.resolvedLanguages.length > 0) {
       attachResolvedLanguages(request.resolvedLanguages, highlighter);
     }
-    entry.tokenizer = new ShikiStreamTokenizer({
-      highlighter,
+    entry.tokenizer = highlighter.createStreamTokenizer({
       lang: request.language,
       theme: request.theme,
     });
@@ -167,13 +166,13 @@ function closeStream(request: Extract<CodeHighlightStreamRequest, { kind: "strea
       entry.tokenizer = null;
       // `close()` hands back the unstable tail unchanged, so recalling exactly
       // that tail leaves the client's tokens identical: settling never repaints.
-      const recall = tokenizer.tokensUnstable.length;
+      const { stable } = tokenizer.close();
       postStreamTokens({
         kind: "stream-tokens",
         streamId: request.streamId,
         seq: entry.lastSeq + 1,
-        recall,
-        tokens: toStreamTokens(tokenizer.close().stable),
+        recall: stable.length,
+        tokens: toStreamTokens(stable),
         final: true,
       });
     })

@@ -1140,7 +1140,9 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
-.chat-markdown .chat-markdown-shiki .shiki {
+/* Ours, not the highlighter's class: streamed and settled blocks both land as
+   this wrapper's pre, and the settled one carries the theme background inline. */
+.chat-markdown .chat-markdown-shiki > pre {
   background: color-mix(in srgb, var(--muted) 78%, var(--background)) !important;
 }
 

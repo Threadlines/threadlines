@@ -451,14 +451,15 @@ function ChatCodeBlock({ className, code, plain }: ChatCodeBlockProps) {
   if (streamLines.length === 0) {
     return plain;
   }
-  // Shiki keeps the trailing newline as one more empty line; matching it here
-  // is what stops the block growing a row when the settled HTML swaps in.
+  // The settled HTML keeps the trailing newline as one more empty line;
+  // matching it here is what stops the block growing a row when it swaps in.
+  // The pre mirrors that HTML's own (`class="diffs"`, no inline colors).
   const lines = code.endsWith("\n")
     ? [...streamLines, renderStreamLine(EMPTY_STREAM_TOKENS, streamLines.length)]
     : streamLines;
   return (
     <div className="chat-markdown-shiki">
-      <pre className={`shiki ${themeName}`} tabIndex={0}>
+      <pre className="diffs" tabIndex={0}>
         <code>{lines}</code>
       </pre>
     </div>
