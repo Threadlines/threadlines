@@ -1,4 +1,4 @@
-import { readConnectedComputerCapability } from "../environments/computerCapabilities";
+import { useConnectedComputerCapability } from "../environments/computerCapabilities";
 import {
   type ClientOrchestrationCommand,
   type OrchestrationAgentPage,
@@ -68,7 +68,7 @@ import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
-import { readEnvironmentApi } from "../environmentApi";
+import { readEnvironmentApi, useEnvironmentApiAvailable } from "../environmentApi";
 import { getPickerModelName } from "./chat/providerIconUtils";
 import { workflowRunsAsShown } from "./chat/workflowRunView";
 import {
@@ -2864,16 +2864,31 @@ export default function ChatView(props: ChatViewProps) {
   // unless that happened in the last half minute, so the header's ↓N says how
   // far behind the remote it really is before the first message goes. Again
   // whenever the checkout it would start on changes, and for each draft opened,
-  // which can reuse this view on the same checkout.
+  // which can reuse this view on the same checkout. Right after the app starts
+  // the computer's server may not have said yet that it takes the request, or
+  // its connection may not be up: the ask waits for both rather than being
+  // skipped until the next automatic fetch.
   const freshensNewThreadCheckout =
     !isServerThread && gitCwd !== null && activeProject?.kind !== "general-chat";
+  const refreshesRemoteStatus = useConnectedComputerCapability(
+    environmentId,
+    "remoteStatusRefresh",
+  );
+  const environmentApiAvailable = useEnvironmentApiAvailable(environmentId);
   useEffect(() => {
     if (!freshensNewThreadCheckout || gitCwd === null || draftId === null) return;
-    if (!readConnectedComputerCapability(environmentId, "remoteStatusRefresh")) return;
+    if (!refreshesRemoteStatus || !environmentApiAvailable) return;
     void readEnvironmentApi(environmentId)
       ?.vcs.refreshRemoteStatus({ cwd: gitCwd, upstreamMaxAgeMs: NEW_THREAD_UPSTREAM_MAX_AGE_MS })
       .catch(() => undefined);
-  }, [draftId, environmentId, freshensNewThreadCheckout, gitCwd]);
+  }, [
+    draftId,
+    environmentApiAvailable,
+    environmentId,
+    freshensNewThreadCheckout,
+    gitCwd,
+    refreshesRemoteStatus,
+  ]);
   // A thread that owns its worktree follows the branch that worktree is on: a
   // checkout switched from the shell or by the agent must not leave the record,
   // and with it the pull request badge, on the branch the thread began with.

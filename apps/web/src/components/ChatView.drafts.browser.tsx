@@ -1,9 +1,13 @@
-import { MessageId, ProviderInstanceId, type ThreadId } from "@threadlines/contracts";
+import { MessageId, ProviderInstanceId, WS_METHODS, type ThreadId } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import {
+  readPrimaryEnvironmentDescriptor,
+  updatePrimaryEnvironmentDescriptor,
+} from "../environments/primary";
 
 import {
   THREAD_ID,
@@ -41,6 +45,7 @@ import {
   waitForCommandPaletteShortcutLabel,
   mountChatView,
   registerChatViewSuiteHooks,
+  wsRequests,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -295,6 +300,40 @@ describe("ChatView (full app): new threads and drafts", () => {
         envMode: "worktree",
         worktreePath: null,
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("fetches a new thread's upstream once a server that just started says it can", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-new-thread-upstream-test" as MessageId,
+        targetText: "new thread upstream test",
+      }),
+    });
+    const asked = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.vcsRefreshRemoteStatus).length;
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should change to a new draft thread.",
+      );
+      // The server has not said it takes the request yet, as right after it starts.
+      expect(asked()).toBe(0);
+
+      const descriptor = readPrimaryEnvironmentDescriptor();
+      expect(descriptor).not.toBeNull();
+      updatePrimaryEnvironmentDescriptor({
+        ...descriptor!,
+        capabilities: { ...descriptor!.capabilities, remoteStatusRefresh: true },
+      });
+
+      await vi.waitFor(() => expect(asked()).toBe(1), { timeout: 8_000, interval: 16 });
     } finally {
       await mounted.cleanup();
     }

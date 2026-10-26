@@ -3,10 +3,18 @@
  * app, and its server reporting the capability (older servers leave theirs
  * out). The app's own computer is connected as long as the app is running.
  */
-import type { EnvironmentId, ExecutionEnvironmentCapabilities } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  ExecutionEnvironmentCapabilities,
+  ExecutionEnvironmentDescriptor,
+} from "@threadlines/contracts";
 
-import { readPrimaryEnvironmentDescriptor } from "./primary";
-import { useSavedEnvironmentRegistryStore, useSavedEnvironmentRuntimeStore } from "./runtime";
+import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentDescriptor } from "./primary";
+import {
+  useSavedEnvironmentRegistryStore,
+  useSavedEnvironmentRuntimeStore,
+  type SavedEnvironmentRuntimeState,
+} from "./runtime";
 
 /** Every computer this app knows, its own first. */
 export function knownComputerIds(): EnvironmentId[] {
@@ -19,11 +27,39 @@ export function readConnectedComputerCapability(
   environmentId: EnvironmentId,
   capability: keyof ExecutionEnvironmentCapabilities,
 ): boolean {
-  const primary = readPrimaryEnvironmentDescriptor();
+  return capabilityOf(
+    environmentId,
+    capability,
+    readPrimaryEnvironmentDescriptor(),
+    useSavedEnvironmentRuntimeStore.getState().byId[environmentId],
+  );
+}
+
+/**
+ * {@link readConnectedComputerCapability}, kept current for a component: a
+ * surface that renders before the computer's server has said what it can do
+ * (right after the app starts, or while it reconnects) redraws once it has.
+ */
+export function useConnectedComputerCapability(
+  environmentId: EnvironmentId | null,
+  capability: keyof ExecutionEnvironmentCapabilities,
+): boolean {
+  const primary = usePrimaryEnvironmentDescriptor();
+  const runtime = useSavedEnvironmentRuntimeStore((state) =>
+    environmentId === null ? undefined : state.byId[environmentId],
+  );
+  return environmentId !== null && capabilityOf(environmentId, capability, primary, runtime);
+}
+
+function capabilityOf(
+  environmentId: EnvironmentId,
+  capability: keyof ExecutionEnvironmentCapabilities,
+  primary: ExecutionEnvironmentDescriptor | null,
+  runtime: SavedEnvironmentRuntimeState | undefined,
+): boolean {
   if (primary?.environmentId === environmentId) {
     return primary.capabilities[capability] === true;
   }
-  const runtime = useSavedEnvironmentRuntimeStore.getState().byId[environmentId];
   return (
     runtime?.connectionState === "connected" &&
     runtime.descriptor?.capabilities[capability] === true
