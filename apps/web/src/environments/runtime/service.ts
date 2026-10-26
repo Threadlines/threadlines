@@ -1231,9 +1231,9 @@ function applyRecoveredEventBatch(
 
 /**
  * Writes the store for one thread. A thread no open chat shows reaches the
- * screen only through lists (sidebar, inbox, the rail's counts), which read
- * it by the next frame anyway: its writes are deferred, so a thread streaming
- * in the background costs one render per frame rather than one per event.
+ * screen only through lists (sidebar, inbox, the rail's counts), where a
+ * tenth of a second goes unseen: its writes are batched, so threads streaming
+ * in the background cost about ten renders a second rather than one per event.
  */
 function writeThreadStore(
   environmentId: EnvironmentId,

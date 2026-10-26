@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { create } from "zustand";
 
-import {
-  createFrameDeferredNotifications,
-  FRAME_DEFERRAL_FALLBACK_MS,
-} from "./frameDeferredNotifications";
+import { BATCHED_NOTIFICATION_DELAY_MS, createBatchedNotifications } from "./batchedNotifications";
 
 interface CounterState {
   readonly count: number;
@@ -12,7 +9,7 @@ interface CounterState {
 }
 
 function createCounterStore() {
-  const notifications = createFrameDeferredNotifications();
+  const notifications = createBatchedNotifications();
   const store = create<CounterState>()(
     notifications.middleware((set) => ({
       count: 0,
@@ -21,29 +18,17 @@ function createCounterStore() {
   );
   const heard: Array<readonly [number, number]> = [];
   store.subscribe((state, previous) => heard.push([previous.count, state.count]));
-  return { store, heard, defer: notifications.defer };
+  return { store, heard, batch: notifications.batch };
 }
 
-describe("createFrameDeferredNotifications", () => {
-  let frames: Array<() => void>;
+describe("createBatchedNotifications", () => {
   let visibilityState: DocumentVisibilityState;
   let visibilityListeners: Array<() => void>;
 
-  const runFrame = () => {
-    const pending = frames;
-    frames = [];
-    for (const callback of pending) callback();
-  };
-
   beforeEach(() => {
-    frames = [];
     visibilityState = "visible";
     visibilityListeners = [];
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => frames.push(callback));
-    vi.stubGlobal("cancelAnimationFrame", (handle: number) => {
-      frames[handle - 1] = () => undefined;
-    });
     vi.stubGlobal("document", {
       get visibilityState() {
         return visibilityState;
@@ -57,39 +42,40 @@ describe("createFrameDeferredNotifications", () => {
     vi.unstubAllGlobals();
   });
 
-  it("applies deferred writes at once and tells subscribers once, on the next frame", () => {
-    const { store, heard, defer } = createCounterStore();
+  it("applies batched writes at once and tells subscribers once, after the delay", () => {
+    const { store, heard, batch } = createCounterStore();
 
-    defer(() => store.getState().bump());
-    defer(() => store.getState().bump());
+    batch(() => store.getState().bump());
+    batch(() => store.getState().bump());
 
     expect(store.getState().count).toBe(2);
     expect(heard).toEqual([]);
-    runFrame();
+    vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS - 1);
+    expect(heard).toEqual([]);
+    vi.advanceTimersByTime(1);
     expect(heard).toEqual([[0, 2]]);
   });
 
   it("tells subscribers about waiting writes with the next write made at once", () => {
-    const { store, heard, defer } = createCounterStore();
+    const { store, heard, batch } = createCounterStore();
 
-    defer(() => store.getState().bump());
+    batch(() => store.getState().bump());
     store.getState().bump();
     expect(heard).toEqual([[0, 2]]);
 
-    runFrame();
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS * 10);
     expect(heard).toEqual([[0, 2]]);
   });
 
-  it("tells subscribers at once while no frame is coming", () => {
-    const { store, heard, defer } = createCounterStore();
+  it("tells a hidden page at once, and what waits when the page goes hidden", () => {
+    const { store, heard, batch } = createCounterStore();
 
     visibilityState = "hidden";
-    defer(() => store.getState().bump());
+    batch(() => store.getState().bump());
     expect(heard).toEqual([[0, 1]]);
 
     visibilityState = "visible";
-    defer(() => store.getState().bump());
+    batch(() => store.getState().bump());
     expect(heard).toEqual([[0, 1]]);
     visibilityState = "hidden";
     for (const listener of visibilityListeners) listener();
@@ -97,15 +83,5 @@ describe("createFrameDeferredNotifications", () => {
       [0, 1],
       [1, 2],
     ]);
-  });
-
-  it("does not wait forever for a frame that never comes", () => {
-    const { store, heard, defer } = createCounterStore();
-
-    defer(() => store.getState().bump());
-    vi.advanceTimersByTime(FRAME_DEFERRAL_FALLBACK_MS - 1);
-    expect(heard).toEqual([]);
-    vi.advanceTimersByTime(1);
-    expect(heard).toEqual([[0, 1]]);
   });
 });

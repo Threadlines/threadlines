@@ -1336,11 +1336,10 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
-  it("tells the screen about the open chat's events at once and a background thread's by the next frame", async () => {
-    const frames: Array<() => void> = [];
+  it("tells the screen about the open chat's events at once and a background thread's in a batch", async () => {
     vi.stubGlobal("document", { visibilityState: "visible", addEventListener: () => undefined });
-    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => frames.push(callback));
-    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { BATCHED_NOTIFICATION_DELAY_MS } = await import("../../lib/batchedNotifications");
     const {
       resetEnvironmentServiceForTests,
       retainThreadDetailSubscription,
@@ -1400,7 +1399,7 @@ describe("retainThreadDetailSubscription", () => {
     deliverText(backgroundThreadId, 3, " on it");
     expect(textOf(backgroundThreadId)).toBe("Working on it");
     expect(notifications).toBe(0);
-    for (const frame of frames.splice(0)) frame();
+    vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS);
     expect(notifications).toBe(1);
 
     deliverText(openThreadId, 4, "Done");

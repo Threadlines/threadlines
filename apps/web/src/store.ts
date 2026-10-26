@@ -74,7 +74,7 @@ import {
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { attachmentPreviewRoutePath } from "./lib/attachmentPreviewQuery";
 import { keyedMemo } from "./lib/derivationMemo";
-import { createFrameDeferredNotifications } from "./lib/frameDeferredNotifications";
+import { createBatchedNotifications } from "./lib/batchedNotifications";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import {
   derivePendingApprovals,
@@ -4050,15 +4050,15 @@ interface AppStore extends AppState {
   ) => void;
 }
 
-const storeNotifications = createFrameDeferredNotifications();
+const storeNotifications = createBatchedNotifications();
 
 /**
- * Runs `write` against the store, telling subscribers about it by the next
- * animation frame instead of at once (see createFrameDeferredNotifications).
- * For writes nothing on screen waits on this instant, such as events for
- * threads no open chat shows: a burst of them costs one render, not one each.
+ * Runs `write` against the store, telling subscribers about it within a
+ * tenth of a second instead of at once (see createBatchedNotifications). For
+ * writes nothing on screen waits on this instant, such as events for threads
+ * no open chat shows: a burst of them costs one render, not one each.
  */
-export const deferStoreNotifications = storeNotifications.defer;
+export const deferStoreNotifications = storeNotifications.batch;
 
 const createAppStore: StateCreator<AppStore, [], []> = (set) => ({
   ...initialState,
