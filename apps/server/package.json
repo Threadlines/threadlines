@@ -49,8 +49,8 @@
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
-    "@muse-code/sdk": "1.4.9",
-    "@opencode/client": "2.0.31",
+    "@muse-code/sdk": "1.4.13",
+    "@opencode/client": "2.1.4",
     "@pierre/diffs": "catalog:",
     "@xterm/headless": "^6.0.0",
     "effect": "catalog:",
@@ -61,7 +61,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@effect/vitest": "catalog:",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@threadlines/contracts": "workspace:*",

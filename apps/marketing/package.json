@@ -12,10 +12,10 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "astro": "^7.4.0"
+    "astro": "^7.4.2"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.10",
+    "@astrojs/check": "^0.9.12",
     "typescript": "~5.9.3",
     "vite": "catalog:",
     "vite-plus": "catalog:"
