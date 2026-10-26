@@ -474,6 +474,13 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       .stat(filePath)
       .pipe(Effect.catch(() => Effect.succeed(null)));
     if (!fileInfo || fileInfo.type !== "File") {
+      // The build's own files live under /assets/. One that is missing was
+      // asked for by a page still running an older build, and the app page in
+      // its place would be loaded as code; a 404 lets that page see it is out
+      // of date and reload.
+      if (url.value.pathname.startsWith("/assets/")) {
+        return HttpServerResponse.text("Not Found", { status: 404 });
+      }
       const indexPath = path.resolve(staticRoot, "index.html");
       const indexData = yield* fileSystem
         .readFile(indexPath)

@@ -516,6 +516,7 @@ export default function Sidebar() {
     pullRequestByThreadKey,
     linkedPullRequestsByThreadKey,
     entries,
+    nowIso,
   } = useInboxThreads();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
@@ -803,6 +804,7 @@ export default function Sidebar() {
             }),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,
+      now: nowIso,
       sortLive: (heads) => sortInboxThreads(heads.map((entry) => entry.thread)).map(lookup),
       sortDone: (heads) =>
         sortDoneThreads(
@@ -821,6 +823,7 @@ export default function Sidebar() {
     doneThreadOverlays,
     entries,
     environmentIdsWithThreads,
+    nowIso,
     roomsFilterActive,
     routeThreadKey,
     scopedEnvironmentIdValue,
@@ -2084,7 +2087,7 @@ export default function Sidebar() {
                   >
                     <ul data-testid="inbox-done-list">
                       {renderedDoneEntries.map(
-                        ({ entry, children, remoteChildren, openChild }, index) => {
+                        ({ entry, children, remoteChildren, openChild, startedBy }, index) => {
                           const dayGroup = doneDayLabels?.[index] ?? null;
                           return (
                             <React.Fragment key={entry.threadKey}>
@@ -2111,6 +2114,7 @@ export default function Sidebar() {
                                 }
                                 openPrLink={openPrLink}
                                 childCount={children.length + remoteChildren.length}
+                                startedByTitle={startedBy?.thread.title ?? null}
                                 lineage={lineageByThreadKey.get(entry.threadKey)}
                                 onSwipeAction={handleRowSwipe}
                               />

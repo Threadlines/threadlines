@@ -1520,12 +1520,20 @@ describe("child thread families", () => {
       status?: ThreadStatusPill | null;
       done?: boolean;
       createdAt?: string;
+      settledAt?: string;
+      deliveredAt?: string;
+      seenAt?: string;
+      wrappedByUser?: boolean;
     } = {},
   ): Entry => ({
     threadKey: id,
     thread: { id: ThreadId.make(id), createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z" },
     status: options.status ?? null,
     isDone: options.done ?? false,
+    settledAt: options.settledAt ?? options.createdAt ?? "2026-10-01T00:00:00.000Z",
+    seenAt: options.seenAt,
+    deliveredAt: options.deliveredAt ?? null,
+    wrappedByUser: options.wrappedByUser ?? false,
     parent: options.parent ?? null,
   });
   const sections = (
@@ -1534,6 +1542,7 @@ describe("child thread families", () => {
       open?: readonly string[];
       active?: string;
       inScope?: (entry: Entry) => boolean;
+      now?: string;
     } = {},
   ) =>
     buildInboxSections({
@@ -1542,6 +1551,7 @@ describe("child thread families", () => {
       inScope: options.inScope ?? (() => true),
       isFamilyOpen: (key) => options.open?.includes(key) ?? false,
       activeThreadKey: options.active ?? null,
+      now: options.now ?? "2026-10-01T12:00:00.000Z",
       sortLive: (heads) => [...heads],
       sortDone: (heads) => [...heads],
     });
@@ -1686,6 +1696,80 @@ describe("child thread families", () => {
     expect(settled.done.map((row) => row.entry.threadKey)).toEqual(["release"]);
   });
 
+  it("moves a finished child from its live parent's family to Wrapped once its work was seen", () => {
+    const finishedAt = "2026-10-01T11:00:00.000Z";
+    const family = (
+      parent: Parameters<typeof entry>[1],
+      child: Parameters<typeof entry>[1],
+      options: { active?: string; now?: string } = {},
+    ) =>
+      sections(
+        [
+          entry("review", parent),
+          entry("helper", { parent: "review", done: true, settledAt: finishedAt, ...child }),
+        ],
+        options,
+      );
+    const layout = (result: ReturnType<typeof family>) => ({
+      family: result.live.map((row) => [
+        row.entry.threadKey,
+        ...row.children.map((child) => child.threadKey),
+      ]),
+      wrapped: result.done.map((row) => [row.entry.threadKey, row.startedBy?.threadKey ?? null]),
+    });
+    const stays = { family: [["review", "helper"]], wrapped: [] };
+    const leaves = { family: [["review"]], wrapped: [["helper", "review"]] };
+
+    // It wrapped itself while the user was away: it waits under the parent.
+    expect(layout(family({ seenAt: "2026-10-01T10:00:00.000Z" }, {}))).toEqual(stays);
+    expect(childThreadsSummaryText(summarizeChildThreads(family({}, {}).live[0]!.children))).toBe(
+      "1 thread finished",
+    );
+    // Seen since, through the parent or in the child itself, it stands in
+    // Wrapped naming its parent, and the parent's family line goes with it.
+    expect(layout(family({ seenAt: "2026-10-01T12:00:00.000Z" }, {}))).toEqual(leaves);
+    expect(layout(family({}, { seenAt: finishedAt }))).toEqual(leaves);
+    // An answer its background work handed back later: a parent seen before
+    // the delivery has not shown it yet.
+    const deliveredLate = { deliveredAt: "2026-10-01T11:30:00.000Z" };
+    expect(layout(family({ seenAt: "2026-10-01T11:15:00.000Z" }, deliveredLate))).toEqual(stays);
+    expect(layout(family({ seenAt: "2026-10-01T11:45:00.000Z" }, deliveredLate))).toEqual(leaves);
+    // Wrapped by the user's own hand, it goes at once.
+    expect(layout(family({}, { wrappedByUser: true }))).toEqual(leaves);
+    // Never seen, it still waits no longer than a quiet thread would.
+    expect(layout(family({}, {}, { now: "2026-10-03T10:59:00.000Z" }))).toEqual(stays);
+    expect(layout(family({}, {}, { now: "2026-10-03T11:01:00.000Z" }))).toEqual(leaves);
+    // Open in the chat, it stays where it is until the user moves on.
+    expect(
+      layout(family({ seenAt: "2026-10-01T12:00:00.000Z" }, {}, { active: "helper" })),
+    ).toEqual(stays);
+    // Reopened, it is a live child again.
+    expect(layout(family({ seenAt: "2026-10-01T12:00:00.000Z" }, { done: false }))).toEqual(stays);
+    // Once the parent wraps, the child folds back inside it.
+    const parentWrapped = family({ done: true, seenAt: "2026-10-01T12:00:00.000Z" }, {});
+    expect(parentWrapped.done.map((row) => [row.entry.threadKey, row.children.length])).toEqual([
+      ["review", 1],
+    ]);
+    // Standing apart because the scope hides its parent, it names it too.
+    const scopedOut = buildInboxSections({
+      entries: [
+        entry("review"),
+        entry("helper", { parent: "review", done: true, settledAt: finishedAt }),
+      ],
+      parentKeyOf: (candidate) => candidate.parent,
+      inScope: (candidate) => candidate.threadKey !== "review",
+      standsAlone: () => true,
+      isFamilyOpen: () => false,
+      activeThreadKey: null,
+      now: "2026-10-01T12:00:00.000Z",
+      sortLive: (heads) => [...heads],
+      sortDone: (heads) => [...heads],
+    });
+    expect(scopedOut.done.map((row) => [row.entry.threadKey, row.startedBy?.threadKey])).toEqual([
+      ["helper", "review"],
+    ]);
+  });
+
   it("treats a separated child as a thread of its own, and scopes a family by its parent", () => {
     // `parentKeyOf` names only attached parents: a separated child has none.
     const entries = [
@@ -1826,6 +1910,9 @@ describe("families across computers", () => {
     },
     status: options.status ?? null,
     isDone: false,
+    settledAt: "2026-10-21T09:00:00.000Z",
+    seenAt: undefined,
+    wrappedByUser: false,
   });
   // The sidebar's rules: families by environment-scoped keys, the machine
   // filter, and a parent's record of the children this app can't see.
@@ -1862,6 +1949,7 @@ describe("families across computers", () => {
         }),
       isFamilyOpen: () => options.open ?? false,
       activeThreadKey: null,
+      now: "2026-10-21T10:00:00.000Z",
       sortLive: (heads) => [...heads],
       sortDone: (heads) => [...heads],
     });
@@ -1967,6 +2055,17 @@ describe("families across computers", () => {
       ),
     ).toBe("4 threads · 2 needs you");
     expect(countInboxRowAttention([unseen!])).toEqual({ needsYou: 2, working: 1 });
+
+    // Wrapped, and seen through the parent since: it leaves the family like
+    // a thread here, with no row of its own to stand on.
+    const [visited] = sections([{ ...parent, seenAt: "2026-10-21T09:10:00.000Z" }], {
+      computersWithThreads: [mac],
+    }).live;
+    expect(visited!.remoteChildren.map((child) => child.title)).toEqual([
+      "Fix the flaky test",
+      "Write the changelog",
+      "Draft the notes",
+    ]);
 
     // The child's thread is in the list after all: it is the row, once.
     const withThread = sections([parent, flakyTest], { computersWithThreads: [mac] }).live[0]!;
@@ -2328,6 +2427,29 @@ describe("unread finished work", () => {
     expect(filed.filter(isUnreadFinishedWork).map((entry) => entry.thread.title)).toEqual([
       "unread",
       "plan-ready",
+    ]);
+  });
+
+  it("tells a visit the user made from this device's first-load guess", () => {
+    // The guess is made again on every load, so it can't say a thread was seen.
+    const guessedKey = scopedThreadKey(
+      scopeThreadRef(localEnvironmentId, ThreadId.make("guessed")),
+    );
+    const filed = fileInboxThreads({
+      threads: [summary("guessed"), summary("visited", { lastSeenAt: "2026-07-28T11:45:00.000Z" })],
+      seenSources: {
+        seenThreadOverlays: {},
+        threadSeedVisitedAtById: { [guessedKey]: "2026-07-28T11:50:00.000Z" },
+      },
+      doneOverlays: {},
+      now: NOW,
+      wrapUpChildThreadsOnFinish: true,
+      wrapUpIdleThreads: true,
+      pullRequestSettledAt: () => null,
+    });
+    expect(filed.map((entry) => [entry.lastVisitedAt, entry.seenAt])).toEqual([
+      ["2026-07-28T11:50:00.000Z", undefined],
+      ["2026-07-28T11:45:00.000Z", "2026-07-28T11:45:00.000Z"],
     ]);
   });
 });

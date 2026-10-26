@@ -1,3 +1,5 @@
+import type { EnvironmentId } from "@threadlines/contracts";
+import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -18,6 +20,7 @@ import {
   type RelaySessionStatusProbe,
 } from "../relaySessionStatus";
 import { useStore } from "../store";
+import { resolveThreadRouteRef } from "../threadRoutes";
 import { Button } from "./ui/button";
 import { Spinner } from "./ui/spinner";
 
@@ -214,14 +217,39 @@ export function describeSavedEnvironmentOverlay(
  * Full-screen connection surface for hosted (phone) sessions, where the saved
  * environment is the only content source. Without it, a dead relay session
  * renders as an empty shell with no messaging at all.
+ *
+ * It speaks for the computer on screen: a thread address names its own, which
+ * on a phone paired with several need not be the active one, and may not be
+ * saved in this browser at all (a link copied from another browser, which the
+ * thread page explains itself).
  */
 export function SavedEnvironmentConnectionOverlay() {
+  const routeEnvironmentId = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteRef(params)?.environmentId ?? null,
+  });
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  const shownEnvironmentId = routeEnvironmentId ?? activeEnvironmentId;
+  // Keyed so the probes, grace timer and expiry handling start fresh for each
+  // computer instead of carrying one computer's answers over to the next.
+  return (
+    <ComputerConnectionOverlay
+      key={shownEnvironmentId ?? ""}
+      shownEnvironmentId={shownEnvironmentId}
+    />
+  );
+}
+
+function ComputerConnectionOverlay({
+  shownEnvironmentId,
+}: {
+  shownEnvironmentId: EnvironmentId | null;
+}) {
   const record: SavedEnvironmentRecord | null = useSavedEnvironmentRegistryStore((state) =>
-    activeEnvironmentId === null ? null : (state.byId[activeEnvironmentId] ?? null),
+    shownEnvironmentId === null ? null : (state.byId[shownEnvironmentId] ?? null),
   );
   const runtime: SavedEnvironmentRuntimeState | null = useSavedEnvironmentRuntimeStore((state) =>
-    activeEnvironmentId === null ? null : (state.byId[activeEnvironmentId] ?? null),
+    shownEnvironmentId === null ? null : (state.byId[shownEnvironmentId] ?? null),
   );
 
   const connectionState = runtime?.connectionState ?? "disconnected";
@@ -271,7 +299,7 @@ export function SavedEnvironmentConnectionOverlay() {
   const relayHostId = relayDevice?.hostId ?? null;
   const relayDeviceId = relayDevice?.deviceId ?? null;
   const shouldProbe =
-    activeEnvironmentId !== null &&
+    shownEnvironmentId !== null &&
     relayOrigin !== null &&
     (relaySessionId !== null || relayDeviceId !== null) &&
     !isConnected &&
@@ -279,7 +307,7 @@ export function SavedEnvironmentConnectionOverlay() {
     online;
 
   useEffect(() => {
-    if (!shouldProbe || activeEnvironmentId === null || !relayOrigin) {
+    if (!shouldProbe || shownEnvironmentId === null || !relayOrigin) {
       return;
     }
 
@@ -289,7 +317,7 @@ export function SavedEnvironmentConnectionOverlay() {
       if (relayHostId && relayDeviceId) {
         // Only the relay secret goes to the relay; the device's end-to-end
         // key stays on this device.
-        const credentials = await readRelayDeviceCredentials(activeEnvironmentId).catch(() => null);
+        const credentials = await readRelayDeviceCredentials(shownEnvironmentId).catch(() => null);
         if (!credentials || disposed) return;
         const result = await probeRelayDeviceStatus({
           relayOrigin,
@@ -301,7 +329,7 @@ export function SavedEnvironmentConnectionOverlay() {
         if (!disposed) setDeviceProbe(result);
         return;
       }
-      const token = await readSavedEnvironmentBearerToken(activeEnvironmentId).catch(() => null);
+      const token = await readSavedEnvironmentBearerToken(shownEnvironmentId).catch(() => null);
       if (!token || disposed || !relaySessionId) return;
       const result = await probeRelaySessionStatus({
         relayOrigin,
@@ -321,7 +349,7 @@ export function SavedEnvironmentConnectionOverlay() {
       controller.abort();
       window.clearInterval(intervalId);
     };
-  }, [shouldProbe, activeEnvironmentId, relayOrigin, relaySessionId, relayHostId, relayDeviceId]);
+  }, [shouldProbe, shownEnvironmentId, relayOrigin, relaySessionId, relayHostId, relayDeviceId]);
 
   const phase =
     record === null
@@ -344,15 +372,15 @@ export function SavedEnvironmentConnectionOverlay() {
       expiredHandledRef.current = false;
       return;
     }
-    if (expiredHandledRef.current || activeEnvironmentId === null) {
+    if (expiredHandledRef.current || shownEnvironmentId === null) {
       return;
     }
     expiredHandledRef.current = true;
     if (relaySessionId !== null && runtime?.authState !== "requires-auth") {
       // Stop the transport from retrying a handshake that can never succeed.
-      void markRelaySavedEnvironmentLinkExpired(activeEnvironmentId);
+      void markRelaySavedEnvironmentLinkExpired(shownEnvironmentId);
     }
-  }, [phase, activeEnvironmentId, relay !== null, runtime?.authState]);
+  }, [phase, shownEnvironmentId, relay !== null, runtime?.authState]);
 
   if (phase === "hidden" || record === null) {
     return null;
@@ -365,13 +393,13 @@ export function SavedEnvironmentConnectionOverlay() {
   });
 
   const handleRetry = () => {
-    if (activeEnvironmentId === null || isRetrying) {
+    if (shownEnvironmentId === null || isRetrying) {
       return;
     }
     setIsRetrying(true);
     setProbe(null);
     setDeviceProbe(null);
-    void reconnectSavedEnvironment(activeEnvironmentId)
+    void reconnectSavedEnvironment(shownEnvironmentId)
       .catch(() => undefined)
       .finally(() => setIsRetrying(false));
   };

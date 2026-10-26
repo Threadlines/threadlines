@@ -1455,6 +1455,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("answers a missing build file with 404 rather than the app page", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-router-missing-asset-",
+      });
+      yield* fileSystem.writeFileString(path.join(staticDir, "index.html"), "<html>app</html>");
+
+      yield* buildAppUnderTest({ config: { staticDir } });
+
+      // A page from before an update asks for a chunk the new build renamed.
+      // Given the app page instead, the browser rejects it as the wrong type.
+      const staleChunk = yield* HttpClient.get("/assets/_chat-Ba9ttbgo.js");
+      assert.equal(staleChunk.status, 404);
+      const route = yield* HttpClient.get("/environment-1/thread-1");
+      assert.equal(route.status, 200);
+      assert.include(yield* route.text, "<html>app</html>");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("compresses and immutably caches hashed static assets for remote access", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

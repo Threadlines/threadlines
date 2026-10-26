@@ -7,6 +7,8 @@ import {
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import * as Schema from "effect/Schema";
 
+import { PI_PUBLIC_MODELS } from "../provider/pi/_generated/piModelCatalog.gen.ts";
+
 export type AnalyticsModelKind = "known" | "custom" | "unknown";
 export type AnalyticsModelFamily =
   | "gpt"
@@ -89,7 +91,8 @@ const KNOWN_SAFE_MODELS = new Set([
 ]);
 
 const SAFE_PUBLIC_MODEL_PATTERNS = [
-  /^gpt-\d+(?:[.-][a-z0-9]+)*(?:-codex(?:-[a-z0-9]+)?)?$/,
+  // `gpt-4o` and its kin end their version in an "o"; no other letter.
+  /^gpt-\d+o?(?:[.-][a-z0-9]+)*(?:-codex(?:-[a-z0-9]+)?)?$/,
   /^claude-(?:fable|haiku|opus|sonnet)-\d+(?:-\d+)*(?:-\d{8})?$/,
   /^gemini-\d+(?:\.\d+)?(?:-[a-z0-9]+)*$/,
   /^composer-\d+(?:\.\d+)?$/,
@@ -123,15 +126,18 @@ const PUBLIC_MODEL_PROVIDER_PREFIXES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Every word a public model name behind a provider prefix may use. Those
- * agents let users add their own models under a public provider's name
- * (Pi's `models.json`), so `openai/gpt-5.4-acme-payroll` must stay custom
- * even though its shape looks public. Versions are short numbers (`4o`,
- * `8b`) or dates (`20250929`); a longer number could be an account's.
+ * Every word a public model name may use. Agents let users name their own
+ * models (Pi's `models.json`, a Codex custom provider), so
+ * `gpt-5.4-acme-payroll` must stay custom even though its shape looks public,
+ * with a provider prefix or without. Versions are short numbers (`4o`, `8b`)
+ * or dates (`20250929`); a longer number could be an account's. Exact names
+ * in KNOWN_SAFE_MODELS need no check.
  */
 const PUBLIC_MODEL_WORDS: ReadonlySet<string> = new Set([
   "astra",
   "beta",
+  // Grok Build's own models: `grok-4.7-build-fast`.
+  "build",
   "chat",
   "claude",
   "code",
@@ -208,8 +214,7 @@ function publicModelName(model: string): string | undefined {
   }
   const name = bare.startsWith("claude-") ? bare.replaceAll(".", "-") : bare;
   if (!isSafeKnownModel(name)) return undefined;
-  const hadPrefix = segments.length > 0;
-  return !hadPrefix ||
+  return KNOWN_SAFE_MODELS.has(name) ||
     name
       .split(/[-.]/)
       .every((word) => /^(?:\d{1,4}[a-z]?|20\d{6})$/.test(word) || PUBLIC_MODEL_WORDS.has(word))
@@ -217,9 +222,22 @@ function publicModelName(model: string): string | undefined {
     : undefined;
 }
 
+/**
+ * A Pi model's name when Pi itself ships it: its `provider/id` is on Pi's
+ * published list, so the name is public whatever words it uses (`deepseek-v4-pro`,
+ * `global.openai.gpt-6-sol`). A model a user added in Pi's `models.json` or an
+ * extension isn't on it and stays custom. The provider part comes off the way
+ * it does for other agents, so the same model groups across them.
+ */
+function piCatalogModelName(slug: string): string | undefined {
+  if (!PI_PUBLIC_MODELS.has(slug)) return undefined;
+  const id = slug.slice(slug.indexOf("/") + 1);
+  return publicModelName(id) ?? id;
+}
+
 export function normalizeAnalyticsModel(
   model: string | null | undefined,
-  _provider?: string,
+  provider?: string,
 ): AnalyticsModel {
   const normalized = normalizeModelString(model);
   if (!normalized) {
@@ -230,7 +248,8 @@ export function normalizeAnalyticsModel(
     };
   }
 
-  const name = publicModelName(normalized);
+  const name =
+    publicModelName(normalized) ?? (provider === "pi" ? piCatalogModelName(normalized) : undefined);
   if (name !== undefined) {
     return {
       model: name,

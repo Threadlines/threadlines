@@ -475,6 +475,8 @@ export interface SidebarThreadSummary {
   outsideOrigin?: OutsideAgentRef | null;
   /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */
   handedBackTurnId?: TurnId | null;
+  /** See ThreadShell.handedBackAt: when a finished child may leave its parent's family. */
+  handedBackAt?: string | null;
   /** See ThreadShell.awaitedChildThreadCount. */
   awaitedChildThreadCount?: number;
   /** See ThreadShell.pendingChildApproval. */

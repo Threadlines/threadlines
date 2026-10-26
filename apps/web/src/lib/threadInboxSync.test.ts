@@ -239,3 +239,28 @@ describe("a visit the server did not take", () => {
     expect(useUiStateStore.getState().seenThreadOverlays[threadKey]?.at).toBe(UNREAD_AT);
   });
 });
+
+describe("a visit to a thread the server never recorded a visit for", () => {
+  beforeEach(() => {
+    dispatchCommand.mockReset();
+    dispatchCommand.mockResolvedValue({ sequence: 1 });
+    useUiStateStore.setState({ seenThreadOverlays: {}, threadSeedVisitedAtById: {} });
+    useStore.setState({ environmentStateById: {} });
+  });
+
+  it("is recorded even when this device's first-load guess already covers it", async () => {
+    // The guess is made again on every load; only a recorded visit lets a
+    // finished child thread leave its parent's family after a reload.
+    const threadRef = scopeThreadRef(environmentId, ThreadId.make("thread-guessed"));
+    useUiStateStore.setState({
+      threadSeedVisitedAtById: { [scopedThreadKey(threadRef)]: "2026-10-13T09:00:00.000Z" },
+    });
+
+    markThreadSeen(threadRef, COMPLETED_AT);
+    await settle();
+
+    expect(dispatchCommand.mock.calls.map(([command]) => [command.type, command.at])).toEqual([
+      ["thread.seen.set", COMPLETED_AT],
+    ]);
+  });
+});

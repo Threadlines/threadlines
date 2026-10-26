@@ -194,7 +194,7 @@ import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { CommandRunActionsContext } from "./chat/CommandRuns";
 import { useCommandRunActions } from "./chat/useCommandRunActions";
-import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
+import { markThreadSeen, selectThreadSeenAt } from "~/lib/threadInboxSync";
 import { isPageAttended, onPageAttentionChange } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -1240,9 +1240,9 @@ export default function ChatView(props: ChatViewProps) {
     useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const setStoreThreadError = useStore((store) => store.setError);
-  const activeThreadLastVisitedAt = useUiStateStore((store) =>
+  const activeThreadSeenAt = useUiStateStore((store) =>
     routeKind === "server"
-      ? selectThreadLastSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
+      ? selectThreadSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
       : undefined,
   );
   const settings = useSettings();
@@ -1840,8 +1840,8 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeLatestTurn?.completedAt) return;
     const turnCompletedAt = Date.parse(activeLatestTurn.completedAt);
     if (Number.isNaN(turnCompletedAt)) return;
-    const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt) return;
+    const seenAt = activeThreadSeenAt ? Date.parse(activeThreadSeenAt) : NaN;
+    if (!Number.isNaN(seenAt) && seenAt >= turnCompletedAt) return;
 
     // Open is not seen: a turn that finishes while the user is in another app
     // stays unread, so the Dock and taskbar count it, until they come back.
@@ -1854,7 +1854,7 @@ export default function ChatView(props: ChatViewProps) {
     return onPageAttentionChange(markSeenWhenAttended);
   }, [
     activeLatestTurn?.completedAt,
-    activeThreadLastVisitedAt,
+    activeThreadSeenAt,
     latestTurnSettled,
     serverThread?.environmentId,
     serverThread?.id,

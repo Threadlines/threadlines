@@ -1137,8 +1137,8 @@ function placeAgentLines(
       (startsExchange(row.message) || row.message.fromAgent !== undefined));
   const isAnswer = (row: MessagesTimelineRow) => row.kind === "message" && row.turnSummary !== null;
 
-  // Side exchanges: who answers each, how it was when it answered, and who
-  // asked (undefined: the user).
+  // Side exchanges: who answers each (null: the thread's own agent), how it
+  // was when it answered, and who asked (undefined: the user).
   const answerer = new Map<SideTurnId, ThreadParticipantId | null>();
   const answeredAs = new Map<SideTurnId, MessageAgentModel>();
   const asker = new Map<SideTurnId, ThreadParticipantId | null | undefined>();
@@ -1157,6 +1157,15 @@ function placeAgentLines(
       asker.set(row.sideTurnId, row.question.fromAgent?.participantId);
     }
   }
+  // Who answers `sideTurnId`, the thread's own agent included; `fallback`
+  // when no row says.
+  const answererOf = (
+    sideTurnId: SideTurnId,
+    fallback: ThreadParticipantId | null,
+  ): ThreadParticipantId | null => {
+    const known = answerer.get(sideTurnId);
+    return known === undefined ? fallback : known;
+  };
   // An answerer's rows in an exchange: its steps and its answer. The first of
   // them carries its name.
   const answeringTurn = (row: MessagesTimelineRow): SideTurnId | undefined =>
@@ -1304,7 +1313,7 @@ function placeAgentLines(
           sideTurnId === undefined
             ? agent
             : answering
-              ? (answerer.get(sideTurnId) ?? agent)
+              ? answererOf(sideTurnId, agent)
               : row.kind === "message" && row.message.fromAgent !== undefined
                 ? row.message.fromAgent.participantId
                 : agent,
@@ -1389,7 +1398,7 @@ function placeAgentLines(
       }
       if (visible[cursor]) break;
     }
-    const agent = answerer.get(sideTurnId) ?? null;
+    const agent = answererOf(sideTurnId, null);
     for (let index = first; index <= last; index += 1) {
       lines[index] = {
         placement:

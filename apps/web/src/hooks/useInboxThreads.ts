@@ -11,6 +11,7 @@ import { useShallow } from "zustand/react/shallow";
 import {
   canMarkThreadDone,
   fileInboxThreads,
+  freshThreadDoneOverride,
   resolveDoneTimestamp,
   resolveSeenThreadStatus,
   type ThreadStatusPill,
@@ -60,6 +61,14 @@ export interface InboxEntry {
   isDone: boolean;
   canMarkDone: boolean;
   doneAt: string | null;
+  /** See FiledInboxThread.seenAt. */
+  seenAt: string | undefined;
+  /** When its work last moved; see InboxFamilyExit. */
+  settledAt: string | null;
+  /** When its answer last reached its parent; see InboxFamilyExit. */
+  deliveredAt: string | null;
+  /** Wrapped by the user's own word rather than a wrap-up rule. */
+  wrappedByUser: boolean;
 }
 
 /** A general chat with its seen-aware status, and when the user last saw it. */
@@ -308,7 +317,7 @@ export function useInboxThreads(): InboxThreads {
                 now: nowIso,
               })
             : null,
-      }).map(({ thread, threadKey, lastVisitedAt, status, override, isDone }) => {
+      }).map(({ thread, threadKey, lastVisitedAt, seenAt, status, override, isDone }) => {
         const projectKey = resolveThreadProjectKey(thread);
         return {
           thread,
@@ -325,6 +334,10 @@ export function useInboxThreads(): InboxThreads {
             thread.pinnedAt === null &&
             canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
           doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
+          seenAt,
+          settledAt: resolveDoneTimestamp(thread, null),
+          deliveredAt: thread.handedBackAt ?? null,
+          wrappedByUser: isDone && freshThreadDoneOverride(thread, override)?.state === "done",
         };
       }),
     [

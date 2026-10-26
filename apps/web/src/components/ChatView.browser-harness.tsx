@@ -2365,6 +2365,33 @@ export async function waitForLayout(): Promise<void> {
   await nextFrame();
 }
 
+/** How long one step of a mounted view's cleanup may take before it fails by name. */
+const CLEANUP_STEP_DEADLINE_MS = 10_000;
+
+/**
+ * Awaits one step of a mounted view's cleanup, failing with the step's name if
+ * it never settles. On CI a spec has hung in cleanup with the app already
+ * gone, which only showed as the spec's 30s timeout over a blank screenshot;
+ * this names the step that stuck. Under fake timers the deadline never fires.
+ */
+async function finishCleanupStep(name: string, step: Promise<void>): Promise<void> {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    deadline = setTimeout(() => {
+      reject(
+        new Error(
+          `ChatView cleanup stalled: ${name} did not finish within ${CLEANUP_STEP_DEADLINE_MS / 1000}s.`,
+        ),
+      );
+    }, CLEANUP_STEP_DEADLINE_MS);
+  });
+  try {
+    await Promise.race([step, stalled]);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
 async function setViewport(viewport: ViewportSpec): Promise<void> {
   await page.viewport(viewport.width, viewport.height);
   await waitForLayout();
@@ -3160,9 +3187,9 @@ export async function mountChatView(options: {
 
   const cleanup = async () => {
     customWsRpcResolver = null;
-    await screen.unmount();
+    await finishCleanupStep("React's unmount", screen.unmount());
     host.remove();
-    await waitForLayout();
+    await finishCleanupStep("the animation frames after unmount", waitForLayout());
   };
 
   return {
