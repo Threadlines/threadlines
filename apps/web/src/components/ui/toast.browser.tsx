@@ -13,6 +13,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 
 import { Dialog, DialogPopup, DialogTitle } from "./dialog";
+import { useNoticeClearanceRef } from "./noticeLayer";
 import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
 
 /**
@@ -125,6 +126,53 @@ describe("toast layering", () => {
       await vi.waitFor(() => expect(zIndexOf(viewport)).toBeLessThan(APP_OVERLAY_LAYER));
     } finally {
       toastManager.close();
+      await mounted.unmount();
+    }
+  });
+});
+
+function PageTitleRow() {
+  return (
+    <header ref={useNoticeClearanceRef()} style={{ height: 160 }}>
+      Providers
+    </header>
+  );
+}
+
+describe("notice placement", () => {
+  afterEach(() => {
+    toastManager.close();
+    document.body.innerHTML = "";
+  });
+
+  it("starts below a page's title row while the page is open, and goes back after", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <PageTitleRow />
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({ type: "info", title: "Removed 1 device", timeout: 0 });
+      const viewport = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-slot='toast-viewport']");
+        expect(found?.firstElementChild).toBeTruthy();
+        return found!;
+      });
+      const titleRowBottom = document.querySelector("header")!.getBoundingClientRect().bottom;
+      await vi.waitFor(() =>
+        expect(viewport.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleRowBottom),
+      );
+
+      await mounted.rerender(
+        <ToastProvider>
+          <div>conversation</div>
+        </ToastProvider>,
+      );
+      await vi.waitFor(() =>
+        expect(viewport.getBoundingClientRect().top).toBeLessThan(titleRowBottom),
+      );
+    } finally {
       await mounted.unmount();
     }
   });

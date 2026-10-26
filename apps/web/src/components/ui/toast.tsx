@@ -797,8 +797,10 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // a notice raised then must not sit blurred underneath it.
           raisedAboveBackdrops ? "z-60" : "z-40",
           "fixed mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
-          // Vertical positioning
-          "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
+          // Vertical positioning. A page can push the stack below its own
+          // title row and buttons (`useNoticeClearanceRef`); it slides there.
+          "data-[position*=top]:top-[max(calc(var(--toast-inset)+var(--toast-header-offset)),calc(var(--notice-top-clearance,0px)+8px))]",
+          "transition-[top] duration-200 ease-out motion-reduce:transition-none",
           "data-[position*=bottom]:bottom-(--toast-inset)",
           // Horizontal positioning. Right-anchored toasts sit beside the open
           // right panel rather than on top of it: the panel publishes its width
