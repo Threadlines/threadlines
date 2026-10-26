@@ -99,11 +99,13 @@ function DigitColumn({
     return () => window.clearTimeout(settle);
   }, [count, digit, position, spinning]);
 
+  // Each row's line is the row's height, so a digit sits centered in it at
+  // any size (the nightly tag's smaller digits would ride high otherwise).
   return (
     <span className="inline-block h-4 overflow-hidden [mask-image:linear-gradient(transparent,#000_22%,#000_78%,transparent)]">
       <span ref={stripRef} className="flex flex-col will-change-transform">
         {STRIP.map((row) => (
-          <span key={row.key} className="h-4 tabular-nums">
+          <span key={row.key} className="h-4 leading-4 tabular-nums">
             {row.digit}
           </span>
         ))}
