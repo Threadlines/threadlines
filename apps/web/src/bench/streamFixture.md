@@ -12,7 +12,7 @@ Here is a list of the files that were touched, in the order they were changed:
 - `apps/web/src/components/chat/MessagesTimeline.tsx` renders each assistant row
 - `apps/web/src/components/chat/MessagesTimeline.logic.ts` derives timeline rows from thread state
 - `apps/web/src/store.ts` appends each streaming delta to the message text
-- `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts` batches deltas every 50 ms
+- `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts` batches deltas every 100 ms
 - `packages/contracts/src/rpc.ts` types the wire events
 - `apps/web/src/hooks/useMarkdownFileLinkKinds.ts` resolves file chips
 - `apps/web/src/lib/diffRendering.ts` picks the Shiki theme
@@ -107,12 +107,12 @@ export function splitMarkdownBlocks(text: string): string[] {
 
 ## Server flush cadence
 
-The server batches deltas and flushes every 50 ms. That is the rate the client sees, no matter how fast the model writes:
+The server batches deltas and flushes every 100 ms, apart from a reply's first words, which go out at once. That is the rate the client sees, no matter how fast the model writes:
 
 ```json
 {
   "commandTag": "assistant-delta-stream-batch",
-  "flushIntervalMs": 50,
+  "flushIntervalMs": 100,
   "maxBufferedChars": 65536,
   "sources": ["flush", "message-completed", "user-input-requested"],
   "notes": [

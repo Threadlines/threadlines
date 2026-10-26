@@ -1,3 +1,4 @@
+import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -51,10 +52,10 @@ describe("useStreamingTextReveal", () => {
       const body = screen.getByTestId("body").element();
       const committed = screen.getByTestId("committed");
 
-      // Two flushes 50 ms apart: the second one must trail the real text.
+      // Two flushes one interval apart: the second one must trail the real text.
       api!.push(FULL_TEXT.slice(0, 20), true);
       await expect.element(committed).toHaveTextContent("20");
-      vi.advanceTimersByTime(50);
+      vi.advanceTimersByTime(ASSISTANT_STREAM_FLUSH_INTERVAL_MS);
       api!.push(FULL_TEXT.slice(0, 60), true);
       await expect.element(committed).toHaveTextContent("60");
       vi.advanceTimersByTime(16);

@@ -5017,7 +5017,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(finalMessage?.streaming).toBe(false);
   });
 
-  it("batches rapid streaming assistant deltas into one projected update", async () => {
+  it("sends a reply's first words at once and batches the rapid deltas after them", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -5071,9 +5071,8 @@ describe("ProviderRuntimeIngestion", () => {
         event.type === "thread.message-sent" &&
         event.payload.messageId === "assistant:item-streaming-batch",
     );
-    expect(assistantEvents).toHaveLength(1);
-    expect(assistantEvents[0]?.payload.streaming).toBe(true);
-    expect(assistantEvents[0]?.payload.text).toBe("hello batched");
+    expect(assistantEvents.map((event) => event.payload.text)).toEqual(["hello", " batched"]);
+    expect(assistantEvents.every((event) => event.payload.streaming)).toBe(true);
   });
 
   it("holds incomplete inline code markdown while streaming assistant deltas", async () => {

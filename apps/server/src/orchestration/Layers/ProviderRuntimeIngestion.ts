@@ -36,6 +36,7 @@ import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/d
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
+import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import {
   participantSessionKey,
   sessionSlotParticipantId,
@@ -98,7 +99,9 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
-const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(
+  ASSISTANT_STREAM_FLUSH_INTERVAL_MS,
+);
 
 const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
 const MARKDOWN_FENCE_INDENT_LIMIT = 3;
@@ -1301,6 +1304,13 @@ const make = Effect.gen(function* () {
   const pendingStreamingAssistantMessages = yield* Ref.make(
     new Map<MessageId, PendingStreamingAssistantMessage>(),
   );
+  // Streaming replies that have sent text already; the rest of each waits for
+  // the flush interval, while a new one's first words go out at once.
+  const streamedAssistantMessageIds = yield* Cache.make<MessageId, true>({
+    capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
+    timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
+    lookup: () => Effect.die(new Error("streamed assistant message ids are only read with has")),
+  });
   const pendingSubagentResultActivitiesByKey = yield* Ref.make(
     new Map<string, PendingSubagentResultActivity>(),
   );
@@ -2021,6 +2031,7 @@ const make = Effect.gen(function* () {
         delta: readyText,
         commandTag: "assistant-delta-stream-batch",
       });
+      yield* Cache.set(streamedAssistantMessageIds, input.messageId, true);
       return true;
     });
 
@@ -2065,6 +2076,16 @@ const make = Effect.gen(function* () {
           delta: spillChunk,
           commandTag: "assistant-delta-stream-spill",
         });
+        yield* Cache.set(streamedAssistantMessageIds, input.messageId, true);
+        return;
+      }
+
+      // A reply's first words go out as soon as they render, so a slower flush
+      // interval never delays them; what is held back waits for the next tick.
+      if (
+        !(yield* Cache.has(streamedAssistantMessageIds, input.messageId)) &&
+        (yield* flushPendingStreamingAssistantMessage(input))
+      ) {
         return;
       }
 
@@ -2159,6 +2180,7 @@ const make = Effect.gen(function* () {
     clearPendingStreamingAssistantMessage(messageId).pipe(
       Effect.andThen(clearStreamingAssistantTableState(messageId)),
       Effect.andThen(clearBufferedAssistantText(messageId)),
+      Effect.andThen(Cache.invalidate(streamedAssistantMessageIds, messageId)),
     );
 
   const flushBufferedAssistantMessage = (input: {

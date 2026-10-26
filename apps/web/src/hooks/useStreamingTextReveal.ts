@@ -1,11 +1,12 @@
+import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Reveals streamed assistant text at a steady per-frame pace instead of in the
- * 50 ms lumps the server flushes. The markdown keeps rendering the full text at
- * flush cadence; this hook masks the not-yet-shown tail straight in the DOM
- * (truncating text nodes, hiding trailing blocks), so nothing is re-parsed per
- * frame. The shown text trails the real text by roughly one flush so the edge
+ * lumps the server flushes (one every ASSISTANT_STREAM_FLUSH_INTERVAL_MS). The
+ * markdown keeps rendering the full text at flush cadence; this hook masks the
+ * not-yet-shown tail straight in the DOM (truncating text nodes, hiding
+ * trailing blocks), so nothing is re-parsed per frame. The shown text trails the real text by roughly one flush so the edge
  * never runs dry between arrivals. Attach the ref to the element wrapping the
  * markdown body and pass the message's live flag. Returns whether a reveal is
  * still in flight so a caller can wait for the last characters to land.
@@ -48,9 +49,16 @@ export function useStreamingTextReveal(
 
 /** Rendered characters per second assumed before the first flush is measured. */
 const DEFAULT_RATE = 900;
-/** How far the shown text is allowed to trail the real text, in seconds of arrival. */
-const TARGET_BACKLOG_SECONDS = 0.075;
-const MAX_BACKLOG_SECONDS = 0.15;
+/** The time one flush's text took to arrive, before two flushes measure it. */
+const FLUSH_SECONDS = ASSISTANT_STREAM_FLUSH_INTERVAL_MS / 1_000;
+/**
+ * How far the shown text is allowed to trail the real text, in seconds of
+ * arrival. Within this it reveals at the incoming rate; past the maximum it
+ * catches up toward the target. Both scale with the flush interval: a backlog
+ * shorter than one flush would catch up early and then wait on the next one.
+ */
+const TARGET_BACKLOG_SECONDS = 1.5 * FLUSH_SECONDS;
+const MAX_BACKLOG_SECONDS = 3 * FLUSH_SECONDS;
 /** Once the message completes, the remaining tail lands within this window. */
 const DRAIN_MS = 120;
 const MAX_FRAME_SECONDS = 0.05;
@@ -168,7 +176,7 @@ class RevealMask {
       const grown = this.total - previousTotal;
       this.rate =
         this.lastGrowthAt === null
-          ? updateIncomingRate(null, grown, 0.05)
+          ? updateIncomingRate(null, grown, FLUSH_SECONDS)
           : updateIncomingRate(this.rate, grown, (now - this.lastGrowthAt) / 1_000);
       this.lastGrowthAt = now;
     }

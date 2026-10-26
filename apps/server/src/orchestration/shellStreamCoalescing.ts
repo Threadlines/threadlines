@@ -6,9 +6,10 @@ import * as Stream from "effect/Stream";
 /**
  * Window used to coalesce the domain-event firehose for shell subscribers.
  *
- * During a streaming turn the engine emits an event roughly every 50ms per
- * active thread. Shell consumers only render the latest state of each
- * aggregate (sidebar rows), so forwarding every event just multiplies
+ * During a streaming turn the engine emits an event roughly every 100ms per
+ * active thread (ASSISTANT_STREAM_FLUSH_INTERVAL_MS), plus one per tool step.
+ * Shell consumers only render the latest state of each aggregate (sidebar
+ * rows), so forwarding every event just multiplies
  * projection queries and WebSocket pushes per subscriber. 150ms keeps the
  * sidebar visibly live while capping the per-thread resolve/push rate at
  * ~7/s regardless of delta rate.
