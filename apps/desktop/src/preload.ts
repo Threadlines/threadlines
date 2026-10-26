@@ -37,6 +37,13 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
 }
 
+// The local backend's address and this window's credential, read once. Neither
+// changes while the page is loaded: the main process reloads the window when
+// the backend comes back on another port, and the page's socket keeps the
+// address it opened with anyway. The page asks on hot paths (every image
+// attachment's URL), and each ask is a blocking round trip to the main process.
+let localEnvironmentBootstrap: ReturnType<DesktopBridge["getLocalEnvironmentBootstrap"]> = null;
+
 // The window's focus, pushed by the main process. Kept here so a page that
 // asks between changes still gets the answer.
 let windowFocused: boolean | null = null;
@@ -58,11 +65,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   isMarketingCaptureMode: () =>
     ipcRenderer.sendSync(IpcChannels.IS_MARKETING_CAPTURE_MODE_CHANNEL) === true,
   getLocalEnvironmentBootstrap: () => {
+    if (localEnvironmentBootstrap !== null) {
+      return localEnvironmentBootstrap;
+    }
     const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
     if (typeof result !== "object" || result === null) {
       return null;
     }
-    return result as ReturnType<DesktopBridge["getLocalEnvironmentBootstrap"]>;
+    localEnvironmentBootstrap = result as ReturnType<DesktopBridge["getLocalEnvironmentBootstrap"]>;
+    return localEnvironmentBootstrap;
   },
   getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
   setClientSettings: (settings) =>
