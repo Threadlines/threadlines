@@ -169,6 +169,43 @@ describe("notice reasons and clocks", () => {
     }
   });
 
+  it("puts a notice's buttons under its words, not beside them", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({
+        type: "info",
+        title: "Agent wants to visit facpmanuals.com",
+        description: 'In "Analyze Trial Conversions and AI Logs".',
+        timeout: 0,
+        actionProps: { children: "Allow site" },
+        data: { secondaryActionProps: { children: "Show" } },
+      });
+      const slot = (name: string) => {
+        const found = document.querySelector<HTMLElement>(`[data-slot='${name}']`);
+        expect(found).not.toBeNull();
+        return found!;
+      };
+      const [title, description, action] = await vi.waitFor(
+        () => [slot("toast-title"), slot("toast-description"), slot("toast-action")] as const,
+      );
+
+      // The words keep the whole width: neither is cut short.
+      for (const words of [title, description]) {
+        expect(words.scrollWidth).toBeLessThanOrEqual(words.clientWidth + 1);
+      }
+      expect(action.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        description.getBoundingClientRect().bottom,
+      );
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("starts a notice's clock only once it gets a slot in the stack", async () => {
     setPageFocus(true);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

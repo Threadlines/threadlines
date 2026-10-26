@@ -99,20 +99,21 @@ export function resolveHiddenNoticeVisibleMs(notice: {
 }
 
 /**
- * Whether a notice draws its title and reason on separate lines. Errors and
- * warnings always do when they have a reason, so the reason is never cut to
- * one line; so does anything built with `stackedThreadToast`, and anything
- * pointing at another thread. The rest fit title and detail on one line.
+ * Whether a notice shows its whole title and reason, with any buttons in a row
+ * underneath. Errors and warnings with a reason do, so the reason is never cut
+ * short; so does any notice with a button, so the buttons never squeeze the
+ * words beside them, and anything built with `stackedThreadToast`. The rest
+ * keep the title and reason to a line each until clicked.
  */
 export function shouldStackNoticeBody(notice: {
   readonly type?: string | undefined;
   readonly hasDescription: boolean;
+  readonly hasButtons: boolean;
   readonly requestsStackedLayout: boolean;
-  readonly pointsAtAnotherThread: boolean;
 }): boolean {
   return (
     notice.requestsStackedLayout ||
-    notice.pointsAtAnotherThread ||
+    notice.hasButtons ||
     (isAttentionNotice(notice.type) && notice.hasDescription)
   );
 }
