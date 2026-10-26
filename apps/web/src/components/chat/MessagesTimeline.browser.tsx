@@ -1,5 +1,3 @@
-// The Playwright provider types cdp() (touch-screen emulation below).
-/// <reference types="vite-plus/test/browser-playwright" />
 import "../../index.css";
 
 import {
@@ -15,7 +13,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
-import { cdp, page, userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
@@ -165,6 +163,42 @@ function flushPendingRenders() {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, 100);
   });
+}
+
+/**
+ * Draws this document as a touch screen does: `(pointer: coarse)` rules apply
+ * and hover rules don't. Returns the undo. It rewrites the page's own media
+ * rules, not the browser's: CDP touch emulation, once turned off, leaves hover
+ * off for the rest of the tab on Linux CI, and later specs share that tab.
+ */
+function drawAsTouchScreen() {
+  const undo: Array<() => void> = [];
+  const rewrite = (rules: CSSRuleList) => {
+    for (const rule of rules) {
+      if (rule instanceof CSSMediaRule) {
+        const original = rule.media.mediaText;
+        const touch = original.includes("(hover: hover)")
+          ? "not all"
+          : original.replace("(pointer: coarse)", "all").replace("(hover: none)", "all");
+        if (touch !== original) {
+          rule.media.mediaText = touch;
+          undo.push(() => {
+            rule.media.mediaText = original;
+          });
+        }
+      }
+      // Media rules, layers and (nested) style rules all hold rules.
+      if (rule instanceof CSSGroupingRule) {
+        rewrite(rule.cssRules);
+      }
+    }
+  };
+  for (const sheet of document.styleSheets) {
+    rewrite(sheet.cssRules);
+  }
+  return () => {
+    for (const step of undo) step();
+  };
 }
 
 async function resetBrowserHoverState() {
@@ -1085,10 +1119,7 @@ describe("MessagesTimeline", () => {
   it("shows message actions on a touch screen, and keeps a tap on the device glyph off them", async () => {
     // A touch screen has no hover to reveal the actions, and widens each
     // button's target to 44px, past the button and over what sits beside it.
-    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
-    onTestFinished(async () => {
-      await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
-    });
+    onTestFinished(drawAsTouchScreen());
     const entry = buildUserTimelineEntry("ok");
     const screen = await renderTimeline(
       <MessagesTimeline
@@ -1102,7 +1133,6 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      expect(window.matchMedia("(pointer: coarse)").matches).toBe(true);
       // Copy and branch, under the user's message and under the answer.
       const actions = document.querySelectorAll<HTMLButtonElement>(
         'button[aria-label="Copy link"], button[aria-label="Branch from here"]',
