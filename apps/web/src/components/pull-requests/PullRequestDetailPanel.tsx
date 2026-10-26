@@ -6,7 +6,6 @@ import type {
   PullRequestComment,
   PullRequestDetail,
   PullRequestMergeMethod,
-  PullRequestObservation,
   PullRequestRef,
   PullRequestReviewThread,
   PullRequestUpdateMethod,
@@ -35,7 +34,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { usePullRequestRecord } from "../../environments/pullRequests/pullRequestRecordsStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useRememberedMergeMethod } from "./useRememberedMergeMethod";
@@ -48,6 +46,7 @@ import {
   pullRequestDiffQueryOptions,
   pullRequestUpdateMutationOptions,
   refreshPullRequest,
+  usePullRequestDetailFollowingRecord,
 } from "../../lib/pullRequestsReactQuery";
 import { cn, pluralize } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -113,7 +112,6 @@ import {
   resolvePullRequestAutoMergeBlock,
   resolvePullRequestMergeBlock,
   summarizePullRequestChecks,
-  withPullRequestRecordOnDetail,
   type PullRequestChecksSummary,
 } from "./pullRequests.logic";
 
@@ -233,33 +231,19 @@ export function PullRequestDetailPanel({
   const panelRoot = useRef<HTMLDivElement | null>(null);
 
   // Polled while the user looks at it; the newest read anywhere (the
-  // computer's shared record) says its state before this read catches up.
+  // computer's shared record) says its state before this read catches up,
+  // and has it read again.
   const attended = useSurfaceAttended();
   const detailQuery = useQuery(
     pullRequestDetailQueryOptions({ environmentId, reference, attended }),
   );
-  const record = usePullRequestRecord(environmentId, {
-    url: detailQuery.data?.url,
-    repository: reference.repository,
-    number: reference.number,
+  const detailData = usePullRequestDetailFollowingRecord({
+    environmentId,
+    reference,
+    detail: detailQuery.data,
+    attended,
+    rereads: "everything",
   });
-  const recorded = useMemo(
-    () =>
-      detailQuery.data === undefined
-        ? null
-        : withPullRequestRecordOnDetail(detailQuery.data, record),
-    [detailQuery.data, record],
-  );
-  const detailData = recorded?.detail;
-  // A newer read elsewhere changed what this one says: read it again past the
-  // server's cache, once per record, so its checks and merge box follow too.
-  const behindRecord = recorded?.behind === true && attended ? record : undefined;
-  const rereadFor = useRef<PullRequestObservation | undefined>(undefined);
-  useEffect(() => {
-    if (behindRecord === undefined || rereadFor.current === behindRecord) return;
-    rereadFor.current = behindRecord;
-    void refreshPullRequest(queryClient, { environmentId, reference }).catch(() => undefined);
-  }, [behindRecord, environmentId, queryClient, reference]);
   const activity = useQuery(pullRequestActivityQueryOptions({ environmentId, reference }));
   const diff = useQuery({
     ...pullRequestDiffQueryOptions({ environmentId, reference }),

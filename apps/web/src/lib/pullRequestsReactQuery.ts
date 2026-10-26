@@ -1,5 +1,8 @@
 import { isPageAttended, onPageAttentionChange, useSurfaceAttended } from "~/lib/pageAttention";
-import { useAllPullRequestRecords } from "~/environments/pullRequests/pullRequestRecordsStore";
+import {
+  useAllPullRequestRecords,
+  usePullRequestRecord,
+} from "~/environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
   ProjectId,
@@ -8,6 +11,7 @@ import type {
   PullRequestListState,
   PullRequestLookupItem,
   PullRequestMergeMethod,
+  PullRequestObservation,
   PullRequestReactionContent,
   PullRequestRef,
   PullRequestReviewCommentDraft,
@@ -32,11 +36,12 @@ import {
   type Query,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
   mergePullRequestListResults,
+  withPullRequestRecordOnDetail,
   withPullRequestRecordOnEntry,
   type PullRequestEntry,
   type PullRequestProjectFailure,
@@ -355,8 +360,16 @@ export function usePullRequestDetail(input: {
     attended,
   ]);
 
-  return {
+  const followed = usePullRequestDetailFollowingRecord({
+    environmentId: enabled ? input.environmentId : null,
+    reference: enabled ? input.reference : null,
     detail,
+    attended,
+    rereads: "detail",
+  });
+
+  return {
+    detail: followed,
     error: query.error,
     lastKnown,
     waitingFor: followingUp ? wait : null,
@@ -398,9 +411,21 @@ export function pullRequestDiffQueryOptions(input: PullRequestReadInput) {
  */
 export async function refreshPullRequest(
   queryClient: QueryClient,
-  input: { readonly environmentId: EnvironmentId; readonly reference: PullRequestRef },
+  input: PullRequestAddress,
+  /** The detail alone, for a surface that shows no conversation or patch. */
+  scope: "everything" | "detail" = "everything",
 ): Promise<void> {
   const forced = { ...input, force: true } as const;
+  if (scope === "detail") {
+    await queryClient.cancelQueries({
+      queryKey: pullRequestQueryKeys.detail(input.environmentId, input.reference),
+      exact: true,
+    });
+    await queryClient
+      .fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 })
+      .catch(() => undefined);
+    return;
+  }
   const diffOptions = pullRequestDiffQueryOptions(forced);
   // `gh pr diff` is the expensive read and the Code tab may never have been
   // opened, so the patch is only read again where there is one to replace or
@@ -423,6 +448,65 @@ export async function refreshPullRequest(
     queryClient.fetchQuery({ ...pullRequestActivityQueryOptions(forced), staleTime: 0 }),
     rereadsDiff ? queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }) : Promise.resolve(),
   ]);
+}
+
+/** One pull request on one computer. */
+interface PullRequestAddress {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+}
+
+/**
+ * A full read as the computer's shared record has had it since (see
+ * withPullRequestRecordOnDetail), and read again past the server's cache,
+ * once per record, when that record saw it change. A detail's own polling is
+ * paced by what the detail last said, so without this a pull request it last
+ * saw closed would never be read again after it reopened elsewhere. Only
+ * while the surface is attended; coming back reads what went stale anyway.
+ */
+export function usePullRequestDetailFollowingRecord(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly reference: PullRequestRef | null;
+  readonly detail: PullRequestDetail | undefined;
+  readonly attended: boolean;
+  /** What a re-read covers: the conversation and patch too, where the surface shows them. */
+  readonly rereads: "everything" | "detail";
+}): PullRequestDetail | undefined {
+  const queryClient = useQueryClient();
+  const { environmentId, reference, detail, attended, rereads } = input;
+  const record = usePullRequestRecord(environmentId, {
+    url: detail?.url,
+    repository: reference?.repository,
+    number: reference?.number ?? 0,
+  });
+  const recorded = useMemo(
+    () => (detail === undefined ? undefined : withPullRequestRecordOnDetail(detail, record)),
+    [detail, record],
+  );
+  const behindRecord = recorded?.behind === true && attended ? record : undefined;
+  const rereadFor = useRef<PullRequestObservation | undefined>(undefined);
+  const projectId = reference?.projectId;
+  const repository = reference?.repository;
+  const number = reference?.number;
+  useEffect(() => {
+    if (
+      behindRecord === undefined ||
+      rereadFor.current === behindRecord ||
+      environmentId === null ||
+      projectId === undefined ||
+      repository === undefined ||
+      number === undefined
+    ) {
+      return;
+    }
+    rereadFor.current = behindRecord;
+    void refreshPullRequest(
+      queryClient,
+      { environmentId, reference: { projectId, repository, number } },
+      rereads,
+    ).catch(() => undefined);
+  }, [behindRecord, environmentId, number, projectId, queryClient, repository, rereads]);
+  return recorded?.detail;
 }
 
 /** What every pull request write is addressed with. */
