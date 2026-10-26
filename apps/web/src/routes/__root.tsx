@@ -2,6 +2,7 @@ import {
   markPullRequestListSettled,
   startPullRequestAttentionRefresh,
 } from "../lib/pullRequestsReactQuery";
+import { startPullRequestWatch } from "../lib/pullRequestWatch";
 import {
   type DesktopTaskbarStatusInput,
   type DesktopTaskbarThreadSummary,
@@ -765,6 +766,8 @@ function EnvironmentConnectionManagerBootstrap() {
     // every surface showing a pull request reads (pullRequestRecords.ts).
     // Pull request polls stop while nobody looks; coming back reads what went stale.
     const stopPullRequestAttention = startPullRequestAttentionRefresh(queryClient);
+    // Sidebar rows on screen keep their pull requests current (pullRequestWatch.ts).
+    const stopPullRequestWatch = startPullRequestWatch(queryClient);
     const stopPullRequestRecords = startPullRequestRecordsSync({
       onSettled: (environmentId, record) => {
         if (record.state === "open") return;
@@ -779,6 +782,7 @@ function EnvironmentConnectionManagerBootstrap() {
       unbindRowIntent();
       stopPullRequestRecords();
       stopPullRequestAttention();
+      stopPullRequestWatch();
       stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();

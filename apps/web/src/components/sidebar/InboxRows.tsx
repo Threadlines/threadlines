@@ -17,7 +17,7 @@ import {
   MonitorIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useMemo } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type {
   ComputerLinkPendingRequest,
@@ -41,7 +41,8 @@ import {
   outsideOriginLabel,
 } from "../../environments/outsideAgents/outsideAgents.logic";
 import { isThreadSessionStarting } from "../../lib/threadSort";
-import { selectProjectByRef, useStore } from "../../store";
+import { isSidebarThreadRunning, selectProjectByRef, useStore } from "../../store";
+import { useWatchPullRequestsWhileShown } from "../../lib/pullRequestWatch";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
@@ -794,6 +795,30 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       : listPullRequest,
     linkedPullRequests,
   );
+  // On screen, the badge's pull requests are kept current at their own pace
+  // (pullRequestWatch.ts). The open thread's are read by its composer row,
+  // and a merged one never changes again.
+  const [rowSurface, setRowSurface] = useState<HTMLDivElement | null>(null);
+  const busy = isSidebarThreadRunning(thread);
+  useWatchPullRequestsWhileShown(
+    rowSurface,
+    isActive
+      ? []
+      : pullRequests.flatMap((pullRequest) =>
+          pullRequest.repository === null || pullRequest.state === "merged"
+            ? []
+            : [
+                {
+                  environmentId: thread.environmentId,
+                  projectId: thread.projectId,
+                  repository: pullRequest.repository,
+                  number: pullRequest.number,
+                  url: pullRequest.url,
+                  busy,
+                },
+              ],
+        ),
+  );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
   const isRenaming = renamingThreadKey === threadKey;
@@ -948,7 +973,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       >
         {/* The surface holds the row and its family's summary line, so the two
           read, hover and highlight as one row. */}
-        <div className={resolveRowSurfaceTone({ isActive, isSelected })}>
+        <div ref={setRowSurface} className={resolveRowSurfaceTone({ isActive, isSelected })}>
           <ThreadHoverCard thread={thread} status={status} lineage={lineage}>
             <div
               role="button"
