@@ -12,6 +12,7 @@ import {
   markPullRequestListSettled,
   PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS,
   pullRequestDetailQueryOptions,
+  pullRequestDiffQueryOptions,
   pullRequestListQueryOptions,
   pullRequestQueryKeys,
   refreshPullRequest,
@@ -96,5 +97,32 @@ describe("refreshing a pull request", () => {
     expect(
       queryClient.getQueryData(pullRequestQueryKeys.detail(input.environmentId, REFERENCE)),
     ).toEqual({ state: "merged" });
+  });
+
+  it("reads again a patch whose first read it cut short", async () => {
+    const detail = vi.fn(async () => ({ state: "open" }));
+    const activity = vi.fn(async () => ({
+      comments: [],
+      commits: [],
+      reviewThreads: [],
+      reactions: [],
+    }));
+    const diff = vi.fn((input: { readonly force?: boolean }) =>
+      input.force ? Promise.resolve({ files: [] }) : new Promise(() => undefined),
+    );
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      pullRequests: { detail, activity, diff },
+    } as never);
+    const queryClient = new QueryClient();
+    const input = { environmentId: EnvironmentId.make("environment-a"), reference: REFERENCE };
+
+    // The Code tab's first read is still on its way.
+    void queryClient.fetchQuery(pullRequestDiffQueryOptions(input)).catch(() => undefined);
+    await refreshPullRequest(queryClient, input);
+
+    expect(diff).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+    expect(
+      queryClient.getQueryData(pullRequestQueryKeys.diff(input.environmentId, REFERENCE)),
+    ).toEqual({ files: [] });
   });
 });

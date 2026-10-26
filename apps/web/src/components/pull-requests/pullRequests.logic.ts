@@ -885,6 +885,12 @@ export function pullRequestDetailOutranksListing(input: {
   if (input.detail === undefined) {
     return false;
   }
+  // A merge is never undone: whichever has seen one says so, whatever clock
+  // either was read by, or whether either can say when it read.
+  const listedMerged = input.listed.state === "merged";
+  if (listedMerged !== (input.detail.state === "merged")) {
+    return !listedMerged;
+  }
   if (input.detail.observedAt !== undefined && input.listed.observedAt !== null) {
     return Date.parse(input.detail.observedAt) >= input.listed.observedAt;
   }

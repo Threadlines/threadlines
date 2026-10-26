@@ -48,6 +48,7 @@ import {
 } from "../ui/previewCard";
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
+  projectProviderKind,
   projectRepository,
   pullRequestBadgeTone,
   pullRequestDetailOutranksListing,
@@ -109,6 +110,10 @@ interface PullRequestRepositoryScope {
 interface SurfaceChipState {
   readonly environmentId: EnvironmentId;
   readonly state: PullRequestChipState;
+}
+
+function isMerged(row: SurfaceChipState): boolean {
+  return row.state.state === "merged";
 }
 
 interface PullRequestChipSurface {
@@ -272,9 +277,8 @@ export function PullRequestHoverCardProvider({
     const byKey = new Map<string, SurfaceChipState>();
     for (const entry of entries) {
       const key = pullRequestRecordKey(entry);
-      // Where two computers list it, the thread's own computer's row is kept.
-      if (key === null || byKey.get(key)?.environmentId === environmentId) continue;
-      byKey.set(key, {
+      if (key === null) continue;
+      const row: SurfaceChipState = {
         environmentId: entry.environmentId,
         state: {
           state: entry.state,
@@ -282,24 +286,34 @@ export function PullRequestHoverCardProvider({
           autoMergeEnabled: entry.autoMergeEnabled === true,
           observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
         },
-      });
+      };
+      const held = byKey.get(key);
+      // Where two computers list it, a row that saw a merge is kept (a merge
+      // is never undone, so no clocks need comparing), else the thread's own
+      // computer's row.
+      const replaces =
+        held === undefined ||
+        (isMerged(held) !== isMerged(row) ? isMerged(row) : held.environmentId !== environmentId);
+      if (replaces) byKey.set(key, row);
     }
     // The thread's own resolution wins: it is the read that can see a branch
     // land without waiting for the settled listing to come round again, and
     // the one that still knows a pull request the listings no longer carry.
+    // Short of a merge another computer has seen.
     for (const pullRequest of threadPullRequests) {
       const key = pullRequestRecordKey(pullRequest);
-      if (key !== null) {
-        byKey.set(key, {
-          environmentId,
-          state: {
-            state: pullRequest.state,
-            isDraft: pullRequest.isDraft,
-            autoMergeEnabled: pullRequest.autoMergeEnabled,
-            observedAt: pullRequest.observedAt,
-          },
-        });
-      }
+      if (key === null) continue;
+      const row: SurfaceChipState = {
+        environmentId,
+        state: {
+          state: pullRequest.state,
+          isDraft: pullRequest.isDraft,
+          autoMergeEnabled: pullRequest.autoMergeEnabled,
+          observedAt: pullRequest.observedAt,
+        },
+      };
+      const held = byKey.get(key);
+      if (held === undefined || !isMerged(held) || isMerged(row)) byKey.set(key, row);
     }
     return byKey;
   }, [entries, environmentId, threadPullRequests]);
@@ -308,7 +322,9 @@ export function PullRequestHoverCardProvider({
     const byRepository = new Map<string, PullRequestRepositoryScope[]>();
     for (const project of projects) {
       const repository = projectRepository(project);
-      if (repository === null) continue;
+      // A chip only ever names a GitHub pull request (parsePullRequestUrl), so
+      // a GitLab project of the same name must not read it.
+      if (repository === null || projectProviderKind(project) !== "github") continue;
       const scopes = byRepository.get(repository.toLowerCase()) ?? [];
       // One project per computer is all a read needs.
       if (scopes.some((scope) => scope.environmentId === project.environmentId)) continue;

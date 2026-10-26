@@ -45,6 +45,7 @@ import {
   pullRequestProjectFacets,
   pullRequestFiltersFromSearch,
   pullRequestBadgeTone,
+  pullRequestDetailOutranksListing,
   pullRequestFiltersToSearch,
   pullRequestLabelColor,
   pullRequestMergeQueueLabel,
@@ -1002,6 +1003,31 @@ describe("withPullRequestRecord", () => {
     expect(
       withPullRequestRecordOnDetail(read, { ...RECORD, observedAt: "2026-10-26T08:00:00.000Z" }),
     ).toEqual({ detail: read, behind: false });
+  });
+});
+
+describe("pullRequestDetailOutranksListing", () => {
+  it("lets whichever has seen a merge say so, whatever the clocks", () => {
+    const read = (state: "open" | "merged", observedAt?: string) => ({
+      state,
+      ...(observedAt === undefined ? {} : { observedAt }),
+    });
+    // Another computer's chip saw the merge and has no time to compare.
+    expect(
+      pullRequestDetailOutranksListing({
+        listed: { state: "merged", observedAt: null },
+        detail: read("open"),
+        detailCurrent: true,
+      }),
+    ).toBe(false);
+    // An open answer that reads as newer still cannot undo a merge.
+    expect(
+      pullRequestDetailOutranksListing({
+        listed: { state: "open", observedAt: Date.parse("2026-10-26T11:00:00.000Z") },
+        detail: read("merged", "2026-10-26T10:00:00.000Z"),
+        detailCurrent: false,
+      }),
+    ).toBe(true);
   });
 });
 

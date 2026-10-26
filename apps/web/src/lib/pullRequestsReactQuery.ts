@@ -402,23 +402,26 @@ export async function refreshPullRequest(
 ): Promise<void> {
   const forced = { ...input, force: true } as const;
   const diffOptions = pullRequestDiffQueryOptions(forced);
+  // `gh pr diff` is the expensive read and the Code tab may never have been
+  // opened, so the patch is only read again where there is one to replace or
+  // one on its way.
+  const diffState = queryClient.getQueryState(diffOptions.queryKey);
+  const rereadsDiff = diffState?.data !== undefined || diffState?.fetchStatus === "fetching";
   // A read already on its way began before whatever made this one necessary,
   // and a fetch would only join it rather than go past the server's cache.
+  // Only reads that are about to be made again are cancelled: one cancelled
+  // and not replaced would sit loading with nothing to finish it.
   await Promise.all(
     [
       pullRequestQueryKeys.detail(input.environmentId, input.reference),
       pullRequestQueryKeys.activity(input.environmentId, input.reference),
-      diffOptions.queryKey,
+      ...(rereadsDiff ? [diffOptions.queryKey] : []),
     ].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })),
   );
   await Promise.allSettled([
     queryClient.fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 }),
     queryClient.fetchQuery({ ...pullRequestActivityQueryOptions(forced), staleTime: 0 }),
-    // `gh pr diff` is the expensive read and the Code tab may never have been
-    // opened, so the patch is only re-read when there is already one to replace.
-    queryClient.getQueryData(diffOptions.queryKey) === undefined
-      ? Promise.resolve()
-      : queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }),
+    rereadsDiff ? queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }) : Promise.resolve(),
   ]);
 }
 
