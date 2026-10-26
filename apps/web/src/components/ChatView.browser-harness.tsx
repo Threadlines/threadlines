@@ -389,6 +389,7 @@ export function createMockEnvironmentApi(input: {
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
+    settings: {} as EnvironmentApi["settings"],
     projects: {} as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
     previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),

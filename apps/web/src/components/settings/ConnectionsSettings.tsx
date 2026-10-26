@@ -27,6 +27,12 @@ import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { isClipboardCopySupported } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { formatExpiresInLabel, formatRelativeTimeLabel } from "../../timestampFormat";
+import { deviceDisplayName, deviceDisplayNames, deviceOwnName } from "../../deviceNames";
+import {
+  openComputerRenameDialog,
+  openDeviceRenameDialog,
+  useComputerNaming,
+} from "../DeviceRenameDialog";
 import { COMPUTER_LINK_ACCESS_LABELS } from "../fleet/fleetLinks.logic";
 import { ConnectDeviceDialog } from "./connections/ConnectDeviceDialog";
 import { ConnectionStatusDot, formatAccessTimestamp } from "./connections/ConnectionStatusDot";
@@ -591,6 +597,10 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
 
 type DeviceAccessRowProps = {
   clientSession: ServerClientSessionRecord;
+  /** Its name as the list shows it (deviceDisplayNames). */
+  shownAs: string;
+  /** This computer takes device names. */
+  canRename: boolean;
   revokingClientSessionId: string | null;
   onRevokeSession: (sessionId: ServerClientSessionRecord["sessionId"]) => void;
 };
@@ -616,6 +626,8 @@ function deviceKindLabel(
  */
 const DeviceAccessRow = memo(function DeviceAccessRow({
   clientSession,
+  shownAs,
+  canRename,
   revokingClientSessionId,
   onRevokeSession,
 }: DeviceAccessRowProps) {
@@ -639,10 +651,6 @@ const DeviceAccessRow = memo(function DeviceAccessRow({
     isRelayDevice ? null : (clientSession.client.browser ?? null),
     statusText,
   ].filter((value): value is string => value !== null);
-  const primaryLabel =
-    clientSession.client.label ??
-    ([clientSession.client.os, clientSession.client.browser].filter(Boolean).join(" · ") ||
-      "Unnamed device");
 
   return (
     <div className={ITEM_ROW_CLASSNAME}>
@@ -656,11 +664,28 @@ const DeviceAccessRow = memo(function DeviceAccessRow({
               dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
             />
             <KindIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-            <h3 className="truncate text-[13px] font-semibold text-foreground">{primaryLabel}</h3>
+            <h3 className="truncate text-[13px] font-semibold text-foreground">{shownAs}</h3>
           </div>
           <p className="text-xs text-muted-foreground">{metaBits.join(" · ")}</p>
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          {canRename ? (
+            <Button
+              size="xs"
+              variant="outline"
+              data-testid={`device-rename-${clientSession.sessionId}`}
+              onClick={() =>
+                openDeviceRenameDialog({
+                  sessionId: clientSession.sessionId,
+                  shownAs,
+                  label: deviceDisplayName(clientSession.client),
+                  deviceLabel: deviceOwnName(clientSession.client),
+                })
+              }
+            >
+              Rename
+            </Button>
+          ) : null}
           <Button
             size="xs"
             variant="destructive-outline"
@@ -1326,6 +1351,16 @@ export function ConnectionsSettings({
     () => desktopClientSessions.filter((clientSession) => !clientSession.current),
     [desktopClientSessions],
   );
+  // Linked computers keep the name they give themselves; the rest can be told apart.
+  const deviceNames = useMemo(
+    () =>
+      deviceDisplayNames(
+        visibleDeviceSessions.filter((clientSession) => clientSession.role !== "peer"),
+      ),
+    [visibleDeviceSessions],
+  );
+  const thisComputerNaming = useComputerNaming(thisEnvironmentId);
+  const canRenameDevices = primaryServerConfig?.environment.capabilities.deviceNames === true;
   const otherDeviceCount = visibleDeviceSessions.length;
   const tailscaleHttpsEndpoint = useMemo(
     () => desktopAdvertisedEndpoints.find(isTailscaleHttpsEndpoint) ?? null,
@@ -1459,6 +1494,10 @@ export function ConnectionsSettings({
             <DeviceAccessRow
               key={clientSession.sessionId}
               clientSession={clientSession}
+              shownAs={
+                deviceNames.get(clientSession.sessionId) ?? deviceDisplayName(clientSession.client)
+              }
+              canRename={canRenameDevices}
               revokingClientSessionId={revokingDesktopClientSessionId}
               onRevokeSession={handleRevokeDesktopClientSession}
             />
@@ -1664,6 +1703,18 @@ export function ConnectionsSettings({
               </span>
             }
             description="Projects on this computer run here. Other devices see it by this name."
+            control={
+              thisComputerNaming ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  data-testid="connections-rename-computer"
+                  onClick={() => openComputerRenameDialog(thisComputerNaming)}
+                >
+                  Rename
+                </Button>
+              ) : null
+            }
             status={
               primaryVersionMismatch ? (
                 <span className="flex items-center gap-1 text-warning">

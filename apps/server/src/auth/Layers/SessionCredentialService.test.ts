@@ -2,7 +2,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { ServerConfigShape } from "../../config.ts";
@@ -179,6 +182,51 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
       expect(afterRevoke[0]?.sessionId).toBe(owner.sessionId);
       expect(revokedClient.message).toContain("revoked");
     }).pipe(Effect.provide(makeSessionCredentialLayer())),
+  );
+
+  it.effect(
+    "names a device's session at once, and never a linked computer's or a removed one",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionCredentialService;
+        const phone = yield* sessions.issue({
+          subject: "relay-device",
+          role: "client",
+          client: { label: "iPhone", deviceType: "mobile", os: "iOS" },
+        });
+        const computer = yield* sessions.issue({
+          subject: "relay-device",
+          role: "peer",
+          client: { label: "Wilfredo", deviceType: "desktop" },
+        });
+        const announced = yield* sessions.streamChanges.pipe(
+          Stream.filter((change) => change.type === "clientUpserted"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild({ startImmediately: true }),
+        );
+
+        expect(yield* sessions.rename(phone.sessionId, "Will's iPhone")).toBe(true);
+        const [upsert] = yield* Fiber.join(announced);
+        expect(
+          upsert?.type === "clientUpserted" ? upsert.clientSession.client : null,
+        ).toMatchObject({
+          label: "iPhone",
+          name: "Will's iPhone",
+        });
+        // Its next message reads the name without signing in again.
+        expect(Option.getOrNull(yield* sessions.clientOf(phone.sessionId))?.name).toBe(
+          "Will's iPhone",
+        );
+        expect(yield* sessions.rename(phone.sessionId, null)).toBe(true);
+        expect(Option.getOrNull(yield* sessions.clientOf(phone.sessionId))?.name).toBeUndefined();
+
+        // A linked computer keeps the name it gives itself.
+        expect(yield* sessions.rename(computer.sessionId, "Windows PC")).toBe(false);
+        yield* sessions.revoke(phone.sessionId);
+        expect(yield* sessions.rename(phone.sessionId, "Will's iPhone")).toBe(false);
+        expect(Option.isNone(yield* sessions.clientOf(phone.sessionId))).toBe(true);
+      }).pipe(Effect.provide(makeSessionCredentialLayer())),
   );
 
   it.effect("persists lastConnectedAt on first connect and updates it after reconnect", () =>

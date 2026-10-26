@@ -5,21 +5,12 @@
  * root shows it.
  */
 import type { ScopedThreadRef } from "@threadlines/contracts";
-import { useState } from "react";
 import { create } from "zustand";
 
 import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "../lib/utils";
-import { Button } from "./ui/button";
-import {
-  Dialog,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "./ui/dialog";
-import { Input } from "./ui/input";
+import { RenameDialogForm } from "./RenameDialogForm";
+import { Dialog } from "./ui/dialog";
 
 interface ThreadRenameDialogRequest {
   /** Each ask starts fresh, even for the same thread twice. */
@@ -32,11 +23,14 @@ const useThreadRenameDialogStore = create<{ request: ThreadRenameDialogRequest |
   request: null,
 }));
 
+/** Never reused, so a save that lands late can't close a later ask. */
+let lastRequestId = 0;
+
 /** Opens the rename dialog for a thread with its title as it is now. */
 export function openThreadRenameDialog(threadRef: ScopedThreadRef, title: string): void {
-  const previous = useThreadRenameDialogStore.getState().request;
+  lastRequestId += 1;
   useThreadRenameDialogStore.setState({
-    request: { id: (previous?.id ?? 0) + 1, threadRef, title },
+    request: { id: lastRequestId, threadRef, title },
   });
 }
 
@@ -63,76 +57,27 @@ export function ThreadRenameDialogHost() {
 }
 
 function ThreadRenameDialogContent({ request }: { readonly request: ThreadRenameDialogRequest }) {
-  const [title, setTitle] = useState(request.title);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const trimmed = title.trim();
-  const canSave = trimmed.length > 0 && !saving;
-
-  const save = async () => {
-    if (!canSave) return;
-    if (trimmed === request.title) {
-      closeThreadRenameDialog(request.id);
-      return;
-    }
-    const api = readEnvironmentApi(request.threadRef.environmentId);
-    if (!api) {
-      setError("This thread's computer isn't connected.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      await api.orchestration.dispatchCommand({
-        type: "thread.meta.update",
-        commandId: newCommandId(),
-        threadId: request.threadRef.threadId,
-        title: trimmed,
-      });
-      // A save that lands after the dialog moved on to another thread
-      // leaves that one open.
-      closeThreadRenameDialog(request.id);
-    } catch (cause) {
-      setSaving(false);
-      setError(cause instanceof Error ? cause.message : "The thread couldn't be renamed.");
-    }
-  };
-
   return (
-    <DialogPopup className="max-w-md" data-testid="thread-rename-dialog">
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>Rename thread</DialogTitle>
-        </DialogHeader>
-        <DialogPanel className="space-y-2">
-          <Input
-            aria-label="Thread name"
-            data-testid="thread-rename-input"
-            value={title}
-            autoFocus
-            onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => setTitle(event.currentTarget.value)}
-          />
-          {error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          ) : null}
-        </DialogPanel>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => closeThreadRenameDialog()}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={!canSave} data-testid="thread-rename-save">
-            {saving ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
-      </form>
-    </DialogPopup>
+    <RenameDialogForm
+      title="Rename thread"
+      inputLabel="Thread name"
+      initialValue={request.title}
+      failure="The thread couldn't be renamed."
+      testId="thread-rename"
+      onClose={() => closeThreadRenameDialog()}
+      onSave={async (title) => {
+        const api = readEnvironmentApi(request.threadRef.environmentId);
+        if (!api) throw new Error("This thread's computer isn't connected.");
+        await api.orchestration.dispatchCommand({
+          type: "thread.meta.update",
+          commandId: newCommandId(),
+          threadId: request.threadRef.threadId,
+          title,
+        });
+        // A save that lands after the dialog moved on to another thread
+        // leaves that one open.
+        closeThreadRenameDialog(request.id);
+      }}
+    />
   );
 }

@@ -189,9 +189,7 @@ function testLayer(
               locator: { source: "git-remote", remoteName: "origin", remoteUrl: repos.origin },
             }),
         }),
-        Layer.mock(ServerEnvironment)({
-          getDescriptor: Effect.succeed({ label: "Mac mini" } as never),
-        }),
+        ServerEnvironment.layerTest({ label: "Mac mini" }),
         Layer.mock(ProjectSetupScriptRunner)({
           runForThread: (input) =>
             Effect.sync(() => {

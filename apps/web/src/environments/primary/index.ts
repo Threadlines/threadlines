@@ -25,6 +25,7 @@ export {
   listServerPairingLinks,
   peekPairingTokenFromUrl,
   readSessionExpiryMs,
+  renameServerClientSession,
   resolveInitialServerAuthGateState,
   revokeOtherServerClientSessions,
   revokeServerClientSession,

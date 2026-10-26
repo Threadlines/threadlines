@@ -4,6 +4,7 @@ import type {
   AuthClientMetadata,
   AuthCreatePairingCredentialInput,
   AuthPairingCredentialResult,
+  AuthRenameClientSessionInput,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
   AuthSessionId,
@@ -409,6 +410,28 @@ export async function revokeServerClientSession(sessionId: AuthSessionId): Promi
   if (!response.ok) {
     throw new Error(
       await readErrorMessage(response, `Failed to revoke client session (${response.status}).`),
+    );
+  }
+}
+
+/** Names a device using this computer; `null` goes back to what it called itself. */
+export async function renameServerClientSession(
+  sessionId: AuthSessionId,
+  name: string | null,
+): Promise<void> {
+  const payload: AuthRenameClientSessionInput = { sessionId, name };
+  const response = await fetch(resolvePrimaryEnvironmentHttpUrl("/api/auth/clients/rename"), {
+    body: JSON.stringify(payload),
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+    },
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      await readErrorMessage(response, `Failed to rename the device (${response.status}).`),
     );
   }
 }

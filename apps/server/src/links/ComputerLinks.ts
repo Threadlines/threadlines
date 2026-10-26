@@ -140,6 +140,17 @@ export interface ComputerLinksShape {
    * here are the ones in effect.
    */
   readonly linkInUse: (link: PeerLink) => Effect.Effect<void>;
+  /**
+   * The name a linked computer called with, kept on both halves this
+   * computer holds for it: its link here and this computer's link to it.
+   * It is renamed on that computer; this one only follows.
+   */
+  readonly noteRemoteLabel: (input: {
+    readonly deviceId: string;
+    /** The computer the link is confirmed to be; null names only the link here. */
+    readonly environmentId: string | null;
+    readonly label: string;
+  }) => Effect.Effect<void>;
 }
 
 export class ComputerLinks extends Context.Service<ComputerLinks, ComputerLinksShape>()(
@@ -223,6 +234,7 @@ const make = Effect.gen(function* () {
     Stream.mergeAll(
       [
         client.statuses.pipe(Stream.map(() => undefined)),
+        client.remoteLabelChanges.pipe(Stream.map(() => undefined)),
         linkRequests.pendingChanges,
         linkMoves.pendingChanges,
         Stream.fromPubSub(changed),
@@ -251,7 +263,7 @@ const make = Effect.gen(function* () {
         hostPublicKey: made.invite.hostPublicKey,
         directOrigins: [...made.directOrigins],
         environmentId: descriptor.environmentId,
-        label: descriptor.label,
+        label: environment.currentLabel(),
         expiresAt: made.invite.expiresAt,
       } satisfies ComputerLinkInvite;
     });
@@ -349,7 +361,7 @@ const make = Effect.gen(function* () {
                 hostPublicKey: invite.hostPublicKey,
               },
               joiner: {
-                label: descriptor.label,
+                label: environment.currentLabel(),
                 platform: PLATFORM_NAMES[descriptor.platform.os] ?? descriptor.platform.os,
                 kind: "computer",
               },
@@ -849,6 +861,100 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
+  const noteRemoteLabel: ComputerLinksShape["noteRemoteLabel"] = (input) =>
+    Effect.gen(function* () {
+      let changed = yield* devices.setLinkLabel({ deviceId: input.deviceId, label: input.label });
+      if (input.environmentId !== null) {
+        const environmentId = EnvironmentId.make(input.environmentId);
+        const outbound = yield* repo.getByEnvironment(environmentId);
+        if (Option.isSome(outbound) && outbound.value.remoteLabel !== input.label) {
+          yield* repo.update({ linkId: outbound.value.linkId, remoteLabel: input.label });
+          changed = true;
+        }
+        client.noteRemoteLabel(environmentId, input.label);
+      }
+      if (changed) yield* notify;
+    }).pipe(Effect.catch((error) => Effect.logWarning("links.remote-label.failed", { error })));
+
+  // This computer's name as the computers it links to have it. A description
+  // carries it, so renamed, it describes itself to each of them now. One it
+  // couldn't reach (and, after a restart, each of them, since a rename may
+  // not have reached them before) hears it once its link is up again.
+  // Computers that only link here hear it the next time they call.
+  const nameOwed = new Set<string>(
+    (yield* repo.list.pipe(Effect.orElseSucceed(() => [])))
+      .filter(isUsableLink)
+      .map((row) => row.linkId),
+  );
+  const announceName = (row: Pick<ComputerLinkRow, "linkId" | "remoteEnvironmentId">) =>
+    client.describe(row.remoteEnvironmentId, { fresh: true }).pipe(
+      Effect.tap(() => Effect.sync(() => nameOwed.delete(row.linkId))),
+      Effect.catch(() => Effect.sync(() => nameOwed.add(row.linkId))),
+      Effect.asVoid,
+    );
+  yield* environment.labelChanges.pipe(
+    Stream.runForEach(() =>
+      repo.list.pipe(
+        Effect.flatMap((rows) =>
+          Effect.forEach(rows.filter(isUsableLink), announceName, {
+            concurrency: "unbounded",
+            discard: true,
+          }),
+        ),
+        Effect.catch((error) => Effect.logWarning("links.rename.announce-failed", { error })),
+      ),
+    ),
+    Effect.forkScoped,
+  );
+  // Once per connection: a link whose connection comes up, not every status
+  // change while it stays up, so a peer that keeps refusing isn't asked again
+  // and again.
+  let connectedLinks = new Set<string>();
+  yield* client.statuses.pipe(
+    Stream.runForEach((statuses) => {
+      const connected = [...statuses.values()].filter(
+        (status) => status.connection === "connected",
+      );
+      const cameUp: Array<ComputerLinkLiveStatus> = connected.filter(
+        (status) => !connectedLinks.has(status.linkId) && nameOwed.delete(status.linkId),
+      );
+      connectedLinks = new Set(connected.map((status) => status.linkId));
+      return Effect.forEach(
+        cameUp,
+        (status) =>
+          announceName({ linkId: status.linkId, remoteEnvironmentId: status.environmentId }).pipe(
+            Effect.forkScoped,
+          ),
+        { discard: true },
+      );
+    }),
+    Effect.forkScoped,
+  );
+
+  // Whatever way this computer hears another's name (it said so when it
+  // called, or a description of it), both halves this computer holds for it
+  // follow: the link from it is named here, the link to it where it's heard.
+  yield* client.remoteLabelChanges.pipe(
+    Stream.runForEach(({ environmentId, label }) =>
+      devices.listDevices.pipe(
+        Effect.flatMap((rows) =>
+          Effect.forEach(
+            rows.filter(
+              (row) =>
+                isInboundLink(row) &&
+                row.linkEnvironmentPinned &&
+                row.linkEnvironmentId === environmentId,
+            ),
+            (row) => devices.setLinkLabel({ deviceId: row.deviceId, label }),
+          ),
+        ),
+        Effect.flatMap((changed) => (changed.some(Boolean) ? notify : Effect.void)),
+        Effect.catch((error) => Effect.logWarning("links.remote-label.failed", { error })),
+      ),
+    ),
+    Effect.forkScoped,
+  );
+
   return ComputerLinks.of({
     createInvite,
     accept,
@@ -859,6 +965,7 @@ const make = Effect.gen(function* () {
     respondRequest,
     unlinkedByPeer,
     linkInUse,
+    noteRemoteLabel,
   });
 });
 

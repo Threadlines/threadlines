@@ -314,7 +314,8 @@ const make = Effect.gen(function* () {
   const identities = yield* RepositoryIdentityResolver;
   const git = yield* GitVcsDriver;
   const environment = yield* ServerEnvironment;
-  const ownLabel = (yield* environment.getDescriptor).label;
+  // Read at each use: the computer can be renamed while this runs.
+  const ownLabel = environment.currentLabel;
   const sql = yield* SqlClient.SqlClient;
   const readStartupSequence = Effect.suspend(() => snapshots.getSnapshotSequence()).pipe(
     Effect.map((read) => read.snapshotSequence),
@@ -387,14 +388,14 @@ const make = Effect.gen(function* () {
           found.value.state !== "active" ||
           found.value.grant !== "peer"
         ) {
-          return { ok: false, outcome: "cancelled", text: `${ownLabel} removed the link.` };
+          return { ok: false, outcome: "cancelled", text: `${ownLabel()} removed the link.` };
         }
         const access = peerLinkOf(found.value).access;
         if (access === "off") {
           return {
             ok: false,
             outcome: "denied",
-            text: `${ownLabel} doesn't take work from ${found.value.label}.`,
+            text: `${ownLabel()} doesn't take work from ${found.value.label}.`,
           };
         }
         return {
@@ -409,7 +410,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed((): LinkAuthority => ({
         ok: false,
         outcome: "failed",
-        text: `${ownLabel} couldn't check the link.`,
+        text: `${ownLabel()} couldn't check the link.`,
       })),
     );
 
@@ -431,7 +432,7 @@ const make = Effect.gen(function* () {
           if (row === null || row.state !== "active" || row.grant !== "peer") {
             return {
               open: false,
-              settled: { outcome: "cancelled", text: `${ownLabel} removed the link.` },
+              settled: { outcome: "cancelled", text: `${ownLabel()} removed the link.` },
             };
           }
           const access = peerLinkOf(row).access;
@@ -440,7 +441,7 @@ const make = Effect.gen(function* () {
                 open: false,
                 settled: {
                   outcome: "denied",
-                  text: `${ownLabel} doesn't take work from ${row.label}.`,
+                  text: `${ownLabel()} doesn't take work from ${row.label}.`,
                 },
               }
             : { open: true, access };
@@ -481,7 +482,7 @@ const make = Effect.gen(function* () {
   const readThreadOrFail = (threadId: ThreadId) =>
     snapshots.getThreadDetailById(threadId).pipe(
       Effect.map(Option.getOrUndefined),
-      Effect.mapError(() => peerError(`${ownLabel} couldn't read that thread.`)),
+      Effect.mapError(() => peerError(`${ownLabel()} couldn't read that thread.`)),
     );
 
   const readThread = (threadId: ThreadId) =>
@@ -490,7 +491,7 @@ const make = Effect.gen(function* () {
   const readRequest = (deviceId: string, requestId: ChildRequestId) =>
     ledger
       .get(deviceId, requestId)
-      .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the request.`)));
+      .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the request.`)));
 
   /**
    * Dispatches a command; `failed` when the engine refused it or couldn't
@@ -514,7 +515,7 @@ const make = Effect.gen(function* () {
   const mustDispatch = (command: OrchestrationCommand, what: string) =>
     dispatch(command, what).pipe(
       Effect.flatMap((result) =>
-        result === "ok" ? Effect.void : Effect.fail(peerError(`${ownLabel} couldn't ${what}.`)),
+        result === "ok" ? Effect.void : Effect.fail(peerError(`${ownLabel()} couldn't ${what}.`)),
       ),
     );
 
@@ -597,7 +598,7 @@ const make = Effect.gen(function* () {
           ...patch,
           now: yield* nowIso,
         })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the request.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the request.`)));
       if (moved) yield* publishRow(row.linkDeviceId, row.requestId);
       return moved;
     });
@@ -627,7 +628,7 @@ const make = Effect.gen(function* () {
           error: options.error,
           now: yield* nowIso,
         })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the request's end.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the request's end.`)));
       if (settled) yield* publishRow(row.linkDeviceId, row.requestId);
       return settled;
     });
@@ -708,11 +709,11 @@ const make = Effect.gen(function* () {
       const all = yield* providers.getProviders;
       const provider = all.find((entry) => entry.instanceId === input.agent.instanceId);
       if (provider === undefined) {
-        return { refused: `${ownLabel} has no agent "${input.agent.instanceId}".` };
+        return { refused: `${ownLabel()} has no agent "${input.agent.instanceId}".` };
       }
       const refusal = childAgentRefusal(provider, input.interactionMode);
       if (refusal !== null) {
-        return { refused: `${ownLabel} can't start that agent: ${refusal}.` };
+        return { refused: `${ownLabel()} can't start that agent: ${refusal}.` };
       }
       const defaults = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
       const preferred =
@@ -724,14 +725,14 @@ const make = Effect.gen(function* () {
         preferred ??
         provider.models.find((entry) => entry.isHidden !== true)?.slug;
       if (model === undefined) {
-        return { refused: `${ownLabel} has no model for that agent.` };
+        return { refused: `${ownLabel()} has no model for that agent.` };
       }
       if (
         input.agent.model !== undefined &&
         !provider.models.some((entry) => entry.slug === input.agent.model)
       ) {
         return {
-          refused: `${ownLabel}'s ${childAgentProviderName(provider)} has no model "${input.agent.model}".`,
+          refused: `${ownLabel()}'s ${childAgentProviderName(provider)} has no model "${input.agent.model}".`,
         };
       }
       const selection: ModelSelection = {
@@ -756,7 +757,7 @@ const make = Effect.gen(function* () {
         return { status: "cancelled" };
       case "denied":
       case "expired":
-        return { status: "refused", reason: row.reportText ?? `${ownLabel} didn't allow it.` };
+        return { status: "refused", reason: row.reportText ?? `${ownLabel()} didn't allow it.` };
       // A start that failed before any turn ran never started.
       case "failed":
         return row.turnId === null && row.reportTurnId === null
@@ -799,14 +800,14 @@ const make = Effect.gen(function* () {
             settle(
               row,
               "failed",
-              `'${input.title}' couldn't be started on ${ownLabel}: ${detail}`,
+              `'${input.title}' couldn't be started on ${ownLabel()}: ${detail}`,
               {
                 error: detail,
               },
             );
           const project = yield* projectForKey(input.projectKey, input.projectSubdirectory);
           if (project === undefined) {
-            return yield* fail(`${ownLabel} doesn't have this project.`);
+            return yield* fail(`${ownLabel()} doesn't have this project.`);
           }
           const agent = yield* resolveAgent(input);
           if ("refused" in agent) {
@@ -929,7 +930,7 @@ const make = Effect.gen(function* () {
         now,
       })).pipe(Effect.option);
       if (Option.isNone(inserted)) {
-        return { status: "refused", reason: `${ownLabel} couldn't record the request.` } as const;
+        return { status: "refused", reason: `${ownLabel()} couldn't record the request.` } as const;
       }
       const row = inserted.value;
       // Another call won the insert (a retry racing itself): its answer stands.
@@ -942,7 +943,7 @@ const make = Effect.gen(function* () {
       }
       // Refused early when this computer can't do it at all.
       if ((yield* projectForKey(input.projectKey, input.projectSubdirectory)) === undefined) {
-        const reason = `${ownLabel} doesn't have this project.`;
+        const reason = `${ownLabel()} doesn't have this project.`;
         yield* settle(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
       }
@@ -1003,7 +1004,7 @@ const make = Effect.gen(function* () {
       const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       const origin = thread?.remoteOrigin ?? null;
       if (thread === undefined || origin === null || row.messageId === null) {
-        const reason = `That thread is gone from ${ownLabel}.`;
+        const reason = `That thread is gone from ${ownLabel()}.`;
         yield* settleOrFail(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
       }
@@ -1093,7 +1094,7 @@ const make = Effect.gen(function* () {
         if (Option.isNone(inserted)) {
           return {
             status: "refused",
-            reason: `${ownLabel} couldn't record the message.`,
+            reason: `${ownLabel()} couldn't record the message.`,
           } as const;
         }
         const row = inserted.value;
@@ -1205,7 +1206,7 @@ const make = Effect.gen(function* () {
       }
       yield* ledger
         .finishCleanup({ linkDeviceId: deviceId, requestId, cleanup })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the cancel.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the cancel.`)));
     });
 
   /**
@@ -1223,7 +1224,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const result = yield* ledger
         .cancel({ linkDeviceId: deviceId, requestId, text, stopThread, now: yield* nowIso })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the cancel.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the cancel.`)));
       if (result.cancelled) yield* publishRow(deviceId, requestId);
       yield* withRequestLock(deviceId, requestId)(cleanUpCancel(deviceId, requestId));
       return {
@@ -1327,7 +1328,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* ledger
         .markDelivered({ linkDeviceId: link.deviceId, reportId, now: yield* nowIso })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record that.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record that.`)));
     });
 
   // ---------------------------------------------------------------------------
@@ -1344,7 +1345,7 @@ const make = Effect.gen(function* () {
       }
       const row = found.value;
       if (!input.allow) {
-        yield* settle(row, "denied", `${ownLabel} didn't allow it.`);
+        yield* settle(row, "denied", `${ownLabel()} didn't allow it.`);
         return;
       }
       yield* progress(row, { status: "received" });
@@ -1418,7 +1419,7 @@ const make = Effect.gen(function* () {
         yield* cancelRequest(
           deviceId,
           row.requestId,
-          `${ownLabel} removed the link.`,
+          `${ownLabel()} removed the link.`,
           stopRunning,
         ).pipe(
           Effect.catch((error) =>
@@ -1484,7 +1485,7 @@ const make = Effect.gen(function* () {
       }
       if (stopRunning && incomplete) {
         return yield* new ComputerLinkError({
-          detail: `${ownLabel} couldn't stop everything the link started. Try again.`,
+          detail: `${ownLabel()} couldn't stop everything the link started. Try again.`,
         });
       }
     });
@@ -1499,7 +1500,7 @@ const make = Effect.gen(function* () {
     }).pipe(
       Effect.mapError(
         () =>
-          new ComputerLinkError({ detail: `${ownLabel} couldn't record the unlink. Try again.` }),
+          new ComputerLinkError({ detail: `${ownLabel()} couldn't record the unlink. Try again.` }),
       ),
     );
 
@@ -1515,7 +1516,7 @@ const make = Effect.gen(function* () {
 
   const drainsOwed: LinkRequestsShape["drainsOwed"] = ledger.listDrainsOwed.pipe(
     Effect.mapError(
-      () => new ComputerLinkError({ detail: `${ownLabel} couldn't read its unlinks.` }),
+      () => new ComputerLinkError({ detail: `${ownLabel()} couldn't read its unlinks.` }),
     ),
   );
 
@@ -1635,12 +1636,12 @@ const make = Effect.gen(function* () {
           ? settle(
               row,
               "stopped",
-              `The user on ${ownLabel} stopped '${thread.title}' before it finished.`,
+              `The user on ${ownLabel()} stopped '${thread.title}' before it finished.`,
             )
           : settle(
               row,
               "failed",
-              `'${thread.title}' failed on ${ownLabel}: ${thread.session?.lastError ?? "its session ended"}`,
+              `'${thread.title}' failed on ${ownLabel()}: ${thread.session?.lastError ?? "its session ended"}`,
               { error: thread.session?.lastError ?? "Its session ended." },
             );
       }
@@ -1739,7 +1740,7 @@ const make = Effect.gen(function* () {
             yield* settle(
               row,
               "cancelled",
-              `Your message to '${thread.title}' on ${ownLabel} was taken back before it ran.`,
+              `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
             );
           }
           return;
@@ -1754,7 +1755,7 @@ const make = Effect.gen(function* () {
             yield* settle(
               row,
               "failed",
-              `The user on ${ownLabel} ${event.type === "thread.deleted" ? "deleted" : "archived"} that thread before it finished.`,
+              `The user on ${ownLabel()} ${event.type === "thread.deleted" ? "deleted" : "archived"} that thread before it finished.`,
             );
           }
           return;
@@ -1796,7 +1797,7 @@ const make = Effect.gen(function* () {
         }
         return starts;
       }),
-      Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)),
+      Effect.mapError(() => peerError(`${ownLabel()} couldn't read the thread's turns.`)),
     );
 
   /**
@@ -1835,7 +1836,9 @@ const make = Effect.gen(function* () {
           .getCommandReceipt(
             childRequestCommandId(linkBootstrapKey(before.linkDeviceId, before.requestId), "turn"),
           )
-          .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the request's turn.`)));
+          .pipe(
+            Effect.mapError(() => peerError(`${ownLabel()} couldn't read the request's turn.`)),
+          );
         if (Option.isNone(turnReceipt) || turnReceipt.value.status !== "accepted") {
           yield* bootstrapRequest(before.linkDeviceId, before.requestId).pipe(Effect.forkDetach);
           return;
@@ -1851,7 +1854,7 @@ const make = Effect.gen(function* () {
       const row = reread.value;
       const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       if (thread === undefined) {
-        yield* settleOrFail(row, "failed", `That thread is gone from ${ownLabel}.`, {
+        yield* settleOrFail(row, "failed", `That thread is gone from ${ownLabel()}.`, {
           error: "The thread is gone.",
         });
         return;
@@ -1887,14 +1890,14 @@ const make = Effect.gen(function* () {
           yield* settleOrFail(
             row,
             "cancelled",
-            `Your message to '${thread.title}' never ran on ${ownLabel}.`,
+            `Your message to '${thread.title}' never ran on ${ownLabel()}.`,
           );
           return;
         }
       }
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the thread's turns.`)));
       const finishedTurnId = finishedTurnAfterRestart(childTurns, {
         ...request,
         status: row.status === "awaiting_background" ? "awaiting_background" : "running",
@@ -1906,7 +1909,7 @@ const make = Effect.gen(function* () {
         delivery.type === "thread.child-request.settle"
           ? delivery.reply.text.replace(
               "was interrupted by a Threadlines restart",
-              `was interrupted by a restart on ${ownLabel}`,
+              `was interrupted by a restart on ${ownLabel()}`,
             )
           : "",
         delivery.type === "thread.child-request.settle"
@@ -2064,7 +2067,7 @@ const make = Effect.gen(function* () {
     for (const row of open) {
       if (row.status !== "awaiting_approval") continue;
       if (Date.parse(row.createdAt) + LINK_APPROVAL_TTL_MS > now) continue;
-      yield* settle(row, "expired", `Nobody on ${ownLabel} answered within a day.`);
+      yield* settle(row, "expired", `Nobody on ${ownLabel()} answered within a day.`);
     }
     yield* ledger
       .prune({

@@ -291,6 +291,7 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
+    subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(Stream.fromSubscription)),
     revoke,
     consume,
   } satisfies BootstrapCredentialServiceShape;

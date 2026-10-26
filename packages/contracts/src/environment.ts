@@ -113,12 +113,24 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * it; clients then hide Settings' Agents group for them.
    */
   outsideAgents: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The user can name this computer (the `computerName` setting) and the
+   * phones, tablets and browsers using it (`/api/auth/clients/rename`).
+   * Older servers omit it; clients then offer no Rename.
+   */
+  deviceNames: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
 export const ExecutionEnvironmentDescriptor = Schema.Struct({
   environmentId: EnvironmentId,
+  /** The computer's name: the user's name for it, or else `systemLabel`. */
   label: TrimmedNonEmptyString,
+  /**
+   * The name the computer's system gives it (macOS's Computer Name, the
+   * Windows device name), which `label` falls back to. Older servers omit it.
+   */
+  systemLabel: Schema.optionalKey(TrimmedNonEmptyString),
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
   capabilities: ExecutionEnvironmentCapabilities,

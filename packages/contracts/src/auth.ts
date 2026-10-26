@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { AuthSessionId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AuthSessionId, DeviceName, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Declares the server's overall authentication posture.
@@ -170,7 +170,13 @@ export const AuthClientMetadataDeviceType = Schema.Literals([
 export type AuthClientMetadataDeviceType = typeof AuthClientMetadataDeviceType.Type;
 
 export const AuthClientMetadata = Schema.Struct({
+  /** What the device called itself when it signed in ("iPhone", "Chrome on Windows"). */
   label: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
+   * The name the computer's user gave this sign-in, shown instead of
+   * `label`. A sign-in is one pairing: a phone that pairs again starts unnamed.
+   */
+  name: Schema.optionalKey(DeviceName),
   ipAddress: Schema.optionalKey(TrimmedNonEmptyString),
   userAgent: Schema.optionalKey(TrimmedNonEmptyString),
   deviceType: AuthClientMetadataDeviceType,
@@ -263,6 +269,13 @@ export const AuthRevokeClientSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
 });
 export type AuthRevokeClientSessionInput = typeof AuthRevokeClientSessionInput.Type;
+
+/** Names a device's sign-in; `null` goes back to what the device called itself. */
+export const AuthRenameClientSessionInput = Schema.Struct({
+  sessionId: AuthSessionId,
+  name: Schema.NullOr(DeviceName),
+});
+export type AuthRenameClientSessionInput = typeof AuthRenameClientSessionInput.Type;
 
 export const AuthCreatePairingCredentialInput = Schema.Struct({
   label: Schema.optionalKey(TrimmedNonEmptyString),

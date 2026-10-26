@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
@@ -81,6 +82,12 @@ export interface SessionCredentialServiceShape {
     SessionCredentialError
   >;
   readonly streamChanges: Stream.Stream<SessionCredentialChange>;
+  /** `streamChanges`, subscribed now: for a reader that lists first, then follows. */
+  readonly subscribeChanges: Effect.Effect<
+    Stream.Stream<SessionCredentialChange>,
+    never,
+    Scope.Scope
+  >;
   /**
    * Resolves once `sessionId` is no longer usable, and resolves immediately when
    * it is already revoked or unknown.
@@ -97,6 +104,20 @@ export interface SessionCredentialServiceShape {
     sessionId: AuthSessionId,
   ) => Effect.Effect<void, SessionCredentialError, Scope.Scope>;
   readonly revoke: (sessionId: AuthSessionId) => Effect.Effect<boolean, SessionCredentialError>;
+  /**
+   * Names a phone, tablet or browser's session (`null`: back to what the
+   * device called itself), announced like any other change. False when there
+   * is no such live session: revoked, expired, unknown, or a linked computer,
+   * which keeps the name it gives itself.
+   */
+  readonly rename: (
+    sessionId: AuthSessionId,
+    name: string | null,
+  ) => Effect.Effect<boolean, SessionCredentialError>;
+  /** The session's device as stored now, a rename included; none once it is revoked. */
+  readonly clientOf: (
+    sessionId: AuthSessionId,
+  ) => Effect.Effect<Option.Option<AuthClientMetadata>, SessionCredentialError>;
   /**
    * Slides a live session's expiry to `ttl` from now (never shortens it).
    * Used for relay devices, which never hold their signed session token, so the

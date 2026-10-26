@@ -304,6 +304,7 @@ describe("ThreadAutoArchiveSweeper", () => {
           }),
         ),
       ),
+      subscribeChanges: Effect.die("unused"),
     };
     const { dispatched, nextDispatch, sweeper } = await createHarness({
       inactiveDays: 0,

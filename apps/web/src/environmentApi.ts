@@ -48,6 +48,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       credit: (input) => rpcClient.previewLoopback.credit(input),
       localServers: () => rpcClient.previewLoopback.localServers(),
     },
+    settings: {
+      update: rpcClient.server.updateSettings,
+    },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,
       writeFile: rpcClient.projects.writeFile,
@@ -210,8 +213,17 @@ export function useEnvironmentApiAvailable(
 ): boolean {
   return useSyncExternalStore(
     subscribeEnvironmentConnections,
-    () => (environmentId ? readEnvironmentApi(environmentId) !== undefined : false),
+    () => (environmentId ? hasEnvironmentApi(environmentId) : false),
     () => false,
+  );
+}
+
+/** Whether readEnvironmentApi would answer now, without building the API to find out. */
+function hasEnvironmentApi(environmentId: EnvironmentId): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    environmentApiOverridesForTests.has(environmentId) ||
+    readEnvironmentConnection(environmentId) !== null
   );
 }
 

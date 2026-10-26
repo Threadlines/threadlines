@@ -84,6 +84,7 @@ import { type TerminalCommandKind, useTerminalCommandsStore } from "../terminalC
 import { derivePendingApprovals } from "../session-logic";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import { openComputerRenameDialog, useComputerNaming } from "./DeviceRenameDialog";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
@@ -565,6 +566,7 @@ export function OpenCommandPaletteDialog() {
   const scheduledTaskEnvironments = useScheduledTaskEnvironments();
   // Heard from only for this computer's owner, where its server takes outside agents.
   const managesOutsideAgents = useOutsideAgentsSnapshot() !== null;
+  const thisComputerNaming = useComputerNaming(primaryEnvironmentId);
   // The active thread's pull request, so the palette can offer its tab. Both
   // reads are the sidebar's: the same refcounted git status and the same open
   // listing key, and neither runs on a thread with no branch to match.
@@ -1759,6 +1761,19 @@ export function OpenCommandPaletteDialog() {
       icon: <CalendarPlusIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/scheduled", search: { view: "new" } });
+      },
+    });
+  }
+  if (thisComputerNaming) {
+    actionItems.push({
+      kind: "action",
+      value: "action:rename-computer",
+      searchTerms: ["rename computer", "computer name", "name this computer", "fleet", "device"],
+      title: "Rename this computer",
+      description: `Now called ${thisComputerNaming.label}`,
+      icon: <PencilIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openComputerRenameDialog(thisComputerNaming);
       },
     });
   }

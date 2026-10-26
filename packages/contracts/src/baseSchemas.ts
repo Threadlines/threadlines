@@ -13,6 +13,13 @@ export const TrimmedString = Schema.String.pipe(
 );
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 
+/** The longest name a user may give a computer or a device. */
+export const DEVICE_NAME_MAX_LENGTH = 64;
+
+/** A name the user gave a computer or a phone, tablet or browser using one. */
+export const DeviceName = TrimmedNonEmptyString.check(Schema.isMaxLength(DEVICE_NAME_MAX_LENGTH));
+export type DeviceName = typeof DeviceName.Type;
+
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));

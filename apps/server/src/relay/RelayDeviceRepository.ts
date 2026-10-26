@@ -157,6 +157,14 @@ export interface RelayDeviceRepositoryShape {
     readonly environmentId?: string;
     readonly now: string;
   }) => Effect.Effect<void, RelayRepositoryError>;
+  /**
+   * The name a linked computer gives itself now, on its link here. True when
+   * it changed.
+   */
+  readonly setLinkLabel: (input: {
+    readonly deviceId: string;
+    readonly label: string;
+  }) => Effect.Effect<boolean, RelayRepositoryError>;
   readonly insertInvite: (row: RelayInviteRow) => Effect.Effect<void, RelayRepositoryError>;
   readonly getInvite: (
     inviteId: string,
@@ -347,6 +355,16 @@ const make = Effect.gen(function* () {
       WHERE device_id = ${input.deviceId}
     `.pipe(Effect.asVoid, wrap("touchLink"));
 
+  const setLinkLabel: RelayDeviceRepositoryShape["setLinkLabel"] = (input) =>
+    sql<{ readonly deviceId: string }>`
+      UPDATE relay_devices SET label = ${input.label}
+      WHERE device_id = ${input.deviceId} AND label != ${input.label}
+      RETURNING device_id AS "deviceId"
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      wrap("setLinkLabel"),
+    );
+
   const insertInvite: RelayDeviceRepositoryShape["insertInvite"] = (row) =>
     sql`
       INSERT INTO relay_invites (
@@ -473,6 +491,7 @@ const make = Effect.gen(function* () {
     insertApproving,
     setLinkSettings,
     touchLink,
+    setLinkLabel,
     insertInvite,
     getInvite,
     updateInvite,

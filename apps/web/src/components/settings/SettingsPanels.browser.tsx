@@ -77,6 +77,7 @@ import {
   type ComputerLinksClient,
   useComputerLinksStore,
 } from "../../environments/links/computerLinks";
+import { DeviceRenameDialogHost } from "../DeviceRenameDialog";
 import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
 import { OutsideAgentsHost } from "../outsideAgents/OutsideAgentsHost";
 import { ConnectionsSettings } from "./ConnectionsSettings";
@@ -1148,6 +1149,7 @@ describe("GeneralSettingsPanel observability", () => {
     resetServerStateForTests();
     await __resetLocalApiForTests();
     authAccessHarness.reset();
+    __resetEnvironmentApiOverridesForTests();
   });
 
   it("lets a browser-served owner connect devices without listing its own tab", async () => {
@@ -1892,6 +1894,99 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByRole("button", { name: "Remove all", exact: true }))
       .not.toBeDisabled();
+  });
+
+  it("renames this computer and tells apart, then renames, two phones", async () => {
+    window.desktopBridge = createDesktopBridgeStub();
+    const iPhone = (sessionId: string, issuedAt: string, name?: string) =>
+      makeClientSession({
+        sessionId,
+        subject: "relay-device",
+        role: "client",
+        method: "bearer-session-token",
+        client: { label: "iPhone", deviceType: "mobile", os: "iOS", ...(name ? { name } : {}) },
+        issuedAt,
+        expiresAt: "2036-05-05T00:00:00.000Z",
+        connected: false,
+        current: false,
+      });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [
+        iPhone("session-first", "2036-04-02T09:00:00.000Z"),
+        iPhone("session-second", "2036-04-05T18:00:00.000Z"),
+      ],
+    });
+    const renames: Array<unknown> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/api/auth/clients/rename") && init?.method === "POST") {
+          renames.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ renamed: true }), { status: 200 });
+        }
+        throw new Error(`Unhandled fetch ${init?.method ?? "GET"} ${url}`);
+      }),
+    );
+    const base = createBaseServerConfig();
+    const named = (label: string, computerName: string | null): ServerConfig => ({
+      ...base,
+      environment: {
+        ...base.environment,
+        label,
+        systemLabel: "WILFREDO",
+        platform: { os: "windows", arch: "x64" },
+        capabilities: { ...base.environment.capabilities, deviceNames: true },
+      },
+      settings: { ...base.settings, computerName },
+    });
+    const updateSettings = vi.fn<EnvironmentApi["settings"]["update"]>(async (patch) => ({
+      ...base.settings,
+      computerName: patch.computerName ?? null,
+    }));
+    __setEnvironmentApiOverrideForTests(base.environment.environmentId, {
+      settings: { update: updateSettings },
+    } as unknown as EnvironmentApi);
+    setServerConfigSnapshot(named("WILFREDO", null));
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectionsSettings />
+        <DeviceRenameDialogHost />
+      </TestAppProviders>,
+    );
+
+    // This computer: saved on it, and the new name comes back from it.
+    await page.getByTestId("connections-rename-computer").click();
+    await expect.element(page.getByTestId("computer-rename-dialog")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Leave it empty to use WILFREDO, the name Windows gives it."))
+      .toBeInTheDocument();
+    await page.getByTestId("computer-rename-input").fill("Windows PC");
+    await page.getByTestId("computer-rename-save").click();
+    await expect.element(page.getByTestId("computer-rename-dialog")).not.toBeInTheDocument();
+    expect(updateSettings).toHaveBeenCalledWith({ computerName: "Windows PC" });
+    setServerConfigSnapshot(named("Windows PC", "Windows PC"));
+    await expect.element(page.getByText("Windows PC", { exact: true })).toBeInTheDocument();
+
+    // Two iPhones nobody named say when they paired.
+    const firstRow = page.getByText(/^iPhone \(paired .+\)$/).first();
+    await expect.element(firstRow).toBeInTheDocument();
+    await expect.element(page.getByText(/^iPhone \(paired .+\)$/).nth(1)).toBeInTheDocument();
+    await page.getByTestId("device-rename-session-first").click();
+    await expect.element(page.getByTestId("device-rename-input")).toHaveValue("iPhone");
+    await page.getByTestId("device-rename-input").fill("Kitchen phone");
+    // Enter saves, like the button.
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByTestId("device-rename-dialog")).not.toBeInTheDocument();
+    expect(renames).toEqual([{ sessionId: "session-first", name: "Kitchen phone" }]);
+    authAccessHarness.emitClientUpserted(
+      iPhone("session-first", "2036-04-02T09:00:00.000Z", "Kitchen phone"),
+    );
+    await expect.element(page.getByText("Kitchen phone", { exact: true })).toBeInTheDocument();
+    // The other one is the only iPhone now: its name alone tells it apart.
+    await expect.element(page.getByText("iPhone", { exact: true })).toBeInTheDocument();
   });
 
   it("turns on same-network access from connection options after a restart warning", async () => {

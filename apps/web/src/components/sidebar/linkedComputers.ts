@@ -26,9 +26,12 @@ import { failureNotice, toastManager } from "../ui/toast";
 export type ComputerLabelResolver = (environmentId: EnvironmentId, lastKnown: string) => string;
 
 /**
- * Names a computer the way the app knows it: what it calls itself now (this
- * computer's own descriptor, or a saved computer's), else the name it was
- * saved under, else `lastKnown`, the name a link or a parent's record of its
+ * Names a computer the way the app knows it, newest first: what it calls
+ * itself now (this computer's own descriptor, or a connected computer's),
+ * else what a connected computer's live link to it says (it said so when it
+ * last called, so this follows a rename while this app can't reach it), else
+ * the name this app last had for it (its last descriptor, its saved record, a
+ * link only remembered), else `lastKnown`, the name a parent's record of its
  * child last carried. Never "here": a phone or a browser showing this list
  * isn't a computer.
  */
@@ -36,17 +39,55 @@ export function useComputerLabel(): ComputerLabelResolver {
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const savedById = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const linksByEnvironmentId = useComputerLinksStore((state) => state.byEnvironmentId);
+  const linked = useMemo(() => linkedComputerLabels(linksByEnvironmentId), [linksByEnvironmentId]);
   return useCallback(
     (environmentId, lastKnown) => {
       if (primaryDescriptor?.environmentId === environmentId) return primaryDescriptor.label;
+      const runtime = runtimeById[environmentId];
+      if (runtime?.connectionState === "connected" && runtime.descriptor) {
+        return runtime.descriptor.label;
+      }
       return (
-        runtimeById[environmentId]?.descriptor?.label ??
+        linked.live.get(environmentId) ??
+        runtime?.descriptor?.label ??
         savedById[environmentId]?.label ??
+        linked.remembered.get(environmentId) ??
         lastKnown
       );
     },
-    [primaryDescriptor, runtimeById, savedById],
+    [primaryDescriptor, runtimeById, savedById, linked],
   );
+}
+
+/**
+ * What connected computers' links call each computer they link with: from
+ * links whose computer is connected now (`live`), and from the snapshots kept
+ * after a computer went away (`remembered`). Both halves a computer holds for
+ * another carry the same name: the one that computer gave itself.
+ */
+function linkedComputerLabels(byEnvironmentId: Readonly<Record<string, ComputerLinksEntry>>): {
+  readonly live: ReadonlyMap<string, string>;
+  readonly remembered: ReadonlyMap<string, string>;
+} {
+  const live = new Map<string, string>();
+  const remembered = new Map<string, string>();
+  for (const entry of Object.values(byEnvironmentId)) {
+    const labels = entry.live ? live : remembered;
+    // A link being removed, or removed, keeps whatever name it last had.
+    for (const link of entry.snapshot.outbound) {
+      if (link.state === "active" || link.state === "failed") {
+        labels.set(link.remoteEnvironmentId, link.remoteLabel);
+      }
+    }
+    // An unconfirmed inbound link could claim another computer's id.
+    for (const link of entry.snapshot.inbound) {
+      if (link.environmentId !== null && link.environmentPinned === true) {
+        labels.set(link.environmentId, link.label);
+      }
+    }
+  }
+  return { live, remembered };
 }
 
 /** A thread another computer asked to start on `environmentId`, waiting for the user. */

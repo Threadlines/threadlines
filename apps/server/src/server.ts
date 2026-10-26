@@ -139,6 +139,7 @@ import {
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
+  authClientsRenameRouteLayer,
   authClientsRevokeRouteLayer,
   authClientsRouteLayer,
   authPairingLinksRevokeRouteLayer,
@@ -581,7 +582,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
-  Layer.provideMerge(ServerEnvironmentLive),
+  // Below the settings in this chain but follows the computer's name in them:
+  // the same layer, so the one instance.
+  Layer.provideMerge(ServerEnvironmentLive.pipe(Layer.provide(ServerSettingsLive))),
   Layer.provideMerge(AuthLayerLive),
 );
 
@@ -619,6 +622,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
+  authClientsRenameRouteLayer,
   authClientsRevokeRouteLayer,
   authClientsRouteLayer,
   authPairingLinksRevokeRouteLayer,

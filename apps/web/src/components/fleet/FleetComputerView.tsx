@@ -1,5 +1,6 @@
 import type { EnvironmentId, InboundComputerLink } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { PencilIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
@@ -12,6 +13,7 @@ import {
 } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
+import { openComputerRenameDialog, useComputerNaming } from "../DeviceRenameDialog";
 import { PageTitlebar } from "../PageTitlebar";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
 import {
@@ -295,6 +297,11 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   const entry = directory.find((candidate) => candidate.key === entryKey) ?? null;
   const computer: FleetComputer | null =
     computers.find((candidate) => candidate.id === entryKey) ?? null;
+  // This computer and the ones this app connects to; a linked one is renamed
+  // where this app reaches it, if it does.
+  const naming = useComputerNaming(
+    entry?.kind === "this" || entry?.kind === "saved" ? entry.environmentId : null,
+  );
   // A computer waiting to say which it is just did: its page moves to the
   // computer's own address, in place.
   const introducedAs = useMemo(() => {
@@ -437,7 +444,19 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
       className="flex h-full min-h-0 w-full min-w-0 flex-col bg-background"
       data-testid="fleet-computer-view"
     >
-      <PageTitlebar label={entry.label} />
+      <PageTitlebar label={entry.label}>
+        {naming ? (
+          <button
+            type="button"
+            className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+            data-testid="fleet-rename-computer"
+            onClick={() => openComputerRenameDialog(naming)}
+          >
+            <PencilIcon aria-hidden className="size-3.5" />
+            Rename
+          </button>
+        ) : null}
+      </PageTitlebar>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-7 px-4 pt-5 pb-12 sm:px-8 sm:pt-8">
           <header className="space-y-1 px-1">

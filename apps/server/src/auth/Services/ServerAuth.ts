@@ -81,6 +81,15 @@ export interface ServerAuthShape {
   readonly revokeOtherClientSessions: (
     currentSessionId: AuthSessionId,
   ) => Effect.Effect<number, AuthError>;
+  /**
+   * Names a phone, tablet or browser using this computer; `null` goes back to
+   * what it called itself. Fails 400 for a session that isn't a live device
+   * (a linked computer keeps the name it gives itself).
+   */
+  readonly renameClientSession: (
+    targetSessionId: AuthSessionId,
+    name: string | null,
+  ) => Effect.Effect<void, AuthError>;
   /** Any client app's request. A linked computer's (`peer`) session is refused. */
   readonly authenticateHttpRequest: (
     request: HttpServerRequest.HttpServerRequest,

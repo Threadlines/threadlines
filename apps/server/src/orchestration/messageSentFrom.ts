@@ -9,7 +9,8 @@ import type {
 
 /**
  * The device a client session was issued to, as a user message records it
- * (see MessageSentFrom). Undefined for a device of unknown kind.
+ * (see MessageSentFrom): by the name its user gave it, else what it called
+ * itself. Undefined for a device of unknown kind.
  */
 export function messageSentFromClient(client: AuthClientMetadata): MessageSentFrom | undefined {
   const kind =
@@ -23,9 +24,10 @@ export function messageSentFromClient(client: AuthClientMetadata): MessageSentFr
   if (kind === undefined) {
     return undefined;
   }
+  const name = client.name ?? client.label;
   return {
     kind,
-    ...(client.label !== undefined ? { name: client.label } : {}),
+    ...(name !== undefined ? { name } : {}),
     ...(client.os !== undefined ? { os: client.os } : {}),
   };
 }
@@ -39,19 +41,22 @@ export function withMessageSentFrom(
   command: OrchestrationCommand,
   sentFrom: MessageSentFrom | undefined,
 ): OrchestrationCommand {
-  if (sentFrom === undefined) {
-    return command;
-  }
-  switch (command.type) {
-    case "thread.turn.start":
-    case "thread.follow-up.submit":
-    case "thread.fork":
-    case "thread.side-turn.start":
-    case "thread.user-input.respond":
-      return { ...command, sentFrom };
-    default:
-      return command;
-  }
+  return sentFrom !== undefined && writesUserMessage(command) ? { ...command, sentFrom } : command;
+}
+
+const USER_MESSAGE_COMMANDS = [
+  "thread.turn.start",
+  "thread.follow-up.submit",
+  "thread.fork",
+  "thread.side-turn.start",
+  "thread.user-input.respond",
+] as const satisfies ReadonlyArray<OrchestrationCommand["type"]>;
+
+/** Whether the command writes a user message, so `withMessageSentFrom` stamps it. */
+export function writesUserMessage(
+  command: OrchestrationCommand,
+): command is Extract<OrchestrationCommand, { type: (typeof USER_MESSAGE_COMMANDS)[number] }> {
+  return (USER_MESSAGE_COMMANDS as ReadonlyArray<string>).includes(command.type);
 }
 
 /** A device's name or OS as a note quotes it: one short line, no quotes of its own. */

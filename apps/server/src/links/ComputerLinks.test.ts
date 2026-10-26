@@ -108,17 +108,7 @@ const makeComputer = Effect.gen(function* () {
   ).pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "computer-links-test-" })),
-    Layer.provideMerge(
-      Layer.mock(ServerEnvironment)({
-        getDescriptor: Effect.succeed({
-          environmentId: MAC,
-          label: "Mac",
-          platform: { os: "darwin", arch: "arm64" },
-          serverVersion: "0.0.0",
-          capabilities: { repositoryIdentity: true },
-        }),
-      }),
-    ),
+    Layer.provideMerge(ServerEnvironment.layerTest({ environmentId: MAC, label: "Mac" })),
   );
   const context = yield* Layer.buildWithScope(base, scope);
   const realClient = Context.get(
@@ -822,5 +812,47 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
       );
       assert.equal(Option.getOrThrow(yield* computer.repo.get(removed.linkId)).state, "revoked");
     }),
+  );
+});
+
+it.layer(NodeServices.layer)("ComputerLinks names", (it) => {
+  it.effect(
+    "a linked computer's new name reaches both halves held for it, and an unconfirmed one names only its own link",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        const links = yield* computer.boot;
+        const windows = EnvironmentId.make("env-windows");
+        yield* computer.addLink(outboundLink("link-windows", windows, "Wilfredo"));
+        yield* computer.addInboundLink({ deviceId: "device-windows", environmentId: windows });
+        yield* computer.addInboundLink({
+          deviceId: "device-unconfirmed",
+          environmentId: windows,
+          pinned: false,
+        });
+
+        // It called with its new name.
+        yield* links.noteRemoteLabel({
+          deviceId: "device-windows",
+          environmentId: windows,
+          label: "Windows PC",
+        });
+        // A link the invite never confirmed says it's that computer too.
+        yield* links.noteRemoteLabel({
+          deviceId: "device-unconfirmed",
+          environmentId: null,
+          label: "Not Windows",
+        });
+
+        const snapshot = yield* links.snapshot;
+        assert.deepEqual(
+          snapshot.outbound.map((link) => link.remoteLabel),
+          ["Windows PC"],
+        );
+        assert.deepEqual(
+          Object.fromEntries(snapshot.inbound.map((link) => [link.deviceId, link.label])),
+          { "device-windows": "Windows PC", "device-unconfirmed": "Not Windows" },
+        );
+      }),
   );
 });
