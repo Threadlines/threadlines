@@ -6,6 +6,10 @@
  * processor time even hidden (Chromium slows a hidden page's timers but not
  * its other work). So pages step down as they sit idle:
  *
+ * - working: an agent touched it recently, on screen or not. Kept painting
+ *   even while the window is hidden, which on Windows it otherwise is not;
+ *   settles to plain active once the agent has left it for
+ *   {@link LIFECYCLE_LIMITS.drawnForMs}.
  * - drawn: an agent touched it recently. Invisible but still painted, so a
  *   screenshot works -- Chromium produces no picture of a hidden page at all.
  * - background: idle for {@link LIFECYCLE_LIMITS.drawnForMs}, or off screen
@@ -32,7 +36,7 @@ export interface LifecycleLimits {
 }
 
 export const LIFECYCLE_LIMITS: LifecycleLimits = {
-  /** How long a page stays painted after an agent last touched it. */
+  /** How long a page stays painted, and working, after an agent last touched it. */
   drawnForMs: 60_000,
   /**
    * How long a page must sit idle and unseen before it is frozen. Short,
@@ -54,7 +58,7 @@ export const LIFECYCLE_LIMITS: LifecycleLimits = {
 };
 
 /** How the desktop runs a page; see `DesktopPreviewLifecycleInputSchema`. */
-export type PageRunState = "active" | "background" | "frozen";
+export type PageRunState = "working" | "active" | "background" | "frozen";
 
 export interface LifecyclePage {
   readonly key: string;
@@ -75,6 +79,8 @@ export interface LifecyclePage {
 }
 
 export interface LifecyclePlan {
+  /** On screen, and its agent is done with it: run as a plain active page. */
+  readonly settle: ReadonlyArray<string>;
   /** Stop painting and run as a background tab: no agent has touched it for a while. */
   readonly background: ReadonlyArray<string>;
   readonly freeze: ReadonlyArray<string>;
@@ -87,6 +93,7 @@ export function planBrowserLifecycle(
   now: number,
   limits: LifecycleLimits = LIFECYCLE_LIMITS,
 ): LifecyclePlan {
+  const settle: string[] = [];
   const background: string[] = [];
   const freeze: string[] = [];
   const evictable: LifecyclePage[] = [];
@@ -95,14 +102,17 @@ export function planBrowserLifecycle(
 
   for (const page of pages) {
     memoryKb += page.memoryKb ?? 0;
+    const busy = page.inFlight > 0 || page.awaitingUser;
+    const sinceAgent = now - page.lastAgentAt;
+    const agentDone = !busy && sinceAgent >= limits.drawnForMs;
     if (page.shown) {
+      if (page.state === "working" && agentDone) settle.push(page.key);
       continue;
     }
     backgroundPages += 1;
-    const busy = page.inFlight > 0 || page.awaitingUser;
-    const sinceAgent = now - page.lastAgentAt;
     const idleFor = now - Math.max(page.lastAgentAt, page.lastShownAt);
-    if ((page.drawn || page.state === "active") && !busy && sinceAgent >= limits.drawnForMs) {
+    const running = page.state === "active" || page.state === "working";
+    if ((page.drawn || running) && agentDone) {
       background.push(page.key);
     }
     if (page.state !== "frozen" && !busy && idleFor >= limits.freezeAfterMs) {
@@ -129,6 +139,7 @@ export function planBrowserLifecycle(
 
   const evicted = new Set(evict);
   return {
+    settle,
     background: background.filter((key) => !evicted.has(key)),
     freeze: freeze.filter((key) => !evicted.has(key)),
     evict,

@@ -122,6 +122,13 @@ const MAX_NETWORK_FAILURES = 100;
 const CDP_COMMAND_TIMEOUT = "15 seconds";
 const PAGE_DID_NOT_ANSWER = "the page did not answer in time";
 /**
+ * Said when a capture times out. A capture waits for the page to draw, which
+ * it can stop doing while the rest of it still answers; said plainly so the
+ * agent does not guess at a reason.
+ */
+const PAGE_DID_NOT_DRAW =
+  "the page did not draw a new picture in time. browser_snapshot and browser_evaluate still work, and a later screenshot may succeed";
+/**
  * How long a capture may take while the screen is locked. A capture normally
  * answers in well under a second, and a locked Mac's waits until the user is
  * back, so this is only long enough to take a picture on a system that does
@@ -264,6 +271,10 @@ interface FrameOwner {
   readonly ownerBackendNodeId: number;
 }
 
+/** Whether a page in this state runs normally, with focus emulated. */
+const runsInFull = (state: DesktopPreviewLifecycleState): boolean =>
+  state === "active" || state === "working";
+
 /** What a named target that matched nothing says, in the page or its frames. */
 const namedTargetMissing = (target: NamedTarget): string =>
   "selector" in target
@@ -375,8 +386,9 @@ export class PreviewAutomation extends Context.Service<
     /**
      * Sets how a page runs; see `DesktopPreviewLifecycleInputSchema`. Changes
      * for one page apply in the order they were asked for, so a wake asked for
-     * after a freeze always lands last; and every other command makes a page
-     * active first, so nothing ever waits on a page that cannot answer.
+     * after a freeze always lands last; and every other command makes a
+     * background or frozen page active first, so nothing ever waits on a page
+     * that cannot answer.
      */
     readonly setLifecycle: (
       webContentsId: number,
@@ -502,7 +514,10 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * frame that comes only once the user is back: every screenshot timeout
    * traced in the logs happened while the Mac was locked. Covered, minimised
    * and hidden windows are not the same -- tried on a real window, all three
-   * captured a fresh picture in under a tenth of a second. `powerMonitor`
+   * captured a fresh picture in under a tenth of a second on macOS. On Windows
+   * a minimised window's pages draw about twice a second, so a capture takes a
+   * few seconds, and a hidden one's draw only while `working` (see
+   * `setLifecycle`). `powerMonitor`
    * cannot be used before the app is ready, which is after this service is
    * built, hence the wait.
    */
@@ -1878,7 +1893,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     // run in the background: see `setLifecycle`.
     const lifecycleState = lifecycles.get(webContentsId)?.state ?? "active";
     yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", {
-      enabled: lifecycleState === "active",
+      enabled: runsInFull(lifecycleState),
     }).pipe(Effect.ignore);
 
     return buildStatus(webContentsId, contents);
@@ -1901,6 +1916,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * visible one: it is never slowed when hidden, and a freeze is silently
    * ignored. So a page sent to the background loses it, and gets it back when
    * it is next shown or acted on.
+   *
+   * A `working` page also has background throttling off. Focus emulation keeps
+   * a page painting in a hidden window on macOS but not on Windows, where a
+   * window closed to the tray stops drawing its pages altogether and a capture
+   * waits forever. With throttling off on one page, Electron keeps the whole
+   * window drawing, which is why only pages an agent is using get it.
    */
   /**
    * Each guest's frame numbers (the `2` in a ref `f2e7`), by frame id, and the
@@ -1953,10 +1974,14 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         if (from === "frozen") {
           yield* sendCommand(contents, "Page.setWebLifecycleState", { state: "active" });
         }
-        if ((from === "active") !== (state === "active")) {
+        if (runsInFull(from) !== runsInFull(state)) {
           yield* sendCommand(contents, "Emulation.setFocusEmulationEnabled", {
-            enabled: state === "active",
+            enabled: runsInFull(state),
           });
+        }
+        if ((from === "working") !== (state === "working")) {
+          // Kept by Electron for the page's life, new renderers included.
+          contents.setBackgroundThrottling(state !== "working");
         }
         if (state === "frozen") {
           yield* sendCommand(contents, "Page.setWebLifecycleState", { state: "frozen" });
@@ -1973,7 +1998,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     // A frozen page answers nothing, so a command for one would only time out,
     // and one without focus emulation can lose its menus to a blur. The panel
     // readies pages before acting on them; this is the backstop.
-    if ((lifecycles.get(webContentsId)?.state ?? "active") !== "active") {
+    if (!runsInFull(lifecycles.get(webContentsId)?.state ?? "active")) {
       yield* setLifecycle(webContentsId, "active");
     }
     return yield* resolve(webContentsId);
@@ -2623,10 +2648,11 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       const contents = yield* resolveAttached(input.webContentsId);
       const forAgent = input.forAgent === true;
       // Captured through CDP rather than capturePage so the image is the page
-      // itself, whether the window is covered, minimised or hidden. Not while
-      // the screen is locked: nothing is painted, and the capture would wait
-      // until the user is back. So then it gets a short wait, and an answer
-      // that says why.
+      // itself, whether the window is covered, minimised or hidden (a hidden
+      // window's page has to be `working` on Windows; the panel makes an
+      // agent's pages so). Not while the screen is locked: nothing is
+      // painted, and the capture would wait until the user is back. So then
+      // it gets a short wait, and an answer that says why.
       const lockedAtStart = isScreenLocked();
       const shot = (yield* sendCommand(
         contents,
@@ -2641,7 +2667,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         },
         {
           timeout: lockedAtStart ? LOCKED_CAPTURE_TIMEOUT : CDP_COMMAND_TIMEOUT,
-          timedOut: () => (lockedAtStart || isScreenLocked() ? SCREEN_LOCKED : PAGE_DID_NOT_ANSWER),
+          timedOut: () => (lockedAtStart || isScreenLocked() ? SCREEN_LOCKED : PAGE_DID_NOT_DRAW),
         },
       )) as { data?: string };
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {

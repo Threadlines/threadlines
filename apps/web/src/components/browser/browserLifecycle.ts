@@ -60,17 +60,22 @@ async function setRunState(
     return;
   }
   runStateByPage.set(key, state);
-  await window.desktopBridge
-    ?.previewSetLifecycle?.({ webContentsId, state })
-    .catch(() => runStateByPage.delete(key));
+  await window.desktopBridge?.previewSetLifecycle?.({ webContentsId, state }).catch(() => {
+    // Unknown now, unless a newer change was asked for since: that one owns
+    // the record.
+    if (runStateByPage.get(key) === state) runStateByPage.delete(key);
+  });
 }
 
 /**
  * Makes a page run normally again. The desktop does the same before any
- * command on a page; asking here first means it is running before the
- * agent's action, not as a side effect of it.
+ * command on a page. A page an agent is working on already runs in full and
+ * is left so.
  */
 function wake(threadRef: ScopedThreadRef, tabId: string): Promise<void> {
+  if (runStateByPage.get(livePageKey(threadRef, tabId)) === "working") {
+    return Promise.resolve();
+  }
   return setRunState(threadRef, tabId, "active");
 }
 
@@ -89,9 +94,11 @@ function nextPaint(): Promise<void> {
 
 /**
  * Marks a page as in use by an agent for the length of one request: painted
- * if hidden (so a screenshot has something to capture), awake if frozen, and
- * out of reach of the lifecycle until well after the request ends. Returns
- * the call that ends it.
+ * if hidden (so a screenshot has something to capture), working (awake, and
+ * painted even while the window is hidden or closed to the tray), and out of
+ * reach of the lifecycle until well after the request ends. Asked for before
+ * the agent's action rather than left to the desktop's own backstop, so the
+ * page is ready first. Returns the call that ends it.
  */
 export async function beginAgentWork(
   threadRef: ScopedThreadRef,
@@ -109,7 +116,7 @@ export async function beginAgentWork(
     live.setPageState(threadRef, tabId, { drawn: true });
     await nextPaint();
   }
-  await wake(threadRef, tabId);
+  await setRunState(threadRef, tabId, "working");
 
   let ended = false;
   return () => {
@@ -172,8 +179,14 @@ export function forgetThreadPages(threadRef: ScopedThreadRef): void {
   }
 }
 
-/** Whether any running page is off screen: the only case the check has work. */
-export function hasBackgroundPages(): boolean {
+/**
+ * Whether the check has work: a running page is off screen, or a page an
+ * agent was working on may be done with.
+ */
+export function hasLifecycleWork(): boolean {
+  for (const state of runStateByPage.values()) {
+    if (state === "working") return true;
+  }
   const live = useBrowserLiveStore.getState();
   const panel = useBrowserPanelStore.getState();
   for (const [threadKey, browser] of Object.entries(live.liveByThreadKey)) {
@@ -194,6 +207,18 @@ export function hasBackgroundPages(): boolean {
 export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> {
   const live = useBrowserLiveStore.getState();
   const panel = useBrowserPanelStore.getState();
+  // A tab closed while its agent was working leaves nothing to settle, and
+  // would otherwise keep this check running. Read against the same moment as
+  // the stores, before anything is awaited, so a tab opened and put to work
+  // since is never taken for a closed one.
+  const openPages = new Set<string>();
+  for (const browser of Object.values(live.liveByThreadKey)) {
+    const state = selectThreadBrowserState(panel.browserStateByThreadKey, browser.threadRef);
+    for (const tab of state.tabs) openPages.add(livePageKey(browser.threadRef, tab.id));
+  }
+  for (const [key, state] of runStateByPage) {
+    if (state === "working" && !openPages.has(key)) runStateByPage.delete(key);
+  }
   const memory = await window.desktopBridge?.previewMemory?.().catch(() => null);
   const shareByWebContents = new Map<number, number>();
   for (const process of memory?.processes ?? []) {
@@ -245,24 +270,34 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
   // agent picked up, or the user brought on screen, since the snapshot is left
   // alone; checked right before each step, with no await in between, so a
   // wake asked for afterwards is always sent after the freeze it undoes.
+  const agentIdle = (page: { key: string; threadRef: ScopedThreadRef; tabId: string }) => {
+    const activity = activityByPage.get(page.key);
+    return (
+      (activity?.inFlight ?? 0) === 0 &&
+      (activity?.lastAgentAt ?? 0) <= now &&
+      // Nor is one that opened a sign-in pop-up since: it waits on the user.
+      signInPopupsOf(webContentsIdOf(page.threadRef, page.tabId)).length === 0
+    );
+  };
   const stillIdle = (page: {
     key: string;
     threadRef: ScopedThreadRef;
     tabId: string;
     lastShownAt: number;
-  }) => {
-    const activity = activityByPage.get(page.key);
-    return (
-      (activity?.inFlight ?? 0) === 0 &&
-      (activity?.lastAgentAt ?? 0) <= now &&
-      // Seen since the snapshot -- shown and hidden again while an earlier
-      // step awaited the desktop -- is not idle either.
-      (lastShownAtByPage.get(page.key) ?? 0) <= page.lastShownAt &&
-      !isPageShown(page.threadRef, page.tabId) &&
-      // Nor is one that opened a sign-in pop-up since: it waits on the user.
-      signInPopupsOf(webContentsIdOf(page.threadRef, page.tabId)).length === 0
-    );
-  };
+  }) =>
+    agentIdle(page) &&
+    // Seen since the snapshot -- shown and hidden again while an earlier
+    // step awaited the desktop -- is not idle either.
+    (lastShownAtByPage.get(page.key) ?? 0) <= page.lastShownAt &&
+    !isPageShown(page.threadRef, page.tabId);
+  for (const key of plan.settle) {
+    const page = byKey.get(key);
+    // Gone off screen since, it is the background step's next time.
+    if (page === undefined || !agentIdle(page) || !isPageShown(page.threadRef, page.tabId)) {
+      continue;
+    }
+    await setRunState(page.threadRef, page.tabId, "active");
+  }
   for (const key of plan.background) {
     const page = byKey.get(key);
     if (page === undefined || !stillIdle(page)) continue;
@@ -287,7 +322,13 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
   const evicted = new Set(plan.evict);
   for (const page of pages) {
     const state = runStateByPage.get(page.key);
-    if (state === undefined || state === "active" || evicted.has(page.key) || !stillIdle(page)) {
+    if (
+      state === undefined ||
+      state === "active" ||
+      state === "working" ||
+      evicted.has(page.key) ||
+      !stillIdle(page)
+    ) {
       continue;
     }
     const webContentsId = webContentsIdOf(page.threadRef, page.tabId);
