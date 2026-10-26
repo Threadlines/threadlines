@@ -25,7 +25,7 @@
     "@threadlines/tailscale": "workspace:*",
     "effect": "catalog:",
     "electron": "43.8.1",
-    "electron-updater": "^6.8.10"
+    "electron-updater": "^6.8.11"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
