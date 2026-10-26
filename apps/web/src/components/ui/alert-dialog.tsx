@@ -3,6 +3,7 @@
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
 import { useCallback, useRef } from "react";
 
+import { useOnScreenKeyboardInsetVars } from "~/hooks/useOnScreenKeyboardInset";
 import { cn } from "~/lib/utils";
 import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 
@@ -62,14 +63,20 @@ function AlertDialogBackdrop({ className, ...props }: AlertDialogPrimitive.Backd
   );
 }
 
-function AlertDialogViewport({ className, ...props }: AlertDialogPrimitive.Viewport.Props) {
+/** Keeps the dialog above an on-screen keyboard, as DialogViewport does. */
+function AlertDialogViewport({
+  className,
+  ...props
+}: Omit<AlertDialogPrimitive.Viewport.Props, "style">) {
+  const keyboardInsetVars = useOnScreenKeyboardInsetVars(true);
   return (
     <AlertDialogPrimitive.Viewport
       className={cn(
-        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 p-4 backdrop-blur-[2px] dark:bg-black/28",
+        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 p-4 pt-[calc(1rem+var(--keyboard-inset-top))] pb-[calc(1rem+var(--keyboard-inset-bottom))] backdrop-blur-[2px] dark:bg-black/28",
         className,
       )}
       data-slot="alert-dialog-viewport"
+      style={keyboardInsetVars}
       {...props}
     />
   );
@@ -93,7 +100,10 @@ function AlertDialogPopup({
     <AlertDialogPortal>
       <AlertDialogBackdrop />
       <AlertDialogViewport
-        className={cn(bottomStickOnMobile && "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12")}
+        className={cn(
+          bottomStickOnMobile &&
+            "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-[calc(3rem+var(--keyboard-inset-top))] max-sm:pb-(--keyboard-inset-bottom)",
+        )}
       >
         <AlertDialogPrimitive.Popup
           className={cn(

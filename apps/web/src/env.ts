@@ -29,3 +29,11 @@ export function isIosHomeScreenApp(): boolean {
     navigator.maxTouchPoints > 0
   );
 }
+
+/**
+ * Whether this is an iPhone (or iPod touch), in Safari, the home-screen app or
+ * another iOS browser. iPads report themselves as Macs, so they never match.
+ */
+export function isIPhone(): boolean {
+  return typeof navigator !== "undefined" && /\b(?:iPhone|iPod)\b/u.test(navigator.userAgent);
+}

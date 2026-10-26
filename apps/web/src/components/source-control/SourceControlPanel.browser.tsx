@@ -36,8 +36,11 @@ import {
 } from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
+import { showOnScreenKeyboard } from "../../hooks/useOnScreenKeyboardInset.browser-harness";
+import { CHAT_HEADER_BOTTOM_CSS_VAR } from "../../rightPanelLayout";
 import { useStore } from "../../store";
 import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
+import { RightPanelSheet } from "../RightPanelSheet";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
 
 const gitStatusMock = vi.hoisted(() => ({
@@ -433,6 +436,8 @@ async function renderPanel(
     readonly activeThreadRef?: ScopedThreadRef;
     readonly onActiveBranchChange?: (branch: string | null, worktreePath: string | null) => void;
     readonly onOpenDiff?: (filePath?: string) => void;
+    /** Shows the panel the way a phone does: in the sheet over the chat. */
+    readonly inPhoneSheet?: boolean;
   } = {},
 ) {
   const environmentApi = input.environmentApi ?? makeEnvironmentApi();
@@ -453,17 +458,24 @@ async function renderPanel(
   host.style.height = "720px";
   document.body.append(host);
 
+  const panel = (
+    <SourceControlPanel
+      target={target}
+      activeThreadRef={input.activeThreadRef ?? null}
+      {...(input.onActiveBranchChange ? { onActiveBranchChange: input.onActiveBranchChange } : {})}
+      {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
+    />
+  );
   const router = createTestRouter(
     <AppAtomRegistryProvider>
       <QueryClientProvider client={queryClient}>
-        <SourceControlPanel
-          target={target}
-          activeThreadRef={input.activeThreadRef ?? null}
-          {...(input.onActiveBranchChange
-            ? { onActiveBranchChange: input.onActiveBranchChange }
-            : {})}
-          {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
-        />
+        {input.inPhoneSheet ? (
+          <RightPanelSheet open onClose={() => {}}>
+            {panel}
+          </RightPanelSheet>
+        ) : (
+          panel
+        )}
       </QueryClientProvider>
     </AppAtomRegistryProvider>,
   );
@@ -1179,6 +1191,57 @@ describe("SourceControlPanel changes", () => {
       await expect.element(page.getByRole("button", { name: "Commit & push" })).toBeVisible();
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("keeps the commit message above an iPhone keyboard in the phone's panel sheet", async () => {
+    // An iPhone SE: the smallest screen, with its keyboard and the bar of
+    // field arrows above it.
+    const keyboardHeight = 260;
+    await page.viewport(375, 667);
+    document.documentElement.style.setProperty(CHAT_HEADER_BOTTOM_CSS_VAR, "56px");
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status, inPhoneSheet: true });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Write message").click();
+      const textarea = getCommitMessageTextarea();
+      // Under 16px, iPhone Safari zooms the page in when the field takes focus.
+      expect(getComputedStyle(textarea).fontSize).toBe("16px");
+
+      showOnScreenKeyboard({ height: keyboardHeight, pageScrolledUpBy: 0 });
+
+      await vi.waitFor(() => {
+        const popup = textarea.closest<HTMLElement>('[data-slot="drawer-popup"]');
+        expect(popup?.getBoundingClientRect().bottom).toBeCloseTo(
+          window.innerHeight - keyboardHeight,
+          0,
+        );
+        expect(textarea.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+          window.innerHeight - keyboardHeight,
+        );
+      });
+    } finally {
+      vi.restoreAllMocks();
+      document.documentElement.style.removeProperty(CHAT_HEADER_BOTTOM_CSS_VAR);
+      await mounted.cleanup();
+      await page.viewport(1_600, 1_300);
     }
   });
 

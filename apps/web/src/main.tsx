@@ -9,6 +9,7 @@ import "@fontsource-variable/cascadia-mono/index.css";
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
+import { StatusBarEdge } from "./components/StatusBarEdge";
 import { isElectron } from "./env";
 import { isMacPlatform } from "./lib/utils";
 import { getRouter } from "./router";
@@ -36,5 +37,6 @@ document.title = APP_DISPLAY_NAME;
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <RouterProvider router={router} />
+    <StatusBarEdge />
   </React.StrictMode>,
 );
