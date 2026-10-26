@@ -34,14 +34,32 @@ const PROVIDER_LOG_FILE_NAME_PATTERN = /\.log(?:\.\d+)?$/;
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
+export interface EventLogWriteOptions {
+  /**
+   * The record is one token-sized piece of a stream that the log can do
+   * without: its content is written whole once the stream ends, or it has none
+   * (a progress tick). Several land per second for every streaming agent, so
+   * they are left out unless the logger keeps stream fragments. A driver whose
+   * reply text is not written whole when a reply is cut off mid-stream (Claude,
+   * Codex) leaves those pieces unmarked.
+   */
+  readonly streamFragment?: boolean;
+}
+
 export interface EventNdjsonLogger {
   readonly filePath: string;
-  write: (event: unknown, threadId: ThreadId | null) => Effect.Effect<void>;
+  write: (
+    event: unknown,
+    threadId: ThreadId | null,
+    options?: EventLogWriteOptions,
+  ) => Effect.Effect<void>;
   close: () => Effect.Effect<void>;
 }
 
 export interface EventNdjsonLoggerOptions {
   readonly stream: EventNdjsonStream;
+  /** Write records marked as stream fragments too, for debugging streaming. */
+  readonly keepStreamFragments?: boolean;
   readonly maxBytes?: number;
   readonly maxFiles?: number;
   readonly batchWindowMs?: number;
@@ -691,9 +709,14 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
     );
   });
 
+  const keepStreamFragments = options.keepStreamFragments === true;
+
   return {
     filePath,
-    write: (event, threadId) => write(event, threadId).pipe(Effect.withTracerEnabled(false)),
+    write: (event, threadId, writeOptions) =>
+      writeOptions?.streamFragment === true && !keepStreamFragments
+        ? Effect.void
+        : write(event, threadId).pipe(Effect.withTracerEnabled(false)),
     close,
   } satisfies EventNdjsonLogger;
 });

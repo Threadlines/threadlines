@@ -143,9 +143,11 @@ vi.mock("~/store", () => ({
       applyServerShellEvent: vi.fn(),
     }),
   },
+  deferStoreNotifications: (write: () => void) => write(),
   selectProjectsAcrossEnvironments: vi.fn(() => []),
   selectSidebarThreadSummaryByRef: vi.fn(() => null),
   selectThreadByRef: vi.fn(() => null),
+  selectThreadShellsAcrossEnvironments: vi.fn(() => []),
   selectThreadsAcrossEnvironments: vi.fn(() => []),
 }));
 

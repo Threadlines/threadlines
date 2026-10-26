@@ -8,7 +8,6 @@ import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroun
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   EnvironmentId,
-  MessageId,
   OrchestrationAgentRequestState,
   OrchestrationCheckpointSummary,
   OrchestrationChildRequestState,
@@ -59,7 +58,7 @@ import {
   MAX_THREAD_MESSAGES,
   MAX_THREAD_PROPOSED_PLANS,
 } from "@threadlines/shared/threadLimits";
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
 import {
   type ChatAttachment,
   type ChatMessage,
@@ -74,6 +73,8 @@ import {
 } from "./types";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { attachmentPreviewRoutePath } from "./lib/attachmentPreviewQuery";
+import { keyedMemo } from "./lib/derivationMemo";
+import { createBatchedNotifications } from "./lib/batchedNotifications";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import {
   derivePendingApprovals,
@@ -155,10 +156,14 @@ export interface EnvironmentState {
   // (writeThreadState / syncServerThreadDetail).  The shell stream never
   // touches these.
   // ---------------------------------------------------------------------------
-  messageIdsByThreadId: Record<ThreadId, MessageId[]>;
-  messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
-  activityIdsByThreadId: Record<ThreadId, string[]>;
-  activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
+  /**
+   * Each thread's messages and activities, in thread order: the very lists
+   * its `Thread` exposes. They change on every streamed event and run to
+   * thousands, so a change swaps in the new list rather than rebuilding an
+   * index of every entry.
+   */
+  messagesByThreadId: Record<ThreadId, ChatMessage[]>;
+  activitiesByThreadId: Record<ThreadId, OrchestrationThreadActivity[]>;
   proposedPlanIdsByThreadId: Record<ThreadId, string[]>;
   proposedPlanByThreadId: Record<ThreadId, Record<string, ProposedPlan>>;
   turnDiffIdsByThreadId: Record<ThreadId, TurnId[]>;
@@ -220,10 +225,8 @@ const initialEnvironmentState: EnvironmentState = {
   threadShellById: {},
   threadSessionById: {},
   threadTurnStateById: {},
-  messageIdsByThreadId: {},
-  messageByThreadId: {},
-  activityIdsByThreadId: {},
-  activityByThreadId: {},
+  messagesByThreadId: {},
+  activitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
   turnDiffIdsByThreadId: {},
@@ -909,23 +912,48 @@ function latestIso(left: string | null, right: string | null): string | null {
   return left.localeCompare(right) >= 0 ? left : right;
 }
 
+/**
+ * When the latest message a person wrote was sent, in transcript order. One
+ * pass, remembered per messages list: a summary is rebuilt on every streamed
+ * event, and a reply streaming leaves the list's user messages as they were.
+ */
+const latestUserWrittenMessageAt = keyedMemo((messages: Thread["messages"]): string | null => {
+  let latest: ChatMessage | undefined;
+  for (const message of messages) {
+    if (
+      isUserWrittenMessage(message) &&
+      (latest === undefined || compareTranscriptOrder(message, latest) >= 0)
+    ) {
+      latest = message;
+    }
+  }
+  return latest?.createdAt ?? null;
+});
+
+/** The prompts a thread's activities leave open, derived once per activities list. */
+const openPromptsOf = keyedMemo((activities: Thread["activities"]) => {
+  const pendingUserInputs = derivePendingUserInputs(activities);
+  return {
+    hasPendingApprovals: derivePendingApprovals(activities).length > 0,
+    hasPendingUserInput: pendingUserInputs.length > 0,
+    hasBlockingUserInput: pendingUserInputs.some(isBlockingUserInput),
+  };
+});
+
 function toSidebarThreadSummary(
   thread: Thread,
   previous: SidebarThreadSummary | undefined,
 ): SidebarThreadSummary {
-  const latestDetailUserMessageAt =
-    thread.messages.filter(isUserWrittenMessage).toSorted(compareTranscriptOrder).at(-1)
-      ?.createdAt ?? null;
   const latestUserMessageAt = latestIso(
     previous?.latestUserMessageAt ?? null,
-    latestDetailUserMessageAt,
+    latestUserWrittenMessageAt(thread.messages),
   );
   const latestProposedPlan = findLatestProposedPlan(
     thread.proposedPlans,
     thread.latestTurn?.turnId ?? null,
   );
   const hasActivityEvidence = thread.activities.length > 0;
-  const pendingUserInputs = hasActivityEvidence ? derivePendingUserInputs(thread.activities) : [];
+  const openPrompts = hasActivityEvidence ? openPromptsOf(thread.activities) : null;
   const hasProposedPlanEvidence = thread.proposedPlans.length > 0;
   // The detail stream carries per-turn summaries, not the server's rollup, so
   // the open thread recomputes it rather than going stale behind the sidebar.
@@ -949,17 +977,15 @@ function toSidebarThreadSummary(
     worktreePath: thread.worktreePath,
     effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     latestUserMessageAt,
-    hasPendingApprovals: hasActivityEvidence
-      ? derivePendingApprovals(thread.activities).length > 0
+    hasPendingApprovals: openPrompts
+      ? openPrompts.hasPendingApprovals
       : (previous?.hasPendingApprovals ?? false),
     // An agent's invite waiting for the user needs them the same way.
     hasPendingUserInput:
-      (hasActivityEvidence
-        ? pendingUserInputs.length > 0
-        : (previous?.hasPendingUserInput ?? false)) ||
+      (openPrompts ? openPrompts.hasPendingUserInput : (previous?.hasPendingUserInput ?? false)) ||
       (thread.agentRequests !== undefined && awaitingInvite(thread.agentRequests) !== undefined),
-    hasBlockingUserInput: hasActivityEvidence
-      ? pendingUserInputs.some(isBlockingUserInput)
+    hasBlockingUserInput: openPrompts
+      ? openPrompts.hasBlockingUserInput
       : (previous?.hasBlockingUserInput ?? previous?.hasPendingUserInput ?? false),
     ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     hasActionableProposedPlan: hasProposedPlanEvidence
@@ -1037,7 +1063,7 @@ function threadSessionsEqual(
   );
 }
 
-function doneOverridesEqual(
+export function doneOverridesEqual(
   left: SidebarThreadSummary["doneOverride"],
   right: SidebarThreadSummary["doneOverride"],
 ): boolean {
@@ -1365,30 +1391,6 @@ function removeId<T extends string>(ids: readonly T[], id: T): T[] {
   return ids.filter((value) => value !== id);
 }
 
-function buildMessageSlice(thread: Thread): {
-  ids: MessageId[];
-  byId: Record<MessageId, ChatMessage>;
-} {
-  return {
-    ids: thread.messages.map((message) => message.id),
-    byId: Object.fromEntries(
-      thread.messages.map((message) => [message.id, message] as const),
-    ) as Record<MessageId, ChatMessage>,
-  };
-}
-
-function buildActivitySlice(thread: Thread): {
-  ids: string[];
-  byId: Record<string, OrchestrationThreadActivity>;
-} {
-  return {
-    ids: thread.activities.map((activity) => activity.id),
-    byId: Object.fromEntries(
-      thread.activities.map((activity) => [activity.id, activity] as const),
-    ) as Record<string, OrchestrationThreadActivity>,
-  };
-}
-
 function buildProposedPlanSlice(thread: Thread): {
   ids: string[];
   byId: Record<string, ProposedPlan>;
@@ -1555,31 +1557,21 @@ function writeThreadState(
   }
 
   if (previousThread?.messages !== nextThread.messages) {
-    const nextMessageSlice = buildMessageSlice(nextThread);
     nextState = {
       ...nextState,
-      messageIdsByThreadId: {
-        ...nextState.messageIdsByThreadId,
-        [nextThread.id]: nextMessageSlice.ids,
-      },
-      messageByThreadId: {
-        ...nextState.messageByThreadId,
-        [nextThread.id]: nextMessageSlice.byId,
+      messagesByThreadId: {
+        ...nextState.messagesByThreadId,
+        [nextThread.id]: nextThread.messages,
       },
     };
   }
 
   if (previousThread?.activities !== nextThread.activities) {
-    const nextActivitySlice = buildActivitySlice(nextThread);
     nextState = {
       ...nextState,
-      activityIdsByThreadId: {
-        ...nextState.activityIdsByThreadId,
-        [nextThread.id]: nextActivitySlice.ids,
-      },
-      activityByThreadId: {
-        ...nextState.activityByThreadId,
-        [nextThread.id]: nextActivitySlice.byId,
+      activitiesByThreadId: {
+        ...nextState.activitiesByThreadId,
+        [nextThread.id]: nextThread.activities,
       },
     };
   }
@@ -1815,10 +1807,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedShell, ...threadShellById } = state.threadShellById;
   const { [threadId]: _removedSession, ...threadSessionById } = state.threadSessionById;
   const { [threadId]: _removedTurnState, ...threadTurnStateById } = state.threadTurnStateById;
-  const { [threadId]: _removedMessageIds, ...messageIdsByThreadId } = state.messageIdsByThreadId;
-  const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
-  const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
-  const { [threadId]: _removedActivities, ...activityByThreadId } = state.activityByThreadId;
+  const { [threadId]: _removedMessages, ...messagesByThreadId } = state.messagesByThreadId;
+  const { [threadId]: _removedActivities, ...activitiesByThreadId } = state.activitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
     state.proposedPlanIdsByThreadId;
   const { [threadId]: _removedPlans, ...proposedPlanByThreadId } = state.proposedPlanByThreadId;
@@ -1849,10 +1839,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     threadShellById,
     threadSessionById,
     threadTurnStateById,
-    messageIdsByThreadId,
-    messageByThreadId,
-    activityIdsByThreadId,
-    activityByThreadId,
+    messagesByThreadId,
+    activitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
     turnDiffIdsByThreadId,
@@ -1933,7 +1921,8 @@ function upsertThreadMessage(
   messages: ReadonlyArray<ChatMessage>,
   message: ChatMessage,
 ): ChatMessage[] {
-  const existingIndex = messages.findIndex((entry) => entry.id === message.id);
+  // From the end: what changes is nearly always the newest message, streaming.
+  const existingIndex = messages.findLastIndex((entry) => entry.id === message.id);
   if (existingIndex === -1) {
     return capTail([...messages, message], MAX_THREAD_MESSAGES);
   }
@@ -1987,7 +1976,7 @@ function upsertThreadActivity(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity[] {
-  const existingIndex = activities.findIndex((entry) => entry.id === activity.id);
+  const existingIndex = activities.findLastIndex((entry) => entry.id === activity.id);
   const nextActivity = {
     ...activity,
     ...(existingIndex !== -1 ? { eventSequence: activities[existingIndex]?.eventSequence } : {}),
@@ -2036,23 +2025,24 @@ function buildLatestTurn(params: {
   };
 }
 
+/** The same list when no summary changes, so a streamed reply leaves it (and what reads it) alone. */
 function rebindTurnDiffSummariesForAssistantMessage(
-  turnDiffSummaries: ReadonlyArray<TurnDiffSummary>,
+  turnDiffSummaries: TurnDiffSummary[],
   turnId: TurnId,
   assistantMessageId: NonNullable<Thread["latestTurn"]>["assistantMessageId"],
 ): TurnDiffSummary[] {
-  let changed = false;
-  const nextSummaries = turnDiffSummaries.map((summary) => {
-    if (summary.turnId !== turnId || summary.assistantMessageId === assistantMessageId) {
-      return summary;
-    }
-    changed = true;
-    return {
-      ...summary,
-      assistantMessageId: assistantMessageId ?? undefined,
-    };
-  });
-  return changed ? nextSummaries : [...turnDiffSummaries];
+  if (
+    !turnDiffSummaries.some(
+      (summary) => summary.turnId === turnId && summary.assistantMessageId !== assistantMessageId,
+    )
+  ) {
+    return turnDiffSummaries;
+  }
+  return turnDiffSummaries.map((summary) =>
+    summary.turnId !== turnId || summary.assistantMessageId === assistantMessageId
+      ? summary
+      : { ...summary, assistantMessageId: assistantMessageId ?? undefined },
+  );
 }
 
 function revertThreadMessages(
@@ -2232,10 +2222,8 @@ function syncEnvironmentShellSnapshot(
     threadSessionById: {},
     threadTurnStateById: {},
     sidebarThreadSummaryById: {},
-    messageIdsByThreadId: retainThreadScopedRecord(state.messageIdsByThreadId, nextThreadIds),
-    messageByThreadId: retainThreadScopedRecord(state.messageByThreadId, nextThreadIds),
-    activityIdsByThreadId: retainThreadScopedRecord(state.activityIdsByThreadId, nextThreadIds),
-    activityByThreadId: retainThreadScopedRecord(state.activityByThreadId, nextThreadIds),
+    messagesByThreadId: retainThreadScopedRecord(state.messagesByThreadId, nextThreadIds),
+    activitiesByThreadId: retainThreadScopedRecord(state.activitiesByThreadId, nextThreadIds),
     proposedPlanIdsByThreadId: retainThreadScopedRecord(
       state.proposedPlanIdsByThreadId,
       nextThreadIds,
@@ -3614,13 +3602,51 @@ export function selectThreadShellsAcrossEnvironments(state: AppState): ThreadShe
   );
 }
 
-export function selectSidebarThreadsAcrossEnvironments(state: AppState): SidebarThreadSummary[] {
-  return getEnvironmentEntries(state).flatMap(([environmentId, environmentState]) =>
-    environmentState.threadIds.flatMap((threadId) => {
-      const thread = environmentState.sidebarThreadSummaryById[threadId];
+/** One environment's sidebar rows in thread order, kept until a row or the order changes. */
+const sidebarThreadsOfEnvironment = keyedMemo(
+  (
+    summaries: Record<ThreadId, SidebarThreadSummary>,
+    threadIds: readonly ThreadId[],
+    environmentId: EnvironmentId,
+  ): ReadonlyArray<SidebarThreadSummary> =>
+    threadIds.flatMap((threadId) => {
+      const thread = summaries[threadId];
       return thread && thread.environmentId === environmentId ? [thread] : [];
     }),
+);
+
+let lastSidebarThreads: {
+  readonly parts: ReadonlyArray<ReadonlyArray<SidebarThreadSummary>>;
+  readonly threads: ReadonlyArray<SidebarThreadSummary>;
+} | null = null;
+
+/**
+ * Every environment's sidebar rows. The same list (by identity) until a row
+ * changes: many mounted hooks read it on every store write, and most writes
+ * (a streamed message) leave every row as it was.
+ */
+export function selectSidebarThreadsAcrossEnvironments(
+  state: AppState,
+): ReadonlyArray<SidebarThreadSummary> {
+  const parts = getEnvironmentEntries(state).map(([environmentId, environmentState]) =>
+    sidebarThreadsOfEnvironment(
+      environmentState.sidebarThreadSummaryById,
+      environmentState.threadIds,
+      environmentId,
+    ),
   );
+  if (parts.length === 1) return parts[0]!;
+  const last = lastSidebarThreads;
+  if (
+    last !== null &&
+    last.parts.length === parts.length &&
+    parts.every((part, index) => part === last.parts[index])
+  ) {
+    return last.threads;
+  }
+  const threads = parts.flat();
+  lastSidebarThreads = { parts, threads };
+  return threads;
 }
 
 /**
@@ -3635,12 +3661,16 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
 export function selectRunningSidebarThreadsAcrossEnvironments(
   state: AppState,
 ): SidebarThreadSummary[] {
-  return selectSidebarThreadsAcrossEnvironments(state).filter(
-    (thread) =>
-      thread.session?.status === "running" ||
-      thread.session?.orchestrationStatus === "running" ||
-      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
-      (thread.sideTurn ?? null) !== null,
+  return selectSidebarThreadsAcrossEnvironments(state).filter(isSidebarThreadRunning);
+}
+
+/** Whether a sidebar thread has live agent work; see {@link selectRunningSidebarThreadsAcrossEnvironments}. */
+export function isSidebarThreadRunning(thread: SidebarThreadSummary): boolean {
+  return (
+    thread.session?.status === "running" ||
+    thread.session?.orchestrationStatus === "running" ||
+    isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
+    (thread.sideTurn ?? null) !== null
   );
 }
 
@@ -4024,7 +4054,20 @@ interface AppStore extends AppState {
   ) => void;
 }
 
-export const useStore = create<AppStore>((set) => ({
+const storeNotifications = createBatchedNotifications();
+
+/**
+ * Runs `write` against the store, telling subscribers about it within a
+ * tenth of a second instead of at once (see createBatchedNotifications). For
+ * writes nothing on screen waits on this instant, such as events for threads
+ * no open chat shows: a burst of them costs one render, not one each.
+ */
+export const deferStoreNotifications = storeNotifications.batch;
+
+/** Tells the store's subscribers about every write still waiting in a batch, now. */
+export const flushStoreNotifications = storeNotifications.flush;
+
+const createAppStore: StateCreator<AppStore, [], []> = (set) => ({
   ...initialState,
   setActiveEnvironmentId: (environmentId) =>
     set((state) => setActiveEnvironmentId(state, environmentId)),
@@ -4055,4 +4098,6 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => selectThreadCheckout(state, threadRef, branch, worktreePath)),
   restoreThreadCheckout: (threadRef, snapshot) =>
     set((state) => restoreThreadCheckout(state, threadRef, snapshot)),
-}));
+});
+
+export const useStore = create<AppStore>()(storeNotifications.middleware(createAppStore));

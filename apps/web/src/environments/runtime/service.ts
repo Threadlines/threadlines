@@ -82,14 +82,22 @@ import {
   THREAD_INTENT_GRACE_MS,
 } from "./threadDetailSubscriptions";
 import {
+  deferStoreNotifications,
+  doneOverridesEqual,
+  flushStoreNotifications,
+  isSidebarThreadRunning,
   useStore,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectThreadByRef,
+  selectThreadShellsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { useUiStateStore } from "~/uiStateStore";
 import type { WsProtocolCloseContext } from "../../rpc/protocol";
+import type { SidebarThreadSummary } from "../../types";
+import { resolveThreadStatusPill } from "../../components/Sidebar.logic";
 import { applyServerConfigStreamEvent } from "../../rpc/serverConfigEvents";
 import { getServerConfig } from "../../rpc/serverState";
 import { TransportRequestRetriesExhaustedError } from "../../rpc/transportError";
@@ -1094,7 +1102,9 @@ function syncProjectUiFromStore() {
 
 function syncThreadUiFromStore() {
   const appState = useStore.getState();
-  const threads = selectThreadsAcrossEnvironments(appState);
+  // The shells carry everything read here; whole threads would rebuild every
+  // changed thread's detail on each of the shell stream's frequent events.
+  const threads = selectThreadShellsAcrossEnvironments(appState);
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1225,11 +1235,66 @@ function applyRecoveredEventBatch(
   threadDetails.reconcileEvictionForEnvironment(environmentId);
 }
 
+/**
+ * Whether a thread stands the same in every list and badge: it exists, keeps
+ * the row details a user changes (name, archived, pinned, done, seen, queued
+ * follow-ups), shows the same status pill, and counts as running (or not) for
+ * the Dock and the quit warnings. Streamed text, tool steps and counts are
+ * progress, which leave all of these alone.
+ */
+function sameThreadStanding(
+  left: SidebarThreadSummary | undefined,
+  right: SidebarThreadSummary | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return (
+    left.title === right.title &&
+    left.archivedAt === right.archivedAt &&
+    left.pinnedAt === right.pinnedAt &&
+    left.lastSeenAt === right.lastSeenAt &&
+    doneOverridesEqual(left.doneOverride, right.doneOverride) &&
+    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
+    isSidebarThreadRunning(left) === isSidebarThreadRunning(right) &&
+    resolveThreadStatusPill({ thread: left })?.label ===
+      resolveThreadStatusPill({ thread: right })?.label
+  );
+}
+
+/**
+ * Writes the store for one thread. A thread no open chat shows reaches the
+ * screen only through lists (sidebar, inbox, the rail's counts), where a
+ * tenth of a second of progress goes unseen: those writes are batched, so
+ * threads streaming in the background cost about ten renders a second rather
+ * than one per event. A write that changes the thread's standing (it appears
+ * or goes, finishes, or asks the user something) still goes out at once.
+ */
+function writeThreadStore(
+  environmentId: EnvironmentId,
+  threadId: ThreadId | null,
+  write: () => void,
+): void {
+  if (threadId === null || threadDetails.isShown(environmentId, threadId)) {
+    write();
+    return;
+  }
+  const threadRef = scopeThreadRef(environmentId, threadId);
+  const before = selectSidebarThreadSummaryByRef(useStore.getState(), threadRef);
+  deferStoreNotifications(write);
+  if (
+    !sameThreadStanding(before, selectSidebarThreadSummaryByRef(useStore.getState(), threadRef))
+  ) {
+    flushStoreNotifications();
+  }
+}
+
 export function applyEnvironmentThreadDetailEvent(
   event: OrchestrationEvent,
   environmentId: EnvironmentId,
 ) {
-  applyRecoveredEventBatch([event], environmentId);
+  writeThreadStore(environmentId, "threadId" in event.payload ? event.payload.threadId : null, () =>
+    applyRecoveredEventBatch([event], environmentId),
+  );
 }
 
 function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) {
@@ -1251,7 +1316,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
   const threadRef = threadId ? scopeThreadRef(environmentId, threadId) : null;
   const previousThread = threadRef ? selectThreadByRef(useStore.getState(), threadRef) : undefined;
 
-  useStore.getState().applyShellEvent(event, environmentId);
+  writeThreadStore(environmentId, threadId, () =>
+    useStore.getState().applyShellEvent(event, environmentId),
+  );
   markAppliedProjectionEvent(environmentId, event.sequence);
 
   switch (event.kind) {

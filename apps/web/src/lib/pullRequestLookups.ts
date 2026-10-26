@@ -33,7 +33,12 @@ export type PullRequestLookupData =
     }
   | { readonly supported: false };
 
-/** The server keeps an answer this long for every surface asking at about the same time. */
+/**
+ * How long an answer that can still move holds when a surface mounts: the
+ * server keeps one this long for every surface asking at about the same time.
+ * Open pull requests and branches without one stay this short, since a merge
+ * or a new pull request should show soon after it happens.
+ */
 const PULL_REQUEST_LOOKUP_STALE_TIME_MS = 30_000;
 
 /** A thread nobody has on screen keeps its answer, so coming back to it shows it at once. */
@@ -62,6 +67,26 @@ function lookupRefetchIntervalMs(
   return state === "open"
     ? PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS
     : PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS;
+}
+
+/**
+ * How long an answer counts as current, so a surface mounting or remounting
+ * does not ask the host again for something that cannot have moved: anything
+ * {@link lookupRefetchIntervalMs} never polls again is current for good, and
+ * a closed pull request until its next poll. Each one costs a `gh` run, and a
+ * long thread list asks about every row it shows.
+ */
+function lookupStaleTimeMs(
+  item: PullRequestLookupItem,
+  data: PullRequestLookupData | undefined,
+): number {
+  const refetchIntervalMs = lookupRefetchIntervalMs(item, data);
+  if (refetchIntervalMs === false) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return "number" in item && data?.supported === true && data.pullRequest?.state === "closed"
+    ? refetchIntervalMs
+    : PULL_REQUEST_LOOKUP_STALE_TIME_MS;
 }
 
 interface PendingLookup {
@@ -170,7 +195,7 @@ export function pullRequestLookupQueryOptions(request: PullRequestLookupRequest)
       request.item,
     ),
     queryFn: () => requestPullRequestLookup(request),
-    staleTime: PULL_REQUEST_LOOKUP_STALE_TIME_MS,
+    staleTime: (query) => lookupStaleTimeMs(request.item, query.state.data),
     gcTime: PULL_REQUEST_LOOKUP_GC_TIME_MS,
     refetchInterval: (query) => lookupRefetchIntervalMs(request.item, query.state.data),
     // A background tab drives no decisions, and the listings re-read on focus.

@@ -47,6 +47,9 @@ import {
 /** Matches the server's own listing cache, so a remount does not re-run `gh`. */
 const PULL_REQUEST_STALE_TIME_MS = 30_000;
 
+/** The longest a surface holds the open listing before a mount or focus re-reads it. */
+const PULL_REQUEST_OPEN_LIST_STALE_TIME_MS = 60_000;
+
 /** The page keeps the list current while it is on screen. */
 export const PULL_REQUEST_PAGE_REFETCH_INTERVAL_MS = 60_000;
 
@@ -754,6 +757,15 @@ export function usePullRequestLists(input: {
       refetchInterval: input.refetchIntervalMs,
       // A background tab drives no decisions, and every poll spawns `gh`.
       refetchIntervalInBackground: false,
+      // An answer holds until this surface's next poll, so mounting it again
+      // (opening a thread, coming back from Settings) does not run `gh` for
+      // every project. Merged and closed listings only gain rows; the open one
+      // is held a minute at most, so coming back to the window still re-reads
+      // what is in flight.
+      staleTime:
+        state === "open"
+          ? Math.min(input.refetchIntervalMs, PULL_REQUEST_OPEN_LIST_STALE_TIME_MS)
+          : input.refetchIntervalMs,
     })),
     combine: (results) => {
       // Placeholder data here is the previous tab's answer, held over while the

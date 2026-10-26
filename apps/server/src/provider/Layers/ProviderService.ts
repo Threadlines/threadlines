@@ -126,6 +126,20 @@ const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
 });
 
+/**
+ * A canonical piece of an agent's thinking. Each driver's native log holds the
+ * same thinking, whole in the item that ends it or piece by piece, so the
+ * canonical copy is left out. Reply text and tool output pieces are kept: a
+ * reply cut off mid-stream may have no whole copy anywhere.
+ */
+function isCanonicalStreamFragment(event: ProviderRuntimeEvent): boolean {
+  return (
+    event.type === "content.delta" &&
+    (event.payload.streamKind === "reasoning_text" ||
+      event.payload.streamKind === "reasoning_summary_text")
+  );
+}
+
 function readCodexResumeThreadId(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -511,16 +525,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.succeed(event).pipe(
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
-          ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("provider canonical event log write failed", {
-                  eventId: canonicalEvent.eventId,
-                  eventType: canonicalEvent.type,
-                  threadId: canonicalEvent.threadId,
-                  cause: Cause.pretty(cause),
-                }),
-              ),
-            )
+          ? canonicalEventLogger
+              .write(canonicalEvent, canonicalEvent.threadId, {
+                streamFragment: isCanonicalStreamFragment(canonicalEvent),
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("provider canonical event log write failed", {
+                    eventId: canonicalEvent.eventId,
+                    eventType: canonicalEvent.type,
+                    threadId: canonicalEvent.threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              )
           : Effect.void,
       ),
       Effect.flatMap((canonicalEvent) =>

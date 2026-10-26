@@ -81,7 +81,7 @@ export interface InboxGeneralChatEntry {
 
 export interface InboxThreads {
   readonly projects: Project[];
-  readonly sidebarThreads: SidebarThreadSummary[];
+  readonly sidebarThreads: ReadonlyArray<SidebarThreadSummary>;
   readonly sidebarProjects: SidebarProjectSnapshot[];
   readonly sidebarProjectByKey: ReadonlyMap<string, SidebarProjectSnapshot>;
   readonly resolveProjectKeyForRef: (projectRef: ScopedProjectRef) => string;

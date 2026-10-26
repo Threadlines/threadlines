@@ -458,6 +458,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             options.nativeEventLogger!.write(
               { observedAt, event: { provider: PROVIDER, method, payload } },
               ctx.threadId,
+              // A piece of an item; its `item/completed` carries it whole.
+              { streamFragment: method === "item/delta" },
             ),
           ).pipe(Effect.ignore)
         : Effect.void;
@@ -1475,7 +1477,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       Effect.gen(function* () {
         if (ctx.stopped || ctx.host?.generation !== generation) return;
         const { method, params } = notification;
-        if (method !== "item/delta") yield* logNative(ctx, method, params);
+        yield* logNative(ctx, method, params);
         // Host-level notifications carry no session id.
         switch (method) {
           case "usage/changed": {

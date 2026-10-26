@@ -30,6 +30,7 @@
  */
 import path from "node:path";
 
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -88,11 +89,21 @@ export const ProviderEventLoggersLive = Layer.effect(
         errorCount: cleanup.errorCount,
       });
     }
+    // Token-sized stream pieces are left out of both logs unless this is set
+    // (see EventLogWriteOptions.streamFragment).
+    const keepStreamFragments = yield* Config.boolean(
+      "THREADLINES_PROVIDER_LOG_STREAM_FRAGMENTS",
+    ).pipe(
+      Config.withDefault(false),
+      Effect.orElseSucceed(() => false),
+    );
     const native = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "native",
+      keepStreamFragments,
     });
     const canonical = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",
+      keepStreamFragments,
     });
     return {
       native,

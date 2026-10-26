@@ -203,21 +203,11 @@ function makeState(thread: Thread): AppState {
           : {}),
       },
     },
-    messageIdsByThreadId: {
-      [thread.id]: thread.messages.map((message) => message.id),
+    messagesByThreadId: {
+      [thread.id]: thread.messages,
     },
-    messageByThreadId: {
-      [thread.id]: Object.fromEntries(
-        thread.messages.map((message) => [message.id, message] as const),
-      ) as EnvironmentState["messageByThreadId"][ThreadId],
-    },
-    activityIdsByThreadId: {
-      [thread.id]: thread.activities.map((activity) => activity.id),
-    },
-    activityByThreadId: {
-      [thread.id]: Object.fromEntries(
-        thread.activities.map((activity) => [activity.id, activity] as const),
-      ) as EnvironmentState["activityByThreadId"][ThreadId],
+    activitiesByThreadId: {
+      [thread.id]: thread.activities,
     },
     proposedPlanIdsByThreadId: {
       [thread.id]: thread.proposedPlans.map((plan) => plan.id),
@@ -254,10 +244,8 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     threadShellById: {},
     threadSessionById: {},
     threadTurnStateById: {},
-    messageIdsByThreadId: {},
-    messageByThreadId: {},
-    activityIdsByThreadId: {},
-    activityByThreadId: {},
+    messagesByThreadId: {},
+    activitiesByThreadId: {},
     proposedPlanIdsByThreadId: {},
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
@@ -2353,21 +2341,13 @@ describe("incremental orchestration updates", () => {
           latestTurn: thread2.latestTurn,
         },
       },
-      messageIdsByThreadId: {
-        ...baseEnvironmentState.messageIdsByThreadId,
+      messagesByThreadId: {
+        ...baseEnvironmentState.messagesByThreadId,
         [thread2.id]: [],
       },
-      messageByThreadId: {
-        ...baseEnvironmentState.messageByThreadId,
-        [thread2.id]: {},
-      },
-      activityIdsByThreadId: {
-        ...baseEnvironmentState.activityIdsByThreadId,
+      activitiesByThreadId: {
+        ...baseEnvironmentState.activitiesByThreadId,
         [thread2.id]: [],
-      },
-      activityByThreadId: {
-        ...baseEnvironmentState.activityByThreadId,
-        [thread2.id]: {},
       },
       proposedPlanIdsByThreadId: {
         ...baseEnvironmentState.proposedPlanIdsByThreadId,
@@ -2418,11 +2398,8 @@ describe("incremental orchestration updates", () => {
     expect(nextEnvironmentState?.threadSessionById[thread2.id]).toBe(
       previousEnvironmentState?.threadSessionById[thread2.id],
     );
-    expect(nextEnvironmentState?.messageIdsByThreadId[thread2.id]).toBe(
-      previousEnvironmentState?.messageIdsByThreadId[thread2.id],
-    );
-    expect(nextEnvironmentState?.messageByThreadId[thread2.id]).toBe(
-      previousEnvironmentState?.messageByThreadId[thread2.id],
+    expect(nextEnvironmentState?.messagesByThreadId[thread2.id]).toBe(
+      previousEnvironmentState?.messagesByThreadId[thread2.id],
     );
   });
 

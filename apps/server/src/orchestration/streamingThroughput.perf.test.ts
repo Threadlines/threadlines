@@ -4,9 +4,10 @@
  * Guards the per-delta cost of the hot path: one flushed assistant delta =
  * one orchestration command = decide → append → project (all projectors) →
  * receipt, all on the synchronous SQLite driver. During a real turn these
- * arrive every ~50ms per streaming session, so a regression here (an extra
- * per-event table scan, a lost index, per-projector transactions) directly
- * becomes typing-latency and UI jank on older machines.
+ * arrive every ~100ms per streaming session (ASSISTANT_STREAM_FLUSH_INTERVAL_MS),
+ * so a regression here (an extra per-event table scan, a lost index,
+ * per-projector transactions) directly becomes typing-latency and UI jank on
+ * older machines.
  *
  * The bound is deliberately generous — CI machines are slow and shared —
  * so a failure means a structural regression, not noise.
@@ -110,7 +111,7 @@ describe("streaming write-path throughput", () => {
         );
 
         const messageId = MessageId.make("msg-perf-stream");
-        // ~80 chars per flush approximates a 50ms flush window of fast
+        // ~80 chars per flush approximates one flush window of steady
         // streaming; the message grows to ~24KB like a long real answer.
         const delta = "x".repeat(80);
 

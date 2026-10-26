@@ -2,10 +2,13 @@
  * Streaming renderer benchmark. Dev-only page at `/bench/stream.html`.
  *
  * Streams a fixed markdown reply into ChatMarkdown the way the server does
- * (one flush every 50 ms) and records how often the main thread stalled.
- * Results land on `window.__streamBench` and at the foot of the page so a
- * Playwright script can record a clip and read the numbers.
+ * (one flush every ASSISTANT_STREAM_FLUSH_INTERVAL_MS) and records how often
+ * the main thread stalled. `?flush=<ms>` streams at another cadence with the
+ * same text per second, to compare the two. Results land on
+ * `window.__streamBench` and at the foot of the page so a Playwright script
+ * can record a clip and read the numbers.
  */
+import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -14,9 +17,12 @@ import ChatMarkdown from "../components/ChatMarkdown";
 import { useStreamingTextReveal } from "../hooks/useStreamingTextReveal";
 import fixture from "./streamFixture.md?raw";
 
-const FLUSH_INTERVAL_MS = 50;
-const MIN_CHUNK_CHARS = 24;
-const MAX_CHUNK_CHARS = 72;
+const FLUSH_INTERVAL_MS =
+  Number(new URLSearchParams(window.location.search).get("flush")) ||
+  ASSISTANT_STREAM_FLUSH_INTERVAL_MS;
+/** A fast reply: 480 to 1,440 characters a second, whatever the cadence. */
+const MIN_CHUNK_CHARS = Math.round((480 * FLUSH_INTERVAL_MS) / 1_000);
+const MAX_CHUNK_CHARS = Math.round((1_440 * FLUSH_INTERVAL_MS) / 1_000);
 const STALL_FRAME_MS = 50;
 
 interface BenchResult {

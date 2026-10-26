@@ -3872,6 +3872,19 @@ function sdkNativeMethod(message: SDKMessage): string {
   return `claude/${message.type}`;
 }
 
+/**
+ * Native methods that are one piece of a block's thinking, tool input or
+ * signature, or a thinking-token tick. The assistant message that ends the
+ * block carries them whole; a block cut off before it loses only those. Reply
+ * text pieces are kept, since a reply cut off mid-stream has no whole copy.
+ */
+const SDK_STREAM_FRAGMENT_METHODS: ReadonlySet<string> = new Set([
+  "claude/stream_event/content_block_delta/thinking_delta",
+  "claude/stream_event/content_block_delta/input_json_delta",
+  "claude/stream_event/content_block_delta/signature_delta",
+  "claude/system/thinking_tokens",
+]);
+
 function sdkNativeItemId(message: SDKMessage): string | undefined {
   if (message.type === "assistant") {
     const maybeId = (message.message as { id?: unknown }).id;
@@ -4098,6 +4111,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const observedAt = yield* nowIso;
     const itemId = sdkNativeItemId(message);
+    const method = sdkNativeMethod(message);
 
     yield* nativeEventLogger.write(
       {
@@ -4110,7 +4124,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           kind: "notification",
           provider: PROVIDER,
           createdAt: observedAt,
-          method: sdkNativeMethod(message),
+          method,
           ...(typeof message.session_id === "string"
             ? { providerThreadId: message.session_id }
             : {}),
@@ -4124,6 +4138,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       },
       context.session.threadId,
+      { streamFragment: SDK_STREAM_FRAGMENT_METHODS.has(method) },
     );
   });
 

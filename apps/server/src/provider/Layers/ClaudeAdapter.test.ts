@@ -11014,12 +11014,16 @@ describe("ClaudeAdapterLive", () => {
       };
     }> = [];
     const nativeThreadIds: Array<string | null> = [];
+    const fragmentMethods: Array<string | undefined> = [];
     const harness = makeHarness({
       nativeEventLogger: {
         filePath: "memory://claude-native-events",
-        write: (event, threadId) => {
+        write: (event, threadId, options) => {
           nativeEvents.push(event as (typeof nativeEvents)[number]);
           nativeThreadIds.push(threadId ?? null);
+          if (options?.streamFragment === true) {
+            fragmentMethods.push((event as (typeof nativeEvents)[number]).event?.method);
+          }
           return Effect.void;
         },
         close: () => Effect.void,
@@ -11047,11 +11051,26 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-native-log",
-        uuid: "stream-native-log",
+        uuid: "stream-native-log-thinking",
         parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
           index: 0,
+          delta: {
+            type: "thinking_delta",
+            thinking: "hmm",
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-native-log",
+        uuid: "stream-native-log",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
           delta: {
             type: "text_delta",
             text: "hi",
@@ -11096,6 +11115,10 @@ describe("ClaudeAdapterLive", () => {
         ),
         true,
       );
+      // The thinking piece is offered as a stream fragment, which the shared
+      // logger leaves out by default. Reply text is not: a reply cut off before
+      // its assistant message would have no other copy in the log.
+      assert.deepEqual(fragmentMethods, ["claude/stream_event/content_block_delta/thinking_delta"]);
       assert.equal(
         nativeThreadIds.every((threadId) => threadId === String(THREAD_ID)),
         true,

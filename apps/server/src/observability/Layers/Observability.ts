@@ -26,6 +26,7 @@ const otlpSerializationLayer = Layer.mergeAll(
 const SLOW_TRACE_RECORD_THRESHOLD_MS = 1_000;
 const SQL_TRACE_SAMPLE_MODULO = 100;
 const PROJECTION_TRACE_SAMPLE_MODULO = 20;
+const PROVIDER_MESSAGE_TRACE_SAMPLE_MODULO = 100;
 
 const sampledSqlSpanNames = new Set(["sql.execute", "sql.transaction"]);
 const sampledProjectionSpanNames = new Set([
@@ -42,6 +43,21 @@ const sampledProjectionSpanNames = new Set([
   "refreshThreadShellSummary",
   "resolveThreadShell",
   "runProjectorForEvent",
+]);
+/**
+ * The Claude driver's spans for each message its CLI streams, a token chunk at
+ * a time: several per chunk, most of the file while agents stream. Their log
+ * lines live only in these records, so one carrying any is always kept.
+ */
+const sampledProviderMessageSpanNames = new Set([
+  "ensureAssistantTextBlock",
+  "ensureThinkingBlock",
+  "ensureThreadId",
+  "handleSdkMessage",
+  "handleStreamEvent",
+  "handleSystemMessage",
+  "logNativeSdkMessage",
+  "updateResumeCursor",
 ]);
 
 function traceSampleHash(input: string): number {
@@ -88,6 +104,13 @@ export function shouldRecordServerLocalTrace(record: TraceRecord): boolean {
 
   if (sampledProjectionSpanNames.has(record.name)) {
     return shouldKeepSampledTraceRecord(record, PROJECTION_TRACE_SAMPLE_MODULO);
+  }
+
+  if (sampledProviderMessageSpanNames.has(record.name)) {
+    return (
+      record.events.length > 0 ||
+      shouldKeepSampledTraceRecord(record, PROVIDER_MESSAGE_TRACE_SAMPLE_MODULO)
+    );
   }
 
   return true;

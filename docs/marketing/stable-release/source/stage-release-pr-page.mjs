@@ -141,7 +141,7 @@ async function stage(mainDiff) {
   const ready = byTitle("Review the pull request workflow");
   const wrappedSetup = byTitle("Fix Windows first-run setup");
   // A second thread may hydrate only when the capture opens it later.
-  let facpMessageBaseline = baseline.messageByThreadId[facp.id];
+  let facpMessageBaseline = baseline.messagesByThreadId[facp.id];
   const now = new Date().toISOString();
   const earlier = new Date(Date.now() - 45_000).toISOString();
   const older = new Date(Date.now() - 120_000).toISOString();
@@ -476,9 +476,8 @@ async function stage(mainDiff) {
       threadSessionById: { ...current.threadSessionById },
       threadTurnStateById: { ...current.threadTurnStateById },
       sidebarThreadSummaryById: { ...current.sidebarThreadSummaryById },
-      messageByThreadId: { ...current.messageByThreadId },
-      activityIdsByThreadId: { ...current.activityIdsByThreadId },
-      activityByThreadId: { ...current.activityByThreadId },
+      messagesByThreadId: { ...current.messagesByThreadId },
+      activitiesByThreadId: { ...current.activitiesByThreadId },
     };
     for (const [id, shell] of Object.entries(next.threadShellById)) {
       if (id !== main.id && shell.projectId === main.projectId && shell.branch === main.branch) {
@@ -539,47 +538,34 @@ async function stage(mainDiff) {
         hasActionableProposedPlan: false,
       };
     }
-    const messages = current.messageByThreadId[main.id];
+    const messages = current.messagesByThreadId[main.id];
     if (messages)
-      next.messageByThreadId[main.id] = Object.fromEntries(
-        Object.entries(messages).map(([id, message]) => [
-          id,
-          {
-            ...message,
-            text:
-              message.role === "user"
-                ? "The homepage is behind the app now. Lead with Codex and Claude, tighten the copy, and check the download links."
-                : message.role === "assistant"
-                  ? "I've shortened the headline and updated the release notes. The two changed files are ready for review.\n\nI'm checking the layout at desktop and phone widths now. The PR checks are still running."
-                  : message.text,
-          },
-        ]),
-      );
-    const facpMessages = current.messageByThreadId[facp.id];
+      next.messagesByThreadId[main.id] = messages.map((message) => ({
+        ...message,
+        text:
+          message.role === "user"
+            ? "The homepage is behind the app now. Lead with Codex and Claude, tighten the copy, and check the download links."
+            : message.role === "assistant"
+              ? "I've shortened the headline and updated the release notes. The two changed files are ready for review.\n\nI'm checking the layout at desktop and phone widths now. The PR checks are still running."
+              : message.text,
+      }));
+    const facpMessages = current.messagesByThreadId[facp.id];
     if (facpMessages && facpMessageBaseline === undefined) facpMessageBaseline = facpMessages;
     if (facpMessages)
-      next.messageByThreadId[facp.id] = Object.fromEntries(
-        Object.entries(facpMessages).map(([id, message]) => [
-          id,
-          {
-            ...message,
-            text:
-              message.role === "assistant"
-                ? "I'll review the title and model extraction together. A slash can be part of a model number, so SS/2ZE needs to stay intact.\n\nI'm checking the search results with long titles and model names next."
-                : message.text,
-          },
-        ]),
-      );
-    next.activityIdsByThreadId[main.id] = [
-      ...new Set([
-        ...(baseline.activityIdsByThreadId[main.id] ?? []),
-        ...demoActivities.map((entry) => entry.id),
-      ]),
+      next.messagesByThreadId[facp.id] = facpMessages.map((message) => ({
+        ...message,
+        text:
+          message.role === "assistant"
+            ? "I'll review the title and model extraction together. A slash can be part of a model number, so SS/2ZE needs to stay intact.\n\nI'm checking the search results with long titles and model names next."
+            : message.text,
+      }));
+    const baselineActivities = baseline.activitiesByThreadId[main.id] ?? [];
+    const demoActivityById = new Map(demoActivities.map((entry) => [entry.id, entry]));
+    const baselineActivityIds = new Set(baselineActivities.map((entry) => entry.id));
+    next.activitiesByThreadId[main.id] = [
+      ...baselineActivities.map((entry) => demoActivityById.get(entry.id) ?? entry),
+      ...demoActivities.filter((entry) => !baselineActivityIds.has(entry.id)),
     ];
-    next.activityByThreadId[main.id] = {
-      ...baseline.activityByThreadId[main.id],
-      ...Object.fromEntries(demoActivities.map((entry) => [entry.id, entry])),
-    };
     if (JSON.stringify(next) !== JSON.stringify(current)) {
       useStore.setState((s) => ({
         environmentStateById: { ...s.environmentStateById, [environmentId]: next },
@@ -652,18 +638,14 @@ async function stage(mainDiff) {
             threadSessionById: baseline.threadSessionById,
             threadTurnStateById: baseline.threadTurnStateById,
             sidebarThreadSummaryById: baseline.sidebarThreadSummaryById,
-            messageByThreadId: {
-              ...s.environmentStateById[environmentId].messageByThreadId,
-              [main.id]: baseline.messageByThreadId[main.id],
+            messagesByThreadId: {
+              ...s.environmentStateById[environmentId].messagesByThreadId,
+              [main.id]: baseline.messagesByThreadId[main.id],
               ...(facpMessageBaseline ? { [facp.id]: facpMessageBaseline } : {}),
             },
-            activityIdsByThreadId: {
-              ...s.environmentStateById[environmentId].activityIdsByThreadId,
-              [main.id]: baseline.activityIdsByThreadId[main.id],
-            },
-            activityByThreadId: {
-              ...s.environmentStateById[environmentId].activityByThreadId,
-              [main.id]: baseline.activityByThreadId[main.id],
+            activitiesByThreadId: {
+              ...s.environmentStateById[environmentId].activitiesByThreadId,
+              [main.id]: baseline.activitiesByThreadId[main.id],
             },
           },
         },

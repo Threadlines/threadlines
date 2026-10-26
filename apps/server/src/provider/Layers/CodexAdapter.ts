@@ -113,6 +113,16 @@ const CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS = 1_000;
 const CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH = 32;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE = 20;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE_MAX = 50;
+/**
+ * Notifications that are one piece of a reasoning item, which its
+ * `item/completed` carries whole. Reply, plan and output pieces are kept: an
+ * item cut off mid-stream, or a command whose completed item drops its output,
+ * has no whole copy.
+ */
+const CODEX_STREAM_FRAGMENT_METHODS: ReadonlySet<string> = new Set([
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+]);
 const CODEX_EXTERNAL_THREAD_SOURCE_KINDS = [
   "cli",
   "vscode",
@@ -4174,7 +4184,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (!nativeEventLogger) {
       return;
     }
-    yield* nativeEventLogger.write(event, event.threadId).pipe(Effect.withTracerEnabled(false));
+    yield* nativeEventLogger
+      .write(event, event.threadId, {
+        streamFragment: CODEX_STREAM_FRAGMENT_METHODS.has(event.method),
+      })
+      .pipe(Effect.withTracerEnabled(false));
   });
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
