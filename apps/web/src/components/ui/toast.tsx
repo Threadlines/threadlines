@@ -36,6 +36,7 @@ import { cn } from "~/lib/utils";
 import { buttonVariants } from "~/components/ui/button";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { usePageAttended } from "~/lib/pageAttention";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 import { useNoticesRaisedAboveBackdrops } from "./noticeLayer";
 import {
@@ -717,28 +718,6 @@ function useActiveThreadRefFromRoute(): ScopedThreadRef | null {
   }, [activeDraftSession, routeTarget]);
 }
 
-function isWindowInFront(): boolean {
-  return document.visibilityState === "visible" && document.hasFocus();
-}
-
-/** True while the window is shown and has focus: the only time a notice's clock runs. */
-function useWindowInFront(): boolean {
-  const [inFront, setInFront] = useState(isWindowInFront);
-  useEffect(() => {
-    const sync = () => setInFront(isWindowInFront());
-    sync();
-    document.addEventListener("visibilitychange", sync);
-    window.addEventListener("focus", sync);
-    window.addEventListener("blur", sync);
-    return () => {
-      document.removeEventListener("visibilitychange", sync);
-      window.removeEventListener("focus", sync);
-      window.removeEventListener("blur", sync);
-    };
-  }, []);
-  return inFront;
-}
-
 /**
  * Time each notice has left, kept across unmounts: a notice drops out of the
  * stack while it waits for a slot, and picks up where it left off when it
@@ -823,7 +802,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
   );
   const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
   const raisedAboveBackdrops = useNoticesRaisedAboveBackdrops();
-  const windowInFront = useWindowInFront();
+  const windowInFront = usePageAttended();
   const hiddenForThread = toasts.filter(
     (toast) =>
       toast.transitionStatus !== "ending" &&
