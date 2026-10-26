@@ -4716,7 +4716,8 @@ export function SourceControlPanel({
                     onChange={(event) => setCommitMessage(event.target.value)}
                     placeholder="Commit message"
                     size="sm"
-                    className="min-h-[4.5rem] resize-none text-xs"
+                    // 16px on a phone: iPhone Safari zooms into a smaller field on focus.
+                    className="min-h-[4.5rem] resize-none text-base sm:text-xs"
                     autoFocus={showCommitMessageEditor && commitMessageEditorOpen}
                     onBlur={closeEmptyCommitMessageEditor}
                     disabled={generateCommitMessageMutation.isPending || !showCommitMessageEditor}

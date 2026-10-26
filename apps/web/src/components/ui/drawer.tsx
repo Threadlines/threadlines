@@ -2,6 +2,7 @@
 
 import { Drawer as DrawerPrimitive } from "@base-ui/react/drawer";
 
+import { useOnScreenKeyboardInsetVars } from "~/hooks/useOnScreenKeyboardInset";
 import { cn } from "~/lib/utils";
 import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 
@@ -22,6 +23,27 @@ const Drawer = DrawerPrimitive.Root;
 const DrawerTitle = DrawerPrimitive.Title;
 
 const DrawerDescription = DrawerPrimitive.Description;
+
+/**
+ * Ends the panel where an on-screen keyboard begins: iPhone Safari slides the
+ * keyboard over the page instead of shrinking it, so without this a field low
+ * in the panel (the source control commit message) sits under the keys.
+ * Mounted while the panel is in the page (always, for a `keepMounted` one).
+ */
+function DrawerViewport({ className, ...props }: Omit<DrawerPrimitive.Viewport.Props, "style">) {
+  const keyboardInsetVars = useOnScreenKeyboardInsetVars(true);
+  return (
+    <DrawerPrimitive.Viewport
+      className={cn(
+        "fixed inset-0 z-50 flex pt-(--keyboard-inset-top) pb-(--keyboard-inset-bottom)",
+        className,
+      )}
+      data-slot="drawer-viewport"
+      style={keyboardInsetVars}
+      {...props}
+    />
+  );
+}
 
 /**
  * While a finger drags, the drawer writes the panel's transform itself; at
@@ -54,13 +76,8 @@ function DrawerPopup({
         data-slot="drawer-backdrop"
         render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
       />
-      <DrawerPrimitive.Viewport
-        className={cn(
-          "fixed inset-0 z-50 flex",
-          side === "left" ? "justify-start" : "justify-end",
-          viewportClassName,
-        )}
-        data-slot="drawer-viewport"
+      <DrawerViewport
+        className={cn(side === "left" ? "justify-start" : "justify-end", viewportClassName)}
       >
         <DrawerPrimitive.Popup
           className={cn(
@@ -77,7 +94,7 @@ function DrawerPopup({
             {children}
           </DrawerPrimitive.Content>
         </DrawerPrimitive.Popup>
-      </DrawerPrimitive.Viewport>
+      </DrawerViewport>
     </DrawerPrimitive.Portal>
   );
 }
