@@ -2496,11 +2496,14 @@ function CommandOutputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
             )}
             footer={
               <div className="flex items-center justify-end gap-1.5">
-                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                  <MessageCopyButton text={row.message.text} />
+                <div className={USER_MESSAGE_ACTIONS_CLASS}>
+                  <MessageCopyButton
+                    text={row.message.text}
+                    className="text-muted-foreground hover:text-foreground"
+                  />
                   {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
                 </div>
-                <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                <p className={USER_MESSAGE_TIME_CLASS}>
                   {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
                 </p>
               </div>
@@ -2544,6 +2547,37 @@ function useRunMessageFold(rowId: string, foldable: boolean) {
   );
   return { folded, setOpened, foldRef, messageRef };
 }
+
+/**
+ * A message's actions (copy, branch, revert): plain until the message, its
+ * `group`, is hovered. A touch screen has no hover, so there they always show;
+ * hidden, they would still take taps the user can't see.
+ */
+const MESSAGE_ACTIONS_REVEAL_CLASS =
+  "opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100";
+
+/** The actions under the user's own message. */
+const USER_MESSAGE_ACTIONS_CLASS = `flex items-center gap-1.5 ${MESSAGE_ACTIONS_REVEAL_CLASS}`;
+
+/** Copy, at the end of the line that names who wrote an agent's message. */
+const AGENT_MESSAGE_COPY_CLASS = `ml-auto ${MESSAGE_ACTIONS_REVEAL_CLASS}`;
+
+/**
+ * The actions under an answer (AssistantTurnFooter), shown the same way for
+ * the answer's own group. Branch also takes no clicks while it is hidden.
+ */
+const ANSWER_ACTION_REVEAL_CLASS =
+  "opacity-0 transition-opacity duration-200 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100 pointer-coarse:opacity-100";
+const ANSWER_BRANCH_CLASS = `pointer-events-none group-hover/assistant-message:pointer-events-auto group-focus-within/assistant-message:pointer-events-auto pointer-coarse:pointer-events-auto ${ANSWER_ACTION_REVEAL_CLASS}`;
+const ANSWER_COPY_CLASS = `flex items-center ${ANSWER_ACTION_REVEAL_CLASS}`;
+
+/**
+ * The time under the user's own message, after its actions. Positioned so it
+ * sits above the last action's touch target (Button's 44px `after:`, wider
+ * than the button), and a tap on the time or the device glyph stays there.
+ */
+const USER_MESSAGE_TIME_CLASS =
+  "relative flex items-center gap-1 text-right text-xs tracking-tight tabular-nums text-muted-foreground/50";
 
 /**
  * Beside the time on a message the user sent from a phone or a tablet, the
@@ -2673,9 +2707,12 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
               <>
                 <div className="flex items-center gap-1.5">
                   {canRetryFailedTurn && <RetryUserMessageButton />}
-                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                  <div className={USER_MESSAGE_ACTIONS_CLASS}>
                     {displayedUserMessage.copyText && (
-                      <MessageCopyButton text={displayedUserMessage.copyText} />
+                      <MessageCopyButton
+                        text={displayedUserMessage.copyText}
+                        className="text-muted-foreground hover:text-foreground"
+                      />
                     )}
                     {displayedUserMessage.copyText && (
                       <ContinueInNewThreadButton messageId={row.message.id} />
@@ -2683,7 +2720,7 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
                     {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
                   </div>
                 </div>
-                <p className="flex items-center gap-1 text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                <p className={USER_MESSAGE_TIME_CLASS}>
                   <MessageSentFromGlyph sentFrom={row.message.sentFrom} />
                   {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
                 </p>
@@ -2926,13 +2963,13 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
           </>
         ) : null}
         {message.text.length > 0 && !fold.folded ? (
-          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+          <div className={AGENT_MESSAGE_COPY_CLASS}>
             <MessageCopyButton
               text={message.text}
               ariaLabel="Copy message"
               size="icon-xs"
               variant="ghost"
-              className="-my-1.5"
+              className="-my-1.5 text-muted-foreground hover:text-foreground"
             />
           </div>
         ) : null}
@@ -3003,13 +3040,13 @@ function ThreadMessageTimelineRow({
           {computer.length > 0 ? `${kindWord} from ${computer}` : kindWord}
         </span>
         {message.text.length > 0 && !fold.folded ? (
-          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+          <div className={AGENT_MESSAGE_COPY_CLASS}>
             <MessageCopyButton
               text={message.text}
               ariaLabel="Copy message"
               size="icon-xs"
               variant="ghost"
-              className="-my-1.5"
+              className="-my-1.5 text-muted-foreground hover:text-foreground"
             />
           </div>
         ) : null}
@@ -3068,13 +3105,13 @@ function OutsideAgentMessageTimelineRow({
         <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="min-w-0 truncate">outside Threadlines</span>
         {message.text.length > 0 && !fold.folded ? (
-          <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+          <div className={AGENT_MESSAGE_COPY_CLASS}>
             <MessageCopyButton
               text={message.text}
               ariaLabel="Copy message"
               size="icon-xs"
               variant="ghost"
-              className="-my-1.5"
+              className="-my-1.5 text-muted-foreground hover:text-foreground"
             />
           </div>
         ) : null}
@@ -3619,10 +3656,7 @@ function AssistantTurnFooter({
       ))}
       <span className="ml-1 flex shrink-0 items-center gap-2">
         {row.message.text.trim().length > 0 ? (
-          <ContinueInNewThreadButton
-            messageId={row.message.id}
-            className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
-          />
+          <ContinueInNewThreadButton messageId={row.message.id} className={ANSWER_BRANCH_CLASS} />
         ) : null}
         <AssistantCopyButton row={row} />
       </span>
@@ -3642,7 +3676,7 @@ function AssistantCopyButton({ row }: { row: Extract<TimelineRow, { kind: "messa
   }
 
   return (
-    <div className="flex items-center opacity-0 transition-opacity duration-200 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100">
+    <div className={ANSWER_COPY_CLASS}>
       <MessageCopyButton
         text={assistantCopyState.text ?? ""}
         size="icon-xs"

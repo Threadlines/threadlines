@@ -1,3 +1,5 @@
+// The Playwright provider types cdp() (touch-screen emulation below).
+/// <reference types="vite-plus/test/browser-playwright" />
 import "../../index.css";
 
 import {
@@ -13,7 +15,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
-import { page, userEvent } from "vite-plus/test/browser";
+import { cdp, page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
@@ -1075,6 +1077,55 @@ describe("MessagesTimeline", () => {
       await page.getByRole("button", { name: "Branch from here" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows message actions on a touch screen, and keeps a tap on the device glyph off them", async () => {
+    // A touch screen has no hover to reveal the actions, and widens each
+    // button's target to 44px, past the button and over what sits beside it.
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    onTestFinished(async () => {
+      await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    });
+    const entry = buildUserTimelineEntry("ok");
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        onContinueInNewThread={vi.fn()}
+        timelineEntries={[
+          { ...entry, message: { ...entry.message, sentFrom: { kind: "phone", name: "iPhone" } } },
+          buildAssistantTimelineEntry("Done."),
+        ]}
+      />,
+    );
+
+    try {
+      expect(window.matchMedia("(pointer: coarse)").matches).toBe(true);
+      // Copy and branch, under the user's message and under the answer.
+      const actions = document.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Copy link"], button[aria-label="Branch from here"]',
+      );
+      expect(actions).toHaveLength(4);
+      for (const action of actions) {
+        let opacity = 1;
+        for (let el: Element | null = action; el; el = el.parentElement) {
+          opacity *= Number(getComputedStyle(el).opacity);
+        }
+        expect(opacity).toBe(1);
+        const box = action.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        expect(hit?.closest("button")).toBe(action);
+      }
+
+      const glyph = document.querySelector<HTMLElement>('[aria-label="Sent from iPhone"]')!;
+      const rect = glyph.getBoundingClientRect();
+      for (const x of [rect.left + 0.5, rect.left + rect.width / 2, rect.right - 0.5]) {
+        const hit = document.elementFromPoint(x, rect.top + rect.height / 2);
+        expect(hit?.closest("button")).toBeNull();
+        expect(glyph.contains(hit)).toBe(true);
+      }
     } finally {
       await screen.unmount();
     }
