@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
-import { childReportMessageId } from "./childThreadDecisions.ts";
+import { childReportMessageId, isCancelledReport } from "./childThreadDecisions.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -684,6 +684,94 @@ describe("decider child threads", () => {
     });
     expect(threadIn(stopped.model, PARENT).childRequests.open).toEqual([]);
     expect(stopped.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
+  });
+
+  it("a child whose setup failed before it was made still reports to the agent that asked, and Stop still catches it", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto"),
+    );
+    const failed = await run(started.model, {
+      type: "thread.child-request.settle",
+      commandId: CommandId.make("server:child-request:request-1:settle"),
+      threadId: PARENT,
+      requestId: REQUEST,
+      outcome: "failed",
+      reply: {
+        messageId: childReportMessageId(REQUEST),
+        text: "Couldn't start 'Write the changelog': Couldn't set up its worktree: disk full",
+        turnId: null,
+      },
+      error: "Couldn't set up its worktree: disk full",
+      createdAt: at(5),
+    });
+    expect(
+      threadIn(failed.model, PARENT).messages.find(
+        (message) => message.id === childReportMessageId(REQUEST),
+      )?.fromThread,
+    ).toMatchObject({ threadId: CHILD, kind: "report", neverMade: true });
+    expect(failed.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
+    // The parent's turn has ended by now: the report goes out as its next turn.
+    const idle: OrchestrationReadModel = {
+      ...failed.model,
+      threads: failed.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? { ...entry, session: session(PARENT, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const sendReport = {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-report"),
+      threadId: PARENT,
+      messageId: childReportMessageId(REQUEST),
+      createdAt: at(6),
+    } as const;
+    const sent = await run(idle, sendReport);
+    expect(sent.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    // Stop while that turn is prepared still catches it: with no family left
+    // to move it, the delivery epoch moves for the report alone.
+    const stopped = await run(sent.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop"),
+      threadId: PARENT,
+      createdAt: at(7),
+    });
+    const parent = threadIn(stopped.model, PARENT);
+    const origin = parent.messages.find(
+      (message) => message.id === childReportMessageId(REQUEST),
+    )?.fromThread;
+    expect(origin !== undefined && isCancelledReport(parent, origin, null)).toBe(true);
+  });
+
+  it("deleting a child that runs on its own while it is set up settles its start, so nothing reports a thread the user deleted", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto", { reportBack: false }),
+    );
+    // Made before its setup finished (as an older build did), on its own.
+    const created = await run(started.model, {
+      type: "thread.create",
+      commandId: CommandId.make("server:child-request:request-1:create"),
+      threadId: CHILD,
+      projectId,
+      title: "Write the changelog",
+      modelSelection: model,
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      parentThreadId: PARENT,
+      parentTurnId: CALLER_TURN,
+      attachedToParent: false,
+      createdAt: at(2),
+    });
+    const deleted = await run(created.model, {
+      type: "thread.delete",
+      commandId: CommandId.make("delete-child"),
+      threadId: CHILD,
+    });
+    expect(threadIn(deleted.model, PARENT).childRequests.open).toEqual([]);
   });
 
   it("refuses to create a child with more access than its parent has now", async () => {

@@ -3,7 +3,7 @@ import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { CornerDownRightIcon, ListEndIcon, PencilIcon, XIcon } from "lucide-react";
 import { memo } from "react";
 
-import { useThreadTitle } from "~/childThreads";
+import { unnamedThreadOrigin, useThreadTitle } from "~/childThreads";
 import { cn } from "~/lib/utils";
 import { type RoomAgentLabel, roomAgentKey } from "../../rooms";
 
@@ -123,7 +123,7 @@ function QueuedFollowUpLine({
   const queuedBy = fromAgent
     ? ` from ${nameOf(fromAgent.participantId)} for ${nameOf(followUp.participantId)}`
     : fromThread
-      ? ` from ${fromThreadTitle ?? (fromThread.kind === "report" ? "a thread it started" : "the thread that started it")}`
+      ? ` from ${fromThreadTitle ?? unnamedThreadOrigin(fromThread)}`
       : roomAgents !== null
         ? ` for ${nameOf(followUp.participantId)}`
         : null;

@@ -130,6 +130,7 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { ActivityGroup } from "./ActivityGroup";
+import { capitalize } from "./activityWording";
 import {
   activityStepFromWorkLogEntry,
   newestThoughtSentence,
@@ -144,6 +145,7 @@ import {
   useChildRequestState,
   useChildThreadsStartedIn,
   useRemoteChildren,
+  unnamedThreadOrigin,
   useThreadMessageSource,
   type ThreadStartCall,
 } from "../../childThreads";
@@ -2962,7 +2964,7 @@ function ThreadMessageTimelineRow({
   const source = useThreadMessageSource(ctx.activeThreadEnvironmentId, ctx.activeThreadId, origin);
   const computerLabel = useComputerLabel();
   const isReport = origin.kind === "report";
-  const author = source.title ?? (isReport ? "A thread it started" : "The thread that started it");
+  const author = source.title ?? capitalize(unnamedThreadOrigin(origin));
   const computer = source.computer
     ? computerLabel(source.computer.environmentId, source.computer.lastKnown)
     : "";

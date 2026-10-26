@@ -645,8 +645,9 @@ export const childReportMessageId = (requestId: ChildRequestId) =>
  * the asking agent must hear of) is written into the parent as a report and
  * queued for the agent that asked, in the same step, unless its delivery was
  * cancelled meanwhile: Stop or wrap moved the parent's epoch, the child was
- * separated or is gone, or the asking agent left. Only a report actually
- * written marks the child handed back.
+ * separated or is gone, or the asking agent left. A start whose setup failed
+ * before its thread was made (a thread is made last) still reports, with no
+ * child to check. Only a report actually written marks the child handed back.
  */
 export function decideChildRequestSettle(
   readModel: OrchestrationReadModel,
@@ -667,11 +668,13 @@ export function decideChildRequestSettle(
     return decideRemoteRequestSettle(parent, command, baseFor, request, settled);
   }
   const child = findThread(readModel, request.childThreadId);
+  // Deleting a child settles its requests, so an open start without its
+  // thread is one whose thread was never made.
+  const neverMade = child === null && request.kind === "start";
   if (
     reply === undefined ||
-    child === null ||
-    !child.attachedToParent ||
-    child.parentThreadId !== parent.id ||
+    (!neverMade &&
+      (child === null || !child.attachedToParent || child.parentThreadId !== parent.id)) ||
     request.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
     parent.archivedAt !== null ||
     !isPresent(parent, request.from) ||
@@ -680,11 +683,11 @@ export function decideChildRequestSettle(
     return [settled];
   }
   const fromThread = {
-    threadId: child.id,
+    threadId: request.childThreadId,
     requestId: request.requestId,
     kind: "report" as const,
     deliveryEpoch: parent.childRequests.deliveryEpoch,
-    attachmentEpoch: child.parentAttachmentEpoch,
+    ...(child !== null ? { attachmentEpoch: child.parentAttachmentEpoch } : { neverMade: true }),
   };
   const text = reply.text;
   const participantId = request.from.participantId;
@@ -727,11 +730,15 @@ export function decideChildRequestSettle(
         },
       },
     },
-    {
-      ...baseFor(child.id),
-      type: "thread.handed-back",
-      payload: { threadId: child.id, turnId: reply.turnId, handedBackAt: command.createdAt },
-    },
+    ...(child !== null
+      ? [
+          {
+            ...baseFor(child.id),
+            type: "thread.handed-back" as const,
+            payload: { threadId: child.id, turnId: reply.turnId, handedBackAt: command.createdAt },
+          },
+        ]
+      : []),
   ];
 }
 
@@ -1237,12 +1244,14 @@ export function decideChildDeliveriesStop(
   );
   // A report already taken off the queue and being prepared leaves nothing
   // open and nothing queued; while the thread has a family the epoch moves
-  // anyway, so that report is caught before it is sent.
+  // anyway, so that report is caught before it is sent. A thread that was
+  // never made left no family, only its report.
   if (
     open.length === 0 &&
     !hasQueuedReports &&
     attachedChildrenOf(readModel, parent.id).length === 0 &&
-    (parent.childRequests.remoteChildren ?? []).length === 0
+    (parent.childRequests.remoteChildren ?? []).length === 0 &&
+    !parent.messages.some((message) => message.fromThread?.neverMade === true)
   ) {
     return [];
   }
@@ -1316,7 +1325,9 @@ export function settleParentRequestsForUnqueued(
 /**
  * A thread is deleted. A parent's family is separated (or, with
  * `withChildren`, deleted by the caller); a child's open requests on its
- * parent are cancelled and its queued reports taken back.
+ * parent are cancelled and its queued reports taken back, whether or not it
+ * reports back, so an open start never outlives its thread (a start without
+ * a thread is one never made).
  */
 export function childDeletionEvents(
   readModel: OrchestrationReadModel,
@@ -1341,9 +1352,7 @@ export function childDeletionEvents(
       },
     }));
   const parent =
-    thread.parentThreadId !== null && thread.attachedToParent
-      ? findThread(readModel, thread.parentThreadId)
-      : null;
+    thread.parentThreadId !== null ? findThread(readModel, thread.parentThreadId) : null;
   return [
     ...familyEvents,
     ...(parent !== null
@@ -1439,13 +1448,33 @@ export function isStaleReport(
   if (origin === undefined || origin.kind !== "report") {
     return false;
   }
+  return isCancelledReport(parent, origin, findThread(readModel, origin.threadId));
+}
+
+/**
+ * Whether a report's delivery was cancelled since it was queued: Stop or a
+ * wrap moved the parent's epoch, or its child was separated or is gone.
+ * `child` is the report's thread on this computer, null when there is none.
+ * A child on a linked computer isn't here, so the parent's record of it
+ * decides; a child that was never made has only the epoch to go by.
+ */
+export function isCancelledReport(
+  parent: OrchestrationThread,
+  origin: NonNullable<OrchestrationQueuedFollowUp["fromThread"]>,
+  child: OrchestrationThread | null,
+): boolean {
   if (origin.environmentId !== undefined) {
     return isStaleRemoteReport(parent, origin);
   }
-  const child = findThread(readModel, origin.threadId);
+  if (origin.deliveryEpoch !== parent.childRequests.deliveryEpoch) {
+    return true;
+  }
+  if (origin.neverMade === true) {
+    return false;
+  }
   return (
-    origin.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
     child === null ||
+    child.deletedAt !== null ||
     child.parentThreadId !== parent.id ||
     !child.attachedToParent ||
     origin.attachmentEpoch !== child.parentAttachmentEpoch
@@ -1458,7 +1487,7 @@ export function isStaleReport(
  * that child (its attachment epoch moved). The parent's own record of the
  * child decides, since the child isn't here.
  */
-export function isStaleRemoteReport(
+function isStaleRemoteReport(
   parent: OrchestrationThread,
   origin: NonNullable<OrchestrationQueuedFollowUp["fromThread"]>,
 ): boolean {

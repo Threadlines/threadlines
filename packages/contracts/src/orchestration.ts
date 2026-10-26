@@ -584,6 +584,12 @@ export const ThreadMessageOrigin = Schema.Struct({
    * computer, docs/design/fleet.md). Absent: this computer.
    */
   environmentId: Schema.optional(EnvironmentId),
+  /**
+   * A report about a thread that was never made: its setup failed before the
+   * thread existed (a thread is made last, docs/design/thread-setup-state.md).
+   * With no child to check, only Stop or a wrap (the delivery epoch) cancels it.
+   */
+  neverMade: Schema.optional(Schema.Boolean),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 

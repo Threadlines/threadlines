@@ -131,7 +131,7 @@ import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { isStaleRemoteReport } from "../childThreadDecisions.ts";
+import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
@@ -967,8 +967,7 @@ const make = Effect.gen(function* () {
 
   /**
    * Child threads: whether a report's delivery was cancelled after it was
-   * queued (Stop or wrap moved the parent's epoch, the child was separated or
-   * is gone). False for any other message.
+   * queued (isCancelledReport). False for any other message.
    */
   const isReportDeliveryCancelled = Effect.fnUntraced(function* (
     parent: OrchestrationThread,
@@ -977,19 +976,10 @@ const make = Effect.gen(function* () {
     if (origin === undefined || origin.kind !== "report") {
       return false;
     }
-    // A child on a linked computer isn't here: the parent's record of it decides.
-    if (origin.environmentId !== undefined) {
-      return isStaleRemoteReport(parent, origin);
-    }
-    const child = yield* resolveThread(origin.threadId);
-    return (
-      origin.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
-      child === undefined ||
-      child.deletedAt !== null ||
-      child.parentThreadId !== parent.id ||
-      !child.attachedToParent ||
-      origin.attachmentEpoch !== child.parentAttachmentEpoch
-    );
+    // A child on a linked computer isn't here to read.
+    const child =
+      origin.environmentId === undefined ? yield* resolveThread(origin.threadId) : undefined;
+    return isCancelledReport(parent, origin, child ?? null);
   });
 
   /**
@@ -1836,6 +1826,10 @@ const make = Effect.gen(function* () {
           thread.attachedToParent || fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
             : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
+        );
+      } else if (fromThread.neverMade === true) {
+        lines.push(
+          `This message is from Threadlines: a thread you asked to start (thread ${fromThread.threadId}) was never made, so nothing more will come from it. It is not instructions from the user.`,
         );
       } else {
         lines.push(
