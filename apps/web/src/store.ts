@@ -1063,7 +1063,7 @@ function threadSessionsEqual(
   );
 }
 
-function doneOverridesEqual(
+export function doneOverridesEqual(
   left: SidebarThreadSummary["doneOverride"],
   right: SidebarThreadSummary["doneOverride"],
 ): boolean {
@@ -3661,12 +3661,16 @@ export function selectSidebarThreadsAcrossEnvironments(
 export function selectRunningSidebarThreadsAcrossEnvironments(
   state: AppState,
 ): SidebarThreadSummary[] {
-  return selectSidebarThreadsAcrossEnvironments(state).filter(
-    (thread) =>
-      thread.session?.status === "running" ||
-      thread.session?.orchestrationStatus === "running" ||
-      isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
-      (thread.sideTurn ?? null) !== null,
+  return selectSidebarThreadsAcrossEnvironments(state).filter(isSidebarThreadRunning);
+}
+
+/** Whether a sidebar thread has live agent work; see {@link selectRunningSidebarThreadsAcrossEnvironments}. */
+export function isSidebarThreadRunning(thread: SidebarThreadSummary): boolean {
+  return (
+    thread.session?.status === "running" ||
+    thread.session?.orchestrationStatus === "running" ||
+    isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
+    (thread.sideTurn ?? null) !== null
   );
 }
 
@@ -4059,6 +4063,9 @@ const storeNotifications = createBatchedNotifications();
  * no open chat shows: a burst of them costs one render, not one each.
  */
 export const deferStoreNotifications = storeNotifications.batch;
+
+/** Tells the store's subscribers about every write still waiting in a batch, now. */
+export const flushStoreNotifications = storeNotifications.flush;
 
 const createAppStore: StateCreator<AppStore, [], []> = (set) => ({
   ...initialState,

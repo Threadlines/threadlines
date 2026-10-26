@@ -1395,16 +1395,45 @@ describe("retainThreadDetailSubscription", () => {
       selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId))?.messages[0]
         ?.text;
 
+    // The background thread is already working: its reply is progress, told in
+    // one batch.
     deliverText(backgroundThreadId, 2, "Working");
-    deliverText(backgroundThreadId, 3, " on it");
+    deliverText(backgroundThreadId, 3, " on");
+    deliverText(backgroundThreadId, 4, " it");
     expect(textOf(backgroundThreadId)).toBe("Working on it");
     expect(notifications).toBe(0);
     vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS);
     expect(notifications).toBe(1);
 
-    deliverText(openThreadId, 4, "Done");
+    deliverText(openThreadId, 5, "Done");
     expect(textOf(openThreadId)).toBe("Done");
     expect(notifications).toBe(2);
+
+    // A thread appearing, or one asking for approval, is not progress: it goes
+    // out at once even when no open chat shows it.
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    connectionInput.applyShellEvent(
+      {
+        kind: "thread-upserted",
+        sequence: 10,
+        thread: makeThreadShellSnapshot({ threadId: ThreadId.make("thread-new") }).threads[0]!,
+      },
+      environmentId,
+    );
+    expect(notifications).toBe(3);
+    connectionInput.applyShellEvent(
+      {
+        kind: "thread-upserted",
+        sequence: 11,
+        thread: makeThreadShellSnapshot({
+          threadId: backgroundThreadId,
+          sessionStatus: "running",
+          hasPendingApprovals: true,
+        }).threads[0]!,
+      },
+      environmentId,
+    );
+    expect(notifications).toBe(4);
 
     unsubscribe();
     release();

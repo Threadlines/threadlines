@@ -32,19 +32,44 @@ export function createBatchedNotifications(delayMs = BATCHED_NOTIFICATION_DELAY_
   let batching = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let watchingVisibility = false;
+  let flushing = false;
+  let writtenWhileFlushing = false;
+  /** Rounds one flush runs before a listener that keeps writing is left to the timer. */
+  const maxRounds = 32;
 
-  /** Tells every subscriber about the current state, if they have not heard of it. */
+  /**
+   * Tells every subscriber about the current state, if they have not heard of
+   * it. A listener that writes the store while being told finishes this round
+   * first: every subscriber hears each state in order, then the newer one.
+   */
   function flush(): void {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
     }
     if (store === null) return;
-    const state = store.getState();
-    if (Object.is(state, toldState)) return;
-    const previousState = toldState;
-    toldState = state;
-    for (const listener of listeners) listener(state, previousState);
+    if (flushing) {
+      writtenWhileFlushing = true;
+      return;
+    }
+    flushing = true;
+    let rounds = 0;
+    try {
+      do {
+        writtenWhileFlushing = false;
+        const state = store.getState();
+        if (Object.is(state, toldState)) break;
+        const previousState = toldState;
+        toldState = state;
+        for (const listener of listeners) listener(state, previousState);
+        rounds += 1;
+      } while (writtenWhileFlushing && rounds < maxRounds);
+    } finally {
+      flushing = false;
+    }
+    // A listener answering every write with another would spin here forever;
+    // what it wrote last goes out with the next batch instead.
+    if (writtenWhileFlushing) timer ??= setTimeout(flush, delayMs);
   }
 
   function pageVisible(): boolean {

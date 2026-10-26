@@ -67,6 +67,41 @@ describe("createBatchedNotifications", () => {
     expect(heard).toEqual([[0, 2]]);
   });
 
+  it("finishes telling everyone before a listener's own write, then tells everyone that", () => {
+    const { store, batch } = createCounterStore();
+    const heardByLater: number[] = [];
+    let wrote = false;
+    store.subscribe((state) => {
+      if (!wrote) {
+        wrote = true;
+        store.getState().bump();
+      }
+      return state;
+    });
+    store.subscribe((state) => heardByLater.push(state.count));
+
+    batch(() => store.getState().bump());
+    vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS);
+
+    expect(store.getState().count).toBe(2);
+    expect(heardByLater).toEqual([1, 2]);
+  });
+
+  it("leaves a listener that keeps writing to the next batch instead of spinning", () => {
+    const { store } = createCounterStore();
+    store.subscribe((state) => {
+      if (state.count < 1_000) state.bump();
+    });
+
+    store.getState().bump();
+    const afterOneFlush = store.getState().count;
+    expect(afterOneFlush).toBeGreaterThan(1);
+    expect(afterOneFlush).toBeLessThan(1_000);
+
+    vi.advanceTimersByTime(BATCHED_NOTIFICATION_DELAY_MS * 100);
+    expect(store.getState().count).toBe(1_000);
+  });
+
   it("tells a hidden page at once, and what waits when the page goes hidden", () => {
     const { store, heard, batch } = createCounterStore();
 

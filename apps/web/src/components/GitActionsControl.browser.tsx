@@ -210,6 +210,9 @@ vi.mock("~/composerDraftStore", async () => {
 
 vi.mock("~/store", () => ({
   deferStoreNotifications: (write: () => void) => write(),
+  flushStoreNotifications: () => undefined,
+  doneOverridesEqual: () => true,
+  isSidebarThreadRunning: () => false,
   selectEnvironmentState: (
     state: { environmentStateById: Record<string, unknown> },
     environmentId: string | null,
