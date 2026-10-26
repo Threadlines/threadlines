@@ -61,7 +61,7 @@ export function buildGitActionProgressStages(input: {
   terminology?: ChangeRequestTerminology;
 }): string[] {
   const terminology = input.terminology ?? DEFAULT_CHANGE_REQUEST_TERMINOLOGY;
-  const branchStages = input.featureBranch ? ["Preparing feature ref..."] : [];
+  const branchStages = input.featureBranch ? ["Preparing feature branch..."] : [];
   const pushStage = input.pushTarget ? `Pushing to ${input.pushTarget}...` : "Pushing...";
   const prStages = [
     `Preparing ${terminology.shortLabel}...`,

@@ -19,7 +19,7 @@ import {
 } from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 interface BranchToolbarCheckoutSwitchChipProps {
@@ -47,10 +47,9 @@ export const BranchToolbarCheckoutSwitchChip = memo(function BranchToolbarChecko
         await stopThreadSession({ environmentId, threadId });
       } catch {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to stop the session",
-            description: "The background task is still running. Try again in a moment.",
+          failureNotice({
+            title: "Couldn't stop the agent",
+            reason: "The background task is still running. Try again in a moment.",
           }),
         );
       }

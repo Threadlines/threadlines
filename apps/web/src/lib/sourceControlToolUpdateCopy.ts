@@ -29,7 +29,7 @@ export function sourceControlToolUpdateResultCopy(input: {
             type: "success",
             title: `${label} installed`,
             description: result.currentVersion
-              ? `Installed ${result.currentVersion}`
+              ? `Installed ${result.currentVersion}.`
               : "Installed successfully.",
           }
         : {
@@ -57,10 +57,10 @@ export function sourceControlToolUpdateErrorCopy(input: {
   readonly label: string;
   readonly operation: SourceControlToolUpdateOperation | undefined;
   readonly error: unknown;
-}): { readonly title: string; readonly description: string } {
+}): { readonly title: `Couldn't ${string}`; readonly reason: string } {
   return {
-    title: `Could not ${input.operation === "install" ? "install" : "update"} ${input.label}`,
-    description:
+    title: `Couldn't ${input.operation === "install" ? "install" : "update"} ${input.label}`,
+    reason:
       input.error instanceof Error ? input.error.message : "The verified update command failed.",
   };
 }

@@ -18,7 +18,7 @@ import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   SettingsPageContainer,
@@ -416,10 +416,9 @@ export function AgentInstructionsSettingsPanel() {
         );
       } catch (saveError) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not save instruction file",
-            description: saveError instanceof Error ? saveError.message : "Save failed.",
+          failureNotice({
+            title: "Couldn't save the instruction file",
+            error: saveError,
           }),
         );
       } finally {

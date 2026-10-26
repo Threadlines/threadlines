@@ -28,7 +28,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   describeLastEvent,
   describeWebhookEvent,
@@ -51,7 +51,7 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 function clientFor(located: LocatedTask) {
   const connection = readEnvironmentConnection(located.environment.environmentId);
   if (!connection) {
-    toastManager.add({ type: "error", title: `${located.environment.label} isn't connected.` });
+    toastManager.add({ type: "error", title: `${located.environment.label} isn't connected` });
     return null;
   }
   return connection.client;
@@ -171,11 +171,12 @@ function SigningSecretRow({
       });
       setShown(result.secret === null ? null : { secret: result.secret, fresh: false });
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't show the secret",
-        description: errorText(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't show the secret",
+          reason: errorText(error),
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -193,11 +194,12 @@ function SigningSecretRow({
       setTyping(null);
       setShown(result.secret === null ? null : { secret: result.secret, fresh: true });
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't set the secret",
-        description: errorText(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't set the secret",
+          reason: errorText(error),
+        }),
+      );
     } finally {
       setBusy(false);
       setConfirm(null);
@@ -382,7 +384,7 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
   const act = async (
     kind: "connect" | "disconnect" | "rotate" | "dismiss",
     run: () => Promise<unknown>,
-    failure: string,
+    failure: `Couldn't ${string}`,
   ) => {
     setBusy(kind);
     try {
@@ -390,7 +392,7 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
       refresh();
       return true;
     } catch (error) {
-      toastManager.add({ type: "error", title: failure, description: errorText(error) });
+      toastManager.add(failureNotice({ title: failure, reason: errorText(error) }));
       return false;
     } finally {
       setBusy(null);
@@ -766,11 +768,12 @@ export function EventTestSection({
       onResult(next, true);
       refreshEventHistory(queryClient, located);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't start a run",
-        description: errorText(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't start a run",
+          reason: errorText(error),
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -912,11 +915,12 @@ function EventRow({
       });
       refreshEventHistory(queryClient, located);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't run it again",
-        description: errorText(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't run it again",
+          reason: errorText(error),
+        }),
+      );
     } finally {
       setReplaying(false);
     }

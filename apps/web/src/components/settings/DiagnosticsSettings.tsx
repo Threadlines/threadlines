@@ -1,5 +1,6 @@
 import {
   AlertTriangleIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -39,7 +40,7 @@ import { InfoPopover } from "../ui/info-popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { SettingsPageContainer, SettingsPageHeader, SettingsSection } from "./settingsLayout";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
@@ -347,7 +348,9 @@ function TraceIdCell({ traceId }: { traceId: string }) {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1_200);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        toastManager.add(failureNotice({ title: "Couldn't copy the trace ID", error }));
+      });
   }, [traceId]);
 
   return (
@@ -376,7 +379,11 @@ function TraceIdCell({ traceId }: { traceId: string }) {
               aria-label={copied ? "Copied trace ID" : "Copy trace ID"}
               onClick={copyTraceId}
             >
-              <CopyIcon className="size-3" />
+              {copied ? (
+                <CheckIcon className="size-3 text-success" />
+              ) : (
+                <CopyIcon className="size-3" />
+              )}
             </button>
           }
         />
@@ -1094,28 +1101,28 @@ export function DiagnosticsSettingsPanel() {
             if (isStaleProcessSignalMessage(message)) {
               toastManager.add({
                 type: "info",
-                title: "Process already exited",
-                description:
-                  "The process is not a child of the Threadlines Server. It might already have exited.",
+                title: "That process already stopped",
               });
               return;
             }
 
-            toastManager.add({
-              type: "error",
-              title: `Could not send ${signal}`,
-              description: message ?? `Failed to send ${signal}.`,
-            });
+            toastManager.add(
+              failureNotice({
+                title: `Couldn't send ${signal}`,
+                reason: message ?? `Failed to send ${signal}.`,
+              }),
+            );
             return;
           }
           refreshProcesses();
         })
         .catch((error: unknown) => {
-          toastManager.add({
-            type: "error",
-            title: `Could not send ${signal}`,
-            description: error instanceof Error ? error.message : `Failed to send ${signal}.`,
-          });
+          toastManager.add(
+            failureNotice({
+              title: `Couldn't send ${signal}`,
+              error,
+            }),
+          );
         })
         .finally(() => {
           setSignalingPid(null);

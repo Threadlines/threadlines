@@ -379,7 +379,7 @@ describe("provider update runs", () => {
     ];
     run = advanceProviderUpdateRun(run, environmentId, finished);
     const result = describeProviderUpdateRun(run!, finished);
-    expect(result).toMatchObject({ phase: "failed", title: "Codex didn't update" });
+    expect(result).toMatchObject({ phase: "failed", title: "Couldn't update Codex" });
     expect(result.items).toEqual([
       {
         key: "codex",
@@ -480,7 +480,7 @@ describe("provider update runs", () => {
         failProviderUpdateRunStart(run, { ...refusal, attempt })!,
         providers,
       ),
-    ).toMatchObject({ phase: "failed", title: "Codex didn't update", detail: "Not allowed." });
+    ).toMatchObject({ phase: "failed", title: "Couldn't update Codex", detail: "Not allowed." });
 
     // Asked again before the server reported: only the newer request can settle it.
     const again = joinProviderUpdateRun(run, environmentId, providers, ["codex"]);

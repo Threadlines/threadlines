@@ -24,7 +24,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { readEnvironmentApi } from "~/environmentApi";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 
@@ -120,10 +120,9 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     onError: (error) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not copy plan",
-          description: error instanceof Error ? error.message : "An error occurred while copying.",
+        failureNotice({
+          title: "Couldn't copy the plan",
+          error,
         }),
       );
     },
@@ -152,8 +151,8 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Workspace path is unavailable",
-          description: "This thread does not have a workspace path to save into.",
+          title: "Nowhere to save the plan",
+          description: "This thread doesn't have a project folder to save into.",
         }),
       );
       return;
@@ -193,10 +192,9 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       })
       .catch((error) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not save plan",
-            description: error instanceof Error ? error.message : "An error occurred while saving.",
+          failureNotice({
+            title: "Couldn't save the plan",
+            error,
           }),
         );
       })
@@ -240,7 +238,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
                 <MenuItem onClick={onImplementInNewThread}>Implement in new thread</MenuItem>
               ) : null}
               <MenuItem onClick={handleCopyPlan}>
-                {isCopied ? "Copied!" : "Copy to clipboard"}
+                {isCopied ? "Copied" : "Copy to clipboard"}
               </MenuItem>
               <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
               <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>

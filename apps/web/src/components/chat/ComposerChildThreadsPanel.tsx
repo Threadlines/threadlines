@@ -7,7 +7,7 @@ import { readEnvironmentApi } from "~/environmentApi";
 import { cn, newCommandId } from "~/lib/utils";
 import { formatChildThreadCount } from "../Sidebar.logic";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 /**
@@ -27,7 +27,7 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
   const respond = async (choice: "start" | "decline") => {
     const api = readEnvironmentApi(props.threadRef.environmentId);
     if (!api) {
-      toastManager.add({ type: "error", title: "This computer is not connected." });
+      toastManager.add({ type: "error", title: "This computer isn't connected" });
       return;
     }
     setResponding(true);
@@ -41,11 +41,12 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
         createdAt: new Date().toISOString(),
       });
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: choice === "start" ? "Could not start the threads" : "Could not answer the agent",
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: choice === "start" ? "Couldn't start the threads" : "Couldn't answer the agent",
+          error,
+        }),
+      );
     } finally {
       setResponding(false);
     }

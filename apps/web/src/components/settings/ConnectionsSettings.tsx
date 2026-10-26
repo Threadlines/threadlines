@@ -67,7 +67,7 @@ import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
 import {
@@ -272,11 +272,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       toastManager.add({
         type: "success",
         title:
-          kind === "hosted-link"
-            ? "Device link copied"
-            : kind === "link"
-              ? "Device link copied"
-              : "Pairing code copied",
+          kind === "hosted-link" || kind === "link" ? "Copied device link" : "Copied pairing code",
         description:
           kind === "hosted-link"
             ? "Open it in the browser on your phone or tablet."
@@ -288,16 +284,15 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
     onError: (error, kind) => {
       setIsRevealDialogOpen(true);
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
+        failureNotice({
           title: canCopyToClipboard
             ? kind === "hosted-link"
-              ? "Could not copy device link"
+              ? "Couldn't copy the device link"
               : kind === "link"
-                ? "Could not copy device link"
-                : "Could not copy pairing code"
-            : "Clipboard copy unavailable",
-          description: canCopyToClipboard ? error.message : "Showing the full value instead.",
+                ? "Couldn't copy the device link"
+                : "Couldn't copy the pairing code"
+            : "Couldn't copy the pairing details",
+          ...(canCopyToClipboard ? { error } : { reason: "Showing the full value instead." }),
         }),
       );
     },
@@ -1076,10 +1071,9 @@ export function ConnectionsSettings({
         setIsDesktopServerExposureDialogOpen(false);
         setDesktopServerExposureError(message);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not update device access",
-            description: message,
+          failureNotice({
+            title: "Couldn't update device access",
+            reason: message,
           }),
         );
         setIsUpdatingDesktopServerExposure(false);
@@ -1111,10 +1105,9 @@ export function ConnectionsSettings({
         error instanceof Error ? error.message : "Failed to set up the Tailscale link.";
       setDesktopServerExposureError(message);
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not set up the Tailscale link",
-          description: message,
+        failureNotice({
+          title: "Couldn't set up the Tailscale link",
+          reason: message,
         }),
       );
     } finally {
@@ -1148,10 +1141,9 @@ export function ConnectionsSettings({
         error instanceof Error ? error.message : "Failed to turn off the Tailscale link.";
       setDesktopServerExposureError(message);
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not turn off the Tailscale link",
-          description: message,
+        failureNotice({
+          title: "Couldn't turn off the Tailscale link",
+          reason: message,
         }),
       );
     } finally {
@@ -1172,10 +1164,9 @@ export function ConnectionsSettings({
       const message = error instanceof Error ? error.message : "Failed to cancel the link.";
       setDesktopAccessManagementError(message);
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not cancel the link",
-          description: message,
+        failureNotice({
+          title: "Couldn't cancel the link",
+          reason: message,
         }),
       );
     } finally {
@@ -1193,10 +1184,9 @@ export function ConnectionsSettings({
         const message = error instanceof Error ? error.message : "Failed to remove access.";
         setDesktopAccessManagementError(message);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not remove access",
-            description: message,
+          failureNotice({
+            title: "Couldn't remove access",
+            reason: message,
           }),
         );
       } finally {
@@ -1234,10 +1224,9 @@ export function ConnectionsSettings({
         const message = describeComputerLinkFailure(error, "Failed to remove access.");
         setDesktopAccessManagementError(message);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not remove access",
-            description: message,
+          failureNotice({
+            title: "Couldn't remove access",
+            reason: message,
           }),
         );
       } finally {
@@ -1261,10 +1250,9 @@ export function ConnectionsSettings({
       const message = error instanceof Error ? error.message : "Failed to remove devices.";
       setDesktopAccessManagementError(message);
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not remove devices",
-          description: message,
+        failureNotice({
+          title: "Couldn't remove devices",
+          reason: message,
         }),
       );
     } finally {
@@ -1280,10 +1268,9 @@ export function ConnectionsSettings({
       setDirectLinkDialogOpen(false);
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not make a link",
-          description: error instanceof Error ? error.message : "Try again.",
+        failureNotice({
+          title: "Couldn't make a link",
+          error,
         }),
       );
     } finally {

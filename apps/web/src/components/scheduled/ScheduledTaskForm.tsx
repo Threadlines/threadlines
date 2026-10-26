@@ -52,7 +52,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { TimePicker } from "../ui/time-picker";
 import { TimeZonePicker } from "../ui/time-zone-picker";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   CADENCE_KIND_LABELS,
   type CadenceKind,
@@ -342,7 +342,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     const environment = environments.find((entry) => entry.environmentId === form.environmentId);
     const connection = readEnvironmentConnection(form.environmentId);
     if (!connection || !environment) {
-      toastManager.add({ type: "error", title: "That computer isn't connected." });
+      toastManager.add({ type: "error", title: "That computer isn't connected" });
       return;
     }
     setSaving(true);
@@ -358,11 +358,12 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         );
       }
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: editing ? "Couldn't save the task" : "Couldn't create the task",
-        description: error instanceof Error ? error.message : undefined,
-      });
+      toastManager.add(
+        failureNotice({
+          title: editing ? "Couldn't save the task" : "Couldn't create the task",
+          error,
+        }),
+      );
     } finally {
       setSaving(false);
     }

@@ -23,7 +23,7 @@ import {
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { lazyWithPreload } from "../lib/lazyWithPreload";
 import { Dialog } from "./ui/dialog";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 
 const ProjectSetupDialogContent = lazyWithPreload(() =>
   import("./ProjectSetupDialogContent").then((module) => module.ProjectSetupDialogContent),
@@ -164,10 +164,9 @@ function ProjectSetupEndToasts() {
         }
         if (job.stage === "failed") {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
+            failureNotice({
               title: `Couldn't set up ${job.title} on ${label}`,
-              ...(job.error !== null ? { description: job.error } : {}),
+              ...(job.error !== null ? { reason: job.error } : {}),
               actionProps: {
                 children: "Show",
                 onClick: () => showProjectSetupJob(environmentId, job.setupId),

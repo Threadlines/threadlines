@@ -381,8 +381,8 @@ describe("resolveAddProjectUnavailableGuidance", () => {
   it("keeps the plain error for a desktop session that really has no environment", () => {
     expect(resolveAddProjectUnavailableGuidance({ isHostedStatic: false })).toEqual({
       type: "error",
-      title: "Unable to browse projects",
-      description: "No environment is available.",
+      title: "Can't browse projects",
+      description: "No computer is available.",
       action: null,
     });
   });

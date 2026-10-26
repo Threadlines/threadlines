@@ -28,7 +28,7 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Spinner } from "./ui/spinner";
-import { toastManager } from "./ui/toast";
+import { failureNotice, toastManager } from "./ui/toast";
 
 export type ProviderRateLimitResetCreditRequest = {
   readonly instanceId: ProviderInstanceId;
@@ -448,14 +448,15 @@ export function useProviderRateLimitResetCredit(): {
         );
         setPendingRateLimitResetCredit(null);
       } catch (error: unknown) {
-        toastManager.add({
-          type: "error",
-          title: "Usage reset failed",
-          description: unknownErrorMessage(
-            error,
-            `${pendingReset.providerLabel} could not reset usage right now.`,
-          ),
-        });
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't reset usage",
+            reason: unknownErrorMessage(
+              error,
+              `${pendingReset.providerLabel} couldn't reset usage right now.`,
+            ),
+          }),
+        );
       } finally {
         setIsConsumingRateLimitResetCredit(false);
         setResettingRateLimitResetCreditId(null);

@@ -106,7 +106,8 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-vi.mock("~/components/ui/toast", () => ({
+vi.mock("~/components/ui/toast", async () => ({
+  failureNotice: (await import("~/components/ui/toastHelpers")).failureNotice,
   toastManager: {
     add: toastAddSpy,
     close: toastCloseSpy,

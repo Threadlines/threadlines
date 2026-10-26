@@ -3,7 +3,7 @@ import { LoaderIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
 /**
@@ -28,10 +28,9 @@ export function ProviderSignInAction(props: {
     flow: "login",
     onStartError: (error) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not start ${props.displayName} sign-in`,
-          description: error instanceof Error ? error.message : "The command could not be started.",
+        failureNotice({
+          title: `Couldn't start ${props.displayName} sign-in`,
+          error,
         }),
       );
     },

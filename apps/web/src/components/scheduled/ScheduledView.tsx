@@ -25,7 +25,7 @@ import {
   EmptyTitle,
 } from "../ui/empty";
 import { Switch } from "../ui/switch";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   describeNextRun,
   describeTaskSchedule,
@@ -57,7 +57,7 @@ export async function setTaskActive(
 ): Promise<void> {
   const connection = readEnvironmentConnection(environment.environmentId);
   if (!connection) {
-    toastManager.add({ type: "error", title: `${environment.label} isn't connected.` });
+    toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
     return;
   }
   try {
@@ -66,11 +66,12 @@ export async function setTaskActive(
       status: active ? "active" : "paused",
     });
   } catch (error) {
-    toastManager.add({
-      type: "error",
-      title: active ? "Couldn't resume the task" : "Couldn't pause the task",
-      description: error instanceof Error ? error.message : undefined,
-    });
+    toastManager.add(
+      failureNotice({
+        title: active ? "Couldn't resume the task" : "Couldn't pause the task",
+        error,
+      }),
+    );
   }
 }
 

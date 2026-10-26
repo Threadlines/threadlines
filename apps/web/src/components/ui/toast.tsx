@@ -1035,8 +1035,8 @@ function AnchoredToasts() {
   );
 }
 
-export { stackedThreadToast } from "./toastHelpers";
-export type { StackedThreadToastOptions } from "./toastHelpers";
+export { failureNotice, stackedThreadToast } from "./toastHelpers";
+export type { FailureNoticeOptions, FailureTitle, StackedThreadToastOptions } from "./toastHelpers";
 
 export {
   ToastProvider,

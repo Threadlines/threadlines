@@ -22,7 +22,7 @@ import {
   type ProviderUpdateRunView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { SETUP_ROUTE_PATH } from "./setup/firstRunGateState";
-import { stackedThreadToast, toastManager, type NoticeAddOptions } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager, type NoticeAddOptions } from "./ui/toast";
 import { cn } from "~/lib/utils";
 
 const STATUS_TEXT: Record<ProviderUpdateProgressStatus, string> = {
@@ -136,13 +136,20 @@ function noticeForRun(
     case "failed":
     case "unchanged":
       return notice(
-        stackedThreadToast({
-          type: view.phase === "failed" ? "error" : "warning",
-          title: view.title,
-          description,
-          actionProps: { children: "Settings", onClick: input.openSettings },
-          actionVariant: "outline",
-        }),
+        view.phase === "failed"
+          ? failureNotice({
+              title: view.title,
+              reason: description,
+              actionProps: { children: "Settings", onClick: input.openSettings },
+              actionVariant: "outline",
+            })
+          : stackedThreadToast({
+              type: "warning",
+              title: view.title,
+              description,
+              actionProps: { children: "Settings", onClick: input.openSettings },
+              actionVariant: "outline",
+            }),
       );
   }
 }

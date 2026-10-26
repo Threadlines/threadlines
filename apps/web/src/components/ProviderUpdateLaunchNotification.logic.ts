@@ -273,13 +273,21 @@ export interface ProviderUpdateProgressItem {
   readonly message: string | null;
 }
 
-export interface ProviderUpdateRunView {
-  readonly phase: "running" | "succeeded" | "failed" | "unchanged";
-  readonly title: string;
+type ProviderUpdateRunTitle =
+  | {
+      readonly phase: "failed";
+      readonly title: `Couldn't ${string}`;
+    }
+  | {
+      readonly phase: "running" | "succeeded" | "unchanged";
+      readonly title: string;
+    };
+
+export type ProviderUpdateRunView = ProviderUpdateRunTitle & {
   /** One line under the title; a run of several agents shows its rows instead. */
   readonly detail: string | null;
   readonly items: readonly ProviderUpdateProgressItem[];
-}
+};
 
 function updateStateKey(state: ServerProvider["updateState"]): string {
   return state ? `${state.status}|${state.startedAt ?? ""}|${state.finishedAt ?? ""}` : "idle";
@@ -523,8 +531,8 @@ export function describeProviderUpdateRun(
     return {
       phase: "failed",
       title: only
-        ? `${only.item.label} didn't ${only.member.installing ? "install" : "update"}`
-        : `${failed.length} agents didn't update`,
+        ? `Couldn't ${only.member.installing ? "install" : "update"} ${only.item.label}`
+        : `Couldn't update ${failed.length} agents`,
       detail: single ? (singleMessage ?? "The update stopped before it finished.") : null,
       items,
     };

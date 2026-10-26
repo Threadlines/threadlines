@@ -31,7 +31,6 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   RuntimeTaskId,
-  TerminalOpenInput,
 } from "@threadlines/contracts";
 import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
 import {
@@ -43,7 +42,7 @@ import {
 import { isAcpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
+import { projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -154,7 +153,6 @@ import {
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_COMPOSER_RUNTIME_MODE,
-  DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
   type ProposedPlan,
@@ -196,7 +194,7 @@ import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadSeenAt } from "~/lib/threadInboxSync";
 import { isPageAttended, onPageAttentionChange } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -1734,15 +1732,13 @@ export default function ChatView(props: ChatViewProps) {
         await reconnectSavedEnvironment(environmentId);
         toastManager.add({
           type: "success",
-          title: "Environment reconnected",
-          description: `${label} is ready.`,
+          title: `Reconnected to ${label}`,
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not reconnect environment",
-            description: error instanceof Error ? error.message : "Failed to reconnect.",
+          failureNotice({
+            title: `Couldn't reconnect to ${label}`,
+            error,
           }),
         );
       } finally {
@@ -4375,10 +4371,9 @@ export default function ChatView(props: ChatViewProps) {
       const providersApi = readEnvironmentApi(environmentId)?.providers;
       if (!providersApi) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start MCP authorization",
-            description: "This thread's machine is not connected.",
+          failureNotice({
+            title: "Couldn't start MCP sign-in",
+            reason: "This thread's computer isn't connected.",
           }),
         );
         return;
@@ -4437,7 +4432,7 @@ export default function ChatView(props: ChatViewProps) {
               await providersApi.reloadExtensionMcpServers(baseInput);
               toastManager.add({
                 type: "success",
-                title: `${action.serverLabel} MCP authorized`,
+                title: `Signed in to ${action.serverLabel}`,
                 description: "MCP servers reloaded.",
               });
             } catch (reloadError) {
@@ -4445,11 +4440,11 @@ export default function ChatView(props: ChatViewProps) {
               toastManager.add(
                 stackedThreadToast({
                   type: "warning",
-                  title: `${action.serverLabel} MCP authorized`,
+                  title: `Signed in to ${action.serverLabel}`,
                   description:
                     reloadError instanceof Error
-                      ? `Authorization completed, but MCP reload failed: ${reloadError.message}`
-                      : "Authorization completed, but MCP reload failed.",
+                      ? `Signed in, but couldn't reload the MCP servers: ${reloadError.message}`
+                      : "Signed in, but couldn't reload the MCP servers.",
                 }),
               );
             }
@@ -4472,10 +4467,9 @@ export default function ChatView(props: ChatViewProps) {
         });
         const message = error instanceof Error ? error.message : "MCP authorization failed.";
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not authorize ${action.serverLabel} MCP`,
-            description: `${message}\n\nFallback: ${fallbackCommand}`,
+          failureNotice({
+            title: `Couldn't sign in to ${action.serverLabel}`,
+            reason: `${message}\n\nFallback: ${fallbackCommand}`,
           }),
         );
       }
@@ -4614,10 +4608,9 @@ export default function ChatView(props: ChatViewProps) {
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not delete action",
-            description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          failureNotice({
+            title: "Couldn't delete the action",
+            error,
           }),
         );
       }
@@ -5308,10 +5301,9 @@ export default function ChatView(props: ChatViewProps) {
         );
       } catch (err) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Message not sent",
-            description: describeDispatchFailure(err, "The approval could not be declined."),
+          failureNotice({
+            title: "Couldn't send the message",
+            reason: describeDispatchFailure(err, "The approval couldn't be declined."),
           }),
         );
         return false;
@@ -6040,10 +6032,9 @@ export default function ChatView(props: ChatViewProps) {
       // minutes to exhaust it); the toast makes the failure visible anywhere,
       // and names the thread with a way back while another one is open.
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Message failed to send",
-          description: dispatchFailureMessage,
+        failureNotice({
+          title: "Couldn't send the message",
+          reason: dispatchFailureMessage,
           data: {
             aboutThread: {
               threadRef: threadRefForSend,
@@ -6225,8 +6216,8 @@ export default function ChatView(props: ChatViewProps) {
           type: "warning",
           title:
             failedCount === 1
-              ? "An attachment could not be restored"
-              : `${failedCount} attachments could not be restored`,
+              ? "An attachment couldn't be restored"
+              : `${failedCount} attachments couldn't be restored`,
           description: "Attach them again before sending.",
         }),
       );
@@ -6313,10 +6304,9 @@ export default function ChatView(props: ChatViewProps) {
       await stopThreadSession(scopeThreadRef(environmentId, threadId));
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not stop the background work",
-          description: error instanceof Error ? error.message : "Try again.",
+        failureNotice({
+          title: "Couldn't stop the background work",
+          error,
         }),
       );
     } finally {
@@ -6366,10 +6356,9 @@ export default function ChatView(props: ChatViewProps) {
       const api = readEnvironmentApi(environmentId);
       if (!api) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not update goal",
-            description: "Environment API unavailable.",
+          failureNotice({
+            title: "Couldn't update the goal",
+            reason: "That computer isn't connected.",
           }),
         );
         return;
@@ -6457,10 +6446,9 @@ export default function ChatView(props: ChatViewProps) {
       } catch (error) {
         dropOptimisticGoal();
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not update goal",
-            description: error instanceof Error ? error.message : "Goal update failed.",
+          failureNotice({
+            title: "Couldn't update the goal",
+            error,
           }),
         );
       } finally {
@@ -6488,10 +6476,9 @@ export default function ChatView(props: ChatViewProps) {
     const api = readEnvironmentApi(environmentId);
     if (!api) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not clear goal",
-          description: "Environment API unavailable.",
+        failureNotice({
+          title: "Couldn't clear the goal",
+          reason: "That computer isn't connected.",
         }),
       );
       return;
@@ -6507,10 +6494,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not clear goal",
-          description: error instanceof Error ? error.message : "Goal clear failed.",
+        failureNotice({
+          title: "Couldn't clear the goal",
+          error,
         }),
       );
     } finally {
@@ -6525,10 +6511,9 @@ export default function ChatView(props: ChatViewProps) {
     const api = readEnvironmentApi(environmentId);
     if (!api) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not compact context",
-          description: "Environment API unavailable.",
+        failureNotice({
+          title: "Couldn't compact the context",
+          reason: "That computer isn't connected.",
         }),
       );
       return;
@@ -6545,10 +6530,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not compact context",
-          description: error instanceof Error ? error.message : "Context compaction failed.",
+        failureNotice({
+          title: "Couldn't compact the context",
+          error,
         }),
       );
     } finally {
@@ -6563,10 +6547,9 @@ export default function ChatView(props: ChatViewProps) {
     const api = readEnvironmentApi(environmentId);
     if (!api) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not retry",
-          description: "Environment API unavailable.",
+        failureNotice({
+          title: "Couldn't retry",
+          reason: "That computer isn't connected.",
         }),
       );
       return;
@@ -6583,10 +6566,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not retry",
-          description: error instanceof Error ? error.message : "Retry dispatch failed.",
+        failureNotice({
+          title: "Couldn't retry",
+          error,
         }),
       );
     } finally {
@@ -7424,13 +7406,9 @@ export default function ChatView(props: ChatViewProps) {
           })
           .catch(() => undefined);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start forked thread",
-            description:
-              err instanceof Error
-                ? err.message
-                : "An error occurred while creating the new thread.",
+          failureNotice({
+            title: "Couldn't start the forked thread",
+            error: err,
           }),
         );
       })
@@ -7546,13 +7524,9 @@ export default function ChatView(props: ChatViewProps) {
       })
       .catch((err: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start implementation thread",
-            description:
-              err instanceof Error
-                ? err.message
-                : "An error occurred while creating the new thread.",
+          failureNotice({
+            title: "Couldn't start the implementation thread",
+            error: err,
           }),
         );
       })
@@ -7628,11 +7602,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (err) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not dismiss plan",
-          description:
-            err instanceof Error ? err.message : "An error occurred while dismissing the plan.",
+        failureNotice({
+          title: "Couldn't dismiss the plan",
+          error: err,
         }),
       );
     }

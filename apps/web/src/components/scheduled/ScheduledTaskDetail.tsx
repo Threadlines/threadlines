@@ -21,7 +21,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   EventAddressSection,
   EventHistory,
@@ -251,7 +251,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const runNow = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected.` });
+      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
       return;
     }
     setBusy("run");
@@ -265,11 +265,12 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         });
       }
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't start a run",
-        description: error instanceof Error ? error.message : undefined,
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't start a run",
+          error,
+        }),
+      );
     } finally {
       setBusy(null);
     }
@@ -278,7 +279,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const sendTestEvent = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected.` });
+      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
       return;
     }
     setBusy("test");
@@ -287,11 +288,12 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
       setTestResult({ detail, started: false });
       refreshEventHistory(queryClient, located);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't send a test event",
-        description: error instanceof Error ? error.message : undefined,
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't send a test event",
+          error,
+        }),
+      );
     } finally {
       setBusy(null);
     }
@@ -300,7 +302,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const confirmDelete = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected.` });
+      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
       return;
     }
     setBusy("delete");
@@ -312,11 +314,12 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
       setDeleteOpen(false);
       navigation.showAll({ replace: true });
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't delete the task",
-        description: error instanceof Error ? error.message : undefined,
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't delete the task",
+          error,
+        }),
+      );
     } finally {
       setBusy(null);
     }

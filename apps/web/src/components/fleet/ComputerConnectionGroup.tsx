@@ -22,7 +22,7 @@ import { openConnectComputerDialog } from "../settings/connections/JoinComputerD
 import { formatDesktopSshTarget } from "../settings/connections/sshTarget";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 /** "Connected for 3m", or "Connected just now" in its first seconds. */
 function connectedForLabel(since: string, nowMs: number): string {
@@ -51,16 +51,15 @@ function statusTooltip(
 
 async function runConnectionAction(
   action: () => Promise<void>,
-  failure: { readonly title: string; readonly fallback: string },
+  failure: { readonly title: `Couldn't ${string}` },
 ): Promise<void> {
   try {
     await action();
   } catch (error) {
     toastManager.add(
-      stackedThreadToast({
-        type: "error",
+      failureNotice({
         title: failure.title,
-        description: error instanceof Error ? error.message : failure.fallback,
+        error,
       }),
     );
   }
@@ -161,8 +160,7 @@ export function ComputerConnectionGroup({
       onClick={() => {
         setBusy("cancel");
         void runConnectionAction(() => cancelPendingRelayJoin(environmentId), {
-          title: "Could not cancel",
-          fallback: "Failed to cancel.",
+          title: "Couldn't cancel",
         }).finally(() => setBusy(null));
       }}
     >
@@ -182,15 +180,13 @@ export function ComputerConnectionGroup({
         if (canDisconnect) {
           setBusy("disconnect");
           void runConnectionAction(() => disconnectSavedEnvironmentByUser(environmentId), {
-            title: "Could not disconnect",
-            fallback: "Failed to disconnect.",
+            title: "Couldn't disconnect",
           }).finally(() => setBusy(null));
           return;
         }
         setBusy("connect");
         void runConnectionAction(() => reconnectSavedEnvironment(environmentId), {
-          title: "Could not connect",
-          fallback: "Failed to connect.",
+          title: "Couldn't connect",
         }).finally(() => setBusy(null));
       }}
     >

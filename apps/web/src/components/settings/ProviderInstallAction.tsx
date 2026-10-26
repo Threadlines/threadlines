@@ -23,7 +23,7 @@ import { useCallback, useState, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   isProviderInstallInFlight,
   providerInstallStatusText,
@@ -55,13 +55,9 @@ export function startProviderInstall(input: {
       () => undefined,
       (error: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not install ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
-            description:
-              error instanceof Error
-                ? error.message
-                : "The provider install command could not be started.",
+          failureNotice({
+            title: `Couldn't install ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
+            error,
           }),
         );
       },
