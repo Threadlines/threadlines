@@ -126,6 +126,7 @@ import {
 import { providerMcpLoginCommand, type ExtensionMcpLoginProvider } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { useNoticeClearanceRef } from "../ui/noticeLayer";
 import { PageTabButton } from "../ui/page-tabs";
 import {
   Dialog,
@@ -4453,6 +4454,7 @@ function ExtensionScopePicker({
 }
 
 export function ExtensionsSettingsPanel() {
+  const noticeClearanceRef = useNoticeClearanceRef();
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
@@ -5457,46 +5459,53 @@ export function ExtensionsSettingsPanel() {
           </span>
         ) : null}
         <div className="space-y-4">
-          <div className="flex items-end justify-between gap-3 border-b border-border">
-            <div className="flex items-center gap-5" role="tablist" aria-label="Plugins and skills">
-              <PageTabButton
-                label="Plugins"
-                count={allPluginItems.filter(extensionItemInstalled).length}
-                active={tab === "plugins"}
-                panelId="extensions-tab-plugins"
-                onClick={() => selectTab("plugins")}
-              />
-              <PageTabButton
-                label="Skills"
-                count={allSkillItems.length}
-                active={tab === "skills"}
-                panelId="extensions-tab-skills"
-                onClick={() => selectTab("skills")}
-              />
+          {/* Tabs and search sit where notices land; notices start below them. */}
+          <div className="space-y-4" ref={noticeClearanceRef}>
+            <div className="flex items-end justify-between gap-3 border-b border-border">
+              <div
+                className="flex items-center gap-5"
+                role="tablist"
+                aria-label="Plugins and skills"
+              >
+                <PageTabButton
+                  label="Plugins"
+                  count={allPluginItems.filter(extensionItemInstalled).length}
+                  active={tab === "plugins"}
+                  panelId="extensions-tab-plugins"
+                  onClick={() => selectTab("plugins")}
+                />
+                <PageTabButton
+                  label="Skills"
+                  count={allSkillItems.length}
+                  active={tab === "skills"}
+                  panelId="extensions-tab-skills"
+                  onClick={() => selectTab("skills")}
+                />
+              </div>
+              <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground">
+                {isLoading ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <LoaderIcon className="size-3 animate-spin" />
+                    Loading
+                  </span>
+                ) : inventory?.generatedAt ? (
+                  `Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
+                    lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
+                  }`
+                ) : null}
+              </div>
             </div>
-            <div className="min-w-0 truncate pb-2 text-[11px] text-muted-foreground">
-              {isLoading ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <LoaderIcon className="size-3 animate-spin" />
-                  Loading
-                </span>
-              ) : inventory?.generatedAt ? (
-                `Loaded ${new Date(inventory.generatedAt).toLocaleTimeString()}${
-                  lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
-                }`
-              ) : null}
-            </div>
+            {scope !== null && !scopeIsReachable ? (
+              <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
+            ) : null}
+            <Input
+              nativeInput
+              value={pageQuery}
+              placeholder={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+              aria-label={tab === "skills" ? "Search skills" : "Search plugins and connections"}
+              onChange={(event) => setPageQuery(event.currentTarget.value)}
+            />
           </div>
-          {scope !== null && !scopeIsReachable ? (
-            <p className="text-xs text-muted-foreground">{scopeMachineLabel} is not connected.</p>
-          ) : null}
-          <Input
-            nativeInput
-            value={pageQuery}
-            placeholder={tab === "skills" ? "Search skills" : "Search plugins and connections"}
-            aria-label={tab === "skills" ? "Search skills" : "Search plugins and connections"}
-            onChange={(event) => setPageQuery(event.currentTarget.value)}
-          />
           <div className="flex flex-wrap items-center gap-2">
             <ExtensionProviderFilter
               options={providerOptions}

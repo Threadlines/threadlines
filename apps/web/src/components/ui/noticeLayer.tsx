@@ -1,4 +1,10 @@
-import { useEffect, useSyncExternalStore, type ComponentPropsWithRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useSyncExternalStore,
+  type ComponentPropsWithRef,
+  type RefCallback,
+} from "react";
 
 /**
  * Notices sit below the app's overlay layer so a menu that opens into their
@@ -47,4 +53,55 @@ export function CoveringBackdrop({
     return () => changeOpenBackdropCount(-1);
   }, [open]);
   return <div {...props} />;
+}
+
+/** How far down the page notices start, in viewport px; 0px leaves them at their usual spot. */
+export const NOTICE_TOP_CLEARANCE_CSS_VAR = "--notice-top-clearance";
+
+/** Bottom edge of each element notices stay below; the lowest one wins. */
+const clearanceBottoms = new Map<HTMLElement, number>();
+
+function publishNoticeClearance() {
+  const bottom = Math.max(0, ...clearanceBottoms.values());
+  document.documentElement.style.setProperty(
+    NOTICE_TOP_CLEARANCE_CSS_VAR,
+    `${Math.round(bottom)}px`,
+  );
+}
+
+function closestScroller(node: HTMLElement): HTMLElement | null {
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(parent).overflowY)) return parent;
+  }
+  return null;
+}
+
+/**
+ * Keeps notices below the element this ref is on: a page's title row and the
+ * buttons beside it, which sit in the corner notices land in (Settings pages,
+ * the phone's Settings header). Measures the element's bottom edge as it sits
+ * with its page scrolled to the top, so notices stay put while the page
+ * scrolls; with several on screen, notices clear the lowest. Put it on the
+ * whole block, so anything that grows inside it moves the line too.
+ */
+export function useNoticeClearanceRef(): RefCallback<HTMLElement> {
+  return useCallback((node: HTMLElement | null) => {
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const scroller = closestScroller(node);
+    const measure = () => {
+      // A hidden element (the phone header on a wide window) measures 0.
+      clearanceBottoms.set(node, node.getBoundingClientRect().bottom + (scroller?.scrollTop ?? 0));
+      publishNoticeClearance();
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      clearanceBottoms.delete(node);
+      publishNoticeClearance();
+    };
+  }, []);
 }
