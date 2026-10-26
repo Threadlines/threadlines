@@ -88,8 +88,22 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
  * `~/.claude/projects`. Resume tests that need a transcript on disk seed a
  * real config dir instead (see `seedClaudeTranscript`).
  */
+/**
+ * The test process's environment without Claude Code's own variables. An
+ * agent running these tests from inside a Claude Code session would otherwise
+ * hand its session's values (a suggestions setting, a session id) to every
+ * session here, and tests that check what a session started with would see
+ * the agent's instead.
+ */
+const hostEnvironment = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => key !== "CLAUDECODE" && !key.startsWith("CLAUDE_CODE_"),
+    ),
+  );
+
 const missingClaudeConfigEnvironment = (): NodeJS.ProcessEnv => ({
-  ...process.env,
+  ...hostEnvironment(),
   CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), "threadlines-claude-adapter-test-no-config"),
 });
 
@@ -106,7 +120,7 @@ function seedClaudeTranscript(
   mkdirSync(projectDir, { recursive: true });
   writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), contents);
   return {
-    environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+    environment: { ...hostEnvironment(), CLAUDE_CONFIG_DIR: configDir },
     cleanup: () => rmSync(configDir, { recursive: true, force: true }),
   };
 }
