@@ -1041,9 +1041,8 @@ export const make = Effect.fn("makePullRequestService")(function* () {
   const loadDetail = Effect.fn("PullRequestService.loadDetail")(function* (
     key: PullRequestCacheKey,
   ) {
-    const target = yield* requireTarget("detail", key.projectId, key.repository);
-    const viewer = yield* readViewer(target.project);
-    const repository = yield* readRepositoryAccess(target);
+    // Taken before anything else is awaited, so a read already under way when
+    // the forced one was asked for cannot take its mark.
     const fresh = yield* Ref.modify(freshDetailKeys, (keys): [boolean, ReadonlySet<string>] => {
       const cacheKey = pullRequestCacheKey(key);
       if (!keys.has(cacheKey)) return [false, keys];
@@ -1051,6 +1050,9 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       rest.delete(cacheKey);
       return [true, rest];
     });
+    const target = yield* requireTarget("detail", key.projectId, key.repository);
+    const viewer = yield* readViewer(target.project);
+    const repository = yield* readRepositoryAccess(target);
     const { result: row, observedAt } = yield* observations
       .observe(
         target.provider.getChangeRequest({
@@ -1131,8 +1133,10 @@ export const make = Effect.fn("makePullRequestService")(function* () {
         const outdated = input.outdated;
         return (
           input.force
-            ? Cache.invalidate(input.cache, key).pipe(
-                Effect.andThen(input.alsoInvalidate?.(target) ?? Effect.void),
+            ? // What goes with the read first: the read that replaces this one
+              // may start the moment the cached one is dropped.
+              (input.alsoInvalidate?.(target) ?? Effect.void).pipe(
+                Effect.andThen(Cache.invalidate(input.cache, key)),
               )
             : outdated
               ? Cache.invalidateWhen(input.cache, key, outdated).pipe(Effect.asVoid)

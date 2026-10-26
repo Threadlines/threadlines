@@ -155,13 +155,17 @@ function readDuePullRequests(queryClient: QueryClient): void {
       checksState: record?.checks?.state ?? null,
       busy: pullRequest.busy,
       updatedAgoMs: answer === null ? null : nowMs - Date.parse(answer.updatedAt),
+      lastReadFailed: query?.status === "error",
     });
     if (intervalMs === null) continue;
+    // A failed read counts as a read, or a host that refuses would be asked
+    // again on every tick.
+    const lastReadAt = Math.max(query?.dataUpdatedAt ?? 0, query?.errorUpdatedAt ?? 0);
     entries.push({
       value: options,
       batchKey: `${pullRequest.environmentId}|${pullRequest.projectId}|${pullRequest.repository.toLowerCase()}`,
       intervalMs,
-      ageMs: query?.dataUpdatedAt ? nowMs - query.dataUpdatedAt : Number.POSITIVE_INFINITY,
+      ageMs: lastReadAt > 0 ? nowMs - lastReadAt : Number.POSITIVE_INFINITY,
     });
   }
   // Asked for together, so each repository's go out as one request.

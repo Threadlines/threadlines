@@ -9,6 +9,8 @@ export const PULL_REQUEST_WATCH_QUIET_MS = 90_000;
 export const PULL_REQUEST_WATCH_CLOSED_MS = 300_000;
 /** A pull request the host changed this recently is still in motion. */
 const PULL_REQUEST_WATCH_RECENT_MS = 10 * 60_000;
+/** After a read that failed: a host refusing now will not answer better in seconds. */
+export const PULL_REQUEST_WATCH_AFTER_FAILURE_MS = 300_000;
 
 /** How often a watched pull request is read, or null for one that cannot change. */
 export function pullRequestWatchIntervalMs(input: {
@@ -19,8 +21,11 @@ export function pullRequestWatchIntervalMs(input: {
   readonly busy: boolean;
   /** How long ago the host last changed it, where a read said. */
   readonly updatedAgoMs: number | null;
+  /** The last read of it failed. */
+  readonly lastReadFailed: boolean;
 }): number | null {
   if (input.state === "merged") return null;
+  if (input.lastReadFailed) return PULL_REQUEST_WATCH_AFTER_FAILURE_MS;
   if (input.state === "closed") return PULL_REQUEST_WATCH_CLOSED_MS;
   const moving =
     input.busy ||
@@ -36,7 +41,7 @@ export interface PullRequestWatchEntry<A> {
   /** Pull requests that travel in one request: same computer, project and repository. */
   readonly batchKey: string;
   readonly intervalMs: number;
-  /** Since its last answer; infinite before the first. */
+  /** Since it was last read, answered or not; infinite before the first. */
   readonly ageMs: number;
 }
 

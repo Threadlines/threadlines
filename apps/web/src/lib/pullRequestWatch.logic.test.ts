@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  PULL_REQUEST_WATCH_AFTER_FAILURE_MS,
   PULL_REQUEST_WATCH_BUSY_MS,
   PULL_REQUEST_WATCH_CLOSED_MS,
   PULL_REQUEST_WATCH_QUIET_MS,
@@ -14,6 +15,7 @@ const QUIET_OPEN = {
   checksState: "success",
   busy: false,
   updatedAgoMs: 60 * 60_000,
+  lastReadFailed: false,
 } as const;
 
 describe("pullRequestWatchIntervalMs", () => {
@@ -34,6 +36,10 @@ describe("pullRequestWatchIntervalMs", () => {
       PULL_REQUEST_WATCH_CLOSED_MS,
     );
     expect(pullRequestWatchIntervalMs({ ...QUIET_OPEN, state: "merged", busy: true })).toBeNull();
+    // A host that refused is not asked again within seconds, busy or not.
+    expect(pullRequestWatchIntervalMs({ ...QUIET_OPEN, busy: true, lastReadFailed: true })).toBe(
+      PULL_REQUEST_WATCH_AFTER_FAILURE_MS,
+    );
   });
 });
 
