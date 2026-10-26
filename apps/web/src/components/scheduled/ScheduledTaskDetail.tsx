@@ -22,6 +22,7 @@ import {
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import {
   EventAddressSection,
   EventHistory,
@@ -251,7 +252,10 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const runNow = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
+      addComputerNotConnectedNotice({
+        environmentId: environment.environmentId,
+        fallbackLabel: environment.label,
+      });
       return;
     }
     setBusy("run");
@@ -279,7 +283,10 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const sendTestEvent = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
+      addComputerNotConnectedNotice({
+        environmentId: environment.environmentId,
+        fallbackLabel: environment.label,
+      });
       return;
     }
     setBusy("test");
@@ -302,7 +309,10 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const confirmDelete = async () => {
     const connection = client();
     if (!connection) {
-      toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
+      addComputerNotConnectedNotice({
+        environmentId: environment.environmentId,
+        fallbackLabel: environment.label,
+      });
       return;
     }
     setBusy("delete");

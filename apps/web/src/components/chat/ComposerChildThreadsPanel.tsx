@@ -8,6 +8,7 @@ import { cn, newCommandId } from "~/lib/utils";
 import { formatChildThreadCount } from "../Sidebar.logic";
 import { Button } from "../ui/button";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 /**
@@ -27,7 +28,10 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
   const respond = async (choice: "start" | "decline") => {
     const api = readEnvironmentApi(props.threadRef.environmentId);
     if (!api) {
-      toastManager.add({ type: "error", title: "This computer isn't connected" });
+      addComputerNotConnectedNotice({
+        environmentId: props.threadRef.environmentId,
+        fallbackLabel: "This computer",
+      });
       return;
     }
     setResponding(true);

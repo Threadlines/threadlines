@@ -29,6 +29,7 @@ import {
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import {
   describeLastEvent,
   describeWebhookEvent,
@@ -47,11 +48,14 @@ const EVENT_PAGE = 20;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : undefined);
 
-/** The client for a task's computer, or a toast saying it isn't connected. */
+/** The client for a task's computer, or a notice saying it isn't connected. */
 function clientFor(located: LocatedTask) {
   const connection = readEnvironmentConnection(located.environment.environmentId);
   if (!connection) {
-    toastManager.add({ type: "error", title: `${located.environment.label} isn't connected` });
+    addComputerNotConnectedNotice({
+      environmentId: located.environment.environmentId,
+      fallbackLabel: located.environment.label,
+    });
     return null;
   }
   return connection.client;

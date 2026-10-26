@@ -7,6 +7,7 @@ import { cn, newCommandId } from "~/lib/utils";
 import type { PendingRoomInvite } from "../../rooms";
 import { Button } from "../ui/button";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 
 /**
  * An agent asks to bring in another agent for a review
@@ -25,7 +26,10 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
   const respond = async (choice: RoomAgentInviteChoice) => {
     const api = readEnvironmentApi(props.threadRef.environmentId);
     if (!api) {
-      toastManager.add({ type: "error", title: "This computer isn't connected" });
+      addComputerNotConnectedNotice({
+        environmentId: props.threadRef.environmentId,
+        fallbackLabel: "This computer",
+      });
       return;
     }
     setResponding(true);

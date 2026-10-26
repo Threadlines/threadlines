@@ -4,6 +4,7 @@ import { memo, useState } from "react";
 import { readEnvironmentConnection } from "~/environments/runtime";
 import { Button } from "../ui/button";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 
 /**
  * An agent asks to create or change a scheduled task ("Agents can start
@@ -21,7 +22,10 @@ export const ComposerScheduleRequestPanel = memo(function ComposerScheduleReques
   const respond = async (allow: boolean) => {
     const connection = readEnvironmentConnection(props.threadRef.environmentId);
     if (!connection) {
-      toastManager.add({ type: "error", title: "This computer isn't connected" });
+      addComputerNotConnectedNotice({
+        environmentId: props.threadRef.environmentId,
+        fallbackLabel: "This computer",
+      });
       return;
     }
     setResponding(true);

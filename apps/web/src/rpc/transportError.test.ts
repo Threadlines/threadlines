@@ -1,8 +1,10 @@
+import { OrchestrationDispatchCommandError } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   describeDispatchFailure,
   isRetryableRequestFailure,
+  isUncertainDispatchFailure,
   isTransportConnectionErrorMessage,
   sanitizeThreadErrorMessage,
   TransportRequestRetriesExhaustedError,
@@ -80,6 +82,32 @@ describe("isRetryableRequestFailure", () => {
           90_000,
           new Error("SocketCloseError"),
         ),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isUncertainDispatchFailure", () => {
+  it("is unsure about failures in transit, sure about rejections", () => {
+    expect(
+      isUncertainDispatchFailure(new TransportRequestTimeoutError("dispatchCommand", 30_000)),
+    ).toBe(true);
+    expect(
+      isUncertainDispatchFailure(
+        new TransportRequestRetriesExhaustedError(
+          "dispatchCommand",
+          60_000,
+          new Error("SocketCloseError"),
+        ),
+      ),
+    ).toBe(true);
+    expect(isUncertainDispatchFailure(new Error("Thread 'x' has no user message to retry."))).toBe(
+      false,
+    );
+    // The server's answer is an answer, even worded like a dropped socket.
+    expect(
+      isUncertainDispatchFailure(
+        new OrchestrationDispatchCommandError({ message: "SocketCloseError while writing" }),
       ),
     ).toBe(false);
   });
