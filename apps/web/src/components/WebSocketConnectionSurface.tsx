@@ -8,7 +8,7 @@ import {
   type WsConnectionUiState,
   useWsConnectionStatus,
 } from "../rpc/wsConnectionState";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 import {
   type DesktopSessionOutcome,
@@ -58,7 +58,7 @@ function formatRetryCountdown(nextRetryAt: string, nowMs: number): string {
 }
 
 function describeOfflineToast(): string {
-  return "WebSocket disconnected. Waiting for network.";
+  return "Connection lost. Waiting for the network.";
 }
 
 function formatReconnectAttemptLabel(status: WsConnectionStatus): string {
@@ -190,11 +190,9 @@ export function WebSocketConnectionCoordinator() {
           return;
         }
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Reconnect failed",
-            description:
-              error instanceof Error ? error.message : "Unable to restart the WebSocket.",
+          failureNotice({
+            title: "Couldn't reconnect",
+            error,
             data: {
               dismissAfterVisibleMs: 8_000,
               hideCopyButton: true,

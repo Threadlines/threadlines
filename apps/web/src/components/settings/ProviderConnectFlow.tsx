@@ -9,7 +9,7 @@ import { lazyWithPreload } from "../../lib/lazyWithPreload";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   isProviderConnectFlowActive,
   PROVIDER_CONNECT_TERMINAL_CLASS,
@@ -310,10 +310,9 @@ export function ProviderConnectFlow({
   const { copyToClipboard, isCopied } = useCopyToClipboard<"provider-auth-command">({
     onError: (error) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not copy the command",
-          description: error.message,
+        failureNotice({
+          title: "Couldn't copy the command",
+          error,
         }),
       );
     },
@@ -343,10 +342,9 @@ export function ProviderConnectFlow({
     onStartError: (error) => {
       if (startErrorInline) return;
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not start ${displayName} sign-in`,
-          description: error instanceof Error ? error.message : "The command could not be started.",
+        failureNotice({
+          title: `Couldn't start ${displayName} sign-in`,
+          error,
         }),
       );
     },

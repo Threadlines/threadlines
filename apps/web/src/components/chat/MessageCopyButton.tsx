@@ -3,7 +3,7 @@ import { CopyIcon, CheckIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
-import { anchoredToastManager } from "../ui/toast";
+import { anchoredToastManager, failureNotice, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ANCHORED_TOAST_TIMEOUT_MS = 1000;
@@ -17,25 +17,14 @@ const onCopy = (ref: React.RefObject<HTMLButtonElement | null>) => {
         anchor: ref.current,
       },
       timeout: ANCHORED_TOAST_TIMEOUT_MS,
-      title: "Copied!",
+      title: "Copied",
     });
   }
 };
 
-const onCopyError = (ref: React.RefObject<HTMLButtonElement | null>, error: Error) => {
-  if (ref.current) {
-    anchoredToastManager.add({
-      data: {
-        tooltipStyle: true,
-      },
-      positionerProps: {
-        anchor: ref.current,
-      },
-      timeout: ANCHORED_TOAST_TIMEOUT_MS,
-      title: "Failed to copy",
-      description: error.message,
-    });
-  }
+// A failure stays readable, like every other failed copy.
+const onCopyError = (error: Error) => {
+  toastManager.add(failureNotice({ title: "Couldn't copy", error }));
 };
 
 export const MessageCopyButton = memo(function MessageCopyButton({
@@ -54,7 +43,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   const ref = useRef<HTMLButtonElement>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
     onCopy: () => onCopy(ref),
-    onError: (error: Error) => onCopyError(ref, error),
+    onError: onCopyError,
     timeout: ANCHORED_TOAST_TIMEOUT_MS,
   });
 

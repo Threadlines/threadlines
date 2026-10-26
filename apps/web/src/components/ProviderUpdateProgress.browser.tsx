@@ -165,7 +165,7 @@ describe("ProviderUpdateProgress", () => {
           message: "npm ERR! EACCES: permission denied",
         }),
       );
-      await vi.waitFor(() => expect(noticeTitles()).toEqual(["Codex didn't update"]));
+      await vi.waitFor(() => expect(noticeTitles()).toEqual(["Couldn't update Codex"]));
       expect(document.body.textContent).toContain("npm ERR! EACCES: permission denied");
       expect(document.querySelector("[data-slot='toast-action']")?.textContent).toBe("Settings");
     } finally {

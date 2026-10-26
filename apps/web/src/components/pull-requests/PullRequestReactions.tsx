@@ -20,7 +20,7 @@ import { useState } from "react";
 import { pullRequestReactionMutationOptions } from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
   PULL_REQUEST_REACTION_ORDER,
@@ -86,14 +86,13 @@ export function PullRequestReactionBar({
           });
           // The count springing back on its own would read as a glitch, so the
           // refusal is said out loud where the eye is not.
-          toastManager.add({
-            type: "error",
-            title: "That reaction could not be saved",
-            ...(error instanceof Error && error.message.trim().length > 0
-              ? { description: error.message }
-              : {}),
-            data: { hideCopyButton: true },
-          });
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't save the reaction",
+              error,
+              data: { hideCopyButton: true },
+            }),
+          );
         },
       },
     );

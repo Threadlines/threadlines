@@ -14,7 +14,7 @@ import { describeProjectSetupProgress, describeProjectSetupStage } from "../../p
 import { SETTINGS_GROUP_ROW_CLASS, SettingsGroup } from "../settings/settingsLayout";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 /**
  * A computer's project setups on its Fleet page (docs/design/fleet.md,
@@ -65,16 +65,15 @@ function ProjectSetupRow({
   const [busy, setBusy] = useState(false);
   const finished = isProjectSetupFinished(job.stage);
   const progress = describeProjectSetupProgress(job);
-  const act = async (action: () => Promise<void>, failure: string) => {
+  const act = async (action: () => Promise<void>, failure: `Couldn't ${string}`) => {
     setBusy(true);
     try {
       await action();
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
+        failureNotice({
           title: failure,
-          description: describeProjectSetupFailure(error, `${computer.label} didn't answer.`),
+          reason: describeProjectSetupFailure(error, `${computer.label} didn't answer.`),
         }),
       );
     } finally {
@@ -122,7 +121,7 @@ function ProjectSetupRow({
             onClick={() =>
               void act(
                 () => dismissProjectSetup(computer, job.setupId),
-                `Could not dismiss ${job.title}`,
+                `Couldn't dismiss ${job.title}`,
               )
             }
           >
@@ -137,7 +136,7 @@ function ProjectSetupRow({
             onClick={() =>
               void act(
                 () => cancelProjectSetup(computer, job.setupId),
-                `Could not cancel setting up ${job.title}`,
+                `Couldn't cancel setting up ${job.title}`,
               )
             }
           >

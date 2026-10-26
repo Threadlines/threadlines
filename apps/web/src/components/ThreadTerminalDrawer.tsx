@@ -50,7 +50,7 @@ import { TerminalNotice } from "./terminal/TerminalNotice";
 import { TerminalPortNotice } from "./terminal/TerminalPortNotice";
 import { controlCodeFor, TerminalKeyRow } from "./terminal/TerminalKeyRow";
 import { type TerminalStripTab, TerminalTabStrip } from "./terminal/TerminalTabStrip";
-import { copyTextWithToast } from "./chat/copyTextWithToast";
+import { copyWithNotice } from "./ui/copyWithNotice";
 import {
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
@@ -1095,7 +1095,7 @@ export function TerminalViewport({
             return;
           }
           if (clicked === "copy-link") {
-            copyTextWithToast(link.text, "Link address");
+            void copyWithNotice(link.text, "link address");
           }
           return;
         }
@@ -1121,7 +1121,7 @@ export function TerminalViewport({
           return;
         }
         if (clicked === "copy-path") {
-          copyTextWithToast(target, "Path");
+          void copyWithNotice(target, "path");
         }
       })();
     };

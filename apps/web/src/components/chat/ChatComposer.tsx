@@ -182,7 +182,7 @@ import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { useRoomAgents } from "./useRoomAgents";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import {
@@ -2256,13 +2256,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // so leave the composer untouched rather than making it the second
       // casualty of a reload.
       if (!written) {
-        toastManager.add({
-          type: "error",
-          title: "Could not stash this prompt",
-          description:
-            "Browser storage rejected the write, so the composer was left as-is. Free up site data and try again.",
-          data: { hideCopyButton: true },
-        });
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't stash this prompt",
+            reason:
+              "Browser storage rejected the write, so the composer was left as-is. Free up site data and try again.",
+            data: { hideCopyButton: true },
+          }),
+        );
         return;
       }
       // Written but only into the in-memory fallback (localStorage blocked):
@@ -2271,9 +2272,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (!durable) {
         toastManager.add({
           type: "warning",
-          title: "Stashed prompt will not survive a reload",
+          title: "Stashed prompt won't survive a reload",
           description:
-            "Browser storage is unavailable, so this stash is kept in memory only for this session.",
+            "Browser storage is unavailable, so this stash is kept only until you close this page.",
           data: { hideCopyButton: true },
         });
       }
@@ -2336,7 +2337,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (!attachmentsDurable && durable && attachments.length > 0) {
           toastManager.add({
             type: "warning",
-            title: "Stashed attachments were not saved",
+            title: "Stashed attachments weren't saved",
             description:
               "The prompt was stashed, but browser storage rejected its attachments. They will be missing if you reload.",
             data: { hideCopyButton: true },
@@ -2348,7 +2349,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         // them evaporate.
         toastManager.add({
           type: "warning",
-          title: "Stashed attachments did not attach",
+          title: "Stashed attachments didn't attach",
           description: `That prompt was restored or deleted before ${kept.length} attachment${kept.length === 1 ? "" : "s"} finished saving. Add ${kept.length === 1 ? "it" : "them"} again if you still need ${kept.length === 1 ? "it" : "them"}.`,
           data: { hideCopyButton: true },
         });
@@ -3135,7 +3136,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         event?.preventDefault();
         toastManager.add({
           type: "error",
-          title: "Selected model does not accept images.",
+          title: "Selected model doesn't accept images",
         });
         return;
       }
@@ -3260,7 +3261,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (hasBlockingQuestion) {
       toastManager.add({
         type: "error",
-        title: "Attach files after answering plan questions.",
+        title: "Attach files after answering plan questions",
       });
       return false;
     }
@@ -3318,7 +3319,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (rejectedImageForModel) {
       toastManager.add({
         type: "error",
-        title: "Selected model does not accept images.",
+        title: "Selected model doesn't accept images",
       });
     }
     if (nextAttachments.length === 1 && nextAttachments[0]) {
@@ -3361,24 +3362,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           return;
         }
         if (result.status === "unsupported" || result.status === "failed") {
-          toastManager.add({
-            type: "error",
-            title:
-              result.status === "unsupported"
-                ? "Screenshot capture is not available."
-                : "Screenshot capture failed.",
-            description: result.message,
-          });
+          toastManager.add(
+            result.status === "unsupported"
+              ? {
+                  type: "error",
+                  title: "Can't take screenshots here",
+                  description: result.message,
+                }
+              : failureNotice({
+                  title: "Couldn't take the screenshot",
+                  reason: result.message,
+                }),
+          );
           return;
         }
 
         const file = desktopCapturedScreenshotToFile(result.image);
         if (!file) {
-          toastManager.add({
-            type: "error",
-            title: "Screenshot capture failed.",
-            description: "The captured image could not be read.",
-          });
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't take the screenshot",
+              reason: "The captured image couldn't be read.",
+            }),
+          );
           return;
         }
 
@@ -3386,11 +3392,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         focusComposer();
       })
       .catch((error: unknown) => {
-        toastManager.add({
-          type: "error",
-          title: "Screenshot capture failed.",
-          description: unknownErrorMessage(error, "The desktop capture request failed."),
-        });
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't take the screenshot",
+            reason: unknownErrorMessage(error, "The desktop capture request failed."),
+          }),
+        );
       })
       .finally(() => {
         setIsCapturingScreenshot(false);
@@ -3660,11 +3667,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         // limits and the dedupe that this would otherwise have to restate.
         const file = desktopCapturedScreenshotToFile({ dataUrl, name, mimeType: "image/png" });
         if (file === null) {
-          toastManager.add({
-            type: "error",
-            title: "Screenshot capture failed.",
-            description: "The captured image could not be read.",
-          });
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't take the screenshot",
+              reason: "The captured image couldn't be read.",
+            }),
+          );
           return false;
         }
         const attached = addComposerFiles([file]);

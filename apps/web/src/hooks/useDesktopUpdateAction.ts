@@ -13,20 +13,26 @@ import {
   isDesktopUpdateActionKindDisabled,
   resolveDesktopUpdateActionKind,
 } from "../components/desktopUpdate.logic";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
 import { confirmDesktopUpdateInstall } from "../lib/desktopUpdateInstallConfirmation";
 import {
   setDesktopUpdateStateQueryData,
   useDesktopUpdateState,
 } from "../lib/desktopUpdateReactQuery";
 
-function toastUpdateError(title: string, description: string) {
-  toastManager.add(stackedThreadToast({ type: "error", title, description }));
+function toastUpdateError(
+  title: `Couldn't ${string}`,
+  detail: { reason: string } | { error: unknown },
+) {
+  toastManager.add(failureNotice({ title, ...detail }));
 }
 
-function toastAcceptedActionFailure(result: DesktopUpdateActionResult, title: string) {
+function toastAcceptedActionFailure(
+  result: DesktopUpdateActionResult,
+  title: `Couldn't ${string}`,
+) {
   const actionError = getDesktopUpdateActionError(result);
-  if (actionError) toastUpdateError(title, actionError);
+  if (actionError) toastUpdateError(title, { reason: actionError });
 }
 
 async function checkForDesktopUpdate(bridge: DesktopBridge): Promise<DesktopUpdateCheckResult> {
@@ -78,13 +84,10 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
       void runPendingDesktopUpdateAction(bridge, "download")
         .then((result) => {
           setDesktopUpdateStateQueryData(queryClient, result.state);
-          toastAcceptedActionFailure(result, "Could not download update");
+          toastAcceptedActionFailure(result, "Couldn't download the update");
         })
         .catch((error: unknown) => {
-          toastUpdateError(
-            "Could not download update",
-            error instanceof Error ? error.message : "Download failed.",
-          );
+          toastUpdateError("Couldn't download the update", { error });
         });
       return;
     }
@@ -97,14 +100,11 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
           if (!confirmed) return;
           return runPendingDesktopUpdateAction(bridge, "install").then((result) => {
             setDesktopUpdateStateQueryData(queryClient, result.state);
-            toastAcceptedActionFailure(result, "Could not install update");
+            toastAcceptedActionFailure(result, "Couldn't install the update");
           });
         })
         .catch((error: unknown) => {
-          toastUpdateError(
-            "Could not install update",
-            error instanceof Error ? error.message : "Install failed.",
-          );
+          toastUpdateError("Couldn't install the update", { error });
         });
       return;
     }
@@ -114,17 +114,13 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
       .then((result) => {
         setDesktopUpdateStateQueryData(queryClient, result.state);
         if (!result.checked) {
-          toastUpdateError(
-            "Could not check for updates",
-            result.state.message ?? "Automatic updates are not available in this build.",
-          );
+          toastUpdateError("Couldn't check for updates", {
+            reason: result.state.message ?? "Automatic updates are not available in this build.",
+          });
         }
       })
       .catch((error: unknown) => {
-        toastUpdateError(
-          "Could not check for updates",
-          error instanceof Error ? error.message : "Update check failed.",
-        );
+        toastUpdateError("Couldn't check for updates", { error });
       });
   }, [queryClient, state]);
 

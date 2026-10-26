@@ -48,7 +48,7 @@ import {
   SelectValue,
 } from "../ui/select";
 import { Toggle } from "../ui/toggle";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   buildKeybindingRows,
   buildKeybindingCommandOptions,
@@ -1104,12 +1104,12 @@ export function KeybindingsSettingsPanel() {
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
     void openInPreferredEditor(ensureLocalApi(), keybindingsConfigPath).catch((error: unknown) => {
-      toastManager.add({
-        title: "Unable to open keybindings file",
-        description:
-          error instanceof Error ? error.message : "The keybindings file was not opened.",
-        type: "error",
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't open keybindings.json",
+          error,
+        }),
+      );
     });
   }, [keybindingsConfigPath]);
 
@@ -1127,11 +1127,12 @@ export function KeybindingsSettingsPanel() {
         setIsAddingBinding(false);
       })
       .catch((error: unknown) => {
-        toastManager.add({
-          title: "Unable to save keybinding",
-          description: error instanceof Error ? error.message : "The keybinding was not saved.",
-          type: "error",
-        });
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't save the keybinding",
+            error,
+          }),
+        );
       })
       .finally(() => {
         setSavingCommand(null);
@@ -1143,11 +1144,12 @@ export function KeybindingsSettingsPanel() {
     void ensureLocalApi()
       .server.removeKeybinding(rowKeybindingTarget(row))
       .catch((error: unknown) => {
-        toastManager.add({
-          title: "Unable to remove keybinding",
-          description: error instanceof Error ? error.message : "The keybinding was not removed.",
-          type: "error",
-        });
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't remove the keybinding",
+            error,
+          }),
+        );
       })
       .finally(() => {
         setSavingCommand(null);

@@ -26,7 +26,7 @@ import {
   formatWorktreePathForDisplay,
   getOrphanedWorktreePathForThread,
 } from "../worktreeCleanup";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
 import { confirmThreadDeleteWithChildren } from "../components/ThreadDeleteDialog";
 import type { Thread } from "../types";
 import { useSettings } from "./useSettings";
@@ -205,10 +205,9 @@ export function useThreadActions() {
           error,
         });
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Thread deleted, but worktree removal failed",
-            description: `Could not remove ${formatWorktreePathForDisplay(input.worktreePath)}. ${describeWorktreeRemovalError(error)}`,
+          failureNotice({
+            title: "Couldn't remove the worktree",
+            reason: `The thread was deleted. Couldn't remove ${formatWorktreePathForDisplay(input.worktreePath)}. ${describeWorktreeRemovalError(error)}`,
           }),
         );
       }

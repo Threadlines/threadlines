@@ -23,7 +23,7 @@ import {
   type ProviderUpdateCandidate,
   providerUpdateGroupKey,
 } from "../ProviderUpdateLaunchNotification.logic";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 function withMember<T>(set: ReadonlySet<T>, member: T): ReadonlySet<T> {
   return set.has(member) ? set : new Set(set).add(member);
@@ -121,13 +121,9 @@ export function useProviderUpdateRunner(
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not stop Claude processes",
-          description:
-            error instanceof Error
-              ? error.message
-              : "Threadlines could not stop the processes blocking this update.",
+        failureNotice({
+          title: "Couldn't stop Claude processes",
+          error,
         }),
       );
     } finally {

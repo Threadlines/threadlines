@@ -133,7 +133,8 @@ vi.mock("~/environments/runtime", () => {
   };
 });
 
-vi.mock("../ui/toast", () => ({
+vi.mock("../ui/toast", async () => ({
+  failureNotice: (await import("~/components/ui/toastHelpers")).failureNotice,
   stackedThreadToast: vi.fn((options: unknown) => options),
   toastManager: {
     add: gitActionMock.toastAdd,
@@ -1361,7 +1362,7 @@ describe("SourceControlPanel changes", () => {
       await vi.waitFor(() => {
         expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
           expect.objectContaining({
-            title: "Commit message generation failed",
+            title: "Couldn't write the commit message",
             description: "usage limit reached",
           }),
         );
@@ -2422,7 +2423,7 @@ describe("SourceControlPanel commit graph", () => {
         expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
           expect.objectContaining({
             type: "error",
-            title: "Refresh failed",
+            title: "Couldn't refresh the changes",
             description: "remote fetch timed out",
           }),
         );

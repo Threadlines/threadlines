@@ -51,7 +51,7 @@ import {
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, toastManager } from "./ui/toast";
 import { Kbd } from "./ui/kbd";
 import { ScrollArea } from "./ui/scroll-area";
 import { Skeleton } from "./ui/skeleton";
@@ -1293,16 +1293,15 @@ export default function Sidebar() {
 
       const api = readLocalApi();
       if (!api) {
-        toastManager.add({ type: "error", title: "Link opening is unavailable." });
+        toastManager.add({ type: "error", title: "Can't open links here" });
         return;
       }
 
       void api.shell.openExternal(pullRequest.url).catch((error) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open pull request link",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't open the pull request",
+            error,
           }),
         );
       });
@@ -1316,10 +1315,9 @@ export default function Sidebar() {
         await archiveThread(threadRef);
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to archive thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't archive the thread",
+            error,
           }),
         );
       }
@@ -1352,7 +1350,7 @@ export default function Sidebar() {
 
       const trimmed = newTitle.trim();
       if (trimmed.length === 0) {
-        toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
+        toastManager.add({ type: "warning", title: "Thread title can't be empty" });
         finishRename();
         return;
       }
@@ -1374,10 +1372,9 @@ export default function Sidebar() {
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to rename thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't rename the thread",
+            error,
           }),
         );
       }

@@ -21,7 +21,7 @@ import { readEnvironmentApi } from "~/environmentApi";
 import { usePrimaryEnvironmentDescriptor } from "~/environments/primary/context";
 import { useSavedEnvironmentRuntimeStore } from "~/environments/runtime/catalog";
 import { newCommandId, randomUUID } from "~/lib/utils";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import type { CommandRunActions } from "./CommandRuns";
 
 /** A new run's terminal starts at this size; the drawer fits it once it shows. */
@@ -101,11 +101,12 @@ export function useCommandRunActions(input: {
           (started) => focusTerminal(started?.terminalId ?? terminalId),
           (error: unknown) => {
             toastManager.add(
-              stackedThreadToast({
-                type: "error",
+              failureNotice({
                 title:
-                  mode === "run" ? "Could not run the command" : "Could not put the command in",
-                description: errorText(error, "The terminal did not open."),
+                  mode === "run"
+                    ? "Couldn't run the command"
+                    : "Couldn't put the command in the terminal",
+                reason: errorText(error, "The terminal did not open."),
               }),
             );
           },
@@ -120,10 +121,9 @@ export function useCommandRunActions(input: {
       if (!api?.commandRuns || threadId === null) return;
       void api.commandRuns.sendOutput({ threadId, runId }).catch((error: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not send the output",
-            description: errorText(error, "The output did not go out."),
+          failureNotice({
+            title: "Couldn't send the output",
+            reason: errorText(error, "The output did not go out."),
           }),
         );
       });
@@ -146,10 +146,9 @@ export function useCommandRunActions(input: {
         })
         .catch((error: unknown) => {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: dismissed ? "Could not skip the command" : "Could not bring the command back",
-              description: errorText(error, "Try again."),
+            failureNotice({
+              title: dismissed ? "Couldn't skip the command" : "Couldn't bring the command back",
+              reason: errorText(error, "Try again."),
             }),
           );
         });

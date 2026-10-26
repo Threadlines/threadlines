@@ -28,7 +28,7 @@ import { describeThreadMoveProgress, isThreadMoveStalled } from "../../threadMov
 import { buildThreadRouteParams } from "../../threadRoutes";
 import type { Thread } from "../../types";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import type { ComposerNotice } from "./composerNotices";
 
 export interface ThreadMoveNoticeActions {
@@ -153,10 +153,9 @@ export function useThreadMoveNotice(input: {
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
+          failureNotice({
             title: "Couldn't stop the move",
-            description: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+            reason: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
           }),
         );
       } finally {

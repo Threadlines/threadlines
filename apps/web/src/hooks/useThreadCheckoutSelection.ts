@@ -5,7 +5,7 @@ import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "../lib/utils";
 import { useStore } from "../store";
 import type { ThreadSession } from "../types";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
 
 interface SelectedThreadCheckout {
   readonly branch: string | null;
@@ -43,10 +43,9 @@ export function useThreadCheckoutSelection(input: {
       const api = readEnvironmentApi(threadRef.environmentId);
       if (!api) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
+          failureNotice({
             title: "Couldn't move the thread",
-            description: "Not connected to the environment. Try again once it reconnects.",
+            reason: "That computer isn't connected. Try again once it reconnects.",
           }),
         );
         return false;
@@ -86,10 +85,9 @@ export function useThreadCheckoutSelection(input: {
             restoreThreadCheckout(threadRef, snapshot);
             onBranchOverrideChange?.(snapshot.branch);
             toastManager.add(
-              stackedThreadToast({
-                type: "error",
+              failureNotice({
                 title: "Couldn't move the thread",
-                description: "The checkout switch didn't reach the server. Try again.",
+                reason: "The checkout switch didn't reach the server. Try again.",
               }),
             );
           },

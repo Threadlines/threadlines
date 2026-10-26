@@ -64,7 +64,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Textarea } from "~/components/ui/textarea";
-import { stackedThreadToast, toastManager, type ThreadToastData } from "~/components/ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { openInPreferredEditor } from "~/editorPreferences";
 import {
@@ -1369,7 +1369,7 @@ export default function GitActionsControl({
     if (!api) {
       toastManager.add({
         type: "error",
-        title: "Link opening is unavailable.",
+        title: "Can't open links here",
         data: threadToastData,
       });
       return;
@@ -1378,17 +1378,16 @@ export default function GitActionsControl({
     if (!prUrl) {
       toastManager.add({
         type: "error",
-        title: "No open pull request found.",
+        title: "No open pull request found",
         data: threadToastData,
       });
       return;
     }
     void api.shell.openExternal(prUrl).catch((err: unknown) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open pull request link",
-          description: err instanceof Error ? err.message : "An error occurred.",
+        failureNotice({
+          title: "Couldn't open the pull request",
+          error: err,
           ...(threadToastData !== undefined ? { data: threadToastData } : {}),
         }),
       );
@@ -1455,7 +1454,7 @@ export default function GitActionsControl({
         progressToastId ??
         toastManager.add({
           type: "loading",
-          title: progressStages[0] ?? "Running git action...",
+          title: progressStages[0] ?? "Running Git action...",
           description: "Waiting for Git...",
           timeout: 0,
           data: scopedToastData,
@@ -1465,13 +1464,13 @@ export default function GitActionsControl({
         toastId: resolvedProgressToastId,
         toastData: scopedToastData,
         actionId,
-        initialTitle: progressStages[0] ?? "Running git action...",
+        initialTitle: progressStages[0] ?? "Running Git action...",
       });
 
       if (progressToastId) {
         toastManager.update(progressToastId, {
           type: "loading",
-          title: progressStages[0] ?? "Running git action...",
+          title: progressStages[0] ?? "Running Git action...",
           description: "Waiting for Git...",
           timeout: 0,
           data: scopedToastData,
@@ -1573,10 +1572,9 @@ export default function GitActionsControl({
         const authFailure = gitRemoteAuthFailureFromError(err);
         toastManager.update(
           resolvedProgressToastId,
-          stackedThreadToast({
-            type: "error",
-            title: "Action failed",
-            description: formatGitErrorMessage(err),
+          failureNotice({
+            title: "Couldn't finish the Git action",
+            reason: formatGitErrorMessage(err),
             ...(authFailure
               ? {
                   timeout: 0,
@@ -1658,7 +1656,7 @@ export default function GitActionsControl({
               case "pulled":
                 return {
                   title: "Pulled",
-                  description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`,
+                  description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}.`,
                   data: threadToastData,
                 };
               case "skipped_up_to_date":
@@ -1699,9 +1697,9 @@ export default function GitActionsControl({
           error: (err) => {
             const authFailure = gitRemoteAuthFailureFromError(err);
             if (authFailure) {
-              return {
-                title: "Pull failed",
-                description: formatGitErrorMessage(err),
+              return failureNotice({
+                title: "Couldn't pull the changes",
+                reason: formatGitErrorMessage(err),
                 timeout: 0,
                 actionProps: {
                   children: "Fix authentication...",
@@ -1710,16 +1708,15 @@ export default function GitActionsControl({
                 },
                 data: {
                   ...threadToastData,
-                  actionLayout: "stacked-end" as const,
                   actionVariant: "default" as const,
                 },
-              };
+              });
             }
-            return {
-              title: "Pull failed",
-              description: formatGitErrorMessage(err),
-              data: threadToastData,
-            };
+            return failureNotice({
+              title: "Couldn't pull the changes",
+              reason: formatGitErrorMessage(err),
+              ...(threadToastData ? { data: threadToastData } : {}),
+            });
           },
         });
         void promise.catch(() => undefined);
@@ -1780,7 +1777,7 @@ export default function GitActionsControl({
       if (!api || !gitCwd) {
         toastManager.add({
           type: "error",
-          title: "Editor opening is unavailable.",
+          title: "Can't open an editor here",
           data: threadToastData,
         });
         return;
@@ -1788,10 +1785,9 @@ export default function GitActionsControl({
       const target = resolvePathLinkTarget(filePath, gitCwd);
       void openInPreferredEditor(api, target, gitCwd).catch((error) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open file",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't open the file",
+            error,
             ...(threadToastData !== undefined ? { data: threadToastData } : {}),
           }),
         );

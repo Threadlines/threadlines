@@ -5,7 +5,7 @@ import type {
 import { useEffect, useState } from "react";
 
 import { Switch } from "../ui/switch";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 
 /**
@@ -36,11 +36,12 @@ export function DesktopBackgroundRows() {
 
   const update = (patch: DesktopBackgroundOptionsPatch) => {
     void bridge.setBackgroundOptions?.(patch).then(setOptions, (error: unknown) => {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't save the setting",
-        description: error instanceof Error ? error.message : undefined,
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't save the setting",
+          error,
+        }),
+      );
     });
   };
 

@@ -30,7 +30,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { ComputerConnectionGroup } from "./ComputerConnectionGroup";
 import { describeComputerLocation, type FleetComputer, type FleetGlyph } from "./fleet.logic";
 import {
@@ -91,10 +91,9 @@ function RemoveFromAppSection({
       void navigate({ to: "/fleet" });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not remove ${entry.displayLabel}`,
-          description: error instanceof Error ? error.message : "Try again.",
+        failureNotice({
+          title: `Couldn't remove ${entry.displayLabel}`,
+          error,
         }),
       );
     } finally {
@@ -187,10 +186,9 @@ function WaitingLinkGroup({
       setConfirmOpen(false);
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not unlink ${entry.displayLabel}`,
-          description: describeComputerLinkFailure(error, "Try again."),
+        failureNotice({
+          title: `Couldn't unlink ${entry.displayLabel}`,
+          reason: describeComputerLinkFailure(error, "Try again."),
         }),
       );
     } finally {

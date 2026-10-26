@@ -67,7 +67,7 @@ export type FailureNoticeOptions = Omit<
   "type" | "title" | "description"
 > & {
   title: FailureTitle;
-  /** The plain reason underneath. Left out, it comes from `error`. */
+  /** The plain reason underneath. Left out, it comes from `error`, or there is none. */
   reason?: ReactNode;
   /** The error that caused it, whose message becomes the reason. */
   error?: unknown;
@@ -80,9 +80,13 @@ export type FailureNoticeOptions = Omit<
  */
 export function failureNotice(options: FailureNoticeOptions): NoticeAddOptions {
   const { reason, error, ...rest } = options;
+  // With neither, the title says it all.
+  const description =
+    reason ??
+    (error === undefined ? undefined : describeFailureReason(describeUnknownError(error)));
   return stackedThreadToast({
     ...rest,
     type: "error",
-    description: reason ?? describeFailureReason(describeUnknownError(error)),
+    ...(description === undefined ? {} : { description }),
   });
 }

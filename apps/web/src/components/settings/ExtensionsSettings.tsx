@@ -3,7 +3,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CloudIcon,
-  CopyIcon,
   DatabaseIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -126,6 +125,7 @@ import {
 import { providerMcpLoginCommand, type ExtensionMcpLoginProvider } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { CopyIconButton } from "../CopyButton";
 import { useNoticeClearanceRef } from "../ui/noticeLayer";
 import { PageTabButton } from "../ui/page-tabs";
 import {
@@ -161,7 +161,7 @@ import {
 } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   SETTINGS_GROUP_ROW_CLASS,
@@ -170,7 +170,6 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
-import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
@@ -1006,28 +1005,6 @@ function extensionClipboardDetails(item: ExtensionItem): string {
   }
 }
 
-function copyText(value: string, label: string) {
-  void copyTextToClipboard(value).then(
-    () => {
-      const preview = value.length > 180 ? `${value.slice(0, 177).trimEnd()}...` : value;
-      toastManager.add({
-        type: "success",
-        title: `${label} copied`,
-        description: preview,
-      });
-    },
-    (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Failed to copy ${label.toLowerCase()}`,
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  );
-}
-
 function formatJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
@@ -1091,39 +1068,34 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function extensionActionFailureTitle(label: string): `Couldn't ${string}` {
+  if (label === "Authorize" || label === "Re-auth") return "Couldn't sign in";
+  if (label === "Plugin details") return "Couldn't load plugin details";
+  return `Couldn't ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+}
+
 function openPathInEditor(targetPath: string, workspaceRoot: string) {
   let api: ReturnType<typeof ensureLocalApi>;
   try {
     api = ensureLocalApi();
   } catch (error) {
     toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: "Unable to open plugin path",
-        description: error instanceof Error ? error.message : "Local API unavailable.",
+      failureNotice({
+        title: "Couldn't open the plugin's files",
+        error,
       }),
     );
     return;
   }
 
-  void openInPreferredEditor(api, targetPath, workspaceRoot).then(
-    () => {
-      toastManager.add({
-        type: "success",
-        title: "Opened in editor",
-        description: targetPath,
-      });
-    },
-    (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open plugin path",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  );
+  void openInPreferredEditor(api, targetPath, workspaceRoot).catch((error) => {
+    toastManager.add(
+      failureNotice({
+        title: "Couldn't open the plugin's files",
+        error,
+      }),
+    );
+  });
 }
 
 function DetailRow({
@@ -1151,15 +1123,14 @@ function DetailRow({
         <Tooltip>
           <TooltipTrigger
             render={
-              <Button
+              <CopyIconButton
+                value={copyValue}
+                what={label.toLowerCase()}
                 size="icon-xs"
                 variant="ghost"
                 className="size-6 rounded-sm text-muted-foreground hover:text-foreground max-sm:hidden"
-                onClick={() => copyText(copyValue, label)}
                 aria-label={`Copy ${label}`}
-              >
-                <CopyIcon className="size-3" />
-              </Button>
+              />
             }
           />
           <TooltipPopup side="top">Copy {label.toLowerCase()}</TooltipPopup>
@@ -1241,15 +1212,14 @@ function ExtensionToolsList({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Button
+                  <CopyIconButton
+                    value={formatJson(tool.inputSchema ?? {})}
+                    what="tool schema"
                     size="icon-xs"
                     variant="ghost"
                     className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
-                    onClick={() => copyText(formatJson(tool.inputSchema ?? {}), "Tool schema")}
                     aria-label={`Copy ${tool.name} schema`}
-                  >
-                    <CopyIcon className="size-3" />
-                  </Button>
+                  />
                 }
               />
               <TooltipPopup side="top">Copy schema</TooltipPopup>
@@ -1331,15 +1301,14 @@ function ExtensionResourcesList({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Button
+                  <CopyIconButton
+                    value={template.uriTemplate}
+                    what="resource template"
                     size="icon-xs"
                     variant="ghost"
                     className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
-                    onClick={() => copyText(template.uriTemplate, "Resource template")}
                     aria-label={`Copy ${template.name}`}
-                  >
-                    <CopyIcon className="size-3" />
-                  </Button>
+                  />
                 }
               />
               <TooltipPopup side="top">Copy template</TooltipPopup>
@@ -1700,10 +1669,9 @@ function ExtensionDetailDialog({
           });
         }
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `${label} failed`,
-            description: message,
+          failureNotice({
+            title: extensionActionFailureTitle(label),
+            reason: message,
           }),
         );
       } finally {
@@ -1753,8 +1721,7 @@ function ExtensionDetailDialog({
           if (status.status === "completed") {
             toastManager.add({
               type: "success",
-              title: "OAuth completed",
-              description: item.server.name,
+              title: `Signed in to ${item.server.name}`,
             });
             await onInventoryMutated(inventoryChangeFor(item, true));
             return status.message ?? status.status;
@@ -1765,7 +1732,7 @@ function ExtensionDetailDialog({
           throw new Error(message);
         }
       }
-      throw new Error(`OAuth timed out.\n\nFallback:\n${result.terminalCommand}`);
+      throw new Error(`Sign-in timed out.\n\nFallback:\n${result.terminalCommand}`);
     });
   }, [cwd, item, mcpOAuthActionLabel, onInventoryMutated, providersApi, runDialogAction]);
 
@@ -2184,14 +2151,14 @@ function ExtensionDetailDialog({
                           Truncated
                         </Badge>
                       ) : null}
-                      <Button
+                      <CopyIconButton
+                        value={skillContents.contents}
+                        what="skill"
                         size="xs"
                         variant="ghost"
-                        onClick={() => copyText(skillContents.contents, "Skill")}
                       >
-                        <CopyIcon className="size-3" />
                         Copy
-                      </Button>
+                      </CopyIconButton>
                     </div>
                   ) : null}
                 </div>
@@ -2403,19 +2370,16 @@ function ExtensionDetailDialog({
                   </Button>
                 ) : null}
                 {mcpOAuthActionAvailable ? (
-                  <Button
+                  <CopyIconButton
+                    value={providerMcpLoginCommand(mcpLoginProviderForItem(item), item.server.name)}
+                    what="login command"
+                    icon={TerminalIcon}
+                    iconClassName="size-3.5"
                     size="xs"
                     variant="outline"
-                    onClick={() =>
-                      copyText(
-                        providerMcpLoginCommand(mcpLoginProviderForItem(item), item.server.name),
-                        "Terminal login command",
-                      )
-                    }
                   >
-                    <TerminalIcon className="size-3.5" />
                     Copy login
-                  </Button>
+                  </CopyIconButton>
                 ) : null}
               </>
             ) : null}
@@ -2604,20 +2568,15 @@ function ExtensionDetailDialog({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Button
+                  <CopyIconButton
+                    value={extensionClipboardDetails(item)}
+                    what={`${extensionKindLabel(item.kind).toLowerCase()} metadata`}
+                    iconClassName="size-3.5"
                     size="icon-xs"
                     variant="ghost"
                     className="size-7 rounded-sm text-muted-foreground hover:text-foreground"
-                    onClick={() =>
-                      copyText(
-                        extensionClipboardDetails(item),
-                        `${extensionKindLabel(item.kind)} metadata`,
-                      )
-                    }
                     aria-label={`Copy ${extensionKindLabel(item.kind).toLowerCase()} metadata`}
-                  >
-                    <CopyIcon className="size-3.5" />
-                  </Button>
+                  />
                 }
               />
               <TooltipPopup side="top">Copy metadata</TooltipPopup>
@@ -3363,10 +3322,9 @@ function MarketplacesBlock({
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `${label} failed`,
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: extensionActionFailureTitle(label),
+            error,
           }),
         );
       } finally {
@@ -5141,10 +5099,9 @@ export function ExtensionsSettingsPanel() {
         await refresh({ invalidateCache: true });
       } catch (toggleError) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
-            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          failureNotice({
+            title: `Couldn't ${nextEnabled ? "enable" : "disable"} the plugin`,
+            error: toggleError,
           }),
         );
       } finally {
@@ -5174,10 +5131,9 @@ export function ExtensionsSettingsPanel() {
         await refresh({ invalidateCache: true });
       } catch (toggleError) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `${nextEnabled ? "Enable" : "Disable"} skill failed`,
-            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          failureNotice({
+            title: `Couldn't ${nextEnabled ? "enable" : "disable"} the skill`,
+            error: toggleError,
           }),
         );
       } finally {
@@ -5279,10 +5235,9 @@ export function ExtensionsSettingsPanel() {
         await refresh({ invalidateCache: true });
       } catch (toggleError) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `${nextEnabled ? "Enable" : "Disable"} plugin failed`,
-            description: toggleError instanceof Error ? toggleError.message : "An error occurred.",
+          failureNotice({
+            title: `Couldn't ${nextEnabled ? "enable" : "disable"} the plugin`,
+            error: toggleError,
           }),
         );
       } finally {
