@@ -22,9 +22,14 @@ describe("planBrowserLifecycle", () => {
     const plan = planBrowserLifecycle(
       [
         // An agent's page a minute and a bit later: no longer painted, not yet frozen.
-        page("recent", { drawn: true, state: "active", lastAgentAt: NOW - 61_000, lastShownAt: 0 }),
+        page("recent", {
+          drawn: true,
+          state: "working",
+          lastAgentAt: NOW - 61_000,
+          lastShownAt: 0,
+        }),
         // An agent's page it touched a moment ago keeps running in full.
-        page("in-use", { drawn: true, state: "active", lastAgentAt: NOW - 5_000, lastShownAt: 0 }),
+        page("in-use", { drawn: true, state: "working", lastAgentAt: NOW - 5_000, lastShownAt: 0 }),
         // Unseen and untouched for long enough: frozen.
         page("idle", { lastAgentAt: 0, lastShownAt: NOW - LIFECYCLE_LIMITS.freezeAfterMs }),
         // Busy pages keep running however old they look.
@@ -36,7 +41,21 @@ describe("planBrowserLifecycle", () => {
       NOW,
     );
 
-    expect(plan).toEqual({ background: ["recent"], freeze: ["idle"], evict: [] });
+    expect(plan).toEqual({ settle: [], background: ["recent"], freeze: ["idle"], evict: [] });
+  });
+
+  it("lets a page on screen stop working once its agent has left it alone", () => {
+    const plan = planBrowserLifecycle(
+      [
+        page("done", { shown: true, state: "working", lastAgentAt: NOW - 61_000 }),
+        page("in-use", { shown: true, state: "working", lastAgentAt: NOW - 5_000 }),
+        page("asking", { shown: true, state: "working", awaitingUser: true, lastAgentAt: 0 }),
+        page("never-worked", { shown: true, state: "active" }),
+      ],
+      NOW,
+    );
+
+    expect(plan.settle).toEqual(["done"]);
   });
 
   it("closes the oldest idle background pages to stay inside the limits, never busy or shown ones", () => {
