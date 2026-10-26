@@ -23,6 +23,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorId } from "@threadlines/contracts";
 import { readLocalApi } from "../../localApi";
 import { copyTextToClipboard } from "~/lib/clipboard";
+import { isEditableEventTarget } from "~/lib/editableTarget";
 import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import { usePreferredEditor } from "../../editorPreferences";
 import { useServerAvailableEditors } from "../../rpc/serverState";
@@ -39,7 +40,6 @@ import {
   findRenderedPierreLineElement,
   formatRevealLineNoticeLabel,
   formatSelectedLineRangeLabel,
-  isEditableEventTarget,
   isPrintableKeydown,
   isTypeToEditKeydown,
   lineEndCharacter,

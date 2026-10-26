@@ -152,19 +152,6 @@ export function isTypeToEditKeydown(event: KeydownLike): boolean {
   return isPrintableKeydown(event) && event.key !== " ";
 }
 
-/**
- * Whether the (composed-path-innermost) event target already accepts text
- * input — the tree's search box, or any editable surface — so type-to-edit
- * must not steal the keystroke.
- */
-export function isEditableEventTarget(target: EventTarget | null | undefined): boolean {
-  const element = target as Partial<Element> | null | undefined;
-  if (!element || typeof element.closest !== "function") {
-    return false;
-  }
-  return element.closest("input, textarea, select, [contenteditable]") !== null;
-}
-
 export type DoubleClickEditTarget =
   | { kind: "code"; lineIndex: number | null }
   | { kind: "line-number-gutter" };
