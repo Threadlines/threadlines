@@ -30,6 +30,7 @@ import {
   keepPreviousData,
   mutationOptions,
   queryOptions,
+  useIsFetching,
   useQueries,
   useQuery,
   useQueryClient,
@@ -488,9 +489,21 @@ export function usePullRequestDetailFollowingRecord(input: {
   const projectId = reference?.projectId;
   const repository = reference?.repository;
   const number = reference?.number;
+  // A read on its way may be the very one the record came from (the server
+  // records a read before it answers): it is left to land, and only an
+  // answer still behind is read again.
+  const reading =
+    useIsFetching({
+      queryKey: pullRequestQueryKeys.detail(
+        environmentId ?? IDLE_ENVIRONMENT_ID,
+        reference ?? IDLE_PULL_REQUEST_REF,
+      ),
+      exact: true,
+    }) > 0;
   useEffect(() => {
     if (
       behindRecord === undefined ||
+      reading ||
       rereadFor.current === behindRecord ||
       environmentId === null ||
       projectId === undefined ||
@@ -505,7 +518,7 @@ export function usePullRequestDetailFollowingRecord(input: {
       { environmentId, reference: { projectId, repository, number } },
       rereads,
     ).catch(() => undefined);
-  }, [behindRecord, environmentId, number, projectId, queryClient, repository, rereads]);
+  }, [behindRecord, environmentId, number, projectId, queryClient, reading, repository, rereads]);
   return recorded?.detail;
 }
 
