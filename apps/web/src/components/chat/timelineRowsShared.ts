@@ -2,7 +2,7 @@
  * What the chat's rows read from the rows as a whole, through the timeline's
  * shared row context: which messages carry an author line, what a side
  * answer's steps are named by, the room requests messages answer, each turn's
- * `thread_start` calls, and which sign-in errors a later reply resolved.
+ * `thread_start` calls, and which sign-in steps a later reply resolved.
  *
  * The rows change on every live update (a step starting, a reply streaming
  * in), and a new context value redraws every row on screen. So each part
@@ -18,7 +18,6 @@ import type {
 import { shallow } from "zustand/vanilla/shallow";
 
 import { parseThreadStartResult, type ThreadStartCall } from "../../childThreads";
-import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
 import type { ChatMessage } from "../../types";
 import { threadlinesRoomToolOf } from "./activitySteps";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
@@ -43,7 +42,7 @@ export interface TimelineRowsShared {
   readonly sideAnswerRequests: ReadonlyMap<RoomAgentRequestId, ChatMessage>;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   readonly threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
-  /** Sign-in errors and reconnect steps a later successful reply resolved. */
+  /** Sign-in steps a later reply from the same agent resolved. */
   readonly resolvedProviderAuthReconnectIds: ReadonlySet<string>;
 }
 
@@ -179,7 +178,7 @@ function collectThreadStartCalls(
 /**
  * The agent a finished reply proves can sign in: the added agent that wrote
  * it, or null for the thread's own. Undefined for anything else: a reply
- * still being written, an empty one, a sign-in error.
+ * still being written, or an empty one.
  */
 function providerAuthRecoveredAgent(
   row: MessagesTimelineRow,
@@ -188,8 +187,7 @@ function providerAuthRecoveredAgent(
     row.kind !== "message" ||
     row.message.role !== "assistant" ||
     row.message.streaming ||
-    row.message.text.trim().length === 0 ||
-    isProviderAuthErrorChatMessage(row.message)
+    row.message.text.trim().length === 0
   ) {
     return undefined;
   }
@@ -197,10 +195,9 @@ function providerAuthRecoveredAgent(
 }
 
 /**
- * The sign-in errors a later reply shows are fixed: one from the agent whose
- * sign-in failed. A sign-in error reply is always the thread's own agent's; a
- * reconnect step names its agent. A side answer counts for the agent that
- * wrote it, so a reviewer's answer never resolves the thread's own agent.
+ * The sign-in steps a later reply shows are fixed: one from the agent whose
+ * sign-in failed, which the step names. A side answer counts for the agent
+ * that wrote it, so a reviewer's answer never resolves the thread's own agent.
  */
 function collectResolvedProviderAuthReconnectIds(
   rows: ReadonlyArray<MessagesTimelineRow>,
@@ -214,20 +211,12 @@ function collectResolvedProviderAuthReconnectIds(
       recoveredAgents.add(recoveredAgent);
       continue;
     }
-    if (recoveredAgents.size === 0) {
+    if (row.kind !== "work" || recoveredAgents.size === 0) {
       continue;
     }
-    if (row.kind === "message") {
-      if (recoveredAgents.has(null) && isProviderAuthErrorChatMessage(row.message)) {
-        resolvedIds.add(row.id);
-      }
-      continue;
-    }
-    if (row.kind === "work") {
-      for (const entry of row.groupedEntries) {
-        if (entry.authReconnect && recoveredAgents.has(entry.authReconnect.participantId ?? null)) {
-          resolvedIds.add(entry.id);
-        }
+    for (const entry of row.groupedEntries) {
+      if (entry.authReconnect && recoveredAgents.has(entry.authReconnect.participantId ?? null)) {
+        resolvedIds.add(entry.id);
       }
     }
   }

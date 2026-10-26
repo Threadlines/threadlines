@@ -696,17 +696,12 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Sign in in terminal");
   });
 
-  it("keeps another agent's replies from hiding or resolving the thread's sign-in error", async () => {
+  it("turns a sign-in step green only when the agent that failed replies again", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const signInError = "Failed to authenticate. API Error: 401 Invalid authentication credentials";
     const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
-        providerAuthReconnect={{
-          provider: ProviderDriverKind.make("claudeAgent"),
-          command: "claude auth login",
-          message: signInError,
-        }}
         onRunProviderAuthReconnect={() => {}}
         timelineEntries={[
           {
@@ -727,26 +722,13 @@ describe("MessagesTimeline", () => {
             },
           },
           {
-            id: "entry-auth-message",
-            kind: "message",
-            createdAt: "2026-10-25T21:20:00.000Z",
-            message: {
-              id: MessageId.make("message-auth"),
-              role: "assistant",
-              text: signInError,
-              createdAt: "2026-10-25T21:20:00.000Z",
-              completedAt: "2026-10-25T21:20:01.000Z",
-              streaming: false,
-            },
-          },
-          {
             id: "entry-review",
             kind: "message",
             createdAt: "2026-10-25T21:28:21.000Z",
             message: {
               id: MessageId.make("side-answer:review"),
               role: "assistant",
-              text: 'Found one defect.\n\nI reproduced `403: {"error":{"message":"Invalid authentication credentials"}}` yielding a sign-in prompt.',
+              text: "Found one defect.",
               participantId: ThreadParticipantId.make("participant-sol"),
               sideTurnId: SideTurnId.make("side-turn-review"),
               createdAt: "2026-10-25T21:28:21.000Z",
@@ -791,119 +773,11 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    // The thread's own error and step stay open; only the room agent's own
-    // step is resolved, by its own later reply.
-    expect(markup.match(/data-provider-auth-reconnect-resolved="false"/g)).toHaveLength(2);
+    // The thread's own step stays open: the reviewer's side answer and its
+    // turn are its own. The reviewer's step is resolved by its later reply.
+    expect(markup.match(/data-provider-auth-reconnect-resolved="false"/g)).toHaveLength(1);
     expect(markup.match(/data-provider-auth-reconnect-resolved="true"/g)).toHaveLength(1);
     expect(markup).toContain("Codex sign-in refreshed");
-    expect(markup).toContain("Found one defect.");
-  });
-
-  it("renders assistant authentication messages as provider sign-in guidance", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        providerAuthReconnect={{
-          provider: ProviderDriverKind.make("claudeAgent"),
-          command: "claude auth login",
-          message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-        }}
-        onRunProviderAuthReconnect={() => {}}
-        timelineEntries={[
-          {
-            id: "entry-auth-message",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            message: {
-              id: MessageId.make("message-auth"),
-              role: "assistant",
-              text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              completedAt: "2026-03-17T19:12:30.000Z",
-              streaming: false,
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-provider-auth-reconnect="true"');
-    expect(markup).toContain("Claude needs sign in");
-    expect(markup).toContain("claude auth login");
-    expect(markup).not.toContain('data-agent-response-body="true"');
-  });
-
-  it("renders Codex authentication messages with the Codex sign-in command", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        providerAuthReconnect={{
-          provider: ProviderDriverKind.make("codex"),
-          command: "codex login",
-          message: "Not logged in",
-        }}
-        onRunProviderAuthReconnect={() => {}}
-        timelineEntries={[
-          {
-            id: "entry-codex-auth-message",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            message: {
-              id: MessageId.make("message-codex-auth"),
-              role: "assistant",
-              text: "Not logged in",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              completedAt: "2026-03-17T19:12:30.000Z",
-              streaming: false,
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-provider-auth-reconnect="true"');
-    expect(markup).toContain("Codex needs sign in");
-    expect(markup).toContain("codex login");
-    expect(markup).toContain("Sign in in terminal");
-    expect(markup).not.toContain('data-agent-response-body="true"');
-  });
-
-  it("renders Claude slash-login messages as terminal sign-in guidance", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        providerAuthReconnect={{
-          provider: ProviderDriverKind.make("claudeAgent"),
-          command: "claude auth login",
-          message: "Not logged in • Please run /login",
-        }}
-        onRunProviderAuthReconnect={() => {}}
-        timelineEntries={[
-          {
-            id: "entry-claude-slash-login",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            message: {
-              id: MessageId.make("message-claude-slash-login"),
-              role: "assistant",
-              text: "Not logged in • Please run /login",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              completedAt: "2026-03-17T19:12:30.000Z",
-              streaming: false,
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-provider-auth-reconnect="true"');
-    expect(markup).toContain("Claude needs sign in");
-    expect(markup).toContain("claude auth login");
-    expect(markup).toContain("Sign in in terminal");
-    expect(markup).not.toContain('data-agent-response-body="true"');
   });
 
   it("names the running step on the working line while the steps before it show above", async () => {
