@@ -208,6 +208,15 @@ export interface VcsStatusBroadcasterShape {
     cwd: string,
   ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
   readonly refreshStatus: (cwd: string) => Effect.Effect<VcsStatusResult, GitManagerServiceError>;
+  /**
+   * Reads the remote part again and sends it to every subscriber, fetching the
+   * upstream unless it was fetched within `upstreamMaxAgeMs`: for a surface
+   * about to show how far behind the remote the checkout is.
+   */
+  readonly refreshRemoteStatus: (
+    cwd: string,
+    options: { readonly upstreamMaxAgeMs: number },
+  ) => Effect.Effect<void, GitManagerServiceError>;
   readonly streamStatus: (
     input: VcsStatusInput,
     options?: StreamStatusOptions,
@@ -433,14 +442,21 @@ export const layer = Layer.effect(
 
     const refreshRemoteStatus = Effect.fn("VcsStatusBroadcaster.refreshRemoteStatus")(function* (
       cwd: string,
-      options?: { readonly forceRefresh?: boolean },
+      options?: { readonly forceRefresh?: boolean; readonly upstreamMaxAgeMs?: number },
     ) {
       yield* workflow.invalidateRemoteStatus(cwd);
       // Refreshes this broadcaster starts on its own may reuse a pull request
       // answer from the last minute; an explicit refresh asks the host.
       const remote = yield* workflow.remoteStatus(
         { cwd },
-        options?.forceRefresh === true ? options : { allowRecentPullRequest: true },
+        options?.forceRefresh === true
+          ? options
+          : {
+              allowRecentPullRequest: true,
+              ...(options?.upstreamMaxAgeMs === undefined
+                ? {}
+                : { upstreamMaxAgeMs: options.upstreamMaxAgeMs }),
+            },
       );
       return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
     });
@@ -844,6 +860,11 @@ export const layer = Layer.effect(
       getStatus,
       refreshLocalStatus,
       refreshStatus,
+      refreshRemoteStatus: (rawCwd, options) =>
+        withFileSystem(normalizeCwd(rawCwd)).pipe(
+          Effect.flatMap((cwd) => refreshRemoteStatus(cwd, options)),
+          Effect.asVoid,
+        ),
       streamStatus,
       observeLocalStatus,
       observeMissingCheckouts,

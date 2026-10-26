@@ -184,6 +184,7 @@ import {
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
+  VcsRefreshRemoteStatusInput,
   VcsStatusInput,
   VcsStatusLocalResult,
   VcsStatusResult,
@@ -471,6 +472,7 @@ export const WS_METHODS = {
   vcsDropStash: "vcs.dropStash",
   vcsRefreshLocalStatus: "vcs.refreshLocalStatus",
   vcsRefreshStatus: "vcs.refreshStatus",
+  vcsRefreshRemoteStatus: "vcs.refreshRemoteStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCommitGraph: "vcs.commitGraph",
   vcsCommitDetails: "vcs.commitDetails",
@@ -1364,6 +1366,12 @@ export const WsVcsDropStashRpc = Rpc.make(WS_METHODS.vcsDropStash, {
 export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
   payload: VcsStatusInput,
   success: VcsStatusResult,
+  error: GitManagerServiceError,
+});
+
+/** Only on servers reporting the `remoteStatusRefresh` capability. */
+export const WsVcsRefreshRemoteStatusRpc = Rpc.make(WS_METHODS.vcsRefreshRemoteStatus, {
+  payload: VcsRefreshRemoteStatusInput,
   error: GitManagerServiceError,
 });
 
@@ -2323,6 +2331,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsApplyStashRpc,
   WsVcsDropStashRpc,
   WsVcsRefreshLocalStatusRpc,
+  WsVcsRefreshRemoteStatusRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
   WsGitGenerateCommitMessageRpc,

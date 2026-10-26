@@ -1,3 +1,4 @@
+import { readConnectedComputerCapability } from "../environments/computerCapabilities";
 import {
   type OrchestrationAgentPage,
   type OrchestrationCheckBack,
@@ -1220,6 +1221,9 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     </div>
   );
 });
+
+/** How recent a fetch of a new thread's checkout has to be before its ↓N counts. */
+const NEW_THREAD_UPSTREAM_MAX_AGE_MS = 30_000;
 
 export default function ChatView(props: ChatViewProps) {
   const { environmentId, threadId, routeKind, onDiffPanelOpen, composerFocusRequest = 0 } = props;
@@ -2859,6 +2863,19 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // A new thread is about to start on this checkout: its upstream is fetched
+  // unless that happened in the last half minute, so the header's ↓N says how
+  // far behind the remote it really is before the first message goes. Again
+  // whenever the checkout it would start on changes.
+  const freshensNewThreadCheckout =
+    !isServerThread && gitCwd !== null && activeProject?.kind !== "general-chat";
+  useEffect(() => {
+    if (!freshensNewThreadCheckout || gitCwd === null) return;
+    if (!readConnectedComputerCapability(environmentId, "remoteStatusRefresh")) return;
+    void readEnvironmentApi(environmentId)
+      ?.vcs.refreshRemoteStatus({ cwd: gitCwd, upstreamMaxAgeMs: NEW_THREAD_UPSTREAM_MAX_AGE_MS })
+      .catch(() => undefined);
+  }, [environmentId, freshensNewThreadCheckout, gitCwd]);
   // A thread that owns its worktree follows the branch that worktree is on: a
   // checkout switched from the shell or by the agent must not leave the record,
   // and with it the pull request badge, on the branch the thread began with.

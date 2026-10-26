@@ -139,6 +139,7 @@ describe("ThreadDiffStatBaselineReactor", () => {
       getStatus: () => Effect.die("unused"),
       refreshLocalStatus: () => Effect.die("unused"),
       refreshStatus: () => Effect.die("unused"),
+      refreshRemoteStatus: () => Effect.die("unused"),
       streamStatus: () => Stream.empty,
       observeLocalStatus: () =>
         Stream.fromIterable(input.observations).pipe(

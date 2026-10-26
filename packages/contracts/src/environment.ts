@@ -83,6 +83,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   pullRequestObservations: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server reads a checkout's remote status again on request, fetching
+   * its upstream if older than asked (`vcs.refreshRemoteStatus`). Older
+   * servers omit it; a new thread then shows whatever the last fetch saw.
+   */
+  remoteStatusRefresh: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server runs event tasks: scheduled tasks started by a webhook
    * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
    */

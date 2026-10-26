@@ -206,6 +206,10 @@ type TraceTailState = {
   remainder: string;
 };
 
+function statusRemoteRefreshKeyString(key: StatusRemoteRefreshCacheKey): string {
+  return `${key.gitCommonDir}\u0000${key.remoteName}\u0000${key.branchName}`;
+}
+
 class StatusRemoteRefreshCacheKey extends Data.Class<{
   gitCommonDir: string;
   remoteName: string;
@@ -1637,13 +1641,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   let finishedStatusFetches = 0;
 
   /** Fetches one upstream; answers the fetch's place in finishedStatusFetches. */
+  // When each upstream last fetched, and last failed to, by
+  // statusRemoteRefreshKeyString: what a caller asking for a fresher fetch
+  // than the cache keeps (upstreamMaxAgeMs) weighs.
+  const upstreamFetchedAtMs = new Map<string, number>();
+  const upstreamFailedAtMs = new Map<string, number>();
+
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
   ) {
+    const keyString = statusRemoteRefreshKeyString(cacheKey);
     yield* fetchRemoteForStatus(cacheKey.gitCommonDir, {
       remoteName: cacheKey.remoteName,
       branchName: cacheKey.branchName,
-    });
+    }).pipe(
+      Effect.tapError(() =>
+        Clock.currentTimeMillis.pipe(
+          Effect.map((nowMs) => upstreamFailedAtMs.set(keyString, nowMs)),
+        ),
+      ),
+    );
+    const fetchedAtMs = yield* Clock.currentTimeMillis;
+    upstreamFetchedAtMs.set(keyString, fetchedAtMs);
+    upstreamFailedAtMs.delete(keyString);
     return yield* Effect.sync(() => ++finishedStatusFetches);
   });
 
@@ -1654,6 +1674,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Exit.isSuccess(exit)
         ? STATUS_UPSTREAM_REFRESH_INTERVAL
         : STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN,
+  });
+
+  /**
+   * Lets the next look fetch an upstream whose last fetch is older than
+   * `maxAgeMs`, though the cache would keep it for its two minutes. A fetch
+   * that failed within the cooldown is left to it.
+   */
+  const expireUpstreamFetchOlderThan = Effect.fn("expireUpstreamFetchOlderThan")(function* (
+    reads: StatusReads,
+    maxAgeMs: number,
+  ) {
+    const upstream = yield* reads.upstream;
+    if (!upstream) return;
+    const cacheKey = new StatusRemoteRefreshCacheKey({
+      gitCommonDir: yield* reads.gitCommonDir,
+      remoteName: upstream.remoteName,
+      branchName: upstream.branchName,
+    });
+    const keyString = statusRemoteRefreshKeyString(cacheKey);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const failedAtMs = upstreamFailedAtMs.get(keyString);
+    if (
+      failedAtMs !== undefined &&
+      nowMs - failedAtMs < Duration.toMillis(STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN)
+    ) {
+      return;
+    }
+    const fetchedAtMs = upstreamFetchedAtMs.get(keyString);
+    if (fetchedAtMs !== undefined && nowMs - fetchedAtMs > maxAgeMs) {
+      yield* Cache.invalidate(statusRemoteRefreshCache, cacheKey);
+    }
   });
 
   /**
@@ -2553,6 +2604,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // Reads taken before a fetch are not reused after it: refs moved, and the
     // checkout may have switched branches while it ran.
     const reads = yield* makeStatusReads(cwd);
+    if (options?.upstreamMaxAgeMs !== undefined) {
+      yield* expireUpstreamFetchOlderThan(reads, options.upstreamMaxAgeMs).pipe(
+        Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+      );
+    }
     const fetched = yield* refreshStatusUpstreamIfStale(cwd, reads).pipe(
       Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(false)),
       Effect.tapCause((cause) => Effect.logError(cause)),

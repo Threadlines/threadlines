@@ -49,6 +49,7 @@ import type {
   VcsPullResult,
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
+  VcsRefreshRemoteStatusInput,
   VcsStatusInput,
   VcsStatusLocalResult,
   VcsStatusResult,
@@ -1920,6 +1921,8 @@ export interface EnvironmentApi {
     applyStash: (input: VcsApplyStashInput) => Promise<VcsApplyStashResult>;
     dropStash: (input: VcsDropStashInput) => Promise<VcsDropStashResult>;
     refreshLocalStatus: (input: VcsStatusInput) => Promise<VcsStatusLocalResult>;
+    /** Only on servers reporting the `remoteStatusRefresh` capability. */
+    refreshRemoteStatus: (input: VcsRefreshRemoteStatusInput) => Promise<void>;
     refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
     onStatus: (
       input: VcsStatusInput,

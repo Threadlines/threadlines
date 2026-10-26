@@ -2092,6 +2092,20 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsRefreshRemoteStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsRefreshRemoteStatus,
+            Effect.gen(function* () {
+              // Automatic fetching turned off means git reaches the remote only
+              // when the user asks it to, so this reads nothing new either.
+              const interval = yield* automaticGitFetchInterval;
+              if (Duration.isZero(interval)) return;
+              yield* vcsStatusBroadcaster.refreshRemoteStatus(input.cwd, {
+                upstreamMaxAgeMs: input.upstreamMaxAgeMs,
+              });
+            }),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsRefreshLocalStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRefreshLocalStatus,

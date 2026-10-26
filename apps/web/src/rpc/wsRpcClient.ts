@@ -185,6 +185,8 @@ export interface WsRpcClient {
     readonly dropStash: RpcUnaryMethod<typeof WS_METHODS.vcsDropStash>;
     readonly refreshLocalStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshLocalStatus>;
     readonly refreshStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshStatus>;
+    /** Only on servers reporting the `remoteStatusRefresh` capability. */
+    readonly refreshRemoteStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshRemoteStatus>;
     readonly onStatus: (
       input: RpcInput<typeof WS_METHODS.subscribeVcsStatus>,
       listener: (status: VcsStatusResult) => void,
@@ -772,6 +774,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.vcsRefreshLocalStatus](input)),
       refreshStatus: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRefreshStatus](input)),
+      refreshRemoteStatus: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsRefreshRemoteStatus](input)),
       onStatus: (input, listener, options) => {
         let current: VcsStatusResult | null = null;
         return transport.subscribe(
