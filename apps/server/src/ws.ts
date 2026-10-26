@@ -93,6 +93,7 @@ import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { PreviewTunnel } from "./preview/PreviewTunnel.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
+import { PullRequestObservations } from "./pullRequest/PullRequestObservations.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
@@ -406,6 +407,7 @@ const makeWsRpcLayer = (
       const gitWorkflow = yield* GitWorkflowService;
       const gitAuthRemediation = yield* GitAuthRemediationService;
       const pullRequests = yield* PullRequestService;
+      const pullRequestObservations = yield* PullRequestObservations;
       const vcsProvisioning = yield* VcsProvisioningService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const previewTunnel = yield* PreviewTunnel;
@@ -2232,6 +2234,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.pullRequestsLookup, pullRequests.lookup(input), {
             "rpc.aggregate": "pullRequests",
           }),
+        [WS_METHODS.pullRequestsSubscribeObservations]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.pullRequestsSubscribeObservations,
+            Effect.succeed(pullRequestObservations.stream),
+            { "rpc.aggregate": "pullRequests" },
+          ),
         [WS_METHODS.pullRequestsDetail]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
             "rpc.aggregate": "pullRequests",

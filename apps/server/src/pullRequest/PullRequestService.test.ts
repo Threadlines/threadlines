@@ -29,6 +29,7 @@ import {
 } from "./PullRequestProvider.ts";
 import * as PullRequestProviderRegistryLayer from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
+import * as PullRequestObservations from "./PullRequestObservations.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -128,7 +129,13 @@ const hostClientsLayer = Layer.mergeAll(
 );
 
 const layer = PullRequestService.layer.pipe(
-  Layer.provide(Layer.mergeAll(PullRequestProviderRegistryLayer.layer, projectionsLayer)),
+  Layer.provide(
+    Layer.mergeAll(
+      PullRequestProviderRegistryLayer.layer,
+      projectionsLayer,
+      PullRequestObservations.layer,
+    ),
+  ),
   Layer.provide(hostClientsLayer),
   Layer.provide(NodeServices.layer),
 );
@@ -170,6 +177,7 @@ const layerWithCapabilities = (capabilities: PullRequestProviderApi["capabilitie
       Layer.mergeAll(
         Layer.succeed(PullRequestProviderRegistry, fromProviders([stubProvider(capabilities)])),
         projectionsLayer,
+        PullRequestObservations.layer,
       ),
     ),
   );

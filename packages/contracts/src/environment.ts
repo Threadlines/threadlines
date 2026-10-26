@@ -77,6 +77,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** The server reports when it froze (`subscribeServerStalls`). */
   stallReports: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server sends what it last heard from the host about each pull request
+   * (`pullRequests.subscribeObservations`). Older servers omit it; clients
+   * then go by each surface's own reads.
+   */
+  pullRequestObservations: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server runs event tasks: scheduled tasks started by a webhook
    * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
    */

@@ -109,6 +109,12 @@ export const PullRequestListEntry = Schema.Struct({
   autoMergeEnabled: Schema.optionalKey(Schema.Boolean),
   labels: Schema.Array(PullRequestLabel),
   origin: PullRequestListEntryOrigin,
+  /**
+   * When the read behind this row began, on the server's clock: what a client
+   * weighs it against the server's shared record of the pull request by
+   * (`PullRequestObservation.observedAt`). Absent from older servers.
+   */
+  observedAt: Schema.optionalKey(IsoDateTime),
 });
 export type PullRequestListEntry = typeof PullRequestListEntry.Type;
 
@@ -159,6 +165,51 @@ export const PullRequestListResult = Schema.Struct({
   errors: Schema.Array(PullRequestListProjectError),
 });
 export type PullRequestListResult = typeof PullRequestListResult.Type;
+
+/**
+ * What the server last heard from the host about one pull request, kept per
+ * pull request and sent to every client as it changes, whoever asked: the
+ * pull requests page, a thread's lookup, a checkout's status read, the merge
+ * automation. A client shows this one record wherever the pull request
+ * appears, so every surface agrees with the others.
+ *
+ * Each part is as of the newest read that covered it, ordered by when the
+ * read began, so a slow read that started earlier never overwrites a later
+ * one. A read that covered nothing new sends nothing.
+ */
+export const PullRequestObservation = Schema.Struct({
+  provider: SourceControlProviderKind,
+  /** `owner/name`, as the host spells it. Compared case-insensitively. */
+  repository: TrimmedNonEmptyString,
+  number: PositiveInt,
+  /** Rises with every record the server sends, across all pull requests. */
+  sequence: NonNegativeInt,
+  /** When the newest read behind this record began, on the server's clock. */
+  observedAt: IsoDateTime,
+  title: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  headBranch: TrimmedNonEmptyString,
+  state: PullRequestState,
+  /** Absent until a read that tells drafts apart saw it; a checkout's status read cannot. */
+  isDraft: Schema.optionalKey(Schema.Boolean),
+  /** When it merged or closed, where a read said. */
+  settledAt: Schema.optionalKey(IsoDateTime),
+  /** Armed to merge on its own, or in the merge queue; absent until a read said. */
+  autoMergeEnabled: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The checks on the head commit, from the newest full read of this pull
+   * request (listings do not say which commit their checks ran on).
+   */
+  checks: Schema.optionalKey(
+    Schema.Struct({
+      headSha: Schema.NullOr(TrimmedNonEmptyString),
+      /** Null where the head has no checks. */
+      state: Schema.NullOr(PullRequestChecksState),
+      observedAt: IsoDateTime,
+    }),
+  ),
+});
+export type PullRequestObservation = typeof PullRequestObservation.Type;
 
 /** How many pull requests one lookup may ask about. */
 export const PULL_REQUEST_LOOKUP_LIMIT = 50;
@@ -538,6 +589,8 @@ export const PullRequestDetail = Schema.Struct({
   /** The base is not the repository's default branch, so this sits on other work. */
   isStacked: Schema.Boolean,
   defaultBranch: Schema.NullOr(Schema.String),
+  /** When this read began, on the server's clock; see `PullRequestListEntry.observedAt`. */
+  observedAt: Schema.optionalKey(IsoDateTime),
 });
 export type PullRequestDetail = typeof PullRequestDetail.Type;
 

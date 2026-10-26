@@ -205,6 +205,7 @@ import {
   PullRequestListResult,
   PullRequestLookupInput,
   PullRequestLookupResult,
+  PullRequestObservation,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -498,6 +499,7 @@ export const WS_METHODS = {
   // Pull request methods
   pullRequestsList: "pullRequests.list",
   pullRequestsLookup: "pullRequests.lookup",
+  pullRequestsSubscribeObservations: "pullRequests.subscribeObservations",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsActivity: "pullRequests.activity",
   pullRequestsDiff: "pullRequests.diff",
@@ -1420,6 +1422,20 @@ export const WsPullRequestsLookupRpc = Rpc.make(WS_METHODS.pullRequestsLookup, {
   error: PullRequestServiceError,
 });
 
+/**
+ * The server's record of every pull request it has read recently, then each
+ * change as a read lands. Only servers reporting the `pullRequestObservations`
+ * capability answer it.
+ */
+export const WsPullRequestsSubscribeObservationsRpc = Rpc.make(
+  WS_METHODS.pullRequestsSubscribeObservations,
+  {
+    payload: Schema.Struct({}),
+    success: PullRequestObservation,
+    stream: true,
+  },
+);
+
 export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   payload: PullRequestDetailInput,
   success: PullRequestDetail,
@@ -2316,6 +2332,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitApplyAuthRemediationRpc,
   WsPullRequestsListRpc,
   WsPullRequestsLookupRpc,
+  WsPullRequestsSubscribeObservationsRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsActivityRpc,
   WsPullRequestsDiffRpc,

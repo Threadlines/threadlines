@@ -70,6 +70,11 @@ import {
 } from "../vcs/GitVcsDriver.ts";
 import { parseGitConfigList, type GitConfigSnapshot } from "../vcs/gitConfigSnapshot.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
+import {
+  PullRequestObservations,
+  type PullRequestRead,
+} from "../pullRequest/PullRequestObservations.ts";
+import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
 import type {
   ChangeRequestSample,
   SourceControlProviderContext,
@@ -363,6 +368,28 @@ function matchesBranchHeadContext(
   return true;
 }
 
+/**
+ * What a branch's pull request search said about one pull request, for the
+ * shared record. Only pull requests whose address names their repository
+ * (GitHub's) are recorded; the search cannot tell drafts apart.
+ */
+function changeRequestRead(summary: ChangeRequest): ReadonlyArray<PullRequestRead> {
+  const reference = parsePullRequestUrl(summary.url);
+  if (reference === null || reference.number !== summary.number) return [];
+  return [
+    {
+      provider: summary.provider,
+      repository: reference.repository,
+      number: summary.number,
+      title: summary.title,
+      url: summary.url,
+      headBranch: summary.headRefName,
+      state: summary.state,
+      autoMergeEnabled: summary.autoMergeEnabled,
+    },
+  ];
+}
+
 function toPullRequestInfo(summary: ChangeRequest): PullRequestInfo {
   return {
     number: summary.number,
@@ -632,6 +659,7 @@ function toPullRequestHeadRemoteInfo(pr: {
 export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   const gitCore = yield* GitVcsDriver;
   const sourceControlProviders = yield* SourceControlProviderRegistry;
+  const pullRequestObservations = yield* PullRequestObservations;
   const textGeneration = yield* TextGeneration;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
 
@@ -1381,12 +1409,17 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     const parsedByNumber = new Map<number, PullRequestInfo>();
 
     for (const headSelector of headContext.headSelectors) {
-      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
-        cwd,
-        headSelector,
-        state: "all",
-        limit: 20,
-      });
+      const pullRequests = yield* pullRequestObservations
+        .observe(
+          (yield* sourceControlProvider(cwd)).listChangeRequests({
+            cwd,
+            headSelector,
+            state: "all",
+            limit: 20,
+          }),
+          (found) => found.flatMap(changeRequestRead),
+        )
+        .pipe(Effect.map(({ result }) => result));
 
       for (const pr of pullRequests.map(toPullRequestInfo)) {
         if (!matchesBranchHeadContext(pr, headContext)) {

@@ -176,6 +176,7 @@ import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
+import * as PullRequestObservations from "./pullRequest/PullRequestObservations.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
@@ -975,6 +976,7 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.sourceControlRepositoryService,
           }),
           Layer.mock(PullRequestService)({}),
+          PullRequestObservations.layer,
         ),
       ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),

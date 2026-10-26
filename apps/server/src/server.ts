@@ -129,6 +129,7 @@ import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import * as PullRequestObservations from "./pullRequest/PullRequestObservations.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner.ts";
@@ -585,6 +586,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
 );
 
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
+  // What the host last said about each pull request, recorded by the git
+  // manager's branch searches and the pull request service alike.
+  Layer.provideMerge(PullRequestObservations.layer),
   // Misc.
   Layer.provideMerge(ProcessDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
