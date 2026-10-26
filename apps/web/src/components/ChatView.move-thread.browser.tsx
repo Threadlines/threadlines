@@ -326,13 +326,23 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .toMatchTextContent("Mac mini asks its user first.");
 
       // A computer that can't take it is listed, disabled, with why.
-      await dialog.getByTestId("thread-move-target").click();
+      const targetPicker = dialog.getByTestId("thread-move-target");
+      await targetPicker.click();
+      // The list's items stay in the page once it closes, so the checks below
+      // only mean something while it is open.
+      await expect.element(targetPicker).toHaveAttribute("aria-expanded", "true");
       const windows = page.getByTestId(`thread-move-target-${FLEET_REMOTE_ENVIRONMENT_ID}`);
       await expect
         .element(windows)
         .toMatchTextContent("Windows PC has no project for this repository.");
       await expect.element(windows).toHaveAttribute("data-disabled");
+      // Escape closes the list and leaves the dialog open. Bounded: an element
+      // that is gone (the dialog closed with it) is otherwise waited on until
+      // the spec's own timeout, which names no step.
       await userEvent.keyboard("{Escape}");
+      await expect
+        .element(targetPicker, { timeout: 5_000 })
+        .toHaveAttribute("aria-expanded", "false");
 
       // Mac mini turns the start down: the dialog says why and stays open.
       // (Stood in for here: the test server can't send a typed error.)
