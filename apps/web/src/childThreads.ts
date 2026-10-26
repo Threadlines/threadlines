@@ -62,6 +62,19 @@ export function useRemoteChildren(
   );
 }
 
+/**
+ * What a message another thread wrote calls that thread when its title isn't
+ * known: the thread that started this one, one this one started, or one it
+ * asked for that was never made.
+ */
+export function unnamedThreadOrigin(origin: Pick<ThreadMessageOrigin, "kind" | "neverMade">) {
+  return origin.kind === "request"
+    ? "the thread that started it"
+    : origin.neverMade === true
+      ? "a thread it asked for"
+      : "a thread it started";
+}
+
 /** Where a message another thread wrote (`fromThread`) came from, for its line. */
 export interface ThreadMessageSource {
   /** The computer that thread lives on. */

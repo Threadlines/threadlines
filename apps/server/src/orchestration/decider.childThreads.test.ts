@@ -686,6 +686,68 @@ describe("decider child threads", () => {
     expect(stopped.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
   });
 
+  it("a child whose setup failed before it was made still reports to the agent that asked, unless its delivery was cancelled", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto"),
+    );
+    const failed = await run(started.model, {
+      type: "thread.child-request.settle",
+      commandId: CommandId.make("server:child-request:request-1:settle"),
+      threadId: PARENT,
+      requestId: REQUEST,
+      outcome: "failed",
+      reply: {
+        messageId: childReportMessageId(REQUEST),
+        text: "Couldn't start 'Write the changelog': Couldn't set up its worktree: disk full",
+        turnId: null,
+      },
+      error: "Couldn't set up its worktree: disk full",
+      createdAt: at(5),
+    });
+    expect(
+      threadIn(failed.model, PARENT).messages.find(
+        (message) => message.id === childReportMessageId(REQUEST),
+      )?.fromThread,
+    ).toMatchObject({ threadId: CHILD, kind: "report", neverMade: true });
+    expect(failed.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
+    // The parent's turn has ended by now: the report goes out as its next turn.
+    const idle: OrchestrationReadModel = {
+      ...failed.model,
+      threads: failed.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? { ...entry, session: session(PARENT, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const sendReport = {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-report"),
+      threadId: PARENT,
+      messageId: childReportMessageId(REQUEST),
+      createdAt: at(6),
+    } as const;
+    const sent = await run(idle, sendReport);
+    expect(sent.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    // Stop takes it back; simulate one that slipped through by moving the epoch on.
+    const movedOn: OrchestrationReadModel = {
+      ...idle,
+      threads: idle.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              childRequests: {
+                ...entry.childRequests,
+                deliveryEpoch: entry.childRequests.deliveryEpoch + 1,
+              },
+            }
+          : entry,
+      ),
+    };
+    const cancelled = await run(movedOn, sendReport);
+    expect(cancelled.events.map((event) => event.type)).toEqual(["thread.follow-up-unqueued"]);
+  });
+
   it("refuses to create a child with more access than its parent has now", async () => {
     const narrowed = readModel([thread(PARENT, { runtimeMode: "approval-required" })]);
     expect(
