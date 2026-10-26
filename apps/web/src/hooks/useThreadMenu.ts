@@ -1,8 +1,4 @@
-import {
-  EMPTY_CHILD_REQUEST_STATE,
-  type ScopedThreadRef,
-  type ThreadId,
-} from "@threadlines/contracts";
+import { EMPTY_CHILD_REQUEST_STATE, type ScopedThreadRef } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
 import { useCallback } from "react";
@@ -21,7 +17,8 @@ import {
   describeThreadSelectionMenu,
   type ThreadMenuAction,
 } from "../components/threadMenu.logic";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
+import { copyWithNotice } from "../components/ui/copyWithNotice";
 import { readEnvironmentApi } from "../environmentApi";
 import { readThreadMoveOffered } from "../environments/links/threadMoves";
 import {
@@ -38,7 +35,6 @@ import {
   useStore,
 } from "../store";
 import type { SidebarThreadSummary } from "../types";
-import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
 
@@ -53,12 +49,11 @@ export interface ThreadMenuTarget {
 
 type MenuPosition = { readonly x: number; readonly y: number };
 
-const errorToast = (title: string, error: unknown) =>
+const errorToast = (title: `Couldn't ${string}`, error: unknown) =>
   toastManager.add(
-    stackedThreadToast({
-      type: "error",
+    failureNotice({
       title,
-      description: error instanceof Error ? error.message : "An error occurred.",
+      error,
     }),
   );
 
@@ -79,18 +74,6 @@ export function useThreadMenu() {
   const { archiveThread, deleteThread, pinThread, unpinThread } = useThreadActions();
   const confirmArchive = useSettings<boolean>((settings) => settings.confirmThreadArchive);
   const confirmDelete = useSettings<boolean>((settings) => settings.confirmThreadDelete);
-  const { copyToClipboard: copyThreadId } = useCopyToClipboard<{ threadId: ThreadId }>({
-    onCopy: (ctx) => {
-      toastManager.add({ type: "success", title: "Thread ID copied", description: ctx.threadId });
-    },
-    onError: (error) => errorToast("Failed to copy thread ID", error),
-  });
-  const { copyToClipboard: copyPath } = useCopyToClipboard<{ path: string }>({
-    onCopy: (ctx) => {
-      toastManager.add({ type: "success", title: "Path copied", description: ctx.path });
-    },
-    onError: (error) => errorToast("Failed to copy path", error),
-  });
 
   /** The menu's items for a thread as it is now; null when the app doesn't know the thread. */
   const describe = useCallback((target: ThreadMenuTarget) => {
@@ -173,7 +156,10 @@ export function useThreadMenu() {
             if (action === "pin") await pinThread(threadRef);
             else await unpinThread(threadRef);
           } catch (error) {
-            errorToast(action === "pin" ? "Failed to pin thread" : "Failed to unpin thread", error);
+            errorToast(
+              action === "pin" ? "Couldn't pin the thread" : "Couldn't unpin the thread",
+              error,
+            );
           }
           return;
         case "mark-unread":
@@ -210,10 +196,10 @@ export function useThreadMenu() {
           } catch (error) {
             errorToast(
               action === "stop-children"
-                ? "Could not stop its threads"
+                ? "Couldn't stop its threads"
                 : action === "attach"
-                  ? "Could not put the thread back"
-                  : "Could not make it its own thread",
+                  ? "Couldn't put the thread back"
+                  : "Couldn't make it its own thread",
               error,
             );
           }
@@ -229,14 +215,14 @@ export function useThreadMenu() {
           );
           const path = thread.worktreePath ?? project?.cwd ?? null;
           if (!path) {
-            errorToast("Path unavailable", new Error("This thread has no folder to copy."));
+            errorToast("Couldn't copy the path", new Error("This thread has no folder to copy."));
             return;
           }
-          copyPath(path, { path });
+          void copyWithNotice(path, "path");
           return;
         }
         case "copy-thread-id":
-          copyThreadId(thread.id, { threadId: thread.id });
+          void copyWithNotice(thread.id, "thread ID");
           return;
         case "archive": {
           const api = readLocalApi();
@@ -250,7 +236,7 @@ export function useThreadMenu() {
           try {
             await archiveThread(threadRef);
           } catch (error) {
-            errorToast("Failed to archive thread", error);
+            errorToast("Couldn't archive the thread", error);
           }
           return;
         }
@@ -287,16 +273,7 @@ export function useThreadMenu() {
         }
       }
     },
-    [
-      archiveThread,
-      confirmArchive,
-      confirmDelete,
-      copyPath,
-      copyThreadId,
-      deleteThread,
-      pinThread,
-      unpinThread,
-    ],
+    [archiveThread, confirmArchive, confirmDelete, deleteThread, pinThread, unpinThread],
   );
 
   /** Opens the thread's menu at `position` and does what is picked. */
@@ -364,7 +341,7 @@ export function useThreadMenu() {
               else await unpinThread(refOf(thread));
             } catch (error) {
               errorToast(
-                clicked === "pin" ? "Failed to pin thread" : "Failed to unpin thread",
+                clicked === "pin" ? "Couldn't pin the thread" : "Couldn't unpin the thread",
                 error,
               );
             }
@@ -390,7 +367,7 @@ export function useThreadMenu() {
             try {
               await archiveThread(refOf(thread));
             } catch (error) {
-              errorToast("Failed to archive thread", error);
+              errorToast("Couldn't archive the thread", error);
             }
           }
           break;

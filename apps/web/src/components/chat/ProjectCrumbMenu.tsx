@@ -5,7 +5,6 @@ import { memo, useCallback, useEffect, useMemo } from "react";
 import { ChevronDownIcon, CopyIcon, FolderGit2Icon } from "lucide-react";
 import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
 import { usePreferredEditor } from "../../editorPreferences";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   Menu,
   MenuGroup,
@@ -19,7 +18,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { copyWithNotice } from "../ui/copyWithNotice";
 import {
   EditorOpenRadioGroup,
   editorOpenActionLabel,
@@ -69,20 +68,6 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
     () => shortcutLabelForCommand(keybindings, "editor.openFavorite"),
     [keybindings],
   );
-  const { copyToClipboard } = useCopyToClipboard<{ path: string }>({
-    onCopy: (ctx) => {
-      toastManager.add({ type: "success", title: "Path copied", description: ctx.path });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to copy path",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  });
 
   const inWorktree = !areFilesystemPathsEqual(cwd, projectCwd);
   const offersDefaultEditor = canOpenInEditor && options.length > 0;
@@ -124,7 +109,7 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
           ))
         )
       ) : null}
-      <MenuItem onClick={() => copyToClipboard(path, { path })}>
+      <MenuItem onClick={() => void copyWithNotice(path, "path")}>
         <CopyIcon aria-hidden="true" className="text-muted-foreground" />
         Copy path
       </MenuItem>

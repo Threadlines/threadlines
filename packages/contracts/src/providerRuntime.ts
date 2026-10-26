@@ -923,6 +923,8 @@ export type HookProgressPayload = typeof HookProgressPayload.Type;
 
 const HookCompletedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
+  /** The hook's trigger (SessionStart, PreToolUse...), so a failure can say which hook failed. */
+  hookEvent: Schema.optional(TrimmedNonEmptyStringSchema),
   outcome: Schema.Literals(["success", "error", "cancelled"]),
   output: Schema.optional(Schema.String),
   stdout: Schema.optional(Schema.String),

@@ -9,7 +9,7 @@ import { PencilIcon, UserRoundPlusIcon, XIcon } from "lucide-react";
 import { memo, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { roomAgentKey } from "../../rooms";
 import type { RoomAgentRow, RoomAgents } from "./useRoomAgents";
@@ -31,19 +31,20 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
   /** The row being renamed, by `roomAgentKey`. */
   const [renaming, setRenaming] = useState<string | null>(null);
 
-  const failed = (title: string) => (error: unknown) =>
-    toastManager.add({
-      type: "error",
-      title,
-      description: error instanceof Error ? error.message : String(error),
-    });
+  const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
+    toastManager.add(
+      failureNotice({
+        title,
+        error,
+      }),
+    );
 
   const rename = (row: RoomAgentRow, typed: string) => {
     setRenaming(null);
-    void agents.rename(row, typed).catch(failed(`Could not rename ${row.modelName}`));
+    void agents.rename(row, typed).catch(failed(`Couldn't rename ${row.modelName}`));
   };
   const remove = (row: RoomAgentRow) => {
-    void agents.remove(row).catch(failed(`Could not remove ${row.name}`));
+    void agents.remove(row).catch(failed(`Couldn't remove ${row.name}`));
   };
   const choose = (row: RoomAgentRow) => {
     agents.choose(row.id);

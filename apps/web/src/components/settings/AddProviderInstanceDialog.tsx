@@ -23,7 +23,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
 import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSettingsForm";
 import { AnimatedHeight } from "../AnimatedHeight";
@@ -170,18 +170,14 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     };
     try {
       updateSettings({ providerInstances: nextMap });
-      toastManager.add({
-        type: "success",
-        title: "Provider instance added",
-        description: `${driverOption.label} instance '${instanceId}' was added.`,
-      });
       onOpenChange(false);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not add provider instance",
-        description: error instanceof Error ? error.message : "Update failed.",
-      });
+      toastManager.add(
+        failureNotice({
+          title: `Couldn't add the ${driverOption.label} account`,
+          error,
+        }),
+      );
     }
   }, [
     driver,

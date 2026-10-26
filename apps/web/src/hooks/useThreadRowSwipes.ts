@@ -2,7 +2,7 @@ import { parseScopedThreadKey } from "@threadlines/client-runtime";
 import { useCallback, useRef, useState } from "react";
 
 import type { SwipeUndo } from "../components/sidebar/SwipeUndoBar";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
 import { reopenThreadByKey } from "../lib/threadInboxSync";
 import { useSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
@@ -60,10 +60,9 @@ export function useThreadRowSwipes() {
           () => offerUndo("Archived", () => unarchiveThread(threadRef)),
           (error: unknown) => {
             toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Failed to archive thread",
-                description: error instanceof Error ? error.message : "An error occurred.",
+              failureNotice({
+                title: "Couldn't archive the thread",
+                error,
               }),
             );
           },

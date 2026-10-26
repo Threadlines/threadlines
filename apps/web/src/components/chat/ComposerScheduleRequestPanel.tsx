@@ -3,7 +3,8 @@ import { memo, useState } from "react";
 
 import { readEnvironmentConnection } from "~/environments/runtime";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 
 /**
  * An agent asks to create or change a scheduled task ("Agents can start
@@ -21,7 +22,10 @@ export const ComposerScheduleRequestPanel = memo(function ComposerScheduleReques
   const respond = async (allow: boolean) => {
     const connection = readEnvironmentConnection(props.threadRef.environmentId);
     if (!connection) {
-      toastManager.add({ type: "error", title: "This computer is not connected." });
+      addComputerNotConnectedNotice({
+        environmentId: props.threadRef.environmentId,
+        fallbackLabel: "This computer",
+      });
       return;
     }
     setResponding(true);
@@ -31,11 +35,12 @@ export const ComposerScheduleRequestPanel = memo(function ComposerScheduleReques
         allow,
       });
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: allow ? "Could not make the change" : "Could not answer the agent",
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: allow ? "Couldn't make the change" : "Couldn't answer the agent",
+          error,
+        }),
+      );
     } finally {
       setResponding(false);
     }

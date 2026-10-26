@@ -28,7 +28,6 @@ import {
   gitWorkingTreeDiffQueryOptions,
   invalidateGitWorkingTreeDiffQueries,
 } from "~/lib/gitReactQuery";
-import { copyTextToClipboard } from "~/lib/clipboard";
 import { refreshGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { cn } from "~/lib/utils";
@@ -89,7 +88,8 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "./ui/menu";
-import { toastManager } from "./ui/toast";
+import { failureNotice, toastManager } from "./ui/toast";
+import { copyWithNotice } from "./ui/copyWithNotice";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Toggle } from "./ui/toggle";
 import { TooltipWrapper } from "./ui/tooltip";
@@ -909,14 +909,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
     [activeCwd],
   );
   const copyDiffFilePath = useCallback((filePath: string) => {
-    void copyTextToClipboard(filePath).then(
-      () => {
-        toastManager.add({ type: "success", title: "Path copied", description: filePath });
-      },
-      () => {
-        toastManager.add({ type: "error", title: "Failed to copy path" });
-      },
-    );
+    void copyWithNotice(filePath, "path");
   }, []);
 
   const stageChangesMutation = useMutation(
@@ -952,11 +945,12 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
         () => refreshDiffGitStatus(),
         (error: unknown) => {
           refreshDiffGitStatus();
-          toastManager.add({
-            type: "error",
-            title: "Stage changes failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't stage the changes",
+              error,
+            }),
+          );
         },
       );
     },
@@ -968,11 +962,12 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
         () => refreshDiffGitStatus(),
         (error: unknown) => {
           refreshDiffGitStatus();
-          toastManager.add({
-            type: "error",
-            title: "Unstage changes failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't unstage the changes",
+              error,
+            }),
+          );
         },
       );
     },
@@ -988,17 +983,13 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
       filePaths: [request.filePath],
       scope: "unstaged",
     });
-    void toastManager.promise(promise, {
-      loading: { title: "Discarding changes..." },
-      success: () => ({ title: "Changes discarded", description: request.filePath }),
-      error: (error: unknown) => ({
-        title: "Discard changes failed",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      }),
-    });
+    // The file leaves the diff; only a failure needs a notice.
     void promise.then(
       () => refreshDiffGitStatus(),
-      () => refreshDiffGitStatus(),
+      (error: unknown) => {
+        toastManager.add(failureNotice({ title: "Couldn't discard the changes", error }));
+        refreshDiffGitStatus();
+      },
     );
   }, [discardChangesMutation, pendingDiscardDiffFile, refreshDiffGitStatus]);
 

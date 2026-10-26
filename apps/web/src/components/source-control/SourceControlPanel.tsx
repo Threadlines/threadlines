@@ -179,7 +179,8 @@ import {
 import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
-import { stackedThreadToast, toastManager, type ThreadToastData } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
+import { copyWithNotice } from "../ui/copyWithNotice";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   buildCommitGraphDetailRefs,
@@ -1687,18 +1688,15 @@ function SourceControlBranchMenu({
           applyCheckoutSwitch(nextBranch, selectionTarget.nextWorktreePath);
           return nextBranch;
         });
-      void toastManager.promise(promise, {
-        loading: { title: `Switching to ${ref.name}...` },
-        success: (branch) => ({
-          title: "Branch switched",
-          description: branch,
-        }),
-        error: (error) => ({
-          title: "Switch branch failed",
-          description: toGitActionErrorMessage(error),
-        }),
+      // The branch picker shows the switch; only a failure needs a notice.
+      void promise.then(refreshPanel, (error: unknown) => {
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't switch branch",
+            reason: toGitActionErrorMessage(error),
+          }),
+        );
       });
-      void promise.then(refreshPanel, () => undefined);
     },
     [applyCheckoutSwitch, checkoutMutation, refreshPanel, target.projectCwd, target.worktreePath],
   );
@@ -1768,18 +1766,15 @@ function SourceControlBranchMenu({
     });
     setCreateBranchOpen(false);
     setCreateBranchName("");
-    void toastManager.promise(promise, {
-      loading: { title: `Creating ${refName}...` },
-      success: (branch) => ({
-        title: "Branch created",
-        description: branch,
-      }),
-      error: (error) => ({
-        title: "Create branch failed",
-        description: toGitActionErrorMessage(error),
-      }),
+    // The branch picker shows the new branch; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't create the branch",
+          reason: toGitActionErrorMessage(error),
+        }),
+      );
     });
-    void promise.then(refreshPanel, () => undefined);
   }, [
     createBranchMutation,
     createBranchName,
@@ -1816,10 +1811,11 @@ function SourceControlBranchMenu({
             : refName,
         };
       },
-      error: (error) => ({
-        title: "Merge or push failed",
-        description: toGitActionErrorMessage(error),
-      }),
+      error: (error) =>
+        failureNotice({
+          title: "Couldn't merge or push",
+          reason: toGitActionErrorMessage(error),
+        }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
   }, [
@@ -2718,10 +2714,9 @@ export function SourceControlPanel({
       )
       .catch((error: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Refresh failed",
-            description: toGitActionErrorMessage(error),
+          failureNotice({
+            title: "Couldn't refresh the changes",
+            reason: toGitActionErrorMessage(error),
             ...(threadToastData !== undefined ? { data: threadToastData } : {}),
           }),
         );
@@ -2814,7 +2809,7 @@ export function SourceControlPanel({
         shouldPushBeforePr:
           action === "create_pr" && (!status?.hasUpstream || (status?.aheadCount ?? 0) > 0),
       });
-      const initialTitle = progressStages[0] ?? "Running git action...";
+      const initialTitle = progressStages[0] ?? "Running Git action...";
       const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
       // Progress lives in the module store keyed by environment + cwd so it
       // survives this panel unmounting (diff viewer, route swaps) mid-action.
@@ -2862,10 +2857,9 @@ export function SourceControlPanel({
           () => undefined,
         );
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Action failed",
-            description: toGitActionErrorMessage(error),
+          failureNotice({
+            title: "Couldn't finish the Git action",
+            reason: toGitActionErrorMessage(error),
             ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
           }),
         );
@@ -2913,7 +2907,7 @@ export function SourceControlPanel({
             case "pulled":
               return {
                 title: "Pulled",
-                description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`,
+                description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}.`,
                 data: threadToastData,
               };
             case "skipped_up_to_date":
@@ -2976,9 +2970,9 @@ export function SourceControlPanel({
         error: (error) => {
           const authFailure = gitRemoteAuthFailureFromError(error);
           if (authFailure) {
-            return {
-              title: "Pull failed",
-              description: formatGitErrorMessage(error),
+            return failureNotice({
+              title: "Couldn't pull the changes",
+              reason: formatGitErrorMessage(error),
               timeout: 0,
               actionProps: {
                 children: "Fix authentication...",
@@ -2986,16 +2980,15 @@ export function SourceControlPanel({
               },
               data: {
                 ...threadToastData,
-                actionLayout: "stacked-end" as const,
                 actionVariant: "default" as const,
               },
-            };
+            });
           }
-          return {
-            title: "Pull failed",
-            description: formatGitErrorMessage(error),
-            data: threadToastData,
-          };
+          return failureNotice({
+            title: "Couldn't pull the changes",
+            reason: formatGitErrorMessage(error),
+            ...(threadToastData ? { data: threadToastData } : {}),
+          });
         },
       });
       void promise.then(
@@ -3088,11 +3081,12 @@ export function SourceControlPanel({
         description: result.stash.message,
         data: threadToastData,
       }),
-      error: (error) => ({
-        title: "Could not stash changes",
-        description: formatGitErrorMessage(error),
-        data: threadToastData,
-      }),
+      error: (error) =>
+        failureNotice({
+          title: "Couldn't stash the changes",
+          reason: formatGitErrorMessage(error),
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
     });
     void promise.then(
       () => {
@@ -3140,11 +3134,12 @@ export function SourceControlPanel({
                     : undefined,
                 data: threadToastData,
               },
-        error: (error) => ({
-          title: dropAfterApply ? "Could not pop stash" : "Could not apply stash",
-          description: formatGitErrorMessage(error),
-          data: threadToastData,
-        }),
+        error: (error) =>
+          failureNotice({
+            title: dropAfterApply ? "Couldn't pop the stash" : "Couldn't apply the stash",
+            reason: formatGitErrorMessage(error),
+            ...(threadToastData ? { data: threadToastData } : {}),
+          }),
       });
       void promise.then(
         (result) => {
@@ -3187,11 +3182,12 @@ export function SourceControlPanel({
     void toastManager.promise(promise, {
       loading: { title: "Dropping stash...", data: threadToastData },
       success: { title: "Stash dropped", data: threadToastData },
-      error: (error) => ({
-        title: "Could not drop stash",
-        description: formatGitErrorMessage(error),
-        data: threadToastData,
-      }),
+      error: (error) =>
+        failureNotice({
+          title: "Couldn't drop the stash",
+          reason: formatGitErrorMessage(error),
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
     });
     void promise.then(
       () => {
@@ -3212,36 +3208,32 @@ export function SourceControlPanel({
         title: "Git initialized",
         data: threadToastData,
       },
-      error: (error) => ({
-        title: "Git initialization failed",
-        description: error instanceof Error ? error.message : "An error occurred.",
-        data: threadToastData,
-      }),
+      error: (error) =>
+        failureNotice({
+          title: "Couldn't initialize Git",
+          error,
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
     });
     void promise.then(refreshPanel, () => undefined);
   }, [initMutation, refreshPanel, threadToastData]);
 
   const runStageChanges = useCallback(
-    (filePaths: string[], label: string, count: number) => {
+    (filePaths: string[]) => {
       if (isParentRepositoryConfirmationRequired) {
         return;
       }
       clearCommitMessageDraft();
-      const promise = stageChangesMutation.mutateAsync({ filePaths });
-      void toastManager.promise(promise, {
-        loading: { title: "Staging changes...", data: threadToastData },
-        success: () => ({
-          title: "Changes staged",
-          description: count === 1 ? label : `${count} files`,
-          data: threadToastData,
-        }),
-        error: (error) => ({
-          title: "Stage changes failed",
-          description: toGitActionErrorMessage(error),
-          data: threadToastData,
-        }),
+      void stageChangesMutation.mutateAsync({ filePaths }).then(refreshPanel, (error) => {
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't stage the changes",
+            reason: toGitActionErrorMessage(error),
+            ...(threadToastData ? { data: threadToastData } : {}),
+          }),
+        );
+        refreshPanel();
       });
-      void promise.then(refreshPanel, () => refreshPanel());
     },
     [
       clearCommitMessageDraft,
@@ -3253,26 +3245,21 @@ export function SourceControlPanel({
   );
 
   const runUnstageChanges = useCallback(
-    (filePaths: string[], label: string, count: number) => {
+    (filePaths: string[]) => {
       if (isParentRepositoryConfirmationRequired) {
         return;
       }
       clearCommitMessageDraft();
-      const promise = unstageChangesMutation.mutateAsync({ filePaths });
-      void toastManager.promise(promise, {
-        loading: { title: "Unstaging changes...", data: threadToastData },
-        success: () => ({
-          title: "Changes unstaged",
-          description: count === 1 ? label : `${count} files`,
-          data: threadToastData,
-        }),
-        error: (error) => ({
-          title: "Unstage changes failed",
-          description: toGitActionErrorMessage(error),
-          data: threadToastData,
-        }),
+      void unstageChangesMutation.mutateAsync({ filePaths }).then(refreshPanel, (error) => {
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't unstage the changes",
+            reason: toGitActionErrorMessage(error),
+            ...(threadToastData ? { data: threadToastData } : {}),
+          }),
+        );
+        refreshPanel();
       });
-      void promise.then(refreshPanel, () => refreshPanel());
     },
     [
       clearCommitMessageDraft,
@@ -3285,14 +3272,14 @@ export function SourceControlPanel({
 
   const stageFileChanges = useCallback(
     (entry: WorkingTreeSectionFile) => {
-      runStageChanges([entry.path], entry.path, 1);
+      runStageChanges([entry.path]);
     },
     [runStageChanges],
   );
 
   const unstageFileChanges = useCallback(
     (entry: WorkingTreeSectionFile) => {
-      runUnstageChanges([entry.path], entry.path, 1);
+      runUnstageChanges([entry.path]);
     },
     [runUnstageChanges],
   );
@@ -3301,22 +3288,14 @@ export function SourceControlPanel({
     if (unstagedChangeFiles.length === 0) {
       return;
     }
-    runStageChanges(
-      unstagedChangeFiles.map((entry) => entry.path),
-      "all unstaged changes",
-      unstagedChangeFiles.length,
-    );
+    runStageChanges(unstagedChangeFiles.map((entry) => entry.path));
   }, [runStageChanges, unstagedChangeFiles]);
 
   const unstageAllStagedChanges = useCallback(() => {
     if (stagedChangeFiles.length === 0) {
       return;
     }
-    runUnstageChanges(
-      stagedChangeFiles.map((entry) => entry.path),
-      "all staged changes",
-      stagedChangeFiles.length,
-    );
+    runUnstageChanges(stagedChangeFiles.map((entry) => entry.path));
   }, [runUnstageChanges, stagedChangeFiles]);
 
   const requestDiscardFileChanges = useCallback(
@@ -3381,21 +3360,17 @@ export function SourceControlPanel({
       scope: discardRequest.scope,
     });
     setPendingDiscardChanges(null);
-    void toastManager.promise(promise, {
-      loading: { title: "Discarding changes...", data: threadToastData },
-      success: () => ({
-        title: "Changes discarded",
-        description:
-          discardRequest.count === 1 ? discardRequest.label : `${discardRequest.count} files`,
-        data: threadToastData,
-      }),
-      error: (error) => ({
-        title: "Discard changes failed",
-        description: toGitActionErrorMessage(error),
-        data: threadToastData,
-      }),
+    // The files leave the list; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't discard the changes",
+          reason: toGitActionErrorMessage(error),
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
+      );
+      refreshPanel();
     });
-    void promise.then(refreshPanel, () => refreshPanel());
   }, [
     clearCommitMessageDraft,
     discardChangesMutation,
@@ -3470,26 +3445,12 @@ export function SourceControlPanel({
 
   const copyCommitValue = useCallback(
     (value: string, title: string, options?: CopyCommitValueOptions) => {
+      const what = title.toLowerCase().replace(/\bid\b/g, "ID");
+      if (options?.successToast !== false) return copyWithNotice(value, what);
       return copyTextToClipboard(value).then(
-        () => {
-          if (options?.successToast !== false) {
-            const description = value.length > 240 ? `${value.slice(0, 240)}...` : value;
-            toastManager.add({
-              type: "success",
-              title: `${title} copied`,
-              description,
-            });
-          }
-          return true;
-        },
+        () => true,
         (error) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: `Failed to copy ${title.toLowerCase()}`,
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
+          toastManager.add(failureNotice({ title: `Couldn't copy ${what}`, error }));
           return false;
         },
       );
@@ -3521,10 +3482,9 @@ export function SourceControlPanel({
         },
         (error) => {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to copy commit message",
-              description: error instanceof Error ? error.message : "An error occurred.",
+            failureNotice({
+              title: "Couldn't copy the commit message",
+              error,
             }),
           );
           return false;
@@ -3546,28 +3506,26 @@ export function SourceControlPanel({
             toastManager.add(
               stackedThreadToast({
                 type: "error",
-                title: "Commit link unavailable",
-                description: "No GitHub remote URL was found for this commit.",
+                title: "This commit has no link",
+                description: "No GitHub remote was found for it.",
               }),
             );
             return;
           }
           void api.shell.openExternal(details.commitUrl).catch((error) => {
             toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Failed to open commit",
-                description: error instanceof Error ? error.message : "An error occurred.",
+              failureNotice({
+                title: "Couldn't open the commit",
+                error,
               }),
             );
           });
         },
         (error) => {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Commit link unavailable",
-              description: error instanceof Error ? error.message : "An error occurred.",
+            failureNotice({
+              title: "Couldn't open the commit link",
+              error,
             }),
           );
         },
@@ -3596,20 +3554,17 @@ export function SourceControlPanel({
     });
     setPendingCreateTagCommit(null);
     setCreateTagName("");
-    void toastManager.promise(promise, {
-      loading: { title: `Creating tag ${tagName}...`, data: threadToastData },
-      success: (result) => ({
-        title: "Tag created",
-        description: `${result.tagName} at ${commit.shortSha}`,
-        data: threadToastData,
-      }),
-      error: (error) => ({
-        title: "Create tag failed",
-        description: toGitActionErrorMessage(error),
-        data: threadToastData,
-      }),
+    // The tag shows on its commit in the graph; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't create the tag",
+          reason: toGitActionErrorMessage(error),
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
+      );
+      refreshPanel();
     });
-    void promise.then(refreshPanel, () => refreshPanel());
   }, [
     createTagMutation,
     createTagName,
@@ -3633,11 +3588,12 @@ export function SourceControlPanel({
         description: deleteRequest.branchName,
         data: threadToastData,
       }),
-      error: (error) => ({
-        title: "Delete branch failed",
-        description: toGitActionErrorMessage(error),
-        data: threadToastData,
-      }),
+      error: (error) =>
+        failureNotice({
+          title: "Couldn't delete the branch",
+          reason: toGitActionErrorMessage(error),
+          ...(threadToastData ? { data: threadToastData } : {}),
+        }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
   }, [
@@ -3660,7 +3616,7 @@ export function SourceControlPanel({
         toastManager.add(
           stackedThreadToast({
             type: "warning",
-            title: "Codex review unavailable",
+            title: "Can't start a Codex review here",
             description: unavailableReason ?? "The source control target is unavailable.",
             ...(threadToastData !== undefined ? { data: threadToastData } : {}),
           }),
@@ -3719,10 +3675,9 @@ export function SourceControlPanel({
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Review failed",
-          description: error instanceof Error ? error.message : "An error occurred.",
+        failureNotice({
+          title: "Couldn't start the review",
+          error,
           ...(threadToastData !== undefined ? { data: threadToastData } : {}),
         }),
       );
@@ -3876,10 +3831,9 @@ export function SourceControlPanel({
         setCommitMessageEditorOpen(false);
       }
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Commit message generation failed",
-          description: error instanceof Error ? error.message : "An error occurred.",
+        failureNotice({
+          title: "Couldn't write the commit message",
+          error,
           ...(threadToastData !== undefined ? { data: threadToastData } : {}),
         }),
       );

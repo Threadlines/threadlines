@@ -69,7 +69,7 @@ import {
   type ProviderUpdateControls,
 } from "../settings/useProviderUpdateRunner";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import {
   ProviderSignInButton,
   ProviderSignInInlineStatus,
@@ -712,10 +712,9 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
       goTo(next, { picks: [...picks].map(String), connectSkipped: next === "folder" });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not save your agents",
-          description: error instanceof Error ? error.message : "Try again in a moment.",
+        failureNotice({
+          title: "Couldn't save your agents",
+          error,
         }),
       );
     } finally {

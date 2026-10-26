@@ -35,7 +35,7 @@ import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
 import { type ProviderInstanceEntry, providerInstanceShowsBadge } from "../../providerInstances";
 import { useRoomRecipientStore } from "../../rooms";
 import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { RoomAgentsSection } from "./RoomAgentsSection";
 import type { RoomAgentRow, RoomAgents } from "./useRoomAgents";
 
@@ -190,22 +190,24 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     if (room !== null && adding) {
       setIsMenuOpen(false);
       void room.add(instanceId, model).catch((error: unknown) =>
-        toastManager.add({
-          type: "error",
-          title: "Could not add the agent",
-          description: error instanceof Error ? error.message : String(error),
-        }),
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't add the agent",
+            error,
+          }),
+        ),
       );
       return;
     }
     if (room !== null && addressedAgent !== null) {
       setIsMenuOpen(false);
       void room.changeModel(addressedAgent, instanceId, model).catch((error: unknown) =>
-        toastManager.add({
-          type: "error",
-          title: `Could not change the model of ${addressedAgent.name}`,
-          description: error instanceof Error ? error.message : String(error),
-        }),
+        toastManager.add(
+          failureNotice({
+            title: `Couldn't change the model of ${addressedAgent.name}`,
+            error,
+          }),
+        ),
       );
       return;
     }

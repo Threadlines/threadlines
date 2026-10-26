@@ -43,7 +43,7 @@ import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Skeleton } from "../ui/skeleton";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { OutsideAgentDialog } from "./outsideAgentDialog";
 import { ThreadlinesCommandRow } from "./ThreadlinesCommandRow";
 
@@ -88,10 +88,9 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
       await resumeOutsideAgentRequests();
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not take agent sign-ins again",
-          description: describeOutsideAgentFailure(error, "Try again."),
+        failureNotice({
+          title: "Couldn't take agent sign-ins again",
+          reason: describeOutsideAgentFailure(error, "Try again."),
         }),
       );
     } finally {
@@ -105,10 +104,9 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
       await removeOutsideAgent(connection.connectionId);
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not remove ${connection.name}`,
-          description: describeOutsideAgentFailure(error, "Try again."),
+        failureNotice({
+          title: `Couldn't remove ${connection.name}`,
+          reason: describeOutsideAgentFailure(error, "Try again."),
         }),
       );
     }

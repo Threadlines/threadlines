@@ -62,7 +62,7 @@ import {
   ComboboxTrigger,
 } from "./ui/combobox";
 import { inlinePickerTriggerClassName } from "./ui/select";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 
 interface BranchToolbarBranchSelectorProps {
   className?: string;
@@ -403,10 +403,9 @@ export function BranchToolbarBranchSelector({
       } catch (error) {
         setOptimisticBranch(previousBranch);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to switch ref.",
-            description: toBranchActionErrorMessage(error),
+          failureNotice({
+            title: "Couldn't switch branch",
+            reason: toBranchActionErrorMessage(error),
           }),
         );
       }
@@ -431,10 +430,9 @@ export function BranchToolbarBranchSelector({
       } catch (error) {
         setOptimisticBranch(previousBranch);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to create and switch ref.",
-            description: toBranchActionErrorMessage(error),
+          failureNotice({
+            title: "Couldn't create the branch",
+            reason: toBranchActionErrorMessage(error),
           }),
         );
       }
@@ -472,7 +470,7 @@ export function BranchToolbarBranchSelector({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Cannot switch branches with changes",
+          title: "Can't switch branches with changes",
           description: "Commit or stash your working tree changes before switching branches.",
         }),
       );

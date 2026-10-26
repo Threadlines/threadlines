@@ -21,7 +21,7 @@ import {
 } from "../lib/checkoutRecovery";
 import { gitBranchSearchInfiniteQueryOptions, invalidateGitQueries } from "../lib/gitReactQuery";
 import { newCommandId } from "../lib/utils";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { failureNotice, toastManager } from "../components/ui/toast";
 
 export interface CheckoutRecoveryView {
   /** Null when nothing is wrong with this thread's checkout. */
@@ -100,10 +100,9 @@ export function useCheckoutRecovery(input: {
         await invalidateGitQueries(queryClient, { environmentId });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not recover this thread's folder",
-            description: error instanceof Error ? error.message : "Unknown error.",
+          failureNotice({
+            title: "Couldn't recover this thread's folder",
+            error,
           }),
         );
       } finally {

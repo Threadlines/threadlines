@@ -16,6 +16,7 @@ import {
   settingsSectionLabelForPath,
 } from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
+import { useNoticeClearanceRef } from "../components/ui/noticeLayer";
 import { PageTitlebar } from "../components/PageTitlebar";
 import { SidebarInset } from "../components/ui/sidebar";
 import { isElectron } from "../env";
@@ -49,6 +50,8 @@ function SettingsContentLayout() {
   const location = useLocation();
   const { authGateState } = Route.useRouteContext();
   const navigate = useNavigate();
+  // The phone header's close button sits where notices land.
+  const noticeClearanceRef = useNoticeClearanceRef();
   const navigateBackWithinApp = useNavigateBackWithinApp();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
@@ -92,6 +95,7 @@ function SettingsContentLayout() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {!isElectron && (
           <header
+            ref={noticeClearanceRef}
             className={cn(
               "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 md:hidden",
             )}

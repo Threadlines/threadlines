@@ -2,7 +2,10 @@
 
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
+import { describeUnknownError } from "~/rpc/transportError";
+
 import type { NoticeAddOptions, ThreadToastData } from "./toast";
+import { describeFailureReason } from "./toast.logic";
 
 export type StackedThreadToastOptions = {
   type: "error" | "warning" | "success" | "info" | "loading";
@@ -54,4 +57,36 @@ export function stackedThreadToast(options: StackedThreadToastOptions): NoticeAd
   }
 
   return payload;
+}
+
+/** What a failure notice says first: "Couldn't" and what didn't happen, no closing period. */
+export type FailureTitle = `Couldn't ${string}`;
+
+export type FailureNoticeOptions = Omit<
+  StackedThreadToastOptions,
+  "type" | "title" | "description"
+> & {
+  title: FailureTitle;
+  /** The plain reason underneath. Left out, it comes from `error`, or there is none. */
+  reason?: ReactNode;
+  /** The error that caused it, whose message becomes the reason. */
+  error?: unknown;
+};
+
+/**
+ * Every "it didn't work" notice: "Couldn't [do the thing]", the plain reason
+ * underneath, copy beside close. Use it for any error notice about an action
+ * that failed, so they all read the same way.
+ */
+export function failureNotice(options: FailureNoticeOptions): NoticeAddOptions {
+  const { reason, error, ...rest } = options;
+  // With neither, the title says it all.
+  const description =
+    reason ??
+    (error === undefined ? undefined : describeFailureReason(describeUnknownError(error)));
+  return stackedThreadToast({
+    ...rest,
+    type: "error",
+    ...(description === undefined ? {} : { description }),
+  });
 }

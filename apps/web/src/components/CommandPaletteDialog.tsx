@@ -193,7 +193,8 @@ import {
 } from "./ui/command";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
+import { addComputerNotConnectedNotice } from "./computerConnectionNotices";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useComposerHandleContext } from "../composerHandleContext";
 
@@ -2136,10 +2137,9 @@ export function OpenCommandPaletteDialog() {
 
       if (isUnsupportedWindowsProjectPath(rawCwd.trim(), browseEnvironmentPlatform)) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to add project",
-            description: "Windows-style paths are only supported on Windows.",
+          failureNotice({
+            title: "Couldn't add the project",
+            reason: "Windows-style paths are only supported on Windows.",
           }),
         );
         return;
@@ -2147,10 +2147,9 @@ export function OpenCommandPaletteDialog() {
 
       if (isExplicitRelativeProjectPath(rawCwd.trim()) && !currentProjectCwdForBrowse) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to add project",
-            description: "Relative paths require an active project.",
+          failureNotice({
+            title: "Couldn't add the project",
+            reason: "Relative paths require an active project.",
           }),
         );
         return;
@@ -2220,10 +2219,9 @@ export function OpenCommandPaletteDialog() {
         closeIfGeneration(sessionGeneration);
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to add project",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't add the project",
+            error,
           }),
         );
       }
@@ -2273,13 +2271,10 @@ export function OpenCommandPaletteDialog() {
 
     const api = readEnvironmentApi(addProjectCloneFlow.environmentId);
     if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to clone project",
-          description: "Environment API is not available.",
-        }),
-      );
+      addComputerNotConnectedNotice({
+        environmentId: addProjectCloneFlow.environmentId,
+        failure: "Couldn't clone the project",
+      });
       return;
     }
 
@@ -2312,10 +2307,9 @@ export function OpenCommandPaletteDialog() {
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Repository lookup failed",
-            description: errorMessage(error),
+          failureNotice({
+            title: "Couldn't find the repository",
+            reason: errorMessage(error),
           }),
         );
       } finally {
@@ -2331,10 +2325,9 @@ export function OpenCommandPaletteDialog() {
 
     if (isUnsupportedWindowsProjectPath(rawDestination, browseEnvironmentPlatform)) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Clone failed",
-          description: "Windows-style paths are only supported on Windows.",
+        failureNotice({
+          title: "Couldn't clone the project",
+          reason: "Windows-style paths are only supported on Windows.",
         }),
       );
       return;
@@ -2342,10 +2335,9 @@ export function OpenCommandPaletteDialog() {
 
     if (isExplicitRelativeProjectPath(rawDestination) && !currentProjectCwdForBrowse) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Clone failed",
-          description: "Relative paths require an active project.",
+        failureNotice({
+          title: "Couldn't clone the project",
+          reason: "Relative paths require an active project.",
         }),
       );
       return;
@@ -2372,10 +2364,9 @@ export function OpenCommandPaletteDialog() {
       await handleAddProject(result.cwd);
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Clone failed",
-          description: errorMessage(error),
+        failureNotice({
+          title: "Couldn't clone the project",
+          reason: errorMessage(error),
         }),
       );
     } finally {
@@ -2659,10 +2650,9 @@ export function OpenCommandPaletteDialog() {
 
     void execution.catch((error: unknown) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to run command",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        failureNotice({
+          title: "Couldn't run the command",
+          error,
         }),
       );
     });

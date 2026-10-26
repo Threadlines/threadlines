@@ -84,7 +84,7 @@ import {
   NumberFieldIncrement,
   NumberFieldInput,
 } from "../ui/number-field";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import {
   AlertDialog,
@@ -276,10 +276,9 @@ function AboutVersionSection() {
         })
         .catch((error: unknown) => {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not change update track",
-              description: error instanceof Error ? error.message : "Update track change failed.",
+            failureNotice({
+              title: "Couldn't change the update track",
+              error,
             }),
           );
         })
@@ -883,11 +882,12 @@ function ClearBrowserDataRow() {
       await clearAll();
       toastManager.add({ type: "success", title: "Browser data cleared" });
     } catch {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't clear all browser data",
-        description: "Some projects may still be signed in. Try again.",
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't clear all browser data",
+          reason: "Some projects may still be signed in. Try again.",
+        }),
+      );
     } finally {
       setIsClearing(false);
     }
@@ -1516,11 +1516,12 @@ export function ProviderSettingsPanel({
       });
       setAccountToRemove(null);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not remove the account",
-        description: error instanceof Error ? error.message : "Try again in a moment.",
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't remove the account",
+          error,
+        }),
+      );
     } finally {
       setIsRemovingAccount(false);
     }
@@ -1542,11 +1543,12 @@ export function ProviderSettingsPanel({
       });
       setCommunityAgentToRemove(null);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: `Could not remove ${row.instance.displayName ?? "the agent"}`,
-        description: communityAgentErrorText(error, "Try again in a moment."),
-      });
+      toastManager.add(
+        failureNotice({
+          title: `Couldn't remove ${row.instance.displayName ?? "the agent"}`,
+          reason: communityAgentErrorText(error, "Try again in a moment."),
+        }),
+      );
     } finally {
       setIsRemovingCommunityAgent(false);
     }
@@ -2189,9 +2191,9 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
             type: "warning",
             title:
               failedCount === 1
-                ? "One inactive thread could not be archived"
-                : `${failedCount} inactive threads could not be archived`,
-            description: "Some environments may still be reconnecting.",
+                ? "One inactive thread couldn't be archived"
+                : `${failedCount} inactive threads couldn't be archived`,
+            description: "Some computers may still be reconnecting.",
           }),
         );
       }
@@ -2274,9 +2276,9 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
             type: "warning",
             title:
               failedCount === 1
-                ? "One archived thread could not be deleted"
-                : `${failedCount} archived threads could not be deleted`,
-            description: "Some environments may still be reconnecting.",
+                ? "One archived thread couldn't be deleted"
+                : `${failedCount} archived threads couldn't be deleted`,
+            description: "Some computers may still be reconnecting.",
           }),
         );
       }
@@ -2300,10 +2302,9 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
         refreshArchivedThreads();
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to delete thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't delete the thread",
+            error,
           }),
         );
       }
@@ -2318,10 +2319,9 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
         refreshArchivedThreads();
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to unarchive thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
+          failureNotice({
+            title: "Couldn't unarchive the thread",
+            error,
           }),
         );
       }

@@ -7,14 +7,12 @@ import { isSourceControlToolBusy } from "@threadlines/client-runtime";
 import {
   AlertCircleIcon,
   ArrowUpCircleIcon,
-  CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   LoaderIcon,
 } from "lucide-react";
 import { useState } from "react";
 
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openExternalUrl } from "../../lib/externalLinks";
 import { cn } from "../../lib/utils";
 import {
@@ -25,11 +23,12 @@ import {
   sourceControlToolUpdateErrorCopy,
   sourceControlToolUpdateResultCopy,
 } from "../../lib/sourceControlToolUpdateCopy";
+import { CopyIconButton } from "../CopyButton";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 export function SourceControlToolProgress({
   target,
@@ -91,24 +90,6 @@ export function CompactVersionAdvisory({
   const copyAction = copyActionCandidate?.kind === "copyCommand" ? copyActionCandidate : undefined;
   const openActionCandidate = advisory.actions.find((action) => action.kind === "openUrl");
   const openAction = openActionCandidate?.kind === "openUrl" ? openActionCandidate : undefined;
-  const { copyToClipboard } = useCopyToClipboard<{ readonly label: string }>({
-    onCopy: ({ label: actionLabel }) => {
-      toastManager.add({
-        type: "success",
-        title: "Command copied",
-        description: actionLabel,
-      });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not copy command",
-          description: error.message,
-        }),
-      );
-    },
-  });
   const runUpdate = () => {
     if (!updateAction || isUpdating) return;
     setIsUpdating(true);
@@ -128,14 +109,9 @@ export function CompactVersionAdvisory({
       })
       .catch((error: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            ...sourceControlToolUpdateErrorCopy({
-              label,
-              operation: updateAction.operation,
-              error,
-            }),
-          }),
+          failureNotice(
+            sourceControlToolUpdateErrorCopy({ label, operation: updateAction.operation, error }),
+          ),
         );
       })
       .finally(() => setIsUpdating(false));
@@ -260,16 +236,15 @@ export function CompactVersionAdvisory({
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <Button
+                    <CopyIconButton
+                      value={copyAction.value}
+                      what="update command"
                       type="button"
                       size="icon-xs"
                       variant="ghost"
                       className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                      onClick={() => copyToClipboard(copyAction.value, { label: copyAction.label })}
                       aria-label={`Copy ${label} update command`}
-                    >
-                      <CopyIcon className="size-3" aria-hidden />
-                    </Button>
+                    />
                   }
                 />
                 <TooltipPopup side="top">Copy command</TooltipPopup>

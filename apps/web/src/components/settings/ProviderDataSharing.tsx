@@ -13,7 +13,7 @@ import { ensureLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 const DATA_SHARING_LABEL = "Share chats for training";
 const DATA_SHARING_DESCRIPTION =
@@ -36,11 +36,12 @@ function useDataSharing(provider: ServerProvider) {
         enabled,
       });
     } catch (error: unknown) {
-      toastManager.add({
-        type: "error",
-        title: "Couldn't save the data-sharing choice",
-        description: errorMessage(error),
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't save the data-sharing choice",
+          reason: errorMessage(error),
+        }),
+      );
     } finally {
       setPending(null);
     }

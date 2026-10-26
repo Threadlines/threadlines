@@ -20,7 +20,7 @@ import type { EnvironmentId, ProjectReadFileResult } from "@threadlines/contract
 import { ensureEnvironmentApi } from "../../environmentApi";
 import { useFileViewerStore } from "../../fileViewerStore";
 import { projectQueryKeys } from "../../lib/projectReactQuery";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 export const FILE_SAVE_DEBOUNCE_MS = 600;
 
@@ -239,11 +239,12 @@ async function performWrite(key: string): Promise<void> {
     } catch (error) {
       entry.inflight = null;
       useFileViewerStore.getState().setEditSaveState(entry.path, "error");
-      toastManager.add({
-        type: "error",
-        title: `Unable to save ${entry.path.split("/").at(-1) ?? entry.path}`,
-        description: error instanceof Error ? error.message : "An error occurred.",
-      });
+      toastManager.add(
+        failureNotice({
+          title: `Couldn't save ${entry.path.split("/").at(-1) ?? entry.path}`,
+          error,
+        }),
+      );
     }
   })();
   entry.inflight = write;

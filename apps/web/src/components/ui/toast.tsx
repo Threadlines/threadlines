@@ -84,7 +84,8 @@ export type ThreadToastData = {
   expandableLabels?: { expand?: string; collapse?: string };
   /** When set with `expandableContent`, the summary + label act as one text disclosure (no separate chevron row). */
   expandableDescriptionTrigger?: boolean;
-  actionLayout?: "inline" | "stacked-end";
+  /** Shows the whole title and reason even with no button; set by `stackedThreadToast`. */
+  actionLayout?: "stacked-end";
   actionVariant?:
     | "default"
     | "destructive"
@@ -200,11 +201,12 @@ const TOAST_ICONS = {
  */
 const toastReasonCapClassName = "max-h-40 overflow-y-auto overscroll-contain";
 
-/** Corner controls kept inside the notice edge: close, and copy for a stacked error. */
-function toastCornerContainerClassName(stacked: boolean): string {
+/** Corner controls kept inside the notice edge: close, and copy for an error. */
+function toastCornerContainerClassName(singleLine: boolean): string {
   return cn(
     "absolute right-1.5 z-20 flex items-center gap-0.5",
-    stacked ? "top-1.5" : "top-1/2 -translate-y-1/2",
+    // Beside the title line, so opening a compact notice doesn't move them.
+    singleLine ? "top-1/2 -translate-y-1/2" : "top-1.5",
   );
 }
 const toastCornerOrbClass = cn(
@@ -248,18 +250,18 @@ function ToastCornerControls({
   manager,
   toastId,
   onClose,
-  stacked,
+  singleLine,
   copyErrorText,
 }: {
   manager: typeof baseToastManager | typeof anchoredToastManager;
   toastId: ToastId;
   onClose: (() => void) | undefined;
-  stacked: boolean;
+  singleLine: boolean;
   copyErrorText: string | null;
 }) {
   return (
-    <div className={toastCornerContainerClassName(stacked)}>
-      {stacked && copyErrorText !== null ? (
+    <div className={toastCornerContainerClassName(singleLine)}>
+      {copyErrorText !== null ? (
         <CopyErrorButton className={toastCornerOrbClass} text={copyErrorText} />
       ) : null}
       <button
@@ -407,28 +409,12 @@ function ToastDescriptionAndExpandable({ toastData }: { toastData: ThreadToastDa
 const toastStatusIconClassName =
   "size-3.5 in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive/80 in-data-[type=info]:text-info/80 in-data-[type=success]:text-success/80 in-data-[type=warning]:text-warning/80 in-data-[type=loading]:text-muted-foreground/75";
 
-function toastInlineActionClassName(
-  variant: NonNullable<ThreadToastData["actionVariant"]>,
-): string {
-  const destructive = variant === "destructive" || variant === "destructive-outline";
-
-  return cn(
-    "inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md px-1.5 text-xs font-medium outline-none transition-colors",
-    "focus-ring disabled:pointer-events-none disabled:opacity-50",
-    destructive
-      ? "text-destructive/85 hover:bg-destructive/8 hover:text-destructive"
-      : "text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground",
-  );
-}
-
 function toastContentClassName({
-  stacked,
-  inlineContentEndPad,
+  singleLine,
   hideCollapsedContent = false,
   animated = false,
 }: {
-  readonly stacked: boolean;
-  readonly inlineContentEndPad: string;
+  readonly singleLine: boolean;
   readonly hideCollapsedContent?: boolean;
   readonly animated?: boolean;
 }): string {
@@ -437,9 +423,7 @@ function toastContentClassName({
     // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
     "pointer-events-auto min-h-0 overflow-y-visible text-[13px] leading-5 [overflow-x:clip]",
     animated && "transition-opacity duration-250 data-expanded:opacity-100",
-    stacked
-      ? "flex flex-col gap-1.5 px-3 py-2"
-      : cn("flex min-h-7 items-center justify-between gap-2 py-1 pl-3", inlineContentEndPad),
+    singleLine ? "flex min-h-7 items-center py-1 pr-8 pl-3" : "flex flex-col gap-1.5 px-3 py-2",
     hideCollapsedContent && "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
   );
 }
@@ -448,16 +432,16 @@ type ToastIconComponent = (typeof TOAST_ICONS)[keyof typeof TOAST_ICONS];
 
 interface ToastBodyDescriptor {
   readonly Icon: ToastIconComponent | null | undefined;
-  /** Title and reason on their own lines, buttons in a row underneath. */
+  /** The whole title and reason, buttons in a row underneath. */
   readonly stacked: boolean;
+  /** Just a title: one row, close centred beside it. */
+  readonly singleLine: boolean;
   readonly actionVariant: NonNullable<ThreadToastData["actionVariant"]>;
   readonly secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]>;
   readonly copyErrorText: string | null;
   /** The thread the notice is about, while a different thread is open. */
   readonly otherThread: NonNullable<ThreadToastData["aboutThread"]> | null;
   readonly hasButtons: boolean;
-  readonly hasInlineControls: boolean;
-  readonly inlineContentEndPad: string;
 }
 
 function deriveToastBodyDescriptor(
@@ -473,37 +457,39 @@ function deriveToastBodyDescriptor(
   const aboutThread = toast.data?.aboutThread;
   const otherThread =
     aboutThread && isAnotherThread(aboutThread.threadRef, activeThreadRef) ? aboutThread : null;
-  const stacked = shouldStackNoticeBody({
-    type: toast.type,
-    hasDescription: hasRenderableToastDescription(toast.description),
-    requestsStackedLayout: toast.data?.actionLayout === "stacked-end",
-    pointsAtAnotherThread: otherThread !== null,
-  });
-  const actionVariant: NonNullable<ThreadToastData["actionVariant"]> =
-    toast.data?.actionVariant ?? "default";
-  const secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]> =
-    toast.data?.secondaryActionVariant ?? "outline";
-  const copyErrorText =
-    toast.type === "error" && typeof toast.description === "string" && !toast.data?.hideCopyButton
-      ? toast.description
-      : null;
+  const hasDescription = hasRenderableToastDescription(toast.description);
   const hasButtons =
     toast.actionProps !== undefined ||
     toast.data?.secondaryActionProps !== undefined ||
     otherThread !== null;
-  // Stacked, copy sits in the corner beside close and buttons get their own row.
-  const hasInlineControls = !stacked && (copyErrorText !== null || hasButtons);
-  const inlineContentEndPad = hasInlineControls ? "pr-7" : "pr-8";
+  const stacked = shouldStackNoticeBody({
+    type: toast.type,
+    hasDescription,
+    hasButtons,
+    requestsStackedLayout: toast.data?.actionLayout === "stacked-end",
+  });
+  const singleLine = !stacked && !hasDescription && !toast.data?.expandableContent;
+  const actionVariant: NonNullable<ThreadToastData["actionVariant"]> =
+    toast.data?.actionVariant ?? "default";
+  const secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]> =
+    toast.data?.secondaryActionVariant ?? "outline";
+  // An error with a reason is always stacked, so copy has its place beside close.
+  const copyErrorText =
+    toast.type === "error" &&
+    typeof toast.description === "string" &&
+    hasDescription &&
+    !toast.data?.hideCopyButton
+      ? toast.description
+      : null;
   return {
     Icon,
     stacked,
+    singleLine,
     actionVariant,
     secondaryActionVariant,
     copyErrorText,
     otherThread,
     hasButtons,
-    hasInlineControls,
-    inlineContentEndPad,
   };
 }
 
@@ -513,13 +499,19 @@ interface ToastBodyContentProps extends ToastBodyDescriptor {
   readonly toastDescription: unknown;
 }
 
+/**
+ * The words and buttons of a notice. A stacked notice shows everything; a
+ * compact one keeps its title and reason to a line each, and a click on them
+ * opens the whole text. Buttons always get their own row underneath, so the
+ * words keep the notice's full width.
+ */
 function ToastBodyContent({
   stacked,
+  singleLine,
   Icon,
   copyErrorText,
   otherThread,
   hasButtons,
-  hasInlineControls,
   actionProps,
   actionVariant,
   secondaryActionVariant,
@@ -530,26 +522,21 @@ function ToastBodyContent({
   const leadingIcon = toastData?.leadingIcon;
   const { className: secondaryActionClassName, ...secondaryActionRest } =
     secondaryActionProps ?? {};
-  const compactInlineText = !stacked && !toastData?.expandableContent;
-  const hasDescription = hasRenderableToastDescription(toastDescription);
-  const canExpandCompactText = compactInlineText && hasDescription;
-  const [compactTextExpanded, setCompactTextExpanded] = useState(false);
-  const toggleCompactTextExpanded = () => setCompactTextExpanded((expanded) => !expanded);
-  const onCompactTextKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+  const canOpen =
+    !stacked && hasRenderableToastDescription(toastDescription) && !toastData?.expandableContent;
+  const [opened, setOpened] = useState(false);
+  const toggleOpened = () => setOpened((value) => !value);
+  const onTextKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      toggleCompactTextExpanded();
+      toggleOpened();
     }
   };
+  const clamped = singleLine || (canOpen && !opened);
 
   return (
     <>
-      <div
-        className={cn(
-          "flex min-w-0 gap-2",
-          compactInlineText ? "flex-1 items-center" : !stacked && "flex-1",
-        )}
-      >
+      <div className={cn("flex min-w-0 gap-2", singleLine && "flex-1 items-center")}>
         {leadingIcon ? (
           // `min-w-4`, not `w-4`: a row of agent logos is wider than one glyph.
           <div
@@ -566,85 +553,55 @@ function ToastBodyContent({
             <Icon className={toastStatusIconClassName} strokeWidth={2.25} />
           </div>
         ) : null}
-        {compactInlineText ? (
-          <div
-            aria-expanded={canExpandCompactText ? compactTextExpanded : undefined}
-            className={cn(
-              "min-w-0 flex-1 rounded-sm outline-none ring-offset-background",
-              compactTextExpanded ? "flex flex-col gap-0.5 pr-1" : "flex items-baseline gap-1.5",
-              canExpandCompactText &&
-                "cursor-pointer transition-colors hover:bg-muted/35 focus-ring",
-            )}
-            onClick={canExpandCompactText ? toggleCompactTextExpanded : undefined}
-            onKeyDown={canExpandCompactText ? onCompactTextKeyDown : undefined}
-            role={canExpandCompactText ? "button" : undefined}
-            tabIndex={canExpandCompactText ? 0 : undefined}
-            title={
-              canExpandCompactText
-                ? compactTextExpanded
-                  ? "Collapse notice"
-                  : "Expand notice"
-                : undefined
-            }
-          >
-            <Toast.Title
-              className={cn(
-                "min-w-0 font-medium text-foreground/90",
-                compactTextExpanded
-                  ? "wrap-break-word"
-                  : cn("truncate", hasDescription ? "max-w-[52%] shrink-0" : "flex-1"),
-              )}
-              data-slot="toast-title"
-            />
-            {hasDescription ? (
-              <Toast.Description
-                className={cn(
-                  "min-w-0 text-xs leading-4 text-muted-foreground",
-                  compactTextExpanded
-                    ? cn("select-text wrap-break-word", toastReasonCapClassName)
-                    : "flex-1 truncate",
-                )}
-                data-slot="toast-description"
-              />
-            ) : null}
-          </div>
-        ) : (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-0.5">
-            <Toast.Title
-              className={cn(
-                "min-w-0 wrap-break-word text-[13px] leading-5 font-medium text-foreground/90",
-                // Clear the corner controls: close, plus copy on an error.
-                stacked && (copyErrorText !== null ? "pr-11" : "pr-6"),
-              )}
-              data-slot="toast-title"
-            />
-            {otherThread ? (
-              <span
-                className="min-w-0 truncate text-xs leading-4 text-muted-foreground"
-                data-slot="toast-thread"
-              >
-                In {otherThread.title}
-              </span>
-            ) : null}
-            <ToastDescriptionAndExpandable toastData={toastData} />
-          </div>
-        )}
-      </div>
-      {(stacked && hasButtons) || hasInlineControls ? (
         <div
+          aria-expanded={canOpen ? opened : undefined}
           className={cn(
-            "flex items-center gap-1",
-            stacked ? "w-full justify-end pt-0.5" : "shrink-0",
+            "flex min-h-0 min-w-0 flex-1 flex-col gap-0.5",
+            canOpen &&
+              "cursor-pointer rounded-sm outline-none ring-offset-background transition-colors hover:bg-muted/35 focus-ring",
           )}
+          onClick={canOpen ? toggleOpened : undefined}
+          onKeyDown={canOpen ? onTextKeyDown : undefined}
+          role={canOpen ? "button" : undefined}
+          tabIndex={canOpen ? 0 : undefined}
+          title={canOpen ? (opened ? "Collapse notice" : "Expand notice") : undefined}
         >
-          {!stacked && copyErrorText !== null ? <CopyErrorButton text={copyErrorText} /> : null}
+          <Toast.Title
+            className={cn(
+              "min-w-0 text-[13px] leading-5 font-medium text-foreground/90",
+              clamped ? "truncate" : "wrap-break-word",
+              // Clear the corner controls: close, plus copy on an error.
+              !singleLine && (copyErrorText !== null ? "pr-11" : "pr-6"),
+            )}
+            data-slot="toast-title"
+          />
+          {otherThread ? (
+            <span
+              className="min-w-0 truncate text-xs leading-4 text-muted-foreground"
+              data-slot="toast-thread"
+            >
+              In {otherThread.title}
+            </span>
+          ) : null}
+          {canOpen ? (
+            <Toast.Description
+              className={cn(
+                "min-w-0 text-xs leading-4 text-muted-foreground",
+                opened ? cn("select-text wrap-break-word", toastReasonCapClassName) : "truncate",
+              )}
+              data-base-ui-swipe-ignore={opened ? "" : undefined}
+              data-slot="toast-description"
+            />
+          ) : (
+            <ToastDescriptionAndExpandable toastData={toastData} />
+          )}
+        </div>
+      </div>
+      {hasButtons ? (
+        <div className="flex w-full items-center justify-end gap-1 pt-0.5">
           {otherThread ? (
             <button
-              className={
-                stacked
-                  ? buttonVariants({ size: "xs", variant: "outline" })
-                  : toastInlineActionClassName("outline")
-              }
+              className={buttonVariants({ size: "xs", variant: "outline" })}
               data-slot="toast-open-thread"
               onClick={otherThread.open}
               type="button"
@@ -656,9 +613,7 @@ function ToastBodyContent({
             <button
               {...secondaryActionRest}
               className={cn(
-                stacked
-                  ? buttonVariants({ size: "xs", variant: secondaryActionVariant })
-                  : toastInlineActionClassName(secondaryActionVariant),
+                buttonVariants({ size: "xs", variant: secondaryActionVariant }),
                 secondaryActionClassName,
               )}
               type="button"
@@ -666,12 +621,7 @@ function ToastBodyContent({
           ) : null}
           {actionProps ? (
             <Toast.Action
-              className={cn(
-                stacked
-                  ? buttonVariants({ size: "xs", variant: actionVariant })
-                  : toastInlineActionClassName(actionVariant),
-                "shrink-0",
-              )}
+              className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
               data-slot="toast-action"
             >
               {actionProps.children}
@@ -847,8 +797,10 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // a notice raised then must not sit blurred underneath it.
           raisedAboveBackdrops ? "z-60" : "z-40",
           "fixed mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
-          // Vertical positioning
-          "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
+          // Vertical positioning. A page can push the stack below its own
+          // title row and buttons (`useNoticeClearanceRef`); it slides there.
+          "data-[position*=top]:top-[max(calc(var(--toast-inset)+var(--toast-header-offset)),calc(var(--notice-top-clearance,0px)+8px))]",
+          "transition-[top] duration-200 ease-out motion-reduce:transition-none",
           "data-[position*=bottom]:bottom-(--toast-inset)",
           // Horizontal positioning. Right-anchored toasts sit beside the open
           // right panel rather than on top of it: the panel publishes its width
@@ -880,7 +832,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
             visibleToastLayout.items.length,
           );
           const bodyDescriptor = deriveToastBodyDescriptor(toast, activeThreadRef);
-          const { stacked, inlineContentEndPad } = bodyDescriptor;
+          const { singleLine } = bodyDescriptor;
           // A button is a next step; the clock restarts if one appears or goes
           // (opening the thread an "Open thread" notice points at, say).
           const visibleMs =
@@ -968,13 +920,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 copyErrorText={bodyDescriptor.copyErrorText}
                 manager={baseToastManager}
                 onClose={toast.data?.onClose}
-                stacked={stacked}
+                singleLine={singleLine}
                 toastId={toast.id}
               />
               <Toast.Content
                 className={toastContentClassName({
-                  stacked,
-                  inlineContentEndPad,
+                  singleLine,
                   hideCollapsedContent,
                   animated: true,
                 })}
@@ -1028,7 +979,7 @@ function AnchoredToasts() {
             const tooltipStyle = toast.data?.tooltipStyle ?? false;
             const positionerProps = toast.positionerProps;
             const bodyDescriptor = deriveToastBodyDescriptor(toast, activeThreadRef);
-            const { stacked, inlineContentEndPad } = bodyDescriptor;
+            const { singleLine } = bodyDescriptor;
 
             if (!positionerProps?.anchor) {
               return null;
@@ -1062,15 +1013,10 @@ function AnchoredToasts() {
                         copyErrorText={bodyDescriptor.copyErrorText}
                         manager={anchoredToastManager}
                         onClose={toast.data?.onClose}
-                        stacked={stacked}
+                        singleLine={singleLine}
                         toastId={toast.id}
                       />
-                      <Toast.Content
-                        className={toastContentClassName({
-                          stacked,
-                          inlineContentEndPad,
-                        })}
-                      >
+                      <Toast.Content className={toastContentClassName({ singleLine })}>
                         <ToastBodyContent
                           {...bodyDescriptor}
                           actionProps={toast.actionProps}
@@ -1089,8 +1035,8 @@ function AnchoredToasts() {
   );
 }
 
-export { stackedThreadToast } from "./toastHelpers";
-export type { StackedThreadToastOptions } from "./toastHelpers";
+export { failureNotice, stackedThreadToast } from "./toastHelpers";
+export type { FailureNoticeOptions, FailureTitle, StackedThreadToastOptions } from "./toastHelpers";
 
 export {
   ToastProvider,

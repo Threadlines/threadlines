@@ -576,7 +576,7 @@ function ClaudeLongLivedAuthSection(props: {
     if (sanitizedTokenDraft.length === 0) {
       toastManager.add({
         type: "error",
-        title: "Paste a Claude OAuth token first",
+        title: "Paste a Claude sign-in token first",
         description: "Run the setup command, copy the printed token, then save it here.",
       });
       return;
@@ -587,10 +587,10 @@ function ClaudeLongLivedAuthSection(props: {
     setTokenDraft("");
     toastManager.add({
       type: "success",
-      title: "Claude long-lived token saved",
+      title: "Saved your Claude token",
       description: tokenDraftWillBeSanitized
         ? "Whitespace was removed from the pasted token before saving."
-        : "Threadlines will pass it to Claude as CLAUDE_CODE_OAUTH_TOKEN.",
+        : "Claude will use this token to sign in.",
     });
   };
 

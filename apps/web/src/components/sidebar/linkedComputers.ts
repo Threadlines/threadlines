@@ -20,7 +20,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 /** Names a computer: `(environmentId, lastKnown) => name`. */
 export type ComputerLabelResolver = (environmentId: EnvironmentId, lastKnown: string) => string;
@@ -182,11 +182,12 @@ export function useLinkRequestAnswer(
         updateLinkRequestAnswer(key, attempt, (entry) => ({ ...entry, landed: true }));
       } catch (error) {
         updateLinkRequestAnswer(key, attempt, () => null);
-        toastManager.add({
-          type: "error",
-          title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
-          description: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
-        });
+        toastManager.add(
+          failureNotice({
+            title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
+            reason: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+          }),
+        );
       }
     },
     [computerLabel, environmentId, key, request.deviceId, request.requestId, request.title],

@@ -11,7 +11,8 @@ vi.mock("../../environmentApi", () => ({
   ensureEnvironmentApi: () => ({ projects: { writeFile: harness.writeFile } }),
 }));
 
-vi.mock("../ui/toast", () => ({
+vi.mock("../ui/toast", async () => ({
+  failureNotice: (await import("~/components/ui/toastHelpers")).failureNotice,
   toastManager: { add: harness.toastAdd },
 }));
 
