@@ -4,16 +4,22 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as Stream from "effect/Stream";
 
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../../config.ts";
+import { ServerSettingsLive, ServerSettingsService } from "../../serverSettings.ts";
 import { ServerEnvironment } from "../Services/ServerEnvironment.ts";
 import { ServerEnvironmentLive } from "./ServerEnvironment.ts";
 
 const makeServerEnvironmentLayer = (baseDir: string) =>
-  ServerEnvironmentLive.pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)));
+  ServerEnvironmentLive.pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+    Layer.provide(ServerSettingsService.layerTest()),
+  );
 
 const makeServerConfig = Effect.fn(function* (baseDir: string) {
   const derivedPaths = yield* deriveServerPaths(baseDir, undefined);
@@ -74,6 +80,51 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
 
+  it.effect("is named as its settings say from the start, and follows a rename at once", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-server-environment-name-test-",
+      });
+      const { settingsPath } = yield* deriveServerPaths(baseDir, undefined);
+      yield* fileSystem.makeDirectory(nodePath.dirname(settingsPath), { recursive: true });
+      yield* fileSystem.writeFileString(
+        settingsPath,
+        JSON.stringify({ computerName: "Studio Mac" }),
+      );
+
+      yield* Effect.gen(function* () {
+        const environment = yield* ServerEnvironment;
+        const settings = yield* ServerSettingsService;
+        const named = yield* environment.getDescriptor;
+        expect(named.label).toBe("Studio Mac");
+        expect(named.systemLabel).toBeDefined();
+
+        const renamed = yield* environment.labelChanges.pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* settings.updateSettings({ computerName: null });
+        const [announced] = yield* Fiber.join(renamed);
+        // Back to the name its system gives it, everywhere at once.
+        expect(announced?.label).toBe(named.systemLabel);
+        expect(environment.currentLabel()).toBe(named.systemLabel);
+        expect((yield* environment.getDescriptor).label).toBe(named.systemLabel);
+        expect(environment.describe("Windows PC").label).toBe("Windows PC");
+      }).pipe(
+        Effect.provide(
+          // Wired as server.ts wires it: the settings layer given to the
+          // environment is the very one the rest of the server writes to.
+          Layer.mergeAll(
+            ServerSettingsLive,
+            ServerEnvironmentLive.pipe(Layer.provide(ServerSettingsLive)),
+          ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir))),
+        ),
+      );
+    }),
+  );
+
   it.effect("fails instead of overwriting a persisted id when reading the file errors", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -120,7 +171,11 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         Effect.provide(
           ServerEnvironmentLive.pipe(
             Layer.provide(
-              Layer.merge(Layer.succeed(ServerConfig, serverConfig), failingFileSystemLayer),
+              Layer.mergeAll(
+                Layer.succeed(ServerConfig, serverConfig),
+                failingFileSystemLayer,
+                ServerSettingsService.layerTest(),
+              ),
             ),
           ),
         ),

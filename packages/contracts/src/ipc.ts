@@ -1770,6 +1770,10 @@ export interface EnvironmentApi {
     warmUp: () => Promise<void>;
     transcribe: (input: DictationTranscribeInput) => Promise<DictationTranscribeResult>;
   };
+  /** The computer's own settings: what every device connected to it shares. */
+  settings: {
+    update: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+  };
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;

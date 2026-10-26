@@ -12,7 +12,6 @@ import * as path from "node:path";
 
 import {
   CommandId,
-  type ExecutionEnvironmentDescriptor,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -309,11 +308,7 @@ export const makeComputer = Effect.gen(function* () {
             }),
             Layer.mock(GitVcsDriver)({}),
             Layer.mock(GitWorkflowService)({}),
-            Layer.mock(ServerEnvironment)({
-              getDescriptor: Effect.succeed({
-                label: "Test Mac",
-              } as ExecutionEnvironmentDescriptor),
-            }),
+            ServerEnvironment.layerTest({ label: "Test Mac" }),
             ServerSettingsService.layerTest(patch.settings),
             relay.layer,
             github.layer,

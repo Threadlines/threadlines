@@ -263,19 +263,16 @@ const makeComputer = Effect.gen(function* () {
               withPeer: (_environmentId, use) => use(peer) as never,
               peerStream: (_environmentId, use) => use(peer) as never,
               cachedDescribe: () => null,
+              noteRemoteLabel: () => undefined,
             }),
             Layer.mock(ComputerLinkRepository)({
               list: Effect.succeed([LINK]),
               getByEnvironment: () => Effect.succeed(Option.some(LINK)),
             }),
-            Layer.mock(ServerEnvironment)({
-              getDescriptor: Effect.succeed({
-                environmentId: EnvironmentId.make("env-windows"),
-                label: "Windows PC",
-                platform: { os: "windows", arch: "x64" },
-                serverVersion: "0.0.0",
-                capabilities: { repositoryIdentity: true },
-              }),
+            ServerEnvironment.layerTest({
+              environmentId: EnvironmentId.make("env-windows"),
+              label: "Windows PC",
+              platform: { os: "windows", arch: "x64" },
             }),
           ),
         ),

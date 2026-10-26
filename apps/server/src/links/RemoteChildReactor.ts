@@ -606,7 +606,7 @@ const make = Effect.gen(function* () {
           requestId: request.requestId,
           parent: {
             environmentId: self.environmentId,
-            environmentLabel: self.label,
+            environmentLabel: environment.currentLabel(),
             threadId: parent.id,
             threadTitle: parent.title,
             handle: agentName(parent, request),

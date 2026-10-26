@@ -144,7 +144,7 @@ Routes: `/fleet/$environmentId`, plus `/fleet/device/$deviceId` for temporary en
 - after access was revoked, "Connect again with a new code", because an ordinary reconnect can't fix that (1119, 1189);
 - the pending pairing state with its comparison number and Cancel (1132, 1179).
 
-There is no Rename today, and Rev 4 doesn't add one.
+**Rename** (Oct 26) sits in the page's title bar for this computer and for a connected one. See "Names" under R4.5.
 
 **Works with other computers**, a quiet group.
 
@@ -204,6 +204,13 @@ The same dialog opens from Fleet's "+", the one-computer Fleet state, the comman
 ### R4.5 Phones and tablets
 
 They stay managed in Settings. Fleet's graph still draws them around this computer, and clicking one opens Settings › Connections.
+
+**Names (Oct 26).** A computer is called by the name its system gives it (macOS's Computer Name, the Windows device name, Linux's pretty hostname) until the user names it in Threadlines: the `computerName` server setting, so the name lives on that computer and every device and linked computer sees the same one. The descriptor's `label` is the name in effect and `systemLabel` the system's; capability `deviceNames` gates every Rename.
+
+- Rename: the computer page's title bar, Settings › Connections › This computer, and the command palette ("Rename this computer"). An empty name goes back to the system's.
+- Live everywhere: the server reads the name when it needs it (relay lease, link invites, error texts), so nothing keeps the startup name. A rename goes to clients as a new config `snapshot`, which every client version takes the name from, and the config stream subscribes to settings changes before it reads the snapshot. Replayed lifecycle events carry the current name. After the config stream's first snapshot it alone names a saved computer; a late welcome or metadata fetch can't put back an old name.
+- Linked computers: a renamed computer re-describes itself to every computer it links to, and the other side stores the name on both halves (its inbound device row and its outbound link; only for a link the invite confirmed). One it can't reach hears it the next time that link connects, as does each of them once after a restart. A description already on its way, or one asked for earlier, can't put an older name back. A computer that only links _to_ the renamed one hears it the next time it calls. An older peer ignores the name until it updates.
+- Phones, tablets and browsers are named per sign-in (`auth_sessions.client_name`, `/api/auth/clients/rename`, owner only), from their row in Settings › Connections. A phone that pairs again starts unnamed. Two unnamed ones that would read the same say when each paired ("iPhone (paired Oct 20)"). Their messages (voice included) carry the new name from the next one, without reconnecting. A phone can't name itself: the computer's owner names it.
 
 ### R4.6 Look
 

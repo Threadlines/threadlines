@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 export type BootstrapCredentialRole = "owner" | "client";
@@ -51,6 +52,12 @@ export interface BootstrapCredentialServiceShape {
     BootstrapCredentialError
   >;
   readonly streamChanges: Stream.Stream<BootstrapCredentialChange>;
+  /** `streamChanges`, subscribed now: for a reader that lists first, then follows. */
+  readonly subscribeChanges: Effect.Effect<
+    Stream.Stream<BootstrapCredentialChange>,
+    never,
+    Scope.Scope
+  >;
   readonly revoke: (id: string) => Effect.Effect<boolean, BootstrapCredentialError>;
   readonly consume: (credential: string) => Effect.Effect<BootstrapGrant, BootstrapCredentialError>;
 }

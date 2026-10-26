@@ -20,6 +20,7 @@ import {
   ListActiveAuthSessionsInput,
   RevokeAuthSessionInput,
   ExtendAuthSessionExpiryInput,
+  SetAuthSessionClientNameInput,
   SetAuthSessionLastConnectedAtInput,
 } from "../Services/AuthSessions.ts";
 
@@ -34,6 +35,7 @@ const AuthSessionDbRow = Schema.Struct({
   clientDeviceType: Schema.Literals(["desktop", "mobile", "tablet", "bot", "unknown"]),
   clientOs: Schema.NullOr(Schema.String),
   clientBrowser: Schema.NullOr(Schema.String),
+  clientName: Schema.NullOr(Schema.String),
   issuedAt: Schema.DateTimeUtcFromString,
   expiresAt: Schema.DateTimeUtcFromString,
   lastConnectedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -53,6 +55,7 @@ function toAuthSessionRecord(row: typeof AuthSessionDbRow.Type): typeof AuthSess
       deviceType: row.clientDeviceType,
       os: row.clientOs,
       browser: row.clientBrowser,
+      name: row.clientName,
     },
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
@@ -124,6 +127,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           client_device_type AS "clientDeviceType",
           client_os AS "clientOs",
           client_browser AS "clientBrowser",
+          client_name AS "clientName",
           issued_at AS "issuedAt",
           expires_at AS "expiresAt",
           last_connected_at AS "lastConnectedAt",
@@ -149,6 +153,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           client_device_type AS "clientDeviceType",
           client_os AS "clientOs",
           client_browser AS "clientBrowser",
+          client_name AS "clientName",
           issued_at AS "issuedAt",
           expires_at AS "expiresAt",
           last_connected_at AS "lastConnectedAt",
@@ -194,6 +199,21 @@ const makeAuthSessionRepository = Effect.gen(function* () {
         WHERE session_id = ${sessionId}
           AND revoked_at IS NULL
           AND expires_at > ${now}
+        RETURNING session_id AS "sessionId"
+      `,
+  });
+
+  const setClientNameRows = SqlSchema.findAll({
+    Request: SetAuthSessionClientNameInput,
+    Result: Schema.Struct({ sessionId: AuthSessionId }),
+    execute: ({ sessionId, name, now }) =>
+      sql`
+        UPDATE auth_sessions
+        SET client_name = ${name}
+        WHERE session_id = ${sessionId}
+          AND revoked_at IS NULL
+          AND expires_at > ${now}
+          AND role != 'peer'
         RETURNING session_id AS "sessionId"
       `,
   });
@@ -267,6 +287,17 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.length > 0),
     );
 
+  const setClientName: AuthSessionRepositoryShape["setClientName"] = (input) =>
+    setClientNameRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "AuthSessionRepository.setClientName:query",
+          "AuthSessionRepository.setClientName:decodeRows",
+        ),
+      ),
+      Effect.map((rows) => rows.length > 0),
+    );
+
   return {
     create,
     getById,
@@ -274,6 +305,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
     revoke,
     setLastConnectedAt,
     extendExpiry,
+    setClientName,
   } satisfies AuthSessionRepositoryShape;
 });
 

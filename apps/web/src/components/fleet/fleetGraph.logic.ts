@@ -453,6 +453,29 @@ export function curveControlPoint(from: Point, to: Point, awayFrom?: Point): Poi
     : other;
 }
 
+/** How close a computer's name and status may come to the graph's sides. */
+export const FLEET_LABEL_INSET = 8;
+
+/**
+ * How wide a computer's name and status may be before they wrap (two lines
+ * at most): a share of the graph, so a phone wraps what a desktop has room for.
+ */
+export function fleetLabelMaxWidth(stageWidth: number): number {
+  return Math.round(Math.min(240, Math.max(150, stageWidth * 0.4)));
+}
+
+/**
+ * How far to move a label centered under its node at `x` so it stays inside
+ * the graph: toward the middle by just what would stick out.
+ */
+export function fitLabelShift(x: number, labelWidth: number, stageWidth: number): number {
+  const left = x - labelWidth / 2;
+  const right = x + labelWidth / 2;
+  if (left < FLEET_LABEL_INSET) return FLEET_LABEL_INSET - left;
+  if (right > stageWidth - FLEET_LABEL_INSET) return stageWidth - FLEET_LABEL_INSET - right;
+  return 0;
+}
+
 export function curvePath(from: Point, to: Point, awayFrom?: Point): string {
   const control = curveControlPoint(from, to, awayFrom);
   return `M${from.x.toFixed(1)} ${from.y.toFixed(1)}Q${control.x.toFixed(1)} ${control.y.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}`;

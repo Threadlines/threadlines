@@ -21,6 +21,7 @@ import type {
   SavedEnvironmentRecord,
   SavedEnvironmentRuntimeState,
 } from "../../environments/runtime";
+import { deviceDisplayName, deviceDisplayNames, type NamedDevice } from "../../deviceNames";
 import { formatElapsedDurationLabel } from "../../timestampFormat";
 import type { ThreadAttention, ThreadStatusPill } from "../Sidebar.logic";
 
@@ -113,26 +114,11 @@ export interface FleetModel {
 }
 
 /** The device a session belongs to, as the Fleet page needs it. */
-export interface LinkedDeviceSession {
-  readonly sessionId: string;
+export interface LinkedDeviceSession extends NamedDevice {
   readonly subject: string;
   readonly current: boolean;
   readonly connected: boolean;
   readonly lastConnectedAt: string | null;
-  readonly client: {
-    readonly label?: string | undefined;
-    readonly deviceType: string;
-    readonly os?: string | undefined;
-    readonly browser?: string | undefined;
-  };
-}
-
-function deviceLabel(session: LinkedDeviceSession): string {
-  return (
-    session.client.label ??
-    ([session.client.os, session.client.browser].filter(Boolean).join(" · ") ||
-      (session.client.deviceType === "tablet" ? "Tablet" : "Phone"))
-  );
 }
 
 /** A computer's glyph, from the system it says it runs. */
@@ -188,30 +174,29 @@ export function savedComputerInput(
 /**
  * The phones and tablets with access to this computer, a node per session.
  * Sessions carry no device identity, so two sessions are two devices even
- * when they share a name: two unnamed iPhones must not read as one.
+ * when they share a name: two unnamed iPhones must not read as one, and each
+ * says when it paired until it's named (deviceDisplayNames).
  */
 export function linkedDeviceInputs(
   sessions: ReadonlyArray<LinkedDeviceSession>,
   relaySubject: string,
 ): FleetComputerInput[] {
-  return sessions.flatMap((session): FleetComputerInput[] => {
-    if (session.current) return [];
-    if (session.client.deviceType !== "mobile" && session.client.deviceType !== "tablet") {
-      return [];
-    }
-    return [
-      {
-        id: `device:${session.sessionId}`,
-        environmentId: null,
-        kind: "device",
-        label: deviceLabel(session),
-        glyph: session.client.deviceType === "tablet" ? "tablet" : "phone",
-        connection: session.connected ? "connected" : "offline",
-        route: session.subject === relaySubject ? "relay" : "network",
-        lastSeenAt: session.lastConnectedAt,
-      },
-    ];
-  });
+  const devices = sessions.filter(
+    (session) =>
+      !session.current &&
+      (session.client.deviceType === "mobile" || session.client.deviceType === "tablet"),
+  );
+  const names = deviceDisplayNames(devices);
+  return devices.map((session): FleetComputerInput => ({
+    id: `device:${session.sessionId}`,
+    environmentId: null,
+    kind: "device",
+    label: names.get(session.sessionId) ?? deviceDisplayName(session.client),
+    glyph: session.client.deviceType === "tablet" ? "tablet" : "phone",
+    connection: session.connected ? "connected" : "offline",
+    route: session.subject === relaySubject ? "relay" : "network",
+    lastSeenAt: session.lastConnectedAt,
+  }));
 }
 
 /**

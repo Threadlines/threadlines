@@ -16,12 +16,19 @@ export const AuthSessionClientMetadataRecord = Schema.Struct({
 });
 export type AuthSessionClientMetadataRecord = typeof AuthSessionClientMetadataRecord.Type;
 
+/** A stored session's device: what it said about itself, and the name its user gave it. */
+export const AuthSessionClientRecord = Schema.Struct({
+  ...AuthSessionClientMetadataRecord.fields,
+  name: Schema.NullOr(Schema.String),
+});
+export type AuthSessionClientRecord = typeof AuthSessionClientRecord.Type;
+
 export const AuthSessionRecord = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
   role: Schema.Literals(["owner", "client", "peer"]),
   method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
-  client: AuthSessionClientMetadataRecord,
+  client: AuthSessionClientRecord,
   issuedAt: Schema.DateTimeUtcFromString,
   expiresAt: Schema.DateTimeUtcFromString,
   lastConnectedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -69,6 +76,13 @@ export const ExtendAuthSessionExpiryInput = Schema.Struct({
 });
 export type ExtendAuthSessionExpiryInput = typeof ExtendAuthSessionExpiryInput.Type;
 
+export const SetAuthSessionClientNameInput = Schema.Struct({
+  sessionId: AuthSessionId,
+  name: Schema.NullOr(Schema.String),
+  now: Schema.DateTimeUtcFromString,
+});
+export type SetAuthSessionClientNameInput = typeof SetAuthSessionClientNameInput.Type;
+
 export interface AuthSessionRepositoryShape {
   readonly create: (
     input: CreateAuthSessionInput,
@@ -92,6 +106,14 @@ export interface AuthSessionRepositoryShape {
    */
   readonly extendExpiry: (
     input: ExtendAuthSessionExpiryInput,
+  ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
+  /**
+   * Names a live device session (`null` clears it). Returns whether it was
+   * named: revoked, expired, unknown and linked-computer (`peer`) sessions
+   * are left alone.
+   */
+  readonly setClientName: (
+    input: SetAuthSessionClientNameInput,
   ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
 }
 

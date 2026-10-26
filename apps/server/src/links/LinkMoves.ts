@@ -273,7 +273,8 @@ const make = Effect.gen(function* () {
   const identities = yield* RepositoryIdentityResolver;
   const setupScripts = yield* ProjectSetupScriptRunner;
   const environment = yield* ServerEnvironment;
-  const ownLabel = (yield* environment.getDescriptor).label;
+  // Read at each use: the computer can be renamed while this runs.
+  const ownLabel = environment.currentLabel;
   const pendingHub = yield* PubSub.sliding<void>(1);
   const announcePending = PubSub.publish(pendingHub, undefined).pipe(Effect.asVoid);
   const lock = makeKeyedLock();
@@ -306,7 +307,7 @@ const make = Effect.gen(function* () {
   const readRow = (linkDeviceId: string, transferId: string) =>
     moves
       .get(linkDeviceId, transferId)
-      .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't read its moves.`)));
+      .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't read its moves.`)));
 
   const runGit = (cwd: string, args: ReadonlyArray<string>, timeoutMs = GIT_TIMEOUT_MS) =>
     git
@@ -337,7 +338,7 @@ const make = Effect.gen(function* () {
       const receipt = yield* engine.getCommandReceipt(importCommandId(row));
       if (Option.isSome(receipt) && receipt.value.status === "accepted") return true;
       return Option.isSome(yield* threadRows.getById({ threadId: row.threadId }));
-    }).pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't check its threads.`)));
+    }).pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't check its threads.`)));
 
   /** The project here a move lands in, and the remote it fetches from. */
   const landing = (manifest: PeerMoveManifest) =>
@@ -556,7 +557,7 @@ const make = Effect.gen(function* () {
             status: "committed",
             now: yield* nowIso,
           })
-          .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
+          .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record that.`)));
         return false;
       }
       const settled = yield* moves
@@ -567,7 +568,7 @@ const make = Effect.gen(function* () {
           reason,
           now: yield* nowIso,
         })
-        .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
+        .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record that.`)));
       if (settled) {
         if (row.status === "awaiting_approval") yield* announcePending;
         yield* cleanUp({ ...row, status: "aborted", reason });
@@ -601,9 +602,9 @@ const make = Effect.gen(function* () {
           if (!authority.ok) return gone(authority.text);
           const manifestRefusal = moveManifestRefusal(manifest);
           if (manifestRefusal !== null)
-            return gone(`${ownLabel} can't take it: ${manifestRefusal}.`);
+            return gone(`${ownLabel()} can't take it: ${manifestRefusal}.`);
           const land = yield* landing(manifest);
-          if (land === null) return gone(`${ownLabel} doesn't have this project.`);
+          if (land === null) return gone(`${ownLabel()} doesn't have this project.`);
           const agent = yield* requests.resolveAgentFor({
             agent: {
               instanceId: manifest.agent.instanceId,
@@ -625,7 +626,7 @@ const make = Effect.gen(function* () {
                 open.length >= MAX_OPEN_MOVES
               ) {
                 return gone(
-                  `${ownLabel} is already taking other moves. Try again once they're done.`,
+                  `${ownLabel()} is already taking other moves. Try again once they're done.`,
                 );
               }
               const current = yield* requests.authority(link.deviceId);
@@ -640,7 +641,7 @@ const make = Effect.gen(function* () {
                 now: yield* nowIso,
               });
             }),
-          ).pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record the move.`)));
+          ).pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record the move.`)));
           if (!("transferKey" in admitted)) return admitted;
           if (admitted.status === "awaiting_approval") yield* announcePending;
           return stateOf(admitted);
@@ -683,7 +684,7 @@ const make = Effect.gen(function* () {
             }
           }).pipe(Effect.option);
           if (Option.isNone(written)) {
-            return yield* new PeerRpcError({ detail: `${ownLabel} couldn't save that chunk.` });
+            return yield* new PeerRpcError({ detail: `${ownLabel()} couldn't save that chunk.` });
           }
           const bytesReceived = row.bytesReceived + data.length;
           yield* moves
@@ -726,7 +727,7 @@ const make = Effect.gen(function* () {
           if (row.status !== "receiving") return stateOf(row);
           if (row.bytesReceived !== row.manifest.totalBytes) return stateOf(row);
           if (!(yield* verifyPayload(row))) {
-            const reason = `What arrived on ${ownLabel} doesn't match what was sent. Try again.`;
+            const reason = `What arrived on ${ownLabel()} doesn't match what was sent. Try again.`;
             yield* abortRow(row, reason);
             return gone(reason);
           }
@@ -810,7 +811,7 @@ const make = Effect.gen(function* () {
         // The import may have created the thread before it recorded so.
         if (yield* importLanded(row)) {
           yield* settleLanded(row).pipe(
-            Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)),
+            Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record that.`)),
           );
           return stateOf({ ...row, status: "committed" });
         }
@@ -854,7 +855,7 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.mapError(
-            () => new ImportStop({ reason: `${ownLabel} couldn't record its progress.` }),
+            () => new ImportStop({ reason: `${ownLabel()} couldn't record its progress.` }),
           ),
         );
     });
@@ -873,37 +874,39 @@ const make = Effect.gen(function* () {
       } finally {
         await handle.close();
       }
-    }).pipe(Effect.mapError(() => new ImportStop({ reason: `${ownLabel} lost the move's data.` })));
+    }).pipe(
+      Effect.mapError(() => new ImportStop({ reason: `${ownLabel()} lost the move's data.` })),
+    );
 
   /** Fetches the remote, and takes the bundle's commits into a ref named from the move. */
   const fetchStage = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
-      if (land === null) return yield* stop(`${ownLabel} doesn't have this project anymore.`);
+      if (land === null) return yield* stop(`${ownLabel()} doesn't have this project anymore.`);
       // The repository's top level (the project may be a folder inside it),
       // recorded before anything is made in it, so clean-up finds it even if
       // the project goes.
       const top = yield* runGit(land.root, ["rev-parse", "--show-toplevel"]);
-      if (!top.ok) return yield* stop(`${ownLabel} can't read this project's repository.`);
+      if (!top.ok) return yield* stop(`${ownLabel()} can't read this project's repository.`);
       yield* setStage(row, { repoRoot: top.out });
       yield* runGit(land.root, ["fetch", "--quiet", land.remoteName], GIT_FETCH_TIMEOUT_MS);
       const bundle = row.manifest.parts.find((part) => part.kind === "bundle");
       const { headSha, baseSha } = row.manifest.git;
       if (bundle !== undefined && baseSha === null) {
-        return yield* stop(`${ownLabel} can't take commits that start from nothing.`);
+        return yield* stop(`${ownLabel()} can't take commits that start from nothing.`);
       }
       if (bundle !== undefined) {
         const bundlePath = NodePath.join(stagingDir(row), "commits.bundle");
         const bytes = yield* partBytes(row, bundle);
         yield* Effect.tryPromise(() => NodeFs.writeFile(bundlePath, bytes)).pipe(
           Effect.mapError(
-            () => new ImportStop({ reason: `${ownLabel} couldn't unpack the commits.` }),
+            () => new ImportStop({ reason: `${ownLabel()} couldn't unpack the commits.` }),
           ),
         );
         const verified = yield* runGit(land.root, ["bundle", "verify", "--quiet", bundlePath]);
         if (!verified.ok) {
           return yield* stop(
-            `${ownLabel} can't find commit ${(baseSha ?? "").slice(0, 7)} on ${land.remoteName}. Push it, or fetch on ${ownLabel}, then try again.`,
+            `${ownLabel()} can't find commit ${(baseSha ?? "").slice(0, 7)} on ${land.remoteName}. Push it, or fetch on ${ownLabel()}, then try again.`,
           );
         }
         const fetched = yield* runGit(
@@ -918,18 +921,18 @@ const make = Effect.gen(function* () {
           ],
           GIT_FETCH_TIMEOUT_MS,
         );
-        if (!fetched.ok) return yield* stop(`${ownLabel} couldn't take the commits.`);
+        if (!fetched.ok) return yield* stop(`${ownLabel()} couldn't take the commits.`);
       }
       const has = yield* runGit(land.root, ["cat-file", "-e", `${headSha}^{commit}`]);
       if (!has.ok) {
         return yield* stop(
-          `${ownLabel} can't find commit ${headSha.slice(0, 7)} on ${land.remoteName}. Push it, or fetch on ${ownLabel}, then try again.`,
+          `${ownLabel()} can't find commit ${headSha.slice(0, 7)} on ${land.remoteName}. Push it, or fetch on ${ownLabel()}, then try again.`,
         );
       }
       // Measured before anything is checked out or written.
       const written = yield* expansionBytes(row, land.root);
       if (written === null || written > MOVE_MAX_EXPANDED_BYTES) {
-        return yield* stop(`It's too big for ${ownLabel} to unpack.`);
+        return yield* stop(`It's too big for ${ownLabel()} to unpack.`);
       }
       yield* setStage(row, { stage: "fetched" });
     });
@@ -1042,14 +1045,14 @@ const make = Effect.gen(function* () {
       for (const name of candidates) {
         if ((yield* valid(name)) && !(yield* taken(name))) return name;
       }
-      return yield* stop(`${ownLabel} couldn't find a free branch name.`);
+      return yield* stop(`${ownLabel()} couldn't find a free branch name.`);
     });
 
   /** The worktree the moved thread works in, at the moved commit, named from the move. */
   const worktreeStage = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
-      if (land === null) return yield* stop(`${ownLabel} doesn't have this project anymore.`);
+      if (land === null) return yield* stop(`${ownLabel()} doesn't have this project anymore.`);
       const { headSha } = row.manifest.git;
       const branch = row.branch ?? (yield* pickBranch(land.root, row));
       const path =
@@ -1062,7 +1065,7 @@ const make = Effect.gen(function* () {
       // A folder already there when the move first picks its path isn't its
       // own: it's never adopted, reset or removed.
       if (row.worktreePath === null && (yield* pathState(path)) !== false) {
-        return yield* stop(`${ownLabel} already has a folder at ${path}.`);
+        return yield* stop(`${ownLabel()} already has a folder at ${path}.`);
       }
       // Recorded before it is made, so a restart finds what it owns.
       yield* setStage(row, { branch, worktreePath: path });
@@ -1076,7 +1079,7 @@ const make = Effect.gen(function* () {
         // Only the worktree this move made is kept or replaced; another one
         // at its path (made after a crash) stops the move instead.
         if ((yield* ownsWorktree(path, row, row.repoRoot)) !== true) {
-          return yield* stop(`${ownLabel} has another worktree at ${path}.`);
+          return yield* stop(`${ownLabel()} has another worktree at ${path}.`);
         }
         const head = yield* runGit(path, ["rev-parse", "HEAD"]);
         if (head.ok && head.out === headSha) {
@@ -1084,7 +1087,7 @@ const make = Effect.gen(function* () {
           return;
         }
         if ((yield* pathInUse(path)) !== false) {
-          return yield* stop(`A thread on ${ownLabel} is using that folder.`);
+          return yield* stop(`A thread on ${ownLabel()} is using that folder.`);
         }
         yield* runGit(land.root, ["worktree", "remove", "--force", path]);
       }
@@ -1107,15 +1110,15 @@ const make = Effect.gen(function* () {
           name = yield* pickBranch(land.root, row);
           yield* setStage(row, { branch: name });
           if (!(yield* make(name)).ok) {
-            return yield* stop(`${ownLabel} couldn't make a branch for it.`);
+            return yield* stop(`${ownLabel()} couldn't make a branch for it.`);
           }
         }
       }
       const created = yield* runGit(land.root, ["worktree", "add", path, name]);
-      if (!created.ok) return yield* stop(`${ownLabel} couldn't make a worktree for it.`);
+      if (!created.ok) return yield* stop(`${ownLabel()} couldn't make a worktree for it.`);
       const head = yield* runGit(path, ["rev-parse", "HEAD"]);
       if (!head.ok || head.out !== headSha) {
-        return yield* stop(`${ownLabel}'s worktree for it isn't at the moved commit.`);
+        return yield* stop(`${ownLabel()}'s worktree for it isn't at the moved commit.`);
       }
       yield* runGit(land.root, ["update-ref", "-d", tempRef(row)]);
       yield* setStage(row, { stage: "worktree" });
@@ -1133,7 +1136,7 @@ const make = Effect.gen(function* () {
       ),
     ).pipe(
       Effect.mapError(
-        () => new ImportStop({ reason: `${ownLabel} couldn't write ${part.path} safely.` }),
+        () => new ImportStop({ reason: `${ownLabel()} couldn't write ${part.path} safely.` }),
       ),
     );
 
@@ -1141,7 +1144,7 @@ const make = Effect.gen(function* () {
   const applyStage = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const path = row.worktreePath;
-      if (path === null) return yield* stop(`${ownLabel} lost track of the move's worktree.`);
+      if (path === null) return yield* stop(`${ownLabel()} lost track of the move's worktree.`);
       const { headSha } = row.manifest.git;
       const status = yield* runGit(path, ["status", "--porcelain"]);
       if (status.out.length > 0) {
@@ -1150,7 +1153,7 @@ const make = Effect.gen(function* () {
           (yield* pathInUse(path)) !== false ||
           (yield* ownsWorktree(path, row, row.repoRoot)) !== true
         ) {
-          return yield* stop(`A thread on ${ownLabel} is using that folder.`);
+          return yield* stop(`A thread on ${ownLabel()} is using that folder.`);
         }
         yield* runGit(path, ["reset", "--hard", headSha]);
         yield* runGit(path, ["clean", "-fdx"]);
@@ -1164,11 +1167,11 @@ const make = Effect.gen(function* () {
         const bytes = diffBytes;
         yield* Effect.tryPromise(() => NodeFs.writeFile(diffPath, bytes)).pipe(
           Effect.mapError(
-            () => new ImportStop({ reason: `${ownLabel} couldn't unpack the changes.` }),
+            () => new ImportStop({ reason: `${ownLabel()} couldn't unpack the changes.` }),
           ),
         );
         const applied = yield* runGit(path, ["apply", "--binary", "--whitespace=nowarn", diffPath]);
-        if (!applied.ok) return yield* stop(`${ownLabel} couldn't apply the changes.`);
+        if (!applied.ok) return yield* stop(`${ownLabel()} couldn't apply the changes.`);
       }
       if (files.length > 0) {
         const tracked = yield* runGit(path, ["ls-files", "-z"]);
@@ -1180,9 +1183,9 @@ const make = Effect.gen(function* () {
         );
         for (const part of files) {
           const refusal = movePathRefusal(part.path ?? "");
-          if (refusal !== null) return yield* stop(`${ownLabel} can't take it: ${refusal}.`);
+          if (refusal !== null) return yield* stop(`${ownLabel()} can't take it: ${refusal}.`);
           if (trackedFolded.has(foldCase(part.path!))) {
-            return yield* stop(`"${part.path}" clashes with a file ${ownLabel} already tracks.`);
+            return yield* stop(`"${part.path}" clashes with a file ${ownLabel()} already tracks.`);
           }
           yield* writeNewFile(path, part, yield* partBytes(row, part));
         }
@@ -1218,7 +1221,7 @@ const make = Effect.gen(function* () {
               await NodeFs.writeFile(target, bytes);
             }).pipe(
               Effect.mapError(
-                () => new ImportStop({ reason: `${ownLabel} couldn't save an attachment.` }),
+                () => new ImportStop({ reason: `${ownLabel()} couldn't save an attachment.` }),
               ),
             );
           }
@@ -1233,7 +1236,7 @@ const make = Effect.gen(function* () {
   const commitStage = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
-      if (land === null) return yield* stop(`${ownLabel} doesn't have this project anymore.`);
+      if (land === null) return yield* stop(`${ownLabel()} doesn't have this project anymore.`);
       const authority = yield* requests.authority(row.linkDeviceId);
       if (!authority.ok) return yield* stop(authority.text);
       const agent = yield* requests.resolveAgentFor({
@@ -1314,7 +1317,7 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.uninterruptible, Effect.exit);
       if (Exit.isFailure(dispatched) && !(yield* importLanded(row))) {
-        return yield* stop(`${ownLabel} couldn't create the thread.`);
+        return yield* stop(`${ownLabel()} couldn't create the thread.`);
       }
       yield* settleLanded(row).pipe(Effect.ignore);
     });
@@ -1396,7 +1399,7 @@ const make = Effect.gen(function* () {
               now: yield* nowIso,
             });
           } else {
-            yield* abortRow(row, `${ownLabel} didn't allow the move.`);
+            yield* abortRow(row, `${ownLabel()} didn't allow the move.`);
           }
           return true;
         }),
@@ -1470,7 +1473,7 @@ const make = Effect.gen(function* () {
       // One that can't be dropped now ends anyway: its link is gone, so its
       // next stage refuses it, and the sweep drops it within the day.
       for (const row of open.filter((entry) => entry.linkDeviceId === deviceId)) {
-        yield* abortMove(row.linkDeviceId, row.transferId, `${ownLabel} removed the link.`).pipe(
+        yield* abortMove(row.linkDeviceId, row.transferId, `${ownLabel()} removed the link.`).pipe(
           Effect.catch((error) =>
             Effect.logWarning("link move drop failed", { detail: error.message }),
           ),
@@ -1494,7 +1497,7 @@ const make = Effect.gen(function* () {
           row.linkDeviceId,
           row.transferId,
           row.status === "awaiting_approval"
-            ? `Nobody on ${ownLabel} allowed the move in time.`
+            ? `Nobody on ${ownLabel()} allowed the move in time.`
             : "The move stopped arriving.",
         );
       }

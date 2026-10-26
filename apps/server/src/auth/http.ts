@@ -2,6 +2,7 @@ import {
   type AuthBearerBootstrapResult,
   AuthBootstrapInput,
   AuthCreatePairingCredentialInput,
+  AuthRenameClientSessionInput,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
   type AuthWebSocketTokenResult,
@@ -251,6 +252,26 @@ export const authClientsRevokeRouteLayer = HttpRouter.add(
     );
     const revoked = yield* serverAuth.revokeClientSession(session.sessionId, payload.sessionId);
     return HttpServerResponse.jsonUnsafe({ revoked }, { status: 200 });
+  }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
+);
+
+export const authClientsRenameRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/auth/clients/rename",
+  Effect.gen(function* () {
+    const { serverAuth } = yield* authenticateOwnerSession;
+    const payload = yield* HttpServerRequest.schemaBodyJson(AuthRenameClientSessionInput).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AuthError({
+            message: "Invalid rename client payload.",
+            status: 400,
+            cause,
+          }),
+      ),
+    );
+    yield* serverAuth.renameClientSession(payload.sessionId, payload.name);
+    return HttpServerResponse.jsonUnsafe({ renamed: true }, { status: 200 });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 

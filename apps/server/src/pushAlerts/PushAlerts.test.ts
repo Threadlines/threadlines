@@ -137,9 +137,9 @@ const makeHarness = Effect.gen(function* () {
         Layer.mock(LinkRequestRepository)({
           listByThread: () => Effect.sync(() => state.linkRows as never),
         }),
-        Layer.mock(ServerEnvironment)({
-          getEnvironmentId: Effect.succeed(EnvironmentId.make("env-mac")),
-          getDescriptor: Effect.succeed({ label: "Studio Mac" } as never),
+        ServerEnvironment.layerTest({
+          environmentId: EnvironmentId.make("env-mac"),
+          label: "Studio Mac",
         }),
       ),
     ),

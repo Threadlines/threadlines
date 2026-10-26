@@ -231,7 +231,8 @@ export const makeProjectSetups = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = yield* ServerEnvironment;
   const scope = yield* Effect.scope;
-  const ownLabel = (yield* environment.getDescriptor).label;
+  // Read at each use: the computer can be renamed while this runs.
+  const ownLabel = environment.currentLabel;
 
   const live = new Map<string, LiveJob>();
   const admission = yield* Semaphore.make(1);
@@ -239,7 +240,7 @@ export const makeProjectSetups = Effect.gen(function* () {
   const notify = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-  const stored = (what: string) => () => failure(`${ownLabel} couldn't ${what}.`);
+  const stored = (what: string) => () => failure(`${ownLabel()} couldn't ${what}.`);
 
   const toJob = (row: ProjectSetupRow): ProjectSetupJob => ({
     setupId: row.setupId,
@@ -506,7 +507,7 @@ export const makeProjectSetups = Effect.gen(function* () {
       const auth = classifyGitRemoteAuthFailure(lastError);
       const reason =
         auth !== null
-          ? `${describeGitRemoteAuthFailure(auth)} Sign in to ${auth.host ?? "it"} on ${ownLabel}, then Retry.`
+          ? `${describeGitRemoteAuthFailure(auth)} Sign in to ${auth.host ?? "it"} on ${ownLabel()}, then Retry.`
           : (lastError
               .split(/[\r\n]+/)
               .map((line) => line.trim())
@@ -544,7 +545,7 @@ export const makeProjectSetups = Effect.gen(function* () {
             addWarning(
               row,
               why === "exists"
-                ? `Kept ${ownLabel}'s own ${file.path}.`
+                ? `Kept ${ownLabel()}'s own ${file.path}.`
                 : `Couldn't write ${file.path}.`,
             ),
           ),
@@ -581,7 +582,7 @@ export const makeProjectSetups = Effect.gen(function* () {
       Effect.mapError(
         (cause) =>
           new SetupStop({
-            reason: `The copy is in place, but ${ownLabel} couldn't add it as a project: ${cause.message}`,
+            reason: `The copy is in place, but ${ownLabel()} couldn't add it as a project: ${cause.message}`,
           }),
       ),
     );
@@ -692,7 +693,7 @@ export const makeProjectSetups = Effect.gen(function* () {
                 ? stop.value.reason
                 : Option.isSome(stop) && stop.value._tag === "ProjectSetupError"
                   ? stop.value.detail
-                  : `${ownLabel} couldn't finish setting it up.`;
+                  : `${ownLabel()} couldn't finish setting it up.`;
             if (!published) yield* removeStaging(row);
             yield* setStage(
               row,
@@ -756,7 +757,7 @@ export const makeProjectSetups = Effect.gen(function* () {
           }
           const here = yield* projectsHere(input.repositoryKey, input.subdirectory);
           if (here.exact !== undefined) {
-            return yield* failure(`${ownLabel} already has ${here.exact.title}.`);
+            return yield* failure(`${ownLabel()} already has ${here.exact.title}.`);
           }
           // Another folder of this repository is already here: add this one from that copy.
           if (here.copyRoot !== null) destination = here.copyRoot;
@@ -768,7 +769,7 @@ export const makeProjectSetups = Effect.gen(function* () {
                 other.request.repositoryKey === input.repositoryKey),
           );
           if (busy !== undefined) {
-            return yield* failure(`${ownLabel} is already setting up ${busy.request.title}.`);
+            return yield* failure(`${ownLabel()} is already setting up ${busy.request.title}.`);
           }
           const state = yield* destinationState(destination, input.repositoryKey, input.remotes);
           if (state === "not-empty") return yield* failure(`${destination} isn't empty.`);
@@ -810,7 +811,7 @@ export const makeProjectSetups = Effect.gen(function* () {
             if (made._tag === "Failure") {
               yield* removeStaging(row);
               yield* setStage(row, "failed", {
-                error: `${ownLabel} couldn't make a folder next to ${destination}.`,
+                error: `${ownLabel()} couldn't make a folder next to ${destination}.`,
               });
               return toJob({ ...row, stage: "failed" });
             }
@@ -862,7 +863,7 @@ export const makeProjectSetups = Effect.gen(function* () {
       if (!published) {
         yield* removeStaging(row);
         yield* setStage(row, "failed", {
-          error: `Stopped when ${ownLabel} restarted. Retry starts it again.`,
+          error: `Stopped when ${ownLabel()} restarted. Retry starts it again.`,
         });
         return;
       }
@@ -879,7 +880,7 @@ export const makeProjectSetups = Effect.gen(function* () {
         }
       }
       if (row.stage === "copying") {
-        yield* addWarning(row, `${ownLabel} restarted while copying files; some may be missing.`);
+        yield* addWarning(row, `${ownLabel()} restarted while copying files; some may be missing.`);
       }
       yield* setStage(row, "adding");
       const added = yield* addProject(row).pipe(Effect.result);

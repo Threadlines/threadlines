@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { DeviceName, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DictationModelId } from "./dictation.ts";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -1008,6 +1008,12 @@ export const ServerSettings = Schema.Struct({
   newThreadRoomAgents: Schema.Array(NewThreadRoomAgent).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * The name the user gave this computer in Threadlines. Every device and
+   * linked computer sees it (the descriptor's `label`); `null` keeps the name
+   * the computer's system gives it (`systemLabel`). Never chosen: null.
+   */
+  computerName: Schema.NullOr(DeviceName).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1179,6 +1185,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   newThreadRoomAgents: Schema.optionalKey(Schema.Array(NewThreadRoomAgent)),
+  computerName: Schema.optionalKey(Schema.NullOr(DeviceName)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

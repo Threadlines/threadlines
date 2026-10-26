@@ -882,6 +882,7 @@ const buildAppUnderTest = (options?: {
           getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
           updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
           streamChanges: Stream.empty,
+          subscribeChanges: Effect.succeed(Stream.empty),
           ...options?.layers?.serverSettings,
         }),
       ),
@@ -1112,6 +1113,12 @@ const buildAppUnderTest = (options?: {
         Layer.mock(ServerEnvironment)({
           getEnvironmentId: Effect.succeed(testEnvironmentDescriptor.environmentId),
           getDescriptor: Effect.succeed(testEnvironmentDescriptor),
+          currentLabel: () => testEnvironmentDescriptor.label,
+          describe: (computerName) => ({
+            ...testEnvironmentDescriptor,
+            label: computerName ?? testEnvironmentDescriptor.label,
+          }),
+          labelChanges: Stream.never,
           ...options?.layers?.serverEnvironment,
         }),
       ),
@@ -3094,6 +3101,50 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes websocket rpc subscribeServerConfig sends a rename as a new snapshot", () =>
+    Effect.gen(function* () {
+      const renamed = { ...DEFAULT_SERVER_SETTINGS, computerName: "Windows PC" };
+      yield* buildAppUnderTest({
+        layers: {
+          keybindings: {
+            loadConfigState: Effect.succeed({ keybindings: [], issues: [] }),
+            streamChanges: Stream.empty,
+          },
+          providerRegistry: { getProviders: Effect.succeed([]), streamChanges: Stream.empty },
+          serverSettings: {
+            subscribeChanges: Effect.succeed(
+              Stream.make(renamed, { ...renamed, enableRooms: false }),
+            ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const events = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      );
+
+      const [first, second, third] = Array.from(events);
+      assert.equal(
+        first?.type === "snapshot" && first.config.environment.label,
+        testEnvironmentDescriptor.label,
+      );
+      // Every client version takes the computer's name from a snapshot.
+      assert.equal(second?.type, "snapshot");
+      if (second?.type === "snapshot") {
+        assert.equal(second.config.environment.label, "Windows PC");
+        assert.equal(second.config.settings.computerName, "Windows PC");
+      }
+      // Other changes stay small.
+      assert.equal(third?.type, "settingsUpdated");
+      if (third?.type === "settingsUpdated") {
+        assert.equal(third.payload.settings.enableRooms, false);
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "routes websocket rpc subscribeServerLifecycle replays snapshot and streams updates",
     () =>
@@ -3104,7 +3155,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             sequence: 1,
             type: "welcome" as const,
             payload: {
-              environment: testEnvironmentDescriptor,
+              // Published before a rename.
+              environment: { ...testEnvironmentDescriptor, label: "Old name" },
               cwd: "/tmp/project",
               projectName: "project",
             },
@@ -3139,6 +3191,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const [first, second] = Array.from(events);
         assert.equal(first?.type, "welcome");
         assert.equal(first?.sequence, 1);
+        // Replayed with the computer's name as it is now.
+        assert.equal(first?.payload.environment.label, testEnvironmentDescriptor.label);
         assert.equal(second?.type, "ready");
         assert.equal(second?.sequence, 2);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -5394,6 +5448,94 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ],
         );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("stamps a phone's messages with the name it was just given, without reconnecting", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        config: { host: "0.0.0.0" },
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: ownerCookie, "content-type": "application/json" },
+        body: HttpBody.text(JSON.stringify({ label: "iPhone" }), "application/json"),
+      });
+      const pairing = (yield* pairingResponse.json) as { readonly credential: string };
+      const phoneBootstrap = yield* bootstrapBrowserSession(pairing.credential, {
+        headers: {
+          "user-agent":
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        },
+      });
+      const phoneCookie = phoneBootstrap.cookie?.split(";")[0] ?? "";
+      const clientsResponse = yield* HttpClient.get("/api/auth/clients", {
+        headers: { cookie: ownerCookie },
+      });
+      const clients = (yield* clientsResponse.json) as ReadonlyArray<{
+        readonly sessionId: string;
+        readonly current: boolean;
+      }>;
+      const phoneSessionId = clients.find((entry) => !entry.current)?.sessionId;
+      assert.isDefined(phoneSessionId);
+      const renameUrl = yield* getHttpServerUrl("/api/auth/clients/rename");
+      const rename = (name: string | null) =>
+        Effect.promise(() =>
+          fetch(renameUrl, {
+            method: "POST",
+            headers: { cookie: ownerCookie, "content-type": "application/json" },
+            body: JSON.stringify({ sessionId: phoneSessionId, name }),
+          }),
+        );
+
+      const threadId = ThreadId.make("thread-renamed-phone");
+      const steer = (id: string) =>
+        ({
+          type: "thread.follow-up.submit",
+          commandId: CommandId.make(`cmd-${id}`),
+          threadId,
+          turnId: TurnId.make("turn-renamed-phone"),
+          message: {
+            messageId: MessageId.make(`message-${id}`),
+            role: "user",
+            text: "still there?",
+            attachments: [],
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }) as ClientOrchestrationCommand;
+      const baseUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+      const statuses = yield* Effect.scoped(
+        withWsRpcClient(appendSessionCookieToWsUrl(baseUrl, phoneCookie), (client) =>
+          Effect.gen(function* () {
+            yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](steer("before"));
+            const named = yield* rename("Kitchen phone");
+            yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](steer("named"));
+            const cleared = yield* rename(null);
+            yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](steer("cleared"));
+            return [named.status, cleared.status];
+          }),
+        ),
+      );
+
+      assert.deepEqual(statuses, [200, 200]);
+      assert.deepEqual(
+        dispatchedCommands.map((command) =>
+          "sentFrom" in command ? command.sentFrom?.name : undefined,
+        ),
+        ["iPhone", "Kitchen phone", "iPhone"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("records setup-script failures without aborting bootstrap turn start", () =>
