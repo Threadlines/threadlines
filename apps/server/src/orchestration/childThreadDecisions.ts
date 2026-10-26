@@ -1244,12 +1244,14 @@ export function decideChildDeliveriesStop(
   );
   // A report already taken off the queue and being prepared leaves nothing
   // open and nothing queued; while the thread has a family the epoch moves
-  // anyway, so that report is caught before it is sent.
+  // anyway, so that report is caught before it is sent. A thread that was
+  // never made left no family, only its report.
   if (
     open.length === 0 &&
     !hasQueuedReports &&
     attachedChildrenOf(readModel, parent.id).length === 0 &&
-    (parent.childRequests.remoteChildren ?? []).length === 0
+    (parent.childRequests.remoteChildren ?? []).length === 0 &&
+    !parent.messages.some((message) => message.fromThread?.neverMade === true)
   ) {
     return [];
   }
@@ -1323,7 +1325,9 @@ export function settleParentRequestsForUnqueued(
 /**
  * A thread is deleted. A parent's family is separated (or, with
  * `withChildren`, deleted by the caller); a child's open requests on its
- * parent are cancelled and its queued reports taken back.
+ * parent are cancelled and its queued reports taken back, whether or not it
+ * reports back, so an open start never outlives its thread (a start without
+ * a thread is one never made).
  */
 export function childDeletionEvents(
   readModel: OrchestrationReadModel,
@@ -1348,9 +1352,7 @@ export function childDeletionEvents(
       },
     }));
   const parent =
-    thread.parentThreadId !== null && thread.attachedToParent
-      ? findThread(readModel, thread.parentThreadId)
-      : null;
+    thread.parentThreadId !== null ? findThread(readModel, thread.parentThreadId) : null;
   return [
     ...familyEvents,
     ...(parent !== null

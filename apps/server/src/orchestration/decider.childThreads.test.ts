@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
-import { childReportMessageId } from "./childThreadDecisions.ts";
+import { childReportMessageId, isCancelledReport } from "./childThreadDecisions.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -686,7 +686,7 @@ describe("decider child threads", () => {
     expect(stopped.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
   });
 
-  it("a child whose setup failed before it was made still reports to the agent that asked, unless its delivery was cancelled", async () => {
+  it("a child whose setup failed before it was made still reports to the agent that asked, and Stop still catches it", async () => {
     const started = await run(
       readModel([thread(PARENT, { session: session(PARENT) })]),
       startCommand("auto"),
@@ -729,23 +729,49 @@ describe("decider child threads", () => {
     } as const;
     const sent = await run(idle, sendReport);
     expect(sent.events.map((event) => event.type)).toContain("thread.turn-start-requested");
-    // Stop takes it back; simulate one that slipped through by moving the epoch on.
-    const movedOn: OrchestrationReadModel = {
-      ...idle,
-      threads: idle.threads.map((entry) =>
-        entry.id === PARENT
-          ? {
-              ...entry,
-              childRequests: {
-                ...entry.childRequests,
-                deliveryEpoch: entry.childRequests.deliveryEpoch + 1,
-              },
-            }
-          : entry,
-      ),
-    };
-    const cancelled = await run(movedOn, sendReport);
-    expect(cancelled.events.map((event) => event.type)).toEqual(["thread.follow-up-unqueued"]);
+    // Stop while that turn is prepared still catches it: with no family left
+    // to move it, the delivery epoch moves for the report alone.
+    const stopped = await run(sent.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop"),
+      threadId: PARENT,
+      createdAt: at(7),
+    });
+    const parent = threadIn(stopped.model, PARENT);
+    const origin = parent.messages.find(
+      (message) => message.id === childReportMessageId(REQUEST),
+    )?.fromThread;
+    expect(origin !== undefined && isCancelledReport(parent, origin, null)).toBe(true);
+  });
+
+  it("deleting a child that runs on its own while it is set up settles its start, so nothing reports a thread the user deleted", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto", { reportBack: false }),
+    );
+    // Made before its setup finished (as an older build did), on its own.
+    const created = await run(started.model, {
+      type: "thread.create",
+      commandId: CommandId.make("server:child-request:request-1:create"),
+      threadId: CHILD,
+      projectId,
+      title: "Write the changelog",
+      modelSelection: model,
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      parentThreadId: PARENT,
+      parentTurnId: CALLER_TURN,
+      attachedToParent: false,
+      createdAt: at(2),
+    });
+    const deleted = await run(created.model, {
+      type: "thread.delete",
+      commandId: CommandId.make("delete-child"),
+      threadId: CHILD,
+    });
+    expect(threadIn(deleted.model, PARENT).childRequests.open).toEqual([]);
   });
 
   it("refuses to create a child with more access than its parent has now", async () => {

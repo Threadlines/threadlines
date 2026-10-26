@@ -801,6 +801,21 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                       createdAt: isoAt(302),
                       updatedAt: isoAt(302),
                     },
+                    {
+                      id: "msg-never-made-report" as MessageId,
+                      role: "user" as const,
+                      text: "Couldn't start 'Tidy the docs': Couldn't set up its worktree: disk full",
+                      fromThread: {
+                        threadId: "thread-child-never-made" as ThreadId,
+                        requestId: ChildRequestId.make("request-never-made"),
+                        kind: "report" as const,
+                        neverMade: true,
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(304),
+                      updatedAt: isoAt(304),
+                    },
                   ],
                   childRequests: {
                     ...EMPTY_CHILD_REQUEST_STATE,
@@ -937,6 +952,12 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         "reply from Windows PC",
       );
       expect(remoteReport?.querySelector("button[data-thread-message-author]")).toBeNull();
+      // One about a thread whose setup failed before it was made opens nothing.
+      const neverMadeReport = reportOf("Couldn't start 'Tidy the docs'");
+      expect(neverMadeReport?.querySelector("[data-thread-message-author]")?.textContent).toBe(
+        "A thread it asked for",
+      );
+      expect(neverMadeReport?.querySelector("button[data-thread-message-author]")).toBeNull();
 
       [...panel.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Start")

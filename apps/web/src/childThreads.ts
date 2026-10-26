@@ -112,7 +112,13 @@ export function useThreadMessageSource(
         null),
   );
   if (remoteEnvironmentId === null) {
-    return { environmentId, title: liveTitle, computer: null, openable: true };
+    // A thread that was never made has nothing to open.
+    return {
+      environmentId,
+      title: liveTitle,
+      computer: null,
+      openable: origin.neverMade !== true,
+    };
   }
   const child = remoteChildren.find((candidate) => candidate.threadId === origin.threadId);
   const parent = remoteOrigin?.threadId === origin.threadId ? remoteOrigin : null;
