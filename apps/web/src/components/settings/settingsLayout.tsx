@@ -3,7 +3,6 @@ import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
-import { useNoticeClearanceRef } from "../ui/noticeLayer";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { type SettingsSectionPath, settingsNavItemForPath } from "./settingsNavigation";
 
@@ -35,7 +34,7 @@ export const SETTINGS_GROUP_ROW_CLASS =
  * toolbar actions), and one line under it saying what the page holds. Title
  * and description come from the settings menu entry; pages outside the menu
  * pass their own. Below `md` the mobile header already names the page, so the
- * title hides. Notices start below it, so they never cover its actions.
+ * title hides.
  */
 export function SettingsPageHeader({
   section,
@@ -51,9 +50,8 @@ export function SettingsPageHeader({
   const navItem = section ? settingsNavItemForPath(section) : null;
   const resolvedTitle = title ?? navItem?.label;
   const resolvedDescription = description ?? navItem?.description;
-  const noticeClearanceRef = useNoticeClearanceRef();
   return (
-    <header className="space-y-1 px-1" ref={noticeClearanceRef}>
+    <header className="space-y-1 px-1">
       {resolvedTitle || actions ? (
         // Below `md` the title is hidden, so the line exists only for actions.
         <div className={cn("items-center gap-3 md:min-h-7", actions ? "flex" : "hidden md:flex")}>
