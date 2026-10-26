@@ -29,6 +29,15 @@ import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
  */
 const APP_OVERLAY_LAYER = 50;
 
+/**
+ * Notice clocks run only while the window is in front (shown and focused). A
+ * spec's frame has focus only if an earlier spec happened to move it there,
+ * so the clock specs put the window in front themselves.
+ */
+function putWindowInFront() {
+  return vi.spyOn(document, "hasFocus").mockReturnValue(true);
+}
+
 describe("toast layering", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -159,6 +168,7 @@ describe("notice reasons and clocks", () => {
   });
 
   it("starts a notice's clock only once it gets a slot in the stack", async () => {
+    const windowInFront = putWindowInFront();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const mounted = await render(
       <ToastProvider>
@@ -186,10 +196,13 @@ describe("notice reasons and clocks", () => {
       expect(oldest!.closest("[data-ending-style]")).toBeNull();
     } finally {
       await mounted.unmount();
+      windowInFront.mockRestore();
     }
   });
 
   it("holds every clock while the pointer is on the stack", async () => {
+    // In front, so the hold below is the pointer's and not a stopped clock's.
+    const windowInFront = putWindowInFront();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const mounted = await render(
       <ToastProvider>
@@ -213,6 +226,7 @@ describe("notice reasons and clocks", () => {
       expect(root.hasAttribute("data-ending-style")).toBe(false);
     } finally {
       await mounted.unmount();
+      windowInFront.mockRestore();
     }
   });
 });
