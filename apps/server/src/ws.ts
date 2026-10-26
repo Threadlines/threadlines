@@ -102,6 +102,7 @@ import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { PreviewTunnel } from "./preview/PreviewTunnel.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
+import { PullRequestObservations } from "./pullRequest/PullRequestObservations.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { readCodexInlineVisualization } from "./provider/CodexInlineVisualization.ts";
@@ -460,6 +461,7 @@ const makeWsRpcLayer = (
       const gitWorkflow = yield* GitWorkflowService;
       const gitAuthRemediation = yield* GitAuthRemediationService;
       const pullRequests = yield* PullRequestService;
+      const pullRequestObservations = yield* PullRequestObservations;
       const vcsProvisioning = yield* VcsProvisioningService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const previewTunnel = yield* PreviewTunnel;
@@ -2269,6 +2271,20 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsRefreshRemoteStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsRefreshRemoteStatus,
+            Effect.gen(function* () {
+              // Automatic fetching turned off means git reaches the remote only
+              // when the user asks it to, so this reads nothing new either.
+              const interval = yield* automaticGitFetchInterval;
+              if (Duration.isZero(interval)) return;
+              yield* vcsStatusBroadcaster.refreshRemoteStatus(input.cwd, {
+                upstreamMaxAgeMs: input.upstreamMaxAgeMs,
+              });
+            }),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsRefreshLocalStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRefreshLocalStatus,
@@ -2411,6 +2427,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.pullRequestsLookup, pullRequests.lookup(input), {
             "rpc.aggregate": "pullRequests",
           }),
+        [WS_METHODS.pullRequestsSubscribeObservations]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.pullRequestsSubscribeObservations,
+            Effect.succeed(pullRequestObservations.stream),
+            { "rpc.aggregate": "pullRequests" },
+          ),
         [WS_METHODS.pullRequestsDetail]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
             "rpc.aggregate": "pullRequests",

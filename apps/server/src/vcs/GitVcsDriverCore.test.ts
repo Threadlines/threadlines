@@ -5,6 +5,7 @@ import { setTimeout as sleepRealTime } from "node:timers/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
 import * as Data from "effect/Data";
+import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -845,6 +846,41 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const refreshedStatus = yield* driver.statusDetailsRemote(cwd, { forceRefresh: true });
         assert.equal(refreshedStatus.behindCount, 1);
       }),
+    );
+
+    it.effect(
+      "fetches an upstream older than a caller asks for, ahead of the usual two minutes",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          yield* git(remote, ["init", "--bare"]);
+          yield* git(cwd, ["remote", "add", "origin", remote]);
+          yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+          assert.equal((yield* driver.statusDetailsRemote(cwd)).behindCount, 0);
+
+          const peer = yield* makeTmpDir("git-vcs-driver-peer-");
+          yield* git(peer, ["clone", "--branch", initialBranch, remote, "."]);
+          yield* git(peer, ["config", "user.email", "test@test.com"]);
+          yield* git(peer, ["config", "user.name", "Test"]);
+          yield* writeTextFile(peer, "peer.txt", "peer\n");
+          yield* git(peer, ["add", "."]);
+          yield* git(peer, ["commit", "-m", "peer advances remote"]);
+          yield* git(peer, ["push", "origin", initialBranch]);
+
+          // Fetched just now: fresh enough for a caller asking for half a minute.
+          const fresh = yield* driver.statusDetailsRemote(cwd, { upstreamMaxAgeMs: 30_000 });
+          assert.equal(fresh.behindCount, 0);
+
+          yield* TestClock.adjust("31 seconds");
+          // Everyone else still waits out the two minutes...
+          assert.equal((yield* driver.statusDetailsRemote(cwd)).behindCount, 0);
+          // ...but a caller asking for a fetch from the last half minute gets one.
+          const refreshed = yield* driver.statusDetailsRemote(cwd, { upstreamMaxAgeMs: 30_000 });
+          assert.equal(refreshed.behindCount, 1);
+        }),
     );
 
     it.effect("uses origin HEAD for default-branch detection with a non-origin upstream", () =>

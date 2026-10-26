@@ -1,3 +1,4 @@
+import { readConnectedComputerCapability } from "../environments/computerCapabilities";
 import {
   type ClientOrchestrationCommand,
   type OrchestrationAgentPage,
@@ -193,7 +194,7 @@ import { cn, randomUUID } from "~/lib/utils";
 import { CommandRunActionsContext } from "./chat/CommandRuns";
 import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadSeenAt } from "~/lib/threadInboxSync";
-import { isPageAttended, onPageAttentionChange } from "~/lib/pageAttention";
+import { isPageAttended, onPageAttentionChange, SurfaceShownContext } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 import { addComputerNotConnectedNotice, reconnectComputer } from "./computerConnectionNotices";
@@ -1230,6 +1231,9 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     </div>
   );
 });
+
+/** How recent a fetch of a new thread's checkout has to be before its ↓N counts. */
+const NEW_THREAD_UPSTREAM_MAX_AGE_MS = 30_000;
 
 export default function ChatView(props: ChatViewProps) {
   const { environmentId, threadId, routeKind, onDiffPanelOpen, composerFocusRequest = 0 } = props;
@@ -2856,6 +2860,20 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+  // A new thread is about to start on this checkout: its upstream is fetched
+  // unless that happened in the last half minute, so the header's ↓N says how
+  // far behind the remote it really is before the first message goes. Again
+  // whenever the checkout it would start on changes, and for each draft opened,
+  // which can reuse this view on the same checkout.
+  const freshensNewThreadCheckout =
+    !isServerThread && gitCwd !== null && activeProject?.kind !== "general-chat";
+  useEffect(() => {
+    if (!freshensNewThreadCheckout || gitCwd === null || draftId === null) return;
+    if (!readConnectedComputerCapability(environmentId, "remoteStatusRefresh")) return;
+    void readEnvironmentApi(environmentId)
+      ?.vcs.refreshRemoteStatus({ cwd: gitCwd, upstreamMaxAgeMs: NEW_THREAD_UPSTREAM_MAX_AGE_MS })
+      .catch(() => undefined);
+  }, [draftId, environmentId, freshensNewThreadCheckout, gitCwd]);
   // A thread that owns its worktree follows the branch that worktree is on: a
   // checkout switched from the shell or by the agent must not leave the record,
   // and with it the pull request badge, on the branch the thread began with.
@@ -8114,334 +8132,339 @@ export default function ChatView(props: ChatViewProps) {
         {/* Chat column. On a pristine draft with room for it (the `draft-hero`
             variant, see useDraftHero) the timeline shrinks to the question, the
             composer rises to the middle and the column scrolls as one. */}
-        <div
-          ref={setChatColumnElement}
-          data-chat-column=""
-          data-find-region="chat"
-          className={cn(
-            "flex min-h-0 min-w-0 flex-col draft-hero:overflow-y-auto draft-hero:overscroll-y-contain",
-            browserOpen && browserExpanded && "hidden",
-          )}
-          style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
-        >
-          {/* Messages Wrapper */}
-          <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
-            <HeaderEdgeFade at="top" />
-            {/* Messages — LegendList handles virtualization and scrolling internally */}
-            <CommandRunActionsContext value={commandRunActions}>
-              <MessagesTimeline
-                key={activeThread.id}
-                emptyState={draftTimelineEmptyState}
-                detailPending={isServerThread && !threadDetailLoaded}
-                savedEnvironmentConnected={
-                  activeSavedEnvironmentRecord === null ? undefined : !activeEnvironmentUnavailable
-                }
-                isWorking={isWorking}
-                isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
-                awaitedTasks={awaitedTasks}
-                checkBacks={activeThread.checkBacks}
-                onCancelCheckBack={cancelCheckBack}
-                onPutMcpAppMessage={putMcpAppMessage}
-                activeStatusLabel={activeStatusLabel}
-                activeTurnInProgress={isWorking || !latestTurnSettled}
-                activeTurnId={activeLatestTurn?.turnId ?? null}
-                activeTurnStartedAt={activeWorkStartedAt}
-                listRef={legendListRef}
-                stickToBottomRequestKey={stickToBottomRequestKey}
-                timelineEntries={timelineEntries}
-                sideAnswers={sideAnswers}
-                onStopSideAnswer={stopSideAnswer}
-                turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-                activeThreadEnvironmentId={activeThread.environmentId}
-                activeThreadId={activeThread.id}
-                routeThreadKey={routeThreadKey}
-                onOpenTurnDiff={onOpenTurnDiff}
-                revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-                roomAgents={roomAgentLabels}
-                agentModelLabeler={agentModelLabeler}
-                ownAgentLabels={ownAgentLabels}
-                workingParticipantId={activeThread.session?.participantId ?? null}
-                {...(activeThread.agentRequests
-                  ? { openAgentRequests: activeThread.agentRequests.open }
-                  : {})}
-                onRevertUserMessage={onRevertUserMessage}
-                onContinueInNewThread={onContinueMessageInNewThread}
-                onRevealPickedElement={isElectron ? revealPickedElement : undefined}
-                onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
-                isRevertingCheckpoint={isRevertingCheckpoint}
-                onImageExpand={openExpandedImagePreview}
-                onPreviewFile={onPreviewFile}
-                markdownCwd={gitCwd ?? undefined}
-                resolvedTheme={resolvedTheme}
-                timestampFormat={timestampFormat}
-                workspaceRoot={activeWorkspaceRoot}
-                skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-                failedTurnRetry={failedTurnRetryAction}
-                onRunProviderAuthReconnect={runProviderAuthReconnect}
-                mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
-                onRunMcpAuthReconnect={runMcpAuthReconnect}
-                onIsAtEndChange={onIsAtEndChange}
-                onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
-                searchTarget={timelineSearchTarget}
-                planScrollTarget={planScrollTarget}
-                proposedPlanState={timelineProposedPlanState}
-                turnAgents={timelineTurnAgents}
-                onOpenAgentsPanel={onOpenAgentsPanel}
-                workflowRunActions={workflowRunActions}
-                onOpenThread={onOpenForkSourceThread}
-                scheduledRunLabel={scheduledRunLabel}
-                scheduledRunEvent={activeThread.scheduledRun?.event === true}
-              />
-            </CommandRunActionsContext>
-            {/* An MCP app open beside the chat: outside the timeline, so it keeps
-                running when its card scrolls away. */}
-            <McpAppSidePanel
-              environmentId={environmentId}
-              threadId={activeThreadId ?? null}
-              onPutMessage={putMcpAppMessage}
-            />
-
-            {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
-            {showScrollToBottom && (
-              <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 py-1.5">
-                <button
-                  type="button"
-                  aria-label="Scroll to bottom"
-                  onClick={() => {
-                    void requestTimelineStickToBottom(true);
-                  }}
-                  className="pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
-                >
-                  <ChevronDownIcon className="size-4" />
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Input bar */}
+        {/* The expanded browser covers the chat; what it shows stops polling. */}
+        <SurfaceShownContext value={!(browserOpen && browserExpanded)}>
           <div
-            ref={setInputBarElement}
+            ref={setChatColumnElement}
+            data-chat-column=""
+            data-find-region="chat"
             className={cn(
-              "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
-              isGitRepo
-                ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
-                : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+              "flex min-h-0 min-w-0 flex-col draft-hero:overflow-y-auto draft-hero:overscroll-y-contain",
+              browserOpen && browserExpanded && "hidden",
             )}
+            style={browserOpen ? { flex: `${splitChatFraction} 1 0%` } : { flex: "1 1 0%" }}
           >
-            <div className="relative isolate mx-auto w-full draft-hero:max-w-[45rem]">
-              <div className="relative z-10">
-                <ChatComposer
-                  composerRef={composerRef}
-                  composerDraftTarget={composerDraftTarget}
-                  environmentId={environmentId}
-                  routeKind={routeKind}
-                  routeThreadRef={routeThreadRef}
-                  draftId={draftId}
-                  activeThreadId={activeThreadId}
-                  activeThreadEnvironmentId={activeThread?.environmentId}
-                  activeThread={activeThread}
-                  isLocalDraftThread={isLocalDraftThread}
-                  serverThreadExists={serverThread !== undefined}
-                  phase={phase}
-                  isConnecting={isConnecting}
-                  isSendBusy={isSendBusy}
-                  isPreparingWorktree={isPreparingWorktree}
-                  environmentUnavailable={activeEnvironmentUnavailableState}
-                  threadLocked={threadMoveComposerLock}
-                  activePendingApproval={activePendingApproval}
-                  pendingApprovals={pendingApprovals}
-                  pendingUserInputs={pendingUserInputs}
-                  activePendingDraftAnswers={activePendingDraftAnswers}
-                  activePendingQuestionIndex={activePendingQuestionIndex}
-                  respondingRequestIds={respondingRequestIds}
-                  respondingUserInputRequestIds={respondingUserInputRequestIds}
-                  isTimelineScrolledAway={isTimelineScrolledFarFromEnd}
-                  showPlanFollowUpPrompt={showPlanFollowUpPrompt}
-                  activeProposedPlan={activeProposedPlan}
-                  runtimeMode={runtimeMode}
-                  interactionMode={interactionMode}
-                  // Unlocked so every instance's models are selectable;
-                  // `onProviderModelSelect` gates a switch the thread can't
-                  // resume natively (another agent or account) behind the
-                  // handoff confirmation.
-                  lockedProvider={null}
-                  providerStatuses={providerStatuses as ServerProvider[]}
-                  // A local draft has not chosen a concrete model yet. Ignore
-                  // its placeholder Thread value so the composer can resolve
-                  // the active provider instance's live `isDefault` model.
-                  activeThreadModelSelection={
-                    isLocalDraftThread ? null : activeThread?.modelSelection
+            {/* Messages Wrapper */}
+            <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
+              <HeaderEdgeFade at="top" />
+              {/* Messages — LegendList handles virtualization and scrolling internally */}
+              <CommandRunActionsContext value={commandRunActions}>
+                <MessagesTimeline
+                  key={activeThread.id}
+                  emptyState={draftTimelineEmptyState}
+                  detailPending={isServerThread && !threadDetailLoaded}
+                  savedEnvironmentConnected={
+                    activeSavedEnvironmentRecord === null
+                      ? undefined
+                      : !activeEnvironmentUnavailable
                   }
-                  activeThreadActivities={activeThread ? threadActivities : undefined}
-                  notices={dockedComposerNotices}
-                  pullRequests={composerPullRequests}
-                  stackedAbove={
-                    <ComposerFollowUpQueue
-                      steering={queuedSteeringMessages}
-                      queued={queuedFollowUps}
-                      paused={!isWorking && !waitingOnBackgroundTasks}
-                      attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
-                      roomAgents={roomAgentLabels}
-                      environmentId={environmentId}
-                      onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
-                      onRemove={removeQueuedFollowUp}
-                    />
-                  }
-                  resolvedTheme={resolvedTheme}
-                  settings={settings}
-                  roomsEnabled={roomsEnabled}
-                  keybindings={keybindings}
-                  terminalOpen={Boolean(terminalState.terminalOpen)}
-                  gitCwd={gitCwd}
-                  canReferenceWorkspaceFiles={!isGeneralChatThread && gitCwd !== null}
-                  promptRef={promptRef}
-                  composerAttachmentsRef={composerAttachmentsRef}
-                  composerTerminalContextsRef={composerTerminalContextsRef}
-                  composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
-                  composerFileSelectionContextsRef={composerFileSelectionContextsRef}
-                  composerPickedElementContextsRef={composerPickedElementContextsRef}
+                  isWorking={isWorking}
+                  isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
+                  awaitedTasks={awaitedTasks}
+                  checkBacks={activeThread.checkBacks}
+                  onCancelCheckBack={cancelCheckBack}
+                  onPutMcpAppMessage={putMcpAppMessage}
+                  activeStatusLabel={activeStatusLabel}
+                  activeTurnInProgress={isWorking || !latestTurnSettled}
+                  activeTurnId={activeLatestTurn?.turnId ?? null}
+                  activeTurnStartedAt={activeWorkStartedAt}
+                  listRef={legendListRef}
+                  stickToBottomRequestKey={stickToBottomRequestKey}
+                  timelineEntries={timelineEntries}
+                  sideAnswers={sideAnswers}
+                  onStopSideAnswer={stopSideAnswer}
+                  turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                  activeThreadEnvironmentId={activeThread.environmentId}
+                  activeThreadId={activeThread.id}
+                  routeThreadKey={routeThreadKey}
+                  onOpenTurnDiff={onOpenTurnDiff}
+                  revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                  roomAgents={roomAgentLabels}
+                  agentModelLabeler={agentModelLabeler}
+                  ownAgentLabels={ownAgentLabels}
+                  workingParticipantId={activeThread.session?.participantId ?? null}
+                  {...(activeThread.agentRequests
+                    ? { openAgentRequests: activeThread.agentRequests.open }
+                    : {})}
+                  onRevertUserMessage={onRevertUserMessage}
+                  onContinueInNewThread={onContinueMessageInNewThread}
                   onRevealPickedElement={isElectron ? revealPickedElement : undefined}
-                  shouldAutoScrollRef={isAtEndRef}
-                  scheduleStickToBottom={scheduleTimelineStickToBottom}
-                  onSend={onSend}
-                  workflowKeywordSuppressed={workflowKeywordSuppressed}
-                  onToggleWorkflowKeyword={toggleWorkflowKeyword}
-                  onInterrupt={onInterrupt}
-                  onStopBackgroundWork={stopBackgroundWork}
-                  onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
-                  goalControls={goalControls}
-                  goalDispatching={
-                    activeThread !== undefined && goalDispatchingThreadId === activeThread.id
-                  }
-                  optimisticGoal={
-                    activeThread !== undefined
-                      ? (optimisticGoals.get(activeThread.id)?.goal ?? null)
-                      : null
-                  }
-                  onSetThreadGoal={onSetThreadGoal}
-                  onClearThreadGoal={onClearThreadGoal}
-                  contextCompactDisabled={
-                    contextCompactControlVisible ? contextCompactDisabled : undefined
-                  }
-                  contextCompactInFlight={
-                    contextCompactControlVisible ? contextCompactInFlight : undefined
-                  }
-                  contextCompactDisabledReason={
-                    contextCompactControlVisible ? contextCompactDisabledReason : undefined
-                  }
-                  onImplementPlanInNewThread={onImplementPlanInNewThread}
-                  onRespondToApproval={onRespondToApproval}
-                  onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-                  onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-                  onRespondToUserInput={onRespondToUserInput}
-                  onPreviousActivePendingUserInputQuestion={
-                    onPreviousActivePendingUserInputQuestion
-                  }
-                  onChangeActivePendingUserInputCustomAnswer={
-                    onChangeActivePendingUserInputCustomAnswer
-                  }
-                  onProviderModelSelect={onProviderModelSelect}
-                  toggleInteractionMode={toggleInteractionMode}
-                  handleRuntimeModeChange={handleRuntimeModeChange}
-                  handleInteractionModeChange={handleInteractionModeChange}
-                  focusComposer={focusComposer}
-                  setThreadError={setThreadError}
-                  onExpandImage={openExpandedImagePreview}
+                  onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
+                  isRevertingCheckpoint={isRevertingCheckpoint}
+                  onImageExpand={openExpandedImagePreview}
                   onPreviewFile={onPreviewFile}
+                  markdownCwd={gitCwd ?? undefined}
+                  resolvedTheme={resolvedTheme}
+                  timestampFormat={timestampFormat}
+                  workspaceRoot={activeWorkspaceRoot}
+                  skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                  failedTurnRetry={failedTurnRetryAction}
+                  onRunProviderAuthReconnect={runProviderAuthReconnect}
+                  mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
+                  onRunMcpAuthReconnect={runMcpAuthReconnect}
+                  onIsAtEndChange={onIsAtEndChange}
+                  onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
+                  searchTarget={timelineSearchTarget}
+                  planScrollTarget={planScrollTarget}
+                  proposedPlanState={timelineProposedPlanState}
+                  turnAgents={timelineTurnAgents}
+                  onOpenAgentsPanel={onOpenAgentsPanel}
+                  workflowRunActions={workflowRunActions}
+                  onOpenThread={onOpenForkSourceThread}
+                  scheduledRunLabel={scheduledRunLabel}
+                  scheduledRunEvent={activeThread.scheduledRun?.event === true}
                 />
-                <AlertDialog
-                  open={pendingModelHandoff?.open === true}
-                  onOpenChange={(open) => {
-                    if (!open) closeModelHandoffDialog();
-                  }}
-                >
-                  <AlertDialogPopup>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>{pendingModelHandoff?.copy.title}</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        {pendingModelHandoff?.copy.description}
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-muted-foreground text-sm">
-                      <Checkbox
-                        checked={crossProviderDontAskAgain}
-                        onCheckedChange={(checked) =>
-                          setCrossProviderDontAskAgain(checked === true)
-                        }
-                      />
-                      Don't ask again
-                    </label>
-                    <AlertDialogFooter>
-                      <AlertDialogClose render={<Button variant="outline" />}>
-                        Cancel
-                      </AlertDialogClose>
-                      <Button onClick={confirmModelHandoff}>
-                        {pendingModelHandoff?.copy.confirmLabel}
-                      </Button>
-                    </AlertDialogFooter>
-                  </AlertDialogPopup>
-                </AlertDialog>
-              </div>
-            </div>
-            {isGitRepo && (
-              <BranchToolbar
-                environmentId={activeThread.environmentId}
-                threadId={activeThread.id}
-                {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                onEnvModeChange={onEnvModeChange}
-                {...(canOverrideServerThreadEnvMode || isPreparingWorktree
-                  ? { effectiveEnvModeOverride: envMode }
-                  : {})}
-                {...(canOverrideServerThreadEnvMode
-                  ? {
-                      activeThreadBranchOverride: activeThreadBranch,
-                      activeThreadBranchOverrideFromSetting:
-                        pendingServerThreadBase?.fromSetting === true,
-                      onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
-                    }
-                  : {})}
-                envLocked={envLocked}
-                onComposerFocusRequest={scheduleComposerFocus}
-                {...(canCheckoutPullRequestIntoThread
-                  ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                  : {})}
-                {...(hasMultipleEnvironments || setupTargets.length > 0
-                  ? { onEnvironmentChange }
-                  : {})}
-                {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
-                availableEnvironments={logicalProjectEnvironments}
+              </CommandRunActionsContext>
+              {/* An MCP app open beside the chat: outside the timeline, so it keeps
+                  running when its card scrolls away. */}
+              <McpAppSidePanel
+                environmentId={environmentId}
+                threadId={activeThreadId ?? null}
+                onPutMessage={putMcpAppMessage}
               />
-            )}
-          </div>
 
-          {/* Under the hero's composer: where the user left off. Mounted for
-              any roomy draft and shown by the marker, so it appears and leaves
-              in the same frame as the hero itself. */}
-          {isLocalDraftThread && draftHeroCapable ? (
-            <div className="hidden w-full flex-col items-center px-4 pb-8 draft-hero:mb-auto draft-hero:flex">
-              <div className="flex w-full max-w-[45rem] flex-col items-center">
-                <DraftRecentThreads isGeneralChat={isGeneralChatThread} />
-              </div>
+              {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
+              {showScrollToBottom && (
+                <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 py-1.5">
+                  <button
+                    type="button"
+                    aria-label="Scroll to bottom"
+                    onClick={() => {
+                      void requestTimelineStickToBottom(true);
+                    }}
+                    className="pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
+                  >
+                    <ChevronDownIcon className="size-4" />
+                  </button>
+                </div>
+              )}
             </div>
-          ) : null}
 
-          {pullRequestDialogState ? (
-            <PullRequestThreadDialog
-              key={pullRequestDialogState.key}
-              open
-              environmentId={activeThread.environmentId}
-              threadId={pullRequestDialogState.threadId}
-              cwd={activeProject?.cwd ?? null}
-              initialReference={pullRequestDialogState.initialReference}
-              onOpenChange={(open) => {
-                if (!open) {
-                  closePullRequestDialog();
-                }
-              }}
-              onPrepared={handlePreparedPullRequestThread}
-            />
-          ) : null}
-        </div>
+            {/* Input bar */}
+            <div
+              ref={setInputBarElement}
+              className={cn(
+                "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
+                isGitRepo
+                  ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
+                  : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+              )}
+            >
+              <div className="relative isolate mx-auto w-full draft-hero:max-w-[45rem]">
+                <div className="relative z-10">
+                  <ChatComposer
+                    composerRef={composerRef}
+                    composerDraftTarget={composerDraftTarget}
+                    environmentId={environmentId}
+                    routeKind={routeKind}
+                    routeThreadRef={routeThreadRef}
+                    draftId={draftId}
+                    activeThreadId={activeThreadId}
+                    activeThreadEnvironmentId={activeThread?.environmentId}
+                    activeThread={activeThread}
+                    isLocalDraftThread={isLocalDraftThread}
+                    serverThreadExists={serverThread !== undefined}
+                    phase={phase}
+                    isConnecting={isConnecting}
+                    isSendBusy={isSendBusy}
+                    isPreparingWorktree={isPreparingWorktree}
+                    environmentUnavailable={activeEnvironmentUnavailableState}
+                    threadLocked={threadMoveComposerLock}
+                    activePendingApproval={activePendingApproval}
+                    pendingApprovals={pendingApprovals}
+                    pendingUserInputs={pendingUserInputs}
+                    activePendingDraftAnswers={activePendingDraftAnswers}
+                    activePendingQuestionIndex={activePendingQuestionIndex}
+                    respondingRequestIds={respondingRequestIds}
+                    respondingUserInputRequestIds={respondingUserInputRequestIds}
+                    isTimelineScrolledAway={isTimelineScrolledFarFromEnd}
+                    showPlanFollowUpPrompt={showPlanFollowUpPrompt}
+                    activeProposedPlan={activeProposedPlan}
+                    runtimeMode={runtimeMode}
+                    interactionMode={interactionMode}
+                    // Unlocked so every instance's models are selectable;
+                    // `onProviderModelSelect` gates a switch the thread can't
+                    // resume natively (another agent or account) behind the
+                    // handoff confirmation.
+                    lockedProvider={null}
+                    providerStatuses={providerStatuses as ServerProvider[]}
+                    // A local draft has not chosen a concrete model yet. Ignore
+                    // its placeholder Thread value so the composer can resolve
+                    // the active provider instance's live `isDefault` model.
+                    activeThreadModelSelection={
+                      isLocalDraftThread ? null : activeThread?.modelSelection
+                    }
+                    activeThreadActivities={activeThread ? threadActivities : undefined}
+                    notices={dockedComposerNotices}
+                    pullRequests={composerPullRequests}
+                    stackedAbove={
+                      <ComposerFollowUpQueue
+                        steering={queuedSteeringMessages}
+                        queued={queuedFollowUps}
+                        paused={!isWorking && !waitingOnBackgroundTasks}
+                        attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+                        roomAgents={roomAgentLabels}
+                        environmentId={environmentId}
+                        onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
+                        onRemove={removeQueuedFollowUp}
+                      />
+                    }
+                    resolvedTheme={resolvedTheme}
+                    settings={settings}
+                    roomsEnabled={roomsEnabled}
+                    keybindings={keybindings}
+                    terminalOpen={Boolean(terminalState.terminalOpen)}
+                    gitCwd={gitCwd}
+                    canReferenceWorkspaceFiles={!isGeneralChatThread && gitCwd !== null}
+                    promptRef={promptRef}
+                    composerAttachmentsRef={composerAttachmentsRef}
+                    composerTerminalContextsRef={composerTerminalContextsRef}
+                    composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
+                    composerFileSelectionContextsRef={composerFileSelectionContextsRef}
+                    composerPickedElementContextsRef={composerPickedElementContextsRef}
+                    onRevealPickedElement={isElectron ? revealPickedElement : undefined}
+                    shouldAutoScrollRef={isAtEndRef}
+                    scheduleStickToBottom={scheduleTimelineStickToBottom}
+                    onSend={onSend}
+                    workflowKeywordSuppressed={workflowKeywordSuppressed}
+                    onToggleWorkflowKeyword={toggleWorkflowKeyword}
+                    onInterrupt={onInterrupt}
+                    onStopBackgroundWork={stopBackgroundWork}
+                    onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
+                    goalControls={goalControls}
+                    goalDispatching={
+                      activeThread !== undefined && goalDispatchingThreadId === activeThread.id
+                    }
+                    optimisticGoal={
+                      activeThread !== undefined
+                        ? (optimisticGoals.get(activeThread.id)?.goal ?? null)
+                        : null
+                    }
+                    onSetThreadGoal={onSetThreadGoal}
+                    onClearThreadGoal={onClearThreadGoal}
+                    contextCompactDisabled={
+                      contextCompactControlVisible ? contextCompactDisabled : undefined
+                    }
+                    contextCompactInFlight={
+                      contextCompactControlVisible ? contextCompactInFlight : undefined
+                    }
+                    contextCompactDisabledReason={
+                      contextCompactControlVisible ? contextCompactDisabledReason : undefined
+                    }
+                    onImplementPlanInNewThread={onImplementPlanInNewThread}
+                    onRespondToApproval={onRespondToApproval}
+                    onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
+                    onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                    onRespondToUserInput={onRespondToUserInput}
+                    onPreviousActivePendingUserInputQuestion={
+                      onPreviousActivePendingUserInputQuestion
+                    }
+                    onChangeActivePendingUserInputCustomAnswer={
+                      onChangeActivePendingUserInputCustomAnswer
+                    }
+                    onProviderModelSelect={onProviderModelSelect}
+                    toggleInteractionMode={toggleInteractionMode}
+                    handleRuntimeModeChange={handleRuntimeModeChange}
+                    handleInteractionModeChange={handleInteractionModeChange}
+                    focusComposer={focusComposer}
+                    setThreadError={setThreadError}
+                    onExpandImage={openExpandedImagePreview}
+                    onPreviewFile={onPreviewFile}
+                  />
+                  <AlertDialog
+                    open={pendingModelHandoff?.open === true}
+                    onOpenChange={(open) => {
+                      if (!open) closeModelHandoffDialog();
+                    }}
+                  >
+                    <AlertDialogPopup>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>{pendingModelHandoff?.copy.title}</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {pendingModelHandoff?.copy.description}
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-muted-foreground text-sm">
+                        <Checkbox
+                          checked={crossProviderDontAskAgain}
+                          onCheckedChange={(checked) =>
+                            setCrossProviderDontAskAgain(checked === true)
+                          }
+                        />
+                        Don't ask again
+                      </label>
+                      <AlertDialogFooter>
+                        <AlertDialogClose render={<Button variant="outline" />}>
+                          Cancel
+                        </AlertDialogClose>
+                        <Button onClick={confirmModelHandoff}>
+                          {pendingModelHandoff?.copy.confirmLabel}
+                        </Button>
+                      </AlertDialogFooter>
+                    </AlertDialogPopup>
+                  </AlertDialog>
+                </div>
+              </div>
+              {isGitRepo && (
+                <BranchToolbar
+                  environmentId={activeThread.environmentId}
+                  threadId={activeThread.id}
+                  {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                  onEnvModeChange={onEnvModeChange}
+                  {...(canOverrideServerThreadEnvMode || isPreparingWorktree
+                    ? { effectiveEnvModeOverride: envMode }
+                    : {})}
+                  {...(canOverrideServerThreadEnvMode
+                    ? {
+                        activeThreadBranchOverride: activeThreadBranch,
+                        activeThreadBranchOverrideFromSetting:
+                          pendingServerThreadBase?.fromSetting === true,
+                        onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
+                      }
+                    : {})}
+                  envLocked={envLocked}
+                  onComposerFocusRequest={scheduleComposerFocus}
+                  {...(canCheckoutPullRequestIntoThread
+                    ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+                    : {})}
+                  {...(hasMultipleEnvironments || setupTargets.length > 0
+                    ? { onEnvironmentChange }
+                    : {})}
+                  {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
+                  availableEnvironments={logicalProjectEnvironments}
+                />
+              )}
+            </div>
+
+            {/* Under the hero's composer: where the user left off. Mounted for
+                any roomy draft and shown by the marker, so it appears and leaves
+                in the same frame as the hero itself. */}
+            {isLocalDraftThread && draftHeroCapable ? (
+              <div className="hidden w-full flex-col items-center px-4 pb-8 draft-hero:mb-auto draft-hero:flex">
+                <div className="flex w-full max-w-[45rem] flex-col items-center">
+                  <DraftRecentThreads isGeneralChat={isGeneralChatThread} />
+                </div>
+              </div>
+            ) : null}
+
+            {pullRequestDialogState ? (
+              <PullRequestThreadDialog
+                key={pullRequestDialogState.key}
+                open
+                environmentId={activeThread.environmentId}
+                threadId={pullRequestDialogState.threadId}
+                cwd={activeProject?.cwd ?? null}
+                initialReference={pullRequestDialogState.initialReference}
+                onOpenChange={(open) => {
+                  if (!open) {
+                    closePullRequestDialog();
+                  }
+                }}
+                onPrepared={handlePreparedPullRequestThread}
+              />
+            ) : null}
+          </div>
+        </SurfaceShownContext>
         {/* end chat column */}
         {browserOpen && routeThreadRef !== null ? (
           <>

@@ -101,6 +101,8 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       threadMove: true,
       projectSetup: true,
       stallReports: true,
+      pullRequestObservations: true,
+      remoteStatusRefresh: true,
       terminalTabLists: true,
       signInAddressReplay: true,
       outsideAgents: true,

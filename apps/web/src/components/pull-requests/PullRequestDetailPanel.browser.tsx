@@ -175,7 +175,7 @@ async function renderComposerPullRequest(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
+  const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE);
   queryClient.setQueryData(queryKey, detail);
   function Composer() {
     return (
@@ -184,7 +184,13 @@ async function renderComposerPullRequest(
         pullRequest={{
           environmentId: ENVIRONMENT_ID,
           reference: REFERENCE,
-          pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+          pullRequest: {
+            ...DETAIL,
+            autoMergeEnabled: false,
+            settledAt: null,
+            diffStat: null,
+            observedAt: null,
+          },
           pushedHead: null,
           projectTitle: DETAIL.projectTitle,
           onOpen,
@@ -412,7 +418,13 @@ describe("Composer pull request merge controls", () => {
           pullRequest={{
             environmentId: ENVIRONMENT_ID,
             reference: REFERENCE,
-            pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+            pullRequest: {
+              ...DETAIL,
+              autoMergeEnabled: false,
+              settledAt: null,
+              diffStat: null,
+              observedAt: null,
+            },
             pushedHead,
             projectTitle: DETAIL.projectTitle,
             onOpen: vi.fn(),
@@ -446,10 +458,7 @@ describe("Composer pull request merge controls", () => {
       pullRequests: { detail: readDetail },
     } as unknown as EnvironmentApi);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(
-      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
-      BEFORE_PUSH,
-    );
+    queryClient.setQueryData(pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE), BEFORE_PUSH);
     const screen = await renderPushedRow(queryClient);
     try {
       await expect
@@ -482,11 +491,9 @@ describe("Composer pull request merge controls", () => {
     } as unknown as EnvironmentApi);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     // Read a minute before the thread was opened again.
-    queryClient.setQueryData(
-      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
-      BEFORE_PUSH,
-      { updatedAt: Date.now() - 60_000 },
-    );
+    queryClient.setQueryData(pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE), BEFORE_PUSH, {
+      updatedAt: Date.now() - 60_000,
+    });
     const screen = await renderPushedRow(queryClient, "4f1c2d9");
     try {
       await expect.element(page.getByText("Refreshing…"), { timeout: 5_000 }).toBeVisible();
@@ -510,11 +517,9 @@ describe("Composer pull request merge controls", () => {
       pullRequests: { detail: readDetail },
     } as unknown as EnvironmentApi);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(
-      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
-      BEFORE_PUSH,
-      { updatedAt: Date.now() - 60_000 },
-    );
+    queryClient.setQueryData(pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE), BEFORE_PUSH, {
+      updatedAt: Date.now() - 60_000,
+    });
     // The re-read is held back until the network returns, not attempted.
     onlineManager.setOnline(false);
     const screen = await renderPushedRow(queryClient, "4f1c2d9");
@@ -536,7 +541,7 @@ describe("Composer pull request merge controls", () => {
       pullRequests: { detail: readDetail },
     } as unknown as EnvironmentApi);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number);
+    const queryKey = pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE);
     // A minute-old read, and a poll still out from before the push that will
     // answer with the old commit.
     queryClient.setQueryData(queryKey, BEFORE_PUSH, { updatedAt: Date.now() - 60_000 });
@@ -579,10 +584,7 @@ describe("Composer pull request row", () => {
       pullRequests: { detail: async () => merged },
     } as unknown as EnvironmentApi);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(
-      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
-      merged,
-    );
+    queryClient.setQueryData(pullRequestQueryKeys.detail(ENVIRONMENT_ID, REFERENCE), merged);
     // Sized the way the composer's dock is: its width never comes from the row.
     const host = document.createElement("div");
     host.style.width = "640px";
@@ -600,6 +602,7 @@ describe("Composer pull request row", () => {
               autoMergeEnabled: false,
               settledAt: merged.mergedAt,
               diffStat: { additions: merged.additions, deletions: merged.deletions },
+              observedAt: null,
             },
             pushedHead: null,
             projectTitle: merged.projectTitle,

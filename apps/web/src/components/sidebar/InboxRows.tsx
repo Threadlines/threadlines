@@ -1,3 +1,4 @@
+import { usePullRequestRecords } from "../../environments/pullRequests/pullRequestRecordsStore";
 import {
   ArchiveIcon,
   CheckIcon,
@@ -16,7 +17,7 @@ import {
   MonitorIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useMemo } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type {
   ComputerLinkPendingRequest,
@@ -40,7 +41,8 @@ import {
   outsideOriginLabel,
 } from "../../environments/outsideAgents/outsideAgents.logic";
 import { isThreadSessionStarting } from "../../lib/threadSort";
-import { selectProjectByRef, useStore } from "../../store";
+import { isSidebarThreadRunning, selectProjectByRef, useStore } from "../../store";
+import { useWatchPullRequestsWhileShown } from "../../lib/pullRequestWatch";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
@@ -59,6 +61,7 @@ import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatus
 import {
   leadThreadPullRequest,
   pullRequestFromGitStatus,
+  withPullRequestRecord,
   withListedLanding,
   type ThreadPullRequest,
 } from "../pull-requests/pullRequests.logic";
@@ -764,6 +767,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     environmentId: thread.environmentId,
     cwd: thread.branch !== null ? gitCwd : null,
   });
+  const pullRequestRecords = usePullRequestRecords(thread.environmentId);
   // The +/- is the thread's own running total, summed by the server across the
   // turns it has taken -- not the checkout's working tree, which several
   // threads can share and which would print the same numbers on each of them.
@@ -780,9 +784,40 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // that knows a merge or a close; the listing covers a thread whose checkout
   // has moved on, and dates a landing the status cannot.
   const statusPullRequest = pullRequestFromGitStatus(thread.branch, gitStatus.data);
+  // Weighed against what the computer last heard from any read, so the badge
+  // says what the composer's row and the chat's links say.
+  const recordedStatusPullRequest =
+    statusPullRequest &&
+    withPullRequestRecord(statusPullRequest, pullRequestRecords(statusPullRequest));
   const pullRequests = threadPullRequestList(
-    statusPullRequest ? withListedLanding(statusPullRequest, listPullRequest) : listPullRequest,
+    recordedStatusPullRequest
+      ? withListedLanding(recordedStatusPullRequest, listPullRequest)
+      : listPullRequest,
     linkedPullRequests,
+  );
+  // On screen, the badge's pull requests are kept current at their own pace
+  // (pullRequestWatch.ts). The open thread's are read by its composer row,
+  // and a merged one never changes again.
+  const [rowSurface, setRowSurface] = useState<HTMLDivElement | null>(null);
+  const busy = isSidebarThreadRunning(thread);
+  useWatchPullRequestsWhileShown(
+    rowSurface,
+    isActive
+      ? []
+      : pullRequests.flatMap((pullRequest) =>
+          pullRequest.repository === null || pullRequest.state === "merged"
+            ? []
+            : [
+                {
+                  environmentId: thread.environmentId,
+                  projectId: thread.projectId,
+                  repository: pullRequest.repository,
+                  number: pullRequest.number,
+                  url: pullRequest.url,
+                  busy,
+                },
+              ],
+        ),
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
@@ -938,7 +973,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       >
         {/* The surface holds the row and its family's summary line, so the two
           read, hover and highlight as one row. */}
-        <div className={resolveRowSurfaceTone({ isActive, isSelected })}>
+        <div ref={setRowSurface} className={resolveRowSurfaceTone({ isActive, isSelected })}>
           <ThreadHoverCard thread={thread} status={status} lineage={lineage}>
             <div
               role="button"

@@ -1,5 +1,6 @@
 import { EnvironmentId, ProjectId } from "@threadlines/contracts";
 import type {
+  PullRequestObservation,
   PullRequestActivity,
   PullRequestActor,
   PullRequestCheck,
@@ -25,6 +26,7 @@ import type {
 } from "@threadlines/contracts";
 import {
   changeRequestRepositoryName,
+  parsePullRequestUrl,
   toChangeRequestProviderKind,
 } from "@threadlines/shared/sourceControl";
 import { quotePullRequestBody } from "@threadlines/shared/pullRequestAutoFix";
@@ -38,6 +40,7 @@ import { MergeQueueIcon } from "../Icons";
 import type { ElementType } from "react";
 
 import type { Project, SidebarThreadSummary } from "../../types";
+import type { PullRequestRecordLookup } from "../../environments/pullRequests/pullRequestRecordsStore";
 
 /**
  * A listing row plus the environment it came from. The wire type leaves the
@@ -627,6 +630,48 @@ export interface ThreadPullRequest {
   readonly headBranch: string | null;
   /** Lines added and removed; null where the source does not count them. */
   readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
+  /**
+   * When the read behind it began, on its computer's clock (milliseconds);
+   * null where the source does not say, as a checkout's status read does not.
+   * Weighed against the computer's shared record in {@link withPullRequestRecord}.
+   */
+  readonly observedAt: number | null;
+}
+
+/**
+ * A pull request as the newest read of it says: the computer's shared record
+ * of it (environments/pullRequests/pullRequestRecords.ts) where that is at
+ * least as new as what this surface read itself. Every surface showing a pull
+ * request goes through here, which is what keeps them agreeing.
+ */
+export function withPullRequestRecord(
+  pullRequest: ThreadPullRequest,
+  record: PullRequestObservation | undefined,
+): ThreadPullRequest {
+  if (record === undefined || record.number !== pullRequest.number) {
+    return pullRequest;
+  }
+  const recordAt = Date.parse(record.observedAt);
+  if (pullRequest.observedAt !== null && pullRequest.observedAt > recordAt) {
+    return pullRequest;
+  }
+  // A merge is never undone, so a merged answer stands against a record that
+  // has not seen it, whatever clock either was read by.
+  if (pullRequest.state === "merged" && record.state !== "merged") {
+    return pullRequest;
+  }
+  const open = record.state === "open";
+  return {
+    ...pullRequest,
+    state: record.state,
+    isDraft: open && (record.isDraft ?? pullRequest.isDraft),
+    title: record.title,
+    url: record.url,
+    settledAt: open ? null : (record.settledAt ?? pullRequest.settledAt),
+    autoMergeEnabled: open && (record.autoMergeEnabled ?? pullRequest.autoMergeEnabled),
+    headBranch: record.headBranch,
+    observedAt: recordAt,
+  };
 }
 
 /**
@@ -712,30 +757,144 @@ export function pullRequestFromGitStatus(
     isDraft: false,
     title: gitStatus.pr.title,
     url: gitStatus.pr.url,
-    repository,
+    // The address names the repository the pull request lives in, which for a
+    // fork's checkout is not the project's own; the project's is the fallback
+    // for a host whose addresses this cannot read.
+    repository: parsePullRequestUrl(gitStatus.pr.url)?.repository ?? repository,
     // The status read carries no dates.
     settledAt: null,
     autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
     headBranch: gitStatus.pr.headRef,
     // The status read does not count lines.
     diffStat: null,
+    // Nor say when it was read: it may be an answer kept from an earlier one.
+    observedAt: null,
+  };
+}
+
+/**
+ * A listing row as the newest read of its pull request says: the computer's
+ * shared record of it where that is at least as new as the listing, its
+ * checks too where a full read since has seen them. What the pull requests
+ * page, its counts and every list built on the listings show.
+ */
+export function withPullRequestRecordOnEntry(
+  entry: PullRequestEntry,
+  record: PullRequestObservation | undefined,
+): PullRequestEntry {
+  if (record === undefined || record.number !== entry.number) {
+    return entry;
+  }
+  const entryAt = entry.observedAt === undefined ? null : Date.parse(entry.observedAt);
+  const recordAt = Date.parse(record.observedAt);
+  const checksAt = record.checks === undefined ? null : Date.parse(record.checks.observedAt);
+  const takesState = entryAt === null || recordAt >= entryAt;
+  const takesChecks = checksAt !== null && (entryAt === null || checksAt >= entryAt);
+  if (!takesState && !takesChecks) {
+    return entry;
+  }
+  const { settledAt: _settledAt, checksState: _checksState, ...rest } = entry;
+  const open = record.state === "open";
+  const state = takesState ? record.state : entry.state;
+  const settledAt = takesState
+    ? open
+      ? undefined
+      : (record.settledAt ?? entry.settledAt)
+    : entry.settledAt;
+  const checksState = takesChecks ? (record.checks?.state ?? undefined) : entry.checksState;
+  return {
+    ...rest,
+    state,
+    ...(takesState
+      ? {
+          isDraft: open && (record.isDraft ?? entry.isDraft),
+          title: record.title,
+          autoMergeEnabled: open && (record.autoMergeEnabled ?? entry.autoMergeEnabled === true),
+          observedAt: record.observedAt,
+        }
+      : {}),
+    ...(settledAt === undefined ? {} : { settledAt }),
+    ...(checksState === undefined ? {} : { checksState }),
+  };
+}
+
+/**
+ * A full read as a newer read elsewhere left its pull request: its state,
+ * draft flag, auto-merge and when it settled, so the panel's header and
+ * actions never offer what another surface already knows is over. The rest
+ * (the checks list, the merge box, the timeline) only a full read can say;
+ * `behind` asks for one, where the newer read saw the pull request change.
+ */
+export function withPullRequestRecordOnDetail(
+  detail: PullRequestDetail,
+  record: PullRequestObservation | undefined,
+): { readonly detail: PullRequestDetail; readonly behind: boolean } {
+  if (
+    record === undefined ||
+    record.number !== detail.number ||
+    detail.observedAt === undefined ||
+    Date.parse(record.observedAt) <= Date.parse(detail.observedAt)
+  ) {
+    return { detail, behind: false };
+  }
+  const open = record.state === "open";
+  const isDraft = open && (record.isDraft ?? detail.isDraft);
+  const autoMergeEnabled = open ? (record.autoMergeEnabled ?? detail.autoMergeEnabled) : false;
+  const checksMoved =
+    record.checks !== undefined &&
+    Date.parse(record.checks.observedAt) > Date.parse(detail.observedAt) &&
+    (record.checks.headSha !== (detail.headSha ?? null) ||
+      record.checks.state !== (detail.checksState ?? null));
+  const behind =
+    record.state !== detail.state ||
+    isDraft !== detail.isDraft ||
+    autoMergeEnabled !== detail.autoMergeEnabled ||
+    checksMoved;
+  if (!behind) {
+    return { detail, behind };
+  }
+  const settledAt = record.settledAt ?? null;
+  return {
+    detail: {
+      ...detail,
+      state: record.state,
+      isDraft,
+      autoMergeEnabled,
+      title: record.title,
+      mergedAt: record.state === "merged" ? (settledAt ?? detail.mergedAt) : null,
+      closedAt: open ? null : (detail.closedAt ?? settledAt),
+      observedAt: record.observedAt,
+    },
+    behind,
   };
 }
 
 /**
  * Whether a surface takes a pull request's state from its detail read rather
- * than from what a listing or the checkout said. The detail is usually the
- * fresher of the two, except one remembered from earlier and not yet read
- * again: that does not outrank a listing saying the pull request has since
- * merged or closed.
+ * than from what the thread's resolution, a listing or the computer's shared
+ * record said: the newer read wins. A detail or a resolution from a server too
+ * old to say when it read keeps the earlier rule: the detail wins unless it is
+ * one remembered from before and the other has seen a merge or a close since.
  */
 export function pullRequestDetailOutranksListing(input: {
-  readonly listedState: PullRequestState;
-  readonly detail: Pick<PullRequestDetail, "state"> | undefined;
+  readonly listed: Pick<ThreadPullRequest, "state" | "observedAt">;
+  readonly detail: Pick<PullRequestDetail, "state" | "observedAt"> | undefined;
   /** The detail was read since the surface opened, or is fresh enough not to need it. */
   readonly detailCurrent: boolean;
 }): boolean {
-  return input.detail !== undefined && (input.detailCurrent || input.listedState === "open");
+  if (input.detail === undefined) {
+    return false;
+  }
+  // A merge is never undone: whichever has seen one says so, whatever clock
+  // either was read by, or whether either can say when it read.
+  const listedMerged = input.listed.state === "merged";
+  if (listedMerged !== (input.detail.state === "merged")) {
+    return !listedMerged;
+  }
+  if (input.detail.observedAt !== undefined && input.listed.observedAt !== null) {
+    return Date.parse(input.detail.observedAt) >= input.listed.observedAt;
+  }
+  return input.detailCurrent || input.listed.state === "open";
 }
 
 /**
@@ -754,7 +913,16 @@ export function resolveThreadPullRequest(input: {
   /** What lookups found for branches the open listing does not carry; see `newerSettledAnswer`. */
   readonly lookups?: PullRequestLookupAnswers;
   readonly projects: readonly Project[];
+  /** The thread's computer's shared records; see {@link withPullRequestRecord}. */
+  readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest | null {
+  const resolved = resolveThreadPullRequestFromSources(input);
+  return resolved === null ? null : withPullRequestRecord(resolved, input.records?.(resolved));
+}
+
+function resolveThreadPullRequestFromSources(
+  input: Parameters<typeof resolveThreadPullRequest>[0],
+): ThreadPullRequest | null {
   const { thread } = input;
   if (thread.branch === null || thread.archivedAt !== null) {
     return null;
@@ -776,10 +944,11 @@ export function resolveThreadPullRequest(input: {
 
   const open = findThreadListEntry(thread, scope, input.openEntries);
   if (open) {
-    return threadPullRequestFromEntry(open);
+    return threadPullRequestFromEntry(open, thread.environmentId);
   }
   return (
     newerSettledAnswer(
+      thread.environmentId,
       findThreadListEntry(thread, scope, input.settledEntries ?? []),
       input.lookups?.get(pullRequestLookupKey(scope, { branch: thread.branch })),
     ) ?? null
@@ -798,8 +967,15 @@ function findThreadProject(
   return project?.kind === "general-chat" ? undefined : project;
 }
 
-/** A listing row as a thread's badge, row and tab read it. */
-function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest {
+/**
+ * A listing row as a thread's badge, row and tab read it. A row another
+ * computer read keeps no read time: that computer's clock says nothing next
+ * to the thread computer's records.
+ */
+function threadPullRequestFromEntry(
+  entry: PullRequestEntry,
+  environmentId: EnvironmentId,
+): ThreadPullRequest {
   return {
     number: entry.number,
     state: entry.state,
@@ -813,6 +989,10 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
     autoMergeEnabled: entry.autoMergeEnabled === true,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
+    observedAt:
+      entry.observedAt === undefined || entry.environmentId !== environmentId
+        ? null
+        : Date.parse(entry.observedAt),
   };
 }
 
@@ -820,6 +1000,8 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
 export function threadPullRequestFromLookup(
   entry: PullRequestLookupEntry,
   repository: string,
+  /** When the read behind the answer began, on its computer's clock; null where it did not say. */
+  observedAt: number | null,
 ): ThreadPullRequest {
   return {
     number: entry.number,
@@ -832,6 +1014,7 @@ export function threadPullRequestFromLookup(
     autoMergeEnabled: entry.autoMergeEnabled,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
+    observedAt,
   };
 }
 
@@ -931,11 +1114,12 @@ export function threadPullRequestLookupRequests(input: {
  * when neither knows anything.
  */
 function newerSettledAnswer(
+  environmentId: EnvironmentId,
   listed: PullRequestEntry | undefined,
   looked: PullRequestLookupAnswer | undefined,
 ): ThreadPullRequest | null | undefined {
   if (looked === undefined) {
-    return listed ? threadPullRequestFromEntry(listed) : undefined;
+    return listed ? threadPullRequestFromEntry(listed, environmentId) : undefined;
   }
   if (listed === undefined) {
     return looked.pullRequest;
@@ -944,7 +1128,7 @@ function newerSettledAnswer(
     looked.pullRequest?.number === listed.number
       ? updatedAtMs(listed.updatedAt) > (looked.updatedAt ?? 0)
       : updatedAtMs(listed.createdAt) > looked.answeredAt;
-  return listedWins ? threadPullRequestFromEntry(listed) : looked.pullRequest;
+  return listedWins ? threadPullRequestFromEntry(listed, environmentId) : looked.pullRequest;
 }
 
 /**
@@ -995,7 +1179,17 @@ export function resolveLinkedThreadPullRequests(input: {
   readonly settledEntries?: readonly PullRequestEntry[];
   /** What lookups found for numbers the open listing does not carry; see `newerSettledAnswer`. */
   readonly lookups?: PullRequestLookupAnswers;
+  /** The thread's computer's shared records; see {@link withPullRequestRecord}. */
+  readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest[] {
+  return resolveLinkedFromSources(input).map((pullRequest) =>
+    withPullRequestRecord(pullRequest, input.records?.(pullRequest)),
+  );
+}
+
+function resolveLinkedFromSources(
+  input: Parameters<typeof resolveLinkedThreadPullRequests>[0],
+): ThreadPullRequest[] {
   const linked = (input.thread.linkedPullRequests ?? []).filter(
     (candidate) => candidate.number !== input.ownNumber,
   );
@@ -1011,10 +1205,11 @@ export function resolveLinkedThreadPullRequests(input: {
         ? undefined
         : findNumberedListEntry(scope, candidate.number, input.openEntries);
     const known = open
-      ? threadPullRequestFromEntry(open)
+      ? threadPullRequestFromEntry(open, input.thread.environmentId)
       : scope === null
         ? undefined
         : newerSettledAnswer(
+            input.thread.environmentId,
             findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []),
             lookedUpNumber(input.lookups, scope, candidate.number),
           );
@@ -1030,6 +1225,7 @@ export function resolveLinkedThreadPullRequests(input: {
         autoMergeEnabled: false,
         headBranch: null,
         diffStat: null,
+        observedAt: null,
       }
     );
   });

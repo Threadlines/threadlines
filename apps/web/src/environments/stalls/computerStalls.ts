@@ -8,7 +8,7 @@ import { type ReceivedComputerStall, receiveComputerStall } from "@threadlines/c
 import type { EnvironmentId, ServerStall } from "@threadlines/contracts";
 import { create } from "zustand";
 
-import { readConnectedComputerCapability } from "../computerCapabilities";
+import { knownComputerIds, readConnectedComputerCapability } from "../computerCapabilities";
 import {
   readPrimaryEnvironmentDescriptor,
   subscribePrimaryEnvironmentDescriptor,
@@ -43,12 +43,6 @@ export function receiveServerStall(
       [environmentId]: receiveComputerStall(stall, receivedAtMs),
     },
   });
-}
-
-function knownComputerIds(): EnvironmentId[] {
-  const primary = readPrimaryEnvironmentDescriptor()?.environmentId;
-  const saved = Object.keys(useSavedEnvironmentRegistryStore.getState().byId) as EnvironmentId[];
-  return primary === undefined ? saved : [primary, ...saved.filter((id) => id !== primary)];
 }
 
 /** A computer as a stall notice names it, and whether it is the one the app runs on. */

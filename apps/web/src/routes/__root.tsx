@@ -756,12 +756,26 @@ function EnvironmentConnectionManagerBootstrap() {
     const stopProjectSetups = startProjectSetupsSync();
     // Each connected computer's latest freeze or sleep, for its notice and Fleet.
     const stopComputerStalls = startComputerStallsSync();
+    // Pull request records, the return-to-window refresh and the sidebar's
+    // watch (pullRequestBackground.ts), loaded after first paint.
+    let stopPullRequestBackground: (() => void) | null = null;
+    let disposed = false;
+    const cancelPullRequestBackground = whenIdleAfterFirstPaint(() => {
+      void import("../lib/pullRequestBackground")
+        .then((module) => {
+          if (!disposed) stopPullRequestBackground = module.startPullRequestBackground(queryClient);
+        })
+        .catch(() => undefined);
+    });
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      disposed = true;
+      cancelPullRequestBackground();
+      stopPullRequestBackground?.();
       stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();

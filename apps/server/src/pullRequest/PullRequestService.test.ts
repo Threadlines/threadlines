@@ -29,6 +29,7 @@ import {
 } from "./PullRequestProvider.ts";
 import * as PullRequestProviderRegistryLayer from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
+import * as PullRequestObservations from "./PullRequestObservations.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -128,7 +129,13 @@ const hostClientsLayer = Layer.mergeAll(
 );
 
 const layer = PullRequestService.layer.pipe(
-  Layer.provide(Layer.mergeAll(PullRequestProviderRegistryLayer.layer, projectionsLayer)),
+  Layer.provide(
+    Layer.mergeAll(
+      PullRequestProviderRegistryLayer.layer,
+      projectionsLayer,
+      PullRequestObservations.layer,
+    ),
+  ),
   Layer.provide(hostClientsLayer),
   Layer.provide(NodeServices.layer),
 );
@@ -170,6 +177,7 @@ const layerWithCapabilities = (capabilities: PullRequestProviderApi["capabilitie
       Layer.mergeAll(
         Layer.succeed(PullRequestProviderRegistry, fromProviders([stubProvider(capabilities)])),
         projectionsLayer,
+        PullRequestObservations.layer,
       ),
     ),
   );
@@ -855,6 +863,26 @@ describe("PullRequestService pull request reads", () => {
           .filter((args) => args[0] === "api" && args[1] !== "graphql"),
         [["api", "repos/openai/codex"]],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("compares the branch with its base again on a forced read, not on a poll", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      hostAnswers({ detail: () => detailJson({ headRefOid: "9e0b7a1" }) });
+      const service = yield* PullRequestService.PullRequestService;
+      const comparisons = () =>
+        mockExecute.mock.calls.filter(
+          ([input]) => input.args[1] === "graphql" && (input.stdin ?? "").includes("compare("),
+        ).length;
+
+      yield* service.detail(reference);
+      // Past the detail's own cache: the next poll goes to the host.
+      yield* TestClock.adjust("16 seconds");
+      yield* service.detail(reference);
+      assert.equal(comparisons(), 1);
+      yield* service.detail({ ...reference, force: true });
+      assert.equal(comparisons(), 2);
     }).pipe(Effect.provide(layer)),
   );
 

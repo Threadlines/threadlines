@@ -175,6 +175,17 @@ export const VcsStatusInput = Schema.Struct({
 });
 export type VcsStatusInput = typeof VcsStatusInput.Type;
 
+/**
+ * Reads a checkout's remote status again for every subscriber, fetching its
+ * upstream unless that was fetched within `upstreamMaxAgeMs`: a new thread
+ * about to start on the checkout shows how far behind the remote it is.
+ */
+export const VcsRefreshRemoteStatusInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  upstreamMaxAgeMs: NonNegativeInt,
+});
+export type VcsRefreshRemoteStatusInput = typeof VcsRefreshRemoteStatusInput.Type;
+
 export const VcsPullHistoryReconciliation = Schema.Struct({
   refName: TrimmedNonEmptyStringSchema,
   upstreamRef: TrimmedNonEmptyStringSchema,

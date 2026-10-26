@@ -125,6 +125,13 @@ export interface GitWorktreeBaseRef {
 
 export interface GitRemoteStatusOptions {
   readonly forceRefresh?: boolean;
+  /**
+   * Fetches the upstream unless it was fetched within this long, instead of
+   * the usual two minutes: for a surface about to show how far behind the
+   * remote the checkout is. A fetch that failed recently still waits out its
+   * cooldown.
+   */
+  readonly upstreamMaxAgeMs?: number;
 }
 
 export interface GitPreparedCommitContext {

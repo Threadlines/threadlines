@@ -185,6 +185,8 @@ export interface WsRpcClient {
     readonly dropStash: RpcUnaryMethod<typeof WS_METHODS.vcsDropStash>;
     readonly refreshLocalStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshLocalStatus>;
     readonly refreshStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshStatus>;
+    /** Only on servers reporting the `remoteStatusRefresh` capability. */
+    readonly refreshRemoteStatus: RpcUnaryMethod<typeof WS_METHODS.vcsRefreshRemoteStatus>;
     readonly onStatus: (
       input: RpcInput<typeof WS_METHODS.subscribeVcsStatus>,
       listener: (status: VcsStatusResult) => void,
@@ -245,6 +247,10 @@ export interface WsRpcClient {
     readonly updateComment: RpcUnaryMethod<typeof WS_METHODS.pullRequestsUpdateComment>;
     readonly reviewerCandidates: RpcUnaryMethod<typeof WS_METHODS.pullRequestsReviewerCandidates>;
     readonly requestReviewers: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRequestReviewers>;
+    /** Only on servers reporting the `pullRequestObservations` capability. */
+    readonly subscribeObservations: RpcStreamMethod<
+      typeof WS_METHODS.pullRequestsSubscribeObservations
+    >;
   };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
@@ -768,6 +774,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.vcsRefreshLocalStatus](input)),
       refreshStatus: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRefreshStatus](input)),
+      refreshRemoteStatus: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsRefreshRemoteStatus](input)),
       onStatus: (input, listener, options) => {
         let current: VcsStatusResult | null = null;
         return transport.subscribe(
@@ -841,6 +849,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
       lookup: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsLookup](input)),
+      subscribeObservations: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.pullRequestsSubscribeObservations]({}),
+          listener,
+          { ...options, tag: WS_METHODS.pullRequestsSubscribeObservations },
+        ),
       detail: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
       activity: (input) =>

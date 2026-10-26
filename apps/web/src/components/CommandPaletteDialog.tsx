@@ -1,5 +1,6 @@
 "use client";
 
+import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import {
   scopedProjectKey,
   scopedThreadKey,
@@ -611,6 +612,7 @@ export function OpenCommandPaletteDialog() {
     refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
     enabled: activeThreadHasBranch,
   });
+  const activeThreadPullRequestRecords = usePullRequestRecords(activeThread?.environmentId);
   const activeThreadPullRequest = activeThread
     ? resolveThreadPullRequest({
         thread: {
@@ -620,6 +622,7 @@ export function OpenCommandPaletteDialog() {
         gitStatus: activeThreadGitStatus.data,
         openEntries: activeThreadOpenPullRequests.entries,
         projects,
+        records: activeThreadPullRequestRecords,
       })
     : null;
 

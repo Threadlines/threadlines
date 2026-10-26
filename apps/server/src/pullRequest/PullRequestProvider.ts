@@ -238,7 +238,14 @@ export interface PullRequestProviderApi {
   ) => Effect.Effect<ProviderChangeRequestLookup, PullRequestProviderError>;
 
   readonly getChangeRequest: (
-    input: ProviderRepositoryRef & { readonly number: number },
+    input: ProviderRepositoryRef & {
+      readonly number: number;
+      /**
+       * Read every part again. Without it a host may reuse a part that rarely
+       * moves (GitHub's comparison with the base) from a read moments ago.
+       */
+      readonly fresh?: boolean;
+    },
   ) => Effect.Effect<ProviderChangeRequestDetail, PullRequestProviderError>;
 
   /** The conversation, the line threads, and the commits, read on their own. */

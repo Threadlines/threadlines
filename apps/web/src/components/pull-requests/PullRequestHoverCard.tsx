@@ -14,9 +14,21 @@
  *
  * @module PullRequestHoverCard
  */
-import type { EnvironmentId, PullRequestRef, PullRequestState } from "@threadlines/contracts";
+import { useSurfaceAttended } from "~/lib/pageAttention";
+import { pullRequestLookupQueryOptions } from "~/lib/pullRequestLookups";
+import {
+  pullRequestRecordKey,
+  usePullRequestRecord,
+  usePullRequestRecordOnAnyComputer,
+} from "../../environments/pullRequests/pullRequestRecordsStore";
+import type {
+  EnvironmentId,
+  PullRequestObservation,
+  PullRequestRef,
+  PullRequestState,
+} from "@threadlines/contracts";
 import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClientContext, useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/shallow";
 
@@ -36,6 +48,7 @@ import {
 } from "../ui/previewCard";
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import {
+  projectProviderKind,
   projectRepository,
   pullRequestBadgeTone,
   pullRequestDetailOutranksListing,
@@ -48,6 +61,32 @@ export interface PullRequestChipState {
   readonly isDraft: boolean;
   /** The host is landing it on its own: armed, or already in the merge queue. */
   readonly autoMergeEnabled: boolean;
+  /** When the read behind it began (milliseconds); null where the source does not say. */
+  readonly observedAt: number | null;
+}
+
+/** A computer's shared record of a pull request, as a chip draws it. */
+function chipStateFromRecord(record: PullRequestObservation): PullRequestChipState {
+  const open = record.state === "open";
+  return {
+    state: record.state,
+    isDraft: open && record.isDraft === true,
+    autoMergeEnabled: open && record.autoMergeEnabled === true,
+    observedAt: Date.parse(record.observedAt),
+  };
+}
+
+/** The newer of two answers about one pull request; one that cannot say when it read loses. */
+function newerChipState(
+  surface: PullRequestChipState | null,
+  record: PullRequestChipState | null,
+): PullRequestChipState | null {
+  if (surface === null || record === null) return surface ?? record;
+  return surface.observedAt !== null &&
+    record.observedAt !== null &&
+    surface.observedAt > record.observedAt
+    ? surface
+    : record;
 }
 
 /** Everything the card needs to draw itself and then read the rest. */
@@ -67,19 +106,28 @@ interface PullRequestRepositoryScope {
   readonly repository: string;
 }
 
+/** What the surface itself knows about a pull request, and the computer that read it. */
+interface SurfaceChipState {
+  readonly environmentId: EnvironmentId;
+  readonly state: PullRequestChipState;
+}
+
+function isMerged(row: SurfaceChipState): boolean {
+  return row.state.state === "merged";
+}
+
 interface PullRequestChipSurface {
   readonly handle: PullRequestCardHandle;
-  /** The state a chip wears, keyed by {@link chipKey}. */
-  readonly stateByKey: ReadonlyMap<string, PullRequestChipState>;
-  /** Which environment and project can read a repository, keyed by its lowercased name. */
-  readonly scopeByRepository: ReadonlyMap<string, PullRequestRepositoryScope>;
+  /** The state a chip wears, keyed by {@link pullRequestRecordKey}: host, repository and number. */
+  readonly stateByKey: ReadonlyMap<string, SurfaceChipState>;
+  /** Which project on each computer can read a repository, keyed by its lowercased name. */
+  readonly scopesByRepository: ReadonlyMap<string, readonly PullRequestRepositoryScope[]>;
 }
 
 const PullRequestChipSurfaceContext = createContext<PullRequestChipSurface | null>(null);
 
-function chipKey(repository: string, number: number): string {
-  return `${repository.toLowerCase()}:${number}`;
-}
+/** How often a pull request a link on screen points at is read while the user looks. */
+const PULL_REQUEST_LINK_ON_SCREEN_POLL_INTERVAL_MS = 60_000;
 
 /**
  * What one chip should look like and, where the workspace can read it, what the
@@ -87,6 +135,7 @@ function chipKey(repository: string, number: number): string {
  * drawn as an open pull request in the muted tone that says "state unknown".
  */
 export function usePullRequestChip(
+  url: string,
   repository: string,
   number: number,
 ): {
@@ -94,8 +143,26 @@ export function usePullRequestChip(
   readonly payload: PullRequestHoverCardPayload | null;
 } {
   const surface = useContext(PullRequestChipSurfaceContext);
-  const state = surface?.stateByKey.get(chipKey(repository, number)) ?? null;
-  const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
+  const subject = { url, repository, number };
+  const key = pullRequestRecordKey(subject);
+  const surfaceState = (key === null ? undefined : surface?.stateByKey.get(key)) ?? null;
+  const scopes = surface?.scopesByRepository.get(repository.toLowerCase());
+  // The card reads on the computer the surface's answer came from where it
+  // can, so the card and the chip weigh their reads on one clock.
+  const scope =
+    scopes?.find((candidate) => candidate.environmentId === surfaceState?.environmentId) ??
+    scopes?.[0] ??
+    null;
+  // What a computer last heard about it, whoever asked. Read times are only
+  // weighed on one computer's clock: the one behind the surface's answer, else
+  // the one that reads this repository. A link nothing here reads (in an
+  // agent's transcript, say) still shows what any computer heard.
+  const environmentId = surfaceState?.environmentId ?? scope?.environmentId ?? null;
+  const recordOnComputer = usePullRequestRecord(environmentId, subject);
+  const recordAnywhere = usePullRequestRecordOnAnyComputer(environmentId === null ? subject : null);
+  const record = recordOnComputer ?? recordAnywhere;
+  const recordState = useMemo(() => (record ? chipStateFromRecord(record) : null), [record]);
+  const state = newerChipState(surfaceState?.state ?? null, recordState);
   return useMemo(
     () => ({
       state,
@@ -108,10 +175,49 @@ export function usePullRequestChip(
               state: state?.state ?? "open",
               isDraft: state?.isDraft ?? false,
               autoMergeEnabled: state?.autoMergeEnabled ?? false,
+              // Another computer's clock says nothing next to the card's read.
+              observedAt:
+                scope.environmentId === environmentId ? (state?.observedAt ?? null) : null,
             },
     }),
-    [number, scope, state],
+    [environmentId, number, scope, state],
   );
+}
+
+/**
+ * Keeps the pull request a link on screen points at read while the user looks,
+ * so the link says what it is now even where nothing else here reads it. Reads
+ * of one repository travel together, and a merged one is never read again.
+ * Renders nothing; outside the app's query client (a bare render) it does
+ * nothing either.
+ */
+export function PullRequestLinkRead({
+  payload,
+}: {
+  readonly payload: PullRequestHoverCardPayload;
+}) {
+  return useContext(QueryClientContext) ? <PullRequestLinkReadQuery payload={payload} /> : null;
+}
+
+function PullRequestLinkReadQuery({ payload }: { readonly payload: PullRequestHoverCardPayload }) {
+  const attended = useSurfaceAttended();
+  useQuery({
+    ...pullRequestLookupQueryOptions({
+      key: `${payload.reference.repository.toLowerCase()}#${payload.reference.number}`,
+      environmentId: payload.environmentId,
+      projectId: payload.reference.projectId,
+      repository: payload.reference.repository,
+      item: { number: payload.reference.number },
+    }),
+    enabled: attended,
+    refetchInterval: (query) =>
+      attended &&
+      query.state.data?.supported !== false &&
+      query.state.data?.pullRequest?.state !== "merged"
+        ? PULL_REQUEST_LINK_ON_SCREEN_POLL_INTERVAL_MS
+        : false,
+  });
+  return null;
 }
 
 /**
@@ -150,6 +256,7 @@ const NO_THREAD_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
  */
 export function PullRequestHoverCardProvider({
   threadPullRequests = NO_THREAD_PULL_REQUESTS,
+  environmentId,
   children,
 }: {
   /**
@@ -158,6 +265,8 @@ export function PullRequestHoverCardProvider({
    * the merged listing is re-read, and a lookup still knows one that fell off.
    */
   readonly threadPullRequests?: readonly ThreadPullRequest[];
+  /** The computer the thread runs on, which read its pull requests. */
+  readonly environmentId: EnvironmentId;
   readonly children: ReactNode;
 }) {
   const [handle] = useState(() => createPreviewCardHandle<PullRequestHoverCardPayload>());
@@ -165,48 +274,69 @@ export function PullRequestHoverCardProvider({
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
 
   const stateByKey = useMemo(() => {
-    const byKey = new Map<string, PullRequestChipState>();
+    const byKey = new Map<string, SurfaceChipState>();
     for (const entry of entries) {
-      byKey.set(chipKey(entry.repository, entry.number), {
-        state: entry.state,
-        isDraft: entry.isDraft,
-        autoMergeEnabled: entry.autoMergeEnabled === true,
-      });
+      const key = pullRequestRecordKey(entry);
+      if (key === null) continue;
+      const row: SurfaceChipState = {
+        environmentId: entry.environmentId,
+        state: {
+          state: entry.state,
+          isDraft: entry.isDraft,
+          autoMergeEnabled: entry.autoMergeEnabled === true,
+          observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
+        },
+      };
+      const held = byKey.get(key);
+      // Where two computers list it, a row that saw a merge is kept (a merge
+      // is never undone, so no clocks need comparing), else the thread's own
+      // computer's row.
+      const replaces =
+        held === undefined ||
+        (isMerged(held) !== isMerged(row) ? isMerged(row) : held.environmentId !== environmentId);
+      if (replaces) byKey.set(key, row);
     }
     // The thread's own resolution wins: it is the read that can see a branch
     // land without waiting for the settled listing to come round again, and
     // the one that still knows a pull request the listings no longer carry.
+    // Short of a merge another computer has seen.
     for (const pullRequest of threadPullRequests) {
-      if (pullRequest.repository) {
-        byKey.set(chipKey(pullRequest.repository, pullRequest.number), {
+      const key = pullRequestRecordKey(pullRequest);
+      if (key === null) continue;
+      const row: SurfaceChipState = {
+        environmentId,
+        state: {
           state: pullRequest.state,
           isDraft: pullRequest.isDraft,
           autoMergeEnabled: pullRequest.autoMergeEnabled,
-        });
-      }
+          observedAt: pullRequest.observedAt,
+        },
+      };
+      const held = byKey.get(key);
+      if (held === undefined || !isMerged(held) || isMerged(row)) byKey.set(key, row);
     }
     return byKey;
-  }, [entries, threadPullRequests]);
+  }, [entries, environmentId, threadPullRequests]);
 
-  const scopeByRepository = useMemo(() => {
-    const byRepository = new Map<string, PullRequestRepositoryScope>();
+  const scopesByRepository = useMemo(() => {
+    const byRepository = new Map<string, PullRequestRepositoryScope[]>();
     for (const project of projects) {
       const repository = projectRepository(project);
-      if (repository === null || byRepository.has(repository.toLowerCase())) {
-        continue;
-      }
-      byRepository.set(repository.toLowerCase(), {
-        environmentId: project.environmentId,
-        projectId: project.id,
-        repository,
-      });
+      // A chip only ever names a GitHub pull request (parsePullRequestUrl), so
+      // a GitLab project of the same name must not read it.
+      if (repository === null || projectProviderKind(project) !== "github") continue;
+      const scopes = byRepository.get(repository.toLowerCase()) ?? [];
+      // One project per computer is all a read needs.
+      if (scopes.some((scope) => scope.environmentId === project.environmentId)) continue;
+      scopes.push({ environmentId: project.environmentId, projectId: project.id, repository });
+      byRepository.set(repository.toLowerCase(), scopes);
     }
     return byRepository;
   }, [projects]);
 
   const surface = useMemo<PullRequestChipSurface>(
-    () => ({ handle, scopeByRepository, stateByKey }),
-    [handle, scopeByRepository, stateByKey],
+    () => ({ handle, scopesByRepository, stateByKey }),
+    [handle, scopesByRepository, stateByKey],
   );
 
   return (
@@ -235,13 +365,14 @@ function PullRequestHoverCardContent({
   state,
   isDraft,
   autoMergeEnabled,
+  observedAt,
 }: PullRequestHoverCardPayload) {
-  const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const attended = useSurfaceAttended();
+  const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference, attended }));
   const detail = query.data;
-  // A read remembered from earlier does not outrank the caller's word that
-  // the pull request has merged or closed since, until it is read again.
+  // The newer read says what state it is in: this detail, or the chip's word.
   const stateSource = pullRequestDetailOutranksListing({
-    listedState: state,
+    listed: { state, observedAt },
     detail,
     detailCurrent: query.status === "success" && (query.isFetchedAfterMount || !query.isStale),
   })

@@ -64,7 +64,11 @@ import { readLocalApi } from "../localApi";
 import { GitPullRequestIcon } from "lucide-react";
 
 import { ChatWebLink } from "./chat/ChatWebLink";
-import { PullRequestHoverCard, usePullRequestChip } from "./pull-requests/PullRequestHoverCard";
+import {
+  PullRequestHoverCard,
+  PullRequestLinkRead,
+  usePullRequestChip,
+} from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
@@ -649,7 +653,7 @@ function MarkdownPullRequestChip({
   readonly threadRef: ScopedThreadRef | null;
   readonly title?: string | undefined;
 }) {
-  const chip = usePullRequestChip(repository, number);
+  const chip = usePullRequestChip(href, repository, number);
   const tone = chip.state
     ? pullRequestBadgeTone(chip.state.state, chip.state.isDraft, chip.state.autoMergeEnabled)
     : // Nothing here has listed this repository, so the glyph says "a pull
@@ -657,18 +661,21 @@ function MarkdownPullRequestChip({
       { Icon: GitPullRequestIcon, className: "text-muted-foreground", label: "Pull request" };
 
   return (
-    <PullRequestHoverCard payload={chip.payload}>
-      <ChatWebLink
-        href={href}
-        threadRef={threadRef}
-        title={title}
-        className="chat-markdown-pull-request-chip inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 align-middle font-mono text-[12px] transition-colors hover:bg-accent"
-      >
-        <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
-        <span>#{number}</span>
-        {label ? <span className="font-sans">{label}</span> : null}
-      </ChatWebLink>
-    </PullRequestHoverCard>
+    <>
+      {chip.payload ? <PullRequestLinkRead payload={chip.payload} /> : null}
+      <PullRequestHoverCard payload={chip.payload}>
+        <ChatWebLink
+          href={href}
+          threadRef={threadRef}
+          title={title}
+          className="chat-markdown-pull-request-chip inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 align-middle font-mono text-[12px] transition-colors hover:bg-accent"
+        >
+          <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
+          <span>#{number}</span>
+          {label ? <span className="font-sans">{label}</span> : null}
+        </ChatWebLink>
+      </PullRequestHoverCard>
+    </>
   );
 }
 

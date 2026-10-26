@@ -57,6 +57,7 @@ import {
 } from "@threadlines/shared/sourceControl";
 
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { PullRequestObservations, type PullRequestRead } from "./PullRequestObservations.ts";
 import {
   PullRequestProviderRegistry,
   type ProviderAuthoredChangeRequest,
@@ -397,6 +398,8 @@ function toEntry(input: {
   readonly repository?: string;
   /** Push access on the row's repository; omitted where the host did not say. */
   readonly viewerCanWrite?: boolean;
+  /** When the read behind the row began; see `PullRequestListEntry.observedAt`. */
+  readonly observedAt?: string;
 }): PullRequestListEntry {
   const { project, row } = input;
   const matchesViewer = viewerMatcher(input.viewer);
@@ -432,6 +435,7 @@ function toEntry(input: {
     ...(row.autoMergeEnabled === undefined ? {} : { autoMergeEnabled: row.autoMergeEnabled }),
     labels: row.labels,
     origin: input.origin,
+    ...(input.observedAt === undefined ? {} : { observedAt: input.observedAt }),
   };
 }
 
@@ -454,6 +458,8 @@ function toDetail(input: {
   readonly viewer: string | null;
   readonly repository: ProviderRepositoryAccess;
   readonly capabilities: PullRequestCapabilities;
+  /** When the read began; see `PullRequestDetail.observedAt`. */
+  readonly observedAt?: string;
 }): PullRequestDetail {
   const { project } = input.target;
   const { row } = input;
@@ -520,6 +526,7 @@ function toDetail(input: {
     autoMergeEnabled: row.autoMergeEnabled ?? null,
     isStacked: defaultBranch !== null && row.baseBranch !== defaultBranch,
     defaultBranch,
+    ...(input.observedAt === undefined ? {} : { observedAt: input.observedAt }),
   };
 }
 
@@ -528,6 +535,8 @@ interface LookupCacheEntry {
   readonly pullRequest: PullRequestLookupEntry | null;
   /** When the host gave it, so a caller served from here knows how old it is. */
   readonly answeredAtMs: number;
+  /** When the read behind it began; what a client weighs it against the shared record by. */
+  readonly observedAt?: string;
   /** Infinite for a merged number, which no later read can change. */
   readonly expiresAtMs: number;
 }
@@ -558,6 +567,44 @@ const lookupItemKey = (repositoryKey: string, item: PullRequestLookupItem) =>
   "number" in item
     ? `${repositoryKey}\u0000n\u0000${item.number}`
     : `${repositoryKey}\u0000b\u0000${item.branch}`;
+
+/** What a listing or lookup row says about its pull request, for the shared record. */
+function rowRead(
+  provider: SourceControlProviderKind,
+  repository: string,
+  row: ProviderChangeRequestSummary,
+): PullRequestRead {
+  return {
+    provider,
+    repository,
+    number: row.number,
+    title: row.title,
+    url: row.url,
+    headBranch: row.headBranch,
+    state: row.state,
+    isDraft: row.isDraft,
+    settledAt: row.settledAt,
+    autoMergeEnabled: row.autoMergeEnabled,
+  };
+}
+
+/** A full read of one pull request: its row, plus its checks and how it is set to merge. */
+function detailRead(
+  provider: SourceControlProviderKind,
+  repository: string,
+  row: ProviderChangeRequestDetail,
+): PullRequestRead {
+  const queued = row.mergeQueue?.position != null;
+  return {
+    ...rowRead(provider, repository, row),
+    // Armed or queued, as listings and lookups report it.
+    autoMergeEnabled:
+      row.autoMergeEnabled === undefined && row.mergeQueue === undefined
+        ? undefined
+        : row.autoMergeEnabled === true || queued,
+    checks: { headSha: row.headSha ?? null, state: row.checksState ?? null },
+  };
+}
 
 function toLookupEntry(row: ProviderChangeRequestSummary): PullRequestLookupEntry {
   return {
@@ -635,6 +682,7 @@ function dropLookupAnswersFor(
 export const make = Effect.fn("makePullRequestService")(function* () {
   const registry = yield* PullRequestProviderRegistry;
   const projections = yield* ProjectionSnapshotQuery;
+  const observations = yield* PullRequestObservations;
 
   /** Every provider failure reaches the client as the host's own sentence. */
   const asServiceError = (operation: string) => (error: PullRequestProviderError) =>
@@ -699,17 +747,27 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       if (host === null) {
         return Effect.succeed<PullRequestProjectRead>({ entries: [], error: null });
       }
-      return host
-        .listChangeRequests({
-          cwd: input.project.workspaceRoot,
-          repository: input.project.repository,
-          state: input.state,
-          limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
-        })
+      return observations
+        .observe(
+          host.listChangeRequests({
+            cwd: input.project.workspaceRoot,
+            repository: input.project.repository,
+            state: input.state,
+            limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
+          }),
+          (rows) =>
+            rows.map((row) => rowRead(input.project.provider, input.project.repository, row)),
+        )
         .pipe(
-          Effect.map((rows): PullRequestProjectRead => ({
+          Effect.map(({ result: rows, observedAt }): PullRequestProjectRead => ({
             entries: rows.map((row) =>
-              toEntry({ project: input.project, row, viewer: input.viewer, origin: "workspace" }),
+              toEntry({
+                project: input.project,
+                row,
+                viewer: input.viewer,
+                origin: "workspace",
+                observedAt,
+              }),
             ),
             error: null,
           })),
@@ -757,51 +815,57 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           if (viewer === null || viewer.trim().length === 0) {
             return Effect.succeed(empty);
           }
-          return search({
-            cwd: input.anchor.workspaceRoot,
-            viewer,
-            state: input.state,
-            limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
-          }).pipe(
-            Effect.map((rows): PullRequestProjectRead => ({
-              entries: rows.flatMap((row) =>
-                keepAuthoredRow({
-                  row,
-                  anchor: input.anchor,
-                  covered: input.covered,
-                  seen: input.seen,
-                })
-                  ? [
-                      toEntry({
-                        project: input.anchor,
-                        row,
-                        viewer,
-                        origin: "authored",
-                        repository: row.repository,
-                        ...(row.viewerCanWrite === undefined
-                          ? {}
-                          : { viewerCanWrite: row.viewerCanWrite }),
-                      }),
-                    ]
-                  : [],
-              ),
-              error: null,
-            })),
-            Effect.catch((error) =>
-              Effect.succeed<PullRequestProjectRead>({
-                entries: [],
-                error: {
-                  projectId: input.anchor.projectId,
-                  projectTitle: input.anchor.title,
-                  // The search is not about any one repository, so there is
-                  // none to name in the notice it fails into.
-                  repository: null,
-                  reason: error.reason,
-                  detail: error.detail,
-                },
+          return observations
+            .observe(
+              search({
+                cwd: input.anchor.workspaceRoot,
+                viewer,
+                state: input.state,
+                limit: input.state === "open" ? OPEN_LIST_LIMIT : PULL_REQUEST_SETTLED_LIST_LIMIT,
               }),
-            ),
-          );
+              (rows) => rows.map((row) => rowRead(input.anchor.provider, row.repository, row)),
+            )
+            .pipe(
+              Effect.map(({ result: rows, observedAt }): PullRequestProjectRead => ({
+                entries: rows.flatMap((row) =>
+                  keepAuthoredRow({
+                    row,
+                    anchor: input.anchor,
+                    covered: input.covered,
+                    seen: input.seen,
+                  })
+                    ? [
+                        toEntry({
+                          project: input.anchor,
+                          row,
+                          viewer,
+                          origin: "authored",
+                          repository: row.repository,
+                          ...(row.viewerCanWrite === undefined
+                            ? {}
+                            : { viewerCanWrite: row.viewerCanWrite }),
+                          observedAt,
+                        }),
+                      ]
+                    : [],
+                ),
+                error: null,
+              })),
+              Effect.catch((error) =>
+                Effect.succeed<PullRequestProjectRead>({
+                  entries: [],
+                  error: {
+                    projectId: input.anchor.projectId,
+                    projectTitle: input.anchor.title,
+                    // The search is not about any one repository, so there is
+                    // none to name in the notice it fails into.
+                    repository: null,
+                    reason: error.reason,
+                    detail: error.detail,
+                  },
+                }),
+              ),
+            );
         }),
       );
     });
@@ -968,20 +1032,43 @@ export const make = Effect.fn("makePullRequestService")(function* () {
     lookup: (key: string) => loadList(parseListCacheKey(key)),
   });
 
+  /**
+   * Detail reads owed a fresh read of every part (`fresh` on the provider),
+   * marked by a forced read and taken by the read that answers it.
+   */
+  const freshDetailKeys = yield* Ref.make<ReadonlySet<string>>(new Set());
+
   const loadDetail = Effect.fn("PullRequestService.loadDetail")(function* (
     key: PullRequestCacheKey,
   ) {
+    // Taken before anything else is awaited, so a read already under way when
+    // the forced one was asked for cannot take its mark.
+    const fresh = yield* Ref.modify(freshDetailKeys, (keys): [boolean, ReadonlySet<string>] => {
+      const cacheKey = pullRequestCacheKey(key);
+      if (!keys.has(cacheKey)) return [false, keys];
+      const rest = new Set(keys);
+      rest.delete(cacheKey);
+      return [true, rest];
+    });
     const target = yield* requireTarget("detail", key.projectId, key.repository);
     const viewer = yield* readViewer(target.project);
     const repository = yield* readRepositoryAccess(target);
-    const row = yield* target.provider
-      .getChangeRequest({ ...repositoryRef(target), number: key.number })
+    const { result: row, observedAt } = yield* observations
+      .observe(
+        target.provider.getChangeRequest({
+          ...repositoryRef(target),
+          number: key.number,
+          ...(fresh ? { fresh: true } : {}),
+        }),
+        (detail) => [detailRead(target.project.provider, target.repository, detail)],
+      )
       .pipe(Effect.mapError(asServiceError("detail")));
     return toDetail({
       target,
       row,
       viewer,
       repository,
+      observedAt,
       capabilities: target.provider.capabilities,
     });
   });
@@ -1046,8 +1133,10 @@ export const make = Effect.fn("makePullRequestService")(function* () {
         const outdated = input.outdated;
         return (
           input.force
-            ? Cache.invalidate(input.cache, key).pipe(
-                Effect.andThen(input.alsoInvalidate?.(target) ?? Effect.void),
+            ? // What goes with the read first: the read that replaces this one
+              // may start the moment the cached one is dropped.
+              (input.alsoInvalidate?.(target) ?? Effect.void).pipe(
+                Effect.andThen(Cache.invalidate(input.cache, key)),
               )
             : outdated
               ? Cache.invalidateWhen(input.cache, key, outdated).pipe(Effect.asVoid)
@@ -1114,21 +1203,29 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           return answered;
         }
         const mine = [...claimed.mine.values()];
-        const read = yield* host({
-          ...repositoryRef(target),
-          numbers: mine.flatMap((item) => ("number" in item ? [item.number] : [])),
-          branches: mine.flatMap((item) => ("branch" in item ? [item.branch] : [])),
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Pull request lookup failed", {
-              provider: error.provider,
-              detail: error.detail,
-            }).pipe(Effect.as(null)),
-          ),
-        );
+        const read = yield* observations
+          .observe(
+            host({
+              ...repositoryRef(target),
+              numbers: mine.flatMap((item) => ("number" in item ? [item.number] : [])),
+              branches: mine.flatMap((item) => ("branch" in item ? [item.branch] : [])),
+            }),
+            (answers) =>
+              [...answers.numbers.values(), ...answers.branches.values()].flatMap((row) =>
+                row === null ? [] : [rowRead(target.project.provider, target.repository, row)],
+              ),
+          )
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Pull request lookup failed", {
+                provider: error.provider,
+                detail: error.detail,
+              }).pipe(Effect.as(null)),
+            ),
+          );
         const answeredAtMs = yield* Clock.currentTimeMillis;
         for (const [key, item] of read === null ? [] : claimed.mine) {
-          const row = read === null ? undefined : lookupAnswerFor(read, item);
+          const row = read === null ? undefined : lookupAnswerFor(read.result, item);
           if (row === undefined) {
             continue;
           }
@@ -1136,6 +1233,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           answered.set(key, {
             pullRequest,
             answeredAtMs,
+            ...(read === null ? {} : { observedAt: read.observedAt }),
             expiresAtMs: lookupExpiresAtMs(item, pullRequest, answeredAtMs),
           });
         }
@@ -1208,6 +1306,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
               item,
               pullRequest: entry.pullRequest,
               answeredAt: DateTime.formatIso(DateTime.makeUnsafe(entry.answeredAtMs)),
+              ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
             },
           ];
     });
@@ -1289,6 +1388,18 @@ export const make = Effect.fn("makePullRequestService")(function* () {
             projectId: target.project.projectId,
             repository: target.repository,
           }),
+        ).pipe(
+          Effect.andThen(
+            Ref.update(freshDetailKeys, (keys) =>
+              new Set(keys).add(
+                pullRequestCacheKey({
+                  projectId: target.project.projectId,
+                  repository: target.repository,
+                  number: input.number,
+                }),
+              ),
+            ),
+          ),
         ),
     });
 

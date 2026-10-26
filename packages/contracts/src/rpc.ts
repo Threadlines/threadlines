@@ -184,6 +184,7 @@ import {
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
+  VcsRefreshRemoteStatusInput,
   VcsStatusInput,
   VcsStatusLocalResult,
   VcsStatusResult,
@@ -205,6 +206,7 @@ import {
   PullRequestListResult,
   PullRequestLookupInput,
   PullRequestLookupResult,
+  PullRequestObservation,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -470,6 +472,7 @@ export const WS_METHODS = {
   vcsDropStash: "vcs.dropStash",
   vcsRefreshLocalStatus: "vcs.refreshLocalStatus",
   vcsRefreshStatus: "vcs.refreshStatus",
+  vcsRefreshRemoteStatus: "vcs.refreshRemoteStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCommitGraph: "vcs.commitGraph",
   vcsCommitDetails: "vcs.commitDetails",
@@ -498,6 +501,7 @@ export const WS_METHODS = {
   // Pull request methods
   pullRequestsList: "pullRequests.list",
   pullRequestsLookup: "pullRequests.lookup",
+  pullRequestsSubscribeObservations: "pullRequests.subscribeObservations",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsActivity: "pullRequests.activity",
   pullRequestsDiff: "pullRequests.diff",
@@ -1365,6 +1369,12 @@ export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
   error: GitManagerServiceError,
 });
 
+/** Only on servers reporting the `remoteStatusRefresh` capability. */
+export const WsVcsRefreshRemoteStatusRpc = Rpc.make(WS_METHODS.vcsRefreshRemoteStatus, {
+  payload: VcsRefreshRemoteStatusInput,
+  error: GitManagerServiceError,
+});
+
 export const WsVcsRefreshLocalStatusRpc = Rpc.make(WS_METHODS.vcsRefreshLocalStatus, {
   payload: VcsStatusInput,
   success: VcsStatusLocalResult,
@@ -1419,6 +1429,20 @@ export const WsPullRequestsLookupRpc = Rpc.make(WS_METHODS.pullRequestsLookup, {
   success: PullRequestLookupResult,
   error: PullRequestServiceError,
 });
+
+/**
+ * The server's record of every pull request it has read recently, then each
+ * change as a read lands. Only servers reporting the `pullRequestObservations`
+ * capability answer it.
+ */
+export const WsPullRequestsSubscribeObservationsRpc = Rpc.make(
+  WS_METHODS.pullRequestsSubscribeObservations,
+  {
+    payload: Schema.Struct({}),
+    success: PullRequestObservation,
+    stream: true,
+  },
+);
 
 export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   payload: PullRequestDetailInput,
@@ -2307,6 +2331,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsApplyStashRpc,
   WsVcsDropStashRpc,
   WsVcsRefreshLocalStatusRpc,
+  WsVcsRefreshRemoteStatusRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
   WsGitGenerateCommitMessageRpc,
@@ -2316,6 +2341,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitApplyAuthRemediationRpc,
   WsPullRequestsListRpc,
   WsPullRequestsLookupRpc,
+  WsPullRequestsSubscribeObservationsRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsActivityRpc,
   WsPullRequestsDiffRpc,

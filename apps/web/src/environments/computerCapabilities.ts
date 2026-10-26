@@ -6,7 +6,14 @@
 import type { EnvironmentId, ExecutionEnvironmentCapabilities } from "@threadlines/contracts";
 
 import { readPrimaryEnvironmentDescriptor } from "./primary";
-import { useSavedEnvironmentRuntimeStore } from "./runtime";
+import { useSavedEnvironmentRegistryStore, useSavedEnvironmentRuntimeStore } from "./runtime";
+
+/** Every computer this app knows, its own first. */
+export function knownComputerIds(): EnvironmentId[] {
+  const primary = readPrimaryEnvironmentDescriptor()?.environmentId;
+  const saved = Object.keys(useSavedEnvironmentRegistryStore.getState().byId) as EnvironmentId[];
+  return primary === undefined ? saved : [primary, ...saved.filter((id) => id !== primary)];
+}
 
 export function readConnectedComputerCapability(
   environmentId: EnvironmentId,

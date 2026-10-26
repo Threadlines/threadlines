@@ -81,6 +81,8 @@ export interface ComposerPullRequestRowModel {
   readonly headBranch: string | null;
   readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
   readonly chip: ComposerPullRequestChip;
+  /** When the read its state came from began (milliseconds); null where that read did not say. */
+  readonly observedAt: number | null;
 }
 
 /**
@@ -215,12 +217,11 @@ export function composerPullRequestRow(input: {
   readonly detailCurrent: boolean;
 }): ComposerPullRequestRowModel {
   const { pullRequest, detail } = input;
-  // The detail is usually the fresher read of the two: it is re-read while
-  // checks run, while the listing behind the thread's resolution polls far
-  // more slowly. A remembered one does not outrank a listing that has seen
-  // the pull request merge or close since.
+  // Whichever was read last says what state it is in: the detail, or the
+  // thread's resolution, which already carries the computer's shared record
+  // of every other read of this pull request.
   const stateSource = pullRequestDetailOutranksListing({
-    listedState: pullRequest.state,
+    listed: pullRequest,
     detail,
     detailCurrent: input.detailCurrent,
   })
@@ -248,6 +249,10 @@ export function composerPullRequestRow(input: {
       armed: autoMergeEnabled,
       waitingFor: input.waitingFor,
     }),
+    observedAt:
+      stateSource?.observedAt === undefined
+        ? pullRequest.observedAt
+        : Date.parse(stateSource.observedAt),
   };
 }
 

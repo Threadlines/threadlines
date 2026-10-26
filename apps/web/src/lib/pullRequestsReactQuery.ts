@@ -1,3 +1,8 @@
+import { isPageAttended, onPageAttentionChange, useSurfaceAttended } from "~/lib/pageAttention";
+import {
+  useAllPullRequestRecords,
+  usePullRequestRecord,
+} from "~/environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
   ProjectId,
@@ -6,6 +11,7 @@ import type {
   PullRequestListState,
   PullRequestLookupItem,
   PullRequestMergeMethod,
+  PullRequestObservation,
   PullRequestReactionContent,
   PullRequestRef,
   PullRequestReviewCommentDraft,
@@ -24,16 +30,20 @@ import {
   keepPreviousData,
   mutationOptions,
   queryOptions,
+  useIsFetching,
   useQueries,
   useQuery,
   useQueryClient,
+  type Query,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
   mergePullRequestListResults,
+  withPullRequestRecordOnDetail,
+  withPullRequestRecordOnEntry,
   type PullRequestEntry,
   type PullRequestProjectFailure,
 } from "~/components/pull-requests/pullRequests.logic";
@@ -97,15 +107,41 @@ export const pullRequestQueryKeys = {
         ? (["number", item.number] as const)
         : (["branch", item.branch] as const)),
     ] as const,
-  detail: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "detail", environmentId, projectId, number] as const,
-  activity: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "activity", environmentId, projectId, number] as const,
-  diff: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "diff", environmentId, projectId, number] as const,
-  reviewerCandidates: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "reviewer-candidates", environmentId, projectId, number] as const,
+  // One pull request's reads. The repository is part of the key: a project
+  // reads pull requests from more than one, and #42 in one is not #42 in another.
+  detail: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("detail", environmentId, reference),
+  activity: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("activity", environmentId, reference),
+  diff: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("diff", environmentId, reference),
+  reviewerCandidates: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("reviewer-candidates", environmentId, reference),
 };
+
+function pullRequestKey<const Read extends string>(
+  read: Read,
+  environmentId: EnvironmentId,
+  reference: PullRequestRef,
+) {
+  return [
+    "pull-requests",
+    read,
+    environmentId,
+    reference.projectId,
+    reference.repository,
+    reference.number,
+  ] as const;
+}
+
+/**
+ * How often an open pull request on screen is read while the user is looking
+ * at the app and nothing about it is in motion, so a merge, a review or a
+ * check elsewhere shows up without a refresh. While its checks run it is read
+ * at the faster checks pace; while the user is elsewhere it is not read at
+ * all, and coming back reads it at once (startPullRequestAttentionRefresh).
+ */
+export const PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS = 30_000;
 
 /** Everything the detail surface reads, addressed the same way on every key. */
 export interface PullRequestReadInput {
@@ -118,6 +154,12 @@ export interface PullRequestReadInput {
    * reads again past a cached read of any other commit. Detail only.
    */
   readonly expectedHeadSha?: string | null;
+  /**
+   * Whether the surface reading it is on screen with the user looking
+   * (lib/pageAttention.ts). Only then is a settled open pull request kept
+   * current; a surface not looking reads nothing on a timer. Detail only.
+   */
+  readonly attended?: boolean;
 }
 
 function readPayload(input: PullRequestReadInput) {
@@ -126,11 +168,7 @@ function readPayload(input: PullRequestReadInput) {
 
 export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.detail(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.detail(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.detail({
         ...readPayload(input),
@@ -138,14 +176,20 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
       }),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
     gcTime: PULL_REQUEST_DETAIL_GC_TIME_MS,
-    // Kept current while there is something to wait for, and read again on
-    // coming back to the app then too. The rest of the time it is a document
-    // the user reads, and the panel's own Refresh is the one thing that re-runs
-    // `gh`. A read that failed is tried again at the same pace, whether or not
-    // an earlier one is on screen: that one may no longer be true.
+    // Kept current at the checks pace while there is something to wait for,
+    // and read again on coming back to the app then too. A read that failed is
+    // tried again at the same pace, whether or not an earlier one is on
+    // screen: that one may no longer be true. An open one the user is looking
+    // at is read now and then besides; nothing is read for a surface the user
+    // is not looking at.
     refetchOnWindowFocus: (query) => detailWorthRereading(query.state),
-    refetchInterval: (query) =>
-      detailWorthRereading(query.state) ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS : false,
+    refetchInterval: (query) => {
+      if (input.attended === false) return false;
+      if (detailWorthRereading(query.state)) return PULL_REQUEST_CHECKS_POLL_INTERVAL_MS;
+      return input.attended === true && query.state.data?.state === "open"
+        ? PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS
+        : false;
+    },
     refetchIntervalInBackground: false,
   });
 }
@@ -218,12 +262,18 @@ export function usePullRequestDetail(input: {
   readonly pushedHead?: string | null;
 }): PullRequestDetailRead {
   const queryClient = useQueryClient();
+  const attended = useSurfaceAttended();
   const enabled = input.environmentId !== null && input.reference !== null;
   const pushedHead = input.pushedHead ?? null;
   const environmentId = input.environmentId ?? IDLE_ENVIRONMENT_ID;
   const reference = input.reference ?? IDLE_PULL_REQUEST_REF;
   const query = useQuery({
-    ...pullRequestDetailQueryOptions({ environmentId, reference, expectedHeadSha: pushedHead }),
+    ...pullRequestDetailQueryOptions({
+      environmentId,
+      reference,
+      expectedHeadSha: pushedHead,
+      attended,
+    }),
     enabled,
   });
   const detail = query.data;
@@ -263,7 +313,13 @@ export function usePullRequestDetail(input: {
   // not restart the wait.
   const { projectId, repository, number } = reference;
   useEffect(() => {
-    if (followUpKey === null || fetching || sent >= CHECKS_WAIT_FOLLOW_UP_AT_MS.length) {
+    // Nobody is looking: the push is followed up once the user is back.
+    if (
+      !attended ||
+      followUpKey === null ||
+      fetching ||
+      sent >= CHECKS_WAIT_FOLLOW_UP_AT_MS.length
+    ) {
       return;
     }
     const dueAt = startedAt === null ? 0 : startedAt + (CHECKS_WAIT_FOLLOW_UP_AT_MS[sent] ?? 0);
@@ -302,10 +358,19 @@ export function usePullRequestDetail(input: {
     sent,
     fetching,
     queryClient,
+    attended,
   ]);
 
-  return {
+  const followed = usePullRequestDetailFollowingRecord({
+    environmentId: enabled ? input.environmentId : null,
+    reference: enabled ? input.reference : null,
     detail,
+    attended,
+    rereads: "detail",
+  });
+
+  return {
+    detail: followed,
     error: query.error,
     lastKnown,
     waitingFor: followingUp ? wait : null,
@@ -322,11 +387,7 @@ const IDLE_PULL_REQUEST_REF = {
 
 export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.activity(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.activity(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.activity(readPayload(input)),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
@@ -336,11 +397,7 @@ export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
 
 export function pullRequestDiffQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.diff(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.diff(input.environmentId, input.reference),
     queryFn: () => ensureEnvironmentApi(input.environmentId).pullRequests.diff(readPayload(input)),
     staleTime: PULL_REQUEST_DIFF_STALE_TIME_MS,
     gcTime: PULL_REQUEST_DIFF_GC_TIME_MS,
@@ -355,19 +412,114 @@ export function pullRequestDiffQueryOptions(input: PullRequestReadInput) {
  */
 export async function refreshPullRequest(
   queryClient: QueryClient,
-  input: { readonly environmentId: EnvironmentId; readonly reference: PullRequestRef },
+  input: PullRequestAddress,
+  /** The detail alone, for a surface that shows no conversation or patch. */
+  scope: "everything" | "detail" = "everything",
 ): Promise<void> {
   const forced = { ...input, force: true } as const;
+  if (scope === "detail") {
+    await queryClient.cancelQueries({
+      queryKey: pullRequestQueryKeys.detail(input.environmentId, input.reference),
+      exact: true,
+    });
+    await queryClient
+      .fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 })
+      .catch(() => undefined);
+    return;
+  }
   const diffOptions = pullRequestDiffQueryOptions(forced);
+  // `gh pr diff` is the expensive read and the Code tab may never have been
+  // opened, so the patch is only read again where there is one to replace or
+  // one on its way.
+  const diffState = queryClient.getQueryState(diffOptions.queryKey);
+  const rereadsDiff = diffState?.data !== undefined || diffState?.fetchStatus === "fetching";
+  // A read already on its way began before whatever made this one necessary,
+  // and a fetch would only join it rather than go past the server's cache.
+  // Only reads that are about to be made again are cancelled: one cancelled
+  // and not replaced would sit loading with nothing to finish it.
+  await Promise.all(
+    [
+      pullRequestQueryKeys.detail(input.environmentId, input.reference),
+      pullRequestQueryKeys.activity(input.environmentId, input.reference),
+      ...(rereadsDiff ? [diffOptions.queryKey] : []),
+    ].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })),
+  );
   await Promise.allSettled([
     queryClient.fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 }),
     queryClient.fetchQuery({ ...pullRequestActivityQueryOptions(forced), staleTime: 0 }),
-    // `gh pr diff` is the expensive read and the Code tab may never have been
-    // opened, so the patch is only re-read when there is already one to replace.
-    queryClient.getQueryData(diffOptions.queryKey) === undefined
-      ? Promise.resolve()
-      : queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }),
+    rereadsDiff ? queryClient.fetchQuery({ ...diffOptions, staleTime: 0 }) : Promise.resolve(),
   ]);
+}
+
+/** One pull request on one computer. */
+interface PullRequestAddress {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+}
+
+/**
+ * A full read as the computer's shared record has had it since (see
+ * withPullRequestRecordOnDetail), and read again past the server's cache,
+ * once per record, when that record saw it change. A detail's own polling is
+ * paced by what the detail last said, so without this a pull request it last
+ * saw closed would never be read again after it reopened elsewhere. Only
+ * while the surface is attended; coming back reads what went stale anyway.
+ */
+export function usePullRequestDetailFollowingRecord(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly reference: PullRequestRef | null;
+  readonly detail: PullRequestDetail | undefined;
+  readonly attended: boolean;
+  /** What a re-read covers: the conversation and patch too, where the surface shows them. */
+  readonly rereads: "everything" | "detail";
+}): PullRequestDetail | undefined {
+  const queryClient = useQueryClient();
+  const { environmentId, reference, detail, attended, rereads } = input;
+  const record = usePullRequestRecord(environmentId, {
+    url: detail?.url,
+    repository: reference?.repository,
+    number: reference?.number ?? 0,
+  });
+  const recorded = useMemo(
+    () => (detail === undefined ? undefined : withPullRequestRecordOnDetail(detail, record)),
+    [detail, record],
+  );
+  const behindRecord = recorded?.behind === true && attended ? record : undefined;
+  const rereadFor = useRef<PullRequestObservation | undefined>(undefined);
+  const projectId = reference?.projectId;
+  const repository = reference?.repository;
+  const number = reference?.number;
+  // A read on its way may be the very one the record came from (the server
+  // records a read before it answers): it is left to land, and only an
+  // answer still behind is read again.
+  const reading =
+    useIsFetching({
+      queryKey: pullRequestQueryKeys.detail(
+        environmentId ?? IDLE_ENVIRONMENT_ID,
+        reference ?? IDLE_PULL_REQUEST_REF,
+      ),
+      exact: true,
+    }) > 0;
+  useEffect(() => {
+    if (
+      behindRecord === undefined ||
+      reading ||
+      rereadFor.current === behindRecord ||
+      environmentId === null ||
+      projectId === undefined ||
+      repository === undefined ||
+      number === undefined
+    ) {
+      return;
+    }
+    rereadFor.current = behindRecord;
+    void refreshPullRequest(
+      queryClient,
+      { environmentId, reference: { projectId, repository, number } },
+      rereads,
+    ).catch(() => undefined);
+  }, [behindRecord, environmentId, number, projectId, queryClient, reading, repository, rereads]);
+  return recorded?.detail;
 }
 
 /** What every pull request write is addressed with. */
@@ -548,11 +700,7 @@ export function pullRequestReviewerCandidatesQueryOptions(input: {
   readonly reference: PullRequestRef;
 }) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.reviewerCandidates(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.reviewerCandidates(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.reviewerCandidates(input.reference),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
@@ -570,10 +718,21 @@ export function pullRequestListQueryOptions(input: {
   readonly environmentId: EnvironmentId;
   readonly state: PullRequestListState;
 }) {
+  const owedKey = listingOwedKey(input);
   return queryOptions({
     queryKey: pullRequestQueryKeys.list(input.environmentId, input.state),
-    queryFn: () =>
-      ensureEnvironmentApi(input.environmentId).pullRequests.list({ state: input.state }),
+    queryFn: async () => {
+      const owed = listingsOwedFreshRead.delete(owedKey);
+      try {
+        return await ensureEnvironmentApi(input.environmentId).pullRequests.list({
+          state: input.state,
+          ...(owed ? { force: true as const } : {}),
+        });
+      } catch (error) {
+        if (owed) listingsOwedFreshRead.add(owedKey);
+        throw error;
+      }
+    },
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     // Coming back to the window is a good moment to re-read what is still in
     // flight. Merged and closed are history: the sidebar keeps them only to
@@ -600,6 +759,7 @@ const PULL_REQUEST_LIST_STATES = [
  */
 export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
   const environments = usePullRequestEnvironments();
+  const pullRequestRecords = useAllPullRequestRecords();
 
   return useQueries({
     queries: environments.flatMap((environment) =>
@@ -612,21 +772,49 @@ export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
     // its own tab, so a pull request two computers both list is one row here
     // too and the Project filter does not offer it twice.
     combine: (results) =>
-      PULL_REQUEST_LIST_STATES.flatMap(
-        (state, stateIndex) =>
-          mergePullRequestListResults({
-            state,
-            results: environments.map((environment, environmentIndex) => {
-              const result =
-                results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
-              return {
-                environmentId: environment.environmentId,
-                environmentLabel: environment.label,
-                data: result && !result.isPlaceholderData ? result.data : undefined,
-              };
-            }),
-          }).entries,
+      PULL_REQUEST_LIST_STATES.flatMap((state, stateIndex) =>
+        mergePullRequestListResults({
+          state,
+          results: environments.map((environment, environmentIndex) => {
+            const result = results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
+            return {
+              environmentId: environment.environmentId,
+              environmentLabel: environment.label,
+              data: result && !result.isPlaceholderData ? result.data : undefined,
+            };
+          }),
+        }).entries.map((entry) =>
+          withPullRequestRecordOnEntry(entry, pullRequestRecords(entry.environmentId)(entry)),
+        ),
       ),
+  });
+}
+
+/** Listings whose next read skips the server's cache; see {@link markPullRequestListSettled}. */
+const listingsOwedFreshRead = new Set<string>();
+
+function listingOwedKey(input: {
+  readonly environmentId: EnvironmentId;
+  readonly state: PullRequestListState;
+}): string {
+  return `${input.environmentId}\u0000${input.state}`;
+}
+
+/**
+ * A pull request just merged or closed, and the server's cached listing of
+ * that state may be from before it did. The listing goes stale here, and its
+ * next read (now, if it is on screen, or whenever one mounts) goes past the
+ * server's cache, so the pull request does not wait for the next slow poll to
+ * turn up under its new state.
+ */
+export function markPullRequestListSettled(
+  queryClient: QueryClient,
+  input: { readonly environmentId: EnvironmentId; readonly state: PullRequestListState },
+): void {
+  listingsOwedFreshRead.add(listingOwedKey(input));
+  void queryClient.invalidateQueries({
+    queryKey: pullRequestQueryKeys.list(input.environmentId, input.state),
+    exact: true,
   });
 }
 
@@ -749,12 +937,16 @@ export function usePullRequestLists(input: {
   const environments = usePullRequestEnvironments();
   const enabled = input.enabled ?? true;
   const state = input.state;
+  const pullRequestRecords = useAllPullRequestRecords();
+  const attended = useSurfaceAttended();
 
   return useQueries({
     queries: environments.map((environment) => ({
       ...pullRequestListQueryOptions({ environmentId: environment.environmentId, state }),
       enabled,
-      refetchInterval: input.refetchIntervalMs,
+      // Only while the user is looking at the app: every poll spawns `gh`, and
+      // coming back reads what went stale meanwhile (startPullRequestAttentionRefresh).
+      refetchInterval: attended ? input.refetchIntervalMs : false,
       // A background tab drives no decisions, and every poll spawns `gh`.
       refetchIntervalInBackground: false,
       // An answer holds until this surface's next poll, so mounting it again
@@ -795,9 +987,19 @@ export function usePullRequestLists(input: {
       const hasNoAnswer = results.length > 0 && usableData.every((data) => data === undefined);
       const allFailed = results.every((result) => result.error !== null);
 
+      // Each row as the newest read of it says; one that has since left this
+      // listing's state (merged while the open listing still carries it) goes.
+      const entries = merged.entries.flatMap((entry) => {
+        const recorded = withPullRequestRecordOnEntry(
+          entry,
+          pullRequestRecords(entry.environmentId)(entry),
+        );
+        return recorded.state === state ? [recorded] : [];
+      });
+
       return {
         environments,
-        entries: merged.entries,
+        entries,
         failures: merged.failures,
         environmentFailures: results.flatMap((result, index) => {
           const environment = environments[index];
@@ -817,5 +1019,37 @@ export function usePullRequestLists(input: {
         isFetching: results.some((result) => result.isFetching),
       };
     },
+  });
+}
+
+/**
+ * The reads that say what state a pull request is in: the open listing, a
+ * lookup, a full read. A diff, the activity and the merged and closed listings
+ * keep their own pace; reading them on every return would cost a `gh` run
+ * each for nothing the user is waiting on.
+ */
+function saysPullRequestState(query: Query): boolean {
+  const [, read, , state] = query.queryKey;
+  return read === "lookup" || read === "detail" || (read === "list" && state === "open");
+}
+
+/**
+ * Reads again every pull request state on screen that went stale while the
+ * user was elsewhere, the moment they come back: the timers stop while
+ * nobody looks, so this is what brings the screen current. Started once.
+ */
+export function startPullRequestAttentionRefresh(queryClient: QueryClient): () => void {
+  let attended = isPageAttended();
+  return onPageAttentionChange(() => {
+    const wasAttended = attended;
+    attended = isPageAttended();
+    if (attended && !wasAttended) {
+      void queryClient.refetchQueries({
+        queryKey: pullRequestQueryKeys.all,
+        type: "active",
+        stale: true,
+        predicate: saysPullRequestState,
+      });
+    }
   });
 }

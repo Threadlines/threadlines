@@ -27,6 +27,7 @@ const THREAD_PULL_REQUEST: ThreadPullRequest = {
   autoMergeEnabled: false,
   headBranch: null,
   diffStat: null,
+  observedAt: null,
 };
 
 function check(status: PullRequestCheck["status"], name: string): PullRequestCheck {
@@ -131,19 +132,45 @@ describe("composerPullRequestRow", () => {
 
   it("does not let a remembered read undo a merge the listing has seen since", () => {
     const remembered = detail({ state: "open" });
-    const row = (detailCurrent: boolean) =>
+    const row = (state: "merged" | "closed", detailCurrent: boolean) =>
       composerPullRequestRow({
-        pullRequest: { ...THREAD_PULL_REQUEST, state: "merged" },
+        pullRequest: { ...THREAD_PULL_REQUEST, state },
         projectTitle: null,
         detail: remembered,
         threadAutoMerge: false,
         waitingFor: null,
         detailCurrent,
       });
-    expect(row(false).state).toBe("merged");
-    expect(row(false).chip).toEqual({ label: "Merged", tone: "merged", interactive: false });
-    // A read of its own is the fresher word, whatever the listing still says.
-    expect(row(true).state).toBe("open");
+    expect(row("merged", false).state).toBe("merged");
+    expect(row("merged", false).chip).toEqual({
+      label: "Merged",
+      tone: "merged",
+      interactive: false,
+    });
+    expect(row("closed", false).state).toBe("closed");
+    // A read of its own is the fresher word on what can change back: a closed
+    // pull request can be reopened. A merge never is, so nothing undoes it.
+    expect(row("closed", true).state).toBe("open");
+    expect(row("merged", true).state).toBe("merged");
+  });
+
+  it("takes its state from whichever read was newer, the detail or the shared record", () => {
+    const row = (input: { readonly detailAt: string; readonly recordedAt: number }) =>
+      composerPullRequestRow({
+        // The thread's resolution, already weighed against the computer's
+        // shared record: some other read saw it close.
+        pullRequest: { ...THREAD_PULL_REQUEST, state: "closed", observedAt: input.recordedAt },
+        projectTitle: null,
+        detail: { ...detail({ state: "open" }), observedAt: input.detailAt },
+        threadAutoMerge: false,
+        waitingFor: null,
+        // Even a detail read since the row opened loses to a newer read elsewhere.
+        detailCurrent: true,
+      });
+    const close = Date.parse("2026-10-26T10:00:00.000Z");
+    expect(row({ detailAt: "2026-10-26T09:59:00.000Z", recordedAt: close }).state).toBe("closed");
+    // Reopened since.
+    expect(row({ detailAt: "2026-10-26T10:01:00.000Z", recordedAt: close }).state).toBe("open");
   });
 
   it("takes the branch, project, size and state from the detail once it lands", () => {

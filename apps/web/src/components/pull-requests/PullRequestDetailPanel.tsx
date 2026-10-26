@@ -38,6 +38,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useRememberedMergeMethod } from "./useRememberedMergeMethod";
 import { openExternalUrl } from "../../lib/externalLinks";
+import { useSurfaceAttended } from "../../lib/pageAttention";
 import {
   pullRequestActionMutationOptions,
   pullRequestActivityQueryOptions,
@@ -45,6 +46,7 @@ import {
   pullRequestDiffQueryOptions,
   pullRequestUpdateMutationOptions,
   refreshPullRequest,
+  usePullRequestDetailFollowingRecord,
 } from "../../lib/pullRequestsReactQuery";
 import { cn, pluralize } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -228,13 +230,26 @@ export function PullRequestDetailPanel({
   // it is unmounted until it is opened.
   const panelRoot = useRef<HTMLDivElement | null>(null);
 
-  const detail = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  // Polled while the user looks at it; the newest read anywhere (the
+  // computer's shared record) says its state before this read catches up,
+  // and has it read again.
+  const attended = useSurfaceAttended();
+  const detailQuery = useQuery(
+    pullRequestDetailQueryOptions({ environmentId, reference, attended }),
+  );
+  const detailData = usePullRequestDetailFollowingRecord({
+    environmentId,
+    reference,
+    detail: detailQuery.data,
+    attended,
+    rereads: "everything",
+  });
   const activity = useQuery(pullRequestActivityQueryOptions({ environmentId, reference }));
   const diff = useQuery({
     ...pullRequestDiffQueryOptions({ environmentId, reference }),
     // A host with no patch to give has no Code tab to open, and asking it for
     // one would only fail.
-    enabled: codeOpened && detail.data?.capabilities.diff === true,
+    enabled: codeOpened && detailData?.capabilities.diff === true,
   });
 
   const handleRefresh = useCallback(() => {
@@ -285,7 +300,7 @@ export function PullRequestDetailPanel({
 
   const sendCommentToThread = useCallback(
     (comment: PullRequestComment) => {
-      const data = detail.data;
+      const data = detailData;
       // A review's remark is a finding an agent can act on; a plain comment is
       // only a remark, so it goes over as the quoted words it is.
       runHandoff(
@@ -298,36 +313,36 @@ export function PullRequestDetailPanel({
             }),
       );
     },
-    [detail.data, reference.number, runHandoff],
+    [detailData, reference.number, runHandoff],
   );
 
   const fixThread = useCallback(
     (thread: PullRequestReviewThread) => {
-      const data = detail.data;
+      const data = detailData;
       if (!data) return;
       runHandoff(buildFixFindingHandoff(data, reviewThreadFinding(thread)));
     },
-    [detail.data, runHandoff],
+    [detailData, runHandoff],
   );
 
   const fixCheck = useCallback(
     (check: PullRequestCheck) => {
-      const data = detail.data;
+      const data = detailData;
       if (!data) return;
       runHandoff(buildFixFindingHandoff(data, failingCheckFinding(check)));
     },
-    [detail.data, runHandoff],
+    [detailData, runHandoff],
   );
 
   const findings = useMemo(
-    () => collectPullRequestFindings(activity.data ?? null, detail.data?.checks ?? []),
-    [activity.data, detail.data?.checks],
+    () => collectPullRequestFindings(activity.data ?? null, detailData?.checks ?? []),
+    [activity.data, detailData?.checks],
   );
 
   // The hand-offs the whole pull request offers, as opposed to the ones a
   // single finding does. Null where there is nowhere to write them.
   const handoffs = useMemo<PullRequestHandoffActions | null>(() => {
-    const data = detail.data;
+    const data = detailData;
     if (!canHandoff || !data) {
       return null;
     }
@@ -341,7 +356,7 @@ export function PullRequestDetailPanel({
           ? () => runHandoff(buildResolveConflictsHandoff(data))
           : null,
     };
-  }, [canHandoff, detail.data, findings, runHandoff]);
+  }, [canHandoff, detailData, findings, runHandoff]);
 
   const panelId = `pull-request-${reference.projectId}-${reference.number}`;
 
@@ -349,8 +364,8 @@ export function PullRequestDetailPanel({
   // the same list read twice, so the strip's words are found here rather than
   // reported up from the tab that draws the rows.
   const checksSummary = useMemo(
-    () => summarizePullRequestChecks(detail.data?.checks ?? []),
-    [detail.data?.checks],
+    () => summarizePullRequestChecks(detailData?.checks ?? []),
+    [detailData?.checks],
   );
   const scrollToChecks = useCallback(() => {
     scrollPullRequestSummaryTo(
@@ -368,7 +383,7 @@ export function PullRequestDetailPanel({
       </div>
     ) : null;
 
-  if (detail.isPending) {
+  if (detailQuery.isPending) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="pull-request-detail">
         <PullRequestDetailSkeleton {...(context === "page" && onClose ? { onClose } : {})} />
@@ -376,19 +391,19 @@ export function PullRequestDetailPanel({
     );
   }
 
-  if (detail.isError || !detail.data) {
+  if (detailQuery.isError || !detailData) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="pull-request-detail">
         {closeControl}
         <Empty>
           <EmptyHeader>
             <EmptyDescription>
-              {detail.error instanceof Error && detail.error.message.trim().length > 0
-                ? detail.error.message
+              {detailQuery.error instanceof Error && detailQuery.error.message.trim().length > 0
+                ? detailQuery.error.message
                 : "This pull request could not be read."}
             </EmptyDescription>
           </EmptyHeader>
-          <Button variant="outline" size="sm" onClick={() => void detail.refetch()}>
+          <Button variant="outline" size="sm" onClick={() => void detailQuery.refetch()}>
             Retry
           </Button>
         </Empty>
@@ -396,7 +411,7 @@ export function PullRequestDetailPanel({
     );
   }
 
-  const data = detail.data;
+  const data = detailData;
   const retryActivity = () => void activity.refetch();
   // A host that cannot produce a patch has no Code tab at all, so a selection
   // left on it from another pull request falls back to the Summary.
@@ -419,7 +434,7 @@ export function PullRequestDetailPanel({
         context={context}
         linkedThread={linkedThread}
         autoFocusTitle={autoFocusTitle}
-        isRefreshing={isRefreshing || detail.isFetching}
+        isRefreshing={isRefreshing || detailQuery.isFetching}
         onRefresh={handleRefresh}
         {...(onClose ? { onClose } : {})}
         {...(onReviewInThread ? { onCheckout: onReviewInThread } : {})}

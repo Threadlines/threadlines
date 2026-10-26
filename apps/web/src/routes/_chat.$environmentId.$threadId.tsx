@@ -1,3 +1,4 @@
+import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 import type { PullRequestRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -404,6 +405,9 @@ function ChatThreadRouteView() {
       [openPullRequests.entries, pullRequestProjects, pullRequestTabAvailable, pullRequestThread],
     ),
   );
+  // What the thread's computer last heard about each pull request, whoever
+  // asked; every pull request below is weighed against it.
+  const pullRequestRecords = usePullRequestRecords(pullRequestThread?.environmentId);
   const threadPullRequest = useMemo(() => {
     if (!pullRequestThread) {
       return null;
@@ -419,6 +423,7 @@ function ChatThreadRouteView() {
       openEntries: openPullRequests.entries,
       lookups: pullRequestLookups,
       projects: pullRequestProjects,
+      records: pullRequestRecords,
     });
     // Dated from the settled listings and lookups, which also say when a
     // status still calling it open is older than its merge.
@@ -440,6 +445,7 @@ function ChatThreadRouteView() {
     pullRequestGitStatus.data,
     pullRequestLookups,
     pullRequestProjects,
+    pullRequestRecords,
     pullRequestThread,
     settledPullRequestEntries,
   ]);
@@ -480,6 +486,7 @@ function ChatThreadRouteView() {
       openEntries: openPullRequests.entries,
       settledEntries: settledPullRequestEntries,
       lookups: pullRequestLookups,
+      records: pullRequestRecords,
     }).flatMap((pullRequest): ThreadPullRequestTarget[] =>
       // The panel addresses a pull request by repository, so one on a
       // project with no remote it can read has nothing to open.
@@ -502,6 +509,7 @@ function ChatThreadRouteView() {
     openPullRequests.entries,
     pullRequestLookups,
     pullRequestProjects,
+    pullRequestRecords,
     settledPullRequestEntries,
     threadEnvironmentId,
     threadLinkedPullRequests,
@@ -1021,7 +1029,10 @@ function ChatThreadRouteView() {
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
           <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-            <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
+            <PullRequestHoverCardProvider
+              environmentId={threadRef.environmentId}
+              threadPullRequests={hoverCardPullRequests}
+            >
               <ChatView
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
@@ -1049,7 +1060,10 @@ function ChatThreadRouteView() {
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
         <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-          <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
+          <PullRequestHoverCardProvider
+            environmentId={threadRef.environmentId}
+            threadPullRequests={hoverCardPullRequests}
+          >
             <ChatView
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}
