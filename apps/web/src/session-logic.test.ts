@@ -1896,6 +1896,51 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toEqual([]);
   });
 
+  it("shows a hook only when it fails", () => {
+    const hook = (id: string, outcome: "success" | "error") => [
+      makeActivity({
+        id: `${id}-started`,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "hook.started",
+        summary: "SessionStart hook started",
+        tone: "tool",
+        payload: { hookId: id, hookName: "SessionStart:startup", hookEvent: "SessionStart" },
+      }),
+      makeActivity({
+        id: `${id}-progress`,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "hook.progress",
+        summary: "Hook output",
+        tone: "warning",
+        payload: { hookId: id, status: "inProgress", stderr: "warming up" },
+      }),
+      makeActivity({
+        id: `${id}-completed`,
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "hook.completed",
+        summary: outcome === "success" ? "SessionStart hook completed" : "SessionStart hook failed",
+        tone: outcome === "success" ? "tool" : "error",
+        payload: {
+          hookId: id,
+          hookEvent: "SessionStart",
+          outcome,
+          status: outcome === "success" ? "completed" : "failed",
+          ...(outcome === "error" ? { detail: "node: command not found" } : {}),
+        },
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(hook("hook-ok", "success"))).toEqual([]);
+    expect(deriveWorkLogEntries(hook("hook-bad", "error"))).toEqual([
+      expect.objectContaining({
+        id: "hook-bad-completed",
+        label: "SessionStart hook failed",
+        tone: "error",
+        detail: "node: command not found",
+      }),
+    ]);
+  });
+
   it("omits task.started but shows task.progress and task.completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

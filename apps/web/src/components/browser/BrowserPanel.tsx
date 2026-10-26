@@ -71,7 +71,6 @@ import { readEnvironmentApi } from "../../environmentApi";
 import { readEnvironmentDescriptor } from "../../environments/runtime/catalog";
 import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useTheme } from "../../hooks/useTheme";
-import { copyTextToClipboard } from "../../lib/clipboard";
 import { cn, isMacPlatform } from "../../lib/utils";
 import { resolveFindShortcutOwner } from "../../lib/findShortcutOwner";
 import {
@@ -89,7 +88,8 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
+import { copyWithNotice } from "../ui/copyWithNotice";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
 import {
@@ -887,11 +887,12 @@ export function BrowserPanel({
     // empty capture or a rejected IPC call, which looked exactly like success
     // until the composer turned out to be missing the image.
     const captureFailed = () => {
-      toastManager.add({
-        type: "error",
-        title: "Screenshot capture failed.",
-        description: "The page did not produce an image. Try again.",
-      });
+      toastManager.add(
+        failureNotice({
+          title: "Couldn't take the screenshot",
+          reason: "The page did not produce an image. Try again.",
+        }),
+      );
     };
     void window.desktopBridge
       ?.previewScreenshot?.({ webContentsId: webview.getWebContentsId() })
@@ -1192,9 +1193,7 @@ export function BrowserPanel({
             <MenuItem
               disabled={activeUrl === null}
               onClick={() => {
-                if (activeUrl !== null) {
-                  void copyTextToClipboard(activeUrl).catch(() => {});
-                }
+                if (activeUrl !== null) void copyWithNotice(activeUrl, "address");
               }}
             >
               Copy address
@@ -1227,7 +1226,7 @@ export function BrowserPanel({
                     callWhenReady(() => webviewFor(activeTabId)?.reloadIgnoringCache());
                   })
                   .catch(() => {
-                    toastManager.add({ type: "error", title: "Couldn't clear the cache" });
+                    toastManager.add(failureNotice({ title: "Couldn't clear the cache" }));
                   });
               }}
             >
@@ -1244,7 +1243,7 @@ export function BrowserPanel({
                 // reloads every open tab of this project after clearing: a page
                 // would otherwise keep looking signed in from memory.
                 void window.desktopBridge?.previewClearBrowsingData?.({ partition }).catch(() => {
-                  toastManager.add({ type: "error", title: "Couldn't clear cookies and storage" });
+                  toastManager.add(failureNotice({ title: "Couldn't clear cookies and storage" }));
                 });
               }}
             >

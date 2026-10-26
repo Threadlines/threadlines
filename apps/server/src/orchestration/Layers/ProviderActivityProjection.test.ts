@@ -232,6 +232,30 @@ describe("ProviderActivityProjection", () => {
     ]);
   });
 
+  it("names the hook that failed", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "hook.completed",
+      eventId: EventId.make("evt-hook-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        hookId: "hook-1",
+        hookEvent: "sessionStart",
+        outcome: "error",
+        stderr: "node: command not found",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "hook.completed",
+        tone: "error",
+        summary: "SessionStart hook failed",
+      }),
+    ]);
+  });
+
   it("suppresses routine MCP startup status updates", () => {
     for (const status of ["starting", "ready", "connected", "cancelled"]) {
       expect(

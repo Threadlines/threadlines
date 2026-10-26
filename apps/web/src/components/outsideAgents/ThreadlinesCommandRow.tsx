@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { CopyButton } from "../CopyButton";
 import { SettingsRow } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 const TITLE = "Threadlines command";
 
@@ -61,10 +61,9 @@ export function ThreadlinesCommandRow() {
       result = await (action === "install" ? install() : remove());
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
+        failureNotice({
           title: `Couldn't ${action} the threadlines command`,
-          description: error instanceof Error ? error.message : undefined,
+          error,
         }),
       );
     } finally {
@@ -74,10 +73,9 @@ export function ThreadlinesCommandRow() {
     setStatus(result.status);
     if (result.outcome === "failed") {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
+        failureNotice({
           title: `Couldn't ${action} the threadlines command`,
-          description: result.detail ?? undefined,
+          reason: result.detail ?? undefined,
         }),
       );
     }

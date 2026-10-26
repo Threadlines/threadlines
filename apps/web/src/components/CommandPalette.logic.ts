@@ -453,8 +453,8 @@ export function resolveAddProjectUnavailableGuidance(input: { readonly isHostedS
   if (!input.isHostedStatic) {
     return {
       type: "error",
-      title: "Unable to browse projects",
-      description: "No environment is available.",
+      title: "Can't browse projects",
+      description: "No computer is available.",
       action: null,
     };
   }

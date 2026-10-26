@@ -62,6 +62,7 @@ import {
 } from "../components/WebSocketConnectionSurface";
 import { Button } from "../components/ui/button";
 import {
+  failureNotice,
   AnchoredToastProvider,
   stackedThreadToast,
   ToastProvider,
@@ -922,7 +923,7 @@ function EventRouter() {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
-          title: "Invalid keybindings configuration",
+          title: "keybindings.json has a mistake",
           description: issue.message,
           actionVariant: "outline",
           actionProps: {
@@ -943,11 +944,9 @@ function EventRouter() {
                 })
                 .catch((error) => {
                   toastManager.add(
-                    stackedThreadToast({
-                      type: "error",
-                      title: "Unable to open keybindings file",
-                      description:
-                        error instanceof Error ? error.message : "Unknown error opening file.",
+                    failureNotice({
+                      title: "Couldn't open keybindings.json",
+                      error,
                     }),
                   );
                 });

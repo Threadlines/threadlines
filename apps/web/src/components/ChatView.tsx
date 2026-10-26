@@ -1,5 +1,6 @@
 import { readConnectedComputerCapability } from "../environments/computerCapabilities";
 import {
+  type ClientOrchestrationCommand,
   type OrchestrationAgentPage,
   type OrchestrationCheckBack,
   type OrchestrationWorkflowRun,
@@ -32,7 +33,6 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   RuntimeTaskId,
-  TerminalOpenInput,
 } from "@threadlines/contracts";
 import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
 import {
@@ -44,7 +44,7 @@ import {
 import { isAcpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
+import { projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -155,7 +155,6 @@ import {
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_COMPOSER_RUNTIME_MODE,
-  DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
   type ProposedPlan,
@@ -197,7 +196,15 @@ import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadSeenAt } from "~/lib/threadInboxSync";
 import { isPageAttended, onPageAttentionChange, SurfaceShownContext } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
+import { addComputerNotConnectedNotice, reconnectComputer } from "./computerConnectionNotices";
+import {
+  composerContentsKey,
+  forgetFailedSend,
+  recordFailedSend,
+  retryFailedSend,
+  type FailedSend,
+} from "./chat/sendRetry";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -229,7 +236,6 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import {
-  reconnectSavedEnvironment,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
@@ -401,7 +407,11 @@ import {
   selectOptimisticThreadMessages,
   useOptimisticThreadMessagesStore,
 } from "../optimisticThreadMessages";
-import { describeDispatchFailure, sanitizeThreadErrorMessage } from "~/rpc/transportError";
+import {
+  describeDispatchFailure,
+  isUncertainDispatchFailure,
+  sanitizeThreadErrorMessage,
+} from "~/rpc/transportError";
 import {
   refreshThreadDetailSubscription,
   retainThreadDetailSubscription,
@@ -1735,20 +1745,7 @@ export default function ChatView(props: ChatViewProps) {
     async (environmentId: EnvironmentId, label: string) => {
       setReconnectingEnvironmentId(environmentId);
       try {
-        await reconnectSavedEnvironment(environmentId);
-        toastManager.add({
-          type: "success",
-          title: "Environment reconnected",
-          description: `${label} is ready.`,
-        });
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not reconnect environment",
-            description: error instanceof Error ? error.message : "Failed to reconnect.",
-          }),
-        );
+        await reconnectComputer(environmentId, label);
       } finally {
         setReconnectingEnvironmentId(null);
       }
@@ -4392,13 +4389,11 @@ export default function ChatView(props: ChatViewProps) {
       // the browser prompt opens locally, where the user is sitting.
       const providersApi = readEnvironmentApi(environmentId)?.providers;
       if (!providersApi) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start MCP authorization",
-            description: "This thread's machine is not connected.",
-          }),
-        );
+        addComputerNotConnectedNotice({
+          environmentId,
+          failure: "Couldn't start MCP sign-in",
+          fallbackLabel: "This thread's computer",
+        });
         return;
       }
 
@@ -4455,7 +4450,7 @@ export default function ChatView(props: ChatViewProps) {
               await providersApi.reloadExtensionMcpServers(baseInput);
               toastManager.add({
                 type: "success",
-                title: `${action.serverLabel} MCP authorized`,
+                title: `Signed in to ${action.serverLabel}`,
                 description: "MCP servers reloaded.",
               });
             } catch (reloadError) {
@@ -4463,11 +4458,11 @@ export default function ChatView(props: ChatViewProps) {
               toastManager.add(
                 stackedThreadToast({
                   type: "warning",
-                  title: `${action.serverLabel} MCP authorized`,
+                  title: `Signed in to ${action.serverLabel}`,
                   description:
                     reloadError instanceof Error
-                      ? `Authorization completed, but MCP reload failed: ${reloadError.message}`
-                      : "Authorization completed, but MCP reload failed.",
+                      ? `Signed in, but couldn't reload the MCP servers: ${reloadError.message}`
+                      : "Signed in, but couldn't reload the MCP servers.",
                 }),
               );
             }
@@ -4490,10 +4485,9 @@ export default function ChatView(props: ChatViewProps) {
         });
         const message = error instanceof Error ? error.message : "MCP authorization failed.";
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not authorize ${action.serverLabel} MCP`,
-            description: `${message}\n\nFallback: ${fallbackCommand}`,
+          failureNotice({
+            title: `Couldn't sign in to ${action.serverLabel}`,
+            reason: `${message}\n\nFallback: ${fallbackCommand}`,
           }),
         );
       }
@@ -4632,10 +4626,9 @@ export default function ChatView(props: ChatViewProps) {
         });
       } catch (error) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not delete action",
-            description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          failureNotice({
+            title: "Couldn't delete the action",
+            error,
           }),
         );
       }
@@ -5326,10 +5319,9 @@ export default function ChatView(props: ChatViewProps) {
         );
       } catch (err) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Message not sent",
-            description: describeDispatchFailure(err, "The approval could not be declined."),
+          failureNotice({
+            title: "Couldn't send the message",
+            reason: describeDispatchFailure(err, "The approval couldn't be declined."),
           }),
         );
         return false;
@@ -5674,6 +5666,8 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
+    // Sending again by hand retires an older failure's Retry.
+    forgetFailedSend(scopedThreadKey(scopeThreadRef(environmentId, threadIdForSend)));
     if (approvalDeclines.length > 0 && !(await declineBeforeSend(approvalDeclines))) {
       sendInFlightRef.current = false;
       return;
@@ -5820,6 +5814,21 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.resetCursorState();
 
     let dispatchSucceeded = false;
+    // Exactly what went out, and what follows once the server takes it, for
+    // a Retry after a failure in transit.
+    let dispatchedSend: {
+      readonly command: ClientOrchestrationCommand;
+      readonly onAccepted: () => Promise<void> | void;
+    } | null = null;
+    const dispatchForSend = async (
+      command: ClientOrchestrationCommand,
+      onAccepted: () => Promise<void> | void,
+    ) => {
+      dispatchedSend = { command, onAccepted };
+      await api.orchestration.dispatchCommand(command);
+      dispatchSucceeded = true;
+      await onAccepted();
+    };
     await (async () => {
       let firstComposerImageName: string | null = null;
       if (composerAttachmentsSnapshot.length > 0) {
@@ -5850,25 +5859,26 @@ export default function ChatView(props: ChatViewProps) {
       );
 
       if (askOnTheSide) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.side-turn.start",
-          commandId: newCommandId(),
-          threadId: threadIdForSend,
-          sideTurnId: SideTurnId.make(randomUUID()),
-          participantId: roomRecipientId,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+        await dispatchForSend(
+          {
+            type: "thread.side-turn.start",
+            commandId: newCommandId(),
+            threadId: threadIdForSend,
+            sideTurnId: SideTurnId.make(randomUUID()),
+            participantId: roomRecipientId,
+            message: {
+              messageId: messageIdForSend,
+              role: "user",
+              text: outgoingMessageText,
+              ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+            },
+            // Reasoning picked for the agent rides along; it stays picked for
+            // the agent's next real turn.
+            ...(roomRecipientModelSelection ? { modelSelection: roomRecipientModelSelection } : {}),
+            createdAt: messageCreatedAt,
           },
-          // Reasoning picked for the agent rides along; it stays picked for
-          // the agent's next real turn.
-          ...(roomRecipientModelSelection ? { modelSelection: roomRecipientModelSelection } : {}),
-          createdAt: messageCreatedAt,
-        });
-        dispatchSucceeded = true;
-        rememberRoomSend(threadRefForSend, false);
+          () => rememberRoomSend(threadRefForSend, false),
+        );
         return;
       }
 
@@ -5878,35 +5888,36 @@ export default function ChatView(props: ChatViewProps) {
           throw new Error("No active provider turn is available for a follow-up.");
         }
         const turnAttachments = await turnAttachmentsPromise;
-        await api.orchestration.dispatchCommand({
-          type: "thread.follow-up.submit",
-          commandId: newCommandId(),
-          threadId: threadIdForSend,
-          turnId: steerTurnId,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachments,
-            ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+        await dispatchForSend(
+          {
+            type: "thread.follow-up.submit",
+            commandId: newCommandId(),
+            threadId: threadIdForSend,
+            turnId: steerTurnId,
+            message: {
+              messageId: messageIdForSend,
+              role: "user",
+              text: outgoingMessageText,
+              attachments: turnAttachments,
+              ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+            },
+            delivery: followUpDelivery,
+            composer,
+            // What a queued message runs with, like a normal send would.
+            ...(followUpDelivery === "queue"
+              ? {
+                  modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
+                  runtimeMode,
+                  interactionMode,
+                }
+              : {}),
+            ...(roomsActive ? { participantId: roomRecipientId } : {}),
+            createdAt: messageCreatedAt,
           },
-          delivery: followUpDelivery,
-          composer,
-          // What a queued message runs with, like a normal send would.
-          ...(followUpDelivery === "queue"
-            ? {
-                modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
-                runtimeMode,
-                interactionMode,
-              }
-            : {}),
-          ...(roomsActive ? { participantId: roomRecipientId } : {}),
-          createdAt: messageCreatedAt,
-        });
-        dispatchSucceeded = true;
-        if (roomsActive) {
-          rememberRoomSend(threadRefForSend, followUpDelivery === "queue");
-        }
+          () => {
+            if (roomsActive) rememberRoomSend(threadRefForSend, followUpDelivery === "queue");
+          },
+        );
         return;
       }
 
@@ -5956,61 +5967,67 @@ export default function ChatView(props: ChatViewProps) {
       // The worktree is cut inside this request; the flag stays up until the
       // thread reports its worktree path.
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
-      await api.orchestration.dispatchCommand({
-        type: "thread.turn.start",
-        commandId: newCommandId(),
-        threadId: threadIdForSend,
-        message: {
-          messageId: messageIdForSend,
-          role: "user",
-          text: outgoingMessageText,
-          attachments: turnAttachments,
-          ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
-        },
-        modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
-        ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
-        composer,
-        titleSeed: title,
-        runtimeMode,
-        interactionMode,
-        // A default-mode turn on a thread holding an unimplemented plan is the
-        // implementation turn, even when the user typed their own prompt or
-        // switched modes manually — otherwise the plan stays "ready" forever.
-        ...(interactionMode === "default" &&
-        activeThread.id === threadIdForSend &&
-        hasActionableProposedPlan(activeProposedPlan) &&
-        activeProposedPlan
-          ? {
-              sourceProposedPlan: {
-                threadId: activeThread.id,
-                planId: activeProposedPlan.id,
-              },
-            }
-          : {}),
-        ...(bootstrap ? { bootstrap } : {}),
-        createdAt: messageCreatedAt,
-      });
-      dispatchSucceeded = true;
-      markLocalDispatchAccepted(threadRefForSend);
-      if (roomsActive) {
-        rememberRoomSend(threadRefForSend, true);
-      }
-      // A turn for an added agent says nothing about the thread's own model.
-      if (isServerThread && ctxSelectedModel && roomRecipientId === null) {
-        await persistThreadSettingsForNextTurn({
+      await dispatchForSend(
+        {
+          type: "thread.turn.start",
+          commandId: newCommandId(),
           threadId: threadIdForSend,
+          message: {
+            messageId: messageIdForSend,
+            role: "user",
+            text: outgoingMessageText,
+            attachments: turnAttachments,
+            ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
+          },
+          modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
+          ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
+          composer,
+          titleSeed: title,
+          runtimeMode,
+          interactionMode,
+          // A default-mode turn on a thread holding an unimplemented plan is the
+          // implementation turn, even when the user typed their own prompt or
+          // switched modes manually — otherwise the plan stays "ready" forever.
+          ...(interactionMode === "default" &&
+          activeThread.id === threadIdForSend &&
+          hasActionableProposedPlan(activeProposedPlan) &&
+          activeProposedPlan
+            ? {
+                sourceProposedPlan: {
+                  threadId: activeThread.id,
+                  planId: activeProposedPlan.id,
+                },
+              }
+            : {}),
+          ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
-          modelSelection: ctxSelectedModelSelection,
-        });
-      }
+        },
+        async () => {
+          markLocalDispatchAccepted(threadRefForSend);
+          if (roomsActive) rememberRoomSend(threadRefForSend, true);
+          // A turn for an added agent says nothing about the thread's own model.
+          if (isServerThread && ctxSelectedModel && roomRecipientId === null) {
+            await persistThreadSettingsForNextTurn({
+              threadId: threadIdForSend,
+              createdAt: messageCreatedAt,
+              modelSelection: ctxSelectedModelSelection,
+            });
+          }
+        },
+      );
     })().catch(async (err: unknown) => {
+      // Retry can only resend a message the composer got back, as it came back.
+      let retryContents: string | null = null;
       if (
         !dispatchSucceeded &&
         promptRef.current.length === 0 &&
         composerAttachmentsRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
         composerTranscriptHighlightContextsRef.current.length === 0 &&
-        composerFileSelectionContextsRef.current.length === 0
+        composerFileSelectionContextsRef.current.length === 0 &&
+        composerPickedElementContextsRef.current.length === 0 &&
+        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.drawingContexts
+          .length ?? 0) === 0
       ) {
         if (isSteeringFollowUp) {
           setSteeringMessagesById((existing) => {
@@ -6045,48 +6062,98 @@ export default function ChatView(props: ChatViewProps) {
         for (const context of composerFileSelectionContextsSnapshot) {
           addComposerDraftFileSelectionContext(composerDraftTarget, context);
         }
+        composerPickedElementContextsRef.current = composerPickedElementContextsSnapshot;
+        const draftStore = useComposerDraftStore.getState();
+        draftStore.setPickedElementContexts(
+          composerDraftTarget,
+          composerPickedElementContextsSnapshot,
+        );
+        draftStore.setDrawingContexts(composerDraftTarget, composerDrawingContextsSnapshot);
+        retryContents = composerContentsKey(
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+        );
         composerRef.current?.resetCursorState({
           cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
           prompt: promptForSend,
           detectTrigger: true,
         });
       }
-      const dispatchFailureMessage = describeDispatchFailure(err, "Failed to send message.");
-      setThreadError(threadIdForSend, dispatchFailureMessage);
+      // Resolved on click: a draft that has since become a real thread opens
+      // as that thread.
+      const openFailedThread = () => {
+        const draftStillOpen =
+          draftIdForSend !== null &&
+          !selectThreadExistsByRef(useStore.getState(), threadRefForSend) &&
+          useComposerDraftStore.getState().getDraftSession(draftIdForSend) !== null;
+        void (draftStillOpen
+          ? navigate({
+              to: "/draft/$draftId",
+              params: buildDraftThreadRouteParams(draftIdForSend),
+            })
+          : navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(threadRefForSend),
+            }));
+      };
+      const failed = dispatchedSend;
       // The thread error banner only helps if the user is still looking at
       // this thread when the retry budget runs out (large uploads can take
       // minutes to exhaust it); the toast makes the failure visible anywhere,
       // and names the thread with a way back while another one is open.
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Message failed to send",
-          description: dispatchFailureMessage,
-          data: {
-            aboutThread: {
-              threadRef: threadRefForSend,
-              title: threadTitleForSend,
-              // Resolved on click: a draft that has since become a real
-              // thread opens as that thread.
-              open: () => {
-                const draftStillOpen =
-                  draftIdForSend !== null &&
-                  !selectThreadExistsByRef(useStore.getState(), threadRefForSend) &&
-                  useComposerDraftStore.getState().getDraftSession(draftIdForSend) !== null;
-                void (draftStillOpen
-                  ? navigate({
-                      to: "/draft/$draftId",
-                      params: buildDraftThreadRouteParams(draftIdForSend),
-                    })
-                  : navigate({
-                      to: "/$environmentId/$threadId",
-                      params: buildThreadRouteParams(threadRefForSend),
-                    }));
+      const showSendFailure = (error: unknown, offerRetry = true) => {
+        const failureMessage = describeDispatchFailure(error, "Failed to send message.");
+        setThreadError(threadIdForSend, failureMessage);
+        // Retry only after a failure in transit, for a message the composer
+        // got back: it resends the very command, and the server knows a
+        // repeat. A refusal is an answer; the message waits in the box.
+        const threadKey = scopedThreadKey(threadRefForSend);
+        const failedSend: FailedSend | null =
+          offerRetry &&
+          retryContents !== null &&
+          failed !== null &&
+          isUncertainDispatchFailure(error)
+            ? {
+                failureId: recordFailedSend(threadKey),
+                threadKey,
+                environmentId: threadRefForSend.environmentId,
+                command: failed.command,
+                draftTarget: composerDraftTarget,
+                contents: retryContents,
+                onAccepted: failed.onAccepted,
+              }
+            : null;
+        let noticeId: string | null = null;
+        noticeId = toastManager.add(
+          failureNotice({
+            title: "Couldn't send the message",
+            reason: failureMessage,
+            ...(failedSend
+              ? {
+                  actionProps: {
+                    children: "Retry",
+                    onClick: () => {
+                      if (noticeId !== null) toastManager.close(noticeId);
+                      void retryFailedSend(failedSend).then((result) => {
+                        if (result.outcome === "skipped") openFailedThread();
+                        else if (result.outcome === "sent") setThreadError(threadIdForSend, null);
+                        // Overtaken by a newer send meanwhile: no Retry for this one.
+                        else showSendFailure(result.error, result.latest);
+                      });
+                    },
+                  },
+                }
+              : {}),
+            data: {
+              aboutThread: {
+                threadRef: threadRefForSend,
+                title: threadTitleForSend,
+                open: openFailedThread,
               },
             },
-          },
-        }),
-      );
+          }),
+        );
+      };
+      showSendFailure(err);
     });
     sendInFlightRef.current = false;
     if (!dispatchSucceeded && !isSteeringFollowUp && !askOnTheSide) {
@@ -6243,8 +6310,8 @@ export default function ChatView(props: ChatViewProps) {
           type: "warning",
           title:
             failedCount === 1
-              ? "An attachment could not be restored"
-              : `${failedCount} attachments could not be restored`,
+              ? "An attachment couldn't be restored"
+              : `${failedCount} attachments couldn't be restored`,
           description: "Attach them again before sending.",
         }),
       );
@@ -6331,10 +6398,9 @@ export default function ChatView(props: ChatViewProps) {
       await stopThreadSession(scopeThreadRef(environmentId, threadId));
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not stop the background work",
-          description: error instanceof Error ? error.message : "Try again.",
+        failureNotice({
+          title: "Couldn't stop the background work",
+          error,
         }),
       );
     } finally {
@@ -6383,13 +6449,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       const api = readEnvironmentApi(environmentId);
       if (!api) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not update goal",
-            description: "Environment API unavailable.",
-          }),
-        );
+        addComputerNotConnectedNotice({ environmentId, failure: "Couldn't update the goal" });
         return;
       }
       const threadId = activeThread.id;
@@ -6475,10 +6535,9 @@ export default function ChatView(props: ChatViewProps) {
       } catch (error) {
         dropOptimisticGoal();
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not update goal",
-            description: error instanceof Error ? error.message : "Goal update failed.",
+          failureNotice({
+            title: "Couldn't update the goal",
+            error,
           }),
         );
       } finally {
@@ -6505,13 +6564,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     const api = readEnvironmentApi(environmentId);
     if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not clear goal",
-          description: "Environment API unavailable.",
-        }),
-      );
+      addComputerNotConnectedNotice({ environmentId, failure: "Couldn't clear the goal" });
       return;
     }
     const threadId = activeThread.id;
@@ -6525,10 +6578,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not clear goal",
-          description: error instanceof Error ? error.message : "Goal clear failed.",
+        failureNotice({
+          title: "Couldn't clear the goal",
+          error,
         }),
       );
     } finally {
@@ -6542,13 +6594,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     const api = readEnvironmentApi(environmentId);
     if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not compact context",
-          description: "Environment API unavailable.",
-        }),
-      );
+      addComputerNotConnectedNotice({ environmentId, failure: "Couldn't compact the context" });
       return;
     }
 
@@ -6563,10 +6609,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not compact context",
-          description: error instanceof Error ? error.message : "Context compaction failed.",
+        failureNotice({
+          title: "Couldn't compact the context",
+          error,
         }),
       );
     } finally {
@@ -6580,13 +6625,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     const api = readEnvironmentApi(environmentId);
     if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not retry",
-          description: "Environment API unavailable.",
-        }),
-      );
+      addComputerNotConnectedNotice({ environmentId, failure: "Couldn't retry" });
       return;
     }
 
@@ -6601,10 +6640,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not retry",
-          description: error instanceof Error ? error.message : "Retry dispatch failed.",
+        failureNotice({
+          title: "Couldn't retry",
+          error,
         }),
       );
     } finally {
@@ -7442,13 +7480,9 @@ export default function ChatView(props: ChatViewProps) {
           })
           .catch(() => undefined);
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start forked thread",
-            description:
-              err instanceof Error
-                ? err.message
-                : "An error occurred while creating the new thread.",
+          failureNotice({
+            title: "Couldn't start the forked thread",
+            error: err,
           }),
         );
       })
@@ -7564,13 +7598,9 @@ export default function ChatView(props: ChatViewProps) {
       })
       .catch((err: unknown) => {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not start implementation thread",
-            description:
-              err instanceof Error
-                ? err.message
-                : "An error occurred while creating the new thread.",
+          failureNotice({
+            title: "Couldn't start the implementation thread",
+            error: err,
           }),
         );
       })
@@ -7646,11 +7676,9 @@ export default function ChatView(props: ChatViewProps) {
       });
     } catch (err) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not dismiss plan",
-          description:
-            err instanceof Error ? err.message : "An error occurred while dismissing the plan.",
+        failureNotice({
+          title: "Couldn't dismiss the plan",
+          error: err,
         }),
       );
     }

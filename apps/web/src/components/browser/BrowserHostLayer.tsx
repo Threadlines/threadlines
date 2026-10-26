@@ -36,7 +36,7 @@ import { openTabForPage } from "./openInBrowserPanel";
 import { noteSignInPopup } from "./signInPopups";
 import {
   forgetThreadPages,
-  hasBackgroundPages,
+  hasLifecycleWork,
   notePageHidden,
   notePageShown,
   runBrowserLifecycleCheck,
@@ -76,7 +76,7 @@ export const BROWSER_SLOT_ANCHOR = "--threadlines-browser-slot";
 /** Hidden pages keep the size the panel last had, or this before it has had one. */
 const DEFAULT_HIDDEN_PAGE_SIZE = { width: 1280, height: 800 };
 
-/** How often idle pages are looked at, while there are any off screen. */
+/** How often idle pages are looked at, while there are any off screen or working. */
 const LIFECYCLE_CHECK_INTERVAL_MS = 15_000;
 
 /** How often this computer's use is reported while it is connected. */
@@ -518,7 +518,7 @@ function useBrowserLifecycleLoop(): void {
   useEffect(() => {
     let running = false;
     const timer = window.setInterval(() => {
-      if (running || !hasBackgroundPages()) return;
+      if (running || !hasLifecycleWork()) return;
       running = true;
       void runBrowserLifecycleCheck().finally(() => {
         running = false;

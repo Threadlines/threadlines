@@ -640,7 +640,7 @@ describe("Keybindings update toast", () => {
       sendServerConfigUpdatedPush([
         { kind: "keybindings.malformed-config", message: "Expected JSON array" },
       ]);
-      await waitForToast("Invalid keybindings configuration");
+      await waitForToast("keybindings.json has a mistake");
     } finally {
       await mounted.cleanup();
     }
@@ -653,11 +653,11 @@ describe("Keybindings update toast", () => {
       sendServerConfigUpdatedPush([
         { kind: "keybindings.malformed-config", message: "Expected JSON array" },
       ]);
-      await waitForToast("Invalid keybindings configuration");
+      await waitForToast("keybindings.json has a mistake");
       // A warning with a next step stays until closed, so close it the way a
       // user would; the store outlives the remount below.
       document.querySelector<HTMLButtonElement>('[data-slot="toast-close"]')?.click();
-      await waitForNoToast("Invalid keybindings configuration");
+      await waitForNoToast("keybindings.json has a mistake");
 
       // Remount the app — onServerConfigUpdated replays the cached value
       // synchronously on subscribe. This should NOT produce a toast.
@@ -669,7 +669,7 @@ describe("Keybindings update toast", () => {
 
       const titles = queryToastTitles();
       expect(
-        titles.filter((t) => t === "Invalid keybindings configuration").length,
+        titles.filter((t) => t === "keybindings.json has a mistake").length,
         "Replayed cached value should not produce a toast",
       ).toBe(0);
 

@@ -1,3 +1,6 @@
+import { OrchestrationDispatchCommandError } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
+
 const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketCloseError\b/i,
   /\bSocketOpenError\b/i,
@@ -110,6 +113,24 @@ export function isRetryableRequestFailure(error: unknown): boolean {
     isTransportConnectionErrorMessage(message) ||
     RETRYABLE_REQUEST_ERROR_PATTERNS.some((pattern) => pattern.test(message))
   );
+}
+
+const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+
+/**
+ * A failed dispatch the server may still have accepted: the request failed in
+ * transit (a timeout, a dropped socket, the reconnect budget running out), so
+ * there was no answer either way. Send it again with the same command id and
+ * the server recognizes a repeat; a rejection, by contrast, is recorded
+ * against that id, so a new attempt after one needs a new id.
+ */
+export function isUncertainDispatchFailure(error: unknown): boolean {
+  // The server's own answer is never uncertain, whatever its words say.
+  if (isOrchestrationDispatchCommandError(error)) return false;
+  if (error instanceof TransportRequestRetriesExhaustedError) {
+    return !isOrchestrationDispatchCommandError(error.cause);
+  }
+  return isRetryableRequestFailure(error);
 }
 
 /**

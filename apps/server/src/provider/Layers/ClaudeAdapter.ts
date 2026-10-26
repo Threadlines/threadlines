@@ -7089,12 +7089,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "hook_response":
+      case "hook_response": {
+        const hookEvent = nonEmptyString(message.hook_event);
         yield* offerRuntimeEvent({
           ...base,
           type: "hook.completed",
           payload: {
             hookId: message.hook_id,
+            ...(hookEvent ? { hookEvent } : {}),
             outcome: message.outcome,
             output: message.output,
             stdout: message.stdout,
@@ -7103,6 +7105,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      }
       case "background_tasks_changed": {
         // This is a level signal with replace semantics. Forward the complete
         // set so orchestration can set the pending count absolutely; do not

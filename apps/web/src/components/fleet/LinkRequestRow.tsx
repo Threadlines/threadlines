@@ -11,7 +11,7 @@ import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
 import { SETTINGS_GROUP_ROW_CLASS } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 
 /**
  * A thread another computer's agent asked to start, waiting for this
@@ -43,10 +43,9 @@ export function LinkRequestRow({
       });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: allow ? "Could not allow it" : "Could not deny it",
-          description: describeComputerLinkFailure(error, "Try again."),
+        failureNotice({
+          title: allow ? "Couldn't allow it" : "Couldn't deny it",
+          reason: describeComputerLinkFailure(error, "Try again."),
         }),
       );
     } finally {

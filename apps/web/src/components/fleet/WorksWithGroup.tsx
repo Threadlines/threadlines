@@ -18,7 +18,7 @@ import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsGroup } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { FLEET_GLYPH_ICONS } from "./FleetGraph";
 import type { FleetGlyph } from "./fleet.logic";
@@ -76,10 +76,9 @@ export function LinkSettingsControls({
       await setComputerLinkAccess(worker, { deviceId: inbound.deviceId, ...change });
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not change it on ${worker.label}`,
-          description: describeComputerLinkFailure(error, "Try again."),
+        failureNotice({
+          title: `Couldn't change the link on ${worker.label}`,
+          reason: describeComputerLinkFailure(error, "Try again."),
         }),
       );
     } finally {

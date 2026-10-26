@@ -21,7 +21,6 @@ import { readEnvironmentApi } from "../../environmentApi";
 import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import {
@@ -61,7 +60,9 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
+import { copyWithNotice } from "../ui/copyWithNotice";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InboxViewMenu, type EnvironmentScopeOption } from "./InboxViewMenu";
 
@@ -211,20 +212,6 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   const [projectGroupingSelection, setProjectGroupingSelection] = useState<
     SidebarProjectGroupingMode | "inherit"
   >("inherit");
-  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
-    onCopy: (ctx) => {
-      toastManager.add({ type: "success", title: "Path copied", description: ctx.path });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to copy path",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  });
 
   const openProjectRenameDialog = useCallback((member: SidebarProjectGroupMember) => {
     setProjectRenameTarget(member);
@@ -282,7 +269,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         const warningToastId = toastManager.add(
           stackedThreadToast({
             type: "warning",
-            title: "Project is not empty",
+            title: "Project isn't empty",
             description: "Delete all threads in this project before removing it.",
             actionVariant: "destructive",
             actionProps: {
@@ -327,18 +314,15 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
                   await removeProject(member, { force: true });
                 })().catch((error) => {
-                  const message =
-                    error instanceof Error ? error.message : "Unknown error removing project.";
                   console.error("Failed to remove project", {
                     projectId: member.id,
                     environmentId: member.environmentId,
                     error,
                   });
                   toastManager.add(
-                    stackedThreadToast({
-                      type: "error",
-                      title: `Failed to remove "${member.name}"`,
-                      description: message,
+                    failureNotice({
+                      title: `Couldn't remove "${member.name}"`,
+                      error,
                     }),
                   );
                 });
@@ -363,17 +347,15 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
       try {
         await removeProject(member);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing project.";
         console.error("Failed to remove project", {
           projectId: member.id,
           environmentId: member.environmentId,
           error,
         });
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Failed to remove "${member.name}"`,
-            description: message,
+          failureNotice({
+            title: `Couldn't remove "${member.name}"`,
+            error,
           }),
         );
       }
@@ -408,7 +390,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 openProjectGroupingDialog(member);
                 return;
               case "copy-path":
-                copyPathToClipboard(member.cwd, { path: member.cwd });
+                void copyWithNotice(member.cwd, "path");
                 return;
               case "delete":
                 return handleRemoveProject(member);
@@ -471,7 +453,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         await actionHandlers.get(clicked)?.();
       })();
     },
-    [copyPathToClipboard, handleRemoveProject, openProjectGroupingDialog, openProjectRenameDialog],
+    [handleRemoveProject, openProjectGroupingDialog, openProjectRenameDialog],
   );
 
   const closeProjectRenameDialog = useCallback(() => {
@@ -486,7 +468,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
     const trimmed = projectRenameTitle.trim();
     if (trimmed.length === 0) {
-      toastManager.add({ type: "warning", title: "Project title cannot be empty" });
+      toastManager.add({ type: "warning", title: "Project title can't be empty" });
       return;
     }
 
@@ -497,13 +479,10 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
     const api = readEnvironmentApi(projectRenameTarget.environmentId);
     if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to rename project",
-          description: "Project API unavailable.",
-        }),
-      );
+      addComputerNotConnectedNotice({
+        environmentId: projectRenameTarget.environmentId,
+        failure: "Couldn't rename the project",
+      });
       return;
     }
 
@@ -517,10 +496,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
       closeProjectRenameDialog();
     } catch (error) {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to rename project",
-          description: error instanceof Error ? error.message : "An error occurred.",
+        failureNotice({
+          title: "Couldn't rename the project",
+          error,
         }),
       );
     }

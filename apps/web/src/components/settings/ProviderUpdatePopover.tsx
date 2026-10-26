@@ -11,15 +11,14 @@
  * @module ProviderUpdatePopover
  */
 import type { ServerProvider } from "@threadlines/contracts";
-import { AlertCircleIcon, CopyIcon, DownloadIcon, LoaderIcon, XIcon } from "lucide-react";
+import { AlertCircleIcon, DownloadIcon, LoaderIcon, XIcon } from "lucide-react";
 import type { ReactElement } from "react";
 
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
+import { CopyIconButton } from "../CopyButton";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
-import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { getProviderVersionAdvisoryPresentation } from "./providerStatus";
 import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
@@ -56,24 +55,6 @@ export function ProviderUpdatePopover({
   /** The element that opens the popover (a version tag or an Update button). */
   readonly trigger: ReactElement;
 }) {
-  const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
-    onCopy: ({ providerName }) => {
-      toastManager.add({
-        type: "success",
-        title: `${providerName} update command copied`,
-        description: "Run it in a terminal when you are ready to update.",
-      });
-    },
-    onError: (error, { providerName }) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Could not copy ${providerName} update command`,
-          description: error.message,
-        }),
-      );
-    },
-  });
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   if (!versionAdvisory) {
     return null;
@@ -191,16 +172,15 @@ export function ProviderUpdatePopover({
               <Tooltip>
                 <TooltipTrigger
                   render={
-                    <Button
+                    <CopyIconButton
+                      value={updateCommand}
+                      what={`${displayName} update command`}
                       type="button"
                       size="icon-xs"
                       variant="ghost"
                       className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                      onClick={() => copyToClipboard(updateCommand, { providerName: displayName })}
-                      aria-label="Copy update command"
-                    >
-                      <CopyIcon className="size-3" />
-                    </Button>
+                      aria-label={`Copy ${displayName} update command`}
+                    />
                   }
                 />
                 <TooltipPopup side="top">Copy command</TooltipPopup>

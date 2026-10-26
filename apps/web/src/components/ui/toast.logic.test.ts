@@ -4,6 +4,7 @@ import {
   ATTENTION_NOTICE_VISIBLE_MS,
   NOTICE_VISIBLE_MS,
   buildVisibleToastLayout,
+  describeFailureReason,
   resolveHiddenNoticeVisibleMs,
   resolveNoticeVisibleMs,
   selectStackNotices,
@@ -244,5 +245,19 @@ describe("resolveHiddenNoticeVisibleMs", () => {
     assert.equal(resolveHiddenNoticeVisibleMs({ type: "error" }), ATTENTION_NOTICE_VISIBLE_MS);
     assert.equal(resolveHiddenNoticeVisibleMs({ type: "success" }), NOTICE_VISIBLE_MS);
     assert.equal(resolveHiddenNoticeVisibleMs({ type: "loading" }), null);
+  });
+});
+
+describe("describeFailureReason", () => {
+  it("drops the error type in front of the words", () => {
+    assert.equal(describeFailureReason("TypeError: Failed to fetch"), "Failed to fetch");
+    assert.equal(
+      describeFailureReason("fatal: not a git repository"),
+      "fatal: not a git repository",
+    );
+  });
+
+  it("never leaves the reason empty", () => {
+    assert.equal(describeFailureReason("  "), "Something went wrong.");
   });
 });

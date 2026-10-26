@@ -20,7 +20,7 @@ import {
   sourceControlToolUpdateNoticeSetKey,
   sourceControlToolUpdateToastCopy,
 } from "./SourceControlToolUpdateLaunchNotification.logic";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 
 const SOURCE_CONTROL_UPDATE_SUCCESS_VISIBLE_MS = 3_000;
 
@@ -207,10 +207,8 @@ export function SourceControlToolUpdateLaunchNotification() {
             error,
           });
           finish(
-            stackedThreadToast({
-              type: "error",
-              title: failure.title,
-              description: failure.description,
+            failureNotice({
+              ...failure,
               timeout: 0,
               actionProps: { children: "Settings", onClick: openSettings },
               actionVariant: "outline",

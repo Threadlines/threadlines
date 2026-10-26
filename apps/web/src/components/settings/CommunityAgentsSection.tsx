@@ -37,7 +37,7 @@ import { ensureLocalApi } from "../../localApi";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
-import { toastManager } from "../ui/toast";
+import { failureNotice, toastManager } from "../ui/toast";
 import { AgentRow } from "./AgentRow";
 import { communityAgentErrorText } from "./communityAgents";
 import { ProviderGroupHeading } from "./ProviderGroupHeading";
@@ -210,11 +210,12 @@ export function CommunityAgentsSection(props: {
           props.onAdded(instanceId);
         },
         (error: unknown) => {
-          toastManager.add({
-            type: "error",
-            title: `Could not install ${agent.name}`,
-            description: communityAgentErrorText(error, "Try again in a moment."),
-          });
+          toastManager.add(
+            failureNotice({
+              title: `Couldn't install ${agent.name}`,
+              reason: communityAgentErrorText(error, "Try again in a moment."),
+            }),
+          );
           // The usual reason is a listing that moved on: show the new one.
           load(true);
         },

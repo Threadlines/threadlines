@@ -165,6 +165,42 @@ function flushPendingRenders() {
   });
 }
 
+/**
+ * Draws this document as a touch screen does: `(pointer: coarse)` rules apply
+ * and hover rules don't. Returns the undo. It rewrites the page's own media
+ * rules, not the browser's: CDP touch emulation, once turned off, leaves hover
+ * off for the rest of the tab on Linux CI, and later specs share that tab.
+ */
+function drawAsTouchScreen() {
+  const undo: Array<() => void> = [];
+  const rewrite = (rules: CSSRuleList) => {
+    for (const rule of rules) {
+      if (rule instanceof CSSMediaRule) {
+        const original = rule.media.mediaText;
+        const touch = original.includes("(hover: hover)")
+          ? "not all"
+          : original.replace("(pointer: coarse)", "all").replace("(hover: none)", "all");
+        if (touch !== original) {
+          rule.media.mediaText = touch;
+          undo.push(() => {
+            rule.media.mediaText = original;
+          });
+        }
+      }
+      // Media rules, layers and (nested) style rules all hold rules.
+      if (rule instanceof CSSGroupingRule) {
+        rewrite(rule.cssRules);
+      }
+    }
+  };
+  for (const sheet of document.styleSheets) {
+    rewrite(sheet.cssRules);
+  }
+  return () => {
+    for (const step of undo) step();
+  };
+}
+
 async function resetBrowserHoverState() {
   const resetTarget = document.createElement("button");
   resetTarget.type = "button";
@@ -1075,6 +1111,51 @@ describe("MessagesTimeline", () => {
       await page.getByRole("button", { name: "Branch from here" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows message actions on a touch screen, and keeps a tap on the device glyph off them", async () => {
+    // A touch screen has no hover to reveal the actions, and widens each
+    // button's target to 44px, past the button and over what sits beside it.
+    onTestFinished(drawAsTouchScreen());
+    const entry = buildUserTimelineEntry("ok");
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        onContinueInNewThread={vi.fn()}
+        timelineEntries={[
+          { ...entry, message: { ...entry.message, sentFrom: { kind: "phone", name: "iPhone" } } },
+          buildAssistantTimelineEntry("Done."),
+        ]}
+      />,
+    );
+
+    try {
+      // Copy and branch, under the user's message and under the answer.
+      const actions = document.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Copy link"], button[aria-label="Branch from here"]',
+      );
+      expect(actions).toHaveLength(4);
+      for (const action of actions) {
+        let opacity = 1;
+        for (let el: Element | null = action; el; el = el.parentElement) {
+          opacity *= Number(getComputedStyle(el).opacity);
+        }
+        expect(opacity).toBe(1);
+        const box = action.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        expect(hit?.closest("button")).toBe(action);
+      }
+
+      const glyph = document.querySelector<HTMLElement>('[aria-label="Sent from iPhone"]')!;
+      const rect = glyph.getBoundingClientRect();
+      for (const x of [rect.left + 0.5, rect.left + rect.width / 2, rect.right - 0.5]) {
+        const hit = document.elementFromPoint(x, rect.top + rect.height / 2);
+        expect(hit?.closest("button")).toBeNull();
+        expect(glyph.contains(hit)).toBe(true);
+      }
     } finally {
       await screen.unmount();
     }

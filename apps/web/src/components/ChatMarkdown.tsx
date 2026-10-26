@@ -32,7 +32,8 @@ import {
   SearchHighlightedInlineText,
 } from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { stackedThreadToast, toastManager } from "./ui/toast";
+import { failureNotice, toastManager } from "./ui/toast";
+import { copyWithNotice } from "./ui/copyWithNotice";
 import { openInPreferredEditor } from "../editorPreferences";
 import {
   isPathWithinCwd,
@@ -70,7 +71,6 @@ import {
 } from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
-import { copyTextWithToast } from "./chat/copyTextWithToast";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {
   type MarkdownFileLinkKind,
@@ -1019,17 +1019,16 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (!api) {
       toastManager.add({
         type: "error",
-        title: "Open in editor is unavailable",
+        title: "Can't open an editor here",
       });
       return;
     }
 
     void openInPreferredEditor(api, targetPath, workspaceRoot).catch((error) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Unable to open ${entryLabel}`,
-          description: error instanceof Error ? error.message : "An error occurred.",
+        failureNotice({
+          title: `Couldn't open ${entryLabel}`,
+          error,
         }),
       );
     });
@@ -1040,17 +1039,16 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (!api) {
       toastManager.add({
         type: "error",
-        title: "Open in file manager is unavailable",
+        title: "Can't open a file manager here",
       });
       return;
     }
 
     void api.shell.openInEditor(targetPath, "file-manager").catch((error) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: kind === "directory" ? "Unable to open folder" : "Unable to reveal file",
-          description: error instanceof Error ? error.message : displayPath,
+        failureNotice({
+          title: kind === "directory" ? "Couldn't open the folder" : "Couldn't show the file",
+          error,
         }),
       );
     });
@@ -1083,10 +1081,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
     toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: "Unable to open in file viewer",
-        description: `${displayPath} is not available in the active project workspace.`,
+      failureNotice({
+        title: "Couldn't open it in the file viewer",
+        reason: `${displayPath} is not available in the active project workspace.`,
       }),
     );
   }, [displayPath, openInInternalViewer, openReference]);
@@ -1140,11 +1137,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         return;
       }
       if (clicked === "copy-relative") {
-        copyTextWithToast(displayPath, "Relative path");
+        void copyWithNotice(displayPath, "relative path");
         return;
       }
       if (clicked === "copy-full") {
-        copyTextWithToast(targetPath, "Full path");
+        void copyWithNotice(targetPath, "full path");
       }
     },
     [
@@ -1240,11 +1237,12 @@ function areMarkdownFileLinkPropsEqual(
  */
 function toastFileReferenceNotFound(reference: string): void {
   const name = parseChatFileReference(reference)?.path ?? reference;
-  toastManager.add({
-    type: "error",
-    title: `Couldn't find ${name} in this project`,
-    description: "If it's saved somewhere else, ask the agent for its full path.",
-  });
+  toastManager.add(
+    failureNotice({
+      title: `Couldn't find ${name} in this project`,
+      reason: "If it's saved somewhere else, ask the agent for its full path.",
+    }),
+  );
 }
 
 function ChatMarkdownDocument({

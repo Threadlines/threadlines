@@ -37,11 +37,13 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
 }
 
-// The local backend's address and this window's credential, read once. Neither
-// changes while the page is loaded: the main process reloads the window when
-// the backend comes back on another port, and the page's socket keeps the
-// address it opened with anyway. The page asks on hot paths (every image
-// attachment's URL), and each ask is a blocking round trip to the main process.
+// The app's own server, asked of the main process once it has one. The page
+// reads it whenever it needs the backend connection, an asset address or the
+// sign-in credential -- up to 160 times a second while busy -- and each ask
+// was a synchronous round trip that blocked the page. It holds for the page's
+// life: the token is made once per app run, and when the server comes back on
+// a different port the main process reloads the window at the new address,
+// which starts this script again. Not kept while there is no server yet.
 let localEnvironmentBootstrap: ReturnType<DesktopBridge["getLocalEnvironmentBootstrap"]> = null;
 
 // The window's focus, pushed by the main process. Kept here so a page that
@@ -65,9 +67,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   isMarketingCaptureMode: () =>
     ipcRenderer.sendSync(IpcChannels.IS_MARKETING_CAPTURE_MODE_CHANNEL) === true,
   getLocalEnvironmentBootstrap: () => {
-    if (localEnvironmentBootstrap !== null) {
-      return localEnvironmentBootstrap;
-    }
+    if (localEnvironmentBootstrap !== null) return localEnvironmentBootstrap;
     const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
     if (typeof result !== "object" || result === null) {
       return null;

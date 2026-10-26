@@ -17,8 +17,8 @@ import {
   webLinkClickTarget,
 } from "../browser/openInBrowserPanel";
 import { isLinkToPullRequest } from "../pull-requests/pullRequests.logic";
-import { stackedThreadToast, toastManager } from "../ui/toast";
-import { copyTextWithToast } from "./copyTextWithToast";
+import { failureNotice, toastManager } from "../ui/toast";
+import { copyWithNotice } from "../ui/copyWithNotice";
 import { useThreadPullRequestLinks } from "./ThreadPullRequestLinkContext";
 
 /**
@@ -128,17 +128,16 @@ export const ChatWebLink = memo(function ChatWebLink({
       if (clicked === "open-external") {
         void api.shell.openExternal(href).catch((error: unknown) => {
           toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Unable to open link",
-              description: error instanceof Error ? error.message : "An error occurred.",
+            failureNotice({
+              title: "Couldn't open the link",
+              error,
             }),
           );
         });
         return;
       }
       if (clicked === "copy-link") {
-        copyTextWithToast(href, "Link address");
+        void copyWithNotice(href, "link address");
       }
     },
     [href, onContextMenu, opensPullRequestTab, threadRef],

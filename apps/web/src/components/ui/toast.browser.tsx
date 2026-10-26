@@ -13,6 +13,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 
 import { Dialog, DialogPopup, DialogTitle } from "./dialog";
+import { useNoticeClearanceRef } from "./noticeLayer";
 import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
 
 /**
@@ -130,6 +131,53 @@ describe("toast layering", () => {
   });
 });
 
+function PageTitleRow() {
+  return (
+    <header ref={useNoticeClearanceRef()} style={{ height: 160 }}>
+      Providers
+    </header>
+  );
+}
+
+describe("notice placement", () => {
+  afterEach(() => {
+    toastManager.close();
+    document.body.innerHTML = "";
+  });
+
+  it("starts below a page's title row while the page is open, and goes back after", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <PageTitleRow />
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({ type: "info", title: "Removed 1 device", timeout: 0 });
+      const viewport = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-slot='toast-viewport']");
+        expect(found?.firstElementChild).toBeTruthy();
+        return found!;
+      });
+      const titleRowBottom = document.querySelector("header")!.getBoundingClientRect().bottom;
+      await vi.waitFor(() =>
+        expect(viewport.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleRowBottom),
+      );
+
+      await mounted.rerender(
+        <ToastProvider>
+          <div>conversation</div>
+        </ToastProvider>,
+      );
+      await vi.waitFor(() =>
+        expect(viewport.getBoundingClientRect().top).toBeLessThan(titleRowBottom),
+      );
+    } finally {
+      await mounted.unmount();
+    }
+  });
+});
+
 describe("notice reasons and clocks", () => {
   afterEach(() => {
     toastManager.close();
@@ -164,6 +212,43 @@ describe("notice reasons and clocks", () => {
       expect(description.getBoundingClientRect().height).toBeGreaterThan(lineHeight * 1.5);
       // Every line is on screen: nothing clamped or scrolled out of view.
       expect(description.scrollHeight).toBeLessThanOrEqual(description.clientHeight + 1);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("puts a notice's buttons under its words, not beside them", async () => {
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+
+    try {
+      toastManager.add({
+        type: "info",
+        title: "Agent wants to visit facpmanuals.com",
+        description: 'In "Analyze Trial Conversions and AI Logs".',
+        timeout: 0,
+        actionProps: { children: "Allow site" },
+        data: { secondaryActionProps: { children: "Show" } },
+      });
+      const slot = (name: string) => {
+        const found = document.querySelector<HTMLElement>(`[data-slot='${name}']`);
+        expect(found).not.toBeNull();
+        return found!;
+      };
+      const [title, description, action] = await vi.waitFor(
+        () => [slot("toast-title"), slot("toast-description"), slot("toast-action")] as const,
+      );
+
+      // The words keep the whole width: neither is cut short.
+      for (const words of [title, description]) {
+        expect(words.scrollWidth).toBeLessThanOrEqual(words.clientWidth + 1);
+      }
+      expect(action.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        description.getBoundingClientRect().bottom,
+      );
     } finally {
       await mounted.unmount();
     }

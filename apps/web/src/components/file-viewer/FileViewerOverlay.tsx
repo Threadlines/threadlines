@@ -22,7 +22,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { EditorId } from "@threadlines/contracts";
 import { readLocalApi } from "../../localApi";
-import { copyTextToClipboard } from "~/lib/clipboard";
 import { isEditableEventTarget } from "~/lib/editableTarget";
 import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import { usePreferredEditor } from "../../editorPreferences";
@@ -102,7 +101,8 @@ import { Skeleton } from "../ui/skeleton";
 import { Toggle } from "../ui/toggle";
 import { openExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { usePinchToExpand } from "../chat/usePinchToExpand";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
+import { copyWithNotice } from "../ui/copyWithNotice";
 
 interface FileTreeNode {
   entry: ProjectEntry;
@@ -147,14 +147,7 @@ function workspaceAbsolutePath(cwd: string, path: string): string {
 }
 
 function copyRelativePathToClipboard(path: string): void {
-  void copyTextToClipboard(path).then(
-    () => {
-      toastManager.add({ type: "success", title: "Path copied", description: path });
-    },
-    () => {
-      toastManager.add({ type: "error", title: "Failed to copy path" });
-    },
-  );
+  void copyWithNotice(path, "path");
 }
 
 function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
@@ -166,10 +159,9 @@ function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
     .openInEditor(workspaceAbsolutePath(cwd, path), editor, cwd)
     .catch((error: unknown) => {
       toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open file externally",
-          description: error instanceof Error ? error.message : "An error occurred.",
+        failureNotice({
+          title: "Couldn't open the file in another app",
+          error,
         }),
       );
     });

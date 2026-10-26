@@ -947,6 +947,9 @@ export type DesktopPreviewColorSchemeInput = typeof DesktopPreviewColorSchemeInp
 /**
  * How a page runs.
  *
+ * - `working`: as `active`, and painted even while the window is hidden. For a
+ *   page an agent is using: on Windows a window closed to the tray stops
+ *   drawing its pages, and a page that is not drawn cannot be captured.
  * - `active`: normally, focus emulated (see the desktop's attach).
  * - `background`: without focus emulation, so Chromium slows a hidden page as
  *   it would a background tab. Focus emulation counts as being captured, and
@@ -955,9 +958,15 @@ export type DesktopPreviewColorSchemeInput = typeof DesktopPreviewColorSchemeInp
  *   memory exactly as it was.
  *
  * Only pages nobody can see leave `active`: the panel steps down tabs that sit
- * hidden and idle, and makes them active before anything touches them.
+ * hidden and idle, and makes them active before anything touches them. Pages
+ * an agent picks up are `working` until it has left them alone for a while.
  */
-export const DesktopPreviewLifecycleState = Schema.Literals(["active", "background", "frozen"]);
+export const DesktopPreviewLifecycleState = Schema.Literals([
+  "working",
+  "active",
+  "background",
+  "frozen",
+]);
 export type DesktopPreviewLifecycleState = typeof DesktopPreviewLifecycleState.Type;
 
 export const DesktopPreviewLifecycleInputSchema = Schema.Struct({
