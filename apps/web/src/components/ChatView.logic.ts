@@ -18,9 +18,7 @@ import {
 } from "@threadlines/contracts";
 import { backgroundOutputFileFromText } from "@threadlines/shared/backgroundRunOutput";
 import {
-  findProviderAuthRetryUserMessageIndex,
   isProviderAuthErrorMessage,
-  type ProviderAuthReplyInput,
   providerAuthReconnectCommand,
   providerCanSignIn,
   serverProviderCanSignIn,
@@ -55,7 +53,6 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { ownAgentSession } from "../rooms";
 import { hasActiveContextCompactionActivity } from "../lib/contextCompactionActivities";
 import { threadMemo } from "../lib/derivationMemo";
-import { isProviderAuthErrorChatMessage } from "../lib/providerAuthMessages";
 import {
   deriveForkContextEntries,
   deriveMovedInEntries,
@@ -1934,7 +1931,6 @@ export function deriveProviderAuthReconnectPrompt(input: {
   readonly providerStatus?: Pick<ServerProvider, "driver" | "community"> | null | undefined;
   readonly threadError?: string | null | undefined;
   readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
-  readonly messages?: ReadonlyArray<ProviderAuthReplyInput> | null | undefined;
 }): ProviderAuthReconnectPrompt | null {
   const provider = input.provider ?? null;
   if (!provider) {
@@ -1983,19 +1979,6 @@ export function deriveProviderAuthReconnectPrompt(input: {
     }
   }
 
-  const messages = input.messages ?? [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || !isProviderAuthErrorChatMessage(message)) {
-      continue;
-    }
-    return {
-      provider,
-      command,
-      message: message.text.trim(),
-    };
-  }
-
   return null;
 }
 
@@ -2011,34 +1994,24 @@ export function deriveFailedTurnRetryMessageId(input: {
       ChatMessage,
       | "id"
       | "role"
-      | "text"
-      | "participantId"
       | "turnId"
       | "sideTurnId"
       | "requestKind"
       | "requestOutcome"
       | "fromAgent"
       | "fromThread"
-    > &
-      Pick<ProviderAuthReplyInput, "streaming">
+    >
   >;
   readonly sessionLastError: string | null | undefined;
 }): MessageId | null {
-  const messages = input.messages.filter(
-    (message) => !isTurnAside(message) && !isAgentOrigin(message),
-  );
-  const lastUserMessage = messages.findLast((message) => message.role === "user");
-  if (!lastUserMessage) {
+  if (!input.sessionLastError?.trim()) {
     return null;
   }
-  if (input.sessionLastError?.trim()) {
-    return lastUserMessage.id;
-  }
-
-  const authRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(messages);
-  return authRetryUserMessageIndex === null
-    ? null
-    : (messages[authRetryUserMessageIndex]?.id ?? null);
+  return (
+    input.messages.findLast(
+      (message) => message.role === "user" && !isTurnAside(message) && !isAgentOrigin(message),
+    )?.id ?? null
+  );
 }
 
 export function shouldOfferFailedTurnRetry(input: {

@@ -9,7 +9,6 @@
  * draws it (TimelineRowContent), so what is counted is what is on screen.
  */
 
-import { isProviderAuthErrorChatMessage } from "../../../lib/providerAuthMessages";
 import { deriveDisplayedUserMessageState } from "../../../lib/terminalContext";
 import type { InlineSkill } from "../../../lib/inlineMarkdownTokens";
 import { proposedPlanTitle, stripDisplayedPlanMarkdown } from "../../../proposedPlan";
@@ -23,8 +22,6 @@ export interface ChatFindRowContext {
   readonly skills: ReadonlyArray<InlineSkill>;
   /** The timeline sits in a thread, so Codex inline visualizations render. */
   readonly visualizations: boolean;
-  /** A sign-in prompt replaces an agent's auth-error message. */
-  readonly providerAuthReconnect: boolean;
   readonly sideAnswerRequests: { has(requestId: NonNullable<ChatMessage["requestId"]>): boolean };
 }
 
@@ -55,7 +52,6 @@ function messageBlocks(
       return null;
     case "assistant": {
       const text = message.text || (message.streaming ? "" : "(empty response)");
-      if (context.providerAuthReconnect && isProviderAuthErrorChatMessage(message)) return null;
       const streaming = Boolean(message.streaming);
       return cached(message, `${view}|${streaming}|${contextKey}`, () =>
         findableMarkdownBlocks({
@@ -125,7 +121,7 @@ function messageBlocks(
  * much as on its own words.
  */
 export function chatFindContextKey(context: ChatFindRowContext): string {
-  return `${context.cwd ?? ""}|${context.visualizations}|${context.providerAuthReconnect}|${skillsKey(context.skills)}`;
+  return `${context.cwd ?? ""}|${context.visualizations}|${skillsKey(context.skills)}`;
 }
 
 /**

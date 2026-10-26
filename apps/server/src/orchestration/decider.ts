@@ -16,7 +16,6 @@ import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
-import { findProviderAuthRetryUserMessageIndex } from "@threadlines/shared/providerAuth";
 import {
   activeParticipants,
   findActiveParticipantByHandle,
@@ -2696,17 +2695,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // steered into it while it ran) is never the turn's own message, so it
       // is never what a retry sends again.
       const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
-      const providerAuthRetryUserMessageIndex = findProviderAuthRetryUserMessageIndex(turnMessages);
-      if (!session || (session.lastError === null && providerAuthRetryUserMessageIndex === null)) {
+      if (!session || session.lastError === null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no failed turn to retry.`,
         });
       }
-      const lastUserMessage =
-        providerAuthRetryUserMessageIndex === null
-          ? turnMessages.findLast((message) => message.role === "user")
-          : turnMessages[providerAuthRetryUserMessageIndex];
+      const lastUserMessage = turnMessages.findLast((message) => message.role === "user");
       if (!lastUserMessage) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,

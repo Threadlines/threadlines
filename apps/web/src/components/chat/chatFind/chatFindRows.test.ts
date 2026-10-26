@@ -29,7 +29,6 @@ const context: ChatFindRowContext = {
   cwd: "/repo",
   skills: [],
   visualizations: true,
-  providerAuthReconnect: true,
   sideAnswerRequests: new Set([requestId]),
 };
 
@@ -93,18 +92,5 @@ describe("findableRowBlocks", () => {
     );
     expect(findableRowBlocks(sideReply, context)).toBeNull();
     expect(findableRowBlocks(echo, context)).toBeNull();
-  });
-
-  it("skips an auth error the chat shows as a sign-in prompt", () => {
-    expect(
-      findableRowBlocks(
-        messageRow({
-          id: "m5" as ChatMessage["id"],
-          role: "assistant",
-          text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-        }),
-        context,
-      ),
-    ).toBeNull();
   });
 });

@@ -63,7 +63,6 @@ import {
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
-import { isProviderAuthErrorChatMessage } from "~/lib/providerAuthMessages";
 import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
@@ -3000,7 +2999,6 @@ export default function ChatView(props: ChatViewProps) {
         providerStatus: activeProviderStatus,
         threadError: activeThread?.error ?? activeThread?.session?.lastError ?? null,
         activities: threadActivities,
-        messages: timelineMessages,
       }),
     [
       activeProviderDriver,
@@ -3008,7 +3006,6 @@ export default function ChatView(props: ChatViewProps) {
       activeThread?.error,
       activeThread?.session?.lastError,
       threadActivities,
-      timelineMessages,
     ],
   );
   // The in-chat card runs the provider's terminal sign-in. A provider
@@ -3068,9 +3065,8 @@ export default function ChatView(props: ChatViewProps) {
   const hasInlineProviderAuthError = useMemo(
     () =>
       providerAuthReconnectAction !== null &&
-      (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
-        timelineMessages.some(isProviderAuthErrorChatMessage)),
-    [providerAuthReconnectAction, timelineMessages, workLogEntries],
+      workLogEntries.some((entry) => entry.authReconnect !== undefined),
+    [providerAuthReconnectAction, workLogEntries],
   );
   const threadErrorNoticeVisible = shouldShowThreadErrorNotice({
     threadError: activeThread?.error,
@@ -8152,7 +8148,6 @@ export default function ChatView(props: ChatViewProps) {
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-                providerAuthReconnect={providerAuthReconnectAction}
                 failedTurnRetry={failedTurnRetryAction}
                 onRunProviderAuthReconnect={runProviderAuthReconnect}
                 mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}

@@ -86,7 +86,6 @@ import {
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
-import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
 import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -297,7 +296,6 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId | null;
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
-  providerAuthReconnect: ProviderAuthReconnectAction | null;
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
   mcpAuthReconnectStatusByServerName: ReadonlyMap<string, McpAuthReconnectStatus>;
   failedTurnRetry: FailedTurnRetryAction | null;
@@ -812,7 +810,6 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
-  providerAuthReconnect?: ProviderAuthReconnectAction | null;
   failedTurnRetry?: FailedTurnRetryAction | null;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
@@ -908,7 +905,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
-  providerAuthReconnect: providerAuthReconnectProp = null,
   failedTurnRetry: failedTurnRetryProp = null,
   onRunProviderAuthReconnect: onRunProviderAuthReconnectProp,
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
@@ -960,7 +956,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const proposedPlanState = useStableHandlers(proposedPlanStateProp);
   const workflowRunActions = useStableHandlers(workflowRunActionsProp);
   const failedTurnRetry = useStableHandlers(failedTurnRetryProp);
-  const providerAuthReconnect = useKept(providerAuthReconnectProp, shallow);
   const turnDiffSummaryByAssistantMessageId = useKept(
     turnDiffSummaryByAssistantMessageIdProp,
     shallow,
@@ -1316,10 +1311,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       cwd: markdownCwd,
       skills,
       visualizations: activeThreadId !== null,
-      providerAuthReconnect: providerAuthReconnect != null,
       sideAnswerRequests,
     }),
-    [activeThreadId, markdownCwd, providerAuthReconnect, sideAnswerRequests, skills],
+    [activeThreadId, markdownCwd, sideAnswerRequests, skills],
   );
 
   const enableAutoStickIfAtEnd = useCallback(() => {
@@ -1915,7 +1909,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       activeThreadId,
       turnDiffSummaryByTurnId,
-      providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
       failedTurnRetry,
@@ -1961,7 +1954,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       activeThreadId,
       turnDiffSummaryByTurnId,
-      providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
       failedTurnRetry,
@@ -3444,10 +3436,6 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   // being written; a side answer settles its own message when it ends.
   const writing = streaming && (isWorking || row.message.sideTurnId !== undefined);
   useStreamingHeightFloor(revealRef, writing || (!streaming && revealing));
-  const authReconnect =
-    ctx.providerAuthReconnect && isProviderAuthErrorChatMessage(row.message)
-      ? ctx.providerAuthReconnect
-      : null;
   // Notes carry the story while the agent works, on its line. A finished
   // turn's last message is its answer: the line bends into it, it reads at
   // full strength and carries the turn's footer, while the notes before it
@@ -3506,43 +3494,34 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               replyTo={row.sideReplyTo}
             />
           ) : null}
-          {authReconnect ? (
-            <ProviderAuthReconnectCard
-              action={authReconnect}
-              className="max-w-2xl"
-              resolved={ctx.resolvedProviderAuthReconnectIds.has(row.id)}
-              {...(ctx.onRunProviderAuthReconnect ? { onRun: ctx.onRunProviderAuthReconnect } : {})}
-            />
-          ) : (
-            <FallbackAssistantResponseContainer row={row}>
-              <div
-                ref={revealRef}
-                data-agent-response-body="true"
-                data-assistant-message-body="true"
-                data-transcript-message-body="true"
-                data-transcript-message-id={row.message.id}
-                data-transcript-message-role="assistant"
-                data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
-                data-chat-find-body=""
-              >
-                <CodeBlockRunScopeContext value={runScope}>
-                  <ChatMarkdown
-                    text={messageText}
-                    cwd={ctx.markdownCwd}
-                    environmentId={ctx.activeThreadEnvironmentId}
-                    threadId={ctx.activeThreadId ?? undefined}
-                    isStreaming={Boolean(row.message.streaming)}
-                    skills={ctx.skills}
-                    searchHighlightQuery={
-                      ctx.activeSearchTargetMessageId === row.message.id
-                        ? ctx.searchTargetQuery
-                        : undefined
-                    }
-                  />
-                </CodeBlockRunScopeContext>
-              </div>
-            </FallbackAssistantResponseContainer>
-          )}
+          <FallbackAssistantResponseContainer row={row}>
+            <div
+              ref={revealRef}
+              data-agent-response-body="true"
+              data-assistant-message-body="true"
+              data-transcript-message-body="true"
+              data-transcript-message-id={row.message.id}
+              data-transcript-message-role="assistant"
+              data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
+              data-chat-find-body=""
+            >
+              <CodeBlockRunScopeContext value={runScope}>
+                <ChatMarkdown
+                  text={messageText}
+                  cwd={ctx.markdownCwd}
+                  environmentId={ctx.activeThreadEnvironmentId}
+                  threadId={ctx.activeThreadId ?? undefined}
+                  isStreaming={Boolean(row.message.streaming)}
+                  skills={ctx.skills}
+                  searchHighlightQuery={
+                    ctx.activeSearchTargetMessageId === row.message.id
+                      ? ctx.searchTargetQuery
+                      : undefined
+                  }
+                />
+              </CodeBlockRunScopeContext>
+            </div>
+          </FallbackAssistantResponseContainer>
           {/* The footer comes first so the turn's changes, which land a beat
               later, open below it instead of pushing it down. */}
           {summary ? <AssistantTurnFooter row={row} summary={summary} /> : null}
@@ -5720,12 +5699,10 @@ function providerAuthReconnectProviderLabel(provider: ProviderDriverKind): strin
 const ProviderAuthReconnectCard = memo(function ProviderAuthReconnectCard({
   action,
   onRun,
-  className,
   resolved = false,
 }: {
   action: ProviderAuthReconnectAction;
   onRun?: (action: ProviderAuthReconnectAction) => void;
-  className?: string;
   resolved?: boolean;
 }) {
   const providerLabel = providerAuthReconnectProviderLabel(action.provider);
@@ -5735,7 +5712,6 @@ const ProviderAuthReconnectCard = memo(function ProviderAuthReconnectCard({
       className={cn(
         "rounded-md border px-2.5 py-2",
         resolved ? "border-success/25 bg-success/5" : "border-destructive/25 bg-destructive/5",
-        className,
       )}
       data-provider-auth-reconnect="true"
       data-provider-auth-reconnect-resolved={resolved ? "true" : "false"}

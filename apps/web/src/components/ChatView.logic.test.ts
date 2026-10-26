@@ -493,7 +493,6 @@ describe("deriveProviderAuthReconnectPrompt", () => {
         provider: claudeProvider,
         threadError,
         activities: [earlierSignInFailure, activity],
-        messages: [{ role: "assistant", text: "Not logged in · Please run /login" }],
       }),
     ).toBeNull();
   });
@@ -605,58 +604,6 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     ).toBeNull();
   });
 
-  it("detects authentication failures from assistant messages", () => {
-    expect(
-      deriveProviderAuthReconnectPrompt({
-        provider: claudeProvider,
-        messages: [
-          {
-            role: "assistant",
-            text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-          },
-        ],
-      }),
-    ).toEqual({
-      provider: claudeProvider,
-      command: "claude auth login",
-      message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-    });
-  });
-
-  it("reads each version of a streamed message by its own text", () => {
-    // Streaming replaces the message object while its id stays the same.
-    const partial = { id: "msg-1", role: "assistant" as const, text: "Working on" };
-    const failed = {
-      id: "msg-1",
-      role: "assistant" as const,
-      text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
-    };
-    const prompt = (message: Pick<ChatMessage, "role" | "text">) =>
-      deriveProviderAuthReconnectPrompt({ provider: claudeProvider, messages: [message] });
-
-    expect(prompt(partial)).toBeNull();
-    expect(prompt(failed)?.message).toBe(failed.text);
-    expect(prompt(partial)).toBeNull();
-  });
-
-  it("detects Codex authentication failures with the Codex login command", () => {
-    expect(
-      deriveProviderAuthReconnectPrompt({
-        provider: codexProvider,
-        messages: [
-          {
-            role: "assistant",
-            text: "Not logged in. Run `codex login` in a terminal, then retry.",
-          },
-        ],
-      }),
-    ).toEqual({
-      provider: codexProvider,
-      command: "codex login",
-      message: "Not logged in. Run `codex login` in a terminal, then retry.",
-    });
-  });
-
   it("detects a revoked Codex refresh token as a terminal sign-in prompt", () => {
     const message =
       "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.";
@@ -671,34 +618,6 @@ describe("deriveProviderAuthReconnectPrompt", () => {
       command: "codex login",
       message,
     });
-  });
-
-  it("ignores diagnostic assistant prose that mentions unauthenticated UI state", () => {
-    expect(
-      deriveProviderAuthReconnectPrompt({
-        provider: codexProvider,
-        messages: [
-          {
-            role: "assistant",
-            text: "The config path matters here: Threadlines can materialize a Codex shadow home before starting app-server. If that shadow home misses or ages out MCP credential files, the UI would repeatedly appear unauthenticated even though the primary ~/.codex login was fresh.",
-          },
-        ],
-      }),
-    ).toBeNull();
-  });
-
-  it("ignores assistant summaries that mention unrelated unauthenticated tooling", () => {
-    expect(
-      deriveProviderAuthReconnectPrompt({
-        provider: codexProvider,
-        messages: [
-          {
-            role: "assistant",
-            text: "I could not change the live Vercel project setting yet because the local Vercel CLI is not authenticated and the connector returned 403. To finish it directly in your Vercel dashboard, I need your explicit approval to use your logged-in Chrome session.",
-          },
-        ],
-      }),
-    ).toBeNull();
   });
 
   it("ignores unrelated runtime errors", () => {
@@ -756,7 +675,6 @@ describe("deriveFailedTurnRetryMessageId", () => {
           {
             id: MessageId.make("message-steer"),
             role: "user",
-            text: "also update the docs",
             // Typed while the turn ran, so it carries that turn's id.
             turnId: TurnId.make("turn-failed"),
           },
@@ -766,7 +684,7 @@ describe("deriveFailedTurnRetryMessageId", () => {
     ).toBe(userMessage.id);
   });
 
-  it("targets a session failure or a completed provider-auth response", () => {
+  it("targets a session failure, and nothing when the turn recorded none", () => {
     expect(
       deriveFailedTurnRetryMessageId({
         messages: [userMessage],
@@ -775,27 +693,7 @@ describe("deriveFailedTurnRetryMessageId", () => {
     ).toBe(userMessage.id);
     expect(
       deriveFailedTurnRetryMessageId({
-        messages: [
-          userMessage,
-          {
-            id: MessageId.make("message-auth"),
-            role: "assistant",
-            text: "Not logged in · Please run /login",
-          },
-        ],
-        sessionLastError: null,
-      }),
-    ).toBe(userMessage.id);
-    expect(
-      deriveFailedTurnRetryMessageId({
-        messages: [
-          userMessage,
-          {
-            id: MessageId.make("message-success"),
-            role: "assistant",
-            text: "Request completed.",
-          },
-        ],
+        messages: [userMessage, { id: MessageId.make("message-success"), role: "assistant" }],
         sessionLastError: null,
       }),
     ).toBeNull();
