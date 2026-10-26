@@ -5,6 +5,7 @@
 import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 
+import { isEditableEventTarget } from "../../lib/editableTarget";
 import { createXtermSurface } from "../terminal/xtermSurface";
 import { PROVIDER_CONNECT_TERMINAL_CLASS } from "./providerConnectFlow.logic";
 
@@ -64,7 +65,12 @@ export function ProviderConnectTerminal({
     });
     resizeObserver.observe(mount);
     pushSize(terminal);
-    terminal.focus();
+    // Ready for the run's prompt, unless the user is typing elsewhere: the
+    // terminal can appear on its own (its chunk landing, or the stall
+    // threshold opening it) while they paste the page's final address.
+    if (!isEditableEventTarget(mount.ownerDocument.activeElement)) {
+      terminal.focus();
+    }
 
     return () => {
       disposed = true;
