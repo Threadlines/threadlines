@@ -3873,16 +3873,17 @@ function sdkNativeMethod(message: SDKMessage): string {
 }
 
 /**
- * Native methods that are one piece of a streamed block (its text, thinking,
- * tool input or signature) or a thinking-token tick. The assistant message
- * that ends the block carries all of it, so the log keeps that one.
+ * Native methods that are one piece of a block's thinking, tool input or
+ * signature, or a thinking-token tick. The assistant message that ends the
+ * block carries them whole; a block cut off before it loses only those. Reply
+ * text pieces are kept, since a reply cut off mid-stream has no whole copy.
  */
-function isSdkStreamFragmentMethod(method: string): boolean {
-  return (
-    method.startsWith("claude/stream_event/content_block_delta") ||
-    method === "claude/system/thinking_tokens"
-  );
-}
+const SDK_STREAM_FRAGMENT_METHODS: ReadonlySet<string> = new Set([
+  "claude/stream_event/content_block_delta/thinking_delta",
+  "claude/stream_event/content_block_delta/input_json_delta",
+  "claude/stream_event/content_block_delta/signature_delta",
+  "claude/system/thinking_tokens",
+]);
 
 function sdkNativeItemId(message: SDKMessage): string | undefined {
   if (message.type === "assistant") {
@@ -4137,7 +4138,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       },
       context.session.threadId,
-      { streamFragment: isSdkStreamFragmentMethod(method) },
+      { streamFragment: SDK_STREAM_FRAGMENT_METHODS.has(method) },
     );
   });
 

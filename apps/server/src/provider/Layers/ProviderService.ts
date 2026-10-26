@@ -126,6 +126,20 @@ const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
 });
 
+/**
+ * A canonical piece of an agent's thinking. Each driver's native log holds the
+ * same thinking, whole in the item that ends it or piece by piece, so the
+ * canonical copy is left out. Reply text and tool output pieces are kept: a
+ * reply cut off mid-stream may have no whole copy anywhere.
+ */
+function isCanonicalStreamFragment(event: ProviderRuntimeEvent): boolean {
+  return (
+    event.type === "content.delta" &&
+    (event.payload.streamKind === "reasoning_text" ||
+      event.payload.streamKind === "reasoning_summary_text")
+  );
+}
+
 function readCodexResumeThreadId(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -513,9 +527,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         canonicalEventLogger
           ? canonicalEventLogger
               .write(canonicalEvent, canonicalEvent.threadId, {
-                // The driver's native log already holds this text: whole in its
-                // completed item, or piece by piece where it has no whole copy.
-                streamFragment: canonicalEvent.type === "content.delta",
+                streamFragment: isCanonicalStreamFragment(canonicalEvent),
               })
               .pipe(
                 Effect.catchCause((cause) =>

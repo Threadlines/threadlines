@@ -114,13 +114,12 @@ const CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH = 32;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE = 20;
 const CODEX_EXTERNAL_THREAD_PAGE_SIZE_MAX = 50;
 /**
- * Notifications that are one piece of an item's text. The `item/completed`
- * that ends the item carries the whole text, so the native log keeps that one.
- * Command and file-change output pieces stay: their completed items may not.
+ * Notifications that are one piece of a reasoning item, which its
+ * `item/completed` carries whole. Reply, plan and output pieces are kept: an
+ * item cut off mid-stream, or a command whose completed item drops its output,
+ * has no whole copy.
  */
 const CODEX_STREAM_FRAGMENT_METHODS: ReadonlySet<string> = new Set([
-  "item/agentMessage/delta",
-  "item/plan/delta",
   "item/reasoning/summaryTextDelta",
   "item/reasoning/textDelta",
 ]);

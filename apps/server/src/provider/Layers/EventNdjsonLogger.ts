@@ -36,11 +36,12 @@ export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
 export interface EventLogWriteOptions {
   /**
-   * The record is one piece of a stream (a token's worth of text, a thinking
-   * counter tick) whose content the log also holds whole. Several land per
-   * second for every streaming agent, so they are left out unless the logger
-   * keeps stream fragments. Mark only pieces with a complete copy elsewhere in
-   * the log, or that carry no content at all.
+   * The record is one token-sized piece of a stream that the log can do
+   * without: its content is written whole once the stream ends, or it has none
+   * (a progress tick). Several land per second for every streaming agent, so
+   * they are left out unless the logger keeps stream fragments. A driver whose
+   * reply text is not written whole when a reply is cut off mid-stream (Claude,
+   * Codex) leaves those pieces unmarked.
    */
   readonly streamFragment?: boolean;
 }
