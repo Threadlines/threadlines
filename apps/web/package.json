@@ -51,7 +51,7 @@
   "devDependencies": {
     "@rolldown/plugin-babel": "^0.2.4",
     "@tailwindcss/vite": "^4.3.3",
-    "@tanstack/router-plugin": "^1.168.46",
+    "@tanstack/router-plugin": "^1.168.48",
     "@types/babel__core": "^7.20.5",
     "@types/hast": "^3.0.5",
     "@types/react": "~19.3.0",

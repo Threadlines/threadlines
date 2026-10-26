@@ -62,7 +62,7 @@
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26"
   },
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@10.34.9",
   "msw": {
     "workerDirectory": [
       "apps/web/public"
