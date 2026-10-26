@@ -15,10 +15,12 @@ import { trimMatchingCharacters, trimMatchingCharactersEnd } from "./String.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "threadlines";
 const LEGACY_WORKTREE_BRANCH_PREFIXES = ["t3code"] as const;
+// 8 hex from a client's own pick; 16 from a token the server derives from a
+// setup's key, long enough that two setups never share one.
 const TEMP_WORKTREE_BRANCH_PATTERNS = [
   WORKTREE_BRANCH_PREFIX,
   ...LEGACY_WORKTREE_BRANCH_PREFIXES,
-].map((prefix) => new RegExp(`^${prefix}\\/[0-9a-f]{8}$`));
+].map((prefix) => new RegExp(`^${prefix}\\/(?:[0-9a-f]{8}|[0-9a-f]{16})$`));
 
 const isSlash = (character: string) => character === "/";
 

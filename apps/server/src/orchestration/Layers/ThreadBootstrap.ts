@@ -1,43 +1,62 @@
 /**
  * ThreadBootstrap - see Services/ThreadBootstrap.ts.
  *
- * `runTurnStart` is the WebSocket path's bootstrap, moved here unchanged so
- * child threads can share its pieces. `startChild` is the staged version:
+ * Both callers build a setup plan and hand it to one staged run
+ * (docs/design/thread-setup-state.md):
  *
- * 1. create: `thread.create` with the child's id, unless it exists.
- * 2. worktree: a worktree on the request's branch, reusing one an
- *    interrupted run left, then `thread.meta.update`. Skipped once the thread
- *    has a worktree, and for children working in the project folder.
- * 3. setup: the project's setup script, launched at most once. The
- *    `setup-script.requested` activity is written before the launch, so a
- *    crash between the two never launches it again; it, `.started`,
- *    `.skipped` or `.failed` marks the stage done. The runner starts the
- *    script in a terminal and returns, so nothing waits on it.
- * 4. turn: `thread.turn.start` with the request's message. Its receipt is the
- *    proof the whole setup is done.
+ * 1. worktree: a worktree on the plan's branch, reusing one an interrupted
+ *    run left (or its branch alone, if git stopped between making the branch
+ *    and checking it out). Skipped for a thread that has one, and for work in
+ *    the project folder. Nothing is recorded: the thread doesn't exist yet.
+ * 2. start: `thread.start`, one decision that makes the thread (or gives one
+ *    made earlier without a message its checkout), records the setup
+ *    script's claim and starts the first turn. Its receipt is the turn's;
+ *    an accepted one means the whole setup is done.
+ * 3. the setup script, launched after the start by the run that committed
+ *    it. The claim came with the start, so it launches at most once: a run
+ *    that finds the start already accepted never launches it, and a crash
+ *    between the two skips it. It never fails the setup.
  *
- * Every command id derives from the request (childRequestIds.ts), so a
- * command a crashed run already got through is answered from its receipt.
+ * Every id derives from the plan's key (the client's command id, or the
+ * request's; childRequestIds.ts), so a command a crashed run already got
+ * through is answered from its receipt.
  *
  * @module ThreadBootstrapLive
  */
 import {
+  type ChildThreadLaunch,
   CommandId,
   EventId,
   OrchestrationDispatchCommandError,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
+  type ProjectId,
+  type ThreadBootstrapCreateThread,
+  type ThreadId,
 } from "@threadlines/contracts";
+import { worktreeFolderNameForBranch } from "@threadlines/shared/git";
+import { setupProjectScript } from "@threadlines/shared/projectScripts";
+import { basename, join } from "node:path";
+
 import * as Cause from "effect/Cause";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { ServerConfig } from "../../config.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
-import { childRequestCommandId, childWorktreeBranch, derivedUuid } from "../childRequestIds.ts";
+import {
+  childRequestCommandId,
+  childWorktreeBranch,
+  derivedUuid,
+  firstSendWorktreeBranch,
+} from "../childRequestIds.ts";
 import { withinModeCeiling } from "../childThreadDecisions.ts";
 import {
   OrchestrationCommandInvariantError,
@@ -64,13 +83,22 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** Activities that mark a child's setup stage done; see the module comment. */
+/**
+ * Setup activities an older build recorded on a thread it left half-made:
+ * its script was claimed (or settled) then, and is never launched again.
+ */
 const SETUP_DONE_KINDS: ReadonlySet<string> = new Set([
   "setup-script.requested",
   "setup-script.started",
   "setup-script.skipped",
   "setup-script.failed",
 ]);
+
+/**
+ * The reason git locks a worktree with while `git worktree add` makes it
+ * (untranslated: GitVcsDriver runs the add with `LC_ALL=C`).
+ */
+const GIT_ADDING_LOCK_REASON = "initializing";
 
 /** An error's own words: a decider's or git's detail, else its message. */
 const plainDetail = (error: unknown): string => {
@@ -86,20 +114,90 @@ const plainDetail = (error: unknown): string => {
 };
 
 const STAGE_FAILURE: Record<ChildBootstrapStage, string> = {
-  create: "Couldn't create the thread",
   worktree: "Couldn't set up its worktree",
-  setup: "Couldn't run its setup script",
   turn: "Couldn't start its first turn",
 };
 
-const stageError = (stage: ChildBootstrapStage) => (cause: unknown) =>
-  new ChildBootstrapError({
-    stage,
-    detail: `${STAGE_FAILURE[stage]}: ${plainDetail(cause)}`,
-    cause,
-  });
+/** A setup stopped at `stage`, with what stopped it. */
+class SetupStageFailure extends Data.TaggedError("SetupStageFailure")<{
+  readonly stage: ChildBootstrapStage;
+  readonly cause: unknown;
+}> {}
+
+/** A worktree on a setup's branch that someone locked on purpose: left alone. */
+class LockedWorktreeError extends Data.TaggedError("LockedWorktreeError")<{
+  readonly path: string;
+  readonly reason: string;
+}> {
+  get detail(): string {
+    return `${this.path} is locked (${this.reason || "no reason given"}). Unlock or remove it, then try again.`;
+  }
+}
+
+const failedAt = (stage: ChildBootstrapStage) => (cause: unknown) =>
+  new SetupStageFailure({ stage, cause });
+
+/**
+ * Logs and drops a step's failure or defect, never an interruption: the
+ * server stopping mid-step still stops the run, which then resumes.
+ */
+const logFailures =
+  (message: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<void, never, R> =>
+    effect.pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning(message, { cause: Cause.pretty(cause) }),
+      ),
+    );
+
+/** Where a setup cuts its worktree from. */
+type WorktreeBase =
+  /** The latest of a branch: its upstream when the local one has fallen behind. */
+  | { readonly kind: "fresh"; readonly branch: string }
+  /** Exactly this ref (a child's launch saved it when it was asked for). */
+  | { readonly kind: "ref"; readonly ref: string };
+
+/** Everything one setup needs, whichever caller asked for it. */
+interface SetupPlan {
+  readonly threadId: ThreadId;
+  /** Ids for the steps after the start, fixed by the plan's key. */
+  readonly ids: {
+    readonly command: (step: string) => CommandId;
+    readonly activity: (kind: string) => EventId;
+  };
+  /** The thread to make; absent when the caller only names one that exists. */
+  readonly create: ThreadBootstrapCreateThread | undefined;
+  readonly worktree:
+    | {
+        readonly projectCwd: string;
+        readonly branch: string;
+        readonly base: WorktreeBase;
+      }
+    | undefined;
+  readonly runSetup: boolean;
+  /** The first turn; its command id is the start's, and its receipt the setup's. */
+  readonly turn: Omit<ThreadTurnStartCommand, "bootstrap">;
+  /** Before each stage: fails to stop the setup there. */
+  readonly proceed: (stage: ChildBootstrapStage) => Effect.Effect<void, SetupStageFailure>;
+  /** A thread that already exists is brought within the plan first (a child's modes). */
+  readonly fitExisting?: (
+    thread: OrchestrationThread,
+  ) => Effect.Effect<OrchestrationThread, SetupStageFailure>;
+}
+
+/** The worktree a setup works in, and whether this run made it (and its branch). */
+interface PlacedWorktree {
+  readonly path: string;
+  readonly branch: string;
+  readonly madeWorktree: boolean;
+  readonly madeBranch: boolean;
+}
 
 const make = Effect.gen(function* () {
+  const { worktreesDir } = yield* ServerConfig;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const gitWorkflow = yield* GitWorkflowService;
@@ -112,407 +210,368 @@ const make = Effect.gen(function* () {
     ChildBootstrapError
   >();
 
-  const serverCommandId = (tag: string) => CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
-
-  const appendThreadActivity = (input: {
-    readonly threadId: ThreadTurnStartCommand["threadId"];
-    readonly kind: string;
-    readonly summary: string;
-    readonly createdAt: string;
-    readonly payload: Record<string, unknown>;
-    readonly tone: "info" | "error";
-  }) =>
-    orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: serverCommandId("setup-script-activity"),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.make(crypto.randomUUID()),
-        tone: input.tone,
-        kind: input.kind,
-        summary: input.summary,
-        payload: input.payload,
-        turnId: null,
-        createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
-
-  const appendSetupScriptActivity = (input: {
-    readonly threadId: ThreadTurnStartCommand["threadId"];
-    readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
-    readonly summary: string;
-    readonly createdAt: string;
-    readonly payload: Record<string, unknown>;
-    readonly tone: "info" | "error";
-  }) => appendThreadActivity(input);
-
-  const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
-    isOrchestrationDispatchCommandError(cause)
-      ? cause
-      : new OrchestrationDispatchCommandError({
-          message: cause instanceof Error ? cause.message : fallbackMessage,
-          cause,
-        });
-
-  // A refusal the caller acts on by type (an outside agent's turn on a busy
-  // thread, or one above its ceiling) keeps its type through the bootstrap.
-  const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
-    const error = Cause.squash(cause);
-    return isOrchestrationDispatchCommandError(error)
-      ? error
-      : new OrchestrationDispatchCommandError({
-          message:
-            error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
-          ...(isOrchestrationCommandInvariantError(error) && error.refusal !== undefined
-            ? { refusal: error.refusal }
-            : {}),
-          cause,
-        });
-  };
-
   const refreshGitStatus = (cwd: string) =>
     vcsStatusBroadcaster
       .refreshStatus(cwd)
       .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+  /** The thread as the read model has it; archived and deleted threads read as gone. */
+  const readThread = (threadId: ThreadId) =>
+    projectionSnapshotQuery.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined));
+
   // ---------------------------------------------------------------------------
-  // The WebSocket path
+  // The stages
   // ---------------------------------------------------------------------------
 
-  // The client re-sends a command whose socket dropped or whose response
-  // was slow, so the whole bootstrap has to be idempotent under the
-  // command id: a retry joins the run in flight, and a retry that lands
-  // after the run finished is answered from the receipt the final turn
-  // start left, exactly as a plain dispatch would answer it.
-  const runBootstrapTurnStart = (
-    command: ThreadTurnStartCommand,
-  ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+  /**
+   * Stage 1: the plan's worktree, made once. Its branch is the plan's alone
+   * (named from the plan's key), so one already on it is an earlier run's:
+   *
+   * - unlocked: that run made it; it is used.
+   * - locked `initializing`: git was still adding it when a crash cut it
+   *   short, so it may be half checked out. Nothing has worked in it (the
+   *   thread doesn't exist yet), so it goes, and the worktree is made again.
+   * - locked for any other reason: someone pinned it on purpose; it is left
+   *   alone and the setup stops, saying so.
+   *
+   * A worktree made again from a branch an earlier run left gets a folder of
+   * its own, never the usual one: a cut-off git may still be running there
+   * and clean that folder up when it fails.
+   */
+  const ensureWorktree = (worktree: NonNullable<SetupPlan["worktree"]>) =>
     Effect.gen(function* () {
+      const cwd = worktree.projectCwd;
+      const existing = (yield* gitWorkflow.listWorktrees({ cwd })).find(
+        (entry) => entry.branch === worktree.branch,
+      );
+      if (existing !== undefined) {
+        if (existing.lockReason === undefined) {
+          return {
+            path: existing.path,
+            branch: worktree.branch,
+            madeWorktree: false,
+            madeBranch: false,
+          } satisfies PlacedWorktree;
+        }
+        if (existing.lockReason !== GIT_ADDING_LOCK_REASON) {
+          return yield* new LockedWorktreeError({
+            path: existing.path,
+            reason: existing.lockReason,
+          });
+        }
+        yield* gitWorkflow.removeWorktree({ cwd, path: existing.path, force: true, unlock: true });
+      }
+      const refs = yield* gitWorkflow.listRefs({ cwd, query: worktree.branch, refresh: true });
+      const branchExists = refs.refs.some(
+        (ref) => ref.name === worktree.branch && ref.isRemote !== true,
+      );
+      const created = branchExists
+        ? yield* gitWorkflow.createWorktree({
+            cwd,
+            refName: worktree.branch,
+            path: `${join(worktreesDir, basename(cwd), worktreeFolderNameForBranch(worktree.branch))}-${crypto.randomUUID().slice(0, 4)}`,
+          })
+        : yield* gitWorkflow.createWorktree({
+            cwd,
+            refName:
+              worktree.base.kind === "ref"
+                ? worktree.base.ref
+                : (yield* gitWorkflow.resolveFreshWorktreeBase({
+                    cwd,
+                    branch: worktree.base.branch,
+                  })).refName,
+            newRefName: worktree.branch,
+            path: null,
+          });
+      yield* refreshGitStatus(created.worktree.path);
+      return {
+        path: created.worktree.path,
+        branch: created.worktree.refName,
+        madeWorktree: true,
+        madeBranch: !branchExists,
+      } satisfies PlacedWorktree;
+    });
+
+  /**
+   * A start the decider refused for good leaves no thread to hold the
+   * worktree this run made: it goes, and its branch with it, without force,
+   * so one with anything in it stays. One this run found is never touched.
+   */
+  const removeMadeWorktree = (projectCwd: string, placed: PlacedWorktree) =>
+    Effect.gen(function* () {
+      if (!placed.madeWorktree) {
+        return;
+      }
+      yield* gitWorkflow.removeWorktree({ cwd: projectCwd, path: placed.path, force: false });
+      if (placed.madeBranch) {
+        yield* gitWorkflow.deleteBranch({ cwd: projectCwd, branchName: placed.branch });
+      }
+    }).pipe(logFailures("thread setup could not remove the worktree of a refused start"));
+
+  /**
+   * The setup script's claim, made part of the start: only when the plan asks
+   * for setup in a worktree, the project has a script to run there, and an
+   * older build's run hasn't claimed it already.
+   */
+  const setupClaimFor = (
+    plan: SetupPlan,
+    projectId: ProjectId,
+    existing: OrchestrationThread | undefined,
+    worktreePath: string | null,
+  ) =>
+    Effect.gen(function* () {
+      if (!plan.runSetup || worktreePath === null) {
+        return undefined;
+      }
+      if (existing?.activities.some((activity) => SETUP_DONE_KINDS.has(activity.kind))) {
+        return undefined;
+      }
+      const project = yield* projectionSnapshotQuery
+        .getProjectShellById(projectId)
+        .pipe(Effect.map(Option.getOrUndefined));
+      if (project === undefined || setupProjectScript(project.scripts) === null) {
+        return undefined;
+      }
+      return {
+        id: plan.ids.activity("setup-script.requested"),
+        tone: "info",
+        kind: "setup-script.requested",
+        summary: "Starting setup script",
+        payload: { worktreePath },
+        turnId: null,
+        createdAt: yield* nowIso,
+      } satisfies OrchestrationThreadActivity;
+    });
+
+  /** One setup activity after the start, with ids fixed by the plan. */
+  const appendSetupActivity = (
+    plan: SetupPlan,
+    activity: {
+      readonly kind: "setup-script.started" | "setup-script.skipped" | "setup-script.failed";
+      readonly summary: string;
+      readonly tone: "info" | "error";
+      readonly payload: Record<string, unknown>;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const createdAt = yield* nowIso;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: plan.ids.command(activity.kind),
+        threadId: plan.threadId,
+        activity: {
+          id: plan.ids.activity(activity.kind),
+          tone: activity.tone,
+          kind: activity.kind,
+          summary: activity.summary,
+          payload: activity.payload,
+          turnId: null,
+          createdAt,
+        },
+        createdAt,
+      });
+    });
+
+  /** Stage 3: the claimed setup script, started in a terminal; nothing waits on it. */
+  const launchSetupScript = (plan: SetupPlan, projectId: ProjectId, worktreePath: string) =>
+    Effect.gen(function* () {
+      const launched = yield* projectSetupScriptRunner
+        .runForThread({
+          threadId: plan.threadId,
+          projectId,
+          ...(plan.worktree !== undefined ? { projectCwd: plan.worktree.projectCwd } : {}),
+          worktreePath,
+        })
+        .pipe(Effect.exit);
+      if (Exit.isFailure(launched)) {
+        // The server stopping is not the script failing to start.
+        if (Cause.hasInterrupts(launched.cause)) {
+          return yield* Effect.interrupt;
+        }
+        const detail = plainDetail(Cause.squash(launched.cause));
+        yield* Effect.logWarning("thread setup could not launch its setup script", {
+          threadId: plan.threadId,
+          worktreePath,
+          detail,
+        });
+        return yield* appendSetupActivity(plan, {
+          kind: "setup-script.failed",
+          summary: "Setup script failed to start",
+          tone: "error",
+          payload: { detail, worktreePath },
+        });
+      }
+      if (launched.value.status !== "started") {
+        // Its script was removed in the moment since the claim.
+        return yield* appendSetupActivity(plan, {
+          kind: "setup-script.skipped",
+          summary: "Setup script skipped",
+          tone: "info",
+          payload: { reason: "no-script" },
+        });
+      }
+      yield* appendSetupActivity(plan, {
+        kind: "setup-script.started",
+        summary: "Setup script started",
+        tone: "info",
+        payload: {
+          scriptId: launched.value.scriptId,
+          scriptName: launched.value.scriptName,
+          terminalId: launched.value.terminalId,
+          worktreePath,
+        },
+      });
+    }).pipe(logFailures("thread setup could not record its setup script"));
+
+  /** The whole setup, from wherever an earlier run of the same plan stopped. */
+  const runSetup = (plan: SetupPlan) =>
+    Effect.gen(function* () {
+      const startId = plan.turn.commandId;
+      // Accepted: the thread, its claim and its turn landed together, and the
+      // run that made them launched the script.
       const receipt = yield* orchestrationEngine
-        .getCommandReceipt(command.commandId)
-        .pipe(
-          Effect.mapError((cause) =>
-            toDispatchCommandError(cause, "Failed to read orchestration command receipt"),
-          ),
-        );
+        .getCommandReceipt(startId)
+        .pipe(Effect.mapError(failedAt("turn")));
       if (Option.isSome(receipt)) {
         if (receipt.value.status === "accepted") {
           return { sequence: receipt.value.resultSequence };
         }
-        return yield* toDispatchCommandError(
+        return yield* failedAt("turn")(
           new OrchestrationCommandPreviouslyRejectedError({
-            commandId: command.commandId,
+            commandId: startId,
             detail: receipt.value.error ?? "Previously rejected.",
           }),
-          "Command previously rejected.",
         );
       }
 
-      const bootstrap = command.bootstrap;
-      const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
-      let createdThread = false;
-      let targetProjectId = bootstrap?.createThread?.projectId;
-      let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
-      let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
+      yield* plan.proceed("worktree");
+      const found = yield* readThread(plan.threadId).pipe(Effect.mapError(failedAt("worktree")));
+      const existing =
+        found !== undefined && plan.fitExisting !== undefined
+          ? yield* plan.fitExisting(found)
+          : found;
+      const placed =
+        plan.worktree === undefined || (existing?.worktreePath ?? null) !== null
+          ? undefined
+          : yield* ensureWorktree(plan.worktree).pipe(Effect.mapError(failedAt("worktree")));
 
-      const recordBootstrapFailure = (dispatchError: OrchestrationDispatchCommandError) =>
-        Effect.gen(function* () {
-          const failedAt = yield* nowIso;
-          const detail = dispatchError.message.trim() || "Failed to bootstrap thread turn.";
-          const requestedModelSelection =
-            finalTurnStartCommand.modelSelection ?? bootstrap?.createThread?.modelSelection;
-
-          yield* appendThreadActivity({
-            threadId: command.threadId,
-            kind: "bootstrap.turn-start.failed",
-            summary: "Thread bootstrap failed",
-            createdAt: failedAt,
-            payload: {
-              detail,
-              message: finalTurnStartCommand.message,
-              modelSelection: requestedModelSelection ?? null,
-              runtimeMode: finalTurnStartCommand.runtimeMode,
-              interactionMode: finalTurnStartCommand.interactionMode,
-              prepareWorktree: bootstrap?.prepareWorktree ?? null,
-              worktreePath: targetWorktreePath,
-            },
-            tone: "error",
-          }).pipe(Effect.ignoreCause({ log: true }));
-
-          yield* orchestrationEngine
-            .dispatch({
-              type: "thread.session.set",
-              commandId: serverCommandId("bootstrap-session-error"),
-              threadId: command.threadId,
-              session: {
-                threadId: command.threadId,
-                status: "error",
-                providerName: null,
-                ...(requestedModelSelection
-                  ? { providerInstanceId: requestedModelSelection.instanceId }
-                  : {}),
-                providerSessionId: null,
-                providerThreadId: null,
-                runtimeMode: finalTurnStartCommand.runtimeMode,
-                activeTurnId: null,
-                pendingBackgroundTaskCount: 0,
-                lastError: detail,
-                updatedAt: failedAt,
-              },
-              createdAt: failedAt,
-            })
-            .pipe(Effect.ignoreCause({ log: true }));
-        });
-
-      const recordSetupScriptLaunchFailure = (input: {
-        readonly error: unknown;
-        readonly requestedAt: string;
-        readonly worktreePath: string;
-      }) => {
-        const detail =
-          input.error instanceof Error ? input.error.message : "Unknown setup failure.";
-        return appendSetupScriptActivity({
-          threadId: command.threadId,
-          kind: "setup-script.failed",
-          summary: "Setup script failed to start",
-          createdAt: input.requestedAt,
-          payload: {
-            detail,
-            worktreePath: input.worktreePath,
-          },
-          tone: "error",
-        }).pipe(
-          Effect.ignoreCause({ log: false }),
-          Effect.flatMap(() =>
-            Effect.logWarning("bootstrap turn start failed to launch setup script", {
-              threadId: command.threadId,
-              worktreePath: input.worktreePath,
-              detail,
-            }),
-          ),
-        );
-      };
-
-      const recordSetupScriptStarted = (input: {
-        readonly requestedAt: string;
-        readonly worktreePath: string;
-        readonly scriptId: string;
-        readonly scriptName: string;
-        readonly terminalId: string;
-      }) =>
-        Effect.gen(function* () {
-          const startedAt = yield* nowIso;
-          const payload = {
-            scriptId: input.scriptId,
-            scriptName: input.scriptName,
-            terminalId: input.terminalId,
-            worktreePath: input.worktreePath,
-          };
-          yield* Effect.all([
-            appendSetupScriptActivity({
-              threadId: command.threadId,
-              kind: "setup-script.requested",
-              summary: "Starting setup script",
-              createdAt: input.requestedAt,
-              payload,
-              tone: "info",
-            }),
-            appendSetupScriptActivity({
-              threadId: command.threadId,
-              kind: "setup-script.started",
-              summary: "Setup script started",
-              createdAt: startedAt,
-              payload,
-              tone: "info",
-            }),
-          ]).pipe(
-            Effect.asVoid,
-            Effect.catch((error) =>
-              Effect.logWarning(
-                "bootstrap turn start launched setup script but failed to record setup activity",
-                {
-                  threadId: command.threadId,
-                  worktreePath: input.worktreePath,
-                  scriptId: input.scriptId,
-                  terminalId: input.terminalId,
-                  detail: error.message,
-                },
-              ),
-            ),
-          );
-        });
-
-      const runSetupProgram = () =>
-        Effect.gen(function* () {
-          if (!bootstrap?.runSetupScript || !targetWorktreePath) {
-            return;
-          }
-          const worktreePath = targetWorktreePath;
-          const requestedAt = yield* nowIso;
-          yield* projectSetupScriptRunner
-            .runForThread({
-              threadId: command.threadId,
-              ...(targetProjectId ? { projectId: targetProjectId } : {}),
-              ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
-              worktreePath,
-            })
-            .pipe(
-              Effect.matchEffect({
-                onFailure: (error) =>
-                  recordSetupScriptLaunchFailure({
-                    error,
-                    requestedAt,
-                    worktreePath,
-                  }),
-                onSuccess: (setupResult) => {
-                  if (setupResult.status !== "started") {
-                    return Effect.void;
-                  }
-                  return recordSetupScriptStarted({
-                    requestedAt,
-                    worktreePath,
-                    scriptId: setupResult.scriptId,
-                    scriptName: setupResult.scriptName,
-                    terminalId: setupResult.terminalId,
-                  });
-                },
-              }),
+      yield* plan.proceed("turn");
+      const projectId = existing?.projectId ?? plan.create?.projectId;
+      const worktreePath =
+        placed?.path ?? existing?.worktreePath ?? plan.create?.worktreePath ?? null;
+      const claim =
+        projectId === undefined
+          ? undefined
+          : yield* setupClaimFor(plan, projectId, existing, worktreePath).pipe(
+              Effect.mapError(failedAt("turn")),
             );
-        });
-
-      const bootstrapProgram = Effect.gen(function* () {
-        if (bootstrap?.createThread) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.create",
-            commandId: serverCommandId("bootstrap-thread-create"),
-            threadId: command.threadId,
-            projectId: bootstrap.createThread.projectId,
-            title: bootstrap.createThread.title,
-            modelSelection: bootstrap.createThread.modelSelection,
-            runtimeMode: bootstrap.createThread.runtimeMode,
-            interactionMode: bootstrap.createThread.interactionMode,
-            branch: bootstrap.createThread.branch,
-            worktreePath: bootstrap.createThread.worktreePath,
-            ...(bootstrap.createThread.participants !== undefined
-              ? { participants: bootstrap.createThread.participants }
-              : {}),
-            ...(bootstrap.createThread.agentRole !== undefined
-              ? { agentRole: bootstrap.createThread.agentRole }
-              : {}),
-            // Only `/mcp/connect` builds a bootstrap with it; the Normalizer
-            // refuses it from clients (docs/design/outside-agents.md).
-            ...(bootstrap.createThread.outsideOrigin !== undefined
-              ? { outsideOrigin: bootstrap.createThread.outsideOrigin }
-              : {}),
-            createdAt: bootstrap.createThread.createdAt,
-          });
-          createdThread = true;
-        }
-
-        if (bootstrap?.prepareWorktree) {
-          // "From main" means the latest main: start from the upstream
-          // when the local branch has fallen behind it.
-          const base = yield* gitWorkflow.resolveFreshWorktreeBase({
-            cwd: bootstrap.prepareWorktree.projectCwd,
-            branch: bootstrap.prepareWorktree.baseBranch,
-          });
-          const worktree = yield* gitWorkflow.createWorktree({
-            cwd: bootstrap.prepareWorktree.projectCwd,
-            refName: base.refName,
-            newRefName: bootstrap.prepareWorktree.branch,
-            path: null,
-          });
-          targetWorktreePath = worktree.worktree.path;
-          yield* orchestrationEngine.dispatch({
-            type: "thread.meta.update",
-            commandId: serverCommandId("bootstrap-thread-meta-update"),
-            threadId: command.threadId,
-            branch: worktree.worktree.refName,
-            worktreePath: targetWorktreePath,
-          });
-          yield* refreshGitStatus(targetWorktreePath);
-        }
-
-        yield* runSetupProgram();
-
-        return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
-      });
-
-      return yield* bootstrapProgram.pipe(
-        Effect.catchCause((cause) => {
-          const dispatchError = toBootstrapDispatchCommandCauseError(cause);
-          if (Cause.hasInterruptsOnly(cause)) {
-            return Effect.fail(dispatchError);
-          }
-          return (createdThread ? recordBootstrapFailure(dispatchError) : Effect.void).pipe(
-            Effect.flatMap(() => Effect.fail(dispatchError)),
-          );
-        }),
-      );
+      const started = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.start",
+          commandId: startId,
+          threadId: plan.threadId,
+          ...(existing === undefined && plan.create !== undefined
+            ? {
+                create: {
+                  ...plan.create,
+                  ...(placed !== undefined
+                    ? { branch: placed.branch, worktreePath: placed.path }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(existing !== undefined && placed !== undefined
+            ? { checkout: { branch: placed.branch, worktreePath: placed.path } }
+            : {}),
+          ...(claim !== undefined ? { setupScriptClaim: claim } : {}),
+          turn: plan.turn,
+        })
+        .pipe(
+          Effect.tapError((error) =>
+            placed !== undefined &&
+            plan.worktree !== undefined &&
+            isOrchestrationCommandInvariantError(error)
+              ? removeMadeWorktree(plan.worktree.projectCwd, placed)
+              : Effect.void,
+          ),
+          Effect.mapError(failedAt("turn")),
+        );
+      if (claim !== undefined && projectId !== undefined && worktreePath !== null) {
+        yield* launchSetupScript(plan, projectId, worktreePath);
+      }
+      return started;
     });
 
+  // ---------------------------------------------------------------------------
+  // A client's first send
+  // ---------------------------------------------------------------------------
+
+  // The client re-sends a command whose socket dropped or whose response was
+  // slow, so the setup is keyed by the command id: a retry joins the run in
+  // flight, finishes one a restart cut off, or is answered from the receipt
+  // the start left, exactly as a plain dispatch would answer it.
+  const clientPlan = (command: ThreadTurnStartCommand): SetupPlan => {
+    const { bootstrap, ...turn } = command;
+    const key = command.commandId;
+    const prepare = bootstrap?.prepareWorktree;
+    return {
+      threadId: command.threadId,
+      ids: {
+        command: (step) => CommandId.make(`server:first-send:${key}:${step}`),
+        activity: (kind) => EventId.make(derivedUuid("first-send-setup-activity", key, kind)),
+      },
+      create: bootstrap?.createThread,
+      worktree:
+        prepare === undefined
+          ? undefined
+          : {
+              projectCwd: prepare.projectCwd,
+              // Named by the command, not the client, so no other setup can
+              // ever find, use or remove this run's worktree.
+              branch: firstSendWorktreeBranch(key),
+              base: { kind: "fresh", branch: prepare.baseBranch },
+            },
+      runSetup: bootstrap?.runSetupScript === true,
+      turn,
+      proceed: () => Effect.void,
+    };
+  };
+
+  // Whatever stopped the setup (a stage's failure, or a defect in git), as
+  // the error a plain dispatch would answer with. A refusal the caller acts
+  // on by type (an outside agent's turn above its ceiling) keeps its type.
+  const toDispatchCommandError = (failure: unknown) => {
+    const cause = failure instanceof SetupStageFailure ? failure.cause : failure;
+    return isOrchestrationDispatchCommandError(cause)
+      ? cause
+      : new OrchestrationDispatchCommandError({
+          message: plainDetail(cause),
+          ...(isOrchestrationCommandInvariantError(cause) && cause.refusal !== undefined
+            ? { refusal: cause.refusal }
+            : {}),
+          cause,
+        });
+  };
+
   const runTurnStart: ThreadBootstrapShape["runTurnStart"] = (command) =>
-    bootstrapTurnStartRuns.run(command.commandId, runBootstrapTurnStart(command));
+    bootstrapTurnStartRuns.run(
+      command.commandId,
+      runSetup(clientPlan(command)).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.fail(toDispatchCommandError(Cause.squash(cause))),
+        ),
+      ),
+    );
 
   // ---------------------------------------------------------------------------
   // Child threads
   // ---------------------------------------------------------------------------
 
-  /** The child as the read model has it; archived and deleted threads read as gone. */
-  const readChild = (input: ChildBootstrapInput, stage: ChildBootstrapStage) =>
-    projectionSnapshotQuery
-      .getThreadDetailById(input.childThreadId)
-      .pipe(Effect.map(Option.getOrUndefined), Effect.mapError(stageError(stage)));
-
-  const goneError = (stage: ChildBootstrapStage) =>
-    new ChildBootstrapError({
-      stage,
-      detail: `${STAGE_FAILURE[stage]}: the thread was archived or deleted while it was being set up.`,
-    });
-
-  /** Stage 1: the thread, created once. */
-  const ensureChildThread = (input: ChildBootstrapInput) =>
-    Effect.gen(function* () {
-      const existing = yield* readChild(input, "create");
-      if (existing !== undefined) {
-        return existing;
-      }
-      const { launch } = input;
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.create",
-          commandId: childRequestCommandId(input.requestId, "create"),
-          threadId: input.childThreadId,
-          projectId: input.projectId,
-          title: launch.title,
-          modelSelection: launch.modelSelection,
-          runtimeMode: launch.runtimeMode,
-          interactionMode: launch.interactionMode,
-          branch: null,
-          worktreePath: null,
-          ...(input.lineage.kind === "local"
-            ? {
-                parentThreadId: input.lineage.parentThreadId,
-                parentTurnId: input.lineage.parentTurnId,
-                attachedToParent: launch.reportBack,
-              }
-            : input.lineage.kind === "remote"
-              ? { remoteOrigin: input.lineage.remoteOrigin }
-              : { scheduledRun: input.lineage.scheduledRun }),
-          createdAt: input.createdAt,
-        })
-        .pipe(Effect.mapError(stageError("create")));
-      const created = yield* readChild(input, "create");
-      if (created === undefined) {
-        return yield* goneError("create");
-      }
-      return created;
-    });
-
   /**
-   * A child an interrupted run already created keeps the access it was
-   * created with; the launch may have been narrowed since (its parent's
+   * A child an older build created before its first turn keeps the access it
+   * was created with; the launch may have been narrowed since (its parent's
    * access went down). It is narrowed to the launch before anything runs.
    */
   const narrowChildModes = (input: ChildBootstrapInput, thread: OrchestrationThread) =>
@@ -544,208 +603,97 @@ const make = Effect.gen(function* () {
         runtimeMode: input.launch.runtimeMode,
         interactionMode: input.launch.interactionMode,
       };
-    }).pipe(Effect.mapError(stageError("create")));
-
-  /**
-   * Stage 2: the child's own worktree. A worktree already on the request's
-   * branch is one an interrupted run made; so is the branch alone, if git
-   * stopped between making the branch and checking it out.
-   */
-  const ensureChildWorktree = (input: ChildBootstrapInput, thread: OrchestrationThread) =>
-    Effect.gen(function* () {
-      const workspace = input.launch.workspace;
-      if (workspace.kind !== "worktree" || thread.worktreePath !== null) {
-        return thread;
-      }
-      const cwd = workspace.projectCwd;
-      const branch = childWorktreeBranch(input.requestId);
-      const existing = (yield* gitWorkflow.listWorktrees({ cwd })).find(
-        (entry) => entry.branch === branch,
-      );
-      let worktree: { readonly path: string; readonly refName: string };
-      if (existing !== undefined) {
-        worktree = { path: existing.path, refName: branch };
-      } else {
-        const refs = yield* gitWorkflow.listRefs({ cwd, query: branch, refresh: true });
-        const branchExists = refs.refs.some((ref) => ref.name === branch && ref.isRemote !== true);
-        const created = yield* gitWorkflow.createWorktree(
-          branchExists
-            ? { cwd, refName: branch, path: null }
-            : { cwd, refName: workspace.baseRef, newRefName: branch, path: null },
-        );
-        worktree = created.worktree;
-      }
-      yield* orchestrationEngine.dispatch({
-        type: "thread.meta.update",
-        commandId: childRequestCommandId(input.requestId, "meta"),
-        threadId: input.childThreadId,
-        branch: worktree.refName,
-        worktreePath: worktree.path,
-      });
-      yield* refreshGitStatus(worktree.path);
-      return { ...thread, branch: worktree.refName, worktreePath: worktree.path };
-    }).pipe(Effect.mapError(stageError("worktree")));
-
-  /** One setup activity, with ids fixed by the request so a retry records it once. */
-  const appendChildSetupActivity = (
-    input: ChildBootstrapInput,
-    activity: {
-      readonly kind:
-        | "setup-script.requested"
-        | "setup-script.started"
-        | "setup-script.skipped"
-        | "setup-script.failed";
-      readonly summary: string;
-      readonly tone: "info" | "error";
-      readonly payload: Record<string, unknown>;
-      readonly createdAt: string;
-    },
-  ) =>
-    orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: childRequestCommandId(input.requestId, activity.kind),
-      threadId: input.childThreadId,
-      activity: {
-        id: EventId.make(derivedUuid("child-setup-activity", input.requestId, activity.kind)),
-        tone: activity.tone,
-        kind: activity.kind,
-        summary: activity.summary,
-        payload: activity.payload,
-        turnId: null,
-        createdAt: activity.createdAt,
-      },
-      createdAt: activity.createdAt,
     });
 
-  /** Stage 3: the setup script, launched at most once. */
-  const ensureChildSetup = (input: ChildBootstrapInput, thread: OrchestrationThread) =>
-    Effect.gen(function* () {
-      if (thread.activities.some((activity) => SETUP_DONE_KINDS.has(activity.kind))) {
-        return;
-      }
-      const requestedAt = yield* nowIso;
-      const skip = (reason: string) =>
-        appendChildSetupActivity(input, {
-          kind: "setup-script.skipped",
-          summary: "Setup script skipped",
-          tone: "info",
-          payload: { reason },
-          createdAt: requestedAt,
-        });
-      const worktreePath = thread.worktreePath;
-      if (!input.launch.runSetup) {
-        return yield* skip("not-requested");
-      }
-      if (input.launch.workspace.kind !== "worktree" || worktreePath === null) {
-        return yield* skip("no-worktree");
-      }
-      // Claimed before it is launched: at most once, even across a crash.
-      yield* appendChildSetupActivity(input, {
-        kind: "setup-script.requested",
-        summary: "Starting setup script",
-        tone: "info",
-        payload: { worktreePath },
-        createdAt: requestedAt,
-      });
-      const launched = yield* projectSetupScriptRunner
-        .runForThread({
-          threadId: input.childThreadId,
-          projectId: input.projectId,
-          projectCwd: input.launch.workspace.projectCwd,
-          worktreePath,
-        })
-        .pipe(Effect.result);
-      if (launched._tag === "Failure") {
-        yield* appendChildSetupActivity(input, {
-          kind: "setup-script.failed",
-          summary: "Setup script failed to start",
-          tone: "error",
-          payload: { detail: launched.failure.message, worktreePath },
-          createdAt: requestedAt,
-        });
-        return;
-      }
-      if (launched.success.status !== "started") {
-        return yield* skip("no-script");
-      }
-      const payload = {
-        scriptId: launched.success.scriptId,
-        scriptName: launched.success.scriptName,
-        terminalId: launched.success.terminalId,
-        worktreePath,
-      };
-      yield* appendChildSetupActivity(input, {
-        kind: "setup-script.started",
-        summary: "Setup script started",
-        tone: "info",
-        payload,
-        createdAt: yield* nowIso,
-      });
-    }).pipe(Effect.asVoid, Effect.mapError(stageError("setup")));
+  const childCreate = (
+    input: ChildBootstrapInput,
+    launch: ChildThreadLaunch,
+  ): ThreadBootstrapCreateThread => ({
+    projectId: input.projectId,
+    title: launch.title,
+    modelSelection: launch.modelSelection,
+    runtimeMode: launch.runtimeMode,
+    interactionMode: launch.interactionMode,
+    branch: null,
+    worktreePath: null,
+    ...(input.lineage.kind === "local"
+      ? {
+          parentThreadId: input.lineage.parentThreadId,
+          parentTurnId: input.lineage.parentTurnId,
+          attachedToParent: launch.reportBack,
+        }
+      : input.lineage.kind === "remote"
+        ? { remoteOrigin: input.lineage.remoteOrigin }
+        : { scheduledRun: input.lineage.scheduledRun }),
+    createdAt: input.createdAt,
+  });
 
-  /** Stage 4: the first turn, answering the request. */
-  const startChildTurn = (input: ChildBootstrapInput) =>
+  const childPlan = (input: ChildBootstrapInput) =>
     Effect.gen(function* () {
       const { launch } = input;
-      return yield* orchestrationEngine.dispatch({
-        type: "thread.turn.start",
-        commandId: childRequestCommandId(input.requestId, "turn"),
+      const workspace = launch.workspace;
+      const checkpoint = input.checkpoint;
+      return {
         threadId: input.childThreadId,
-        message: {
-          messageId: input.childMessageId,
-          role: "user",
-          text: launch.prompt,
-          attachments: [],
+        ids: {
+          command: (step) => childRequestCommandId(input.requestId, step),
+          activity: (kind) =>
+            EventId.make(derivedUuid("child-setup-activity", input.requestId, kind)),
         },
-        modelSelection: launch.modelSelection,
-        runtimeMode: launch.runtimeMode,
-        interactionMode: launch.interactionMode,
-        ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
-        createdAt: yield* nowIso,
-      });
-    }).pipe(Effect.mapError(stageError("turn")));
-
-  const runChild = (input: ChildBootstrapInput) =>
-    Effect.gen(function* () {
-      // The first turn's receipt means an earlier run finished everything.
-      const turnReceipt = yield* orchestrationEngine
-        .getCommandReceipt(childRequestCommandId(input.requestId, "turn"))
-        .pipe(Effect.mapError(stageError("turn")));
-      if (Option.isSome(turnReceipt)) {
-        if (turnReceipt.value.status === "accepted") {
-          return { sequence: turnReceipt.value.resultSequence };
-        }
-        return yield* stageError("turn")({
-          detail: turnReceipt.value.error ?? "it was refused earlier.",
-        });
-      }
-      const proceed = (stage: ChildBootstrapStage) =>
-        input.checkpoint === undefined
-          ? Effect.void
-          : input.checkpoint(stage).pipe(
-              Effect.flatMap((go) =>
-                go
-                  ? Effect.void
-                  : Effect.fail(
-                      new ChildBootstrapError({
-                        stage,
-                        detail: `${STAGE_FAILURE[stage]}: it was cancelled.`,
-                      }),
-                    ),
+        create: childCreate(input, launch),
+        worktree:
+          workspace.kind === "worktree"
+            ? {
+                projectCwd: workspace.projectCwd,
+                branch: childWorktreeBranch(input.requestId),
+                base: { kind: "ref", ref: workspace.baseRef },
+              }
+            : undefined,
+        runSetup: launch.runSetup,
+        turn: {
+          type: "thread.turn.start",
+          commandId: childRequestCommandId(input.requestId, "turn"),
+          threadId: input.childThreadId,
+          message: {
+            messageId: input.childMessageId,
+            role: "user",
+            text: launch.prompt,
+            attachments: [],
+          },
+          modelSelection: launch.modelSelection,
+          runtimeMode: launch.runtimeMode,
+          interactionMode: launch.interactionMode,
+          ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
+          createdAt: yield* nowIso,
+        },
+        proceed: (stage) =>
+          checkpoint === undefined
+            ? Effect.void
+            : checkpoint(stage).pipe(
+                Effect.flatMap((go) =>
+                  go ? Effect.void : Effect.fail(failedAt(stage)(new Error("it was cancelled."))),
+                ),
               ),
-            );
-      yield* proceed("create");
-      const created = yield* narrowChildModes(input, yield* ensureChildThread(input));
-      yield* proceed("worktree");
-      const placed = yield* ensureChildWorktree(input, created);
-      yield* proceed("setup");
-      yield* ensureChildSetup(input, placed);
-      yield* proceed("turn");
-      return yield* startChildTurn(input);
+        fitExisting: (thread) =>
+          narrowChildModes(input, thread).pipe(Effect.mapError(failedAt("worktree"))),
+      } satisfies SetupPlan;
     });
 
   const startChild: ThreadBootstrapShape["startChild"] = (input) =>
-    childRuns.run(input.requestId, runChild(input));
+    childRuns.run(
+      input.requestId,
+      childPlan(input).pipe(
+        Effect.flatMap(runSetup),
+        Effect.mapError(
+          (failure) =>
+            new ChildBootstrapError({
+              stage: failure.stage,
+              detail: `${STAGE_FAILURE[failure.stage]}: ${plainDetail(failure.cause)}`,
+              cause: failure.cause,
+            }),
+        ),
+      ),
+    );
 
   return { runTurnStart, startChild } satisfies ThreadBootstrapShape;
 });

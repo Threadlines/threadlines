@@ -1198,8 +1198,9 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
       Effect.gen(function* () {
         const computer = yield* makeComputer;
         yield* setClock("2026-10-20T08:00:00.000Z");
-        // The first run's thread exists, but it stops before its worktree and message.
+        // The first run is held before its start, so it has no thread or message yet.
         const held = yield* Deferred.make<void>();
+        const reached = yield* Deferred.make<void>();
         const service = yield* computer.boot({
           bootstrap: {
             startChild: (input) =>
@@ -1207,7 +1208,13 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
                 ...input,
                 checkpoint: (stage) =>
                   (input.checkpoint?.(stage) ?? Effect.succeed(true)).pipe(
-                    Effect.tap(() => (stage === "worktree" ? Deferred.await(held) : Effect.void)),
+                    Effect.tap(() =>
+                      stage === "turn"
+                        ? Deferred.succeed(reached, undefined).pipe(
+                            Effect.andThen(Deferred.await(held)),
+                          )
+                        : Effect.void,
+                    ),
                   ),
               }),
           },
@@ -1228,10 +1235,8 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         yield* send("g-1");
         const [first] = yield* computer.runs(task.id);
         const issueThread = scheduledRunThreadId(task.id, first!.slotUtc);
-        yield* eventually(
-          computer.thread(issueThread).pipe(Effect.map((thread) => thread !== undefined)),
-          "the first run's thread exists",
-        );
+        yield* Deferred.await(reached);
+        assert.isUndefined(yield* computer.thread(issueThread));
         yield* send("g-2");
         const [, second] = yield* eventsOf(computer, task.id);
         assert.equal(second?.status, "waiting");

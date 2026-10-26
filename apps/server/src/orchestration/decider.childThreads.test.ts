@@ -7,6 +7,7 @@ import {
   EMPTY_AGENT_REQUEST_STATE,
   EnvironmentId,
   EMPTY_CHILD_REQUEST_STATE,
+  EventId,
   MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -588,6 +589,101 @@ describe("decider child threads", () => {
         createdAt: at(5),
       }),
     ).toBe(true);
+  });
+
+  it("never makes a child whose request was stopped while its worktree was cut, whether or not it reports back", async () => {
+    for (const reportBack of [true, false]) {
+      const started = await run(
+        readModel([thread(PARENT, { session: session(PARENT) })]),
+        startCommand("auto", { reportBack }),
+      );
+      const turnId = CommandId.make("server:child-request:request-1:turn");
+      const childStart: OrchestrationCommand = {
+        type: "thread.start",
+        commandId: turnId,
+        threadId: CHILD,
+        create: {
+          projectId,
+          title: "Write the changelog",
+          modelSelection: model,
+          runtimeMode: "auto-accept-edits",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "threadlines/0c1d2e3f",
+          worktreePath: "/repo-worktrees/0c1d2e3f",
+          parentThreadId: PARENT,
+          parentTurnId: CALLER_TURN,
+          attachedToParent: reportBack,
+          createdAt: at(1),
+        },
+        setupScriptClaim: {
+          id: EventId.make(`setup-claim-${reportBack}`),
+          tone: "info",
+          kind: "setup-script.requested",
+          summary: "Starting setup script",
+          payload: { worktreePath: "/repo-worktrees/0c1d2e3f" },
+          turnId: null,
+          createdAt: at(3),
+        },
+        turn: {
+          type: "thread.turn.start",
+          commandId: turnId,
+          threadId: CHILD,
+          message: {
+            messageId: CHILD_MESSAGE,
+            role: "user",
+            text: launch().prompt,
+            attachments: [],
+          },
+          runtimeMode: "auto-accept-edits",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
+          createdAt: at(3),
+        },
+      };
+      // Not stopped: the child appears in its worktree, working on the request.
+      const made = await run(started.model, childStart);
+      expect(threadIn(made.model, CHILD).worktreePath).toBe("/repo-worktrees/0c1d2e3f");
+      expect(threadIn(made.model, PARENT).childRequests.open[0]?.status).toBe("running");
+      // Stopped first: it is never made.
+      const stopped = await run(started.model, {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stop-parent"),
+        threadId: PARENT,
+        createdAt: at(2),
+      });
+      expect(await refused(stopped.model, childStart)).toBe(true);
+    }
+  });
+
+  it("stopping a child still being set up settles its request, so it is never made", async () => {
+    const started = await run(
+      readModel([thread(PARENT, { session: session(PARENT) })]),
+      startCommand("auto"),
+    );
+    // Its thread doesn't exist yet: a message to it waits for it to start.
+    expect(
+      await refused(started.model, {
+        type: "thread.child.send",
+        commandId: CommandId.make("send-early"),
+        threadId: PARENT,
+        requestId: ChildRequestId.make("send-1"),
+        from: PRIMARY,
+        callerTurnId: CALLER_TURN,
+        childThreadId: CHILD,
+        childMessageId: MessageId.make("send-early-message"),
+        text: "Also do X",
+        createdAt: at(2),
+      }),
+    ).toBe(true);
+    const stopped = await run(started.model, {
+      type: "thread.children.stop",
+      commandId: CommandId.make("stop-child"),
+      threadId: PARENT,
+      childThreadIds: [CHILD],
+      createdAt: at(2),
+    });
+    expect(threadIn(stopped.model, PARENT).childRequests.open).toEqual([]);
+    expect(stopped.model.threads.some((entry) => entry.id === CHILD)).toBe(false);
   });
 
   it("refuses to create a child with more access than its parent has now", async () => {

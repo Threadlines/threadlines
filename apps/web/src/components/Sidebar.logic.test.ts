@@ -1870,6 +1870,7 @@ describe("families across computers", () => {
     | "remoteOrigin"
     | "remoteChildren"
     | "remoteChildStarts"
+    | "localChildStarts"
   >;
   type Entry = InboxFamilyEntry & { readonly thread: FamilyThread };
   const keyOf = (environmentId: EnvironmentId, id: string) =>
@@ -1882,6 +1883,8 @@ describe("families across computers", () => {
       status?: ThreadStatusPill | null;
       remoteChildren?: FamilyThread["remoteChildren"];
       remoteChildStarts?: FamilyThread["remoteChildStarts"];
+      localChildStarts?: FamilyThread["localChildStarts"];
+      childOf?: string;
     } = {},
   ): Entry => ({
     threadKey: keyOf(environmentId, id),
@@ -1889,8 +1892,8 @@ describe("families across computers", () => {
       id: ThreadId.make(id),
       createdAt: "2026-10-21T09:00:00.000Z",
       environmentId,
-      parentThreadId: null,
-      attachedToParent: false,
+      parentThreadId: options.childOf === undefined ? null : ThreadId.make(options.childOf),
+      attachedToParent: options.childOf !== undefined,
       remoteOrigin:
         options.startedOnMacBy === undefined
           ? null
@@ -1903,6 +1906,7 @@ describe("families across computers", () => {
             },
       ...(options.remoteChildren ? { remoteChildren: options.remoteChildren } : {}),
       ...(options.remoteChildStarts ? { remoteChildStarts: options.remoteChildStarts } : {}),
+      ...(options.localChildStarts ? { localChildStarts: options.localChildStarts } : {}),
     },
     status: options.status ?? null,
     isDone: false,
@@ -1938,6 +1942,10 @@ describe("families across computers", () => {
           canSeeComputer: (environmentId) =>
             (options.computersWithThreads ?? [mac, windows]).includes(environmentId),
           computerLabel: (_environmentId, lastKnown) => lastKnown,
+          hasThread: (threadId) =>
+            entries.some(
+              (candidate) => candidate.threadKey === keyOf(parent.thread.environmentId, threadId),
+            ),
         }),
       isFamilyOpen: () => options.open ?? false,
       activeThreadKey: null,
@@ -2097,6 +2105,38 @@ describe("families across computers", () => {
     const quiet = sections([wrappedParent("idle")], { computersWithThreads: [mac] });
     expect(quiet.live).toEqual([]);
     expect(quiet.done).toHaveLength(1);
+  });
+
+  it("shows a child started here while it is set up, then its own thread in its place", () => {
+    const release = entry(mac, "release", {
+      localChildStarts: [
+        {
+          requestId: ChildRequestId.make("request-changelog"),
+          childThreadId: ThreadId.make("changelog"),
+          title: "Write the changelog",
+          createdAt: "2026-10-21T09:01:00.000Z",
+        },
+      ],
+    });
+    // Its worktree is being made: no thread yet, but the family shows it.
+    const settingUp = sections([release], { open: true }).live;
+    expect(
+      settingUp[0]!.shownRemoteChildren.map((child) => [
+        child.title,
+        child.status?.label,
+        child.threadId,
+        remoteChildStatusText(child),
+      ]),
+    ).toEqual([["Write the changelog", "Starting", null, "Setting up"]]);
+    // Its thread arrives with its first turn: the row gives way to it, even
+    // while the parent still lists the start (the two come separately).
+    const changelog = entry(mac, "changelog", { childOf: "release", status: working });
+    const started = sections([release, changelog], { open: true }).live;
+    expect(started.flatMap(inboxLiveRowThreadKeys)).toEqual([
+      release.threadKey,
+      changelog.threadKey,
+    ]);
+    expect(started[0]!.remoteChildren).toEqual([]);
   });
 });
 

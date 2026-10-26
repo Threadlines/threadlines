@@ -4095,7 +4095,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         const branch = line.slice("branch refs/heads/".length);
         const pending = entries.at(-1);
         if (pending && pending.path === currentPath) {
-          entries[entries.length - 1] = { path: pending.path, branch };
+          entries[entries.length - 1] = { ...pending, branch };
+        }
+      } else if ((line === "locked" || line.startsWith("locked ")) && currentPath) {
+        const pending = entries.at(-1);
+        if (pending && pending.path === currentPath) {
+          entries[entries.length - 1] = {
+            ...pending,
+            lockReason: line.slice("locked".length).trim(),
+          };
         }
       } else if (line === "") {
         currentPath = null;
@@ -4983,9 +4991,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ? ["worktree", "add", "--no-track", "-b", input.newRefName, worktreePath, input.refName]
       : ["worktree", "add", "--no-guess", worktreePath, input.refName];
 
-    yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
+    // Untranslated messages: the error matched below, and the `initializing`
+    // lock reason git leaves on an add a crash cut short, which ThreadBootstrap
+    // reads back to know the checkout is unfinished.
+    const addOptions = {
       fallbackErrorMessage: "git worktree add failed",
-    }).pipe(
+      env: { LC_ALL: "C" },
+    };
+    yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, addOptions).pipe(
       Effect.catchIf(
         // A worktree whose folder was deleted out-of-band leaves its
         // registration behind, and git refuses to reuse the path ("missing but
@@ -4997,11 +5010,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           executeGit("GitVcsDriver.createWorktree.prune", input.cwd, ["worktree", "prune"], {
             fallbackErrorMessage: "git worktree prune failed",
           }).pipe(
-            Effect.andThen(
-              executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
-                fallbackErrorMessage: "git worktree add failed",
-              }),
-            ),
+            Effect.andThen(executeGit("GitVcsDriver.createWorktree", input.cwd, args, addOptions)),
           ),
       ),
     );

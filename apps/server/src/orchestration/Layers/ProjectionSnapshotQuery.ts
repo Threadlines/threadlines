@@ -79,6 +79,7 @@ import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
   remoteChildStartsOf,
+  localChildStartsOf,
 } from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import {
@@ -200,6 +201,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
   const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
   const remoteChildren = childRequests.remoteChildren ?? [];
   const remoteChildStarts = remoteChildStartsOf(childRequests);
+  const localChildStarts = localChildStartsOf(childRequests);
   return {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
@@ -214,6 +216,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     ...threadMoveFields(row),
     ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
     ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
+    ...(localChildStarts.length > 0 ? { localChildStarts } : {}),
   };
 };
 

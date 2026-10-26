@@ -225,6 +225,13 @@ export interface GitWorktreeEntry {
   readonly path: string;
   /** Short branch name, or null for a detached or bare checkout. */
   readonly branch: string | null;
+  /**
+   * Why git holds the checkout locked (empty when no reason was given);
+   * absent when it isn't. Git locks a checkout as `initializing` while
+   * `git worktree add` makes it, so one still locked that way is an add that
+   * was cut short.
+   */
+  readonly lockReason?: string;
 }
 
 export interface GitVcsDriverShape {

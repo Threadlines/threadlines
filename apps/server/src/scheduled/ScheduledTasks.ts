@@ -1650,9 +1650,9 @@ const make = Effect.gen(function* () {
           checkpoint: (stage) =>
             Effect.gen(function* () {
               const going = yield* stillLaunching(row, stage);
-              // Past creating it, the thread exists: the run links to it, and
-              // its turn's end finds the run by it.
-              if (going && stage !== "create") {
+              // Its start makes the thread with its first turn: the run links
+              // to it first, so the turn's end always finds the run by it.
+              if (going && stage === "turn") {
                 yield* repo
                   .updateRun({
                     taskId: row.taskId,

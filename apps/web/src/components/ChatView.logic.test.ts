@@ -57,11 +57,52 @@ import {
   resolveThreadBranchToRecord,
   deriveThreadTimelineEntries,
   deriveThreadWorkLogEntries,
+  requestSetupTerminalReveal,
+  settleSetupTerminalReveal,
 } from "./ChatView.logic";
 import { deriveWorkLogEntries } from "../session-logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("setup terminal reveal", () => {
+  const at = (second: number) => `2026-10-25T10:00:${String(second).padStart(2, "0")}.000Z`;
+  const activity = (kind: string, second: number, payload: unknown = {}) => ({
+    kind,
+    createdAt: at(second),
+    payload,
+  });
+
+  it("brings the setup terminal forward once it starts, whichever view asks", () => {
+    requestSetupTerminalReveal("environment-local:thread-1", at(0));
+    // The claim arrives with the thread and its first turn: nothing to show yet.
+    expect(
+      settleSetupTerminalReveal("environment-local:thread-1", [
+        activity("setup-script.requested", 1),
+      ]),
+    ).toBeNull();
+    const started = [
+      activity("setup-script.requested", 1),
+      activity("setup-script.started", 2, { terminalId: "setup-install" }),
+    ];
+    expect(settleSetupTerminalReveal("environment-local:thread-1", started)).toBe("setup-install");
+    // Once only: a later view of the thread leaves the terminals alone.
+    expect(settleSetupTerminalReveal("environment-local:thread-1", started)).toBeNull();
+  });
+
+  it("stops waiting when the setup script doesn't start", () => {
+    requestSetupTerminalReveal("environment-local:thread-2", at(0));
+    expect(
+      settleSetupTerminalReveal("environment-local:thread-2", [activity("setup-script.failed", 1)]),
+    ).toBeNull();
+    expect(
+      settleSetupTerminalReveal("environment-local:thread-2", [
+        activity("setup-script.failed", 1),
+        activity("setup-script.started", 5, { terminalId: "later" }),
+      ]),
+    ).toBeNull();
+  });
+});
 
 describe("isScrollMetricsAtEnd", () => {
   it("treats content shorter than the viewport as already at the end", () => {

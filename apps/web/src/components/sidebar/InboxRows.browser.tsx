@@ -603,6 +603,7 @@ describe("child thread families in the inbox", () => {
     // A start Windows PC hasn't allowed yet: there is no thread there.
     const [waitingStart] = resolveRemoteFamilyChildren({
       parent: {
+        environmentId: EnvironmentId.make("environment-mac"),
         remoteChildStarts: [
           {
             requestId: ChildRequestId.make("request-notes"),
@@ -616,6 +617,24 @@ describe("child thread families in the inbox", () => {
       },
       canSeeComputer: () => false,
       computerLabel: (_environmentId, lastKnown) => lastKnown,
+      hasThread: () => false,
+    });
+    // A child started here whose worktree is still being made: nowhere else to name.
+    const [settingUp] = resolveRemoteFamilyChildren({
+      parent: {
+        environmentId: ENVIRONMENT_ID,
+        localChildStarts: [
+          {
+            requestId: ChildRequestId.make("request-changelog"),
+            childThreadId: ThreadId.make("thread-changelog"),
+            title: "Write the changelog",
+            createdAt: "2026-10-21T09:00:00.000Z",
+          },
+        ],
+      },
+      canSeeComputer: () => true,
+      computerLabel: (_environmentId, lastKnown) => lastKnown,
+      hasThread: () => false,
     });
     render(
       <ThreadHoverCardProvider>
@@ -646,6 +665,7 @@ describe("child thread families in the inbox", () => {
             computerLabel="Windows PC"
           />
           <InboxRemoteChildRow child={waitingStart!} />
+          <InboxRemoteChildRow child={settingUp!} />
         </ul>
       </ThreadHoverCardProvider>,
     );
@@ -659,6 +679,9 @@ describe("child thread families in the inbox", () => {
     await expect
       .element(page.getByTestId("remote-child-meta-start:environment-windows:request-notes"))
       .toMatchTextContent("Waiting for Windows PC to allow it");
+    const settingUpMeta = page.getByTestId("remote-child-meta-setup:request-changelog");
+    await expect.element(settingUpMeta).toMatchTextContent("Setting up");
+    expect(settingUpMeta.element().querySelector("svg")).toBeNull();
   });
 });
 

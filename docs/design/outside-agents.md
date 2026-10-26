@@ -502,21 +502,16 @@ new thread, a `thread.turn.start` with a `bootstrap`, and runs it through
   - `fromOutside` on the turn start;
   - the ids stored on the request row.
 
-**A restart in the middle.** `runTurnStart` is not resumable: only its final
-turn start has a stable command id. If the server restarts after it made the
-thread but before the turn started, the thread is left without its first turn,
-as the app's own first send would be.
+**A restart in the middle.** The thread is made last, with its first turn, in
+one decision (`thread.start`, docs/design/thread-setup-state.md), so a restart
+leaves either no thread or a complete one.
 
 - The `outside_agent_requests` row says `starting` until the call answers.
 - On startup, rows still `starting` become `failed`. A retry with the same
-  `requestId` then answers `failed`, names the half-made thread and says to
-  start again with a new `requestId`. It never re-runs the bootstrap: that would
-  fail on the existing thread, or cut a second worktree.
-- The half-made thread is visible in the app with the agent's label, so the
-  user can see it and delete it.
-- Making `runTurnStart` resume its stages (stable sub-command ids, recovering
-  an existing worktree) would help the app's own first send too. That is a
-  separate follow-up (Honest limits).
+  `requestId` reads the start's receipt: accepted answers `started`; otherwise
+  nothing was made, and the answer says to start again with a new
+  `requestId`. (A thread an older build left half-made is still named, so the
+  user can delete it.)
 
 **Server-only fields.** `outsideOrigin` (on `ThreadBootstrapCreateThread` and
 the thread shell) and `fromOutside` (on `thread.turn.start`) are server-only,
@@ -625,18 +620,10 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
 - **The address carries the port.** Desktop keeps 3773 unless something else
   holds it. Then Settings shows the new address, and the user adds it again.
 - **Check-backs** are outside the running cap.
-- **The setup window of a first send.** `runTurnStart` publishes the thread
-  before it cuts the worktree and starts the first turn. Two things follow,
-  for the app's own first send as much as for an outside agent's:
-  - A restart in that window leaves a thread without its first turn (see
-    Starting).
-  - A message sent to the thread from the app in that window (seconds) is
-    accepted and can start the agent in the project folder before the
-    worktree exists (Sol, final review).
-
-  The fix for both is one follow-up: a durable "setting up" state on the
-  shared first-send path, which the decider enforces, the app shows, and a
-  restart resumes. It's not in this build.
+- **The setup window of a first send** is closed: the thread doesn't exist
+  until its worktree is ready, and is made with its first turn in one decision
+  (docs/design/thread-setup-state.md). Built after this design as its
+  follow-up.
 
 - **MCP sessions live until the server restarts.** Effect's HTTP transport
   keeps every session it opened and can't drop one. The `threadlines` command

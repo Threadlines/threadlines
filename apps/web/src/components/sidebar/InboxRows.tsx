@@ -1560,7 +1560,10 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
             // Under the title: the dot's width plus the gap.
             className="mt-0.5 flex min-w-0 items-center gap-1 ps-3 text-[11px] leading-4 text-muted-foreground/60"
           >
-            <MonitorIcon aria-hidden className="size-3 shrink-0" />
+            {/* Being set up here: no other computer to point at. */}
+            {child.phase === "setting_up" ? null : (
+              <MonitorIcon aria-hidden className="size-3 shrink-0" />
+            )}
             {isStart ? (
               <span className={cn("min-w-0 truncate", tone)}>{statusText}</span>
             ) : (
@@ -1573,9 +1576,11 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
           </span>
         </TooltipTrigger>
         <TooltipPopup side="top">
-          {isStart
-            ? statusText
-            : `Its last known status. Connect to ${child.computerLabel} to open it.`}
+          {child.phase === "setting_up"
+            ? "Its worktree is being made. It opens here once it starts."
+            : isStart
+              ? statusText
+              : `Its last known status. Connect to ${child.computerLabel} to open it.`}
         </TooltipPopup>
       </Tooltip>
     </li>

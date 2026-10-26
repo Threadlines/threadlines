@@ -55,6 +55,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
+import { pendingChildRequest } from "../orchestration/childThreadDecisions.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
 import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
@@ -158,6 +159,9 @@ const GONE = "This thread is gone.";
 const REMOTE_ORIGIN_REFUSAL =
   "This thread was started by an agent on another computer, so it has no thread tools. Do the work here; your final reply goes back to it.";
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
+/** A child its start is still setting up: its thread appears once its worktree is ready. */
+const STILL_SETTING_UP =
+  "That thread is still being set up: its worktree is being made. Try again in a moment.";
 
 /** A turn id no thread has: a caller outside its turn never matches it. */
 const NO_TURN = TurnId.make("no-turn");
@@ -1057,6 +1061,28 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               computer: remoteLabel(thread, child.environmentId),
             }))
           : [];
+      // Threads it started here that are still being set up: no thread yet.
+      const listedIds = new Set<string>(listed.map((shell) => shell.id));
+      const settingUp =
+        (input.scope ?? "mine") === "mine"
+          ? thread.childRequests.open.flatMap((request): ThreadSummary[] =>
+              pendingChildRequest(thread, request.childThreadId) === request &&
+              !listedIds.has(request.childThreadId) &&
+              request.launch !== undefined
+                ? [
+                    {
+                      threadId: request.childThreadId,
+                      title: request.launch.title,
+                      status: "working",
+                      branch: null,
+                      model: modelLabel(request.launch.modelSelection, providers),
+                      attached: request.launch.reportBack,
+                      startedBy: "you",
+                    },
+                  ]
+                : [],
+            )
+          : [];
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
         outcome: "ok",
@@ -1069,6 +1095,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               scheduleAnswerWaiting,
             }),
           ),
+          ...settingUp,
           ...remote,
         ],
       } satisfies ThreadListResult;
@@ -1124,6 +1151,13 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const target =
         targetId.length > 0 ? yield* deps.readThread(ThreadId.make(targetId)) : undefined;
+      if (
+        target === undefined &&
+        targetId.length > 0 &&
+        pendingChildRequest(caller, ThreadId.make(targetId)) !== undefined
+      ) {
+        return { outcome: "ok", detail: STILL_SETTING_UP, ...none } satisfies ThreadReadResult;
+      }
       if (target === undefined || target.projectId !== caller.projectId) {
         return { outcome: "refused", detail: NOT_FOUND, ...none } satisfies ThreadReadResult;
       }
@@ -1204,6 +1238,13 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const remoteChild = remoteChildOf(thread.childRequests, ThreadId.make(input.threadId.trim()));
       if (remoteChild !== undefined) {
         return yield* remoteSend(scope, thread, remoteChild, input.message);
+      }
+      if (pendingChildRequest(thread, ThreadId.make(input.threadId.trim())) !== undefined) {
+        return {
+          outcome: "refused",
+          detail: STILL_SETTING_UP,
+          threadId: input.threadId.trim(),
+        } satisfies ThreadSendResult;
       }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {
@@ -1314,6 +1355,39 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const remoteChild = remoteChildOf(thread.childRequests, ThreadId.make(input.threadId.trim()));
       if (remoteChild !== undefined) {
         return yield* remoteStop(scope, thread, remoteChild);
+      }
+      const pendingId = ThreadId.make(input.threadId.trim());
+      const pending = pendingChildRequest(thread, pendingId);
+      if (pending !== undefined && (yield* deps.readThread(pendingId)) === undefined) {
+        // Not made yet: settling its request stops its setup before the thread exists.
+        const key = [
+          scope.threadId,
+          scope.participantId ?? "primary",
+          thread.session?.activeTurnId ?? NO_TURN,
+          "thread_stop",
+          pendingId,
+          pending.requestId,
+        ].join("\u0000");
+        return yield* deps.requests.join(key, () =>
+          Effect.gen(function* () {
+            const rejected = yield* dispatch({
+              type: "thread.children.stop",
+              commandId: CommandId.make(`server:child-stop:${derivedUuid(key)}`),
+              threadId: scope.threadId,
+              childThreadIds: [pendingId],
+              createdAt: yield* nowIso,
+            });
+            if (rejected !== undefined) {
+              return rejected satisfies ThreadStopResult;
+            }
+            return {
+              outcome: "stopped",
+              detail:
+                "Stopped before it started: it won't be made, and nothing comes back from it.",
+              threadId: pendingId,
+            } satisfies ThreadStopResult;
+          }),
+        );
       }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {

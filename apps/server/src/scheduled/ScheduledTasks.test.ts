@@ -398,7 +398,7 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
             computer.bootstrap.startChild({
               ...input,
               checkpoint: (stage) =>
-                stage === "create"
+                stage === "worktree"
                   ? Effect.interrupt
                   : (input.checkpoint?.(stage) ?? Effect.succeed(true)),
             }),
@@ -1003,15 +1003,19 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     Effect.gen(function* () {
       const computer = yield* makeComputer;
       yield* setClock("2026-10-20T08:00:00.000Z");
-      // The first process dies right after creating the thread.
+      // The first process dies after its workspace is ready, just before the
+      // start that makes the thread.
+      let reachedStart = false;
       const dying = yield* computer.boot({
         bootstrap: {
           startChild: (input) =>
             computer.bootstrap.startChild({
               ...input,
               checkpoint: (stage) =>
-                stage === "worktree"
-                  ? Effect.interrupt
+                stage === "turn"
+                  ? Effect.sync(() => {
+                      reachedStart = true;
+                    }).pipe(Effect.andThen(Effect.interrupt))
                   : (input.checkpoint?.(stage) ?? Effect.succeed(true)),
             }),
         },
@@ -1020,9 +1024,11 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       const run = yield* dying.runNow({ id: task.id });
       const threadId = scheduledRunThreadId(task.id, run.slotUtc);
       yield* eventually(
-        computer.thread(threadId).pipe(Effect.map((thread) => thread !== undefined)),
-        "the thread was created",
+        Effect.sync(() => reachedStart),
+        "the launch got as far as its start",
       );
+      // No half-made thread is left behind.
+      assert.isUndefined(yield* computer.thread(threadId));
       assert.equal((yield* computer.runs(task.id))[0]?.status, "launching");
 
       const restarted = yield* computer.boot();

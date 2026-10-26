@@ -20,6 +20,7 @@ import {
   type RemoteChildStart,
   type RemoteChildThread,
   type RoomAgentRef,
+  type LocalChildStart,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
@@ -291,6 +292,43 @@ export const remoteChildStartsOf = (
             label: request.remote.label,
             title: request.launch.title,
             status: request.remote.status,
+            createdAt: request.createdAt,
+          },
+        ]
+      : [],
+  );
+
+/**
+ * Whether a request is a start on this computer that is still setting its
+ * child up: the child's thread is made only when its start commits, with its
+ * first turn (docs/design/thread-setup-state.md), which moves the request on.
+ */
+export const isSettingUpChildStart = (request: OrchestrationChildRequest): boolean =>
+  request.kind === "start" && request.remote === undefined && request.status === "starting";
+
+/**
+ * The children a parent started here whose start request is still open, past
+ * the user's yes: being set up (no thread yet), or at work for it. The parent's
+ * family stands in for any whose thread isn't in its list, so a child shows
+ * while it is set up, and the hand-over to its own row has no gap whichever of
+ * the parent's update or the child's thread arrives first. A child that is
+ * archived or deleted settles its request, so none is stood in for forever.
+ * The thread shell carries these, and the web store derives them the same way
+ * from a loaded thread.
+ */
+export const localChildStartsOf = (
+  state: OrchestrationChildRequestState,
+): ReadonlyArray<LocalChildStart> =>
+  state.open.flatMap((request): LocalChildStart[] =>
+    request.kind === "start" &&
+    request.remote === undefined &&
+    request.status !== "awaiting_user" &&
+    request.launch !== undefined
+      ? [
+          {
+            requestId: request.requestId,
+            childThreadId: request.childThreadId,
+            title: request.launch.title,
             createdAt: request.createdAt,
           },
         ]
