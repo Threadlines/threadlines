@@ -97,15 +97,32 @@ export const pullRequestQueryKeys = {
         ? (["number", item.number] as const)
         : (["branch", item.branch] as const)),
     ] as const,
-  detail: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "detail", environmentId, projectId, number] as const,
-  activity: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "activity", environmentId, projectId, number] as const,
-  diff: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "diff", environmentId, projectId, number] as const,
-  reviewerCandidates: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
-    ["pull-requests", "reviewer-candidates", environmentId, projectId, number] as const,
+  // One pull request's reads. The repository is part of the key: a project
+  // reads pull requests from more than one, and #42 in one is not #42 in another.
+  detail: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("detail", environmentId, reference),
+  activity: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("activity", environmentId, reference),
+  diff: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("diff", environmentId, reference),
+  reviewerCandidates: (environmentId: EnvironmentId, reference: PullRequestRef) =>
+    pullRequestKey("reviewer-candidates", environmentId, reference),
 };
+
+function pullRequestKey<const Read extends string>(
+  read: Read,
+  environmentId: EnvironmentId,
+  reference: PullRequestRef,
+) {
+  return [
+    "pull-requests",
+    read,
+    environmentId,
+    reference.projectId,
+    reference.repository,
+    reference.number,
+  ] as const;
+}
 
 /** Everything the detail surface reads, addressed the same way on every key. */
 export interface PullRequestReadInput {
@@ -126,11 +143,7 @@ function readPayload(input: PullRequestReadInput) {
 
 export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.detail(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.detail(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.detail({
         ...readPayload(input),
@@ -322,11 +335,7 @@ const IDLE_PULL_REQUEST_REF = {
 
 export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.activity(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.activity(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.activity(readPayload(input)),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
@@ -336,11 +345,7 @@ export function pullRequestActivityQueryOptions(input: PullRequestReadInput) {
 
 export function pullRequestDiffQueryOptions(input: PullRequestReadInput) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.diff(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.diff(input.environmentId, input.reference),
     queryFn: () => ensureEnvironmentApi(input.environmentId).pullRequests.diff(readPayload(input)),
     staleTime: PULL_REQUEST_DIFF_STALE_TIME_MS,
     gcTime: PULL_REQUEST_DIFF_GC_TIME_MS,
@@ -548,11 +553,7 @@ export function pullRequestReviewerCandidatesQueryOptions(input: {
   readonly reference: PullRequestRef;
 }) {
   return queryOptions({
-    queryKey: pullRequestQueryKeys.reviewerCandidates(
-      input.environmentId,
-      input.reference.projectId,
-      input.reference.number,
-    ),
+    queryKey: pullRequestQueryKeys.reviewerCandidates(input.environmentId, input.reference),
     queryFn: () =>
       ensureEnvironmentApi(input.environmentId).pullRequests.reviewerCandidates(input.reference),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,

@@ -525,8 +525,7 @@ function ComposerPullRequestAutoMergeSection({
   });
   const detailQueryKey = pullRequestQueryKeys.detail(
     pullRequest.environmentId,
-    pullRequest.reference.projectId,
-    pullRequest.reference.number,
+    pullRequest.reference,
   );
   const actionOptions = pullRequestActionMutationOptions({
     environmentId: pullRequest.environmentId,
