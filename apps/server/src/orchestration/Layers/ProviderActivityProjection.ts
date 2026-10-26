@@ -1014,6 +1014,11 @@ export function projectRuntimeEventToActivities(
 
     case "hook.completed": {
       const detail = event.payload.output ?? event.payload.stdout ?? event.payload.stderr;
+      // Codex names events in camelCase ("sessionStart"); hook configs and
+      // Claude use "SessionStart".
+      const hook = event.payload.hookEvent
+        ? `${event.payload.hookEvent.charAt(0).toUpperCase()}${event.payload.hookEvent.slice(1)} hook`
+        : "Hook";
       return [
         baseActivity(event, {
           id: event.eventId,
@@ -1021,12 +1026,13 @@ export function projectRuntimeEventToActivities(
           kind: "hook.completed",
           summary:
             event.payload.outcome === "success"
-              ? "Hook completed"
+              ? `${hook} completed`
               : event.payload.outcome === "cancelled"
-                ? "Hook cancelled"
-                : "Hook failed",
+                ? `${hook} cancelled`
+                : `${hook} failed`,
           payload: {
             hookId: event.payload.hookId,
+            ...(event.payload.hookEvent ? { hookEvent: event.payload.hookEvent } : {}),
             outcome: event.payload.outcome,
             status: event.payload.outcome === "success" ? "completed" : "failed",
             ...(detail ? { detail: truncateBlock(detail) } : {}),

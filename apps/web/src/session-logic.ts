@@ -3184,6 +3184,7 @@ export function deriveWorkLogEntries(
     // plugin settings unless an actual tool call or provider turn is blocked.
     .filter((activity) => activity.kind !== "mcp.status.updated")
     .filter((activity) => activity.kind !== "mcp.oauth.completed")
+    .filter((activity) => !isQuietHookActivity(activity))
     .filter((activity) => activity.kind !== "prompt-suggestion.updated")
     .filter((activity) => !isToolHeartbeatActivity(activity))
     .filter(
@@ -3219,6 +3220,17 @@ export function deriveWorkLogEntries(
       ...entry
     }) => entry,
   );
+}
+
+/** A hook that worked is plugin housekeeping (a plugin's note at session
+ *  start, a formatter after each edit), so only one that failed or was
+ *  cancelled gets a row: its completion, which names the hook and says why.
+ *  Its start and output stay quiet even while it runs. */
+function isQuietHookActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind === "hook.started" || activity.kind === "hook.progress") {
+    return true;
+  }
+  return activity.kind === "hook.completed" && asRecord(activity.payload)?.outcome === "success";
 }
 
 /** A provider's connection retries matter only while they last: once the
