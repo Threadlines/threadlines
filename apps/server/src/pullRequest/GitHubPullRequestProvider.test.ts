@@ -3,6 +3,7 @@ import { assert, afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
@@ -186,6 +187,85 @@ describe("GitHubPullRequestProvider.runAction", () => {
       assert.deepStrictEqual(prCalls(), [
         ["pr", "merge", "12", "--repo", "octocat/example-app", "--auto", "--squash"],
       ]);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("GitHubPullRequestProvider.getChangeRequest", () => {
+  it.effect("reuses the comparison with the base while the head and the clock allow", () =>
+    Effect.gen(function* () {
+      let head = "aaa111";
+      let armed = false;
+      mockExecute.mockImplementation((input) =>
+        Effect.succeed(
+          processOutput(
+            input.args[0] === "api"
+              ? JSON.stringify({
+                  data: {
+                    repository: {
+                      pullRequest: {
+                        baseRef: { compare: { behindBy: 2 } },
+                        isMergeQueueEnabled: false,
+                      },
+                    },
+                  },
+                })
+              : JSON.stringify({
+                  number: 12,
+                  title: "Add the pull request detail panel",
+                  url: "https://github.com/octocat/example-app/pull/12",
+                  author: { login: "octocat", is_bot: false },
+                  headRefName: "feature/pull-request-detail",
+                  headRefOid: head,
+                  baseRefName: "main",
+                  state: "OPEN",
+                  mergedAt: null,
+                  closedAt: null,
+                  isDraft: false,
+                  additions: 40,
+                  deletions: 4,
+                  changedFiles: 3,
+                  createdAt: "2026-08-30T10:00:00Z",
+                  updatedAt: "2026-08-31T10:00:00Z",
+                  body: "",
+                  mergeable: "MERGEABLE",
+                  reviewDecision: "",
+                  reviewRequests: [],
+                  reviews: [],
+                  labels: [],
+                  statusCheckRollup: [],
+                  autoMergeRequest: armed ? { enabledAt: "2026-08-31T10:00:00Z" } : null,
+                }),
+          ),
+        ),
+      );
+      const provider = yield* GitHubPullRequestProvider.make();
+      const comparisons = () => calls().filter((call) => call.args[0] === "api").length;
+      const read = (fresh?: boolean) =>
+        provider.getChangeRequest({
+          ...repository,
+          number: 12,
+          ...(fresh === undefined ? {} : { fresh }),
+        });
+
+      assert.strictEqual((yield* read()).behindBy, 2);
+      yield* read();
+      assert.strictEqual(comparisons(), 1);
+      // The Refresh control reads every part again.
+      yield* read(true);
+      assert.strictEqual(comparisons(), 2);
+      // So does a new head commit, and the hold running out.
+      head = "bbb222";
+      yield* read();
+      assert.strictEqual(comparisons(), 3);
+      yield* TestClock.adjust("121 seconds");
+      yield* read();
+      assert.strictEqual(comparisons(), 4);
+      // A pull request armed to merge may join a queue at any moment.
+      armed = true;
+      yield* read();
+      yield* read();
+      assert.strictEqual(comparisons(), 6);
     }).pipe(Effect.provide(layer)),
   );
 });

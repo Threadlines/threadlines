@@ -1,4 +1,5 @@
 import type * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
@@ -36,6 +37,7 @@ import {
   decodeGitHubRepositoryJson,
   GITHUB_PULL_REQUEST_ACTIVITY_FIELDS,
   GITHUB_PULL_REQUEST_DETAIL_FIELDS,
+  type GitHubPullRequestDetailRow,
 } from "./gitHubPullRequestDetail.ts";
 import {
   ADD_REACTION_GRAPHQL_MUTATION,
@@ -89,6 +91,9 @@ const PROVIDER_KIND = "github" as const;
 const DIFF_TIMEOUT_MS = 60_000;
 /** A merge waits on the host settling its checks and its queue. */
 const MERGE_TIMEOUT_MS = 60_000;
+/** How long a detail read reuses the comparison with the base; see `readBaseState`. */
+const BASE_STATE_HOLD_MS = 120_000;
+const HELD_BASE_STATES_MAX = 200;
 
 /** Everything GitHub lets a reader do here. The repository narrows `mergeMethods`. */
 export const GITHUB_PULL_REQUEST_CAPABILITIES: PullRequestCapabilities = {
@@ -418,6 +423,79 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
    * kind is split until the number behind it stands alone, which is then
    * answered as none; the branches never cause it and go on their own.
    */
+  /**
+   * The base comparison a detail read reuses, by repository and number. Polling
+   * an open pull request on screen reads its detail every half minute, and the
+   * comparison with the base (how far behind, the merge queue) is a second
+   * call that rarely moves: it is kept up to {@link BASE_STATE_HOLD_MS} while
+   * the head commit and the pull request's own last update stay the same.
+   * Never while it is queued or armed to merge, when the queue moves it, and
+   * never for a read asked to be fresh (the Refresh control).
+   */
+  const heldBaseStates = new Map<
+    string,
+    {
+      readonly head: string;
+      readonly state: GitHubDetailBaseState;
+      readonly readAtMs: number;
+    }
+  >();
+
+  const readBaseState = (
+    input: ProviderRepositoryRef & { readonly number: number; readonly fresh?: boolean },
+    row: GitHubPullRequestDetailRow,
+  ): Effect.Effect<GitHubDetailBaseState> =>
+    Effect.gen(function* () {
+      const key = `${input.repository.toLowerCase()}#${input.number}`;
+      const head = `${row.headSha ?? ""}@${row.updatedAt}`;
+      const nowMs = yield* Clock.currentTimeMillis;
+      const held = heldBaseStates.get(key);
+      const holdable =
+        input.fresh !== true &&
+        row.state === "open" &&
+        row.autoMergeEnabled !== true &&
+        row.headSha !== undefined;
+      if (
+        holdable &&
+        held !== undefined &&
+        held.head === head &&
+        held.state.mergeQueue?.position == null &&
+        nowMs - held.readAtMs < BASE_STATE_HOLD_MS
+      ) {
+        return held.state;
+      }
+      const state = yield* graphqlRead({
+        operation: "detail",
+        cwd: input.cwd,
+        query: DETAIL_BASE_STATE_GRAPHQL_QUERY,
+        variables: {
+          ...graphQlVariables(input),
+          headRef:
+            row.headRepositoryOwnerLogin === null
+              ? row.headBranch
+              : `${row.headRepositoryOwnerLogin}:${row.headBranch}`,
+        },
+        decode: decodeGitHubDetailBaseStateJson,
+      }).pipe(
+        Effect.map((state) => ({ state, answered: true })),
+        // A read the host will not answer leaves the branch's freshness
+        // unknown and says nothing about a queue; it is not worth failing a
+        // detail the reader can use.
+        Effect.catch(() =>
+          Effect.succeed({ state: { behindBy: null } as GitHubDetailBaseState, answered: false }),
+        ),
+      );
+      heldBaseStates.delete(key);
+      if (state.answered) {
+        heldBaseStates.set(key, { head, state: state.state, readAtMs: nowMs });
+        if (heldBaseStates.size > HELD_BASE_STATES_MAX) {
+          const oldest = heldBaseStates.keys().next().value;
+          if (oldest !== undefined) heldBaseStates.delete(oldest);
+        }
+      }
+      return state.state;
+    });
+
   const lookupChangeRequests = (
     input: ProviderRepositoryRef & {
       readonly numbers: ReadonlyArray<number>;
@@ -644,23 +722,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
           ),
         ),
         Effect.flatMap((row) =>
-          graphqlRead({
-            operation: "detail",
-            cwd: input.cwd,
-            query: DETAIL_BASE_STATE_GRAPHQL_QUERY,
-            variables: {
-              ...graphQlVariables(input),
-              headRef:
-                row.headRepositoryOwnerLogin === null
-                  ? row.headBranch
-                  : `${row.headRepositoryOwnerLogin}:${row.headBranch}`,
-            },
-            decode: decodeGitHubDetailBaseStateJson,
-          }).pipe(
-            // A read the host will not answer leaves the branch's freshness
-            // unknown and says nothing about a queue; it is not worth failing a
-            // detail the reader can use.
-            Effect.catch(() => Effect.succeed<GitHubDetailBaseState>({ behindBy: null })),
+          readBaseState(input, row).pipe(
             Effect.map((base) => ({
               ...row,
               baseComparison: toBaseComparison(base.behindBy),

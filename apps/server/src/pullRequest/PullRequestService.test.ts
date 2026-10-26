@@ -866,6 +866,26 @@ describe("PullRequestService pull request reads", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("compares the branch with its base again on a forced read, not on a poll", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      hostAnswers({ detail: () => detailJson({ headRefOid: "9e0b7a1" }) });
+      const service = yield* PullRequestService.PullRequestService;
+      const comparisons = () =>
+        mockExecute.mock.calls.filter(
+          ([input]) => input.args[1] === "graphql" && (input.stdin ?? "").includes("compare("),
+        ).length;
+
+      yield* service.detail(reference);
+      // Past the detail's own cache: the next poll goes to the host.
+      yield* TestClock.adjust("16 seconds");
+      yield* service.detail(reference);
+      assert.equal(comparisons(), 1);
+      yield* service.detail({ ...reference, force: true });
+      assert.equal(comparisons(), 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("reports what the viewer may do and how the repository allows a merge", () =>
     Effect.gen(function* () {
       onlyGitHubProject();

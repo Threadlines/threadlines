@@ -1032,15 +1032,32 @@ export const make = Effect.fn("makePullRequestService")(function* () {
     lookup: (key: string) => loadList(parseListCacheKey(key)),
   });
 
+  /**
+   * Detail reads owed a fresh read of every part (`fresh` on the provider),
+   * marked by a forced read and taken by the read that answers it.
+   */
+  const freshDetailKeys = yield* Ref.make<ReadonlySet<string>>(new Set());
+
   const loadDetail = Effect.fn("PullRequestService.loadDetail")(function* (
     key: PullRequestCacheKey,
   ) {
     const target = yield* requireTarget("detail", key.projectId, key.repository);
     const viewer = yield* readViewer(target.project);
     const repository = yield* readRepositoryAccess(target);
+    const fresh = yield* Ref.modify(freshDetailKeys, (keys): [boolean, ReadonlySet<string>] => {
+      const cacheKey = pullRequestCacheKey(key);
+      if (!keys.has(cacheKey)) return [false, keys];
+      const rest = new Set(keys);
+      rest.delete(cacheKey);
+      return [true, rest];
+    });
     const { result: row, observedAt } = yield* observations
       .observe(
-        target.provider.getChangeRequest({ ...repositoryRef(target), number: key.number }),
+        target.provider.getChangeRequest({
+          ...repositoryRef(target),
+          number: key.number,
+          ...(fresh ? { fresh: true } : {}),
+        }),
         (detail) => [detailRead(target.project.provider, target.repository, detail)],
       )
       .pipe(Effect.mapError(asServiceError("detail")));
@@ -1367,6 +1384,18 @@ export const make = Effect.fn("makePullRequestService")(function* () {
             projectId: target.project.projectId,
             repository: target.repository,
           }),
+        ).pipe(
+          Effect.andThen(
+            Ref.update(freshDetailKeys, (keys) =>
+              new Set(keys).add(
+                pullRequestCacheKey({
+                  projectId: target.project.projectId,
+                  repository: target.repository,
+                  number: input.number,
+                }),
+              ),
+            ),
+          ),
         ),
     });
 
