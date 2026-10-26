@@ -1688,19 +1688,15 @@ function SourceControlBranchMenu({
           applyCheckoutSwitch(nextBranch, selectionTarget.nextWorktreePath);
           return nextBranch;
         });
-      void toastManager.promise(promise, {
-        loading: { title: `Switching to ${ref.name}...` },
-        success: (branch) => ({
-          title: "Branch switched",
-          description: branch,
-        }),
-        error: (error) =>
+      // The branch picker shows the switch; only a failure needs a notice.
+      void promise.then(refreshPanel, (error: unknown) => {
+        toastManager.add(
           failureNotice({
             title: "Couldn't switch branch",
             reason: toGitActionErrorMessage(error),
           }),
+        );
       });
-      void promise.then(refreshPanel, () => undefined);
     },
     [applyCheckoutSwitch, checkoutMutation, refreshPanel, target.projectCwd, target.worktreePath],
   );
@@ -1770,19 +1766,15 @@ function SourceControlBranchMenu({
     });
     setCreateBranchOpen(false);
     setCreateBranchName("");
-    void toastManager.promise(promise, {
-      loading: { title: `Creating ${refName}...` },
-      success: (branch) => ({
-        title: "Branch created",
-        description: branch,
-      }),
-      error: (error) =>
+    // The branch picker shows the new branch; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
         failureNotice({
           title: "Couldn't create the branch",
           reason: toGitActionErrorMessage(error),
         }),
+      );
     });
-    void promise.then(refreshPanel, () => undefined);
   }, [
     createBranchMutation,
     createBranchName,
@@ -3368,22 +3360,17 @@ export function SourceControlPanel({
       scope: discardRequest.scope,
     });
     setPendingDiscardChanges(null);
-    void toastManager.promise(promise, {
-      loading: { title: "Discarding changes...", data: threadToastData },
-      success: () => ({
-        title: "Changes discarded",
-        description:
-          discardRequest.count === 1 ? discardRequest.label : `${discardRequest.count} files`,
-        data: threadToastData,
-      }),
-      error: (error) =>
+    // The files leave the list; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
         failureNotice({
           title: "Couldn't discard the changes",
           reason: toGitActionErrorMessage(error),
           ...(threadToastData ? { data: threadToastData } : {}),
         }),
+      );
+      refreshPanel();
     });
-    void promise.then(refreshPanel, () => refreshPanel());
   }, [
     clearCommitMessageDraft,
     discardChangesMutation,
@@ -3567,21 +3554,17 @@ export function SourceControlPanel({
     });
     setPendingCreateTagCommit(null);
     setCreateTagName("");
-    void toastManager.promise(promise, {
-      loading: { title: `Creating tag ${tagName}...`, data: threadToastData },
-      success: (result) => ({
-        title: "Tag created",
-        description: `${result.tagName} at ${commit.shortSha}`,
-        data: threadToastData,
-      }),
-      error: (error) =>
+    // The tag shows on its commit in the graph; only a failure needs a notice.
+    void promise.then(refreshPanel, (error: unknown) => {
+      toastManager.add(
         failureNotice({
           title: "Couldn't create the tag",
           reason: toGitActionErrorMessage(error),
           ...(threadToastData ? { data: threadToastData } : {}),
         }),
+      );
+      refreshPanel();
     });
-    void promise.then(refreshPanel, () => refreshPanel());
   }, [
     createTagMutation,
     createTagName,

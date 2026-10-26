@@ -26,6 +26,7 @@ import {
 } from "../ui/empty";
 import { Switch } from "../ui/switch";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import {
   describeNextRun,
   describeTaskSchedule,
@@ -57,7 +58,10 @@ export async function setTaskActive(
 ): Promise<void> {
   const connection = readEnvironmentConnection(environment.environmentId);
   if (!connection) {
-    toastManager.add({ type: "error", title: `${environment.label} isn't connected` });
+    addComputerNotConnectedNotice({
+      environmentId: environment.environmentId,
+      fallbackLabel: environment.label,
+    });
     return;
   }
   try {

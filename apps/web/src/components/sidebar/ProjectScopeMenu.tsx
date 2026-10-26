@@ -61,6 +61,7 @@ import {
 } from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import { copyWithNotice } from "../ui/copyWithNotice";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InboxViewMenu, type EnvironmentScopeOption } from "./InboxViewMenu";
@@ -478,12 +479,10 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
     const api = readEnvironmentApi(projectRenameTarget.environmentId);
     if (!api) {
-      toastManager.add(
-        failureNotice({
-          title: "Couldn't rename the project",
-          reason: "That computer isn't connected.",
-        }),
-      );
+      addComputerNotConnectedNotice({
+        environmentId: projectRenameTarget.environmentId,
+        failure: "Couldn't rename the project",
+      });
       return;
     }
 

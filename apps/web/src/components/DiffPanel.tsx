@@ -983,18 +983,13 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
       filePaths: [request.filePath],
       scope: "unstaged",
     });
-    void toastManager.promise(promise, {
-      loading: { title: "Discarding changes..." },
-      success: () => ({ title: "Changes discarded", description: request.filePath }),
-      error: (error: unknown) =>
-        failureNotice({
-          title: "Couldn't discard the changes",
-          error,
-        }),
-    });
+    // The file leaves the diff; only a failure needs a notice.
     void promise.then(
       () => refreshDiffGitStatus(),
-      () => refreshDiffGitStatus(),
+      (error: unknown) => {
+        toastManager.add(failureNotice({ title: "Couldn't discard the changes", error }));
+        refreshDiffGitStatus();
+      },
     );
   }, [discardChangesMutation, pendingDiscardDiffFile, refreshDiffGitStatus]);
 

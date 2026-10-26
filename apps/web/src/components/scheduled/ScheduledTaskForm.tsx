@@ -53,6 +53,7 @@ import { Textarea } from "../ui/textarea";
 import { TimePicker } from "../ui/time-picker";
 import { TimeZonePicker } from "../ui/time-zone-picker";
 import { failureNotice, toastManager } from "../ui/toast";
+import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import {
   CADENCE_KIND_LABELS,
   type CadenceKind,
@@ -342,7 +343,10 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     const environment = environments.find((entry) => entry.environmentId === form.environmentId);
     const connection = readEnvironmentConnection(form.environmentId);
     if (!connection || !environment) {
-      toastManager.add({ type: "error", title: "That computer isn't connected" });
+      addComputerNotConnectedNotice({
+        environmentId: form.environmentId,
+        ...(environment ? { fallbackLabel: environment.label } : {}),
+      });
       return;
     }
     setSaving(true);

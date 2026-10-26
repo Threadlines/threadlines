@@ -194,6 +194,7 @@ import {
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
+import { addComputerNotConnectedNotice } from "./computerConnectionNotices";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useComposerHandleContext } from "../composerHandleContext";
 
@@ -2270,12 +2271,10 @@ export function OpenCommandPaletteDialog() {
 
     const api = readEnvironmentApi(addProjectCloneFlow.environmentId);
     if (!api) {
-      toastManager.add(
-        failureNotice({
-          title: "Couldn't clone the project",
-          reason: "That computer isn't connected.",
-        }),
-      );
+      addComputerNotConnectedNotice({
+        environmentId: addProjectCloneFlow.environmentId,
+        failure: "Couldn't clone the project",
+      });
       return;
     }
 

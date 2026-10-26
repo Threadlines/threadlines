@@ -1,5 +1,6 @@
 import {
   ORCHESTRATION_WS_METHODS,
+  OrchestrationDispatchCommandError,
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -10,10 +11,17 @@ import {
   WS_METHODS,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
+import * as Effect from "effect/Effect";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import {
+  composerContentsKey,
+  recordFailedSend,
+  retryFailedSend,
+  type FailedSend,
+} from "./chat/sendRetry";
 import { applySettingsUpdated } from "../rpc/serverState";
 import { useRoomRecipientStore } from "../rooms";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -629,6 +637,132 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       expect(document.body.textContent).toContain("The last sign-in did not complete.");
       expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
         "Explain this repo",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  /** A first send the server refuses, with the message back in the composer. */
+  async function mountRefusedFirstSend(refusedTurnStarts = 1) {
+    setDraftThreadWithoutWorktree();
+    let turnStartsAnswered = 0;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.turn.start"
+        ) {
+          return undefined;
+        }
+        turnStartsAnswered += 1;
+        return turnStartsAnswered <= refusedTurnStarts
+          ? Effect.fail(new OrchestrationDispatchCommandError({ message: "Not allowed." }))
+          : { sequence: fixture.snapshot.snapshotSequence + 1 };
+      },
+    });
+    const turnStarts = () =>
+      wsRequests.flatMap((request) =>
+        request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+        request.type === "thread.turn.start"
+          ? [request as unknown as Record<string, unknown>]
+          : [],
+      );
+
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo");
+    await waitForLayout();
+    (await waitForSendButton()).click();
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Couldn't send the message"),
+    );
+    expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+      "Explain this repo",
+    );
+    return { mounted, turnStarts };
+  }
+
+  /** The failed send a Retry would hold, as the failure path records it. */
+  function failedSendFor(first: Record<string, unknown>): FailedSend {
+    const { _tag: _ignored, ...command } = first;
+    return {
+      failureId: recordFailedSend(THREAD_KEY),
+      threadKey: THREAD_KEY,
+      environmentId: LOCAL_ENVIRONMENT_ID,
+      command: command as unknown as FailedSend["command"],
+      draftTarget: THREAD_REF,
+      contents: composerContentsKey(useComposerDraftStore.getState().getComposerDraft(THREAD_REF)),
+      onAccepted: vi.fn(),
+    };
+  }
+
+  it("offers no Retry for a message the server refused", async () => {
+    const { mounted } = await mountRefusedFirstSend();
+
+    try {
+      // A refusal is an answer: the message waits in the box, to change or send.
+      await waitForLayout();
+      expect(findButtonByText("Retry")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("retries the very command that failed, taking the message out of the box", async () => {
+    const { mounted, turnStarts } = await mountRefusedFirstSend();
+    const prompt = () =>
+      useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt ?? "";
+
+    try {
+      const [first] = turnStarts();
+      const failed = failedSendFor(first!);
+      const retrying = retryFailedSend(failed);
+      // Out of the box while it goes, so Send can't send it a second time.
+      expect(prompt()).toBe("");
+      await expect(retrying).resolves.toEqual({ outcome: "sent" });
+      const [, second] = turnStarts();
+      // Unchanged, id included: the server's receipt knows a repeat.
+      expect(second).toEqual(first);
+      expect(failed.onAccepted).toHaveBeenCalledOnce();
+      // One retry per failure.
+      await expect(retryFailedSend(failed)).resolves.toEqual({ outcome: "skipped" });
+      expect(turnStarts()).toHaveLength(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the message back when the retry fails too", async () => {
+    const { mounted, turnStarts } = await mountRefusedFirstSend(2);
+
+    try {
+      const [first] = turnStarts();
+      const result = await retryFailedSend(failedSendFor(first!));
+      expect(result).toMatchObject({ outcome: "failed", latest: true });
+      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+        "Explain this repo",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("skips a retry once the message was edited, or a newer failure replaced it", async () => {
+    const { mounted, turnStarts } = await mountRefusedFirstSend();
+
+    try {
+      const [first] = turnStarts();
+      const older = failedSendFor(first!);
+      const latest = failedSendFor(first!);
+      await expect(retryFailedSend(older)).resolves.toEqual({ outcome: "skipped" });
+
+      // An edit is the user's own next message: it stays, and nothing is sent.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo, briefly");
+      await expect(retryFailedSend(latest)).resolves.toEqual({ outcome: "skipped" });
+      expect(turnStarts()).toHaveLength(1);
+      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
+        "Explain this repo, briefly",
       );
     } finally {
       await mounted.cleanup();

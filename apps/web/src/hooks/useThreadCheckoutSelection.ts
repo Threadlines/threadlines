@@ -6,6 +6,7 @@ import { newCommandId } from "../lib/utils";
 import { useStore } from "../store";
 import type { ThreadSession } from "../types";
 import { failureNotice, toastManager } from "../components/ui/toast";
+import { addComputerNotConnectedNotice } from "../components/computerConnectionNotices";
 
 interface SelectedThreadCheckout {
   readonly branch: string | null;
@@ -42,12 +43,10 @@ export function useThreadCheckoutSelection(input: {
       }
       const api = readEnvironmentApi(threadRef.environmentId);
       if (!api) {
-        toastManager.add(
-          failureNotice({
-            title: "Couldn't move the thread",
-            reason: "That computer isn't connected. Try again once it reconnects.",
-          }),
-        );
+        addComputerNotConnectedNotice({
+          environmentId: threadRef.environmentId,
+          failure: "Couldn't move the thread",
+        });
         return false;
       }
 
