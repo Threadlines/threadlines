@@ -8,7 +8,7 @@
  */
 import type { ThreadId } from "@threadlines/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import {
   readEnvironmentConnection,
@@ -16,7 +16,7 @@ import {
   subscribeEnvironmentConnections,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { isPageAttended, onPageAttentionChange } from "../lib/pageAttention";
+import { usePageAttended } from "../lib/pageAttention";
 import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { startPushAlerts } from "./pushAlerts";
@@ -46,8 +46,7 @@ function usePresenceReporting() {
       : savedConnectionState === "connected"
         ? "connected"
         : null;
-  const [attended, setAttended] = useState(isPageAttended);
-  useEffect(() => onPageAttentionChange(() => setAttended(isPageAttended())), []);
+  const attended = usePageAttended();
 
   useEffect(() => {
     if (environmentId === null || threadId === null || !attended || connectedSince === null) {

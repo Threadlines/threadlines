@@ -9,6 +9,7 @@ import {
 import { type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { usePageAttended } from "../../lib/pageAttention";
 import { cn } from "../../lib/utils";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import {
@@ -74,29 +75,6 @@ function useMeasuredWidth(ref: RefObject<HTMLElement | null>): number | null {
     return () => observer.disconnect();
   }, [ref]);
   return width;
-}
-
-/** True while the window has focus and the page is visible: the dots only move then. */
-function readWindowActive(): boolean {
-  return typeof document === "undefined"
-    ? true
-    : document.visibilityState === "visible" && document.hasFocus();
-}
-
-function useWindowActive(): boolean {
-  const [active, setActive] = useState(readWindowActive);
-  useEffect(() => {
-    const update = () => setActive(readWindowActive());
-    window.addEventListener("focus", update);
-    window.addEventListener("blur", update);
-    document.addEventListener("visibilitychange", update);
-    return () => {
-      window.removeEventListener("focus", update);
-      window.removeEventListener("blur", update);
-      document.removeEventListener("visibilitychange", update);
-    };
-  }, []);
-  return active;
 }
 
 interface GraphLine {
@@ -341,7 +319,8 @@ export function FleetGraph({
   const stageRef = useRef<HTMLDivElement>(null);
   const width = useMeasuredWidth(stageRef);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const windowActive = useWindowActive();
+  // The dots only move while the user can be looking at them.
+  const windowActive = usePageAttended();
   const scope = `fleet-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const others = useMemo(() => model.others.slice(0, FLEET_GRAPH_MAX_COMPUTERS), [model.others]);
   const centerProviders = useMemo(

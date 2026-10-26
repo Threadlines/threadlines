@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import type { DesktopBridge } from "@threadlines/contracts";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 // The provider reads the active thread from the route so a toast can offer to
@@ -30,12 +31,13 @@ import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
 const APP_OVERLAY_LAYER = 50;
 
 /**
- * Notice clocks run only while the window is in front (shown and focused). A
- * spec's frame has focus only if an earlier spec happened to move it there,
- * so the clock specs put the window in front themselves.
+ * Says whether this page has focus, for the rest of the spec. Notice clocks run
+ * only while the window is in front, and a spec's frame has focus only if an
+ * earlier spec happened to move it there, so the clock specs say it outright.
  */
-function putWindowInFront() {
-  return vi.spyOn(document, "hasFocus").mockReturnValue(true);
+function setPageFocus(focused: boolean) {
+  const spy = vi.spyOn(document, "hasFocus").mockReturnValue(focused);
+  onTestFinished(() => spy.mockRestore());
 }
 
 describe("toast layering", () => {
@@ -168,7 +170,7 @@ describe("notice reasons and clocks", () => {
   });
 
   it("starts a notice's clock only once it gets a slot in the stack", async () => {
-    const windowInFront = putWindowInFront();
+    setPageFocus(true);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const mounted = await render(
       <ToastProvider>
@@ -196,13 +198,45 @@ describe("notice reasons and clocks", () => {
       expect(oldest!.closest("[data-ending-style]")).toBeNull();
     } finally {
       await mounted.unmount();
-      windowInFront.mockRestore();
+    }
+  });
+
+  it("keeps a notice's clock running while focus is in the desktop app's browser panel", async () => {
+    // Focus inside a browser panel (<webview>) reads as the page losing it,
+    // while the app window, which the desktop bridge asks, still has it.
+    setPageFocus(false);
+    window.desktopBridge = {
+      isWindowFocused: () => true,
+      onWindowFocusChange: () => () => {},
+    } as unknown as DesktopBridge;
+    onTestFinished(() => {
+      Reflect.deleteProperty(window, "desktopBridge");
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const mounted = await render(
+      <ToastProvider>
+        <div>conversation</div>
+      </ToastProvider>,
+    );
+    const liveTitles = () =>
+      Array.from(document.querySelectorAll("[data-slot='toast-title']"))
+        .filter((el) => el.closest("[data-ending-style]") === null)
+        .map((el) => el.textContent);
+
+    try {
+      toastManager.add({ type: "success", title: "Link copied" });
+      await vi.waitFor(() => expect(liveTitles()).toEqual(["Link copied"]));
+
+      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.waitFor(() => expect(liveTitles()).toEqual([]));
+    } finally {
+      await mounted.unmount();
     }
   });
 
   it("holds every clock while the pointer is on the stack", async () => {
     // In front, so the hold below is the pointer's and not a stopped clock's.
-    const windowInFront = putWindowInFront();
+    setPageFocus(true);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const mounted = await render(
       <ToastProvider>
@@ -226,7 +260,6 @@ describe("notice reasons and clocks", () => {
       expect(root.hasAttribute("data-ending-style")).toBe(false);
     } finally {
       await mounted.unmount();
-      windowInFront.mockRestore();
     }
   });
 });
