@@ -170,6 +170,13 @@ export interface ServerSettingsShape {
 
   /** Stream of settings change events. */
   readonly streamChanges: Stream.Stream<ServerSettings>;
+
+  /**
+   * `streamChanges`, subscribed now: for a reader that reads the settings and
+   * then follows them, so a change landing in between is in the stream
+   * instead of lost. The subscription lasts as long as the scope.
+   */
+  readonly subscribeChanges: Effect.Effect<Stream.Stream<ServerSettings>, never, Scope.Scope>;
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -191,6 +198,9 @@ export class ServerSettingsService extends Context.Service<
         const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
         // One write at a time, like the live service.
         const writeLock = yield* Semaphore.make(1);
+        const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
+        const publish = (settings: ServerSettings) =>
+          PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
 
         return {
           start: Effect.void,
@@ -201,6 +211,7 @@ export class ServerSettingsService extends Context.Service<
               Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
               Effect.flatMap(normalizeServerSettings),
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              Effect.tap(publish),
               writeLock.withPermits(1),
             ),
           updateSettingsWith: (makePatch) =>
@@ -212,9 +223,15 @@ export class ServerSettingsService extends Context.Service<
               ),
               Effect.flatMap(normalizeServerSettings),
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              Effect.tap(publish),
               writeLock.withPermits(1),
             ),
-          streamChanges: Stream.empty,
+          get streamChanges() {
+            return Stream.fromPubSub(changesPubSub);
+          },
+          subscribeChanges: PubSub.subscribe(changesPubSub).pipe(
+            Effect.map(Stream.fromSubscription),
+          ),
         } satisfies ServerSettingsShape;
       }),
     );
@@ -708,6 +725,21 @@ const makeServerSettings = Effect.gen(function* () {
       return resolveTextGenerationProviders(materialized);
     });
 
+  /** Raw published settings as readers get them: secrets filled in, providers resolved. */
+  const materializeChanges = (changes: Stream.Stream<ServerSettings>) =>
+    changes.pipe(
+      Stream.mapEffect((settings) =>
+        materializeProviderEnvironmentSecrets(settings).pipe(
+          Effect.catch((error: ServerSettingsError) =>
+            Effect.logWarning("failed to materialize provider environment secrets", {
+              detail: error.detail,
+            }).pipe(Effect.as(settings)),
+          ),
+        ),
+      ),
+      Stream.map(resolveTextGenerationProviders),
+    );
+
   const start = Effect.gen(function* () {
     const shouldStart = yield* Ref.modify(startedRef, (started) => [!started, true]);
     if (!shouldStart) {
@@ -740,19 +772,11 @@ const makeServerSettings = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(applyPatchLocked(() => Effect.succeed(patch))),
     updateSettingsWith: (makePatch) => writeSemaphore.withPermits(1)(applyPatchLocked(makePatch)),
     get streamChanges() {
-      return Stream.fromPubSub(changesPubSub).pipe(
-        Stream.mapEffect((settings) =>
-          materializeProviderEnvironmentSecrets(settings).pipe(
-            Effect.catch((error: ServerSettingsError) =>
-              Effect.logWarning("failed to materialize provider environment secrets", {
-                detail: error.detail,
-              }).pipe(Effect.as(settings)),
-            ),
-          ),
-        ),
-        Stream.map(resolveTextGenerationProviders),
-      );
+      return materializeChanges(Stream.fromPubSub(changesPubSub));
     },
+    subscribeChanges: PubSub.subscribe(changesPubSub).pipe(
+      Effect.map((subscription) => materializeChanges(Stream.fromSubscription(subscription))),
+    ),
   } satisfies ServerSettingsShape;
 });
 

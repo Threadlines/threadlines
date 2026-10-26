@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import NodePath from "node:path";
 
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -15,8 +16,9 @@ import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
-  type AuthClientMetadata,
   AuthSessionId,
+  type ExecutionEnvironmentDescriptor,
+  type MessageSentFrom,
   type ClientOrchestrationCommand,
   CommandId,
   type OrchestrationCommand,
@@ -25,6 +27,9 @@ import {
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
+  type ServerConfigStreamEvent,
+  type ServerLifecycleStreamEvent,
+  type ServerSettings,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetRevertPlanError,
   OrchestrationGetSnapshotError,
@@ -71,7 +76,11 @@ import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
-import { messageSentFromClient, withMessageSentFrom } from "./orchestration/messageSentFrom.ts";
+import {
+  messageSentFromClient,
+  withMessageSentFrom,
+  writesUserMessage,
+} from "./orchestration/messageSentFrom.ts";
 import { RealtimeVoiceDevices } from "./orchestration/Services/RealtimeVoiceDevices.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
@@ -181,6 +190,7 @@ import {
 import {
   SessionCredentialService,
   type SessionCredentialChange,
+  type SessionCredentialServiceShape,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { shareRepeatedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
@@ -362,20 +372,64 @@ function toAuthAccessStreamEvent(
   }
 }
 
+/**
+ * Keeps `sentFromRef` on the device a socket signed in as, renamed or not,
+ * for as long as the socket is open: subscribed before it reads the device,
+ * so a rename landing in between still arrives. Never completes; a failure
+ * only stops following.
+ */
+const followDeviceName = (
+  sessions: SessionCredentialServiceShape,
+  sessionId: AuthSessionId,
+  sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const changes = yield* sessions.subscribeChanges;
+      const current = yield* sessions.clientOf(sessionId);
+      if (Option.isSome(current)) {
+        yield* Ref.set(sentFromRef, messageSentFromClient(current.value));
+      }
+      yield* changes.pipe(
+        Stream.runForEach((change) =>
+          change.type === "clientUpserted" && change.clientSession.sessionId === sessionId
+            ? Ref.set(sentFromRef, messageSentFromClient(change.clientSession.client))
+            : Effect.void,
+        ),
+      );
+    }),
+  ).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("ws.device-name.follow-failed", { sessionId, cause }),
+    ),
+    Effect.andThen(Effect.never),
+  );
+
+/** A lifecycle event as replayed now: with the computer's current name. */
+function withCurrentEnvironment(
+  event: ServerLifecycleStreamEvent,
+  environment: ExecutionEnvironmentDescriptor,
+): ServerLifecycleStreamEvent {
+  return event.type === "welcome"
+    ? { ...event, payload: { ...event.payload, environment } }
+    : { ...event, payload: { ...event.payload, environment } };
+}
+
 const makeWsRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
-    /** The device this connection signs in as; its messages are stamped with it. */
-    readonly client: AuthClientMetadata;
   },
   /** This connection, as a terminal viewer (who controls a tab's size and replies). */
   viewerId: string,
+  /** The device this connection signs in as, kept current (followDeviceName). */
+  sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
-      const sentFrom = messageSentFromClient(currentSession.client);
       const realtimeVoiceDevices = yield* Effect.serviceOption(RealtimeVoiceDevices);
       // Access management is owner-only. Everything else stays open to client
       // sessions: a paired device is meant to use projects, turns, terminals.
@@ -446,6 +500,18 @@ const makeWsRpcLayer = (
       const sourceControlRepositories = yield* SourceControlRepositoryService;
       const bootstrapCredentials = yield* BootstrapCredentialService;
       const sessions = yield* SessionCredentialService;
+      // The device as it is named now: a rename applies from its next
+      // message, without reconnecting. Messages read it as they're sent (a
+      // rename that answered is always seen); voice, whose audio comes too
+      // often for that, reads `sentFromRef`, which the socket keeps current.
+      const currentSentFrom = sessions.clientOf(currentSessionId).pipe(
+        Effect.flatMap((client) =>
+          Option.isSome(client)
+            ? Ref.setAndGet(sentFromRef, messageSentFromClient(client.value))
+            : Ref.get(sentFromRef),
+        ),
+        Effect.catch(() => Ref.get(sentFromRef)),
+      );
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const readBackgroundRunOutput = makeBackgroundRunOutputReader(projectionSnapshotQuery);
       const workflowRunRequests = makeWorkflowRunRequests({
@@ -460,6 +526,45 @@ const makeWsRpcLayer = (
           pairingLinks: serverAuth.listPairingLinks().pipe(Effect.orDie),
           clientSessions: serverAuth.listClientSessions(currentSessionId).pipe(Effect.orDie),
         });
+
+      /**
+       * The device list, then its changes. Subscribed before the list is
+       * read, so a change landing in between (a rename, a removal) follows
+       * it instead of being lost.
+       */
+      const authAccessStream = Effect.gen(function* () {
+        const bootstrapChanges = yield* bootstrapCredentials.subscribeChanges;
+        const sessionChanges = yield* sessions.subscribeChanges;
+        const initialSnapshot = yield* loadAuthAccessSnapshot();
+        const revisionRef = yield* Ref.make(1);
+        const accessChanges: Stream.Stream<BootstrapCredentialChange | SessionCredentialChange> =
+          Stream.merge(bootstrapChanges, sessionChanges).pipe(
+            // Same visibility rule as ServerAuth.listClientSessions: internal
+            // machine-to-machine sessions never reach device-list subscribers.
+            Stream.filter(
+              (change) =>
+                change.type !== "clientUpserted" ||
+                change.clientSession.sessionId === currentSessionId ||
+                !isInternalClientSession(change.clientSession),
+            ),
+          );
+        const liveEvents: Stream.Stream<AuthAccessStreamEvent> = accessChanges.pipe(
+          Stream.mapEffect((change) =>
+            Ref.updateAndGet(revisionRef, (revision) => revision + 1).pipe(
+              Effect.map((revision) => toAuthAccessStreamEvent(change, revision, currentSessionId)),
+            ),
+          ),
+        );
+        return Stream.concat(
+          Stream.make({
+            version: 1 as const,
+            revision: 1,
+            type: "snapshot" as const,
+            payload: initialSnapshot,
+          }),
+          liveEvents,
+        );
+      });
 
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
@@ -609,11 +714,19 @@ const makeWsRpcLayer = (
           );
       };
 
-      const loadServerConfig = Effect.gen(function* () {
+      /**
+       * The config as of `rawSettings` (read now when not given). The
+       * descriptor is made from the same settings value, so the computer's
+       * name always matches the settings sent with it.
+       */
+      const loadServerConfigWith = Effect.fn("loadServerConfigWith")(function* (
+        given?: ServerSettings,
+      ) {
+        const rawSettings = given ?? (yield* serverSettings.getSettings);
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
-        const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
-        const environment = yield* serverEnvironment.getDescriptor;
+        const settings = redactServerSettingsForClient(rawSettings);
+        const environment = serverEnvironment.describe(rawSettings.computerName);
         const auth = yield* serverAuth.getDescriptor();
 
         return {
@@ -642,6 +755,72 @@ const makeWsRpcLayer = (
           settings,
         };
       });
+      const loadServerConfig = loadServerConfigWith();
+
+      /** Keybinding and provider changes, as the config stream sends them. */
+      const liveConfigUpdates: Stream.Stream<ServerConfigStreamEvent> = Stream.merge(
+        keybindings.streamChanges.pipe(
+          Stream.map((event) => ({
+            version: 1 as const,
+            type: "keybindingsUpdated" as const,
+            payload: {
+              keybindings: event.keybindings,
+              issues: event.issues,
+            },
+          })),
+        ),
+        providerRegistry.streamChanges.pipe(
+          Stream.map((providers) => ({
+            version: 1 as const,
+            type: "providerStatuses" as const,
+            payload: { providers },
+          })),
+          Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
+        ),
+      );
+
+      /**
+       * Settings changes after a snapshot whose computer was named
+       * `initialName`. A rename goes out as a whole new snapshot: every
+       * client version takes the computer's name from one, while older ones
+       * would only store a `settingsUpdated` and keep the old name.
+       */
+      const configSettingsUpdates = (
+        changes: Stream.Stream<ServerSettings>,
+        initialName: string | null,
+      ): Stream.Stream<ServerConfigStreamEvent> =>
+        changes.pipe(
+          Stream.mapAccumEffect(
+            () => initialName,
+            (
+              previousName,
+              settings,
+            ): Effect.Effect<readonly [string | null, ReadonlyArray<ServerConfigStreamEvent>]> => {
+              const settingsUpdated: ServerConfigStreamEvent = {
+                version: 1,
+                type: "settingsUpdated",
+                payload: { settings: redactServerSettingsForClient(settings) },
+              };
+              if (settings.computerName === previousName) {
+                return Effect.succeed([previousName, [settingsUpdated]]);
+              }
+              return loadServerConfigWith(settings).pipe(
+                Effect.map(
+                  (config) =>
+                    [
+                      settings.computerName,
+                      [{ version: 1, type: "snapshot", config } satisfies ServerConfigStreamEvent],
+                    ] as const,
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("couldn't send the renamed computer's config", {
+                    cause: Cause.pretty(cause),
+                  }).pipe(Effect.as([previousName, [settingsUpdated]] as const)),
+                ),
+              );
+            },
+          ),
+        );
 
       const refreshGitStatus = (cwd: string) =>
         vcsStatusBroadcaster
@@ -747,10 +926,10 @@ const makeWsRpcLayer = (
        */
       const dispatchClientCommand = (command: ClientOrchestrationCommand) =>
         Effect.gen(function* () {
-          const normalizedCommand = withMessageSentFrom(
-            yield* normalizeDispatchCommand(command),
-            sentFrom,
-          );
+          const dispatched = yield* normalizeDispatchCommand(command);
+          const normalizedCommand = writesUserMessage(dispatched)
+            ? withMessageSentFrom(dispatched, yield* currentSentFrom)
+            : dispatched;
           // Where the event log stood before an archive, so the threads
           // that archive took with it (a parent's settled children) can
           // be read back from what it wrote.
@@ -2507,7 +2686,11 @@ const makeWsRpcLayer = (
             WS_METHODS.realtimeAppendAudio,
             // Who is speaking, for the transcript of it (RealtimeVoiceDevices).
             (Option.isSome(realtimeVoiceDevices)
-              ? realtimeVoiceDevices.value.noteSpeaker(input.threadId, sentFrom)
+              ? Ref.get(sentFromRef).pipe(
+                  Effect.flatMap((sentFrom) =>
+                    realtimeVoiceDevices.value.noteSpeaker(input.threadId, sentFrom),
+                  ),
+                )
               : Effect.void
             ).pipe(
               Effect.andThen(providerService.realtimeAppendAudio!(input)),
@@ -2562,48 +2745,27 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeServerConfig]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
-            Effect.gen(function* () {
-              const keybindingsUpdates = keybindings.streamChanges.pipe(
-                Stream.map((event) => ({
-                  version: 1 as const,
-                  type: "keybindingsUpdated" as const,
-                  payload: {
-                    keybindings: event.keybindings,
-                    issues: event.issues,
-                  },
-                })),
-              );
-              const providerStatuses = providerRegistry.streamChanges.pipe(
-                Stream.map((providers) => ({
-                  version: 1 as const,
-                  type: "providerStatuses" as const,
-                  payload: { providers },
-                })),
-                Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
-              );
-              const settingsUpdates = serverSettings.streamChanges.pipe(
-                Stream.map((settings) => redactServerSettingsForClient(settings)),
-                Stream.map((settings) => ({
-                  version: 1 as const,
-                  type: "settingsUpdated" as const,
-                  payload: { settings },
-                })),
-              );
-
-              const liveUpdates = Stream.merge(
-                keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
-              );
-
-              return Stream.concat(
-                Stream.make({
-                  version: 1 as const,
-                  type: "snapshot" as const,
-                  config: yield* loadServerConfig,
+            Effect.succeed(
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  // Subscribed before the snapshot is read, so a change
+                  // landing in between follows it instead of being lost.
+                  const settingsChanges = yield* serverSettings.subscribeChanges;
+                  const snapshot = yield* loadServerConfig;
+                  return Stream.concat(
+                    Stream.make({
+                      version: 1 as const,
+                      type: "snapshot" as const,
+                      config: snapshot,
+                    }),
+                    Stream.merge(
+                      liveConfigUpdates,
+                      configSettingsUpdates(settingsChanges, snapshot.settings.computerName),
+                    ),
+                  );
                 }),
-                liveUpdates,
-              );
-            }),
+              ),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.subscribeServerStalls]: (_input) =>
@@ -2620,10 +2782,18 @@ const makeWsRpcLayer = (
               const snapshotEvents = Array.from(snapshot.events).toSorted(
                 (left, right) => left.sequence - right.sequence,
               );
+              // Replayed events carry the computer as it is now: the one they
+              // were published with predates any rename since.
+              const environment = yield* serverEnvironment.getDescriptor;
               const liveEvents = lifecycleEvents.stream.pipe(
                 Stream.filter((event) => event.sequence > snapshot.sequence),
               );
-              return Stream.concat(Stream.fromIterable(snapshotEvents), liveEvents);
+              return Stream.concat(
+                Stream.fromIterable(
+                  snapshotEvents.map((event) => withCurrentEnvironment(event, environment)),
+                ),
+                liveEvents,
+              );
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2950,43 +3120,9 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
-            Effect.gen(function* () {
-              yield* requireOwner(WS_METHODS.subscribeAuthAccess);
-              const initialSnapshot = yield* loadAuthAccessSnapshot();
-              const revisionRef = yield* Ref.make(1);
-              const accessChanges: Stream.Stream<
-                BootstrapCredentialChange | SessionCredentialChange
-              > = Stream.merge(bootstrapCredentials.streamChanges, sessions.streamChanges).pipe(
-                // Same visibility rule as ServerAuth.listClientSessions: internal
-                // machine-to-machine sessions never reach device-list subscribers.
-                Stream.filter(
-                  (change) =>
-                    change.type !== "clientUpserted" ||
-                    change.clientSession.sessionId === currentSessionId ||
-                    !isInternalClientSession(change.clientSession),
-                ),
-              );
-
-              const liveEvents: Stream.Stream<AuthAccessStreamEvent> = accessChanges.pipe(
-                Stream.mapEffect((change) =>
-                  Ref.updateAndGet(revisionRef, (revision) => revision + 1).pipe(
-                    Effect.map((revision) =>
-                      toAuthAccessStreamEvent(change, revision, currentSessionId),
-                    ),
-                  ),
-                ),
-              );
-
-              return Stream.concat(
-                Stream.make({
-                  version: 1 as const,
-                  revision: 1,
-                  type: "snapshot" as const,
-                  payload: initialSnapshot,
-                }),
-                liveEvents,
-              );
-            }),
+            requireOwner(WS_METHODS.subscribeAuthAccess).pipe(
+              Effect.as(Stream.unwrap(authAccessStream)),
+            ),
             { "rpc.aggregate": "auth" },
           ),
       });
@@ -3010,11 +3146,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
         const viewerId = randomUUIDv4Sync();
+        const sentFromRef = yield* Ref.make(messageSentFromClient(session.client));
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, viewerId).pipe(
+            makeWsRpcLayer(session, viewerId, sentFromRef).pipe(
               Layer.provide(
                 Layer.succeed(
                   SourceControlToolMaintenance.SourceControlToolMaintenance,
@@ -3079,7 +3216,14 @@ export const websocketRpcRouteLayer = Layer.unwrap(
 
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => Effect.raceFirst(rpcWebSocketHttpEffect, closeWhenRevoked),
+          () =>
+            Effect.raceFirst(
+              rpcWebSocketHttpEffect,
+              Effect.raceFirst(
+                closeWhenRevoked,
+                followDeviceName(sessions, session.sessionId, sentFromRef),
+              ),
+            ),
           () =>
             sessions
               .markDisconnected(session.sessionId)

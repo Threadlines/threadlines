@@ -129,9 +129,7 @@ function testLayer(
               updatedAt: "2026-10-22T10:00:00.000Z",
             }),
         }),
-        Layer.mock(ServerEnvironment)({
-          getDescriptor: Effect.succeed({ label: "Test PC" } as never),
-        }),
+        ServerEnvironment.layerTest({ label: "Test PC" }),
       ),
     ),
     Layer.provideMerge(RepositoryIdentityResolverLive),

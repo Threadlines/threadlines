@@ -242,7 +242,8 @@ const make = Effect.gen(function* () {
   }
 
   const descriptor = yield* environment.getDescriptor;
-  const hostLabel = descriptor.label;
+  // Read at each use: the computer can be renamed while it runs.
+  const hostLabel = environment.currentLabel;
 
   // ----- state ---------------------------------------------------------------
 
@@ -308,7 +309,7 @@ const make = Effect.gen(function* () {
     return {
       status,
       ...(statusError ? { error: statusError } : {}),
-      hostLabel,
+      hostLabel: hostLabel(),
       invite,
       requests: [...requests.values()],
       usage,
@@ -373,7 +374,7 @@ const make = Effect.gen(function* () {
       const origin = relayOrigin!;
       const registered = yield* relayApi
         .registerHost(origin, {
-          label: hostLabel,
+          label: hostLabel(),
           environmentId: descriptor.environmentId,
         })
         .pipe(
@@ -518,9 +519,12 @@ const make = Effect.gen(function* () {
       reconnectAttempt = 0;
       lastPongAt = Date.now();
       setStatus("online");
-      sendControl({ type: "lease", hostLabel });
+      sendControl({ type: "lease", hostLabel: hostLabel() });
       controlTimers.push(
-        setInterval(() => sendControl({ type: "lease", hostLabel }), LEASE_INTERVAL_MS),
+        setInterval(
+          () => sendControl({ type: "lease", hostLabel: hostLabel() }),
+          LEASE_INTERVAL_MS,
+        ),
         setInterval(() => {
           if (Date.now() - lastPongAt > PONG_TIMEOUT_MS) {
             // The network went quiet without a close: start over.
@@ -1304,7 +1308,7 @@ const make = Effect.gen(function* () {
       const { claimToken, macKey } = yield* Effect.promise(() => claimSecrets(inviteSecret));
       const claimTokenHash = toBase64Url(yield* Effect.promise(() => sha256(utf8(claimToken))));
       const created = yield* relayApi.createInvite(relayOrigin!, creds.hostId, creds.hostSecret, {
-        hostLabel,
+        hostLabel: hostLabel(),
         claimTokenHash,
       });
       const now = Date.now();
@@ -1457,7 +1461,7 @@ const make = Effect.gen(function* () {
         devicePublicKey: input.devicePublicKey,
         commitment: input.commitment,
         joiner: {
-          label: hostLabel,
+          label: hostLabel(),
           platform: platformName(descriptor.platform.os),
           kind: input.kind,
         },
@@ -1485,6 +1489,18 @@ const make = Effect.gen(function* () {
             }
           }).pipe(Effect.catchCause((cause) => Effect.logWarning("relay.revoke.failed", { cause })))
         : Effect.void,
+    ),
+    Effect.forkScoped,
+  );
+
+  // A rename reaches the Connections page now, and the relay with a lease
+  // now rather than at the next one.
+  yield* environment.labelChanges.pipe(
+    Stream.runForEach(() =>
+      Effect.sync(() => {
+        publish();
+        sendControl({ type: "lease", hostLabel: hostLabel() });
+      }),
     ),
     Effect.forkScoped,
   );

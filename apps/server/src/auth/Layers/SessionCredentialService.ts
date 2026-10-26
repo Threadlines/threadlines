@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
@@ -77,9 +78,11 @@ function toClientMetadata(record: {
   readonly deviceType: AuthClientMetadata["deviceType"];
   readonly os: string | null;
   readonly browser: string | null;
+  readonly name?: string | null;
 }): AuthClientMetadata {
   return {
     ...(record.label ? { label: record.label } : {}),
+    ...(record.name ? { name: record.name } : {}),
     ...(record.ipAddress ? { ipAddress: record.ipAddress } : {}),
     ...(record.userAgent ? { userAgent: record.userAgent } : {}),
     deviceType: record.deviceType,
@@ -105,6 +108,9 @@ export const makeSessionCredentialService = Effect.gen(function* () {
   );
   const connectedSessionsRef = yield* Ref.make(new Map<string, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
+  // A session's announcements in the order its changes landed: a rename or a
+  // connect read before a revoke must not be announced after its removal.
+  const announceLock = yield* Semaphore.make(1);
   const cookieName = resolveSessionCookieName({
     mode: serverConfig.mode,
     port: serverConfig.port,
@@ -131,7 +137,12 @@ export const makeSessionCredentialService = Effect.gen(function* () {
   const loadActiveSession = (sessionId: AuthSessionId) =>
     Effect.gen(function* () {
       const row = yield* authSessions.getById({ sessionId });
-      if (Option.isNone(row) || row.value.revokedAt !== null) {
+      const now = yield* DateTime.now;
+      if (
+        Option.isNone(row) ||
+        row.value.revokedAt !== null ||
+        DateTime.isLessThanOrEqualTo(row.value.expiresAt, now)
+      ) {
         return Option.none<AuthClientSession>();
       }
 
@@ -150,6 +161,15 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         }),
       );
     });
+
+  /** Announces the session as it is now, if it is still live. */
+  const announceSession = (sessionId: AuthSessionId) =>
+    loadActiveSession(sessionId).pipe(
+      Effect.flatMap((session) =>
+        Option.isSome(session) ? emitUpsert(session.value) : Effect.void,
+      ),
+      announceLock.withPermits(1),
+    );
 
   const awaitRevoked: SessionCredentialServiceShape["awaitRevoked"] = (sessionId) =>
     Effect.gen(function* () {
@@ -191,10 +211,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
             )
           : Effect.void,
       ),
-      Effect.flatMap(() => loadActiveSession(sessionId)),
-      Effect.flatMap((session) =>
-        Option.isSome(session) ? emitUpsert(session.value) : Effect.void,
-      ),
+      Effect.flatMap(() => announceSession(sessionId)),
       Effect.catchCause((cause) =>
         Effect.logError("Failed to publish connected-session auth update.").pipe(
           Effect.annotateLogs({
@@ -216,10 +233,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       }
       return next;
     }).pipe(
-      Effect.flatMap(() => loadActiveSession(sessionId)),
-      Effect.flatMap((session) =>
-        Option.isSome(session) ? emitUpsert(session.value) : Effect.void,
-      ),
+      Effect.flatMap(() => announceSession(sessionId)),
       Effect.catchCause((cause) =>
         Effect.logError("Failed to publish disconnected-session auth update.").pipe(
           Effect.annotateLogs({
@@ -506,7 +520,37 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         yield* emitRemoved(sessionId);
       }
       return revoked;
-    }).pipe(Effect.mapError(toSessionCredentialError("Failed to revoke session.")));
+    }).pipe(
+      announceLock.withPermits(1),
+      Effect.mapError(toSessionCredentialError("Failed to revoke session.")),
+    );
+
+  const rename: SessionCredentialServiceShape["rename"] = (sessionId, name) =>
+    Effect.gen(function* () {
+      const named = yield* authSessions.setClientName({
+        sessionId,
+        name,
+        now: yield* DateTime.now,
+      });
+      if (named) {
+        const session = yield* loadActiveSession(sessionId);
+        if (Option.isSome(session)) yield* emitUpsert(session.value);
+      }
+      return named;
+    }).pipe(
+      announceLock.withPermits(1),
+      Effect.mapError(toSessionCredentialError("Failed to rename session.")),
+    );
+
+  const clientOf: SessionCredentialServiceShape["clientOf"] = (sessionId) =>
+    authSessions.getById({ sessionId }).pipe(
+      Effect.map((row) =>
+        Option.isSome(row) && row.value.revokedAt === null
+          ? Option.some(toClientMetadata(row.value.client))
+          : Option.none(),
+      ),
+      Effect.mapError(toSessionCredentialError("Failed to read session.")),
+    );
 
   const extendExpiry: SessionCredentialServiceShape["extendExpiry"] = (sessionId, ttl) =>
     Effect.gen(function* () {
@@ -525,8 +569,11 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
+    subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(Stream.fromSubscription)),
     awaitRevoked,
     revoke,
+    rename,
+    clientOf,
     extendExpiry,
     markConnected,
     markDisconnected,

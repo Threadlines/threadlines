@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -124,6 +125,17 @@ export interface ComputerLinkClientShape {
   /** The last description this server got, however old; null if none. */
   readonly cachedDescribe: (environmentId: EnvironmentId) => PeerDescriptor | null;
   /**
+   * The name that computer told this one it has now (it called after a
+   * rename): kept in the cached description, and a description that was
+   * already on its way when it said so can't put the old name back.
+   */
+  readonly noteRemoteLabel: (environmentId: EnvironmentId, label: string) => void;
+  /** Each time a description changed the name this computer had for that one. */
+  readonly remoteLabelChanges: Stream.Stream<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+  }>;
+  /**
    * peer.describe over that very link, not whichever link to its computer is
    * in use: how to ask whether the other computer still takes one link.
    * Fails `revoked` when it is refused (or already marked so here).
@@ -179,7 +191,19 @@ const make = Effect.gen(function* () {
 
   const connections = new Map<string, Connection>();
   const opening = new Map<string, Promise<Connection>>();
-  const describeCache = new Map<string, { readonly at: number; readonly value: PeerDescriptor }>();
+  /** Each computer's last description; `askedAt` orders it against the others and labelNotes. */
+  const describeCache = new Map<
+    string,
+    { readonly at: number; readonly askedAt: number; readonly value: PeerDescriptor }
+  >();
+  /** The last name each computer said it has when it called. */
+  const labelNotes = new Map<string, { readonly at: number; readonly label: string }>();
+  /** Orders descriptions asked for and names heard, so the newest name wins. */
+  let labelClock = 0;
+  const remoteLabelPubSub = yield* PubSub.unbounded<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+  }>();
   const statusRef = yield* SubscriptionRef.make<ReadonlyMap<string, ComputerLinkLiveStatus>>(
     new Map(),
   );
@@ -531,12 +555,22 @@ const make = Effect.gen(function* () {
         return cached.value;
       }
       const row = yield* linkFor(environmentId);
-      const value = yield* withPeer(environmentId, (client) =>
+      labelClock += 1;
+      const askedAt = labelClock;
+      const answered = yield* withPeer(environmentId, (client) =>
         client["peer.describe"]({
-          caller: { environmentId: descriptor.environmentId, label: descriptor.label },
+          caller: { environmentId: descriptor.environmentId, label: environment.currentLabel() },
         }),
       );
-      describeCache.set(environmentId, { at: Date.now(), value });
+      // A description asked for later already landed: this one may be older.
+      const newer = describeCache.get(environmentId);
+      if (newer !== undefined && newer.askedAt > askedAt) return newer.value;
+      // It said its new name while this answer was on its way: the answer
+      // may predate the rename, so the name it said wins.
+      const noted = labelNotes.get(environmentId);
+      const value =
+        noted !== undefined && noted.at > askedAt ? { ...answered, label: noted.label } : answered;
+      describeCache.set(environmentId, { at: Date.now(), askedAt, value });
       // What the other computer says about itself is kept for next time.
       yield* repo
         .update({
@@ -546,11 +580,23 @@ const make = Effect.gen(function* () {
           ...(value.directRoutes.length > 0 ? { directRoutes: value.directRoutes } : {}),
         })
         .pipe(Effect.ignore);
+      if (value.label !== row.remoteLabel) {
+        yield* PubSub.publish(remoteLabelPubSub, { environmentId, label: value.label });
+      }
       return value;
     });
 
   const cachedDescribe: ComputerLinkClientShape["cachedDescribe"] = (environmentId) =>
     describeCache.get(environmentId)?.value ?? null;
+
+  const noteRemoteLabel: ComputerLinkClientShape["noteRemoteLabel"] = (environmentId, label) => {
+    labelClock += 1;
+    labelNotes.set(environmentId, { at: labelClock, label });
+    const cached = describeCache.get(environmentId);
+    if (cached !== undefined && cached.value.label !== label) {
+      describeCache.set(environmentId, { ...cached, value: { ...cached.value, label } });
+    }
+  };
 
   const describeOver: ComputerLinkClientShape["describeOver"] = (linkId) =>
     Effect.gen(function* () {
@@ -574,7 +620,7 @@ const make = Effect.gen(function* () {
         connection,
         (peer) =>
           peer["peer.describe"]({
-            caller: { environmentId: descriptor.environmentId, label: descriptor.label },
+            caller: { environmentId: descriptor.environmentId, label: environment.currentLabel() },
           }),
         REQUEST_TIMEOUT_MS,
       );
@@ -667,6 +713,8 @@ const make = Effect.gen(function* () {
     peerStream,
     describe,
     cachedDescribe,
+    noteRemoteLabel,
+    remoteLabelChanges: Stream.fromPubSub(remoteLabelPubSub),
     describeOver,
     statuses: SubscriptionRef.changes(statusRef),
     currentStatuses: SubscriptionRef.get(statusRef),

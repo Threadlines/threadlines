@@ -233,6 +233,7 @@ describe("linkedDeviceInputs", () => {
   function session(sessionId: string, overrides: Partial<LinkedDeviceSession> = {}) {
     return {
       sessionId,
+      issuedAt: "2026-10-20T10:00:00.000Z",
       subject: "relay-device",
       current: false,
       connected: true,
@@ -242,11 +243,11 @@ describe("linkedDeviceInputs", () => {
     } satisfies LinkedDeviceSession;
   }
 
-  it("draws each phone and tablet session, even two with the same name", () => {
+  it("draws each phone and tablet session, two with the same name told apart", () => {
     const devices = linkedDeviceInputs(
       [
         session("first-iphone"),
-        session("second-iphone"),
+        session("second-iphone", { issuedAt: "2026-10-22T10:00:00.000Z" }),
         // This window, and a desktop browser, are not linked devices.
         session("this-window", { current: true }),
         session("laptop", { client: { deviceType: "desktop" } }),
@@ -258,20 +259,15 @@ describe("linkedDeviceInputs", () => {
       ],
       "relay-device",
     );
-    expect(devices.map((device) => [device.id, device.label, device.route])).toEqual([
-      ["device:first-iphone", "iOS · Safari", "relay"],
-      ["device:second-iphone", "iOS · Safari", "relay"],
-      ["device:ipad", "Studio iPad", "network"],
+    expect(devices.map((device) => [device.id, device.route])).toEqual([
+      ["device:first-iphone", "relay"],
+      ["device:second-iphone", "relay"],
+      ["device:ipad", "network"],
     ]);
-    const model = buildFleetModel({
-      center: computer({ id: MACBOOK, label: "MacBook Pro", kind: "this", route: null }),
-      others: devices,
-      threads: [],
-    });
-    expect(model.others.map((other) => other.label)).toEqual([
-      "iOS · Safari",
-      "iOS · Safari",
-      "Studio iPad",
-    ]);
+    const [first, second, ipad] = devices.map((device) => device.label);
+    expect(first).toMatch(/^iOS · Safari \(paired .+\)$/);
+    expect(second).toMatch(/^iOS · Safari \(paired .+\)$/);
+    expect(first).not.toBe(second);
+    expect(ipad).toBe("Studio iPad");
   });
 });

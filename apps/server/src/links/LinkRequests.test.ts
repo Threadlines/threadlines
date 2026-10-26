@@ -280,14 +280,9 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
                     stderrTruncated: false,
                   }),
               }),
-              Layer.mock(ServerEnvironment)({
-                getDescriptor: Effect.succeed({
-                  environmentId: EnvironmentId.make("env-mac-mini"),
-                  label: "Mac mini",
-                  platform: { os: "darwin", arch: "arm64" },
-                  serverVersion: "0.0.0",
-                  capabilities: { repositoryIdentity: true },
-                }),
+              ServerEnvironment.layerTest({
+                environmentId: EnvironmentId.make("env-mac-mini"),
+                label: "Mac mini",
               }),
               ServerSettingsService.layerTest(),
             ),

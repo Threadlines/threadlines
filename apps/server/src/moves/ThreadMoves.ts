@@ -515,7 +515,7 @@ const make = Effect.gen(function* () {
         subdirectory: place.subdirectory,
         source: {
           environmentId: descriptor.environmentId,
-          environmentLabel: descriptor.label,
+          environmentLabel: environment.currentLabel(),
           threadId: thread.id,
         },
         agent,

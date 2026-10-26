@@ -6,7 +6,15 @@ import {
   SmartphoneIcon,
   TabletIcon,
 } from "lucide-react";
-import { type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePageAttended } from "../../lib/pageAttention";
@@ -32,6 +40,8 @@ import {
   FLEET_GRAPH_MAX_MOVING_LINES,
   FLEET_GRAPH_MAX_PROVIDERS,
   FLEET_PROVIDER_NODE_RADIUS,
+  fitLabelShift,
+  fleetLabelMaxWidth,
   layoutFleetGraph,
   type Point,
   travelingDotDelaySeconds,
@@ -156,11 +166,13 @@ function FleetLinePath({ d, state }: { readonly d: string; readonly state: Fleet
 function ComputerNode({
   computer,
   position,
+  stageWidth,
   nowMs,
   onOpen,
 }: {
   readonly computer: FleetComputer;
   readonly position: Point;
+  readonly stageWidth: number;
   readonly nowMs: number;
   readonly onOpen: ((computer: FleetComputer) => void) | null;
 }) {
@@ -168,6 +180,23 @@ function ComputerNode({
   // Offline: quiet text, but the node stays opaque so lines never show through it.
   const quiet = computer.connection === "offline";
   const location = describeComputerLocation(computer, nowMs);
+  // A node near a side keeps its name and status inside the graph: they wrap
+  // (two lines at most) and slide toward the middle by what would stick out,
+  // while the circle stays on its point. Set on the element, so a font that
+  // loads late or a renamed computer refits without a render.
+  const labelRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const label = labelRef.current;
+    if (!label) return;
+    const fit = () => {
+      const shift = fitLabelShift(position.x, label.offsetWidth, stageWidth);
+      label.style.transform = shift === 0 ? "" : `translateX(${shift}px)`;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(label);
+    return () => observer.disconnect();
+  }, [position.x, stageWidth]);
   const body = (
     <>
       <span
@@ -193,21 +222,30 @@ function ComputerNode({
         />
       </span>
       <span
-        className={cn(
-          "mt-1.5 text-[12.5px] leading-4 font-semibold whitespace-nowrap transition-colors",
-          quiet ? "text-muted-foreground" : "text-foreground",
-        )}
+        ref={labelRef}
+        className="mt-1.5 flex flex-col items-center text-center"
+        style={{ maxWidth: fleetLabelMaxWidth(stageWidth) }}
+        data-testid={`fleet-node-label-${computer.id}`}
       >
-        {computer.label}
-      </span>
-      {location ? (
-        <span className="font-mono text-[10.5px] leading-4 whitespace-nowrap text-muted-foreground">
-          {location}
+        <span
+          className={cn(
+            "line-clamp-2 text-[12.5px] leading-4 font-semibold text-balance transition-colors",
+            quiet ? "text-muted-foreground" : "text-foreground",
+          )}
+        >
+          {computer.label}
         </span>
-      ) : null}
+        {location ? (
+          <span className="line-clamp-2 font-mono text-[10.5px] leading-4 text-balance text-muted-foreground">
+            {location}
+          </span>
+        ) : null}
+      </span>
     </>
   );
-  const className = "absolute flex -translate-x-1/2 flex-col items-center rounded-lg";
+  // `w-max`: placed at its point, a node near the right side would otherwise
+  // only get the room left of that side, and squeeze its label to fit.
+  const className = "absolute flex w-max -translate-x-1/2 flex-col items-center rounded-lg";
   const style = { left: position.x, top: position.y - FLEET_COMPUTER_NODE_RADIUS };
   if (onOpen === null) {
     return (
@@ -529,6 +567,7 @@ export function FleetGraph({
           <ComputerNode
             computer={model.center}
             position={layout.center}
+            stageWidth={width ?? 0}
             nowMs={nowMs}
             onOpen={model.center.environmentId === null ? null : onOpenComputer}
           />
@@ -537,6 +576,7 @@ export function FleetGraph({
               key={computer.id}
               computer={computer}
               position={layout.others[index]!}
+              stageWidth={width ?? 0}
               nowMs={nowMs}
               onOpen={onOpenComputer}
             />

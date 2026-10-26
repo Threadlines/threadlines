@@ -35,6 +35,7 @@ import {
   ProjectSetupDialogHost,
 } from "../components/ProjectSetupDialog";
 import { preloadThreadMoveDialog, ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
+import { DeviceRenameDialogHost } from "../components/DeviceRenameDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import {
   ConnectComputerDialogHost,
@@ -86,6 +87,7 @@ import {
 } from "../logicalProject";
 import {
   clearServerConfig,
+  getServerConfig,
   getServerConfigUpdatedNotification,
   ServerConfigUpdatedNotification,
   setServerConfigSnapshot,
@@ -249,6 +251,7 @@ function RootRouteView() {
         <ThreadMoveDialogHost />
         <ProjectSetupDialogHost />
         <ThreadRenameDialogHost />
+        <DeviceRenameDialogHost />
         <ConnectComputerDialogHost />
         <ExpandedImageViewerHost />
         <ProviderSignInDialogHost />
@@ -837,7 +840,14 @@ function EventRouter() {
   const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
     if (!payload) return;
 
-    updatePrimaryEnvironmentDescriptor(payload.environment);
+    // Once the config stream has spoken it names the computer, in order; a
+    // welcome may predate a rename since.
+    const configured = getServerConfig()?.environment;
+    updatePrimaryEnvironmentDescriptor(
+      configured?.environmentId === payload.environment.environmentId
+        ? configured
+        : payload.environment,
+    );
     setActiveEnvironmentId(payload.environment.environmentId);
     void refreshSourceControlDiscoveryAfterReconnect({
       environmentId: payload.environment.environmentId,

@@ -1533,6 +1533,16 @@ function createSavedEnvironmentClient(
   );
 }
 
+/**
+ * The config to record for a saved computer: the one its config stream last
+ * delivered, when it has, else `fetched`. The stream is ordered and carries
+ * every change (a rename comes as a new snapshot), while a fetch that was in
+ * flight meanwhile may answer with what it read before the change.
+ */
+function streamedOrFetched(environmentId: EnvironmentId, fetched: ServerConfig): ServerConfig {
+  return useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.serverConfig ?? fetched;
+}
+
 async function refreshSavedEnvironmentMetadata(
   environmentId: EnvironmentId,
   bearerToken: string,
@@ -1546,7 +1556,10 @@ async function refreshSavedEnvironmentMetadata(
   }
 
   if (record.relay) {
-    const serverConfig = configHint ?? (await client.server.getConfig());
+    const serverConfig = streamedOrFetched(
+      record.environmentId,
+      configHint ?? (await client.server.getConfig()),
+    );
     useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
       authState: "authenticated",
       descriptor: serverConfig.environment,
@@ -1569,7 +1582,7 @@ async function refreshSavedEnvironmentMetadata(
     return;
   }
 
-  const [serverConfig, sessionState] = await Promise.all([
+  const [fetchedConfig, sessionState] = await Promise.all([
     configHint ? Promise.resolve(configHint) : client.server.getConfig(),
     record.desktopSsh
       ? fetchDesktopSshSessionState(record.httpBaseUrl, bearerToken)
@@ -1578,6 +1591,7 @@ async function refreshSavedEnvironmentMetadata(
           bearerToken,
         }),
   ]);
+  const serverConfig = streamedOrFetched(record.environmentId, fetchedConfig);
 
   useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
     authState: sessionState.authenticated ? "authenticated" : "requires-auth",
@@ -1742,6 +1756,11 @@ async function ensureSavedEnvironmentConnection(
               descriptor: event.config.environment,
               serverConfig: event.config,
             });
+            // A renamed computer comes back as a new snapshot: its saved
+            // record follows, so the name stays while it's offline.
+            useSavedEnvironmentRegistryStore
+              .getState()
+              .rename(activeRecord.environmentId, event.config.environment.label);
             return;
           }
           const currentConfig =
@@ -1756,6 +1775,11 @@ async function ensureSavedEnvironmentConnection(
             .patch(activeRecord.environmentId, { serverConfig: nextConfig });
         },
         onWelcome: (payload) => {
+          // Only until the config stream has spoken: after that it alone
+          // names the computer, in order, and a welcome may be older.
+          const current =
+            useSavedEnvironmentRuntimeStore.getState().byId[activeRecord.environmentId];
+          if (current?.serverConfig) return;
           useSavedEnvironmentRuntimeStore.getState().patch(activeRecord.environmentId, {
             descriptor: payload.environment,
           });

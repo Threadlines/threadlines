@@ -118,6 +118,14 @@ export const makePeerRpcLayer = (input: {
               now: DateTime.formatIso(yield* DateTime.now),
             })
             .pipe(Effect.ignore);
+          // Its name now: it may have been renamed since it last called. Its
+          // link back is only named for a computer the invite confirmed: an
+          // unconfirmed one could claim another computer's id.
+          yield* computerLinks.noteRemoteLabel({
+            deviceId: link.deviceId,
+            environmentId: link.environmentPinned ? link.environmentId : null,
+            label: caller.label,
+          });
           const descriptor = yield* environment.getDescriptor;
           const all = yield* providers.getProviders;
           const defaults = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined));

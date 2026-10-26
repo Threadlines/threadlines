@@ -478,6 +478,27 @@ export const makeServerAuth = Effect.gen(function* () {
       );
     });
 
+  const renameClientSession: ServerAuthShape["renameClientSession"] = (targetSessionId, name) =>
+    sessions.rename(targetSessionId, name).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AuthError({
+            message: "Failed to rename the device.",
+            cause,
+          }),
+      ),
+      Effect.flatMap((named) =>
+        named
+          ? Effect.void
+          : Effect.fail(
+              new AuthError({
+                message: "That device can no longer use this computer.",
+                status: 400,
+              }),
+            ),
+      ),
+    );
+
   const revokeOtherClientSessions: ServerAuthShape["revokeOtherClientSessions"] = (
     currentSessionId,
   ) =>
@@ -593,6 +614,7 @@ export const makeServerAuth = Effect.gen(function* () {
     listClientSessions,
     revokeClientSession,
     revokeOtherClientSessions,
+    renameClientSession,
     authenticateHttpRequest: authenticateRequest,
     authenticateWebSocketUpgrade,
     authenticatePeerUpgrade,
