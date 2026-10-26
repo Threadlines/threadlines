@@ -9,24 +9,33 @@ status is read or pushed can be measured before and after.
 ```sh
 cd apps/web
 vp build                                             # the server serves apps/web/dist
-node bench/github-status/run.mjs                     # A, B, C, D, F: about 2.5 hours
-node bench/github-status/run.mjs --scenarios E       # E alone: about 40 minutes
+node bench/github-status/run.mjs --scenarios A,B,C   # one client: up to about 5 hours
+node bench/github-status/run.mjs --scenarios D,F --parallel   # about 1 hour
+node bench/github-status/run.mjs --scenarios E       # about 40 minutes
 node bench/github-status/report.mjs <results.json>   # print a saved run's table again
 ```
 
 Results go to `$TMPDIR/tl-ghbench-results-<time>.json` (or `--out <file>`), saved after every
 change, and the summary table is printed at the end. Flags: `--runs 3` (runs per lag scenario),
 `--cap 660` (seconds a surface gets before it counts as "never"; the slowest polls in the app are 10
-minutes apart), `--away 90` (C: seconds unattended), `--stagger 30` (seconds between the starts of
-side-by-side runs), `--startup 3`, `--transition 2`, `--steady 10` (E: minutes per window),
-`--latency 400` (ms each fake `gh` call takes), `--port 14931`, `--keep` (keep the scratch folder:
-server log, `gh-calls.jsonl`, `git-remote.jsonl`). Ctrl-C stops the server and browser and keeps
-what was measured.
+minutes apart), `--away 90` (C: seconds unattended), `--jitter 60` (most seconds of random wait
+before each change), `--parallel` with `--stagger 90` (runs side by side, that many seconds apart),
+`--startup 3`, `--transition 2`, `--steady 10` (E: minutes per window), `--latency 400` (ms each
+fake `gh` call takes), `--port 14931`, `--keep` (keep the scratch folder: server log,
+`gh-calls.jsonl`, `git-remote.jsonl`). Ctrl-C stops the server and browser and keeps what was
+measured; at the end every saved window's `gh` rates are read again from the final log.
 
-One server and one headless browser (full Chromium, `channel: "chromium"`) run at a time. The runs
-of a lag scenario go side by side, each in its own tab (its own client) on its own thread and pull
-request. Both processes are stopped at the end, by the PIDs the run started. The scratch folder is
-in `$TMPDIR`; nothing reads or writes `~/.threadlines`.
+One server and one headless browser (full Chromium, `channel: "chromium"`) run at a time. Each run
+of a lag scenario gets a fresh tab, thread and pull request; the first tab is parked on a page
+without the app, so the run's tab is the only client. By default runs go one after another. With
+`--parallel` they go side by side, each tab its own client, which is faster but not the same thing:
+every tab's sidebar watches every run's checkout through the server's shared git status stream, so
+one tab's reads can update another's surfaces, and the `gh` counts saved with each change are every
+client's ("all clients"). That is fine for D (its checkouts have no thread branches) and for F's
+wrong-state check, not for A, B or C lags. The random wait before each change spreads runs over
+different points of the app's poll cycles. E, with one tab, is the cost measurement. Both processes
+are stopped at the end, by the PIDs the run started. The scratch folder is in `$TMPDIR`; nothing
+reads or writes `~/.threadlines`.
 
 ## What it sets up
 
@@ -103,18 +112,23 @@ All from what is on screen, with no hooks added to the app:
 - **D** a teammate pushed to `main`; New thread, pick the project, time until the header's ↓N is
   right (Source panel closed). Cold: a project the server has never fetched, added with the remote
   already ahead and picked at once (the server's first fetch can land before the pick; the results
-  say when). Warm: the same project later, pushed to right after the server's own next fetch, so
-  the server's answer is stale until something fetches again; a run where no such fetch came is
-  marked invalid.
+  say when). Warm: the same project later, pushed to right after the server's own next fetch
+  finished, so the server's answer is stale until something fetches again; a run where no such
+  fetch came is marked invalid. Watched: as warm, but the tab already shows a thread on the
+  project's checkout, so New thread opens a draft on a checkout whose status is already watched
+  (timed from the push).
 - **E** nothing changes: `gh` runs per minute by kind, focused, blurred and hidden, each after a
   first window (the page load, or the switch) reported on its own. Two projects, four threads with
   pull requests, one tab.
-- **F** two repositories each have a pull request with the same number, in different states.
-  Counts every time a surface shows a state its own pull request has not had by then.
+- **F** two repositories each have a pull request with the same number, in different states: the
+  first one merges, then the second reopens, then the same tab opens the second one's thread and
+  the first one's again, so each composer row is read right after the other's. Counts every time a
+  surface shows a state its own pull request has not had by then.
 
 For each change, a surface's lag is the time from the state file changing until the surface shows
-the new value and keeps it (every expected surface must hold for 10 seconds before the change is
-done). "Shown before" means it already showed that value before the change, so it never showed the
-old state; "never" means not within the cap. "Disagree" is the time the composer row, sidebar badge
-and chip of one pull request showed different states during the window. Before each change the run
-waits (up to 30 seconds) for `gh` to go quiet, so it is not timed against reads already in flight.
+the new value and keeps it (every expected surface must hold for 10 seconds; an arrival the cap cuts
+short of that counts as "never"). "Shown before" means it already showed that value before the
+change, so it never showed the old state; "never" means not within the cap. "Disagree" is the time
+the composer row, sidebar badge and chip of one pull request showed different states during the
+window. Before each change the run waits a random 0 to `--jitter` seconds, then up to 30 seconds for
+`gh` to go quiet, so it is not timed against reads already in flight.

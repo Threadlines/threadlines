@@ -2,8 +2,8 @@
 // surfaces are, and how many `gh` runs that costs. See README.md.
 //
 //   node bench/github-status/run.mjs [--scenarios A,B,C,D,F] [--runs 3] [--cap 660]
-//       [--away 90] [--stagger 90] [--jitter 60] [--startup 3] [--transition 2]
-//       [--steady 10] [--latency 400] [--port 14931] [--out <file>] [--keep]
+//       [--away 90] [--jitter 60] [--parallel [--stagger 90]] [--startup 3]
+//       [--transition 2] [--steady 10] [--latency 400] [--port 14931] [--out <file>] [--keep]
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,6 +27,7 @@ const options = {
   runs: Number(flag("runs", "3")),
   capSeconds: Number(flag("cap", "660")),
   awaySeconds: Number(flag("away", "90")),
+  parallel: args.includes("--parallel"),
   staggerSeconds: Number(flag("stagger", "90")),
   jitterSeconds: Number(flag("jitter", "60")),
   startupMinutes: Number(flag("startup", "3")),

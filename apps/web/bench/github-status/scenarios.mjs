@@ -1,8 +1,8 @@
 // The scenarios. Each writes plain JSON into `context.out` as it goes (and
 // saves after every step), so a stopped run keeps what it measured: per run,
 // per change, how long each surface took to show it and how long the surfaces
-// disagreed. Runs of one scenario go side by side, each in its own tab on its
-// own thread and pull request, started `staggerMs` apart.
+// disagreed. Each run of a scenario has a fresh tab, thread and pull request
+// of its own; see `eachRun` for one after another versus side by side.
 import { ghRate, sleep } from "./lib.mjs";
 import { readSurfaces, waitForSurfaces, watchUntil } from "./surfaces.mjs";
 
@@ -83,17 +83,30 @@ function prefixed(key, expect, surfaces) {
   );
 }
 
-/** Runs `count` copies of `run(index)` side by side, `staggerMs` apart, each in a tab of its own. */
-async function inParallel(stack, count, staggerMs, run) {
+/**
+ * Runs `options.runs` copies of `run(index, view)`, each in a fresh tab of its
+ * own: one after another, or with `options.parallel` side by side,
+ * `options.staggerMs` apart. Side by side is faster but not one client: every
+ * tab's sidebar watches every run's checkout through the server's shared git
+ * status stream, so another tab's reads can update this one's surfaces.
+ */
+async function eachRun(stack, options, run) {
+  const once = async (index) => {
+    const view = await stack.newView();
+    try {
+      await run(index, view);
+    } finally {
+      await view.close();
+    }
+  };
+  if (!options.parallel) {
+    for (let index = 0; index < options.runs; index += 1) await once(index);
+    return;
+  }
   const results = await Promise.allSettled(
-    Array.from({ length: count }, async (_, index) => {
-      await sleep(index * staggerMs);
-      const view = await stack.newView();
-      try {
-        await run(index, view);
-      } finally {
-        await view.close();
-      }
+    Array.from({ length: options.runs }, async (_, index) => {
+      await sleep(index * options.staggerMs);
+      await once(index);
     }),
   );
   const failure = results.find((result) => result.status === "rejected");
@@ -161,7 +174,7 @@ function summarizeInitial(initial) {
 export async function scenarioA(stack, options, { out, save }) {
   out.runs = [];
   await stack.parkMainView();
-  await inParallel(stack, options.runs, options.staggerMs, async (index, view) => {
+  await eachRun(stack, options, async (index, view) => {
     const thread = await pullRequestThread(stack, {
       slug: "bench/alpha",
       label: "a",
@@ -206,7 +219,7 @@ export async function scenarioB(stack, options, { out, save }) {
   const viewed = await pullRequestThread(stack, { slug: "bench/beta", label: "b-view" });
   out.viewedThread = viewed;
   out.runs = [];
-  await inParallel(stack, options.runs, options.staggerMs, async (index, view) => {
+  await eachRun(stack, options, async (index, view) => {
     const thread = await pullRequestThread(stack, {
       slug: "bench/alpha",
       label: "b",
@@ -243,7 +256,7 @@ export async function scenarioC(stack, options, { out, save }) {
   out.runs = [];
   await stack.parkMainView();
   for (const mode of ["blurred", "hidden"]) {
-    await inParallel(stack, options.runs, options.staggerMs, async (index, view) => {
+    await eachRun(stack, options, async (index, view) => {
       const thread = await pullRequestThread(stack, { slug: "bench/alpha", label: `c-${mode}` });
       await view.openThread(thread.threadId);
       const targets = [targetFor(thread, { composer: true })];
@@ -381,7 +394,7 @@ function fetchesOf(stack, name, from) {
 export async function scenarioD(stack, options, { out, save, home }) {
   out.runs = [];
   await stack.parkMainView();
-  await inParallel(stack, options.runs, options.staggerMs, async (run, view) => {
+  await eachRun(stack, options, async (run, view) => {
     const slug = `bench/delta${run + 1}`;
     const repo = stack.addRepo(slug);
     const coldCount = run + 2;
@@ -559,7 +572,7 @@ export async function scenarioE(stack, options, { out, save }) {
 export async function scenarioF(stack, options, { out, save }) {
   out.runs = [];
   await stack.parkMainView();
-  await inParallel(stack, options.runs, options.staggerMs, async (index, view) => {
+  await eachRun(stack, options, async (index, view) => {
     const number = 7 + index;
     const alphaUrl = `https://github.com/bench/alpha/pull/${number}`;
     const betaUrl = `https://github.com/bench/beta/pull/${number}`;
