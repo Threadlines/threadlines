@@ -1,4 +1,7 @@
-import { pullRequestQueryKeys } from "../lib/pullRequestsReactQuery";
+import {
+  pullRequestQueryKeys,
+  startPullRequestAttentionRefresh,
+} from "../lib/pullRequestsReactQuery";
 import {
   type DesktopTaskbarStatusInput,
   type DesktopTaskbarThreadSummary,
@@ -756,6 +759,8 @@ function EnvironmentConnectionManagerBootstrap() {
     const stopComputerStalls = startComputerStallsSync();
     // Each connected computer's record of every pull request it read, which
     // every surface showing a pull request reads (pullRequestRecords.ts).
+    // Pull request polls stop while nobody looks; coming back reads what went stale.
+    const stopPullRequestAttention = startPullRequestAttentionRefresh(queryClient);
     const stopPullRequestRecords = startPullRequestRecordsSync({
       onSettled: (environmentId, record) => {
         if (record.state === "open") return;
@@ -771,6 +776,7 @@ function EnvironmentConnectionManagerBootstrap() {
     return () => {
       unbindRowIntent();
       stopPullRequestRecords();
+      stopPullRequestAttention();
       stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();

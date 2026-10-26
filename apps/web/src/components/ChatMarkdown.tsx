@@ -63,7 +63,11 @@ import { readLocalApi } from "../localApi";
 import { GitPullRequestIcon } from "lucide-react";
 
 import { ChatWebLink } from "./chat/ChatWebLink";
-import { PullRequestHoverCard, usePullRequestChip } from "./pull-requests/PullRequestHoverCard";
+import {
+  PullRequestHoverCard,
+  PullRequestLinkRead,
+  usePullRequestChip,
+} from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
 import { copyTextWithToast } from "./chat/copyTextWithToast";
@@ -657,18 +661,21 @@ function MarkdownPullRequestChip({
       { Icon: GitPullRequestIcon, className: "text-muted-foreground", label: "Pull request" };
 
   return (
-    <PullRequestHoverCard payload={chip.payload}>
-      <ChatWebLink
-        href={href}
-        threadRef={threadRef}
-        title={title}
-        className="chat-markdown-pull-request-chip inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 align-middle font-mono text-[12px] transition-colors hover:bg-accent"
-      >
-        <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
-        <span>#{number}</span>
-        {label ? <span className="font-sans">{label}</span> : null}
-      </ChatWebLink>
-    </PullRequestHoverCard>
+    <>
+      {chip.payload ? <PullRequestLinkRead payload={chip.payload} /> : null}
+      <PullRequestHoverCard payload={chip.payload}>
+        <ChatWebLink
+          href={href}
+          threadRef={threadRef}
+          title={title}
+          className="chat-markdown-pull-request-chip inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 align-middle font-mono text-[12px] transition-colors hover:bg-accent"
+        >
+          <tone.Icon aria-hidden className={cn("size-3 shrink-0", tone.className)} />
+          <span>#{number}</span>
+          {label ? <span className="font-sans">{label}</span> : null}
+        </ChatWebLink>
+      </PullRequestHoverCard>
+    </>
   );
 }
 

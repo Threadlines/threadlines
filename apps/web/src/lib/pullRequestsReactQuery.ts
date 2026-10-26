@@ -1,3 +1,4 @@
+import { isPageAttended, onPageAttentionChange, usePageAttended } from "~/lib/pageAttention";
 import { useAllPullRequestRecords } from "~/environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
@@ -126,6 +127,15 @@ function pullRequestKey<const Read extends string>(
   ] as const;
 }
 
+/**
+ * How often an open pull request on screen is read while the user is looking
+ * at the app and nothing about it is in motion, so a merge, a review or a
+ * check elsewhere shows up without a refresh. While its checks run it is read
+ * at the faster checks pace; while the user is elsewhere it is not read at
+ * all, and coming back reads it at once (startPullRequestAttentionRefresh).
+ */
+export const PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS = 30_000;
+
 /** Everything the detail surface reads, addressed the same way on every key. */
 export interface PullRequestReadInput {
   readonly environmentId: EnvironmentId;
@@ -137,6 +147,12 @@ export interface PullRequestReadInput {
    * reads again past a cached read of any other commit. Detail only.
    */
   readonly expectedHeadSha?: string | null;
+  /**
+   * Whether the surface reading it is on screen with the user looking
+   * (lib/pageAttention.ts). Only then is a settled open pull request kept
+   * current; a surface not looking reads nothing on a timer. Detail only.
+   */
+  readonly attended?: boolean;
 }
 
 function readPayload(input: PullRequestReadInput) {
@@ -153,14 +169,20 @@ export function pullRequestDetailQueryOptions(input: PullRequestReadInput) {
       }),
     staleTime: PULL_REQUEST_READ_STALE_TIME_MS,
     gcTime: PULL_REQUEST_DETAIL_GC_TIME_MS,
-    // Kept current while there is something to wait for, and read again on
-    // coming back to the app then too. The rest of the time it is a document
-    // the user reads, and the panel's own Refresh is the one thing that re-runs
-    // `gh`. A read that failed is tried again at the same pace, whether or not
-    // an earlier one is on screen: that one may no longer be true.
+    // Kept current at the checks pace while there is something to wait for,
+    // and read again on coming back to the app then too. A read that failed is
+    // tried again at the same pace, whether or not an earlier one is on
+    // screen: that one may no longer be true. An open one the user is looking
+    // at is read now and then besides; nothing is read for a surface the user
+    // is not looking at.
     refetchOnWindowFocus: (query) => detailWorthRereading(query.state),
-    refetchInterval: (query) =>
-      detailWorthRereading(query.state) ? PULL_REQUEST_CHECKS_POLL_INTERVAL_MS : false,
+    refetchInterval: (query) => {
+      if (input.attended === false) return false;
+      if (detailWorthRereading(query.state)) return PULL_REQUEST_CHECKS_POLL_INTERVAL_MS;
+      return input.attended === true && query.state.data?.state === "open"
+        ? PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS
+        : false;
+    },
     refetchIntervalInBackground: false,
   });
 }
@@ -233,12 +255,18 @@ export function usePullRequestDetail(input: {
   readonly pushedHead?: string | null;
 }): PullRequestDetailRead {
   const queryClient = useQueryClient();
+  const attended = usePageAttended();
   const enabled = input.environmentId !== null && input.reference !== null;
   const pushedHead = input.pushedHead ?? null;
   const environmentId = input.environmentId ?? IDLE_ENVIRONMENT_ID;
   const reference = input.reference ?? IDLE_PULL_REQUEST_REF;
   const query = useQuery({
-    ...pullRequestDetailQueryOptions({ environmentId, reference, expectedHeadSha: pushedHead }),
+    ...pullRequestDetailQueryOptions({
+      environmentId,
+      reference,
+      expectedHeadSha: pushedHead,
+      attended,
+    }),
     enabled,
   });
   const detail = query.data;
@@ -278,7 +306,13 @@ export function usePullRequestDetail(input: {
   // not restart the wait.
   const { projectId, repository, number } = reference;
   useEffect(() => {
-    if (followUpKey === null || fetching || sent >= CHECKS_WAIT_FOLLOW_UP_AT_MS.length) {
+    // Nobody is looking: the push is followed up once the user is back.
+    if (
+      !attended ||
+      followUpKey === null ||
+      fetching ||
+      sent >= CHECKS_WAIT_FOLLOW_UP_AT_MS.length
+    ) {
       return;
     }
     const dueAt = startedAt === null ? 0 : startedAt + (CHECKS_WAIT_FOLLOW_UP_AT_MS[sent] ?? 0);
@@ -317,6 +351,7 @@ export function usePullRequestDetail(input: {
     sent,
     fetching,
     queryClient,
+    attended,
   ]);
 
   return {
@@ -757,12 +792,15 @@ export function usePullRequestLists(input: {
   const enabled = input.enabled ?? true;
   const state = input.state;
   const pullRequestRecords = useAllPullRequestRecords();
+  const attended = usePageAttended();
 
   return useQueries({
     queries: environments.map((environment) => ({
       ...pullRequestListQueryOptions({ environmentId: environment.environmentId, state }),
       enabled,
-      refetchInterval: input.refetchIntervalMs,
+      // Only while the user is looking at the app: every poll spawns `gh`, and
+      // coming back reads what went stale meanwhile (startPullRequestAttentionRefresh).
+      refetchInterval: attended ? input.refetchIntervalMs : false,
       // A background tab drives no decisions, and every poll spawns `gh`.
       refetchIntervalInBackground: false,
       // An answer holds until this surface's next poll, so mounting it again
@@ -835,5 +873,21 @@ export function usePullRequestLists(input: {
         isFetching: results.some((result) => result.isFetching),
       };
     },
+  });
+}
+
+/**
+ * Reads again every pull request query on screen that went stale while the
+ * user was elsewhere, the moment they come back: the timers stop while
+ * nobody looks, so this is what brings the screen current. Started once.
+ */
+export function startPullRequestAttentionRefresh(queryClient: QueryClient): () => void {
+  let attended = isPageAttended();
+  return onPageAttentionChange(() => {
+    const wasAttended = attended;
+    attended = isPageAttended();
+    if (attended && !wasAttended) {
+      void queryClient.refetchQueries({ queryKey: ["pull-requests"], type: "active", stale: true });
+    }
   });
 }

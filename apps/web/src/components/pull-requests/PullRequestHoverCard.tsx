@@ -14,6 +14,8 @@
  *
  * @module PullRequestHoverCard
  */
+import { usePageAttended } from "~/lib/pageAttention";
+import { pullRequestLookupQueryOptions } from "~/lib/pullRequestLookups";
 import { useNewestPullRequestRecord } from "../../environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
@@ -22,7 +24,7 @@ import type {
   PullRequestState,
 } from "@threadlines/contracts";
 import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClientContext, useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/shallow";
 
@@ -109,6 +111,9 @@ interface PullRequestChipSurface {
 
 const PullRequestChipSurfaceContext = createContext<PullRequestChipSurface | null>(null);
 
+/** How often a pull request a link on screen points at is read while the user looks. */
+const PULL_REQUEST_LINK_ON_SCREEN_POLL_INTERVAL_MS = 60_000;
+
 function chipKey(repository: string, number: number): string {
   return `${repository.toLowerCase()}:${number}`;
 }
@@ -129,12 +134,12 @@ export function usePullRequestChip(
   // What any computer last heard about it, whoever asked: a link in an agent's
   // transcript, outside any thread's surface, still shows its state.
   const record = useNewestPullRequestRecord(repository, number);
+  const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
   const recordState = useMemo(() => (record ? chipStateFromRecord(record) : null), [record]);
   const state = newerChipState(
     surface?.stateByKey.get(chipKey(repository, number)) ?? null,
     recordState,
   );
-  const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
   return useMemo(
     () => ({
       state,
@@ -152,6 +157,42 @@ export function usePullRequestChip(
     }),
     [number, scope, state],
   );
+}
+
+/**
+ * Keeps the pull request a link on screen points at read while the user looks,
+ * so the link says what it is now even where nothing else here reads it. Reads
+ * of one repository travel together, and a merged one is never read again.
+ * Renders nothing; outside the app's query client (a bare render) it does
+ * nothing either.
+ */
+export function PullRequestLinkRead({
+  payload,
+}: {
+  readonly payload: PullRequestHoverCardPayload;
+}) {
+  return useContext(QueryClientContext) ? <PullRequestLinkReadQuery payload={payload} /> : null;
+}
+
+function PullRequestLinkReadQuery({ payload }: { readonly payload: PullRequestHoverCardPayload }) {
+  const attended = usePageAttended();
+  useQuery({
+    ...pullRequestLookupQueryOptions({
+      key: `${payload.reference.repository.toLowerCase()}#${payload.reference.number}`,
+      environmentId: payload.environmentId,
+      projectId: payload.reference.projectId,
+      repository: payload.reference.repository,
+      item: { number: payload.reference.number },
+    }),
+    enabled: attended,
+    refetchInterval: (query) =>
+      attended &&
+      query.state.data?.supported !== false &&
+      query.state.data?.pullRequest?.state !== "merged"
+        ? PULL_REQUEST_LINK_ON_SCREEN_POLL_INTERVAL_MS
+        : false,
+  });
+  return null;
 }
 
 /**
@@ -279,7 +320,8 @@ function PullRequestHoverCardContent({
   autoMergeEnabled,
   observedAt,
 }: PullRequestHoverCardPayload) {
-  const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const attended = usePageAttended();
+  const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference, attended }));
   const detail = query.data;
   // The newer read says what state it is in: this detail, or the chip's word.
   const stateSource = pullRequestDetailOutranksListing({

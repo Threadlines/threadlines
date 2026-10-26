@@ -1,3 +1,4 @@
+import { usePageAttended } from "~/lib/pageAttention";
 import {
   PULL_REQUEST_LOOKUP_LIMIT,
   type EnvironmentId,
@@ -235,6 +236,7 @@ export function usePullRequestLookups(
   requests: readonly PullRequestLookupRequest[],
 ): PullRequestLookupAnswers {
   const keptRequests = useKept(requests, sameLookupRequests);
+  const attended = usePageAttended();
   const combine = useCallback(
     (results: UseQueryResult<PullRequestLookupData>[]): PullRequestLookupAnswers => {
       const answers = new Map<string, PullRequestLookupAnswer>();
@@ -259,7 +261,12 @@ export function usePullRequestLookups(
     [keptRequests],
   );
   return useQueries({
-    queries: keptRequests.map((request) => pullRequestLookupQueryOptions(request)),
+    // Polled only while the user is looking at the app; coming back reads
+    // what went stale meanwhile (startPullRequestAttentionRefresh).
+    queries: keptRequests.map((request) => ({
+      ...pullRequestLookupQueryOptions(request),
+      ...(attended ? {} : { refetchInterval: false as const }),
+    })),
     combine,
   });
 }
