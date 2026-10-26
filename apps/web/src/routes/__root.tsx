@@ -1,3 +1,4 @@
+import { pullRequestQueryKeys } from "../lib/pullRequestsReactQuery";
 import {
   type DesktopTaskbarStatusInput,
   type DesktopTaskbarThreadSummary,
@@ -122,6 +123,7 @@ import {
 import { startComputerLinksSync } from "../environments/links/computerLinks";
 import { startProjectSetupsSync } from "../environments/projectSetups/projectSetups";
 import { startComputerStallsSync } from "../environments/stalls/computerStalls";
+import { startPullRequestRecordsSync } from "../environments/pullRequests/pullRequestRecords";
 import { ComputerStallNotices } from "../components/ComputerStallNotices";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
@@ -752,12 +754,23 @@ function EnvironmentConnectionManagerBootstrap() {
     const stopProjectSetups = startProjectSetupsSync();
     // Each connected computer's latest freeze or sleep, for its notice and Fleet.
     const stopComputerStalls = startComputerStallsSync();
+    // Each connected computer's record of every pull request it read, which
+    // every surface showing a pull request reads (pullRequestRecords.ts).
+    const stopPullRequestRecords = startPullRequestRecordsSync({
+      onSettled: (environmentId, record) => {
+        if (record.state === "open") return;
+        void queryClient.invalidateQueries({
+          queryKey: pullRequestQueryKeys.list(environmentId, record.state),
+        });
+      },
+    });
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopPullRequestRecords();
       stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();

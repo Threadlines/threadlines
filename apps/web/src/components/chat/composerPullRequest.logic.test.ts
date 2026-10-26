@@ -27,6 +27,7 @@ const THREAD_PULL_REQUEST: ThreadPullRequest = {
   autoMergeEnabled: false,
   headBranch: null,
   diffStat: null,
+  observedAt: null,
 };
 
 function check(status: PullRequestCheck["status"], name: string): PullRequestCheck {
@@ -144,6 +145,24 @@ describe("composerPullRequestRow", () => {
     expect(row(false).chip).toEqual({ label: "Merged", tone: "merged", interactive: false });
     // A read of its own is the fresher word, whatever the listing still says.
     expect(row(true).state).toBe("open");
+  });
+
+  it("takes its state from whichever read was newer, the detail or the shared record", () => {
+    const row = (input: { readonly detailAt: string; readonly recordedAt: number }) =>
+      composerPullRequestRow({
+        // The thread's resolution, already weighed against the computer's
+        // shared record: some other read saw it merge.
+        pullRequest: { ...THREAD_PULL_REQUEST, state: "merged", observedAt: input.recordedAt },
+        projectTitle: null,
+        detail: { ...detail({ state: "open" }), observedAt: input.detailAt },
+        threadAutoMerge: false,
+        waitingFor: null,
+        // Even a detail read since the row opened loses to a newer read elsewhere.
+        detailCurrent: true,
+      });
+    const merge = Date.parse("2026-10-26T10:00:00.000Z");
+    expect(row({ detailAt: "2026-10-26T09:59:00.000Z", recordedAt: merge }).state).toBe("merged");
+    expect(row({ detailAt: "2026-10-26T10:01:00.000Z", recordedAt: merge }).state).toBe("open");
   });
 
   it("takes the branch, project, size and state from the detail once it lands", () => {

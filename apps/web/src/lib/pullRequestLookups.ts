@@ -244,13 +244,14 @@ export function usePullRequestLookups(
         if (request === undefined || data === undefined || !data.supported) {
           return;
         }
+        const answeredAt = Date.parse(data.answeredAt) || result.dataUpdatedAt;
         answers.set(request.key, {
           pullRequest:
             data.pullRequest === null
               ? null
-              : threadPullRequestFromLookup(data.pullRequest, request.repository),
+              : threadPullRequestFromLookup(data.pullRequest, request.repository, answeredAt),
           updatedAt: data.pullRequest === null ? null : Date.parse(data.pullRequest.updatedAt) || 0,
-          answeredAt: Date.parse(data.answeredAt) || result.dataUpdatedAt,
+          answeredAt,
         });
       });
       return answers;

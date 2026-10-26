@@ -1,3 +1,4 @@
+import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { VcsStatusResult } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -18,6 +19,7 @@ import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
 import {
   pullRequestBadgeTone,
   pullRequestFromGitStatus,
+  withPullRequestRecord,
   type PullRequestBadgeTone,
   type ThreadPullRequest,
 } from "./pull-requests/pullRequests.logic";
@@ -176,7 +178,12 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
     environmentId: thread.environmentId,
     cwd: thread.branch != null ? gitCwd : null,
   });
-  const pr = pullRequestFromGitStatus(thread.branch, gitStatus.data);
+  const statusPr = pullRequestFromGitStatus(thread.branch, gitStatus.data);
+  const pullRequestRecords = usePullRequestRecords(thread.environmentId);
+  // The same answer the sidebar badge and the composer's row give.
+  const pr =
+    statusPr &&
+    withPullRequestRecord(statusPr, pullRequestRecords(statusPr.repository, statusPr.number));
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const threadStatus = resolveThreadStatusPill({
     thread: {

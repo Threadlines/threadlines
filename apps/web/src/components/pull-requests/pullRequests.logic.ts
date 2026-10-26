@@ -1,5 +1,6 @@
 import { EnvironmentId, ProjectId } from "@threadlines/contracts";
 import type {
+  PullRequestObservation,
   PullRequestActivity,
   PullRequestActor,
   PullRequestCheck,
@@ -25,6 +26,7 @@ import type {
 } from "@threadlines/contracts";
 import {
   changeRequestRepositoryName,
+  parsePullRequestUrl,
   toChangeRequestProviderKind,
 } from "@threadlines/shared/sourceControl";
 import { quotePullRequestBody } from "@threadlines/shared/pullRequestAutoFix";
@@ -38,6 +40,7 @@ import { MergeQueueIcon } from "../Icons";
 import type { ElementType } from "react";
 
 import type { Project, SidebarThreadSummary } from "../../types";
+import type { PullRequestRecordLookup } from "../../environments/pullRequests/pullRequestRecordsStore";
 
 /**
  * A listing row plus the environment it came from. The wire type leaves the
@@ -627,6 +630,43 @@ export interface ThreadPullRequest {
   readonly headBranch: string | null;
   /** Lines added and removed; null where the source does not count them. */
   readonly diffStat: { readonly additions: number; readonly deletions: number } | null;
+  /**
+   * When the read behind it began, on its computer's clock (milliseconds);
+   * null where the source does not say, as a checkout's status read does not.
+   * Weighed against the computer's shared record in {@link withPullRequestRecord}.
+   */
+  readonly observedAt: number | null;
+}
+
+/**
+ * A pull request as the newest read of it says: the computer's shared record
+ * of it (environments/pullRequests/pullRequestRecords.ts) where that is at
+ * least as new as what this surface read itself. Every surface showing a pull
+ * request goes through here, which is what keeps them agreeing.
+ */
+export function withPullRequestRecord(
+  pullRequest: ThreadPullRequest,
+  record: PullRequestObservation | undefined,
+): ThreadPullRequest {
+  if (record === undefined || record.number !== pullRequest.number) {
+    return pullRequest;
+  }
+  const recordAt = Date.parse(record.observedAt);
+  if (pullRequest.observedAt !== null && pullRequest.observedAt > recordAt) {
+    return pullRequest;
+  }
+  const open = record.state === "open";
+  return {
+    ...pullRequest,
+    state: record.state,
+    isDraft: open && (record.isDraft ?? pullRequest.isDraft),
+    title: record.title,
+    url: record.url,
+    settledAt: open ? null : (record.settledAt ?? pullRequest.settledAt),
+    autoMergeEnabled: open && (record.autoMergeEnabled ?? pullRequest.autoMergeEnabled),
+    headBranch: record.headBranch,
+    observedAt: recordAt,
+  };
 }
 
 /**
@@ -712,30 +752,85 @@ export function pullRequestFromGitStatus(
     isDraft: false,
     title: gitStatus.pr.title,
     url: gitStatus.pr.url,
-    repository,
+    // The address names the repository whatever remote the checkout calls it by.
+    repository: repository ?? parsePullRequestUrl(gitStatus.pr.url)?.repository ?? null,
     // The status read carries no dates.
     settledAt: null,
     autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
     headBranch: gitStatus.pr.headRef,
     // The status read does not count lines.
     diffStat: null,
+    // Nor say when it was read: it may be an answer kept from an earlier one.
+    observedAt: null,
+  };
+}
+
+/**
+ * A listing row as the newest read of its pull request says: the computer's
+ * shared record of it where that is at least as new as the listing, its
+ * checks too where a full read since has seen them. What the pull requests
+ * page, its counts and every list built on the listings show.
+ */
+export function withPullRequestRecordOnEntry(
+  entry: PullRequestEntry,
+  record: PullRequestObservation | undefined,
+): PullRequestEntry {
+  if (record === undefined || record.number !== entry.number) {
+    return entry;
+  }
+  const entryAt = entry.observedAt === undefined ? null : Date.parse(entry.observedAt);
+  const recordAt = Date.parse(record.observedAt);
+  const checksAt = record.checks === undefined ? null : Date.parse(record.checks.observedAt);
+  const takesState = entryAt === null || recordAt >= entryAt;
+  const takesChecks = checksAt !== null && (entryAt === null || checksAt >= entryAt);
+  if (!takesState && !takesChecks) {
+    return entry;
+  }
+  const { settledAt: _settledAt, checksState: _checksState, ...rest } = entry;
+  const open = record.state === "open";
+  const state = takesState ? record.state : entry.state;
+  const settledAt = takesState
+    ? open
+      ? undefined
+      : (record.settledAt ?? entry.settledAt)
+    : entry.settledAt;
+  const checksState = takesChecks ? (record.checks?.state ?? undefined) : entry.checksState;
+  return {
+    ...rest,
+    state,
+    ...(takesState
+      ? {
+          isDraft: open && (record.isDraft ?? entry.isDraft),
+          title: record.title,
+          autoMergeEnabled: open && (record.autoMergeEnabled ?? entry.autoMergeEnabled === true),
+          observedAt: record.observedAt,
+        }
+      : {}),
+    ...(settledAt === undefined ? {} : { settledAt }),
+    ...(checksState === undefined ? {} : { checksState }),
   };
 }
 
 /**
  * Whether a surface takes a pull request's state from its detail read rather
- * than from what a listing or the checkout said. The detail is usually the
- * fresher of the two, except one remembered from earlier and not yet read
- * again: that does not outrank a listing saying the pull request has since
- * merged or closed.
+ * than from what the thread's resolution, a listing or the computer's shared
+ * record said: the newer read wins. A detail or a resolution from a server too
+ * old to say when it read keeps the earlier rule: the detail wins unless it is
+ * one remembered from before and the other has seen a merge or a close since.
  */
 export function pullRequestDetailOutranksListing(input: {
-  readonly listedState: PullRequestState;
-  readonly detail: Pick<PullRequestDetail, "state"> | undefined;
+  readonly listed: Pick<ThreadPullRequest, "state" | "observedAt">;
+  readonly detail: Pick<PullRequestDetail, "state" | "observedAt"> | undefined;
   /** The detail was read since the surface opened, or is fresh enough not to need it. */
   readonly detailCurrent: boolean;
 }): boolean {
-  return input.detail !== undefined && (input.detailCurrent || input.listedState === "open");
+  if (input.detail === undefined) {
+    return false;
+  }
+  if (input.detail.observedAt !== undefined && input.listed.observedAt !== null) {
+    return Date.parse(input.detail.observedAt) >= input.listed.observedAt;
+  }
+  return input.detailCurrent || input.listed.state === "open";
 }
 
 /**
@@ -754,7 +849,18 @@ export function resolveThreadPullRequest(input: {
   /** What lookups found for branches the open listing does not carry; see `newerSettledAnswer`. */
   readonly lookups?: PullRequestLookupAnswers;
   readonly projects: readonly Project[];
+  /** The thread's computer's shared records; see {@link withPullRequestRecord}. */
+  readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest | null {
+  const resolved = resolveThreadPullRequestFromSources(input);
+  return resolved === null
+    ? null
+    : withPullRequestRecord(resolved, input.records?.(resolved.repository, resolved.number));
+}
+
+function resolveThreadPullRequestFromSources(
+  input: Parameters<typeof resolveThreadPullRequest>[0],
+): ThreadPullRequest | null {
   const { thread } = input;
   if (thread.branch === null || thread.archivedAt !== null) {
     return null;
@@ -813,6 +919,7 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
     autoMergeEnabled: entry.autoMergeEnabled === true,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
+    observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
   };
 }
 
@@ -820,6 +927,8 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
 export function threadPullRequestFromLookup(
   entry: PullRequestLookupEntry,
   repository: string,
+  /** When the lookup was answered, on its computer's clock. */
+  answeredAt: number | null,
 ): ThreadPullRequest {
   return {
     number: entry.number,
@@ -832,6 +941,7 @@ export function threadPullRequestFromLookup(
     autoMergeEnabled: entry.autoMergeEnabled,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
+    observedAt: answeredAt,
   };
 }
 
@@ -995,7 +1105,17 @@ export function resolveLinkedThreadPullRequests(input: {
   readonly settledEntries?: readonly PullRequestEntry[];
   /** What lookups found for numbers the open listing does not carry; see `newerSettledAnswer`. */
   readonly lookups?: PullRequestLookupAnswers;
+  /** The thread's computer's shared records; see {@link withPullRequestRecord}. */
+  readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest[] {
+  return resolveLinkedFromSources(input).map((pullRequest) =>
+    withPullRequestRecord(pullRequest, input.records?.(pullRequest.repository, pullRequest.number)),
+  );
+}
+
+function resolveLinkedFromSources(
+  input: Parameters<typeof resolveLinkedThreadPullRequests>[0],
+): ThreadPullRequest[] {
   const linked = (input.thread.linkedPullRequests ?? []).filter(
     (candidate) => candidate.number !== input.ownNumber,
   );
@@ -1030,6 +1150,7 @@ export function resolveLinkedThreadPullRequests(input: {
         autoMergeEnabled: false,
         headBranch: null,
         diffStat: null,
+        observedAt: null,
       }
     );
   });

@@ -6,6 +6,7 @@ import {
   type PullRequestComment,
   type PullRequestListEntry,
   type PullRequestListResult,
+  type PullRequestObservation,
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -31,6 +32,8 @@ import {
   matchesPullRequestSelection,
   mergePullRequestListResults,
   narrowPullRequests,
+  withPullRequestRecord,
+  withPullRequestRecordOnEntry,
   parsePullRequestSelection,
   parsePullRequestsSearch,
   pullRequestEntryKey,
@@ -554,6 +557,7 @@ describe("resolveThreadPullRequest", () => {
       autoMergeEnabled: false,
       headBranch: "feature/pull-requests",
       diffStat: null,
+      observedAt: null,
     });
   });
 
@@ -630,6 +634,7 @@ describe("resolveThreadPullRequest", () => {
       autoMergeEnabled: false,
       headBranch: "feature/pull-requests",
       diffStat: { additions: 10, deletions: 2 },
+      observedAt: null,
     };
     const resolve = (lookups: PullRequestLookupAnswers, settled = entry({ number: 9 })) =>
       resolveThreadPullRequest({
@@ -725,6 +730,7 @@ describe("resolveLinkedThreadPullRequests", () => {
         autoMergeEnabled: false,
         headBranch: null,
         diffStat: null,
+        observedAt: null,
       },
     ]);
   });
@@ -785,6 +791,7 @@ describe("resolveLinkedThreadPullRequests", () => {
             autoMergeEnabled: false,
             headBranch: "fix/elsewhere",
             diffStat: { additions: 3, deletions: 1 },
+            observedAt: null,
           },
           updatedAt: Date.parse(mergedAt),
           answeredAt: Date.parse("2026-10-22T08:00:00.000Z"),
@@ -843,6 +850,69 @@ describe("leadThreadPullRequest", () => {
   });
 });
 
+describe("withPullRequestRecord", () => {
+  const RECORD = {
+    provider: "github",
+    repository: "threadlines/threadlines",
+    number: 7,
+    sequence: 3,
+    observedAt: "2026-10-26T10:00:00.000Z",
+    title: "Merged elsewhere",
+    url: "https://github.com/threadlines/threadlines/pull/7",
+    headBranch: "feature/pull-requests",
+    state: "merged",
+    settledAt: "2026-10-26T09:59:30.000Z",
+  } satisfies PullRequestObservation;
+  const open = (observedAt: number | null): ThreadPullRequest => ({
+    number: 7,
+    state: "open",
+    isDraft: true,
+    title: "Open here",
+    url: RECORD.url,
+    repository: "threadlines/threadlines",
+    settledAt: null,
+    autoMergeEnabled: true,
+    headBranch: "feature/pull-requests",
+    diffStat: null,
+    observedAt,
+  });
+
+  it("shows what a newer read anywhere saw, and keeps a read newer than the record", () => {
+    // A checkout's status cannot say when it read, so the record is newer.
+    expect(withPullRequestRecord(open(null), RECORD)).toMatchObject({
+      state: "merged",
+      isDraft: false,
+      autoMergeEnabled: false,
+      settledAt: "2026-10-26T09:59:30.000Z",
+    });
+    expect(withPullRequestRecord(open(Date.parse("2026-10-26T09:00:00.000Z")), RECORD).state).toBe(
+      "merged",
+    );
+    expect(withPullRequestRecord(open(Date.parse("2026-10-26T11:00:00.000Z")), RECORD).state).toBe(
+      "open",
+    );
+    // Another pull request's record says nothing about this one.
+    expect(withPullRequestRecord(open(null), { ...RECORD, number: 8 }).state).toBe("open");
+  });
+
+  it("moves a listing row to the newer state and checks, and leaves an older record alone", () => {
+    const row = entry({
+      number: 7,
+      state: "open",
+      checksState: "pending",
+      observedAt: "2026-10-26T09:00:00.000Z",
+    });
+    const recorded = withPullRequestRecordOnEntry(row, {
+      ...RECORD,
+      checks: { headSha: "abc123", state: "success", observedAt: RECORD.observedAt },
+    });
+    expect(recorded).toMatchObject({ state: "merged", checksState: "success" });
+    expect(
+      withPullRequestRecordOnEntry(row, { ...RECORD, observedAt: "2026-10-26T08:00:00.000Z" }),
+    ).toBe(row);
+  });
+});
+
 describe("withListedLanding", () => {
   const fromStatus: ThreadPullRequest = {
     number: 7,
@@ -855,6 +925,7 @@ describe("withListedLanding", () => {
     autoMergeEnabled: false,
     headBranch: "feature/pull-requests",
     diffStat: null,
+    observedAt: null,
   };
   const listed: ThreadPullRequest = { ...fromStatus, settledAt: "2026-09-17T09:00:00.000Z" };
 
@@ -901,6 +972,7 @@ describe("resolveThreadPullRequestsSettledAt", () => {
     autoMergeEnabled: false,
     headBranch: "feature/pull-requests",
     diffStat: null,
+    observedAt: null,
   };
   const linkedThread = thread({
     linkedPullRequests: [

@@ -1,3 +1,4 @@
+import { usePullRequestRecords } from "../../environments/pullRequests/pullRequestRecordsStore";
 import {
   ArchiveIcon,
   CheckIcon,
@@ -59,6 +60,7 @@ import { prStatusIndicator, terminalStatusFromRunningIds } from "../ThreadStatus
 import {
   leadThreadPullRequest,
   pullRequestFromGitStatus,
+  withPullRequestRecord,
   withListedLanding,
   type ThreadPullRequest,
 } from "../pull-requests/pullRequests.logic";
@@ -764,6 +766,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     environmentId: thread.environmentId,
     cwd: thread.branch !== null ? gitCwd : null,
   });
+  const pullRequestRecords = usePullRequestRecords(thread.environmentId);
   // The +/- is the thread's own running total, summed by the server across the
   // turns it has taken -- not the checkout's working tree, which several
   // threads can share and which would print the same numbers on each of them.
@@ -780,8 +783,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // that knows a merge or a close; the listing covers a thread whose checkout
   // has moved on, and dates a landing the status cannot.
   const statusPullRequest = pullRequestFromGitStatus(thread.branch, gitStatus.data);
+  // Weighed against what the computer last heard from any read, so the badge
+  // says what the composer's row and the chat's links say.
+  const recordedStatusPullRequest =
+    statusPullRequest &&
+    withPullRequestRecord(
+      statusPullRequest,
+      pullRequestRecords(statusPullRequest.repository, statusPullRequest.number),
+    );
   const pullRequests = threadPullRequestList(
-    statusPullRequest ? withListedLanding(statusPullRequest, listPullRequest) : listPullRequest,
+    recordedStatusPullRequest
+      ? withListedLanding(recordedStatusPullRequest, listPullRequest)
+      : listPullRequest,
     linkedPullRequests,
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);

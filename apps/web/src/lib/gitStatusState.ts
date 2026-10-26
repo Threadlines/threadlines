@@ -1,14 +1,20 @@
+import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
+import {
+  pullRequestRecordKey,
+  usePullRequestRecordsStore,
+} from "../environments/pullRequests/pullRequestRecordsStore";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
   type GitManagerServiceError,
+  type PullRequestObservation,
   type VcsStatusLocalResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { applyGitStatusStreamEvent } from "@threadlines/shared/git";
 import * as Cause from "effect/Cause";
 import { Atom } from "effect/unstable/reactivity";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
@@ -402,10 +408,48 @@ export function useGitStatus(target: GitStatusTarget): GitStatusState {
     [target.environmentId, target.cwd],
   );
 
-  const state = useAtomValue(
+  const atomState = useAtomValue(
     targetKey !== null ? gitStatusStateAtom(targetKey) : EMPTY_GIT_STATUS_ATOM,
   );
-  return targetKey === null ? EMPTY_GIT_STATUS_STATE : state;
+  const state = targetKey === null ? EMPTY_GIT_STATUS_STATE : atomState;
+  // The status may carry an answer kept from an earlier read; what the
+  // computer has heard since about the same pull request, from any read, wins.
+  const statusPullRequest = state.data?.pr ?? null;
+  const reference = statusPullRequest ? parsePullRequestUrl(statusPullRequest.url) : null;
+  const record = usePullRequestRecordsStore((records) =>
+    target.environmentId && reference && statusPullRequest
+      ? records.byEnvironmentId[target.environmentId]?.[
+          pullRequestRecordKey(reference.repository, statusPullRequest.number)
+        ]
+      : undefined,
+  );
+  return useMemo(() => withRecordedStatusPullRequest(state, record), [state, record]);
+}
+
+/** A status with its pull request as the computer's shared record of it says. */
+function withRecordedStatusPullRequest(
+  state: GitStatusState,
+  record: PullRequestObservation | undefined,
+): GitStatusState {
+  const data = state.data;
+  const pr = data?.pr;
+  if (data === null || !pr || record === undefined || record.number !== pr.number) {
+    return state;
+  }
+  const open = record.state === "open";
+  const autoMergeEnabled = open ? (record.autoMergeEnabled ?? pr.autoMergeEnabled) : false;
+  return {
+    ...state,
+    data: {
+      ...data,
+      pr: {
+        ...pr,
+        state: record.state,
+        title: record.title,
+        ...(autoMergeEnabled === undefined ? {} : { autoMergeEnabled }),
+      },
+    },
+  };
 }
 
 function unwatchGitStatus(targetKey: string): void {

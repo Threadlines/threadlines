@@ -1,3 +1,4 @@
+import { useAllPullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import {
   scopedProjectKey,
   scopedThreadKey,
@@ -231,6 +232,9 @@ export function useInboxThreads(): InboxThreads {
       [inboxThreads, openPullRequests.entries, projects],
     ),
   );
+  // What each computer last heard about its pull requests, whoever asked: a
+  // merge one read saw files its thread away without waiting for these lists.
+  const pullRequestRecords = useAllPullRequestRecords();
   const pullRequestByThreadKey = useMemo(() => {
     const byThreadKey = new Map<string, ThreadPullRequest>();
     if (
@@ -248,6 +252,7 @@ export function useInboxThreads(): InboxThreads {
         settledEntries: settledPullRequestEntries,
         lookups: pullRequestLookups,
         projects,
+        records: pullRequestRecords(thread.environmentId),
       });
       if (pullRequest) {
         byThreadKey.set(
@@ -262,6 +267,7 @@ export function useInboxThreads(): InboxThreads {
     openPullRequests.entries,
     projects,
     pullRequestLookups,
+    pullRequestRecords,
     settledPullRequestEntries,
   ]);
   // The pull requests each thread's agent opened on other branches, from the
@@ -281,6 +287,7 @@ export function useInboxThreads(): InboxThreads {
         openEntries: openPullRequests.entries,
         settledEntries: settledPullRequestEntries,
         lookups: pullRequestLookups,
+        records: pullRequestRecords(thread.environmentId),
       });
       if (linked.length > 0) {
         byThreadKey.set(threadKey, linked);
@@ -293,6 +300,7 @@ export function useInboxThreads(): InboxThreads {
     projects,
     pullRequestByThreadKey,
     pullRequestLookups,
+    pullRequestRecords,
     settledPullRequestEntries,
   ]);
 

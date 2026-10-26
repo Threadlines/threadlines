@@ -184,7 +184,13 @@ async function renderComposerPullRequest(
         pullRequest={{
           environmentId: ENVIRONMENT_ID,
           reference: REFERENCE,
-          pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+          pullRequest: {
+            ...DETAIL,
+            autoMergeEnabled: false,
+            settledAt: null,
+            diffStat: null,
+            observedAt: null,
+          },
           pushedHead: null,
           projectTitle: DETAIL.projectTitle,
           onOpen,
@@ -412,7 +418,13 @@ describe("Composer pull request merge controls", () => {
           pullRequest={{
             environmentId: ENVIRONMENT_ID,
             reference: REFERENCE,
-            pullRequest: { ...DETAIL, autoMergeEnabled: false, settledAt: null, diffStat: null },
+            pullRequest: {
+              ...DETAIL,
+              autoMergeEnabled: false,
+              settledAt: null,
+              diffStat: null,
+              observedAt: null,
+            },
             pushedHead,
             projectTitle: DETAIL.projectTitle,
             onOpen: vi.fn(),
@@ -590,6 +602,7 @@ describe("Composer pull request row", () => {
               autoMergeEnabled: false,
               settledAt: merged.mergedAt,
               diffStat: { additions: merged.additions, deletions: merged.deletions },
+              observedAt: null,
             },
             pushedHead: null,
             projectTitle: merged.projectTitle,

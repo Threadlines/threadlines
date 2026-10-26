@@ -162,6 +162,7 @@ export function ComposerPullRequestRow({
     state: row.state,
     isDraft: row.isDraft,
     autoMergeEnabled: row.autoMergeEnabled,
+    observedAt: row.observedAt,
   };
 
   // The number, the checks chip and the close button always stay. As the

@@ -1,3 +1,4 @@
+import { useAllPullRequestRecords } from "~/environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
   ProjectId,
@@ -34,6 +35,7 @@ import { useEffect, useMemo, useState } from "react";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import {
   mergePullRequestListResults,
+  withPullRequestRecordOnEntry,
   type PullRequestEntry,
   type PullRequestProjectFailure,
 } from "~/components/pull-requests/pullRequests.logic";
@@ -601,6 +603,7 @@ const PULL_REQUEST_LIST_STATES = [
  */
 export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
   const environments = usePullRequestEnvironments();
+  const pullRequestRecords = useAllPullRequestRecords();
 
   return useQueries({
     queries: environments.flatMap((environment) =>
@@ -613,20 +616,23 @@ export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
     // its own tab, so a pull request two computers both list is one row here
     // too and the Project filter does not offer it twice.
     combine: (results) =>
-      PULL_REQUEST_LIST_STATES.flatMap(
-        (state, stateIndex) =>
-          mergePullRequestListResults({
-            state,
-            results: environments.map((environment, environmentIndex) => {
-              const result =
-                results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
-              return {
-                environmentId: environment.environmentId,
-                environmentLabel: environment.label,
-                data: result && !result.isPlaceholderData ? result.data : undefined,
-              };
-            }),
-          }).entries,
+      PULL_REQUEST_LIST_STATES.flatMap((state, stateIndex) =>
+        mergePullRequestListResults({
+          state,
+          results: environments.map((environment, environmentIndex) => {
+            const result = results[environmentIndex * PULL_REQUEST_LIST_STATES.length + stateIndex];
+            return {
+              environmentId: environment.environmentId,
+              environmentLabel: environment.label,
+              data: result && !result.isPlaceholderData ? result.data : undefined,
+            };
+          }),
+        }).entries.map((entry) =>
+          withPullRequestRecordOnEntry(
+            entry,
+            pullRequestRecords(entry.environmentId)(entry.repository, entry.number),
+          ),
+        ),
       ),
   });
 }
@@ -750,6 +756,7 @@ export function usePullRequestLists(input: {
   const environments = usePullRequestEnvironments();
   const enabled = input.enabled ?? true;
   const state = input.state;
+  const pullRequestRecords = useAllPullRequestRecords();
 
   return useQueries({
     queries: environments.map((environment) => ({
@@ -796,9 +803,19 @@ export function usePullRequestLists(input: {
       const hasNoAnswer = results.length > 0 && usableData.every((data) => data === undefined);
       const allFailed = results.every((result) => result.error !== null);
 
+      // Each row as the newest read of it says; one that has since left this
+      // listing's state (merged while the open listing still carries it) goes.
+      const entries = merged.entries.flatMap((entry) => {
+        const recorded = withPullRequestRecordOnEntry(
+          entry,
+          pullRequestRecords(entry.environmentId)(entry.repository, entry.number),
+        );
+        return recorded.state === state ? [recorded] : [];
+      });
+
       return {
         environments,
-        entries: merged.entries,
+        entries,
         failures: merged.failures,
         environmentFailures: results.flatMap((result, index) => {
           const environment = environments[index];

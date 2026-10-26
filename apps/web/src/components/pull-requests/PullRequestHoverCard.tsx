@@ -14,7 +14,13 @@
  *
  * @module PullRequestHoverCard
  */
-import type { EnvironmentId, PullRequestRef, PullRequestState } from "@threadlines/contracts";
+import { useNewestPullRequestRecord } from "../../environments/pullRequests/pullRequestRecordsStore";
+import type {
+  EnvironmentId,
+  PullRequestObservation,
+  PullRequestRef,
+  PullRequestState,
+} from "@threadlines/contracts";
 import { pullRequestArmedToMerge } from "@threadlines/shared/pullRequestPolling";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
@@ -48,6 +54,32 @@ export interface PullRequestChipState {
   readonly isDraft: boolean;
   /** The host is landing it on its own: armed, or already in the merge queue. */
   readonly autoMergeEnabled: boolean;
+  /** When the read behind it began (milliseconds); null where the source does not say. */
+  readonly observedAt: number | null;
+}
+
+/** A computer's shared record of a pull request, as a chip draws it. */
+function chipStateFromRecord(record: PullRequestObservation): PullRequestChipState {
+  const open = record.state === "open";
+  return {
+    state: record.state,
+    isDraft: open && record.isDraft === true,
+    autoMergeEnabled: open && record.autoMergeEnabled === true,
+    observedAt: Date.parse(record.observedAt),
+  };
+}
+
+/** The newer of two answers about one pull request; one that cannot say when it read loses. */
+function newerChipState(
+  surface: PullRequestChipState | null,
+  record: PullRequestChipState | null,
+): PullRequestChipState | null {
+  if (surface === null || record === null) return surface ?? record;
+  return surface.observedAt !== null &&
+    record.observedAt !== null &&
+    surface.observedAt > record.observedAt
+    ? surface
+    : record;
 }
 
 /** Everything the card needs to draw itself and then read the rest. */
@@ -94,7 +126,14 @@ export function usePullRequestChip(
   readonly payload: PullRequestHoverCardPayload | null;
 } {
   const surface = useContext(PullRequestChipSurfaceContext);
-  const state = surface?.stateByKey.get(chipKey(repository, number)) ?? null;
+  // What any computer last heard about it, whoever asked: a link in an agent's
+  // transcript, outside any thread's surface, still shows its state.
+  const record = useNewestPullRequestRecord(repository, number);
+  const recordState = useMemo(() => (record ? chipStateFromRecord(record) : null), [record]);
+  const state = newerChipState(
+    surface?.stateByKey.get(chipKey(repository, number)) ?? null,
+    recordState,
+  );
   const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
   return useMemo(
     () => ({
@@ -108,6 +147,7 @@ export function usePullRequestChip(
               state: state?.state ?? "open",
               isDraft: state?.isDraft ?? false,
               autoMergeEnabled: state?.autoMergeEnabled ?? false,
+              observedAt: state?.observedAt ?? null,
             },
     }),
     [number, scope, state],
@@ -171,6 +211,7 @@ export function PullRequestHoverCardProvider({
         state: entry.state,
         isDraft: entry.isDraft,
         autoMergeEnabled: entry.autoMergeEnabled === true,
+        observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
       });
     }
     // The thread's own resolution wins: it is the read that can see a branch
@@ -182,6 +223,7 @@ export function PullRequestHoverCardProvider({
           state: pullRequest.state,
           isDraft: pullRequest.isDraft,
           autoMergeEnabled: pullRequest.autoMergeEnabled,
+          observedAt: pullRequest.observedAt,
         });
       }
     }
@@ -235,13 +277,13 @@ function PullRequestHoverCardContent({
   state,
   isDraft,
   autoMergeEnabled,
+  observedAt,
 }: PullRequestHoverCardPayload) {
   const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
   const detail = query.data;
-  // A read remembered from earlier does not outrank the caller's word that
-  // the pull request has merged or closed since, until it is read again.
+  // The newer read says what state it is in: this detail, or the chip's word.
   const stateSource = pullRequestDetailOutranksListing({
-    listedState: state,
+    listed: { state, observedAt },
     detail,
     detailCurrent: query.status === "success" && (query.isFetchedAfterMount || !query.isStale),
   })

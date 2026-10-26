@@ -245,6 +245,10 @@ export interface WsRpcClient {
     readonly updateComment: RpcUnaryMethod<typeof WS_METHODS.pullRequestsUpdateComment>;
     readonly reviewerCandidates: RpcUnaryMethod<typeof WS_METHODS.pullRequestsReviewerCandidates>;
     readonly requestReviewers: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRequestReviewers>;
+    /** Only on servers reporting the `pullRequestObservations` capability. */
+    readonly subscribeObservations: RpcStreamMethod<
+      typeof WS_METHODS.pullRequestsSubscribeObservations
+    >;
   };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
@@ -841,6 +845,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
       lookup: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsLookup](input)),
+      subscribeObservations: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.pullRequestsSubscribeObservations]({}),
+          listener,
+          { ...options, tag: WS_METHODS.pullRequestsSubscribeObservations },
+        ),
       detail: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
       activity: (input) =>
