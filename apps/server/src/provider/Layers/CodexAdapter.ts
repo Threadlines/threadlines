@@ -2134,6 +2134,7 @@ export function mapToRuntimeEvents(
         type: "hook.completed",
         payload: {
           hookId: payload.run.id,
+          hookEvent: payload.run.eventName,
           outcome: hookOutcomeFromStatus(payload.run.status),
           ...(output ? { output } : {}),
           ...(payload.run.statusMessage ? { stderr: payload.run.statusMessage } : {}),
