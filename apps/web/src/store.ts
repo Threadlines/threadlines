@@ -35,7 +35,7 @@ import type {
   OrchestrationThreadMove,
   ProjectId,
   RemoteChildStart,
-  SettingUpChild,
+  LocalChildStart,
   RemoteChildThread,
   ScopedProjectRef,
   ScopedThreadRef,
@@ -121,7 +121,7 @@ import {
   childRequestStateOn,
   hasPendingChildApproval,
   remoteChildStartsOf,
-  settingUpChildrenOf,
+  localChildStartsOf,
 } from "@threadlines/shared/childThreads";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
@@ -435,8 +435,8 @@ function childRequestCounts(thread: {
 /**
  * The parts of a thread's family it has no thread for (docs/design/fleet.md):
  * the thread on another computer whose agent started it, and on a parent its
- * children on linked computers and the ones it started here that are still
- * being set up. A loaded thread's open requests know them first-hand;
+ * children on linked computers and the ones it started here (one being set up
+ * has no thread yet). A loaded thread's open requests know them first-hand;
  * without them, the shell's copies stand. Empty lists are left out, so two
  * copies of the same family compare alike.
  */
@@ -445,10 +445,10 @@ function remoteFamily(thread: {
   readonly childRequests?: OrchestrationChildRequestState | undefined;
   readonly remoteChildren?: ReadonlyArray<RemoteChildThread> | undefined;
   readonly remoteChildStarts?: ReadonlyArray<RemoteChildStart> | undefined;
-  readonly settingUpChildren?: ReadonlyArray<SettingUpChild> | undefined;
+  readonly localChildStarts?: ReadonlyArray<LocalChildStart> | undefined;
 }): Pick<
   ThreadShell,
-  "remoteOrigin" | "remoteChildren" | "remoteChildStarts" | "settingUpChildren"
+  "remoteOrigin" | "remoteChildren" | "remoteChildStarts" | "localChildStarts"
 > {
   const children =
     thread.childRequests !== undefined
@@ -458,15 +458,15 @@ function remoteFamily(thread: {
     thread.childRequests !== undefined
       ? remoteChildStartsOf(thread.childRequests)
       : (thread.remoteChildStarts ?? []);
-  const settingUp =
+  const localStarts =
     thread.childRequests !== undefined
-      ? settingUpChildrenOf(thread.childRequests)
-      : (thread.settingUpChildren ?? []);
+      ? localChildStartsOf(thread.childRequests)
+      : (thread.localChildStarts ?? []);
   return {
     ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
     ...(children.length > 0 ? { remoteChildren: children } : {}),
     ...(starts.length > 0 ? { remoteChildStarts: starts } : {}),
-    ...(settingUp.length > 0 ? { settingUpChildren: settingUp } : {}),
+    ...(localStarts.length > 0 ? { localChildStarts: localStarts } : {}),
   };
 }
 
@@ -508,9 +508,9 @@ function remoteChildrenEqual(
   );
 }
 
-function settingUpChildrenEqual(
-  left: ReadonlyArray<SettingUpChild> | undefined,
-  right: ReadonlyArray<SettingUpChild> | undefined,
+function localChildStartsEqual(
+  left: ReadonlyArray<LocalChildStart> | undefined,
+  right: ReadonlyArray<LocalChildStart> | undefined,
 ): boolean {
   const a = left ?? [];
   const b = right ?? [];
@@ -615,7 +615,7 @@ function sidebarLineage(
     | "remoteOrigin"
     | "remoteChildren"
     | "remoteChildStarts"
-    | "settingUpChildren"
+    | "localChildStarts"
     | "move"
   >,
 ): Pick<
@@ -632,7 +632,7 @@ function sidebarLineage(
   | "remoteOrigin"
   | "remoteChildren"
   | "remoteChildStarts"
-  | "settingUpChildren"
+  | "localChildStarts"
   | "moveStatus"
 > {
   const moveStatus = threadMoveStatus(thread.move);
@@ -1197,7 +1197,7 @@ function sidebarThreadSummariesEqual(
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
-    settingUpChildrenEqual(left.settingUpChildren, right.settingUpChildren) &&
+    localChildStartsEqual(left.localChildStarts, right.localChildStarts) &&
     left.moveStatus === right.moveStatus
   );
 }
@@ -1293,7 +1293,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
-    settingUpChildrenEqual(left.settingUpChildren, right.settingUpChildren) &&
+    localChildStartsEqual(left.localChildStarts, right.localChildStarts) &&
     threadMovesEqual(left.move, right.move) &&
     movedFromEqual(left.movedFrom, right.movedFrom) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&

@@ -623,7 +623,7 @@ describe("child thread families in the inbox", () => {
     const [settingUp] = resolveRemoteFamilyChildren({
       parent: {
         environmentId: ENVIRONMENT_ID,
-        settingUpChildren: [
+        localChildStarts: [
           {
             requestId: ChildRequestId.make("request-changelog"),
             childThreadId: ThreadId.make("thread-changelog"),

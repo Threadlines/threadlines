@@ -28,7 +28,7 @@ import type {
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   RemoteChildStart,
-  SettingUpChild,
+  LocalChildStart,
   RemoteChildThread,
   ThreadRemoteOrigin,
   OrchestrationThreadMove,
@@ -376,8 +376,8 @@ export interface ThreadShell {
   remoteChildren?: ReadonlyArray<RemoteChildThread>;
   /** On a parent: starts asked of linked computers with no thread there yet. */
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
-  /** On a parent: children started here whose thread isn't made yet. */
-  settingUpChildren?: ReadonlyArray<SettingUpChild>;
+  /** On a parent: children started here still at work or being set up. */
+  localChildStarts?: ReadonlyArray<LocalChildStart>;
   /**
    * Moving, or moved, to a linked computer (OrchestrationThreadMove): frozen
    * here from the start, and read-only once `movedAway` is set. Absent or
@@ -491,8 +491,8 @@ export interface SidebarThreadSummary {
   remoteChildren?: ReadonlyArray<RemoteChildThread>;
   /** See ThreadShell.remoteChildStarts. */
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
-  /** See ThreadShell.settingUpChildren. */
-  settingUpChildren?: ReadonlyArray<SettingUpChild>;
+  /** See ThreadShell.localChildStarts. */
+  localChildStarts?: ReadonlyArray<LocalChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
   /** See ThreadShell.move: only how far it got, for the row's status word. Absent: neither. */

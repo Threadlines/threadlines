@@ -54,12 +54,16 @@ create it **in the same command** as its first turn:
 
 1. **worktree** (if the send asked for one): reuse a worktree already on the
    run's branch, or the branch alone, else cut it (the client path resolves
-   the fresh base first, as today). Nothing is recorded yet; the branch name
-   is fixed by the run's key (a first send's comes from its command id, not
-   the client's placeholder), so a re-run finds what an interrupted one cut
-   and no other run ever shares it. Git keeps a worktree locked while it adds
-   it, so a locked one is an add a crash cut short: it is removed and made
-   again, in a folder of its own in case the cut-off git is still running.
+   the fresh base first, as today). Nothing is recorded yet. The branch is
+   the run's alone: named from its key with 64 bits (`threadlines/<16 hex>`;
+   a first send's comes from its command id, not the client's placeholder),
+   so a re-run finds what an interrupted one cut and no other run shares it.
+   Git keeps a worktree locked `initializing` while it adds it (the add runs
+   untranslated), so one still locked that way is an add a crash cut short:
+   it is removed and made again. Any other lock is someone's on purpose: the
+   setup stops and says so. A worktree made again from a branch an earlier
+   run left always gets a folder of its own, in case the cut-off git is
+   still running and later cleans up the usual one.
 2. **start**: one server-only command, `thread.start`, decided as a sequence
    (`decideCommandSequence`, already used by `thread.children.stop`):
    `thread.create` (with the worktree's branch and path) if the thread is
@@ -172,8 +176,13 @@ harmless: the turn's session restarts in the new checkout
   children an older build left.
 - **The sidebar family** shows a child started here while it is set up, as
   it shows a start on a linked computer: the parent's shell carries
-  `settingUpChildren` (its `starting` local start requests), drawn as a
-  "Setting up" row until the child's own thread is in the list.
+  `localChildStarts` (its open local start requests past the user's yes),
+  and the family draws a "Setting up" row for each whose thread isn't in the
+  list. The same rule covers the hand-over: the parent's request moving on
+  and the child's thread arriving come separately (detail and shell streams,
+  a coalesced shell batch), and the row stays until the thread is there.
+  Archiving or deleting a child settles its request, so nothing is stood in
+  for forever.
 - **Implement plan in a new thread** (ChatView) dispatches `thread.create`,
   then a separate `thread.turn.start`; it becomes one turn start with
   `bootstrap.createThread`, so it gets the same atomic start.
@@ -234,6 +243,14 @@ harmless: the turn's session restarts in the new checkout
   the start), refusal cleanup ownership, a late scheduled checkpoint, pending
   children in the room tools, the 500-activity claim scan, the implement-plan
   flow, the terminal reveal across promotion.
+- Second diff review: Sol, 7 findings, all fixed: any lock was taken for a
+  cut add (now only git's `initializing`, with the add untranslated); lock
+  state came from a second, heavy listing (now the plain listing reports
+  it); branch-only recovery reused the usual folder; 32-bit branch tokens
+  (now 64); mixed interruption causes (now any interruption is re-raised,
+  the script launch included); the sidebar could drop the setting-up row
+  before the child arrived (the row now stands in until the child's thread
+  is in the list; reordering events could not guarantee it).
 - Diff review: Sol, 3 findings, all fixed: a retry adopting a half-checked-out
   worktree (the lock check), cleanup removing a worktree another run adopted
   (branches named by the run key), post-start steps swallowing an

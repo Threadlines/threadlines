@@ -42,13 +42,14 @@ export const childRequestCommandId = (id: string, step: string): CommandId =>
   CommandId.make(`server:child-request:${id}:${step}`);
 
 /**
- * The child's worktree branch: the same placeholder shape a new thread gets
- * (`threadlines/<8 hex>`, see buildTemporaryWorktreeBranchName), so the
- * rename by kind after its first turn applies, but fixed by the request so a
- * resumed setup finds the worktree an interrupted one made.
+ * The child's worktree branch: a placeholder (`threadlines/<16 hex>`, see
+ * isTemporaryWorktreeBranch), so the rename by kind after its first turn
+ * applies, but fixed by the request so a resumed setup finds the worktree an
+ * interrupted one made. 64 bits: a branch belongs to one setup, so a setup
+ * never adopts, or cleans up, another's worktree.
  */
 export const childWorktreeBranch = (requestId: string): string =>
-  `${WORKTREE_BRANCH_PREFIX}/${digest(["child-worktree", requestId]).slice(0, 8)}`;
+  `${WORKTREE_BRANCH_PREFIX}/${digest(["child-worktree", requestId]).slice(0, 16)}`;
 
 /**
  * A first send's worktree branch: fixed by the command id for the same
@@ -56,4 +57,4 @@ export const childWorktreeBranch = (requestId: string): string =>
  * made, and no other command's setup ever shares it.
  */
 export const firstSendWorktreeBranch = (commandId: string): string =>
-  `${WORKTREE_BRANCH_PREFIX}/${digest(["first-send-worktree", commandId]).slice(0, 8)}`;
+  `${WORKTREE_BRANCH_PREFIX}/${digest(["first-send-worktree", commandId]).slice(0, 16)}`;

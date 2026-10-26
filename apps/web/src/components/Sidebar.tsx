@@ -789,7 +789,7 @@ export default function Sidebar() {
       remoteChildrenOf: (parent) =>
         (parent.thread.remoteChildren?.length ?? 0) +
           (parent.thread.remoteChildStarts?.length ?? 0) +
-          (parent.thread.settingUpChildren?.length ?? 0) ===
+          (parent.thread.localChildStarts?.length ?? 0) ===
         0
           ? NO_REMOTE_CHILDREN
           : resolveRemoteFamilyChildren({

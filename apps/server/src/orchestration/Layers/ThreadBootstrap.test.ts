@@ -13,12 +13,14 @@ import {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { ServerConfig } from "../../config.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
@@ -186,6 +188,7 @@ const makeWorld = () => {
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(OrchestrationEngineService, engine as never),
+        Layer.succeed(ServerConfig, { worktreesDir: "/worktrees" } as never),
         Layer.mock(ProjectionSnapshotQuery)({
           getThreadDetailById: (threadId) =>
             Effect.succeed(Option.fromNullishOr(threads.get(threadId))),
@@ -205,7 +208,13 @@ const makeWorld = () => {
             ),
         }),
         Layer.mock(GitWorkflowService)({
-          listWorktrees: () => Effect.succeed(worktrees.map((entry) => ({ ...entry }))),
+          listWorktrees: () =>
+            Effect.succeed(
+              worktrees.map((entry) => ({
+                ...entry,
+                ...(locks.has(entry.path) ? { lockReason: locks.get(entry.path)! } : {}),
+              })),
+            ),
           listRefs: () =>
             Effect.succeed({
               refs: [...branches].map((name) => ({
@@ -218,21 +227,6 @@ const makeWorld = () => {
               hasPrimaryRemote: false,
               nextCursor: null,
               totalCount: branches.size,
-            }),
-          listWorktreeStatuses: () =>
-            Effect.succeed({
-              worktrees: worktrees.map((entry) => ({
-                path: entry.path,
-                refName: entry.branch,
-                isRoot: false,
-                dirty: false,
-                dirtyUnknown: false,
-                unmergedCommitCount: 0,
-                unrelatedHistory: false,
-                mergedByContent: false,
-                missing: false,
-                lockReason: locks.get(entry.path) ?? null,
-              })),
             }),
           resolveFreshWorktreeBase: (request) =>
             Effect.succeed({ refName: `origin/${request.branch}` } as never),
@@ -370,7 +364,10 @@ describe("ThreadBootstrap.startChild", () => {
             command.activity.kind === "setup-script.started",
           "interrupt",
         );
-        expect(Exit.isFailure(yield* Effect.exit(startChild()))).toBe(true);
+        const cutAfterStart = yield* Effect.exit(startChild());
+        expect(Exit.isFailure(cutAfterStart) && Cause.hasInterruptsOnly(cutAfterStart.cause)).toBe(
+          true,
+        );
         // Run once more after it finished: answered from the start's receipt.
         const before = world.accepted.length;
         yield* startChild();
@@ -407,10 +404,10 @@ describe("ThreadBootstrap.startChild", () => {
     }).pipe(Effect.provide(world.layer));
   });
 
-  it.effect("makes again a worktree whose add a crash cut short, rather than work in it", () => {
+  it.effect("makes again a worktree whose add a crash cut short, in a folder of its own", () => {
     const world = makeWorld();
     const branch = childWorktreeBranch(REQUEST);
-    const halfMade = "/worktrees/repo/half-made";
+    const halfMade = worktreePathFor(branch);
     world.worktrees.push({ path: halfMade, branch });
     world.branches.add(branch);
     world.locks.set(halfMade, "initializing");
@@ -418,11 +415,28 @@ describe("ThreadBootstrap.startChild", () => {
       yield* startChild();
 
       expect(world.removedWorktrees).toEqual([halfMade]);
-      // A folder of its own: a cut-off git still running cleans up only the old one.
+      // Never the usual folder: a cut-off git still running cleans up only that one.
       const [made] = world.createWorktreeCalls as Array<{ readonly path: string }>;
       expect(made).toMatchObject({ cwd: PROJECT_CWD, refName: branch });
       expect(made?.path).toMatch(new RegExp(`^${halfMade}-[0-9a-f]{4}$`));
       expect(world.starts()[0]?.create?.worktreePath).toBe(made?.path);
+    }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("leaves alone a worktree someone locked on purpose, and says so", () => {
+    const world = makeWorld();
+    const branch = childWorktreeBranch(REQUEST);
+    const pinned = worktreePathFor(branch);
+    world.worktrees.push({ path: pinned, branch });
+    world.locks.set(pinned, "on a USB drive");
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(startChild());
+
+      expect(error.stage).toBe("worktree");
+      expect(error.message).toContain(`${pinned} is locked (on a USB drive)`);
+      expect(world.removedWorktrees).toEqual([]);
+      expect(world.createWorktreeCalls).toEqual([]);
+      expect(world.starts()).toEqual([]);
     }).pipe(Effect.provide(world.layer));
   });
 
@@ -549,7 +563,9 @@ describe("ThreadBootstrap.runTurnStart", () => {
     const world = makeWorld();
     return Effect.gen(function* () {
       world.failOn(isStart, "interrupt");
-      expect(Exit.isFailure(yield* Effect.exit(runTurnStart(firstSend())))).toBe(true);
+      const cut = yield* Effect.exit(runTurnStart(firstSend()));
+      // Still an interruption to whoever was waiting, not a failed send.
+      expect(Exit.isFailure(cut) && Cause.hasInterruptsOnly(cut.cause)).toBe(true);
       // No half-made thread: only the worktree, which the retry reuses.
       expect(world.threads.size).toBe(0);
       yield* runTurnStart(firstSend());

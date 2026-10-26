@@ -1798,19 +1798,20 @@ const REMOTE_PHASE_PILLS: Record<InboxRemoteChildPhase, ThreadStatusPill | null>
 /**
  * A parent's children the app has no thread for, from the parent's record:
  * its children on computers this app can't see (`remoteChildren`, then
- * `remoteChildStarts`), then the ones it started here that are still being
- * set up (`settingUpChildren`). A child on a computer whose threads the app
- * has is left out: its thread speaks for it, or it is gone there. So is a
- * start that computer already took, since its thread shows up there; a start
- * it hasn't taken yet has no thread anywhere, so it stays. A child being set
- * up here is left out once its thread is in the list (`hasThread`).
- * `computerLabel` names a computer the way this app knows it, falling back to
- * the name the parent last heard.
+ * `remoteChildStarts`), then the ones it started here whose thread isn't in
+ * the list (`localChildStarts`, shown as setting up). A child on a computer
+ * whose threads the app has is left out: its thread speaks for it, or it is
+ * gone there. So is a start that computer already took, since its thread
+ * shows up there; a start it hasn't taken yet has no thread anywhere, so it
+ * stays. A child started here stands in until its own thread is in the list
+ * (`hasThread`), whichever of the two arrives first. `computerLabel` names a
+ * computer the way this app knows it, falling back to the name the parent
+ * last heard.
  */
 export function resolveRemoteFamilyChildren(input: {
   readonly parent: Pick<
     SidebarThreadSummary,
-    "environmentId" | "remoteChildren" | "remoteChildStarts" | "settingUpChildren"
+    "environmentId" | "remoteChildren" | "remoteChildStarts" | "localChildStarts"
   >;
   readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
   readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
@@ -1837,7 +1838,7 @@ export function resolveRemoteFamilyChildren(input: {
       status: REMOTE_PHASE_PILLS[start.status],
       isDone: false,
     }));
-  const settingUp = (input.parent.settingUpChildren ?? [])
+  const settingUp = (input.parent.localChildStarts ?? [])
     .filter((child) => !input.hasThread(child.childThreadId))
     .map((child): InboxRemoteChild => ({
       threadKey: `setup:${child.requestId}`,

@@ -1872,18 +1872,18 @@ export const RemoteChildStart = Schema.Struct({
 export type RemoteChildStart = typeof RemoteChildStart.Type;
 
 /**
- * A child a parent's agent started on this computer whose thread isn't made
- * yet: its worktree is being cut, and the thread appears with its first turn
- * (docs/design/thread-setup-state.md). The sidebar shows it in the parent's
- * family until then.
+ * A child a parent's agent started on this computer, while its start request
+ * is open: being set up (its thread is made with its first turn, once its
+ * worktree is ready; docs/design/thread-setup-state.md) or at work. The
+ * sidebar shows one whose thread it doesn't have yet in the parent's family.
  */
-export const SettingUpChild = Schema.Struct({
+export const LocalChildStart = Schema.Struct({
   requestId: ChildRequestId,
   childThreadId: ThreadId,
   title: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
-export type SettingUpChild = typeof SettingUpChild.Type;
+export type LocalChildStart = typeof LocalChildStart.Type;
 
 /**
  * Something still owed to a linked computer, in the parent's outbox: drop a
@@ -2346,8 +2346,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** On a parent: starts asked of linked computers with no thread there yet. Absent: none. */
   remoteChildStarts: Schema.optional(Schema.Array(RemoteChildStart)),
-  /** On a parent: children started here whose thread isn't made yet. Absent: none. */
-  settingUpChildren: Schema.optional(Schema.Array(SettingUpChild)),
+  /** On a parent: children started here still at work or being set up. Absent: none. */
+  localChildStarts: Schema.optional(Schema.Array(LocalChildStart)),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox

@@ -799,6 +799,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             }),
           ),
           request("local", {}),
+          // One at work here (listed until its thread reaches the sidebar),
+          // and one still waiting for the user's yes (not listed).
+          request("local-working", { status: "running" }),
+          request("local-asking", { status: "awaiting_user" }),
         ],
         remoteChildren: [remoteChild, startedChild],
       });
@@ -843,24 +847,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           createdAt: "2026-10-21T00:00:01.000Z",
         },
       ];
-      const expectedSettingUp = [
-        {
-          requestId: ChildRequestId.make("local"),
-          childThreadId: ThreadId.make("child-local"),
-          title: "Thread local",
-          createdAt: "2026-10-21T00:00:01.000Z",
-        },
-      ];
+      const expectedLocalStarts = ["local", "local-working"].map((id) => ({
+        requestId: ChildRequestId.make(id),
+        childThreadId: ThreadId.make(`child-${id}`),
+        title: `Thread ${id}`,
+        createdAt: "2026-10-21T00:00:01.000Z",
+      }));
       const shell = yield* snapshotQuery.getShellSnapshot();
       const parent = shell.threads.find((thread) => thread.id === ThreadId.make("thread-parent"));
       assert.deepEqual(parent?.remoteChildren, [remoteChild, startedChild]);
       assert.deepEqual(parent?.remoteChildStarts, expectedStarts);
-      assert.deepEqual(parent?.settingUpChildren, expectedSettingUp);
+      assert.deepEqual(parent?.localChildStarts, expectedLocalStarts);
       // A thread with none carries none of them.
       const plain = shell.threads.find((thread) => thread.id === ThreadId.make("thread-plain"));
       assert.isFalse(plain !== undefined && "remoteChildren" in plain);
       assert.isFalse(plain !== undefined && "remoteChildStarts" in plain);
-      assert.isFalse(plain !== undefined && "settingUpChildren" in plain);
+      assert.isFalse(plain !== undefined && "localChildStarts" in plain);
 
       // The single-thread read the live shell stream uses agrees.
       const one = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-parent"));
@@ -868,7 +870,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (one._tag === "Some") {
         assert.deepEqual(one.value.remoteChildren, [remoteChild, startedChild]);
         assert.deepEqual(one.value.remoteChildStarts, expectedStarts);
-        assert.deepEqual(one.value.settingUpChildren, expectedSettingUp);
+        assert.deepEqual(one.value.localChildStarts, expectedLocalStarts);
       }
     }),
   );

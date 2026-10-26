@@ -303,11 +303,21 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         // Git keeps listing a worktree whose directory was removed by hand.
         yield* fileSystem.remove(deletedPath, { recursive: true, force: true });
 
+        const lockedPath = path.join(cwd, "worktrees", "locked");
+        yield* git(cwd, ["worktree", "add", "-b", "locked-branch", lockedPath]);
+        yield* git(cwd, ["worktree", "lock", "--reason", "initializing", lockedPath]);
+
         const worktrees = yield* driver.listWorktrees({ cwd });
 
         assert.deepStrictEqual(
           worktrees.map((worktree) => worktree.branch),
-          [initialBranch, "live-branch"],
+          [initialBranch, "live-branch", "locked-branch"],
+        );
+        // A lock and its reason come with the listing (ThreadBootstrap reads
+        // git's "initializing" lock as an add a crash cut short).
+        assert.deepStrictEqual(
+          worktrees.map((worktree) => worktree.lockReason),
+          [undefined, undefined, "initializing"],
         );
         // Git reports checkouts by their real path, which on macOS resolves
         // the temp directory's symlink.

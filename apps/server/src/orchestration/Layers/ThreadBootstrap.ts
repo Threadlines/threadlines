@@ -34,15 +34,20 @@ import {
   type ThreadBootstrapCreateThread,
   type ThreadId,
 } from "@threadlines/contracts";
+import { worktreeFolderNameForBranch } from "@threadlines/shared/git";
 import { setupProjectScript } from "@threadlines/shared/projectScripts";
+import { basename, join } from "node:path";
+
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { ServerConfig } from "../../config.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
@@ -89,6 +94,12 @@ const SETUP_DONE_KINDS: ReadonlySet<string> = new Set([
   "setup-script.failed",
 ]);
 
+/**
+ * The reason git locks a worktree with while `git worktree add` makes it
+ * (untranslated: GitVcsDriver runs the add with `LC_ALL=C`).
+ */
+const GIT_ADDING_LOCK_REASON = "initializing";
+
 /** An error's own words: a decider's or git's detail, else its message. */
 const plainDetail = (error: unknown): string => {
   if (typeof error === "object" && error !== null) {
@@ -112,6 +123,16 @@ class SetupStageFailure extends Data.TaggedError("SetupStageFailure")<{
   readonly stage: ChildBootstrapStage;
   readonly cause: unknown;
 }> {}
+
+/** A worktree on a setup's branch that someone locked on purpose: left alone. */
+class LockedWorktreeError extends Data.TaggedError("LockedWorktreeError")<{
+  readonly path: string;
+  readonly reason: string;
+}> {
+  get detail(): string {
+    return `${this.path} is locked (${this.reason || "no reason given"}). Unlock or remove it, then try again.`;
+  }
+}
 
 const failedAt = (stage: ChildBootstrapStage) => (cause: unknown) =>
   new SetupStageFailure({ stage, cause });
@@ -176,6 +197,7 @@ interface PlacedWorktree {
 }
 
 const make = Effect.gen(function* () {
+  const { worktreesDir } = yield* ServerConfig;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const gitWorkflow = yield* GitWorkflowService;
@@ -202,13 +224,19 @@ const make = Effect.gen(function* () {
   // ---------------------------------------------------------------------------
 
   /**
-   * Stage 1: the plan's worktree, made once. One already on the plan's branch
-   * is an earlier run's (the branch is the plan's alone). Git keeps a
-   * worktree it is still adding locked, so a locked one is an add a crash
-   * cut short, possibly half checked out: nothing has worked in it yet (the
-   * thread doesn't exist), so it is removed and made again, in a folder of
-   * its own in case the cut-off git is still running and later cleans up
-   * the old folder.
+   * Stage 1: the plan's worktree, made once. Its branch is the plan's alone
+   * (named from the plan's key), so one already on it is an earlier run's:
+   *
+   * - unlocked: that run made it; it is used.
+   * - locked `initializing`: git was still adding it when a crash cut it
+   *   short, so it may be half checked out. Nothing has worked in it (the
+   *   thread doesn't exist yet), so it goes, and the worktree is made again.
+   * - locked for any other reason: someone pinned it on purpose; it is left
+   *   alone and the setup stops, saying so.
+   *
+   * A worktree made again from a branch an earlier run left gets a folder of
+   * its own, never the usual one: a cut-off git may still be running there
+   * and clean that folder up when it fails.
    */
   const ensureWorktree = (worktree: NonNullable<SetupPlan["worktree"]>) =>
     Effect.gen(function* () {
@@ -217,10 +245,7 @@ const make = Effect.gen(function* () {
         (entry) => entry.branch === worktree.branch,
       );
       if (existing !== undefined) {
-        const status = (yield* gitWorkflow.listWorktreeStatuses({ cwd })).worktrees.find(
-          (entry) => entry.path === existing.path,
-        );
-        if ((status?.lockReason ?? null) === null) {
+        if (existing.lockReason === undefined) {
           return {
             path: existing.path,
             branch: worktree.branch,
@@ -228,16 +253,24 @@ const make = Effect.gen(function* () {
             madeBranch: false,
           } satisfies PlacedWorktree;
         }
+        if (existing.lockReason !== GIT_ADDING_LOCK_REASON) {
+          return yield* new LockedWorktreeError({
+            path: existing.path,
+            reason: existing.lockReason,
+          });
+        }
         yield* gitWorkflow.removeWorktree({ cwd, path: existing.path, force: true, unlock: true });
       }
-      const path =
-        existing === undefined ? null : `${existing.path}-${crypto.randomUUID().slice(0, 4)}`;
       const refs = yield* gitWorkflow.listRefs({ cwd, query: worktree.branch, refresh: true });
       const branchExists = refs.refs.some(
         (ref) => ref.name === worktree.branch && ref.isRemote !== true,
       );
       const created = branchExists
-        ? yield* gitWorkflow.createWorktree({ cwd, refName: worktree.branch, path })
+        ? yield* gitWorkflow.createWorktree({
+            cwd,
+            refName: worktree.branch,
+            path: `${join(worktreesDir, basename(cwd), worktreeFolderNameForBranch(worktree.branch))}-${crypto.randomUUID().slice(0, 4)}`,
+          })
         : yield* gitWorkflow.createWorktree({
             cwd,
             refName:
@@ -248,7 +281,7 @@ const make = Effect.gen(function* () {
                     branch: worktree.base.branch,
                   })).refName,
             newRefName: worktree.branch,
-            path,
+            path: null,
           });
       yield* refreshGitStatus(created.worktree.path);
       return {
@@ -349,21 +382,26 @@ const make = Effect.gen(function* () {
           ...(plan.worktree !== undefined ? { projectCwd: plan.worktree.projectCwd } : {}),
           worktreePath,
         })
-        .pipe(Effect.result);
-      if (launched._tag === "Failure") {
+        .pipe(Effect.exit);
+      if (Exit.isFailure(launched)) {
+        // The server stopping is not the script failing to start.
+        if (Cause.hasInterrupts(launched.cause)) {
+          return yield* Effect.interrupt;
+        }
+        const detail = plainDetail(Cause.squash(launched.cause));
         yield* Effect.logWarning("thread setup could not launch its setup script", {
           threadId: plan.threadId,
           worktreePath,
-          detail: launched.failure.message,
+          detail,
         });
         return yield* appendSetupActivity(plan, {
           kind: "setup-script.failed",
           summary: "Setup script failed to start",
           tone: "error",
-          payload: { detail: launched.failure.message, worktreePath },
+          payload: { detail, worktreePath },
         });
       }
-      if (launched.success.status !== "started") {
+      if (launched.value.status !== "started") {
         // Its script was removed in the moment since the claim.
         return yield* appendSetupActivity(plan, {
           kind: "setup-script.skipped",
@@ -377,9 +415,9 @@ const make = Effect.gen(function* () {
         summary: "Setup script started",
         tone: "info",
         payload: {
-          scriptId: launched.success.scriptId,
-          scriptName: launched.success.scriptName,
-          terminalId: launched.success.terminalId,
+          scriptId: launched.value.scriptId,
+          scriptName: launched.value.scriptName,
+          terminalId: launched.value.terminalId,
           worktreePath,
         },
       });
@@ -520,7 +558,7 @@ const make = Effect.gen(function* () {
       command.commandId,
       runSetup(clientPlan(command)).pipe(
         Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
+          Cause.hasInterrupts(cause)
             ? Effect.interrupt
             : Effect.fail(toDispatchCommandError(Cause.squash(cause))),
         ),

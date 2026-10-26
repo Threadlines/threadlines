@@ -1786,7 +1786,7 @@ describe("families across computers", () => {
     | "remoteOrigin"
     | "remoteChildren"
     | "remoteChildStarts"
-    | "settingUpChildren"
+    | "localChildStarts"
   >;
   type Entry = InboxFamilyEntry & { readonly thread: FamilyThread };
   const keyOf = (environmentId: EnvironmentId, id: string) =>
@@ -1799,7 +1799,7 @@ describe("families across computers", () => {
       status?: ThreadStatusPill | null;
       remoteChildren?: FamilyThread["remoteChildren"];
       remoteChildStarts?: FamilyThread["remoteChildStarts"];
-      settingUpChildren?: FamilyThread["settingUpChildren"];
+      localChildStarts?: FamilyThread["localChildStarts"];
       childOf?: string;
     } = {},
   ): Entry => ({
@@ -1822,7 +1822,7 @@ describe("families across computers", () => {
             },
       ...(options.remoteChildren ? { remoteChildren: options.remoteChildren } : {}),
       ...(options.remoteChildStarts ? { remoteChildStarts: options.remoteChildStarts } : {}),
-      ...(options.settingUpChildren ? { settingUpChildren: options.settingUpChildren } : {}),
+      ...(options.localChildStarts ? { localChildStarts: options.localChildStarts } : {}),
     },
     status: options.status ?? null,
     isDone: false,
@@ -2010,7 +2010,7 @@ describe("families across computers", () => {
 
   it("shows a child started here while it is set up, then its own thread in its place", () => {
     const release = entry(mac, "release", {
-      settingUpChildren: [
+      localChildStarts: [
         {
           requestId: ChildRequestId.make("request-changelog"),
           childThreadId: ThreadId.make("changelog"),
@@ -2029,7 +2029,8 @@ describe("families across computers", () => {
         remoteChildStatusText(child),
       ]),
     ).toEqual([["Write the changelog", "Starting", null, "Setting up"]]);
-    // Its thread arrives with its first turn: the row gives way to it.
+    // Its thread arrives with its first turn: the row gives way to it, even
+    // while the parent still lists the start (the two come separately).
     const changelog = entry(mac, "changelog", { childOf: "release", status: working });
     const started = sections([release, changelog], { open: true }).live;
     expect(started.flatMap(inboxLiveRowThreadKeys)).toEqual([

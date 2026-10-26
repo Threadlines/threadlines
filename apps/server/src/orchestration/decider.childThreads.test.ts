@@ -7,6 +7,7 @@ import {
   EMPTY_AGENT_REQUEST_STATE,
   EnvironmentId,
   EMPTY_CHILD_REQUEST_STATE,
+  EventId,
   MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -613,6 +614,15 @@ describe("decider child threads", () => {
           parentTurnId: CALLER_TURN,
           attachedToParent: reportBack,
           createdAt: at(1),
+        },
+        setupScriptClaim: {
+          id: EventId.make(`setup-claim-${reportBack}`),
+          tone: "info",
+          kind: "setup-script.requested",
+          summary: "Starting setup script",
+          payload: { worktreePath: "/repo-worktrees/0c1d2e3f" },
+          turnId: null,
+          createdAt: at(3),
         },
         turn: {
           type: "thread.turn.start",

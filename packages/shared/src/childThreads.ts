@@ -20,7 +20,7 @@ import {
   type RemoteChildStart,
   type RemoteChildThread,
   type RoomAgentRef,
-  type SettingUpChild,
+  type LocalChildStart,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
@@ -307,16 +307,23 @@ export const isSettingUpChildStart = (request: OrchestrationChildRequest): boole
   request.kind === "start" && request.remote === undefined && request.status === "starting";
 
 /**
- * The children a parent started here that are still being set up, oldest
- * first, as its family shows them until their threads appear. The thread
- * shell carries these, and the web store derives them the same way from a
- * loaded thread.
+ * The children a parent started here whose start request is still open, past
+ * the user's yes: being set up (no thread yet), or at work for it. The parent's
+ * family stands in for any whose thread isn't in its list, so a child shows
+ * while it is set up, and the hand-over to its own row has no gap whichever of
+ * the parent's update or the child's thread arrives first. A child that is
+ * archived or deleted settles its request, so none is stood in for forever.
+ * The thread shell carries these, and the web store derives them the same way
+ * from a loaded thread.
  */
-export const settingUpChildrenOf = (
+export const localChildStartsOf = (
   state: OrchestrationChildRequestState,
-): ReadonlyArray<SettingUpChild> =>
-  state.open.flatMap((request): SettingUpChild[] =>
-    isSettingUpChildStart(request) && request.launch !== undefined
+): ReadonlyArray<LocalChildStart> =>
+  state.open.flatMap((request): LocalChildStart[] =>
+    request.kind === "start" &&
+    request.remote === undefined &&
+    request.status !== "awaiting_user" &&
+    request.launch !== undefined
       ? [
           {
             requestId: request.requestId,
