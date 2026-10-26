@@ -1,9 +1,4 @@
 import {
-  markPullRequestListSettled,
-  startPullRequestAttentionRefresh,
-} from "../lib/pullRequestsReactQuery";
-import { startPullRequestWatch } from "../lib/pullRequestWatch";
-import {
   type DesktopTaskbarStatusInput,
   type DesktopTaskbarThreadSummary,
   type ScopedThreadRef,
@@ -130,7 +125,6 @@ import {
 import { startComputerLinksSync } from "../environments/links/computerLinks";
 import { startProjectSetupsSync } from "../environments/projectSetups/projectSetups";
 import { startComputerStallsSync } from "../environments/stalls/computerStalls";
-import { startPullRequestRecordsSync } from "../environments/pullRequests/pullRequestRecords";
 import { ComputerStallNotices } from "../components/ComputerStallNotices";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
@@ -762,17 +756,16 @@ function EnvironmentConnectionManagerBootstrap() {
     const stopProjectSetups = startProjectSetupsSync();
     // Each connected computer's latest freeze or sleep, for its notice and Fleet.
     const stopComputerStalls = startComputerStallsSync();
-    // Each connected computer's record of every pull request it read, which
-    // every surface showing a pull request reads (pullRequestRecords.ts).
-    // Pull request polls stop while nobody looks; coming back reads what went stale.
-    const stopPullRequestAttention = startPullRequestAttentionRefresh(queryClient);
-    // Sidebar rows on screen keep their pull requests current (pullRequestWatch.ts).
-    const stopPullRequestWatch = startPullRequestWatch(queryClient);
-    const stopPullRequestRecords = startPullRequestRecordsSync({
-      onSettled: (environmentId, record) => {
-        if (record.state === "open") return;
-        markPullRequestListSettled(queryClient, { environmentId, state: record.state });
-      },
+    // Pull request records, the return-to-window refresh and the sidebar's
+    // watch (pullRequestBackground.ts), loaded after first paint.
+    let stopPullRequestBackground: (() => void) | null = null;
+    let disposed = false;
+    const cancelPullRequestBackground = whenIdleAfterFirstPaint(() => {
+      void import("../lib/pullRequestBackground")
+        .then((module) => {
+          if (!disposed) stopPullRequestBackground = module.startPullRequestBackground(queryClient);
+        })
+        .catch(() => undefined);
     });
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
@@ -780,9 +773,9 @@ function EnvironmentConnectionManagerBootstrap() {
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
-      stopPullRequestRecords();
-      stopPullRequestAttention();
-      stopPullRequestWatch();
+      disposed = true;
+      cancelPullRequestBackground();
+      stopPullRequestBackground?.();
       stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();
