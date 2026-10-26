@@ -229,3 +229,11 @@ export function shouldRenderThreadScopedToast(
 
   return activeThreadRef?.threadId === toastThreadId;
 }
+
+/**
+ * The reason a failure notice shows for a raw error: its message without a
+ * leading type tag ("TypeError: Failed to fetch" reads "Failed to fetch").
+ */
+export function describeFailureReason(message: string): string {
+  return message.trim().replace(/^[A-Z][A-Za-z]*Error:\s*/, "") || "Something went wrong.";
+}
