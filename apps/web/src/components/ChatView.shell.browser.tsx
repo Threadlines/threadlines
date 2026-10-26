@@ -722,6 +722,8 @@ describe("ChatView (full app): app shell", () => {
 
       // Mid-slide the slot keeps pace with the content column: the clamp
       // applies to every frame of the list's slide, not just its two ends.
+      // The frame is early in the slide, while the content column still
+      // clears the title row's buttons; later the slot rests against them.
       useUiStateStore.getState().setSidebarListOpen(false);
       const slide = await vi.waitFor(() => {
         expect(titleRow.getAnimations()).not.toHaveLength(0);
@@ -729,8 +731,11 @@ describe("ChatView (full app): app shell", () => {
       });
       for (const animation of slide) {
         animation.pause();
-        animation.currentTime = 15;
+        animation.currentTime = 5;
       }
+      expect(thread().getBoundingClientRect().left + 20).toBeGreaterThan(
+        cluster.getBoundingClientRect().right + 12,
+      );
       expect(
         Math.abs(slot.getBoundingClientRect().left - (thread().getBoundingClientRect().left + 20)),
       ).toBeLessThanOrEqual(1);

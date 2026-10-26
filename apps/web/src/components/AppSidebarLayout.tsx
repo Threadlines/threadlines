@@ -39,10 +39,11 @@ import {
 } from "../shortcutModifierState";
 
 const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
-// Room for a row's project, branch and time beside the rail without cutting
-// the project to a few letters; the user can drag it wider (then persisted).
-const THREAD_SIDEBAR_MIN_WIDTH = 15 * 16;
-const THREAD_SIDEBAR_DEFAULT_WIDTH = `${17 * 16}px`;
+// Narrow enough to give the page the room, wide enough that a row's title
+// still reads beside its change count; any narrower and titles lose the words
+// that matter. The user can drag it wider (then persisted).
+const THREAD_SIDEBAR_MIN_WIDTH = 14 * 16;
+const THREAD_SIDEBAR_DEFAULT_WIDTH = `${15 * 16}px`;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
 
 /**

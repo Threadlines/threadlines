@@ -1380,7 +1380,7 @@ describe("ChatView (full app): sidebar", () => {
     return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
   };
 
-  it("keeps a room's working agent, state, clock and project whole at the default width", async () => {
+  it("keeps a room's working agent, state and clock whole at the default width", async () => {
     const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
       model: "Opus 5.5",
     });
@@ -1391,10 +1391,11 @@ describe("ChatView (full app): sidebar", () => {
           line.getBoundingClientRect().right + 0.5,
         );
       }
-      // The list starts wide enough beside the rail for a short project name
-      // too; it is the first thing to give way when it has to (below).
+      // The project name is the first thing to give way: at the default width
+      // it may be shortened, but it only goes once a long agent name needs
+      // its room (below).
       expect(project).toBeDefined();
-      expect(showsWholeText(project!)).toBe(true);
+      expect(project!.getBoundingClientRect().width).toBeGreaterThan(0.5);
     } finally {
       await mounted.cleanup();
     }
