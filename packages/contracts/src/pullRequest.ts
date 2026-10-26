@@ -266,6 +266,11 @@ export const PullRequestLookupAnswer = Schema.Struct({
   pullRequest: Schema.NullOr(PullRequestLookupEntry),
   /** When the host gave this answer, which a cached one keeps. */
   answeredAt: IsoDateTime,
+  /**
+   * When the read behind this answer began, on the server's clock; see
+   * `PullRequestListEntry.observedAt`. Absent from older servers.
+   */
+  observedAt: Schema.optionalKey(IsoDateTime),
 });
 export type PullRequestLookupAnswer = typeof PullRequestLookupAnswer.Type;
 

@@ -4,6 +4,7 @@ import {
   ThreadId,
   type PullRequestCheck,
   type PullRequestComment,
+  type PullRequestDetail,
   type PullRequestListEntry,
   type PullRequestListResult,
   type PullRequestObservation,
@@ -11,6 +12,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { pullRequestRecordKey } from "../../environments/pullRequests/pullRequestRecordsStore";
 import type { Project, SidebarThreadSummary } from "../../types";
 import {
   DEFAULT_PULL_REQUEST_SORT,
@@ -34,6 +36,7 @@ import {
   narrowPullRequests,
   withPullRequestRecord,
   withPullRequestRecordOnEntry,
+  withPullRequestRecordOnDetail,
   parsePullRequestSelection,
   parsePullRequestsSearch,
   pullRequestEntryKey,
@@ -665,6 +668,36 @@ describe("resolveThreadPullRequest", () => {
     ).toMatchObject({ number: 413 });
   });
 
+  it("files a fork's pull request under the repository its address names", () => {
+    // The project is the fork; its branch's pull request went to upstream.
+    const upstream = {
+      ...MERGED_STATUS_PR,
+      state: "open",
+      url: "https://github.com/upstream/threadlines/pull/7",
+    } as const;
+    // The fork's own #7, which the shared records know is merged.
+    const forkRecord = {
+      provider: "github",
+      repository: "threadlines/threadlines",
+      number: 7,
+      sequence: 1,
+      observedAt: "2026-10-26T10:00:00.000Z",
+      title: "Another pull request",
+      url: "https://github.com/threadlines/threadlines/pull/7",
+      headBranch: "other",
+      state: "merged",
+    } satisfies PullRequestObservation;
+    const resolved = resolveThreadPullRequest({
+      thread: thread(),
+      gitStatus: gitStatus({ pr: upstream }),
+      openEntries: [],
+      projects: PROJECTS,
+      records: (subject) =>
+        pullRequestRecordKey(subject) === pullRequestRecordKey(forkRecord) ? forkRecord : undefined,
+    });
+    expect(resolved).toMatchObject({ repository: "upstream/threadlines", state: "open" });
+  });
+
   it("never reads an authored row as a thread's own work", () => {
     expect(
       resolveThreadPullRequest({
@@ -910,6 +943,36 @@ describe("withPullRequestRecord", () => {
     expect(
       withPullRequestRecordOnEntry(row, { ...RECORD, observedAt: "2026-10-26T08:00:00.000Z" }),
     ).toBe(row);
+  });
+
+  it("tells a full read what a newer read saw, and asks for it to be read again", () => {
+    // The fields the panel's header and actions read; the rest stays the read's own.
+    const read = {
+      number: 7,
+      title: "Open here",
+      state: "open",
+      isDraft: false,
+      autoMergeEnabled: true,
+      headSha: "abc123",
+      checksState: "success",
+      mergedAt: null,
+      closedAt: null,
+      observedAt: "2026-10-26T09:00:00.000Z",
+    } as unknown as PullRequestDetail;
+
+    const merged = withPullRequestRecordOnDetail(read, RECORD);
+    expect(merged.behind).toBe(true);
+    expect(merged.detail).toMatchObject({
+      state: "merged",
+      autoMergeEnabled: false,
+      mergedAt: "2026-10-26T09:59:30.000Z",
+    });
+    // A newer read that saw nothing new, or an older one, leaves it alone.
+    const same = { ...RECORD, state: "open", autoMergeEnabled: true } as const;
+    expect(withPullRequestRecordOnDetail(read, same)).toEqual({ detail: read, behind: false });
+    expect(
+      withPullRequestRecordOnDetail(read, { ...RECORD, observedAt: "2026-10-26T08:00:00.000Z" }),
+    ).toEqual({ detail: read, behind: false });
   });
 });
 

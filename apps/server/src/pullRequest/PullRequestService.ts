@@ -535,6 +535,8 @@ interface LookupCacheEntry {
   readonly pullRequest: PullRequestLookupEntry | null;
   /** When the host gave it, so a caller served from here knows how old it is. */
   readonly answeredAtMs: number;
+  /** When the read behind it began; what a client weighs it against the shared record by. */
+  readonly observedAt?: string;
   /** Infinite for a merged number, which no later read can change. */
   readonly expiresAtMs: number;
 }
@@ -1193,7 +1195,6 @@ export const make = Effect.fn("makePullRequestService")(function* () {
               ),
           )
           .pipe(
-            Effect.map(({ result }) => result),
             Effect.catch((error) =>
               Effect.logWarning("Pull request lookup failed", {
                 provider: error.provider,
@@ -1203,7 +1204,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           );
         const answeredAtMs = yield* Clock.currentTimeMillis;
         for (const [key, item] of read === null ? [] : claimed.mine) {
-          const row = read === null ? undefined : lookupAnswerFor(read, item);
+          const row = read === null ? undefined : lookupAnswerFor(read.result, item);
           if (row === undefined) {
             continue;
           }
@@ -1211,6 +1212,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           answered.set(key, {
             pullRequest,
             answeredAtMs,
+            ...(read === null ? {} : { observedAt: read.observedAt }),
             expiresAtMs: lookupExpiresAtMs(item, pullRequest, answeredAtMs),
           });
         }
@@ -1283,6 +1285,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
               item,
               pullRequest: entry.pullRequest,
               answeredAt: DateTime.formatIso(DateTime.makeUnsafe(entry.answeredAtMs)),
+              ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
             },
           ];
     });

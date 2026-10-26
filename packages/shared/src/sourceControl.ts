@@ -335,6 +335,26 @@ export function parsePullRequestUrl(href: string): PullRequestUrlReference | nul
 }
 
 /**
+ * How one pull request is told apart from every other: the host its address
+ * names, its repository (whose casing hosts ignore) and its number, since two
+ * hosts can each have an `owner/name#42`. Null where the address is not one.
+ */
+export function pullRequestIdentityKey(pullRequest: {
+  readonly url: string;
+  readonly repository: string;
+  readonly number: number;
+}): string | null {
+  let host: string;
+  try {
+    host = new URL(pullRequest.url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (host === "") return null;
+  return `${host}/${pullRequest.repository.toLowerCase()}#${pullRequest.number}`;
+}
+
+/**
  * Every GitHub pull request a piece of text links to, each once, in the order
  * it is first mentioned. Casing is the host's to ignore, so the same pull
  * request spelled two ways is still one.

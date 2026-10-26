@@ -181,9 +181,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const statusPr = pullRequestFromGitStatus(thread.branch, gitStatus.data);
   const pullRequestRecords = usePullRequestRecords(thread.environmentId);
   // The same answer the sidebar badge and the composer's row give.
-  const pr =
-    statusPr &&
-    withPullRequestRecord(statusPr, pullRequestRecords(statusPr.repository, statusPr.number));
+  const pr = statusPr && withPullRequestRecord(statusPr, pullRequestRecords(statusPr));
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const threadStatus = resolveThreadStatusPill({
     thread: {

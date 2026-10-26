@@ -19,6 +19,7 @@ import type {
   PullRequestState,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { pullRequestIdentityKey } from "@threadlines/shared/sourceControl";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -58,16 +59,18 @@ export interface PullRequestRead {
 export interface StoredPullRequestRecord {
   readonly observation: PullRequestObservation;
   readonly stateReadAtMs: number;
+  /** Apart from the state: a read that cannot tell drafts apart says nothing about one. */
+  readonly draftReadAtMs: number | null;
   readonly autoMergeReadAtMs: number | null;
   readonly checksReadAtMs: number | null;
 }
 
-export function pullRequestRecordKey(input: {
-  readonly provider: SourceControlProviderKind;
-  readonly repository: string;
-  readonly number: number;
-}): string {
-  return `${input.provider}\u0000${input.repository.toLowerCase()}\u0000${input.number}`;
+/** Two hosts can each have an `owner/name#42`; an address that names none falls back to its provider. */
+function pullRequestRecordKey(read: PullRequestRead): string {
+  return (
+    pullRequestIdentityKey(read) ??
+    `${read.provider}:${read.repository.toLowerCase()}#${read.number}`
+  );
 }
 
 /**
@@ -82,6 +85,9 @@ export function recordPullRequestRead(
   const iso = new Date(readAtMs).toISOString();
   const before = previous?.observation;
   const takesState = previous === undefined || readAtMs >= previous.stateReadAtMs;
+  const takesDraft =
+    read.isDraft !== undefined &&
+    (previous?.draftReadAtMs == null || readAtMs >= previous.draftReadAtMs);
   const takesAutoMerge =
     read.autoMergeEnabled !== undefined &&
     (previous?.autoMergeReadAtMs == null || readAtMs >= previous.autoMergeReadAtMs);
@@ -89,7 +95,7 @@ export function recordPullRequestRead(
     read.checks !== undefined &&
     (previous?.checksReadAtMs == null || readAtMs >= previous.checksReadAtMs);
 
-  const isDraft = takesState && read.isDraft !== undefined ? read.isDraft : before?.isDraft;
+  const isDraft = takesDraft ? read.isDraft : before?.isDraft;
   const settledAt = takesState
     ? read.state === "open"
       ? undefined
@@ -120,6 +126,7 @@ export function recordPullRequestRead(
   const record: StoredPullRequestRecord = {
     observation,
     stateReadAtMs: takesState ? readAtMs : (previous?.stateReadAtMs ?? readAtMs),
+    draftReadAtMs: takesDraft ? readAtMs : (previous?.draftReadAtMs ?? null),
     autoMergeReadAtMs: takesAutoMerge ? readAtMs : (previous?.autoMergeReadAtMs ?? null),
     checksReadAtMs: takesChecks ? readAtMs : (previous?.checksReadAtMs ?? null),
   };

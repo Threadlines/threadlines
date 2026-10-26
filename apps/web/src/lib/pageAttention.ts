@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 /**
  * Whether the user can be looking at this page: it is on screen and its window
@@ -36,4 +36,16 @@ export function usePageAttended(): boolean {
     return onPageAttentionChange(sync);
   }, []);
   return attended;
+}
+
+/**
+ * False inside a part of the page that stays mounted while hidden: the chat
+ * column the expanded browser panel covers. What it shows stops polling.
+ */
+export const SurfaceShownContext = createContext(true);
+
+/** Whether the user can be looking at this part of the page: the page is attended and the part shown. */
+export function useSurfaceAttended(): boolean {
+  const shown = useContext(SurfaceShownContext);
+  return usePageAttended() && shown;
 }

@@ -57,6 +57,15 @@ describe("recordPullRequestRead", () => {
     assert.deepStrictEqual(status.record.observation.checks?.state, "pending");
   });
 
+  it("weighs the draft flag only against reads that could tell", () => {
+    const draft = after(undefined, read({ isDraft: true }), 1_000).record;
+    // A checkout's status read began later but cannot tell drafts apart...
+    const status = after(draft, read({}), 3_000).record;
+    // ...so a listing that began before it and saw the pull request ready still counts.
+    const ready = after(status, read({ isDraft: false }), 2_000);
+    assert.strictEqual(ready.record.observation.isDraft, false);
+  });
+
   it("takes checks only from a read that has them, and says nothing changed when nothing did", () => {
     const first = after(
       undefined,

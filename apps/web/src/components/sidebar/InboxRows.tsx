@@ -787,10 +787,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   // says what the composer's row and the chat's links say.
   const recordedStatusPullRequest =
     statusPullRequest &&
-    withPullRequestRecord(
-      statusPullRequest,
-      pullRequestRecords(statusPullRequest.repository, statusPullRequest.number),
-    );
+    withPullRequestRecord(statusPullRequest, pullRequestRecords(statusPullRequest));
   const pullRequests = threadPullRequestList(
     recordedStatusPullRequest
       ? withListedLanding(recordedStatusPullRequest, listPullRequest)

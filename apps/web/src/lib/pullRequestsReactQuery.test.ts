@@ -1,13 +1,18 @@
 import { EnvironmentId, ProjectId, type PullRequestDetail } from "@threadlines/contracts";
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vite-plus/test";
+
+import { ensureEnvironmentApi } from "../environmentApi";
 
 vi.mock("../environmentApi", () => ({
   ensureEnvironmentApi: vi.fn(),
 }));
 
 import {
+  markPullRequestListSettled,
   PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS,
   pullRequestDetailQueryOptions,
+  pullRequestListQueryOptions,
 } from "./pullRequestsReactQuery";
 
 const REFERENCE = { projectId: ProjectId.make("project-a"), repository: "owner/repo", number: 7 };
@@ -39,5 +44,20 @@ describe("pull request detail reads", () => {
     expect(pace(true, "merged")).toBe(false);
     // A surface that does not say whether it is looked at reads nothing settled on a timer.
     expect(pace(undefined, "open")).toBe(false);
+  });
+});
+
+describe("a listing after one of its pull requests settled", () => {
+  it("reads past the server's cached listing once", async () => {
+    const list = vi.fn(async () => ({ viewer: null, entries: [], errors: [] }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({ pullRequests: { list } } as never);
+    const queryClient = new QueryClient();
+    const merged = { environmentId: EnvironmentId.make("environment-a"), state: "merged" } as const;
+
+    markPullRequestListSettled(queryClient, merged);
+    await queryClient.fetchQuery(pullRequestListQueryOptions(merged));
+    await queryClient.fetchQuery({ ...pullRequestListQueryOptions(merged), staleTime: 0 });
+
+    expect(list.mock.calls).toEqual([[{ state: "merged", force: true }], [{ state: "merged" }]]);
   });
 });

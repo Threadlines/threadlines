@@ -1,4 +1,4 @@
-import { isPageAttended, onPageAttentionChange, usePageAttended } from "~/lib/pageAttention";
+import { isPageAttended, onPageAttentionChange, useSurfaceAttended } from "~/lib/pageAttention";
 import { useAllPullRequestRecords } from "~/environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
@@ -29,6 +29,7 @@ import {
   useQueries,
   useQuery,
   useQueryClient,
+  type Query,
   type QueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -255,7 +256,7 @@ export function usePullRequestDetail(input: {
   readonly pushedHead?: string | null;
 }): PullRequestDetailRead {
   const queryClient = useQueryClient();
-  const attended = usePageAttended();
+  const attended = useSurfaceAttended();
   const enabled = input.environmentId !== null && input.reference !== null;
   const pushedHead = input.pushedHead ?? null;
   const environmentId = input.environmentId ?? IDLE_ENVIRONMENT_ID;
@@ -608,10 +609,21 @@ export function pullRequestListQueryOptions(input: {
   readonly environmentId: EnvironmentId;
   readonly state: PullRequestListState;
 }) {
+  const owedKey = listingOwedKey(input);
   return queryOptions({
     queryKey: pullRequestQueryKeys.list(input.environmentId, input.state),
-    queryFn: () =>
-      ensureEnvironmentApi(input.environmentId).pullRequests.list({ state: input.state }),
+    queryFn: async () => {
+      const owed = listingsOwedFreshRead.delete(owedKey);
+      try {
+        return await ensureEnvironmentApi(input.environmentId).pullRequests.list({
+          state: input.state,
+          ...(owed ? { force: true as const } : {}),
+        });
+      } catch (error) {
+        if (owed) listingsOwedFreshRead.add(owedKey);
+        throw error;
+      }
+    },
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     // Coming back to the window is a good moment to re-read what is still in
     // flight. Merged and closed are history: the sidebar keeps them only to
@@ -663,12 +675,37 @@ export function useLoadedPullRequestEntries(): readonly PullRequestEntry[] {
             };
           }),
         }).entries.map((entry) =>
-          withPullRequestRecordOnEntry(
-            entry,
-            pullRequestRecords(entry.environmentId)(entry.repository, entry.number),
-          ),
+          withPullRequestRecordOnEntry(entry, pullRequestRecords(entry.environmentId)(entry)),
         ),
       ),
+  });
+}
+
+/** Listings whose next read skips the server's cache; see {@link markPullRequestListSettled}. */
+const listingsOwedFreshRead = new Set<string>();
+
+function listingOwedKey(input: {
+  readonly environmentId: EnvironmentId;
+  readonly state: PullRequestListState;
+}): string {
+  return `${input.environmentId}\u0000${input.state}`;
+}
+
+/**
+ * A pull request just merged or closed, and the server's cached listing of
+ * that state may be from before it did. The listing goes stale here, and its
+ * next read (now, if it is on screen, or whenever one mounts) goes past the
+ * server's cache, so the pull request does not wait for the next slow poll to
+ * turn up under its new state.
+ */
+export function markPullRequestListSettled(
+  queryClient: QueryClient,
+  input: { readonly environmentId: EnvironmentId; readonly state: PullRequestListState },
+): void {
+  listingsOwedFreshRead.add(listingOwedKey(input));
+  void queryClient.invalidateQueries({
+    queryKey: pullRequestQueryKeys.list(input.environmentId, input.state),
+    exact: true,
   });
 }
 
@@ -792,7 +829,7 @@ export function usePullRequestLists(input: {
   const enabled = input.enabled ?? true;
   const state = input.state;
   const pullRequestRecords = useAllPullRequestRecords();
-  const attended = usePageAttended();
+  const attended = useSurfaceAttended();
 
   return useQueries({
     queries: environments.map((environment) => ({
@@ -846,7 +883,7 @@ export function usePullRequestLists(input: {
       const entries = merged.entries.flatMap((entry) => {
         const recorded = withPullRequestRecordOnEntry(
           entry,
-          pullRequestRecords(entry.environmentId)(entry.repository, entry.number),
+          pullRequestRecords(entry.environmentId)(entry),
         );
         return recorded.state === state ? [recorded] : [];
       });
@@ -877,7 +914,18 @@ export function usePullRequestLists(input: {
 }
 
 /**
- * Reads again every pull request query on screen that went stale while the
+ * The reads that say what state a pull request is in: the open listing, a
+ * lookup, a full read. A diff, the activity and the merged and closed listings
+ * keep their own pace; reading them on every return would cost a `gh` run
+ * each for nothing the user is waiting on.
+ */
+function saysPullRequestState(query: Query): boolean {
+  const [, read, , state] = query.queryKey;
+  return read === "lookup" || read === "detail" || (read === "list" && state === "open");
+}
+
+/**
+ * Reads again every pull request state on screen that went stale while the
  * user was elsewhere, the moment they come back: the timers stop while
  * nobody looks, so this is what brings the screen current. Started once.
  */
@@ -887,7 +935,12 @@ export function startPullRequestAttentionRefresh(queryClient: QueryClient): () =
     const wasAttended = attended;
     attended = isPageAttended();
     if (attended && !wasAttended) {
-      void queryClient.refetchQueries({ queryKey: ["pull-requests"], type: "active", stale: true });
+      void queryClient.refetchQueries({
+        queryKey: pullRequestQueryKeys.all,
+        type: "active",
+        stale: true,
+        predicate: saysPullRequestState,
+      });
     }
   });
 }

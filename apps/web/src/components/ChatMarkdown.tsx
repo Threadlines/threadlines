@@ -653,7 +653,7 @@ function MarkdownPullRequestChip({
   readonly threadRef: ScopedThreadRef | null;
   readonly title?: string | undefined;
 }) {
-  const chip = usePullRequestChip(repository, number);
+  const chip = usePullRequestChip(href, repository, number);
   const tone = chip.state
     ? pullRequestBadgeTone(chip.state.state, chip.state.isDraft, chip.state.autoMergeEnabled)
     : // Nothing here has listed this repository, so the glyph says "a pull

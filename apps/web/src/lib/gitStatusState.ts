@@ -1,8 +1,5 @@
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
-import {
-  pullRequestRecordKey,
-  usePullRequestRecordsStore,
-} from "../environments/pullRequests/pullRequestRecordsStore";
+import { usePullRequestRecord } from "../environments/pullRequests/pullRequestRecordsStore";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
@@ -416,13 +413,11 @@ export function useGitStatus(target: GitStatusTarget): GitStatusState {
   // computer has heard since about the same pull request, from any read, wins.
   const statusPullRequest = state.data?.pr ?? null;
   const reference = statusPullRequest ? parsePullRequestUrl(statusPullRequest.url) : null;
-  const record = usePullRequestRecordsStore((records) =>
-    target.environmentId && reference && statusPullRequest
-      ? records.byEnvironmentId[target.environmentId]?.[
-          pullRequestRecordKey(reference.repository, statusPullRequest.number)
-        ]
-      : undefined,
-  );
+  const record = usePullRequestRecord(target.environmentId, {
+    url: statusPullRequest?.url,
+    repository: reference?.repository,
+    number: statusPullRequest?.number ?? 0,
+  });
   return useMemo(() => withRecordedStatusPullRequest(state, record), [state, record]);
 }
 

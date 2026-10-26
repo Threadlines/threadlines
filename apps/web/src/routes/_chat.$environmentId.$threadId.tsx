@@ -1029,7 +1029,10 @@ function ChatThreadRouteView() {
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
           <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-            <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
+            <PullRequestHoverCardProvider
+              environmentId={threadRef.environmentId}
+              threadPullRequests={hoverCardPullRequests}
+            >
               <ChatView
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
@@ -1057,7 +1060,10 @@ function ChatThreadRouteView() {
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
         <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-          <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
+          <PullRequestHoverCardProvider
+            environmentId={threadRef.environmentId}
+            threadPullRequests={hoverCardPullRequests}
+          >
             <ChatView
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}

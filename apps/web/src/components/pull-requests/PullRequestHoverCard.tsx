@@ -14,9 +14,12 @@
  *
  * @module PullRequestHoverCard
  */
-import { usePageAttended } from "~/lib/pageAttention";
+import { useSurfaceAttended } from "~/lib/pageAttention";
 import { pullRequestLookupQueryOptions } from "~/lib/pullRequestLookups";
-import { useNewestPullRequestRecord } from "../../environments/pullRequests/pullRequestRecordsStore";
+import {
+  usePullRequestRecord,
+  usePullRequestRecordOnAnyComputer,
+} from "../../environments/pullRequests/pullRequestRecordsStore";
 import type {
   EnvironmentId,
   PullRequestObservation,
@@ -101,10 +104,16 @@ interface PullRequestRepositoryScope {
   readonly repository: string;
 }
 
+/** What the surface itself knows about a pull request, and the computer that read it. */
+interface SurfaceChipState {
+  readonly environmentId: EnvironmentId;
+  readonly state: PullRequestChipState;
+}
+
 interface PullRequestChipSurface {
   readonly handle: PullRequestCardHandle;
   /** The state a chip wears, keyed by {@link chipKey}. */
-  readonly stateByKey: ReadonlyMap<string, PullRequestChipState>;
+  readonly stateByKey: ReadonlyMap<string, SurfaceChipState>;
   /** Which environment and project can read a repository, keyed by its lowercased name. */
   readonly scopeByRepository: ReadonlyMap<string, PullRequestRepositoryScope>;
 }
@@ -124,6 +133,7 @@ function chipKey(repository: string, number: number): string {
  * drawn as an open pull request in the muted tone that says "state unknown".
  */
 export function usePullRequestChip(
+  url: string,
   repository: string,
   number: number,
 ): {
@@ -131,15 +141,19 @@ export function usePullRequestChip(
   readonly payload: PullRequestHoverCardPayload | null;
 } {
   const surface = useContext(PullRequestChipSurfaceContext);
-  // What any computer last heard about it, whoever asked: a link in an agent's
-  // transcript, outside any thread's surface, still shows its state.
-  const record = useNewestPullRequestRecord(repository, number);
+  const surfaceState = surface?.stateByKey.get(chipKey(repository, number)) ?? null;
   const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
+  // What a computer last heard about it, whoever asked. Read times are only
+  // weighed on one computer's clock: the one behind the surface's answer, else
+  // the one that reads this repository. A link nothing here reads (in an
+  // agent's transcript, say) still shows what any computer heard.
+  const environmentId = surfaceState?.environmentId ?? scope?.environmentId ?? null;
+  const subject = { url, repository, number };
+  const recordOnComputer = usePullRequestRecord(environmentId, subject);
+  const recordAnywhere = usePullRequestRecordOnAnyComputer(environmentId === null ? subject : null);
+  const record = recordOnComputer ?? recordAnywhere;
   const recordState = useMemo(() => (record ? chipStateFromRecord(record) : null), [record]);
-  const state = newerChipState(
-    surface?.stateByKey.get(chipKey(repository, number)) ?? null,
-    recordState,
-  );
+  const state = newerChipState(surfaceState?.state ?? null, recordState);
   return useMemo(
     () => ({
       state,
@@ -175,7 +189,7 @@ export function PullRequestLinkRead({
 }
 
 function PullRequestLinkReadQuery({ payload }: { readonly payload: PullRequestHoverCardPayload }) {
-  const attended = usePageAttended();
+  const attended = useSurfaceAttended();
   useQuery({
     ...pullRequestLookupQueryOptions({
       key: `${payload.reference.repository.toLowerCase()}#${payload.reference.number}`,
@@ -231,6 +245,7 @@ const NO_THREAD_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
  */
 export function PullRequestHoverCardProvider({
   threadPullRequests = NO_THREAD_PULL_REQUESTS,
+  environmentId,
   children,
 }: {
   /**
@@ -239,6 +254,8 @@ export function PullRequestHoverCardProvider({
    * the merged listing is re-read, and a lookup still knows one that fell off.
    */
   readonly threadPullRequests?: readonly ThreadPullRequest[];
+  /** The computer the thread runs on, which read its pull requests. */
+  readonly environmentId: EnvironmentId;
   readonly children: ReactNode;
 }) {
   const [handle] = useState(() => createPreviewCardHandle<PullRequestHoverCardPayload>());
@@ -246,13 +263,16 @@ export function PullRequestHoverCardProvider({
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
 
   const stateByKey = useMemo(() => {
-    const byKey = new Map<string, PullRequestChipState>();
+    const byKey = new Map<string, SurfaceChipState>();
     for (const entry of entries) {
       byKey.set(chipKey(entry.repository, entry.number), {
-        state: entry.state,
-        isDraft: entry.isDraft,
-        autoMergeEnabled: entry.autoMergeEnabled === true,
-        observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
+        environmentId: entry.environmentId,
+        state: {
+          state: entry.state,
+          isDraft: entry.isDraft,
+          autoMergeEnabled: entry.autoMergeEnabled === true,
+          observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
+        },
       });
     }
     // The thread's own resolution wins: it is the read that can see a branch
@@ -261,15 +281,18 @@ export function PullRequestHoverCardProvider({
     for (const pullRequest of threadPullRequests) {
       if (pullRequest.repository) {
         byKey.set(chipKey(pullRequest.repository, pullRequest.number), {
-          state: pullRequest.state,
-          isDraft: pullRequest.isDraft,
-          autoMergeEnabled: pullRequest.autoMergeEnabled,
-          observedAt: pullRequest.observedAt,
+          environmentId,
+          state: {
+            state: pullRequest.state,
+            isDraft: pullRequest.isDraft,
+            autoMergeEnabled: pullRequest.autoMergeEnabled,
+            observedAt: pullRequest.observedAt,
+          },
         });
       }
     }
     return byKey;
-  }, [entries, threadPullRequests]);
+  }, [entries, environmentId, threadPullRequests]);
 
   const scopeByRepository = useMemo(() => {
     const byRepository = new Map<string, PullRequestRepositoryScope>();
@@ -320,7 +343,7 @@ function PullRequestHoverCardContent({
   autoMergeEnabled,
   observedAt,
 }: PullRequestHoverCardPayload) {
-  const attended = usePageAttended();
+  const attended = useSurfaceAttended();
   const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference, attended }));
   const detail = query.data;
   // The newer read says what state it is in: this detail, or the chip's word.

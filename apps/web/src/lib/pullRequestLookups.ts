@@ -1,4 +1,4 @@
-import { usePageAttended } from "~/lib/pageAttention";
+import { useSurfaceAttended } from "~/lib/pageAttention";
 import {
   PULL_REQUEST_LOOKUP_LIMIT,
   type EnvironmentId,
@@ -31,6 +31,8 @@ export type PullRequestLookupData =
       readonly pullRequest: PullRequestLookupEntry | null;
       /** When the host gave the answer; the server may have kept it a while. */
       readonly answeredAt: string;
+      /** When the read behind it began; absent from older servers. */
+      readonly observedAt?: string;
     }
   | { readonly supported: false };
 
@@ -178,6 +180,7 @@ async function sendPullRequestLookups(
           supported: true,
           pullRequest: answer.pullRequest,
           answeredAt: answer.answeredAt,
+          ...(answer.observedAt === undefined ? {} : { observedAt: answer.observedAt }),
         });
       }
     }
@@ -236,7 +239,7 @@ export function usePullRequestLookups(
   requests: readonly PullRequestLookupRequest[],
 ): PullRequestLookupAnswers {
   const keptRequests = useKept(requests, sameLookupRequests);
-  const attended = usePageAttended();
+  const attended = useSurfaceAttended();
   const combine = useCallback(
     (results: UseQueryResult<PullRequestLookupData>[]): PullRequestLookupAnswers => {
       const answers = new Map<string, PullRequestLookupAnswer>();
@@ -247,11 +250,14 @@ export function usePullRequestLookups(
           return;
         }
         const answeredAt = Date.parse(data.answeredAt) || result.dataUpdatedAt;
+        // Weighed against the shared record by when its read began, as the
+        // record is; an older server's answer cannot say, and yields to it.
+        const observedAt = data.observedAt === undefined ? null : Date.parse(data.observedAt);
         answers.set(request.key, {
           pullRequest:
             data.pullRequest === null
               ? null
-              : threadPullRequestFromLookup(data.pullRequest, request.repository, answeredAt),
+              : threadPullRequestFromLookup(data.pullRequest, request.repository, observedAt),
           updatedAt: data.pullRequest === null ? null : Date.parse(data.pullRequest.updatedAt) || 0,
           answeredAt,
         });

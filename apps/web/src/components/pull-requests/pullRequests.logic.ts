@@ -752,8 +752,10 @@ export function pullRequestFromGitStatus(
     isDraft: false,
     title: gitStatus.pr.title,
     url: gitStatus.pr.url,
-    // The address names the repository whatever remote the checkout calls it by.
-    repository: repository ?? parsePullRequestUrl(gitStatus.pr.url)?.repository ?? null,
+    // The address names the repository the pull request lives in, which for a
+    // fork's checkout is not the project's own; the project's is the fallback
+    // for a host whose addresses this cannot read.
+    repository: parsePullRequestUrl(gitStatus.pr.url)?.repository ?? repository,
     // The status read carries no dates.
     settledAt: null,
     autoMergeEnabled: gitStatus.pr.autoMergeEnabled === true,
@@ -812,6 +814,57 @@ export function withPullRequestRecordOnEntry(
 }
 
 /**
+ * A full read as a newer read elsewhere left its pull request: its state,
+ * draft flag, auto-merge and when it settled, so the panel's header and
+ * actions never offer what another surface already knows is over. The rest
+ * (the checks list, the merge box, the timeline) only a full read can say;
+ * `behind` asks for one, where the newer read saw the pull request change.
+ */
+export function withPullRequestRecordOnDetail(
+  detail: PullRequestDetail,
+  record: PullRequestObservation | undefined,
+): { readonly detail: PullRequestDetail; readonly behind: boolean } {
+  if (
+    record === undefined ||
+    record.number !== detail.number ||
+    detail.observedAt === undefined ||
+    Date.parse(record.observedAt) <= Date.parse(detail.observedAt)
+  ) {
+    return { detail, behind: false };
+  }
+  const open = record.state === "open";
+  const isDraft = open && (record.isDraft ?? detail.isDraft);
+  const autoMergeEnabled = open ? (record.autoMergeEnabled ?? detail.autoMergeEnabled) : false;
+  const checksMoved =
+    record.checks !== undefined &&
+    Date.parse(record.checks.observedAt) > Date.parse(detail.observedAt) &&
+    (record.checks.headSha !== (detail.headSha ?? null) ||
+      record.checks.state !== (detail.checksState ?? null));
+  const behind =
+    record.state !== detail.state ||
+    isDraft !== detail.isDraft ||
+    autoMergeEnabled !== detail.autoMergeEnabled ||
+    checksMoved;
+  if (!behind) {
+    return { detail, behind };
+  }
+  const settledAt = record.settledAt ?? null;
+  return {
+    detail: {
+      ...detail,
+      state: record.state,
+      isDraft,
+      autoMergeEnabled,
+      title: record.title,
+      mergedAt: record.state === "merged" ? (settledAt ?? detail.mergedAt) : null,
+      closedAt: open ? null : (detail.closedAt ?? settledAt),
+      observedAt: record.observedAt,
+    },
+    behind,
+  };
+}
+
+/**
  * Whether a surface takes a pull request's state from its detail read rather
  * than from what the thread's resolution, a listing or the computer's shared
  * record said: the newer read wins. A detail or a resolution from a server too
@@ -853,9 +906,7 @@ export function resolveThreadPullRequest(input: {
   readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest | null {
   const resolved = resolveThreadPullRequestFromSources(input);
-  return resolved === null
-    ? null
-    : withPullRequestRecord(resolved, input.records?.(resolved.repository, resolved.number));
+  return resolved === null ? null : withPullRequestRecord(resolved, input.records?.(resolved));
 }
 
 function resolveThreadPullRequestFromSources(
@@ -927,8 +978,8 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
 export function threadPullRequestFromLookup(
   entry: PullRequestLookupEntry,
   repository: string,
-  /** When the lookup was answered, on its computer's clock. */
-  answeredAt: number | null,
+  /** When the read behind the answer began, on its computer's clock; null where it did not say. */
+  observedAt: number | null,
 ): ThreadPullRequest {
   return {
     number: entry.number,
@@ -941,7 +992,7 @@ export function threadPullRequestFromLookup(
     autoMergeEnabled: entry.autoMergeEnabled,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
-    observedAt: answeredAt,
+    observedAt,
   };
 }
 
@@ -1109,7 +1160,7 @@ export function resolveLinkedThreadPullRequests(input: {
   readonly records?: PullRequestRecordLookup;
 }): ThreadPullRequest[] {
   return resolveLinkedFromSources(input).map((pullRequest) =>
-    withPullRequestRecord(pullRequest, input.records?.(pullRequest.repository, pullRequest.number)),
+    withPullRequestRecord(pullRequest, input.records?.(pullRequest)),
   );
 }
 

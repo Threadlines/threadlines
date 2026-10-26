@@ -1646,6 +1646,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   // than the cache keeps (upstreamMaxAgeMs) weighs.
   const upstreamFetchedAtMs = new Map<string, number>();
   const upstreamFailedAtMs = new Map<string, number>();
+  /** Keeps one of those times, the most recent last, as many as the fetch cache holds. */
+  const rememberUpstreamTime = (times: Map<string, number>, key: string, atMs: number) => {
+    times.delete(key);
+    times.set(key, atMs);
+    while (times.size > STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY) {
+      const oldest = times.keys().next().value;
+      if (oldest === undefined) break;
+      times.delete(oldest);
+    }
+  };
 
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
@@ -1657,12 +1667,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }).pipe(
       Effect.tapError(() =>
         Clock.currentTimeMillis.pipe(
-          Effect.map((nowMs) => upstreamFailedAtMs.set(keyString, nowMs)),
+          Effect.map((nowMs) => rememberUpstreamTime(upstreamFailedAtMs, keyString, nowMs)),
         ),
       ),
     );
     const fetchedAtMs = yield* Clock.currentTimeMillis;
-    upstreamFetchedAtMs.set(keyString, fetchedAtMs);
+    rememberUpstreamTime(upstreamFetchedAtMs, keyString, fetchedAtMs);
     upstreamFailedAtMs.delete(keyString);
     return yield* Effect.sync(() => ++finishedStatusFetches);
   });

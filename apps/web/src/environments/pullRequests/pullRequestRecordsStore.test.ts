@@ -9,6 +9,12 @@ import {
 
 const ENVIRONMENT = EnvironmentId.make("environment-a");
 
+const GITHUB_SUBJECT = {
+  url: "https://github.com/owner/repo/pull/42",
+  repository: "owner/repo",
+  number: 42,
+};
+
 const record = (overrides: Partial<PullRequestObservation>): PullRequestObservation => ({
   provider: "github",
   repository: "Owner/Repo",
@@ -41,6 +47,21 @@ describe("receivePullRequestRecord", () => {
       record({ sequence: 2, observedAt: "2026-10-26T09:00:00.000Z", state: "open" }),
     );
     expect(late.kept).toBe(false);
-    expect(readPullRequestRecord(ENVIRONMENT, "owner/repo", 42)?.state).toBe("merged");
+    expect(readPullRequestRecord(ENVIRONMENT, GITHUB_SUBJECT)?.state).toBe("merged");
+  });
+
+  it("keeps two hosts' pull requests of the same name apart", () => {
+    receivePullRequestRecord(ENVIRONMENT, record({ state: "open" }));
+    receivePullRequestRecord(
+      ENVIRONMENT,
+      record({
+        provider: "gitlab",
+        sequence: 2,
+        observedAt: "2026-10-26T10:05:00.000Z",
+        url: "https://gitlab.com/owner/repo/-/merge_requests/42",
+        state: "merged",
+      }),
+    );
+    expect(readPullRequestRecord(ENVIRONMENT, GITHUB_SUBJECT)?.state).toBe("open");
   });
 });

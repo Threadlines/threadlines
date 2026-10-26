@@ -1,5 +1,5 @@
 import {
-  pullRequestQueryKeys,
+  markPullRequestListSettled,
   startPullRequestAttentionRefresh,
 } from "../lib/pullRequestsReactQuery";
 import {
@@ -764,9 +764,7 @@ function EnvironmentConnectionManagerBootstrap() {
     const stopPullRequestRecords = startPullRequestRecordsSync({
       onSettled: (environmentId, record) => {
         if (record.state === "open") return;
-        void queryClient.invalidateQueries({
-          queryKey: pullRequestQueryKeys.list(environmentId, record.state),
-        });
+        markPullRequestListSettled(queryClient, { environmentId, state: record.state });
       },
     });
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
