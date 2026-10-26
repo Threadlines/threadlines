@@ -402,6 +402,15 @@ export async function refreshPullRequest(
 ): Promise<void> {
   const forced = { ...input, force: true } as const;
   const diffOptions = pullRequestDiffQueryOptions(forced);
+  // A read already on its way began before whatever made this one necessary,
+  // and a fetch would only join it rather than go past the server's cache.
+  await Promise.all(
+    [
+      pullRequestQueryKeys.detail(input.environmentId, input.reference),
+      pullRequestQueryKeys.activity(input.environmentId, input.reference),
+      diffOptions.queryKey,
+    ].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })),
+  );
   await Promise.allSettled([
     queryClient.fetchQuery({ ...pullRequestDetailQueryOptions(forced), staleTime: 0 }),
     queryClient.fetchQuery({ ...pullRequestActivityQueryOptions(forced), staleTime: 0 }),

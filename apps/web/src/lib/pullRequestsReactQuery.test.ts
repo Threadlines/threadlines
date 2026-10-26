@@ -13,6 +13,8 @@ import {
   PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS,
   pullRequestDetailQueryOptions,
   pullRequestListQueryOptions,
+  pullRequestQueryKeys,
+  refreshPullRequest,
 } from "./pullRequestsReactQuery";
 
 const REFERENCE = { projectId: ProjectId.make("project-a"), repository: "owner/repo", number: 7 };
@@ -59,5 +61,40 @@ describe("a listing after one of its pull requests settled", () => {
     await queryClient.fetchQuery({ ...pullRequestListQueryOptions(merged), staleTime: 0 });
 
     expect(list.mock.calls).toEqual([[{ state: "merged", force: true }], [{ state: "merged" }]]);
+  });
+});
+
+describe("refreshing a pull request", () => {
+  it("goes past a read already on its way instead of joining it", async () => {
+    let answerSlowRead: (detail: unknown) => void = () => undefined;
+    const detail = vi.fn((input: { readonly force?: boolean }) =>
+      input.force
+        ? Promise.resolve({ state: "merged" })
+        : new Promise((resolve) => {
+            answerSlowRead = resolve;
+          }),
+    );
+    const activity = vi.fn(async () => ({
+      comments: [],
+      commits: [],
+      reviewThreads: [],
+      reactions: [],
+    }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      pullRequests: { detail, activity },
+    } as never);
+    const queryClient = new QueryClient();
+    const input = { environmentId: EnvironmentId.make("environment-a"), reference: REFERENCE };
+
+    void queryClient.fetchQuery(pullRequestDetailQueryOptions(input)).catch(() => undefined);
+    const refreshed = refreshPullRequest(queryClient, input);
+    // The read from before answers late; it no longer counts.
+    answerSlowRead({ state: "open" });
+    await refreshed;
+
+    expect(detail).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+    expect(
+      queryClient.getQueryData(pullRequestQueryKeys.detail(input.environmentId, REFERENCE)),
+    ).toEqual({ state: "merged" });
   });
 });

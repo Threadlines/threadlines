@@ -698,6 +698,35 @@ describe("resolveThreadPullRequest", () => {
     expect(resolved).toMatchObject({ repository: "upstream/threadlines", state: "open" });
   });
 
+  it("weighs another computer's listing on no clock but the thread computer's", () => {
+    // The other computer lists it open, by a clock running ahead of this one.
+    const foreign = entry({
+      number: 7,
+      environmentId: OTHER_ENVIRONMENT_ID,
+      observedAt: "2026-10-26T11:00:00.000Z",
+    });
+    const merged = {
+      provider: "github",
+      repository: "threadlines/threadlines",
+      number: 7,
+      sequence: 1,
+      observedAt: "2026-10-26T10:30:00.000Z",
+      title: "Add the pull requests page",
+      url: "https://github.com/threadlines/threadlines/pull/7",
+      headBranch: "feature/pull-requests",
+      state: "merged",
+    } satisfies PullRequestObservation;
+    const resolved = resolveThreadPullRequest({
+      thread: thread(),
+      gitStatus: null,
+      openEntries: [foreign],
+      projects: PROJECTS,
+      records: (subject) =>
+        pullRequestRecordKey(subject) === pullRequestRecordKey(merged) ? merged : undefined,
+    });
+    expect(resolved).toMatchObject({ number: 7, state: "merged" });
+  });
+
   it("never reads an authored row as a thread's own work", () => {
     expect(
       resolveThreadPullRequest({

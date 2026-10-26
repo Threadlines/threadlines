@@ -17,6 +17,7 @@
 import { useSurfaceAttended } from "~/lib/pageAttention";
 import { pullRequestLookupQueryOptions } from "~/lib/pullRequestLookups";
 import {
+  pullRequestRecordKey,
   usePullRequestRecord,
   usePullRequestRecordOnAnyComputer,
 } from "../../environments/pullRequests/pullRequestRecordsStore";
@@ -112,20 +113,16 @@ interface SurfaceChipState {
 
 interface PullRequestChipSurface {
   readonly handle: PullRequestCardHandle;
-  /** The state a chip wears, keyed by {@link chipKey}. */
+  /** The state a chip wears, keyed by {@link pullRequestRecordKey}: host, repository and number. */
   readonly stateByKey: ReadonlyMap<string, SurfaceChipState>;
-  /** Which environment and project can read a repository, keyed by its lowercased name. */
-  readonly scopeByRepository: ReadonlyMap<string, PullRequestRepositoryScope>;
+  /** Which project on each computer can read a repository, keyed by its lowercased name. */
+  readonly scopesByRepository: ReadonlyMap<string, readonly PullRequestRepositoryScope[]>;
 }
 
 const PullRequestChipSurfaceContext = createContext<PullRequestChipSurface | null>(null);
 
 /** How often a pull request a link on screen points at is read while the user looks. */
 const PULL_REQUEST_LINK_ON_SCREEN_POLL_INTERVAL_MS = 60_000;
-
-function chipKey(repository: string, number: number): string {
-  return `${repository.toLowerCase()}:${number}`;
-}
 
 /**
  * What one chip should look like and, where the workspace can read it, what the
@@ -141,14 +138,21 @@ export function usePullRequestChip(
   readonly payload: PullRequestHoverCardPayload | null;
 } {
   const surface = useContext(PullRequestChipSurfaceContext);
-  const surfaceState = surface?.stateByKey.get(chipKey(repository, number)) ?? null;
-  const scope = surface?.scopeByRepository.get(repository.toLowerCase()) ?? null;
+  const subject = { url, repository, number };
+  const key = pullRequestRecordKey(subject);
+  const surfaceState = (key === null ? undefined : surface?.stateByKey.get(key)) ?? null;
+  const scopes = surface?.scopesByRepository.get(repository.toLowerCase());
+  // The card reads on the computer the surface's answer came from where it
+  // can, so the card and the chip weigh their reads on one clock.
+  const scope =
+    scopes?.find((candidate) => candidate.environmentId === surfaceState?.environmentId) ??
+    scopes?.[0] ??
+    null;
   // What a computer last heard about it, whoever asked. Read times are only
   // weighed on one computer's clock: the one behind the surface's answer, else
   // the one that reads this repository. A link nothing here reads (in an
   // agent's transcript, say) still shows what any computer heard.
   const environmentId = surfaceState?.environmentId ?? scope?.environmentId ?? null;
-  const subject = { url, repository, number };
   const recordOnComputer = usePullRequestRecord(environmentId, subject);
   const recordAnywhere = usePullRequestRecordOnAnyComputer(environmentId === null ? subject : null);
   const record = recordOnComputer ?? recordAnywhere;
@@ -166,10 +170,12 @@ export function usePullRequestChip(
               state: state?.state ?? "open",
               isDraft: state?.isDraft ?? false,
               autoMergeEnabled: state?.autoMergeEnabled ?? false,
-              observedAt: state?.observedAt ?? null,
+              // Another computer's clock says nothing next to the card's read.
+              observedAt:
+                scope.environmentId === environmentId ? (state?.observedAt ?? null) : null,
             },
     }),
-    [number, scope, state],
+    [environmentId, number, scope, state],
   );
 }
 
@@ -265,7 +271,10 @@ export function PullRequestHoverCardProvider({
   const stateByKey = useMemo(() => {
     const byKey = new Map<string, SurfaceChipState>();
     for (const entry of entries) {
-      byKey.set(chipKey(entry.repository, entry.number), {
+      const key = pullRequestRecordKey(entry);
+      // Where two computers list it, the thread's own computer's row is kept.
+      if (key === null || byKey.get(key)?.environmentId === environmentId) continue;
+      byKey.set(key, {
         environmentId: entry.environmentId,
         state: {
           state: entry.state,
@@ -279,8 +288,9 @@ export function PullRequestHoverCardProvider({
     // land without waiting for the settled listing to come round again, and
     // the one that still knows a pull request the listings no longer carry.
     for (const pullRequest of threadPullRequests) {
-      if (pullRequest.repository) {
-        byKey.set(chipKey(pullRequest.repository, pullRequest.number), {
+      const key = pullRequestRecordKey(pullRequest);
+      if (key !== null) {
+        byKey.set(key, {
           environmentId,
           state: {
             state: pullRequest.state,
@@ -294,25 +304,23 @@ export function PullRequestHoverCardProvider({
     return byKey;
   }, [entries, environmentId, threadPullRequests]);
 
-  const scopeByRepository = useMemo(() => {
-    const byRepository = new Map<string, PullRequestRepositoryScope>();
+  const scopesByRepository = useMemo(() => {
+    const byRepository = new Map<string, PullRequestRepositoryScope[]>();
     for (const project of projects) {
       const repository = projectRepository(project);
-      if (repository === null || byRepository.has(repository.toLowerCase())) {
-        continue;
-      }
-      byRepository.set(repository.toLowerCase(), {
-        environmentId: project.environmentId,
-        projectId: project.id,
-        repository,
-      });
+      if (repository === null) continue;
+      const scopes = byRepository.get(repository.toLowerCase()) ?? [];
+      // One project per computer is all a read needs.
+      if (scopes.some((scope) => scope.environmentId === project.environmentId)) continue;
+      scopes.push({ environmentId: project.environmentId, projectId: project.id, repository });
+      byRepository.set(repository.toLowerCase(), scopes);
     }
     return byRepository;
   }, [projects]);
 
   const surface = useMemo<PullRequestChipSurface>(
-    () => ({ handle, scopeByRepository, stateByKey }),
-    [handle, scopeByRepository, stateByKey],
+    () => ({ handle, scopesByRepository, stateByKey }),
+    [handle, scopesByRepository, stateByKey],
   );
 
   return (

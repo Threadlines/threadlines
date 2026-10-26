@@ -655,6 +655,11 @@ export function withPullRequestRecord(
   if (pullRequest.observedAt !== null && pullRequest.observedAt > recordAt) {
     return pullRequest;
   }
+  // A merge is never undone, so a merged answer stands against a record that
+  // has not seen it, whatever clock either was read by.
+  if (pullRequest.state === "merged" && record.state !== "merged") {
+    return pullRequest;
+  }
   const open = record.state === "open";
   return {
     ...pullRequest,
@@ -933,10 +938,11 @@ function resolveThreadPullRequestFromSources(
 
   const open = findThreadListEntry(thread, scope, input.openEntries);
   if (open) {
-    return threadPullRequestFromEntry(open);
+    return threadPullRequestFromEntry(open, thread.environmentId);
   }
   return (
     newerSettledAnswer(
+      thread.environmentId,
       findThreadListEntry(thread, scope, input.settledEntries ?? []),
       input.lookups?.get(pullRequestLookupKey(scope, { branch: thread.branch })),
     ) ?? null
@@ -955,8 +961,15 @@ function findThreadProject(
   return project?.kind === "general-chat" ? undefined : project;
 }
 
-/** A listing row as a thread's badge, row and tab read it. */
-function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest {
+/**
+ * A listing row as a thread's badge, row and tab read it. A row another
+ * computer read keeps no read time: that computer's clock says nothing next
+ * to the thread computer's records.
+ */
+function threadPullRequestFromEntry(
+  entry: PullRequestEntry,
+  environmentId: EnvironmentId,
+): ThreadPullRequest {
   return {
     number: entry.number,
     state: entry.state,
@@ -970,7 +983,10 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
     autoMergeEnabled: entry.autoMergeEnabled === true,
     headBranch: entry.headBranch,
     diffStat: { additions: entry.additions, deletions: entry.deletions },
-    observedAt: entry.observedAt === undefined ? null : Date.parse(entry.observedAt),
+    observedAt:
+      entry.observedAt === undefined || entry.environmentId !== environmentId
+        ? null
+        : Date.parse(entry.observedAt),
   };
 }
 
@@ -1092,11 +1108,12 @@ export function threadPullRequestLookupRequests(input: {
  * when neither knows anything.
  */
 function newerSettledAnswer(
+  environmentId: EnvironmentId,
   listed: PullRequestEntry | undefined,
   looked: PullRequestLookupAnswer | undefined,
 ): ThreadPullRequest | null | undefined {
   if (looked === undefined) {
-    return listed ? threadPullRequestFromEntry(listed) : undefined;
+    return listed ? threadPullRequestFromEntry(listed, environmentId) : undefined;
   }
   if (listed === undefined) {
     return looked.pullRequest;
@@ -1105,7 +1122,7 @@ function newerSettledAnswer(
     looked.pullRequest?.number === listed.number
       ? updatedAtMs(listed.updatedAt) > (looked.updatedAt ?? 0)
       : updatedAtMs(listed.createdAt) > looked.answeredAt;
-  return listedWins ? threadPullRequestFromEntry(listed) : looked.pullRequest;
+  return listedWins ? threadPullRequestFromEntry(listed, environmentId) : looked.pullRequest;
 }
 
 /**
@@ -1182,10 +1199,11 @@ function resolveLinkedFromSources(
         ? undefined
         : findNumberedListEntry(scope, candidate.number, input.openEntries);
     const known = open
-      ? threadPullRequestFromEntry(open)
+      ? threadPullRequestFromEntry(open, input.thread.environmentId)
       : scope === null
         ? undefined
         : newerSettledAnswer(
+            input.thread.environmentId,
             findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []),
             lookedUpNumber(input.lookups, scope, candidate.number),
           );
