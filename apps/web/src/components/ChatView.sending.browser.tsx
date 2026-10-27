@@ -683,8 +683,11 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     return { mounted, turnStarts };
   }
 
-  /** The failed send a Retry would hold, as the failure path records it. */
-  function failedSendFor(first: Record<string, unknown>): FailedSend {
+  /**
+   * The failed send a Retry would hold, as the failure path records it.
+   * `chat` logs what the chat is asked to show while the retry goes.
+   */
+  function failedSendFor(first: Record<string, unknown>, chat: string[] = []): FailedSend {
     const { _tag: _ignored, ...command } = first;
     return {
       failureId: recordFailedSend(THREAD_KEY),
@@ -693,6 +696,10 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       command: command as unknown as FailedSend["command"],
       draftTarget: THREAD_REF,
       contents: composerContentsKey(useComposerDraftStore.getState().getComposerDraft(THREAD_REF)),
+      showSending: async () => {
+        chat.push("going out");
+        return () => chat.push("taken back");
+      },
       onAccepted: vi.fn(),
     };
   }
@@ -716,11 +723,14 @@ describe("ChatView (full app): first sends and worktree setup", () => {
 
     try {
       const [first] = turnStarts();
-      const failed = failedSendFor(first!);
+      const chat: string[] = [];
+      const failed = failedSendFor(first!, chat);
       const retrying = retryFailedSend(failed);
-      // Out of the box while it goes, so Send can't send it a second time.
+      // Out of the box while it goes, so Send can't send it a second time,
+      // and the chat shows it going out, as a send does.
       expect(prompt()).toBe("");
       await expect(retrying).resolves.toEqual({ outcome: "sent" });
+      expect(chat).toEqual(["going out"]);
       const [, second] = turnStarts();
       // Unchanged, id included: the server's receipt knows a repeat.
       expect(second).toEqual(first);
@@ -728,6 +738,7 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       // One retry per failure.
       await expect(retryFailedSend(failed)).resolves.toEqual({ outcome: "skipped" });
       expect(turnStarts()).toHaveLength(2);
+      expect(chat).toEqual(["going out"]);
     } finally {
       await mounted.cleanup();
     }
@@ -738,8 +749,10 @@ describe("ChatView (full app): first sends and worktree setup", () => {
 
     try {
       const [first] = turnStarts();
-      const result = await retryFailedSend(failedSendFor(first!));
+      const chat: string[] = [];
+      const result = await retryFailedSend(failedSendFor(first!, chat));
       expect(result).toMatchObject({ outcome: "failed", latest: true });
+      expect(chat).toEqual(["going out", "taken back"]);
       expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
         "Explain this repo",
       );
@@ -753,14 +766,17 @@ describe("ChatView (full app): first sends and worktree setup", () => {
 
     try {
       const [first] = turnStarts();
-      const older = failedSendFor(first!);
-      const latest = failedSendFor(first!);
+      const chat: string[] = [];
+      const older = failedSendFor(first!, chat);
+      const latest = failedSendFor(first!, chat);
       await expect(retryFailedSend(older)).resolves.toEqual({ outcome: "skipped" });
 
       // An edit is the user's own next message: it stays, and nothing is sent.
       useComposerDraftStore.getState().setPrompt(THREAD_REF, "Explain this repo, briefly");
       await expect(retryFailedSend(latest)).resolves.toEqual({ outcome: "skipped" });
       expect(turnStarts()).toHaveLength(1);
+      // A retry that doesn't go shows nothing going out.
+      expect(chat).toEqual([]);
       expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt).toBe(
         "Explain this repo, briefly",
       );

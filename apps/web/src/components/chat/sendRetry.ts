@@ -6,10 +6,12 @@
  * id, so a message that did arrive is answered "already have it" instead of
  * running twice. A refusal is an answer, so it gets no Retry.
  *
- * Retry goes only while the composer still holds exactly what failed; it
- * takes the message out of the box while it goes, as a send does, and puts it
- * back if it fails again. Only the latest failure on a thread can be retried:
- * any new send there, or a retry already started, retires older buttons.
+ * Retry goes only while the composer still holds exactly what failed. Like a
+ * send, it takes the message out of the box while it goes and the chat shows
+ * it going out (the message, "Sending" or "Preparing worktree"); if it fails
+ * again, the chat takes that back and the message goes back in the box. Only
+ * the latest failure on a thread can be retried: any new send there, or a
+ * retry already started, retires older buttons.
  *
  * @module sendRetry
  */
@@ -21,6 +23,7 @@ import type {
 
 import {
   useComposerDraftStore,
+  type ComposerAttachment,
   type ComposerThreadDraftState,
   type DraftId,
 } from "../../composerDraftStore";
@@ -125,6 +128,12 @@ export interface FailedSend {
   /** Where the message went back to, and what it looked like there. */
   readonly draftTarget: ScopedThreadRef | DraftId;
   readonly contents: string;
+  /**
+   * Shows the message going out again, as the send did, with the attachments
+   * the composer held (the chat takes over their previews). Resolves to what
+   * takes it back when the retry fails as well.
+   */
+  readonly showSending: (attachments: ReadonlyArray<ComposerAttachment>) => Promise<() => void>;
   /** What a send does once the server takes it (room memory, the thread's model). */
   readonly onAccepted: () => Promise<void> | void;
 }
@@ -155,11 +164,13 @@ export async function retryFailedSend(
   const generation = sendGenerationByThread.get(failed.threadKey);
   // Out of the box while it goes, as a send does, so Send can't send it twice.
   drafts.clearComposerContent(failed.draftTarget);
+  const takeBackSending = await failed.showSending(draft.attachments);
   try {
     const api = readEnvironmentApi(failed.environmentId);
     if (!api) throw new Error("That computer isn't connected.");
     await api.orchestration.dispatchCommand(failed.command);
   } catch (error) {
+    takeBackSending();
     // Back in the box, unless something new went in meanwhile.
     if (isComposerEmpty(useComposerDraftStore.getState().getComposerDraft(failed.draftTarget))) {
       putBackInComposer(failed.draftTarget, draft);
