@@ -140,6 +140,7 @@ import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadDetailLoaded,
+  selectThreadByRef,
   selectThreadExistsByRef,
   selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
@@ -1318,16 +1319,25 @@ export default function ChatView(props: ChatViewProps) {
   const composerActiveModelSelection = useComposerDraftStore((store) =>
     composerDraftActiveModelSelection(store.getComposerDraft(composerDraftTarget)),
   );
-  // What a new thread's first message went out with. Until the server has
-  // the thread (a new worktree takes a while to cut), the chat names the agent
-  // at work by it, whatever the composer is switched to meanwhile.
-  const [firstSend, setFirstSend] = useState<{
-    readonly threadKey: string;
-    /** The thread's own model, as the message creates the thread with it. */
-    readonly modelSelection: ModelSelection;
-    /** The agent the message went to; null for the thread's own. */
-    readonly participantId: ThreadParticipantId | null;
-  } | null>(null);
+  // What a new thread's first message went out with, by scoped thread key.
+  // Until the server has the thread (a new worktree takes a while to cut),
+  // the chat names the agent at work by it, whatever the composer is switched
+  // to meanwhile. A Retry can set another thread's while one is on its way
+  // here. An entry stays until its send fails or this view goes: one small
+  // record per new thread sent from it.
+  const [firstSendByThreadKey, setFirstSendByThreadKey] = useState<
+    Readonly<
+      Record<
+        string,
+        {
+          /** The thread's own model, as the message creates the thread with it. */
+          readonly modelSelection: ModelSelection;
+          /** The agent the message went to; null for the thread's own. */
+          readonly participantId: ThreadParticipantId | null;
+        }
+      >
+    >
+  >({});
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const prefillComposerDraftPrompt = useComposerDraftStore((store) => store.prefillEmptyPrompt);
   const addComposerDraftAttachments = useComposerDraftStore((store) => store.addAttachments);
@@ -1507,7 +1517,7 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server" && serverThread
       ? null
       : ((draftId ? localDraftErrorsByDraftId[draftId] : null) ?? null);
-  const pendingFirstSend = firstSend?.threadKey === routeThreadKey ? firstSend : null;
+  const pendingFirstSend = firstSendByThreadKey[routeThreadKey] ?? null;
   const sentModelSelection = pendingFirstSend?.modelSelection ?? null;
   const localDraftThread = useMemo(
     () =>
@@ -2539,8 +2549,10 @@ export default function ChatView(props: ChatViewProps) {
     () => new Set<string>(queuedFollowUps.map((followUp) => followUp.messageId)),
     [queuedFollowUps],
   );
+  // Runs as each steer is queued too: one the server already has (a Retry of
+  // a steer that did arrive) is read at once, with no later change to wait for.
   useEffect(() => {
-    if (!activeThreadKey) {
+    if (!activeThreadKey || queuedSteeringMessageIds.size === 0) {
       return;
     }
 
@@ -2560,6 +2572,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
     failedSteeringMessageIds,
     queuedFollowUpIds,
+    queuedSteeringMessageIds,
     serverMessages,
   ]);
   // A steer the provider refused outright (one that merely missed its turn is
@@ -5710,16 +5723,40 @@ export default function ChatView(props: ChatViewProps) {
       ctxSelectedModel || DEFAULT_MODEL,
       ctxSelectedModelSelection.options,
     );
-    if (!isSteeringFollowUp && !askOnTheSide) {
-      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
-      if (isLocalDraftThread) {
-        setFirstSend({
-          threadKey: scopedThreadKey(scopeThreadRef(environmentId, threadIdForSend)),
-          modelSelection: threadCreateModelSelection,
-          participantId: roomRecipientId,
-        });
+    const threadKeyForSend = scopedThreadKey(scopeThreadRef(environmentId, threadIdForSend));
+    // The work the send starts, as the thread shows it while it goes:
+    // "Sending" or "Preparing worktree", and for a new thread what it went
+    // out with. A Retry shows it again, maybe from another thread, so the
+    // working state only lands on the thread on screen. An older failure's
+    // error goes first: the working state takes an error as the answer.
+    const showSendStarted = () => {
+      setThreadError(threadIdForSend, null);
+      if (isSteeringFollowUp || askOnTheSide) return;
+      if (activeThreadKeyRef.current === threadKeyForSend) {
+        beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
       }
-    }
+      if (isLocalDraftThread) {
+        setFirstSendByThreadKey((current) => ({
+          ...current,
+          [threadKeyForSend]: {
+            modelSelection: threadCreateModelSelection,
+            participantId: roomRecipientId,
+          },
+        }));
+      }
+    };
+    const clearSendStarted = () => {
+      // Nothing is on its way any more: a draft goes back to its composer's pick.
+      setFirstSendByThreadKey((current) => {
+        if (!(threadKeyForSend in current)) return current;
+        const { [threadKeyForSend]: _cleared, ...rest } = current;
+        return rest;
+      });
+      if (!isSteeringFollowUp && !askOnTheSide && activeThreadKeyRef.current === threadKeyForSend) {
+        resetLocalDispatch();
+      }
+    };
+    showSendStarted();
 
     const composerAttachmentsSnapshot = [...composerAttachments];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -5779,7 +5816,8 @@ export default function ChatView(props: ChatViewProps) {
         dataUrl: await readFileAsDataUrl(attachment.file),
       })),
     ).then((attachments) => [...attachments, ...drawingAttachments]);
-    const optimisticAttachments = composerAttachmentsSnapshot.map((attachment): ChatAttachment =>
+    // The message in the chat shows the composer's attachments, previews and all.
+    const toOptimisticAttachment = (attachment: ComposerAttachment): ChatAttachment =>
       attachment.type === "image"
         ? {
             type: "image",
@@ -5796,8 +5834,8 @@ export default function ChatView(props: ChatViewProps) {
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
-          },
-    );
+          };
+    const optimisticAttachments = composerAttachmentsSnapshot.map(toOptimisticAttachment);
     const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
     const draftIdForSend = draftId;
     const threadTitleForSend =
@@ -5819,28 +5857,53 @@ export default function ChatView(props: ChatViewProps) {
     // follow-ups need this too: they queue near the composer first, and
     // without re-arming here the timeline stays parked wherever the user had
     // scrolled when the queued message (and the rest of the turn) lands.
-    await requestTimelineStickToBottom(false);
-
-    if (isSteeringFollowUp) {
-      if (followUpDelivery === "steer") {
-        setSteeringMessagesById((existing) => ({
-          ...existing,
-          [messageIdForSend]: {
-            id: messageIdForSend,
-            threadKey: steeringThreadKey,
-            text: outgoingMessageText,
-            createdAt: messageCreatedAt,
-            status: "queued",
-          },
-        }));
+    const showOutgoingMessage = async (message: ChatMessage) => {
+      // Only the send's own thread: a Retry may go while another is open.
+      if (activeThreadKeyRef.current === threadKeyForSend) {
+        await requestTimelineStickToBottom(false);
       }
-    } else if (!askOnTheSide) {
-      // A side question shows once the server has it: until then it has no
-      // answer state to draw.
-      addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
-    }
-
-    setThreadError(threadIdForSend, null);
+      if (isSteeringFollowUp) {
+        if (followUpDelivery === "steer") {
+          setSteeringMessagesById((existing) => ({
+            ...existing,
+            [message.id]: {
+              id: message.id,
+              threadKey: steeringThreadKey,
+              text: message.text,
+              createdAt: message.createdAt,
+              status: "queued",
+            },
+          }));
+        }
+      } else if (!askOnTheSide) {
+        // A side question shows once the server has it: until then it has no
+        // answer state to draw.
+        addOptimisticThreadMessage(threadRefForSend, message);
+      }
+    };
+    const takeBackOutgoingMessage = (message: ChatMessage) => {
+      if (isSteeringFollowUp) {
+        setSteeringMessagesById((existing) => {
+          if (!(message.id in existing)) {
+            return existing;
+          }
+          const next = { ...existing };
+          delete next[message.id];
+          return next;
+        });
+      } else {
+        removeOptimisticThreadMessages(threadRefForSend, new Set([message.id]));
+      }
+      // A message the server got after all hands its previews on to the
+      // server's copy (in whichever view shows the thread now).
+      const delivered = selectThreadByRef(useStore.getState(), threadRefForSend)?.messages.some(
+        (serverMessage) => serverMessage.id === message.id,
+      );
+      if (!delivered) {
+        revokeUserMessagePreviewUrls(message);
+      }
+    };
+    await showOutgoingMessage(optimisticMessage);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
         expiredTerminalContextCount,
@@ -6006,7 +6069,7 @@ export default function ChatView(props: ChatViewProps) {
           : undefined;
       // The worktree is cut inside this request; the flag stays up until the
       // thread reports its worktree path.
-      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+      showSendStarted();
       await dispatchForSend(
         {
           type: "thread.turn.start",
@@ -6056,10 +6119,9 @@ export default function ChatView(props: ChatViewProps) {
         },
       );
     })().catch(async (err: unknown) => {
-      // Nothing is on its way any more: a draft goes back to its composer's pick.
-      setFirstSend((current) =>
-        current?.threadKey === scopedThreadKey(threadRefForSend) ? null : current,
-      );
+      if (!dispatchSucceeded) {
+        clearSendStarted();
+      }
       // Retry can only resend a message the composer got back, as it came back.
       let retryContents: string | null = null;
       if (
@@ -6073,20 +6135,7 @@ export default function ChatView(props: ChatViewProps) {
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.drawingContexts
           .length ?? 0) === 0
       ) {
-        if (isSteeringFollowUp) {
-          setSteeringMessagesById((existing) => {
-            if (!(messageIdForSend in existing)) {
-              return existing;
-            }
-            const next = { ...existing };
-            delete next[messageIdForSend];
-            return next;
-          });
-          revokeUserMessagePreviewUrls(optimisticMessage);
-        } else {
-          removeOptimisticThreadMessages(threadRefForSend, new Set([messageIdForSend]));
-          revokeUserMessagePreviewUrls(optimisticMessage);
-        }
+        takeBackOutgoingMessage(optimisticMessage);
         promptRef.current = promptForSend;
         const retryComposerAttachments = composerAttachmentsSnapshot.map(
           cloneComposerAttachmentForRetry,
@@ -6140,6 +6189,21 @@ export default function ChatView(props: ChatViewProps) {
             }));
       };
       const failed = dispatchedSend;
+      // A Retry shows the message going out again, as the send did, with the
+      // attachments the composer held, whose previews the message takes over.
+      const showRetrySending = async (attachments: ReadonlyArray<ComposerAttachment>) => {
+        const { attachments: _sentAttachments, ...rest } = optimisticMessage;
+        const message: ChatMessage =
+          attachments.length > 0
+            ? { ...rest, attachments: attachments.map(toOptimisticAttachment) }
+            : rest;
+        showSendStarted();
+        await showOutgoingMessage(message);
+        return () => {
+          takeBackOutgoingMessage(message);
+          clearSendStarted();
+        };
+      };
       // The thread error banner only helps if the user is still looking at
       // this thread when the retry budget runs out (large uploads can take
       // minutes to exhaust it); the toast makes the failure visible anywhere,
@@ -6163,6 +6227,7 @@ export default function ChatView(props: ChatViewProps) {
                 command: failed.command,
                 draftTarget: composerDraftTarget,
                 contents: retryContents,
+                showSending: showRetrySending,
                 onAccepted: failed.onAccepted,
               }
             : null;
@@ -6200,9 +6265,6 @@ export default function ChatView(props: ChatViewProps) {
       showSendFailure(err);
     });
     sendInFlightRef.current = false;
-    if (!dispatchSucceeded && !isSteeringFollowUp && !askOnTheSide) {
-      resetLocalDispatch();
-    }
   };
 
   /**
