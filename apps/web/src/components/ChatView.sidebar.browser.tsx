@@ -58,6 +58,7 @@ import {
   createSnapshotForTargetUser,
   addThreadToSnapshot,
   setSidebarThreadWork,
+  waitForThreadDetailLoaded,
   touchSwipe,
   draftIdFromPath,
   draftThreadIdFor,
@@ -969,6 +970,11 @@ describe("ChatView (full app): sidebar", () => {
 
     try {
       await waitForServerConfigToApply();
+      // The sidebar loads both threads' details in the background once the
+      // page idles, and each load rewrites its row from the server's copy:
+      // the edits below go in after them, or a busy machine undoes them.
+      await waitForThreadDetailLoaded(parentThreadId);
+      await waitForThreadDetailLoaded(childThreadId);
       // The child's answer went back to its parent an hour ago, so it
       // wrapped itself.
       const finishedAt = isoAt(-3_600);
