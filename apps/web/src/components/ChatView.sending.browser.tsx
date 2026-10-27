@@ -1439,6 +1439,8 @@ describe("ChatView (full app): first sends and worktree setup", () => {
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
+      // As main.tsx mounts it: React runs mount effects twice in development.
+      strictMode: true,
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
@@ -1528,6 +1530,33 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       );
       expect(document.querySelector('[data-turn-working-anchor="true"]')?.textContent).toContain(
         testCase.working,
+      );
+
+      // The chat view is rebuilt while it waits (another page and back, the
+      // server taking the message meanwhile): the send still shows on its
+      // thread, as it went out, until the thread's own state answers it.
+      const threadPath = mounted.router.state.location.pathname;
+      await mounted.router.navigate({ to: "/usage" });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-turn-working-anchor="true"]')).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      resolveDispatch({ sequence: fixture.snapshot.snapshotSequence + 1 });
+      await waitForLayout();
+      await mounted.router.navigate({ to: threadPath });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('button[aria-label="Preparing worktree"]')).toBeTruthy();
+          expect(
+            document.querySelector('[data-testid="branch-toolbar-preparing"]')?.textContent,
+          ).toBe("Preparing a new worktree from main");
+          expect(
+            document.querySelector('[data-turn-working-anchor="true"]')?.textContent,
+          ).toContain(testCase.working);
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);

@@ -95,6 +95,7 @@ import { type TerminalContextDraft } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
+import { useLocalDispatchStore } from "./chat/localDispatch";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
@@ -3373,6 +3374,7 @@ export function registerChatViewSuiteHooks(): void {
       stickyActiveProvider: null,
     });
     useOptimisticThreadMessagesStore.setState({ messagesByThreadKey: {} });
+    useLocalDispatchStore.setState({ byThreadKey: {} });
     useCommandPaletteStore.setState({
       open: false,
       openIntent: null,
