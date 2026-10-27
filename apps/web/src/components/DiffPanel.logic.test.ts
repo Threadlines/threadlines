@@ -179,6 +179,26 @@ describe("stripPatchContextLines", () => {
     );
   });
 
+  it("keeps a new file's and a deleted file's empty side at line 0", () => {
+    const patch = [
+      "diff --git a/new.ts b/new.ts",
+      "--- /dev/null",
+      "+++ b/new.ts",
+      "@@ -0,0 +1,2 @@",
+      "+one",
+      "+two",
+      "diff --git a/old.ts b/old.ts",
+      "--- a/old.ts",
+      "+++ /dev/null",
+      "@@ -1,2 +0,0 @@",
+      "-one",
+      "-two",
+    ].join("\n");
+
+    // Already zero-context, so the patch comes back unchanged.
+    expect(stripPatchContextLines(patch)).toBe(patch);
+  });
+
   it("keeps no-newline markers attached to change runs and drops them with context", () => {
     const patch = [
       "--- a/foo.txt",

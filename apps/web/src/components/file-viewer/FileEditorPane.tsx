@@ -11,15 +11,21 @@
  * see FileViewerPierre.browser.tsx for the regression test.
  *
  * The pierre editor owns the document after mount: React never feeds edited
- * contents back in (the file prop's cacheKey stays constant for the session,
- * so option-driven re-renders repaint from the latest buffer without
- * rebuilding the document and dropping undo history). Edits stream to the
- * save coordinator, which debounces writes and keeps the read cache current.
+ * contents back in. Pierre tells an outside replacement from a re-render by
+ * the file's cacheKey alone, so the key stays constant for the session and
+ * option-driven re-renders (wrap, theme) keep the draft and its undo history.
+ * Edits stream to the save coordinator, which debounces writes and keeps the
+ * read cache current.
+ *
+ * The session never ends while the pane is mounted (`edit` only turns on), and
+ * the coordinator already holds every change when it does, so there is no
+ * completion handler. No `editStateKey` either: a retained draft would win
+ * over the disk contents a "Reload file" remounts the pane with.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Editor } from "@pierre/diffs/edit";
-import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
+import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/diffs/react";
 
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
@@ -27,6 +33,10 @@ import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { applyEditSeedToEditor } from "./FileViewerOverlay.logic";
 import { flushFileEdits, queueFileEdit } from "./fileEditorSaveCoordinator";
+
+/** A fresh editor per attach; the pane attaches once per mount. */
+const createEditor: EditorFactory<undefined, undefined> = (editorType, options, editStateKey) =>
+  new Editor(editorType, options, editStateKey);
 
 export function FileEditorPane({
   context,
@@ -47,18 +57,12 @@ export function FileEditorPane({
   const { resolvedTheme } = useTheme();
   const latestContentsRef = useRef(initialContents);
   const handleChangeRef = useRef<(contents: string) => void>(() => undefined);
-  const handleAttachRef = useRef<(attached: Editor<undefined>) => void>(() => undefined);
-  const [editor] = useState(
-    () =>
-      new Editor<undefined>({
-        onChange: (file) => {
-          handleChangeRef.current(file.contents);
-        },
-        onAttach: (attached) => {
-          handleAttachRef.current(attached);
-        },
-      }),
-  );
+  const handleAttachRef = useRef<(attached: Editor<"file">) => void>(() => undefined);
+  const [editorOptions] = useState(() => ({
+    onAttach: (attached: Editor<"file">) => {
+      handleAttachRef.current(attached);
+    },
+  }));
   const [editableReady, setEditableReady] = useState(false);
 
   // Entry gestures (type-to-edit, double-click) stash a caret seed in the
@@ -135,17 +139,20 @@ export function FileEditorPane({
   );
 
   return (
-    <EditProvider createEditor={() => editor}>
+    <EditProvider createEditor={createEditor}>
       <PierreFile
         file={{
           name: path,
-          // Option-driven re-renders (wrap, theme) repaint from the latest
-          // buffer; the constant cacheKey keeps the editor's document (and
-          // undo history) intact across them.
+          // The constant cacheKey marks every re-render as the same file, so
+          // pierre keeps the session's document (and undo history).
           contents: latestContentsRef.current,
           cacheKey: `edit:${context.cwd}:${path}`,
         }}
         edit={editableReady}
+        editorOptions={editorOptions}
+        onEditChange={(event) => {
+          handleChangeRef.current(event.file.contents);
+        }}
         // The editor re-tokenizes synchronously through its token
         // transformer; the async worker-pool highlighter cannot serve those
         // per-keystroke updates and lines degrade to plain text.

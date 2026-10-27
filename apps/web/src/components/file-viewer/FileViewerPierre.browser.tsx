@@ -6,8 +6,8 @@ import { userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import { getFiletypeFromFileName, preloadHighlighter } from "@pierre/diffs";
-import { Editor } from "@pierre/diffs/edit";
-import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
+import { Editor, type EditorOptions } from "@pierre/diffs/edit";
+import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/diffs/react";
 
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
@@ -206,24 +206,74 @@ describe("FileViewer pierre integration", () => {
 });
 
 // Mirrors the editable-file wiring (EditProvider + edit File) so
-// editor attachment regressions surface here instead of in the app.
+// editor attachment regressions surface here instead of in the app. Pierre
+// builds the editor through the provider, so tests receive it from onAttach,
+// as FileEditorPane does.
+const createEditor: EditorFactory<undefined, undefined> = (editorType, options, editStateKey) =>
+  new Editor(editorType, options, editStateKey);
+
+/** The editor pierre attaches, once it has adopted the file's document. */
+function attachedEditor(onAttach?: (editor: Editor<"file">) => void) {
+  const state: { attached: Editor<"file"> | null } = { attached: null };
+  return {
+    editorOptions: {
+      onAttach: (editor: Editor<"file">) => {
+        state.attached = editor;
+        onAttach?.(editor);
+      },
+    },
+    /**
+     * Attach is async and spins up highlight workers, so under a saturated host
+     * it can take far longer than the isolated-run norm; keep this below
+     * testTimeout so the specific error survives, but leave generous headroom.
+     */
+    async ready(timeoutMs = 25_000): Promise<Editor<"file">> {
+      const deadline = performance.now() + timeoutMs;
+      for (;;) {
+        const editor = state.attached;
+        if (editor !== null && hasDocument(editor)) {
+          return editor;
+        }
+        if (performance.now() > deadline) {
+          throw new Error("editor never adopted a document");
+        }
+        await settle(150);
+      }
+    },
+  };
+}
+
+function hasDocument(editor: Editor<"file">): boolean {
+  try {
+    return editor.getFile() != null;
+  } catch {
+    return false;
+  }
+}
+
 function EditableHarness({
   path,
   contents,
-  editor,
+  editorOptions,
+  onEditChange,
 }: {
   path: string;
   contents: string;
-  editor: Editor<undefined>;
+  editorOptions: EditorOptions<"file", undefined, undefined>;
+  onEditChange?: (contents: string) => void;
 }) {
   return (
     <DiffWorkerPoolProvider>
-      <EditProvider createEditor={() => editor}>
+      <EditProvider createEditor={createEditor}>
         <div style={{ height: 300, overflow: "auto" }}>
           <PierreFile
             key={path}
             file={{ name: path, contents, cacheKey: `test:${path}:${contents.length}` }}
             edit
+            editorOptions={editorOptions}
+            {...(onEditChange
+              ? { onEditChange: (event) => onEditChange(event.file.contents) }
+              : {})}
             options={{
               disableFileHeader: true,
               theme: "pierre-dark",
@@ -237,29 +287,6 @@ function EditableHarness({
   );
 }
 
-/**
- * Wait until the editor has adopted the file's document (attach is async).
- * Attach spins up highlight workers, so under a saturated host it can take
- * far longer than the isolated-run norm; keep this below testTimeout so the
- * specific error survives, but leave generous headroom.
- */
-async function waitForEditorDocument(editor: Editor<undefined>, timeoutMs = 25_000) {
-  const deadline = performance.now() + timeoutMs;
-  const ready = () => {
-    try {
-      return editor.getFile() != null;
-    } catch {
-      return false;
-    }
-  };
-  while (!ready()) {
-    if (performance.now() > deadline) {
-      throw new Error("editor never adopted a document");
-    }
-    await settle(150);
-  }
-}
-
 describe("FileViewer pierre editing", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -267,16 +294,17 @@ describe("FileViewer pierre editing", () => {
 
   it("applies programmatic edits and reports changes with undo support", async () => {
     const changes: string[] = [];
-    const editor = new Editor<undefined>({
-      onChange: (file) => {
-        changes.push(file.contents);
-      },
-    });
+    const attach = attachedEditor();
 
     const screen = await render(
-      <EditableHarness path="e.ts" contents={"const value = 1;\n"} editor={editor} />,
+      <EditableHarness
+        path="e.ts"
+        contents={"const value = 1;\n"}
+        editorOptions={attach.editorOptions}
+        onEditChange={(contents) => changes.push(contents)}
+      />,
     );
-    await waitForEditorDocument(editor);
+    const editor = await attach.ready();
 
     editor.applyEdits(
       [
@@ -301,16 +329,17 @@ describe("FileViewer pierre editing", () => {
 
   it("accepts typed input through the editable surface", async () => {
     const changes: string[] = [];
-    const editor = new Editor<undefined>({
-      onChange: (file) => {
-        changes.push(file.contents);
-      },
-    });
+    const attach = attachedEditor();
 
     const screen = await render(
-      <EditableHarness path="t.ts" contents={"start\n"} editor={editor} />,
+      <EditableHarness
+        path="t.ts"
+        contents={"start\n"}
+        editorOptions={attach.editorOptions}
+        onEditChange={(contents) => changes.push(contents)}
+      />,
     );
-    await waitForEditorDocument(editor);
+    const editor = await attach.ready();
 
     // Shared CI runners can drop the first synthetic keystroke while the
     // freshly attached editor is still wiring focus and selection, so retry
@@ -335,18 +364,19 @@ describe("FileViewer pierre editing", () => {
   });
 
   it("keeps the edited document across option-driven re-renders (word wrap)", async () => {
-    const editor = new Editor<undefined>({});
-    // Constant cacheKey mirrors FileEditorPane: option changes force a
-    // repaint without rebuilding the editor's document, so edits and undo
-    // history survive a wrap/theme toggle mid-session.
+    const attach = attachedEditor();
+    // Constant cacheKey mirrors FileEditorPane: pierre treats a re-render with
+    // the same key as the same file, so edits and undo history survive a
+    // wrap/theme toggle mid-session.
     function WrapHarness({ wrap }: { wrap: boolean }) {
       return (
         <DiffWorkerPoolProvider>
-          <EditProvider createEditor={() => editor}>
+          <EditProvider createEditor={createEditor}>
             <div style={{ height: 300, overflow: "auto" }}>
               <PierreFile
                 file={{ name: "w2.ts", contents: "const w = 0;\n", cacheKey: "edit:w2.ts" }}
                 edit
+                editorOptions={attach.editorOptions}
                 options={{
                   disableFileHeader: true,
                   theme: "pierre-dark",
@@ -361,7 +391,7 @@ describe("FileViewer pierre editing", () => {
     }
 
     const screen = await render(<WrapHarness wrap={false} />);
-    await waitForEditorDocument(editor);
+    const editor = await attach.ready();
 
     editor.applyEdits(
       [
@@ -388,21 +418,23 @@ describe("FileViewer pierre editing", () => {
     // Mirrors FileEditorPane's onAttach wiring for the type-to-edit entry
     // gesture: the seed lands once pierre's rAF-deferred onAttach fires with
     // the document already built, so applyEdits/setSelections are safe here.
-    const editor = new Editor<undefined>({
-      onAttach: (attached) => {
-        applyEditSeedToEditor(attached, {
-          path: "seed.ts",
-          line: 0,
-          character: 5,
-          insertText: "!",
-        });
-      },
+    const attach = attachedEditor((attached) => {
+      applyEditSeedToEditor(attached, {
+        path: "seed.ts",
+        line: 0,
+        character: 5,
+        insertText: "!",
+      });
     });
 
     const screen = await render(
-      <EditableHarness path="seed.ts" contents={"start\nnext\n"} editor={editor} />,
+      <EditableHarness
+        path="seed.ts"
+        contents={"start\nnext\n"}
+        editorOptions={attach.editorOptions}
+      />,
     );
-    await waitForEditorDocument(editor);
+    const editor = await attach.ready();
 
     const deadline = performance.now() + 15_000;
     while (!editor.getText().includes("start!") && performance.now() < deadline) {
@@ -410,7 +442,7 @@ describe("FileViewer pierre editing", () => {
     }
 
     expect(editor.getText()).toContain("start!\nnext");
-    expect(editor.getState().selections?.[0]).toMatchObject({
+    expect(editor.getViewState().selections?.[0]).toMatchObject({
       start: { line: 0, character: 6 },
       end: { line: 0, character: 6 },
     });
@@ -425,22 +457,21 @@ describe("FileViewer pierre editing", () => {
     // short-circuits on cached content, leaving the editor without a
     // document. Deferring `edit` to a post-mount effect makes the
     // attach a dep-change effect run, which StrictMode does not double.
-    let editorRef: Editor<undefined> | null = null;
+    const attach = attachedEditor();
     function DeferredEditableHarness({ path, contents }: { path: string; contents: string }) {
-      const [editor] = useState(() => new Editor<undefined>({}));
       const [editableReady, setEditableReady] = useState(false);
       useEffect(() => {
         setEditableReady(true);
       }, []);
-      editorRef = editor;
       return (
         <DiffWorkerPoolProvider>
-          <EditProvider createEditor={() => editor}>
+          <EditProvider createEditor={createEditor}>
             <div style={{ height: 300, overflow: "auto" }}>
               <PierreFile
                 key={path}
                 file={{ name: path, contents, cacheKey: `test:${path}:${contents.length}` }}
                 edit={editableReady}
+                editorOptions={attach.editorOptions}
                 options={{ disableFileHeader: true, theme: "pierre-dark", themeType: "dark" }}
               />
             </div>
@@ -456,9 +487,7 @@ describe("FileViewer pierre editing", () => {
     );
     await settle();
 
-    const editor = editorRef as unknown as Editor<undefined>;
-    expect(editor).not.toBeNull();
-    await waitForEditorDocument(editor);
+    const editor = await attach.ready();
     editor.applyEdits(
       [
         {

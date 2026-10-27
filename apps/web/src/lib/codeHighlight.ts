@@ -3,8 +3,8 @@ import {
   resolveLanguages,
   resolveThemes,
   type DiffsHighlighter,
+  type DiffsTheme,
   type SupportedLanguages,
-  type ThemeRegistrationResolved,
 } from "@pierre/diffs";
 import type { ResolvedLanguage } from "@pierre/diffs/worker";
 
@@ -27,7 +27,7 @@ export interface CodeHighlightRequest {
   readonly theme: DiffThemeName;
   /** Grammar data the worker has not seen yet; empty once it has. */
   readonly resolvedLanguages: ResolvedLanguage[];
-  readonly resolvedThemes: ThemeRegistrationResolved[];
+  readonly resolvedThemes: DiffsTheme[];
 }
 
 export type CodeHighlightResponse =
@@ -59,7 +59,7 @@ export type CodeHighlightStreamRequest =
       readonly language: string;
       readonly theme: DiffThemeName;
       readonly resolvedLanguages: ResolvedLanguage[];
-      readonly resolvedThemes: ThemeRegistrationResolved[];
+      readonly resolvedThemes: DiffsTheme[];
     }
   | {
       readonly kind: "stream-append";
@@ -91,7 +91,7 @@ let nextStreamId = 0;
 const pendingRequests = new Map<number, (html: string | null) => void>();
 const streamResponders = new Map<number, (response: CodeHighlightStreamResponse) => void>();
 const languageResolutions = new Map<string, Promise<ResolvedLanguage[]>>();
-const themeResolutions = new Map<string, Promise<ThemeRegistrationResolved[]>>();
+const themeResolutions = new Map<string, Promise<DiffsTheme[]>>();
 const deliveredLanguages = new Set<string>();
 const deliveredThemes = new Set<string>();
 const warmedThemes = new Set<string>();
@@ -156,13 +156,14 @@ async function resolveRequestAssets(
 ): Promise<{
   language: string;
   resolvedLanguages: ResolvedLanguage[];
-  resolvedThemes: ThemeRegistrationResolved[];
+  resolvedThemes: DiffsTheme[];
 }> {
-  let resolvedThemes: ThemeRegistrationResolved[] = [];
+  let resolvedThemes: DiffsTheme[] = [];
   if (!deliveredThemes.has(theme)) {
     let themeResolution = themeResolutions.get(theme);
     if (!themeResolution) {
-      themeResolution = resolveThemes([theme]);
+      // The worker tokenizes with shiki-js, which reads the theme's TextMate half.
+      themeResolution = resolveThemes([theme], "shiki-js");
       themeResolutions.set(theme, themeResolution);
     }
     resolvedThemes = await themeResolution;

@@ -740,7 +740,7 @@ describe("ChatMarkdown", () => {
       // their first load on a busy CI runner can outlast waitFor's one second.
       await vi.waitFor(
         () => {
-          const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
+          const pre = document.querySelector<HTMLElement>(".chat-markdown-shiki > pre");
           expect(pre).not.toBeNull();
           expect(pre!.querySelector('span[style*="color"]')).not.toBeNull();
           // The one-shot HTML carries the theme background inline; the streamed
@@ -755,12 +755,12 @@ describe("ChatMarkdown", () => {
       );
 
       // The frame the fence closed on: still the streamed tokens, never plain.
-      const settling = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre");
-      expect(settling?.classList.contains("shiki")).toBe(true);
+      const settling = document.querySelector<HTMLElement>(".chat-markdown-shiki > pre");
+      expect(settling).not.toBeNull();
       expect(settling?.querySelector('span[style*="color"]')).not.toBeNull();
 
       await vi.waitFor(() => {
-        const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre.shiki");
+        const pre = document.querySelector<HTMLElement>(".chat-markdown-shiki > pre");
         expect(pre?.style.backgroundColor).not.toBe("");
         expect(pre?.textContent).toContain("function identity(value) {}");
       });

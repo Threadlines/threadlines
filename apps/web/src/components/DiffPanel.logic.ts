@@ -159,8 +159,10 @@ export function stripPatchContextLines(patch: string): string {
     if (hunkHeader) {
       flushRun();
       inHunk = true;
-      oldLine = Number.parseInt(hunkHeader[1] ?? "0", 10);
-      newLine = Number.parseInt(hunkHeader[3] ?? "0", 10);
+      // An empty side names the line before it (`@@ -0,0 +1,3 @@` for a new
+      // file), so its next line is one further on.
+      oldLine = Number.parseInt(hunkHeader[1] ?? "0", 10) + (hunkHeader[2] === "0" ? 1 : 0);
+      newLine = Number.parseInt(hunkHeader[3] ?? "0", 10) + (hunkHeader[4] === "0" ? 1 : 0);
       continue;
     }
     if (!inHunk) {
