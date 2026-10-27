@@ -89,7 +89,12 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { failureNotice, toastManager } from "./ui/toast";
-import { copyWithNotice } from "./ui/copyWithNotice";
+import {
+  type FileActionTarget,
+  fileActionMenuItems,
+  readFileActionLaunchers,
+  runFileAction,
+} from "./fileActionsMenu";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Toggle } from "./ui/toggle";
 import { TooltipWrapper } from "./ui/tooltip";
@@ -217,7 +222,7 @@ function resyncVirtualizerAfterJump(virtualizer: VirtualizerInternals | null): v
 /** Below this toolbar width a split diff degrades to two unreadable columns. */
 const NARROW_DIFF_PANEL_WIDTH_PX = 420;
 
-type DiffFileContextAction = "open-editor" | "copy-path" | "stage" | "unstage" | "discard";
+type DiffFileContextAction = "open-viewer" | "stage" | "unstage" | "discard";
 
 interface PendingDiscardDiffFile {
   readonly filePath: string;
@@ -908,9 +913,6 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
     },
     [activeCwd],
   );
-  const copyDiffFilePath = useCallback((filePath: string) => {
-    void copyWithNotice(filePath, "path");
-  }, []);
 
   const stageChangesMutation = useMutation(
     gitStageChangesMutationOptions({
@@ -1009,9 +1011,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
           : undefined;
       const canMutate =
         diffMode === "workingTree" && activeEnvironmentId !== null && activeCwd !== undefined;
-      const menuItems: ContextMenuItem<DiffFileContextAction>[] = [
-        { id: "open-editor", label: "Open in editor" },
-        { id: "copy-path", label: "Copy path" },
+      const gitItems: ContextMenuItem<DiffFileContextAction>[] = [
         ...(canMutate && statusFile?.worktreeStatus
           ? [{ id: "stage" as const, label: "Stage changes", disabled: isFileMutationRunning }]
           : []),
@@ -1028,11 +1028,26 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
             ]
           : []),
       ];
-      const clicked = await api.contextMenu.show(menuItems, position);
-      if (clicked === "open-editor") {
+      const target: FileActionTarget = {
+        path: activeCwd ? resolvePathLinkTarget(filePath, activeCwd) : filePath,
+        kind: "file",
+        relativePath: activeCwd ? filePath : null,
+        workspaceRoot: activeCwd,
+      };
+      const launchers = readFileActionLaunchers(activeEnvironmentId);
+      const clicked = await api.contextMenu.show(
+        [
+          ...fileActionMenuItems(target, launchers, [
+            { id: "open-viewer" as const, label: "Open in file viewer" },
+          ]),
+          ...gitItems.map((item, index) =>
+            index === 0 ? { ...item, separatorBefore: true } : item,
+          ),
+        ],
+        position,
+      );
+      if (clicked === "open-viewer") {
         openDiffFileInEditor(filePath);
-      } else if (clicked === "copy-path") {
-        copyDiffFilePath(filePath);
       } else if (clicked === "stage") {
         runStageDiffFile(filePath);
       } else if (clicked === "unstage") {
@@ -1042,12 +1057,13 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
           filePath,
           isUntracked: statusFile?.worktreeStatus === "untracked",
         });
+      } else {
+        runFileAction(clicked, target, launchers);
       }
     },
     [
       activeCwd,
       activeEnvironmentId,
-      copyDiffFilePath,
       diffMode,
       gitStatusQuery.data,
       isFileMutationRunning,

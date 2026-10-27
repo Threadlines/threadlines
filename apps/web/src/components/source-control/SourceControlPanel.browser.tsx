@@ -10,6 +10,7 @@ import {
   type GitRunStackedActionResult,
   type EnvironmentApi,
   type LocalApi,
+  type ServerConfig,
   type VcsCommitDetailsResult,
   type VcsCommitGraphResult,
   type VcsPullResult,
@@ -36,6 +37,8 @@ import {
 } from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
+import { setServerConfigSnapshot } from "../../rpc/serverState";
+import { writePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
 import { showOnScreenKeyboard } from "../../hooks/useOnScreenKeyboardInset.browser-harness";
 import { CHAT_HEADER_BOTTOM_CSS_VAR } from "../../rightPanelLayout";
 import { useStore } from "../../store";
@@ -1654,12 +1657,21 @@ describe("SourceControlPanel changes", () => {
 
   it("opens changed files in the preferred editor from the context menu", async () => {
     const openInEditor = vi.fn(async () => undefined);
-    const showContextMenu = vi.fn(async () => "open-editor" as const);
+    const showContextMenu = vi.fn(async () => "open-in-editor" as const);
     window.nativeApi = {
       shell: { openInEditor, openExternal: vi.fn(async () => undefined) },
-      server: { getConfig: vi.fn(async () => ({ availableEditors: ["cursor"] })) },
       contextMenu: { show: showContextMenu },
     } as unknown as LocalApi;
+    // Editors run on the computer hosting the primary server, which is this
+    // thread's.
+    setServerConfigSnapshot({ availableEditors: ["cursor"] } as unknown as ServerConfig);
+    writePrimaryEnvironmentDescriptor({
+      environmentId: ENVIRONMENT_ID,
+      label: "Local",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.8.0",
+      capabilities: { repositoryIdentity: true },
+    });
     const status = makeStatus({
       hasWorkingTreeChanges: true,
       workingTree: {
@@ -1694,9 +1706,11 @@ describe("SourceControlPanel changes", () => {
       await vi.waitFor(() => {
         expect(showContextMenu).toHaveBeenCalledWith(
           [
-            { id: "open-diff", label: "Open diff", disabled: false },
+            { id: "open-diff", label: "Open diff", disabled: false, separatorBefore: true },
             { id: "open-viewer", label: "Open in file viewer" },
-            { id: "open-editor", label: "Open in external editor" },
+            { id: "open-in-editor", label: "Open in Cursor" },
+            { id: "copy-path", label: "Copy path", separatorBefore: true },
+            { id: "copy-relative-path", label: "Copy relative path" },
           ],
           { x: 44, y: 88 },
         );
@@ -1709,6 +1723,7 @@ describe("SourceControlPanel changes", () => {
         );
       });
     } finally {
+      writePrimaryEnvironmentDescriptor(null);
       await mounted.cleanup();
     }
   });

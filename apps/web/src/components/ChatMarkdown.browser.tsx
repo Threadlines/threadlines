@@ -7,6 +7,7 @@ import {
   type EnvironmentApi,
   MessageId,
   type OrchestrationCommandRun,
+  type ServerConfig,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -23,7 +24,9 @@ const {
   openInPreferredEditorMock,
   readLocalApiMock,
 } = vi.hoisted(() => {
-  const contextMenuShowMock = vi.fn(async () => null as string | null);
+  const contextMenuShowMock = vi.fn(
+    async (_items: unknown, _position?: unknown) => null as string | null,
+  );
   const filesystemBrowseMock = vi.fn(
     async (): Promise<{
       parentPath: string;
@@ -49,7 +52,8 @@ const {
   };
 });
 
-vi.mock("../editorPreferences", () => ({
+vi.mock("../editorPreferences", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../editorPreferences")>()),
   openInPreferredEditor: openInPreferredEditorMock,
 }));
 
@@ -71,6 +75,10 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
+import { writePrimaryEnvironmentDescriptor } from "../environments/primary/context";
+import { resetServerStateForTests, setServerConfigSnapshot } from "../rpc/serverState";
+import { editorLabel } from "./EditorOpenOptions";
+import { toastManager } from "./ui/toast";
 import { toMarkdownFileUrlHref } from "../markdown-links";
 import { readDrawnBlocks } from "./chat/chatFind/chatFindDom";
 import { findableMarkdownBlocks } from "./chat/chatFind/chatFindText";
@@ -112,6 +120,30 @@ function installReadFileEnvironment(
   } as unknown as EnvironmentApi);
 }
 
+/** The editors the server found, which the file menus name. */
+function installAvailableEditors(availableEditors: ServerConfig["availableEditors"]) {
+  setServerConfigSnapshot({ availableEditors } as unknown as ServerConfig);
+}
+
+/** Right-clicks a chip, answers its menu with `choice`, and returns the menu. */
+async function chooseFromFileMenu(chip: Element | null, choice: string | null) {
+  const callsBefore = contextMenuShowMock.mock.calls.length;
+  contextMenuShowMock.mockResolvedValueOnce(choice);
+  chip?.dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 44, clientY: 88 }),
+  );
+  await vi.waitFor(() => {
+    expect(contextMenuShowMock.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+  return contextMenuShowMock.mock.calls.at(-1)?.[0];
+}
+
+function installClipboard() {
+  const writeText = vi.fn(async (_text: string) => undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  return writeText;
+}
+
 /** A 1x1 PNG, for reads that should come back as a picture. */
 const PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -143,6 +175,8 @@ describe("ChatMarkdown", () => {
     filesystemBrowseMock.mockClear();
     __resetEnvironmentApiOverridesForTests();
     readLocalApiMock.mockClear();
+    resetServerStateForTests();
+    writePrimaryEnvironmentDescriptor(null);
     localStorage.clear();
     document.body.innerHTML = "";
   });
@@ -214,33 +248,132 @@ describe("ChatMarkdown", () => {
   });
 
   it("offers external actions for Windows file links outside the active project", async () => {
+    installAvailableEditors(["vscode", "file-manager"]);
+    const writeText = installClipboard();
     const cwd = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/claude-dotfiles";
     const filePath = "C:/Users/wilfr/.claude/CLAUDE.md";
-    const screen = await render(<ChatMarkdown text={`[CLAUDE.md](${filePath})`} cwd={cwd} />);
+    const screen = await render(<ChatMarkdown text={`[CLAUDE.md:12](${filePath}:12)`} cwd={cwd} />);
 
     try {
       const link = document.querySelector('a[data-workspace-scope="external"]');
       expect(link).toBeInstanceOf(HTMLAnchorElement);
 
-      link?.dispatchEvent(
-        new MouseEvent("contextmenu", {
-          bubbles: true,
-          cancelable: true,
-          clientX: 44,
-          clientY: 88,
-        }),
-      );
-
+      // The viewer cannot show text from outside the project, so the editor
+      // leads; the path copies without the line it was cited at.
+      const menu = await chooseFromFileMenu(link, "copy-path");
+      expect(menu).toEqual([
+        { id: "open-in-editor", label: "Open in VS Code", separatorBefore: true },
+        { id: "reveal", label: `Reveal in ${editorLabel("file-manager")}` },
+        { id: "copy-path", label: "Copy path", separatorBefore: true },
+      ]);
       await vi.waitFor(() => {
-        expect(contextMenuShowMock).toHaveBeenCalledWith(
-          [
-            { id: "open-external", label: "Open in editor" },
-            { id: "reveal", label: "Reveal in file manager" },
-            { id: "copy-full", label: "Copy full path" },
-          ],
-          { x: 44, y: 88 },
+        expect(writeText).toHaveBeenCalledWith(filePath);
+      });
+
+      await chooseFromFileMenu(link, "reveal");
+      await vi.waitFor(() => {
+        expect(openInEditorMock).toHaveBeenCalledWith(filePath, "file-manager", cwd);
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("places an inline file name before its menu offers the path", async () => {
+    const cwd = "/repo/project";
+    installAvailableEditors(["cursor"]);
+    const writeText = installClipboard();
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const searchEntries = vi.fn(async (input: { query: string }) => ({
+      entries:
+        input.query === "math.ts"
+          ? [
+              { path: "docs/math.ts.md", kind: "file" as const },
+              { path: "src/lib/math.ts", kind: "file" as const },
+            ]
+          : [],
+      truncated: false,
+    }));
+    installReadFileEnvironment(
+      vi.fn() as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+    const screen = await render(
+      <ChatMarkdown text="Opening `math.ts:9:4`, not `ghost.ts`." cwd={cwd} />,
+    );
+
+    try {
+      const found = document.querySelector('a[data-chat-file-reference="math.ts:9:4"]');
+      const menu = await chooseFromFileMenu(found, "copy-path");
+      expect(menu).toEqual([
+        { id: "open-viewer", label: "Open in file viewer", separatorBefore: true },
+        { id: "open-in-editor", label: "Open in Cursor" },
+        { id: "copy-path", label: "Copy path", separatorBefore: true },
+        { id: "copy-relative-path", label: "Copy relative path" },
+      ]);
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith("/repo/project/src/lib/math.ts");
+      });
+
+      // The editor gets the file the search found, at the cited line and column.
+      await chooseFromFileMenu(found, "open-in-editor");
+      await vi.waitFor(() => {
+        expect(openInEditorMock).toHaveBeenCalledWith(
+          "/repo/project/src/lib/math.ts:9:4",
+          "cursor",
+          cwd,
         );
       });
+
+      // A name the project lacks offers nothing that would act on a guess.
+      const missing = document.querySelector('a[data-chat-file-reference="ghost.ts"]');
+      expect(await chooseFromFileMenu(missing, "copy-name")).toEqual([
+        { id: "not-found", label: "Not found in this project", disabled: true },
+        { id: "copy-name", label: "Copy name", separatorBefore: true },
+      ]);
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith("ghost.ts");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps another computer's files out of this computer's apps", async () => {
+    installAvailableEditors(["vscode", "file-manager"]);
+    writePrimaryEnvironmentDescriptor({
+      environmentId: EnvironmentId.make("environment-this-mac"),
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.8.0",
+      capabilities: { repositoryIdentity: true },
+    });
+    const screen = await render(
+      <ChatMarkdown
+        text="[notes.txt](C:/Users/wilfr/Desktop/notes.txt)"
+        cwd="C:/Users/wilfr/badcode"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+        threadId={CHAT_MARKDOWN_THREAD_ID}
+      />,
+    );
+
+    try {
+      const link = document.querySelector('a[data-workspace-scope="external"]');
+      expect(await chooseFromFileMenu(link, null)).toEqual([
+        { id: "copy-path", label: "Copy path", separatorBefore: true },
+      ]);
+
+      const addToast = vi.spyOn(toastManager, "add");
+      await page.getByRole("link", { name: "notes.txt" }).click();
+      expect(addToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Couldn't open this file here" }),
+      );
+      addToast.mockRestore();
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
