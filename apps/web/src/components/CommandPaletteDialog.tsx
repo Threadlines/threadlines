@@ -136,14 +136,7 @@ import { useGitStatus } from "../lib/gitStatusState";
 import { useScheduledTaskEnvironments } from "../lib/scheduledTasksState";
 import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
 import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
-import {
-  cn,
-  isMacPlatform,
-  isWindowsPlatform,
-  newCommandId,
-  newProjectId,
-  newThreadId,
-} from "../lib/utils";
+import { cn, isMacPlatform, newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import {
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -172,6 +165,7 @@ import {
 import { isHostedStaticApp } from "../hostedPairing";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
+import { editorLabel } from "./EditorOpenOptions";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { openThreadMoveDialog } from "./ThreadMoveDialog";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
@@ -229,16 +223,6 @@ function externalSessionSourceLabel(source: ProviderExternalThreadCandidate["sou
     case "unknown":
       return "Codex";
   }
-}
-
-function getLocalFileManagerName(platform: string): string {
-  if (isMacPlatform(platform)) {
-    return "Finder";
-  }
-  if (isWindowsPlatform(platform)) {
-    return "Explorer";
-  }
-  return "Files";
 }
 
 function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
@@ -2569,7 +2553,8 @@ export function OpenCommandPaletteDialog() {
                 : "No unadded GitHub repositories found. Enter owner/repo and press Enter to look it up."
           : "Enter a repository path and press Enter to look it up."
       : null;
-  const fileManagerName = getLocalFileManagerName(navigator.platform);
+  // Only the desktop app offers its folder picker, and only for the primary
+  // computer, so the shared file manager name (that computer's) is this one's.
   const canOpenProjectFromFileManager =
     isBrowsing &&
     browseEnvironmentId !== null &&
@@ -2923,7 +2908,7 @@ export function OpenCommandPaletteDialog() {
                 void handleOpenProjectFromFileManager();
               }}
             >
-              {`Open in ${fileManagerName}`}
+              {`Open in ${editorLabel("file-manager")}`}
             </Button>
           ) : null}
         </CommandFooter>

@@ -636,11 +636,9 @@ describe("ChatView (full app): add project", () => {
       const browseInput = palette.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await browseInput.fill("~/Applications/access");
 
-      const fileManagerLabel = isMacPlatform(navigator.platform)
-        ? "Open in Finder"
-        : navigator.platform.toLowerCase().startsWith("win")
-          ? "Open in Explorer"
-          : "Open in Files";
+      // Named after the primary computer, which the harness makes a Mac
+      // whatever runs the test.
+      const fileManagerLabel = "Open in Finder";
       await palette.getByRole("button", { name: fileManagerLabel }).click();
 
       await vi.waitFor(
