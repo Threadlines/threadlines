@@ -1,6 +1,6 @@
 import type { ScheduledTaskCadence } from "@threadlines/contracts";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   cadenceSaveRefusal,
@@ -231,27 +231,35 @@ describe("a cadence across a clock change", () => {
     }
   });
 
-  it("finds a far-off match in a few milliseconds, whatever the distance", () => {
+  it("finds a far-off match with no more work than a near one, whatever the distance", () => {
     // Feb 29 that is also a Sunday: 40 years on, across 80 clock changes in
-    // New York. The search follows the changes near the answer only.
-    const timed = (cron: string, timeZone: string, after: string) => {
+    // New York. The search follows the changes near the answer only, so it
+    // reads the zone about as often as from a year before the answer; one
+    // that walked the distance would read it 40 times as often. Counted in
+    // zone readings (Intl's formatToParts), not milliseconds, which a busy
+    // machine stretches.
+    const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts");
+    const search = (cron: string, timeZone: string, after: string) => {
       const schedule = Result.getOrThrow(compileCadence(custom(cron), timeZone))!;
-      const start = performance.now();
+      formatToParts.mockClear();
       const slot = Result.getOrThrow(schedule.next(at(after)));
-      return { slot: slot?.toISOString(), fast: performance.now() - start < 100 };
+      return { slot: slot?.toISOString(), readings: formatToParts.mock.calls.length };
     };
-    expect(timed("0 * 29 2 */7", "UTC", "2088-03-01T06:00:00Z")).toEqual({
-      slot: "2128-02-29T00:00:00.000Z",
-      fast: true,
-    });
-    expect(timed("0 * 29 2 */7", "America/New_York", "2088-03-01T06:00:00Z")).toEqual({
-      slot: "2128-02-29T05:00:00.000Z",
-      fast: true,
-    });
-    expect(timed("0 * 29 2 *", "America/New_York", "2026-10-21T00:00:00Z")).toEqual({
-      slot: "2028-02-29T05:00:00.000Z",
-      fast: true,
-    });
+    try {
+      const yearBefore = search("0 * 29 2 */7", "America/New_York", "2127-03-01T06:00:00Z");
+      expect(yearBefore.slot).toBe("2128-02-29T05:00:00.000Z");
+      for (const [cron, timeZone, after, slot] of [
+        ["0 * 29 2 */7", "UTC", "2088-03-01T06:00:00Z", "2128-02-29T00:00:00.000Z"],
+        ["0 * 29 2 */7", "America/New_York", "2088-03-01T06:00:00Z", "2128-02-29T05:00:00.000Z"],
+        ["0 * 29 2 *", "America/New_York", "2026-10-21T00:00:00Z", "2028-02-29T05:00:00.000Z"],
+      ] as const) {
+        const found = search(cron, timeZone, after);
+        expect(found.slot).toBe(slot);
+        expect(found.readings).toBeLessThanOrEqual(2 * yearBefore.readings);
+      }
+    } finally {
+      formatToParts.mockRestore();
+    }
   });
 
   it("asked exactly on the change, runs at the first real match after it", () => {
