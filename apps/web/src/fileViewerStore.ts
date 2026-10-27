@@ -607,21 +607,31 @@ export function parseChatFileReference(
   return { path, line };
 }
 
+/** Where an inline-code file reference points, once it has been placed. */
+export interface ResolvedChatFileReference {
+  /** The project folder the path is relative to. */
+  readonly cwd: string;
+  readonly relativePath: string;
+  readonly line: number | undefined;
+}
+
 /**
- * Open an inline-code file reference from the chat transcript.
- *
- * Pathed references open directly; bare file names are resolved through the
- * workspace search index (models frequently cite `ChatComposer.tsx:1010`
- * without the directory). Returns false when nothing could be opened.
+ * Place an inline-code file reference from the chat transcript in the active
+ * project. Pathed references are taken as written; bare file names are
+ * resolved through the workspace search index (models frequently cite
+ * `ChatComposer.tsx:1010` without the directory). Null when it cannot be
+ * placed.
  */
-export async function openChatFileReference(text: string): Promise<boolean> {
+export async function resolveChatFileReference(
+  text: string,
+): Promise<ResolvedChatFileReference | null> {
   const parsed = parseChatFileReference(text);
   const context = activeFileViewerContext;
   if (!parsed || !context) {
-    return false;
+    return null;
   }
   if (parsed.path.includes("/")) {
-    return openFileInActiveViewer({ path: parsed.path, line: parsed.line });
+    return { cwd: context.cwd, relativePath: parsed.path, line: parsed.line };
   }
 
   const { ensureEnvironmentApi } = await import("./environmentApi");
@@ -633,13 +643,21 @@ export async function openChatFileReference(text: string): Promise<boolean> {
       limit: FILE_NAME_SEARCH_LIMIT,
     });
     const match = findFileNamed(result.entries, parsed.path);
-    if (!match) {
-      return false;
-    }
-    return openFileInActiveViewer({ path: match.path, line: parsed.line });
+    return match ? { cwd: context.cwd, relativePath: match.path, line: parsed.line } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Open an inline-code file reference from the chat transcript, placed by
+ * {@link resolveChatFileReference}. Returns false when nothing could be opened.
+ */
+export async function openChatFileReference(text: string): Promise<boolean> {
+  const resolved = await resolveChatFileReference(text);
+  return resolved !== null
+    ? openFileInActiveViewer({ path: resolved.relativePath, line: resolved.line })
+    : false;
 }
 
 /** Exact name matches rank ahead of fuzzy ones, so a few hits hold one if any exists. */

@@ -12,6 +12,7 @@ import { FolderClosedIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { isMacPlatform, isWindowsPlatform } from "~/lib/utils";
+import { readPrimaryEnvironmentDescriptor } from "~/environments/primary/context";
 import {
   AntigravityIcon,
   CursorIcon,
@@ -68,8 +69,32 @@ const EDITOR_OPTIONS: ReadonlyArray<EditorOpenOption> = [
   { label: "WebStorm", Icon: WebStormIcon, value: "webstorm" },
 ];
 
-export function fileManagerLabel(platform: string): string {
+function fileManagerLabel(platform: string): string {
   return isMacPlatform(platform) ? "Finder" : isWindowsPlatform(platform) ? "Explorer" : "Files";
+}
+
+/**
+ * The file manager's name on the computer that opens it: the primary
+ * server's, which is not this device's when a browser on a Mac is paired with
+ * a Windows PC. This device's platform stands in until the server says.
+ */
+function hostFileManagerLabel(): string {
+  switch (readPrimaryEnvironmentDescriptor()?.platform.os) {
+    case "darwin":
+      return "Finder";
+    case "windows":
+      return "Explorer";
+    case "linux":
+      return "Files";
+    default:
+      return fileManagerLabel(navigator.platform);
+  }
+}
+
+/** The name an editor goes by in menus ("Cursor", "Finder"). */
+export function editorLabel(editor: EditorId): string {
+  if (editor === "file-manager") return hostFileManagerLabel();
+  return EDITOR_OPTIONS.find((option) => option.value === editor)?.label ?? editor;
 }
 
 /**
@@ -93,7 +118,7 @@ export function useEditorOpenOptions(
       ...(availableEditors.includes("file-manager")
         ? [
             {
-              label: fileManagerLabel(navigator.platform),
+              label: hostFileManagerLabel(),
               Icon: FolderClosedIcon,
               value: "file-manager" as const,
             },

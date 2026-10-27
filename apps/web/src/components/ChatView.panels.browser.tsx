@@ -1296,11 +1296,9 @@ describe("ChatView (full app): right panel and header actions", () => {
 
   it("selects the file manager as the sticky open target without opening it immediately", async () => {
     setDraftThreadWithoutWorktree();
-    const fileManagerName = isMacPlatform(navigator.platform)
-      ? "Finder"
-      : navigator.platform.toLowerCase().startsWith("win")
-        ? "Explorer"
-        : "Files";
+    // The file manager is named after the computer that opens it, and the
+    // harness's primary computer is a Mac, whatever runs the test.
+    const fileManagerName = "Finder";
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

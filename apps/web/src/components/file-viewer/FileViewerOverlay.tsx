@@ -89,9 +89,14 @@ import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import {
   EditorOpenRadioGroup,
   editorOpenActionLabel,
-  fileManagerLabel,
   useEditorOpenOptions,
 } from "../EditorOpenOptions";
+import {
+  type FileActionTarget,
+  fileActionMenuItems,
+  readFileActionLaunchers,
+  runFileAction,
+} from "../fileActionsMenu";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Group } from "../ui/group";
@@ -102,7 +107,6 @@ import { Toggle } from "../ui/toggle";
 import { openExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { usePinchToExpand } from "../chat/usePinchToExpand";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
-import { copyWithNotice } from "../ui/copyWithNotice";
 
 interface FileTreeNode {
   entry: ProjectEntry;
@@ -146,8 +150,14 @@ function workspaceAbsolutePath(cwd: string, path: string): string {
   return `${cwd.replace(/[/\\]+$/, "")}/${path}`;
 }
 
-function copyRelativePathToClipboard(path: string): void {
-  void copyWithNotice(path, "path");
+/** A project file as the shared file actions see it. */
+function viewerFileTarget(cwd: string, path: string): FileActionTarget {
+  return {
+    path: workspaceAbsolutePath(cwd, path),
+    kind: "file",
+    relativePath: path,
+    workspaceRoot: cwd,
+  };
 }
 
 function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
@@ -165,58 +175,6 @@ function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
         }),
       );
     });
-}
-
-type OpenWithMenuId = "open-external" | "reveal" | "copy-path";
-
-/**
- * The shared "open elsewhere" tail of the viewer's context menus (tab strip
- * and tree): open in the preferred editor — named, so it is no longer a
- * mystery which one launches — reveal in the platform file manager, and copy
- * the relative path.
- */
-function useOpenWithMenu(context: FileViewerContext): {
-  openWithItems: ReadonlyArray<{ id: OpenWithMenuId; label: string }>;
-  handleOpenWithSelection: (clicked: string | null, path: string) => boolean;
-} {
-  const availableEditors = useServerAvailableEditors();
-  const [preferredEditor] = usePreferredEditor(availableEditors);
-  const options = useEditorOpenOptions(availableEditors);
-  const preferredOption = options.find(({ value }) => value === preferredEditor) ?? null;
-  const canReveal = availableEditors.includes("file-manager");
-
-  const openWithItems = useMemo(
-    () => [
-      // When the preferred "editor" is the file manager the reveal entry
-      // below already covers it.
-      ...(preferredOption && preferredOption.value !== "file-manager"
-        ? [{ id: "open-external" as const, label: `Open in ${preferredOption.label}` }]
-        : []),
-      ...(canReveal
-        ? [{ id: "reveal" as const, label: `Reveal in ${fileManagerLabel(navigator.platform)}` }]
-        : []),
-      { id: "copy-path" as const, label: "Copy relative path" },
-    ],
-    [canReveal, preferredOption],
-  );
-
-  const handleOpenWithSelection = useCallback(
-    (clicked: string | null, path: string): boolean => {
-      if (clicked === "open-external" && preferredEditor) {
-        openPathInEditor(context.cwd, path, preferredEditor);
-      } else if (clicked === "reveal") {
-        openPathInEditor(context.cwd, path, "file-manager");
-      } else if (clicked === "copy-path") {
-        copyRelativePathToClipboard(path);
-      } else {
-        return false;
-      }
-      return true;
-    },
-    [context.cwd, preferredEditor],
-  );
-
-  return { openWithItems, handleOpenWithSelection };
 }
 
 function ancestorsOf(path: string): string[] {
@@ -428,8 +386,6 @@ function FileViewerTree({
   // preview tab, so pinning is all that is left to do.
   const handlePinFile = useCallback((path: string) => pinTab(path), [pinTab]);
 
-  const { openWithItems, handleOpenWithSelection } = useOpenWithMenu(context);
-
   const handleFileContextMenu = useCallback(
     (event: React.MouseEvent, path: string) => {
       event.preventDefault();
@@ -438,20 +394,24 @@ function FileViewerTree({
         return;
       }
       const position = { x: event.clientX, y: event.clientY };
+      const target = viewerFileTarget(context.cwd, path);
+      const launchers = readFileActionLaunchers(context.environmentId);
       void (async () => {
         const clicked = await api.contextMenu.show(
-          [{ id: "open-new-tab" as const, label: "Open in new tab" }, ...openWithItems],
+          fileActionMenuItems(target, launchers, [
+            { id: "open-new-tab" as const, label: "Open in new tab" },
+          ]),
           position,
         );
         if (clicked === "open-new-tab") {
           storeOpenFile(path, { pinned: true });
           onFileOpened?.();
         } else {
-          handleOpenWithSelection(clicked, path);
+          runFileAction(clicked, target, launchers);
         }
       })();
     },
-    [handleOpenWithSelection, onFileOpened, openWithItems, storeOpenFile],
+    [context.cwd, context.environmentId, onFileOpened, storeOpenFile],
   );
 
   const expandPathWithAncestors = useCallback((path: string) => {
@@ -1216,8 +1176,6 @@ function FileViewerTabs({
   const closeTab = useFileViewerStore((state) => state.closeTab);
   const closeOtherTabs = useFileViewerStore((state) => state.closeOtherTabs);
   const closeAllTabs = useFileViewerStore((state) => state.closeAllTabs);
-  const { openWithItems, handleOpenWithSelection } = useOpenWithMenu(context);
-
   const handleTabContextMenu = useCallback(
     (event: React.MouseEvent, tab: string) => {
       event.preventDefault();
@@ -1226,6 +1184,8 @@ function FileViewerTabs({
         return;
       }
       const position = { x: event.clientX, y: event.clientY };
+      const target = viewerFileTarget(context.cwd, tab);
+      const launchers = readFileActionLaunchers(context.environmentId);
       void (async () => {
         const clicked = await api.contextMenu.show(
           [
@@ -1233,7 +1193,7 @@ function FileViewerTabs({
             { id: "close" as const, label: "Close" },
             { id: "close-others" as const, label: "Close others", disabled: tabs.length <= 1 },
             { id: "close-all" as const, label: "Close all" },
-            ...openWithItems,
+            ...fileActionMenuItems(target, launchers),
           ],
           position,
         );
@@ -1246,7 +1206,7 @@ function FileViewerTabs({
         } else if (clicked === "close-all") {
           closeAllTabs();
         } else {
-          handleOpenWithSelection(clicked, tab);
+          runFileAction(clicked, target, launchers);
         }
       })();
     },
@@ -1254,8 +1214,8 @@ function FileViewerTabs({
       closeAllTabs,
       closeOtherTabs,
       closeTab,
-      handleOpenWithSelection,
-      openWithItems,
+      context.cwd,
+      context.environmentId,
       pinTab,
       previewPath,
       tabs.length,

@@ -41,7 +41,17 @@ import {
   openDirectoryInActiveViewer,
   openFileInActiveViewer,
   parseChatFileReference,
+  relativePathWithinCwd,
+  resolveChatFileReference,
+  workspaceReadRelativePath,
 } from "../fileViewerStore";
+import {
+  canLaunchFilesFor,
+  type FileActionTarget,
+  fileActionMenuItems,
+  readFileActionLaunchers,
+  runFileAction,
+} from "./fileActionsMenu";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import {
@@ -497,7 +507,9 @@ function fileLinkChip(
     kind: documentContext.fileLinkKindByPath.get(meta.filePath) ?? "file",
     isInWorkspace: Boolean(cwd && isPathWithinCwd(meta.filePath, cwd)),
     workspaceRoot: cwd,
+    environmentId: documentContext.environmentId,
     line: meta.line,
+    column: meta.column,
     label: buildFileLinkLabel(meta, documentContext.fileLinkParentSuffixByPath.get(meta.filePath)),
     theme: documentContext.resolvedTheme,
   };
@@ -957,7 +969,10 @@ interface MarkdownFileLinkProps {
   isInWorkspace: boolean;
   /** The thread's folder, so a file opened in an editor shows inside it. */
   workspaceRoot: string | undefined;
+  /** The thread's environment, which decides whether editors can open it here. */
+  environmentId: EnvironmentId | undefined;
   line?: number | undefined;
+  column?: number | undefined;
   label: string;
   theme: "light" | "dark";
   className?: string | undefined;
@@ -965,8 +980,9 @@ interface MarkdownFileLinkProps {
    * Set when the chip was built from an inline-code reference rather than a
    * link. Such a reference is often a bare file name (`AgentsPanel.tsx:300`)
    * whose real location is only known after a workspace search, so it opens
-   * through {@link openChatFileReference} and the affordances that need a
-   * settled path (copy path, reveal, open in editor) stay off.
+   * through {@link openChatFileReference}, and its right-click menu waits for
+   * {@link resolveChatFileReference} before offering anything that needs the
+   * real path.
    */
   chatReference?: string | undefined;
   /**
@@ -992,7 +1008,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   kind,
   isInWorkspace,
   workspaceRoot,
+  environmentId,
   line,
+  column,
   label,
   theme,
   className,
@@ -1000,6 +1018,20 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   isMissing,
 }: MarkdownFileLinkProps) {
   const entryLabel = kind === "directory" ? "folder" : "file";
+
+  /** The chip as the shared file actions see it, when its path is settled. */
+  const settledTarget = useMemo<FileActionTarget>(
+    () => ({
+      path: filePath,
+      kind,
+      relativePath:
+        isInWorkspace && workspaceRoot ? relativePathWithinCwd(filePath, workspaceRoot) : null,
+      workspaceRoot,
+      line,
+      column,
+    }),
+    [column, filePath, isInWorkspace, kind, line, workspaceRoot],
+  );
 
   /** Opens an inline-code reference, resolving bare names through workspace
    *  search. Returns false when this chip did not come from one. */
@@ -1035,26 +1067,6 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     });
   }, [entryLabel, targetPath, workspaceRoot]);
 
-  const handleRevealInFileManager = useCallback(() => {
-    const api = readLocalApi();
-    if (!api) {
-      toastManager.add({
-        type: "error",
-        title: "Can't open a file manager here",
-      });
-      return;
-    }
-
-    void api.shell.openInEditor(targetPath, "file-manager").catch((error) => {
-      toastManager.add(
-        failureNotice({
-          title: kind === "directory" ? "Couldn't open the folder" : "Couldn't show the file",
-          error,
-        }),
-      );
-    });
-  }, [displayPath, kind, targetPath]);
-
   const openInInternalViewer = useCallback(
     () =>
       kind === "directory"
@@ -1070,24 +1082,32 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (openInInternalViewer()) {
       return;
     }
+    // Outside the project only this computer's apps can open it, and a thread
+    // on another computer names a file over there.
+    if (!canLaunchFilesFor(environmentId)) {
+      toastManager.add(
+        failureNotice({
+          title: `Couldn't open this ${entryLabel} here`,
+          reason:
+            "It's outside the project, on the computer this thread runs on. Right-click it to copy its path.",
+        }),
+      );
+      return;
+    }
     if (kind === "directory") {
-      handleRevealInFileManager();
+      runFileAction("reveal", settledTarget, readFileActionLaunchers(environmentId));
       return;
     }
     handleOpenExternally();
-  }, [handleOpenExternally, handleRevealInFileManager, kind, openInInternalViewer, openReference]);
-
-  const handleOpenInViewer = useCallback(() => {
-    if (openReference() || openInInternalViewer()) {
-      return;
-    }
-    toastManager.add(
-      failureNotice({
-        title: "Couldn't open it in the file viewer",
-        reason: `${displayPath} is not available in the active project workspace.`,
-      }),
-    );
-  }, [displayPath, openInInternalViewer, openReference]);
+  }, [
+    entryLabel,
+    environmentId,
+    handleOpenExternally,
+    kind,
+    openInInternalViewer,
+    openReference,
+    settledTarget,
+  ]);
 
   const handleContextMenu = useCallback(
     async (event: ReactMouseEvent<HTMLAnchorElement>) => {
@@ -1096,63 +1116,91 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
       const api = readLocalApi();
       if (!api) return;
+      const anchor = event.currentTarget;
+      const position = { x: event.clientX, y: event.clientY };
 
+      // An inline reference may be a bare name only a workspace search can
+      // place. The menu waits for the same lookup a click runs, so it never
+      // copies or reveals a guess.
+      const resolved =
+        chatReference !== undefined ? await resolveChatFileReference(chatReference) : null;
+      // The reader moved on (another thread, a collapsed message) while the
+      // search ran; a menu now would point at what is no longer on screen.
+      if (!anchor.isConnected) return;
+      if (chatReference !== undefined && !resolved) {
+        const clicked = await api.contextMenu.show(
+          [
+            { id: "not-found", label: "Not found in this project", disabled: true },
+            { id: "copy-name", label: "Copy name", separatorBefore: true },
+          ] as const,
+          position,
+        );
+        if (clicked === "copy-name") {
+          void copyWithNotice(parseChatFileReference(chatReference)?.path ?? chatReference, "name");
+        }
+        return;
+      }
+      const target: FileActionTarget = resolved
+        ? {
+            ...settledTarget,
+            path: resolvePathLinkTarget(resolved.relativePath, resolved.cwd),
+            relativePath: resolved.relativePath,
+            workspaceRoot: resolved.cwd,
+          }
+        : settledTarget;
+
+      const launchers = readFileActionLaunchers(environmentId);
+      // The viewer shows anything in the project, and pictures from anywhere
+      // the server can reach by a relative path (not another Windows drive).
+      const opensInViewer =
+        resolved !== null ||
+        isInWorkspace ||
+        (kind === "file" &&
+          isImageFilePath(filePath) &&
+          workspaceRoot !== undefined &&
+          workspaceReadRelativePath(filePath, workspaceRoot) !== null);
       const clicked = await api.contextMenu.show(
-        isInWorkspace
-          ? ([
-              {
-                id: "open",
-                label: kind === "directory" ? "Browse folder" : "Open in file viewer",
-              },
-              {
-                id: "open-external",
-                label: kind === "directory" ? "Open folder in editor" : "Open in editor",
-              },
-              { id: "copy-relative", label: "Copy relative path" },
-              { id: "copy-full", label: "Copy full path" },
-            ] as const)
-          : ([
-              {
-                id: "open-external",
-                label: kind === "directory" ? "Open folder in editor" : "Open in editor",
-              },
-              {
-                id: "reveal",
-                label: kind === "directory" ? "Open in file manager" : "Reveal in file manager",
-              },
-              { id: "copy-full", label: "Copy full path" },
-            ] as const),
-        { x: event.clientX, y: event.clientY },
+        fileActionMenuItems(
+          target,
+          launchers,
+          opensInViewer
+            ? [
+                {
+                  id: "open-viewer",
+                  label: kind === "directory" ? "Browse folder" : "Open in file viewer",
+                },
+              ]
+            : [],
+        ),
+        position,
       );
-
-      if (clicked === "open") {
-        handleOpenInViewer();
+      if (clicked === "open-viewer") {
+        // A placed reference opens where the menu found it, without a second search.
+        const opened = resolved
+          ? openFileInActiveViewer({ path: resolved.relativePath, line: resolved.line })
+          : openInInternalViewer();
+        if (!opened) {
+          toastManager.add(
+            failureNotice({
+              title: "Couldn't open it in the file viewer",
+              reason: `${displayPath} is not available in the active project workspace.`,
+            }),
+          );
+        }
         return;
       }
-      if (clicked === "open-external") {
-        handleOpenExternally();
-        return;
-      }
-      if (clicked === "reveal") {
-        handleRevealInFileManager();
-        return;
-      }
-      if (clicked === "copy-relative") {
-        void copyWithNotice(displayPath, "relative path");
-        return;
-      }
-      if (clicked === "copy-full") {
-        void copyWithNotice(targetPath, "full path");
-      }
+      runFileAction(clicked, target, launchers);
     },
     [
+      chatReference,
       displayPath,
-      handleOpenExternally,
-      handleOpenInViewer,
-      handleRevealInFileManager,
+      environmentId,
+      filePath,
       isInWorkspace,
       kind,
-      targetPath,
+      openInInternalViewer,
+      settledTarget,
+      workspaceRoot,
     ],
   );
 
@@ -1180,9 +1228,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                 handleOpen();
               }
             }}
-            // An inline reference may be a bare name resolved by search, so the
-            // menu's path actions would copy or reveal a guess.
-            onContextMenu={chatReference === undefined ? handleContextMenu : undefined}
+            onContextMenu={handleContextMenu}
           >
             <VscodeEntryIcon
               pathValue={filePath}
@@ -1223,7 +1269,9 @@ function areMarkdownFileLinkPropsEqual(
     previous.kind === next.kind &&
     previous.isInWorkspace === next.isInWorkspace &&
     previous.workspaceRoot === next.workspaceRoot &&
+    previous.environmentId === next.environmentId &&
     previous.line === next.line &&
+    previous.column === next.column &&
     previous.label === next.label &&
     previous.theme === next.theme &&
     previous.className === next.className &&

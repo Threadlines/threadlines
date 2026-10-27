@@ -181,6 +181,12 @@ import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { copyWithNotice } from "../ui/copyWithNotice";
+import {
+  type FileActionTarget,
+  fileActionMenuItems,
+  readFileActionLaunchers,
+  runFileAction,
+} from "../fileActionsMenu";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   buildCommitGraphDetailRefs,
@@ -256,7 +262,7 @@ interface SourceControlPanelProps {
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
 type WorkingTreeChangeSection = "staged" | "unstaged";
-type ChangedFileContextAction = "open-diff" | "open-viewer" | "open-editor";
+type ChangedFileContextAction = "open-diff" | "open-viewer";
 
 interface WorkingTreeSectionFile {
   readonly file: WorkingTreeFile;
@@ -3407,12 +3413,23 @@ export function SourceControlPanel({
         return;
       }
 
-      const menuItems: readonly ContextMenuItem<ChangedFileContextAction>[] = [
+      const ownItems: readonly ContextMenuItem<ChangedFileContextAction>[] = [
         { id: "open-diff", label: "Open diff", disabled: !onOpenDiff },
         { id: "open-viewer", label: "Open in file viewer" },
-        { id: "open-editor", label: "Open in external editor" },
       ];
-      const clicked = await api.contextMenu.show(menuItems, position);
+      const target: FileActionTarget | null = cwd
+        ? {
+            path: resolvePathLinkTarget(entry.path, cwd),
+            kind: "file",
+            relativePath: entry.path,
+            workspaceRoot: cwd,
+          }
+        : null;
+      const launchers = readFileActionLaunchers(environmentId);
+      const clicked = await api.contextMenu.show(
+        target ? fileActionMenuItems(target, launchers, ownItems) : ownItems,
+        position,
+      );
 
       if (clicked === "open-diff") {
         openChangedFileDiff(entry.path);
@@ -3424,11 +3441,11 @@ export function SourceControlPanel({
         }
         return;
       }
-      if (clicked === "open-editor") {
-        openChangedFileInEditor(entry.path);
+      if (target) {
+        runFileAction(clicked, target, launchers);
       }
     },
-    [onOpenDiff, openChangedFileDiff, openChangedFileInEditor],
+    [cwd, environmentId, onOpenDiff, openChangedFileDiff, openChangedFileInEditor],
   );
 
   const openPrOnHost = useCallback(() => {
