@@ -77,6 +77,7 @@ import {
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { writePrimaryEnvironmentDescriptor } from "../environments/primary/context";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../rpc/serverState";
+import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { editorLabel } from "./EditorOpenOptions";
 import { toastManager } from "./ui/toast";
 import { toMarkdownFileUrlHref } from "../markdown-links";
@@ -97,15 +98,18 @@ const THREAD_PULL_REQUEST_LINK = {
   open: vi.fn(),
 };
 
-// The inline image loader reads files through react-query, so those renders
-// need the provider the app root supplies.
-function renderWithQueryClient(ui: ReactElement) {
+// File lookups and the inline image loader go through react-query, and hover
+// labels read the server config, so those renders need the providers the app
+// root supplies.
+function renderWithAppProviders(ui: ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return render(ui, {
     wrapper: ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <AppAtomRegistryProvider>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </AppAtomRegistryProvider>
     ),
   });
 }
@@ -136,6 +140,31 @@ async function chooseFromFileMenu(chip: Element | null, choice: string | null) {
     expect(contextMenuShowMock.mock.calls.length).toBeGreaterThan(callsBefore);
   });
   return contextMenuShowMock.mock.calls.at(-1)?.[0];
+}
+
+/**
+ * Moves the pointer to a far corner. A chip that renders under a pointer an
+ * earlier test left behind counts as pointed at.
+ */
+async function parkPointer() {
+  const spot = document.createElement("div");
+  spot.style.cssText = "position:fixed;right:0;bottom:0;width:4px;height:4px";
+  document.body.append(spot);
+  await userEvent.hover(spot);
+}
+
+/** Points at a chip and resolves with what its hover label says. */
+async function hoverLabelOf(chip: Element | null): Promise<string> {
+  await userEvent.hover(chip as HTMLElement);
+  let text = "";
+  await vi.waitFor(
+    () => {
+      text = document.querySelector('[data-slot="tooltip-popup"]')?.textContent ?? "";
+      expect(text).not.toBe("");
+    },
+    { timeout: 4_000 },
+  );
+  return text;
 }
 
 function installClipboard() {
@@ -252,11 +281,17 @@ describe("ChatMarkdown", () => {
     const writeText = installClipboard();
     const cwd = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/claude-dotfiles";
     const filePath = "C:/Users/wilfr/.claude/CLAUDE.md";
-    const screen = await render(<ChatMarkdown text={`[CLAUDE.md:12](${filePath}:12)`} cwd={cwd} />);
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown text={`[CLAUDE.md:12](${filePath}:12)`} cwd={cwd} />,
+    );
 
     try {
       const link = document.querySelector('a[data-workspace-scope="external"]');
       expect(link).toBeInstanceOf(HTMLAnchorElement);
+      // A click leaves the app here, so the hover label says where to.
+      expect(await hoverLabelOf(link)).toBe(
+        `${filePath}:12Outside this project · opens in VS Code`,
+      );
 
       // The viewer cannot show text from outside the project, so the editor
       // leads; the path copies without the line it was cited at.
@@ -302,7 +337,7 @@ describe("ChatMarkdown", () => {
       vi.fn() as unknown as EnvironmentApi["projects"]["readFile"],
       searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
     );
-    const screen = await render(
+    const screen = await renderWithAppProviders(
       <ChatMarkdown text="Opening `math.ts:9:4`, not `ghost.ts`." cwd={cwd} />,
     );
 
@@ -343,6 +378,60 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("looks a bare file name up when pointed at, and dims a name the project lacks", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    // A folder literally named `lib%20old`: a found path is a name, not URL text.
+    const searchEntries = vi.fn(async (input: { query: string }) => ({
+      entries:
+        input.query === "math.ts" ? [{ path: "src/lib%20old/math.ts", kind: "file" as const }] : [],
+      truncated: false,
+    }));
+    installReadFileEnvironment(
+      vi.fn() as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+    await parkPointer();
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="Opening `math.ts:9`, not `ghost.ts`."
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      // A transcript full of names searches for none of them until one is
+      // pointed at.
+      expect(searchEntries).not.toHaveBeenCalled();
+      const found = page.getByRole("link", { name: "math.ts · L9" });
+      expect(await hoverLabelOf(found.element())).toBe("project/src/lib%20old/math.ts:9");
+
+      // Placed, it opens the file the search found without searching again.
+      await found.click();
+      await vi.waitFor(() => {
+        expect(useFileViewerStore.getState().activePath).toBe("src/lib%20old/math.ts");
+      });
+      expect(searchEntries).toHaveBeenCalledTimes(1);
+
+      const missing = page.getByRole("link", { name: "ghost.ts" });
+      await userEvent.unhover(found.element());
+      await userEvent.hover(missing.element());
+      await expect.element(missing).toHaveAttribute("data-missing", "");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(
+          "ghost.tsNot in this project · right-click to copy the name",
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps another computer's files out of this computer's apps", async () => {
     installAvailableEditors(["vscode", "file-manager"]);
     writePrimaryEnvironmentDescriptor({
@@ -352,7 +441,7 @@ describe("ChatMarkdown", () => {
       serverVersion: "0.8.0",
       capabilities: { repositoryIdentity: true },
     });
-    const screen = await render(
+    const screen = await renderWithAppProviders(
       <ChatMarkdown
         text="[notes.txt](C:/Users/wilfr/Desktop/notes.txt)"
         cwd="C:/Users/wilfr/badcode"
@@ -363,6 +452,9 @@ describe("ChatMarkdown", () => {
 
     try {
       const link = document.querySelector('a[data-workspace-scope="external"]');
+      expect(await hoverLabelOf(link)).toBe(
+        "C:/Users/wilfr/Desktop/notes.txtOn another computer · right-click to copy the path",
+      );
       expect(await chooseFromFileMenu(link, null)).toEqual([
         { id: "copy-path", label: "Copy path", separatorBefore: true },
       ]);
@@ -1106,7 +1198,7 @@ describe("ChatMarkdown", () => {
     }));
     installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
 
-    const screen = await renderWithQueryClient(
+    const screen = await renderWithAppProviders(
       <ChatMarkdown
         text="Saved the screenshot to /tmp/Temp/shot.png for review."
         cwd="/tmp/project"
@@ -1138,7 +1230,7 @@ describe("ChatMarkdown", () => {
     }));
     installReadFileEnvironment(readFile as unknown as EnvironmentApi["projects"]["readFile"]);
 
-    const screen = await renderWithQueryClient(
+    const screen = await renderWithAppProviders(
       <ChatMarkdown
         text="![before](shots/gone.png)"
         cwd="/repo/project"
@@ -1175,7 +1267,7 @@ describe("ChatMarkdown", () => {
       searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
     );
 
-    const screen = await renderWithQueryClient(
+    const screen = await renderWithAppProviders(
       <div style={{ width: 900 }}>
         <ChatMarkdown
           text="Cut into `1-left.png`, `2-right.png`, then `3-bottom.png`, in that order."
@@ -1236,7 +1328,7 @@ describe("ChatMarkdown", () => {
       searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
     );
 
-    const screen = await renderWithQueryClient(
+    const screen = await renderWithAppProviders(
       <ChatMarkdown
         text="The new layout is in `home.png`."
         cwd={cwd}
@@ -1439,7 +1531,7 @@ describe("find in chat reads what ChatMarkdown draws", () => {
   for (const document of corpus) {
     it(`agrees on ${document.name}`, async () => {
       const skills = [{ name: "review-pr", displayName: "Review PR" }];
-      const screen = await renderWithQueryClient(
+      const screen = await renderWithAppProviders(
         <div data-timeline-row-id="row">
           <div data-chat-find-body="">
             <ChatMarkdown
@@ -1493,7 +1585,7 @@ describe("ChatMarkdown code block commands", () => {
     agentLabel: () => "Codex",
   });
   const renderReply = (text: string, actions: CommandRunActions) =>
-    renderWithQueryClient(
+    renderWithAppProviders(
       <CommandRunActionsContext value={actions}>
         <CodeBlockRunScopeContext value={{ messageId: REPLY, participantId: null, text }}>
           <ChatMarkdown text={text} cwd="/repo" />
@@ -1592,7 +1684,7 @@ describe("ChatMarkdown code block commands", () => {
   });
 
   it("leaves code blocks alone outside a settled agent reply", async () => {
-    const screen = await renderWithQueryClient(
+    const screen = await renderWithAppProviders(
       <CommandRunActionsContext value={actionsWith()}>
         <ChatMarkdown text={"```bash\npnpm install\n```\n"} cwd="/repo" />
       </CommandRunActionsContext>,

@@ -42,8 +42,9 @@ import {
   openFileInActiveViewer,
   parseChatFileReference,
   relativePathWithinCwd,
+  getActiveFileViewerContext,
   resolveChatFileReference,
-  workspaceReadRelativePath,
+  viewerPathFor,
 } from "../fileViewerStore";
 import {
   canLaunchFilesFor,
@@ -51,7 +52,10 @@ import {
   fileActionMenuItems,
   readFileActionLaunchers,
   runFileAction,
+  useFileActionLaunchers,
 } from "./fileActionsMenu";
+import { editorLabel } from "./EditorOpenOptions";
+import { useComputerLabel } from "./sidebar/linkedComputers";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import {
@@ -64,6 +68,7 @@ import {
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
+  fileLinkMetaForPath,
   isAbsoluteInlineFilePath,
   localhostUrlFromText,
   type MarkdownFileLinkMeta,
@@ -559,7 +564,7 @@ function MarkdownNamedImage({ name, chip }: { name: string; chip: MarkdownFileLi
   }
   const found =
     match.status === "found" && cwd
-      ? resolveMarkdownFileLinkMeta(resolvePathLinkTarget(match.relativePath, cwd), cwd)
+      ? fileLinkMetaForPath(resolvePathLinkTarget(match.relativePath, cwd), cwd)
       : null;
   if (!found) {
     return <MarkdownImageFigure name={name} chip={chip} />;
@@ -571,12 +576,64 @@ function MarkdownNamedImage({ name, chip }: { name: string; chip: MarkdownFileLi
       name={name}
       chip={{
         ...placedChip,
+        // The guessed path may have been a folder; the search only finds files.
+        kind: "file",
         href: found.href,
         targetPath: found.targetPath,
         displayPath: found.displayPath,
         filePath: found.filePath,
       }}
     />
+  );
+}
+
+/**
+ * A file cited by bare name in inline code (`math.ts:12`). Pointing at it runs
+ * the search a click would, so the hover label can say where the file really
+ * is, a name the project lacks dims before anyone clicks it, and the click or
+ * right-click that follows opens the found file without searching again. One
+ * look places every chip that cites the same name.
+ */
+function MarkdownNamedFileLink({
+  name,
+  chip,
+  cwd,
+  environmentId,
+}: {
+  name: string;
+  chip: MarkdownFileLinkProps;
+  cwd: string | undefined;
+  environmentId: EnvironmentId | undefined;
+}) {
+  const [lookup, setLookup] = useState(false);
+  const startLookup = useCallback(() => setLookup(true), []);
+  const match = useFileNamedInProject({ environmentId, cwd, name, lookup });
+  const position =
+    chip.line !== undefined
+      ? `:${chip.line}${chip.column !== undefined ? `:${chip.column}` : ""}`
+      : "";
+  const found =
+    match.status === "found" && cwd
+      ? fileLinkMetaForPath(resolvePathLinkTarget(`${match.relativePath}${position}`, cwd), cwd)
+      : null;
+  // Placed now, so it opens directly and offers the path actions a link does.
+  const { chatReference: _placedBySearch, ...placedChip } = chip;
+  return (
+    <span onPointerEnter={startLookup} onFocus={startLookup}>
+      {found ? (
+        <MarkdownFileLink
+          {...placedChip}
+          // The guessed path may have been a folder; the search only finds files.
+          kind="file"
+          href={found.href}
+          targetPath={found.targetPath}
+          displayPath={found.displayPath}
+          filePath={found.filePath}
+        />
+      ) : (
+        <MarkdownFileLink {...chip} isMissing={match.status === "none"} />
+      )}
+    </span>
   );
 }
 
@@ -794,8 +851,8 @@ function MarkdownCode({
   if (inlineFileReference && inlineFileLinkMeta) {
     // An absolute path already says where the file is, so it opens like a
     // link. Anything else opens through the workspace search, and a bare
-    // name's hover shows the name as written: until something looks, its
-    // folder is only a guess.
+    // name's hover shows the name as written until a look places it: before
+    // that, its folder is only a guess.
     const isAbsolute = isAbsoluteInlineFilePath(inlineFileReference);
     const searchReference = isAbsolute ? null : parseChatFileReference(inlineFileReference);
     const isBareName = searchReference !== null && !searchReference.path.includes("/");
@@ -805,7 +862,16 @@ function MarkdownCode({
       ...(isAbsolute ? {} : { chatReference: inlineFileReference }),
     };
     if (!isImageFilePath(inlineFileLinkMeta.filePath)) {
-      return <MarkdownFileLink {...chip} />;
+      return isBareName ? (
+        <MarkdownNamedFileLink
+          name={inlineFileLinkMeta.basename}
+          chip={chip}
+          cwd={documentContext.cwd}
+          environmentId={documentContext.environmentId}
+        />
+      ) : (
+        <MarkdownFileLink {...chip} />
+      );
     }
     return isBareName ? (
       <MarkdownNamedImage name={inlineFileLinkMeta.basename} chip={chip} />
@@ -1000,6 +1066,88 @@ const MARKDOWN_FILE_LINK_LABEL_CLASS_NAME = "chat-markdown-file-link-label trunc
 const CLICKABLE_INLINE_CODE_CLASS_NAME =
   "cursor-pointer transition-colors hover:text-foreground hover:underline hover:decoration-dotted hover:underline-offset-2";
 
+/**
+ * Whether a click can show a chip's target in the file viewer: the viewer the
+ * thread route registered, by the rule its open applies. A screen with no
+ * viewer (a pull request page) sends every click to another app.
+ */
+function viewerShows(kind: MarkdownFileLinkKind, filePath: string): boolean {
+  const viewerCwd = getActiveFileViewerContext()?.cwd;
+  if (viewerCwd === undefined) return false;
+  const path = viewerPathFor(filePath, viewerCwd, kind);
+  // The project root opens as a folder, never as a file.
+  return kind === "directory" ? path !== null : Boolean(path);
+}
+
+/**
+ * The hover label's second line. Quiet when a click does the expected thing
+ * (a project file opens in the viewer); otherwise it says where the click
+ * goes, or why it can't open anything and what will help. It mounts only while
+ * the label shows, so a transcript full of chips subscribes to nothing.
+ */
+function FileLinkHoverNote({
+  kind,
+  filePath,
+  isInWorkspace,
+  environmentId,
+  chatReference,
+  isMissing,
+}: {
+  kind: MarkdownFileLinkKind;
+  filePath: string;
+  isInWorkspace: boolean;
+  environmentId: EnvironmentId | undefined;
+  chatReference: string | undefined;
+  isMissing: boolean | undefined;
+}) {
+  const launchers = useFileActionLaunchers(environmentId);
+  const computerLabel = useComputerLabel();
+  let note: ReactNode = null;
+  if (isMissing) {
+    note =
+      chatReference !== undefined
+        ? "Not in this project · right-click to copy the name"
+        : "Not found";
+  } else if (chatReference !== undefined) {
+    // Searched for in the project when clicked, and shown in the viewer.
+    note = null;
+  } else if (viewerShows(kind, filePath)) {
+    note = isInWorkspace ? null : clickNote(true, "the file viewer");
+  } else if (!launchers.launchesHere) {
+    const computer = environmentId
+      ? computerLabel(environmentId, "another computer")
+      : "another computer";
+    note = `On ${computer} · right-click to copy the path`;
+  } else {
+    // What a click launches: a folder opens in the file manager, a file in the
+    // preferred editor, which may be the file manager itself.
+    const opener =
+      kind === "file" && launchers.editor
+        ? editorLabel(launchers.editor)
+        : launchers.canReveal
+          ? editorLabel("file-manager")
+          : null;
+    note = clickNote(!isInWorkspace, opener);
+  }
+  return note === null ? null : <div className="mt-1 font-sans text-muted-foreground">{note}</div>;
+}
+
+/** "Outside this project · opens in Cursor", or the half of it that applies. */
+function clickNote(outside: boolean, opener: string | null): ReactNode {
+  if (!opener) {
+    return outside ? "Outside this project" : null;
+  }
+  if (!outside) {
+    return <span className="text-popover-foreground">Opens in {opener}</span>;
+  }
+  return (
+    <>
+      {"Outside this project · "}
+      <span className="text-popover-foreground">opens in {opener}</span>
+    </>
+  );
+}
+
 const MarkdownFileLink = memo(function MarkdownFileLink({
   href,
   targetPath,
@@ -1150,15 +1298,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         : settledTarget;
 
       const launchers = readFileActionLaunchers(environmentId);
-      // The viewer shows anything in the project, and pictures from anywhere
-      // the server can reach by a relative path (not another Windows drive).
-      const opensInViewer =
-        resolved !== null ||
-        isInWorkspace ||
-        (kind === "file" &&
-          isImageFilePath(filePath) &&
-          workspaceRoot !== undefined &&
-          workspaceReadRelativePath(filePath, workspaceRoot) !== null);
+      const opensInViewer = resolved !== null || viewerShows(kind, filePath);
       const clicked = await api.contextMenu.show(
         fileActionMenuItems(
           target,
@@ -1196,11 +1336,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       displayPath,
       environmentId,
       filePath,
-      isInWorkspace,
       kind,
       openInInternalViewer,
       settledTarget,
-      workspaceRoot,
     ],
   );
 
@@ -1247,11 +1385,14 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
           {displayPath}
         </div>
-        {isMissing ? (
-          <div className="mt-1 font-sans text-muted-foreground">Not found</div>
-        ) : !isInWorkspace ? (
-          <div className="mt-1 font-sans text-muted-foreground">Outside active project</div>
-        ) : null}
+        <FileLinkHoverNote
+          kind={kind}
+          filePath={filePath}
+          isInWorkspace={isInWorkspace}
+          environmentId={environmentId}
+          chatReference={chatReference}
+          isMissing={isMissing}
+        />
       </TooltipPopup>
     </Tooltip>
   );

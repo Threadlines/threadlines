@@ -2776,6 +2776,8 @@ function AgentMessageBody(props: {
   text: string;
   fold: AgentMessageFold;
   cwd: string | undefined;
+  /** The thread's computer, which file chips look names up and open files on. */
+  environmentId: EnvironmentId | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   /** The text's color. */
   className: string;
@@ -2829,6 +2831,7 @@ function AgentMessageBody(props: {
         <ChatMarkdown
           text={props.text}
           cwd={props.cwd}
+          environmentId={props.environmentId}
           skills={props.skills}
           searchHighlightQuery={props.searchHighlightQuery}
           className={props.className}
@@ -2901,6 +2904,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
       text={message.text}
       fold={fold}
       cwd={ctx.markdownCwd}
+      environmentId={ctx.activeThreadEnvironmentId}
       skills={ctx.skills}
       // Spoken to another agent, a hand-off reads close to an answer; a
       // question asked on the side reads like the asker's notes.
@@ -3055,7 +3059,9 @@ function ThreadMessageTimelineRow({
         <AgentMessageBody
           text={message.text}
           fold={fold}
+          // Another thread's words: its paths are not this thread's files.
           cwd={undefined}
+          environmentId={undefined}
           skills={ctx.skills}
           className="text-foreground/80"
           searchHighlightQuery={
@@ -3121,6 +3127,7 @@ function OutsideAgentMessageTimelineRow({
           text={message.text}
           fold={fold}
           cwd={ctx.markdownCwd}
+          environmentId={ctx.activeThreadEnvironmentId}
           skills={ctx.skills}
           className="text-foreground/80"
           searchHighlightQuery={

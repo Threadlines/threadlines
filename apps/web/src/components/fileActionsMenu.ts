@@ -8,10 +8,15 @@
  */
 import type { ContextMenuItem, EditorId, EnvironmentId } from "@threadlines/contracts";
 
-import { readPreferredEditor } from "../editorPreferences";
-import { readPrimaryEnvironmentDescriptor } from "../environments/primary/context";
+import { useMemo } from "react";
+
+import { readPreferredEditor, usePreferredEditor } from "../editorPreferences";
+import {
+  readPrimaryEnvironmentDescriptor,
+  usePrimaryEnvironmentId,
+} from "../environments/primary/context";
 import { readLocalApi } from "../localApi";
-import { getServerConfig } from "../rpc/serverState";
+import { getServerConfig, useServerAvailableEditors } from "../rpc/serverState";
 import { editorLabel } from "./EditorOpenOptions";
 import { copyWithNotice } from "./ui/copyWithNotice";
 import { failureNotice, toastManager } from "./ui/toast";
@@ -32,15 +37,17 @@ export interface FileActionTarget {
   readonly column?: number | undefined;
 }
 
-/** What can open a file from here, read once when a menu opens. */
+/** What can open a file from here. */
 export interface FileActionLaunchers {
   /** The editor "Open in" names. Null when none is installed, or when the
    *  preferred one is the file manager, which the reveal entry covers. */
   readonly editor: EditorId | null;
   readonly canReveal: boolean;
+  /** False for a thread on another computer, whose files this one can't open. */
+  readonly launchesHere: boolean;
 }
 
-const NO_LAUNCHERS: FileActionLaunchers = { editor: null, canReveal: false };
+const NO_LAUNCHERS: FileActionLaunchers = { editor: null, canReveal: false, launchesHere: false };
 
 /**
  * Editors and the file manager run on the computer hosting the primary
@@ -48,21 +55,53 @@ const NO_LAUNCHERS: FileActionLaunchers = { editor: null, canReveal: false };
  * neither (the chat header's Open-in menu follows the same rule). A document
  * outside any thread (`environmentId` absent) is this computer's.
  */
-export function canLaunchFilesFor(environmentId: EnvironmentId | null | undefined): boolean {
-  if (!environmentId) return true;
-  return environmentId === readPrimaryEnvironmentDescriptor()?.environmentId;
+function launchesOn(
+  environmentId: EnvironmentId | null | undefined,
+  primaryEnvironmentId: EnvironmentId | null | undefined,
+): boolean {
+  return !environmentId || environmentId === primaryEnvironmentId;
 }
 
+function launchersFor(
+  canLaunch: boolean,
+  availableEditors: ReadonlyArray<EditorId>,
+  preferredEditor: EditorId | null,
+): FileActionLaunchers {
+  if (!canLaunch) return NO_LAUNCHERS;
+  return {
+    editor: preferredEditor === "file-manager" ? null : preferredEditor,
+    canReveal: availableEditors.includes("file-manager"),
+    launchesHere: true,
+  };
+}
+
+export function canLaunchFilesFor(environmentId: EnvironmentId | null | undefined): boolean {
+  return launchesOn(environmentId, readPrimaryEnvironmentDescriptor()?.environmentId);
+}
+
+/** The launchers as they stand, read once when a menu opens. */
 export function readFileActionLaunchers(
   environmentId: EnvironmentId | null | undefined,
 ): FileActionLaunchers {
-  if (!canLaunchFilesFor(environmentId)) return NO_LAUNCHERS;
   const availableEditors = getServerConfig()?.availableEditors ?? [];
-  const editor = readPreferredEditor(availableEditors);
-  return {
-    editor: editor === "file-manager" ? null : editor,
-    canReveal: availableEditors.includes("file-manager"),
-  };
+  return launchersFor(
+    canLaunchFilesFor(environmentId),
+    availableEditors,
+    readPreferredEditor(availableEditors),
+  );
+}
+
+/** The launchers, kept current, for something on screen that names them. */
+export function useFileActionLaunchers(
+  environmentId: EnvironmentId | null | undefined,
+): FileActionLaunchers {
+  const availableEditors = useServerAvailableEditors();
+  const [preferredEditor] = usePreferredEditor(availableEditors);
+  const canLaunch = launchesOn(environmentId, usePrimaryEnvironmentId());
+  return useMemo(
+    () => launchersFor(canLaunch, availableEditors, preferredEditor),
+    [availableEditors, canLaunch, preferredEditor],
+  );
 }
 
 /**

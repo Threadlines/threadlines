@@ -429,6 +429,27 @@ export function workspaceReadRelativePath(targetPath: string, cwd: string): stri
   return relativePath.length > 0 ? relativePath : null;
 }
 
+/**
+ * The path the file viewer shows `targetPath` (no `:line` suffix) by, or null
+ * when it cannot show it and a click goes to another app instead. Anything in
+ * the project qualifies; so does an image outside it, because the server
+ * serves verified image bytes for an escaping path and the viewer can show
+ * the picture instead of bouncing the click to an external editor. The
+ * project root itself comes back as "", which opens as a folder but not as a
+ * file.
+ */
+export function viewerPathFor(
+  targetPath: string,
+  cwd: string,
+  kind: "file" | "directory",
+): string | null {
+  const inside = resolveViewerWorkspacePath(targetPath, cwd);
+  if (inside !== null || kind === "directory") {
+    return inside;
+  }
+  return isImageFilePath(targetPath) ? workspaceReadRelativePath(targetPath, cwd) : null;
+}
+
 function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | null {
   const normalizedTarget = normalizeFileViewerPath(targetPath);
   const isAbsolute =
@@ -698,7 +719,7 @@ export type OpenDirectoryInViewerInput = Omit<OpenFileInViewerInput, "line" | "e
  * never become tabs or active preview paths, so no file read is attempted.
  */
 export function openDirectoryInViewer(input: OpenDirectoryInViewerInput): boolean {
-  const relativePath = resolveViewerWorkspacePath(input.path, input.cwd);
+  const relativePath = viewerPathFor(input.path, input.cwd, "directory");
   if (relativePath === null) {
     return false;
   }
@@ -731,12 +752,7 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       line = Number.parseInt(lineSuffix[1] ?? "", 10) || undefined;
     }
   }
-  // An image outside the root still opens here: the server serves verified
-  // image bytes for an escaping path, so the viewer can show the picture
-  // instead of bouncing the click to an external editor.
-  const relativePath =
-    resolveViewerWorkspacePath(targetPath, input.cwd) ??
-    (isImageFilePath(targetPath) ? workspaceReadRelativePath(targetPath, input.cwd) : null);
+  const relativePath = viewerPathFor(targetPath, input.cwd, "file");
   if (!relativePath) {
     return false;
   }
