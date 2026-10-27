@@ -368,7 +368,6 @@ function ToastDescriptionAndExpandable({ toastData }: { toastData: ThreadToastDa
         aria-expanded={open}
         className={cn(
           "group flex min-w-0 w-full cursor-pointer select-none items-start gap-1.5 rounded-sm text-left outline-none ring-offset-background",
-          "transition-colors hover:bg-muted/30",
           "focus-ring",
         )}
         onClick={toggle}
@@ -557,8 +556,7 @@ function ToastBodyContent({
           aria-expanded={canOpen ? opened : undefined}
           className={cn(
             "flex min-h-0 min-w-0 flex-1 flex-col gap-0.5",
-            canOpen &&
-              "cursor-pointer rounded-sm outline-none ring-offset-background transition-colors hover:bg-muted/35 focus-ring",
+            canOpen && "cursor-pointer rounded-sm outline-none ring-offset-background focus-ring",
           )}
           onClick={canOpen ? toggleOpened : undefined}
           onKeyDown={canOpen ? onTextKeyDown : undefined}
