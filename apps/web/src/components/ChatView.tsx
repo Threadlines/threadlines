@@ -242,6 +242,7 @@ import {
 import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
+  composerDraftActiveModelSelection,
   type DraftThreadEnvMode,
   hydrateAttachmentsFromPersisted,
   useComposerDraftStore,
@@ -1314,6 +1315,19 @@ export default function ChatView(props: ChatViewProps) {
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
+  const composerActiveModelSelection = useComposerDraftStore((store) =>
+    composerDraftActiveModelSelection(store.getComposerDraft(composerDraftTarget)),
+  );
+  // What a new thread's first message went out with. Until the server has
+  // the thread (a new worktree takes a while to cut), the chat names the agent
+  // at work by it, whatever the composer is switched to meanwhile.
+  const [firstSend, setFirstSend] = useState<{
+    readonly threadKey: string;
+    /** The thread's own model, as the message creates the thread with it. */
+    readonly modelSelection: ModelSelection;
+    /** The agent the message went to; null for the thread's own. */
+    readonly participantId: ThreadParticipantId | null;
+  } | null>(null);
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const prefillComposerDraftPrompt = useComposerDraftStore((store) => store.prefillEmptyPrompt);
   const addComposerDraftAttachments = useComposerDraftStore((store) => store.addAttachments);
@@ -1493,25 +1507,29 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server" && serverThread
       ? null
       : ((draftId ? localDraftErrorsByDraftId[draftId] : null) ?? null);
+  const pendingFirstSend = firstSend?.threadKey === routeThreadKey ? firstSend : null;
+  const sentModelSelection = pendingFirstSend?.modelSelection ?? null;
   const localDraftThread = useMemo(
     () =>
       draftThread
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            // Deliberately not the project's persisted `defaultModelSelection`:
-            // nothing writes that field anymore, so old projects carry pins
-            // from whenever they were created (e.g. a long-retired model). A
-            // draft with no selection of its own follows the sticky last-used
-            // state, with this offline fallback beneath it.
-            {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: DEFAULT_MODEL,
-            },
+            // What its first message went out with, else the model picked in
+            // its composer. Deliberately not the project's persisted
+            // `defaultModelSelection`: nothing writes that field anymore, so
+            // old projects carry pins from whenever they were created (e.g. a
+            // long-retired model). A draft with nothing picked gets this
+            // offline fallback.
+            sentModelSelection ??
+              composerActiveModelSelection ?? {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: DEFAULT_MODEL,
+              },
             localDraftError,
           )
         : undefined,
-    [draftThread, localDraftError, threadId],
+    [composerActiveModelSelection, draftThread, localDraftError, sentModelSelection, threadId],
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread
@@ -5687,8 +5705,20 @@ export default function ChatView(props: ChatViewProps) {
       sendInFlightRef.current = false;
       return;
     }
+    const threadCreateModelSelection = createModelSelection(
+      ctxSelectedModelSelection.instanceId,
+      ctxSelectedModel || DEFAULT_MODEL,
+      ctxSelectedModelSelection.options,
+    );
     if (!isSteeringFollowUp && !askOnTheSide) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+      if (isLocalDraftThread) {
+        setFirstSend({
+          threadKey: scopedThreadKey(scopeThreadRef(environmentId, threadIdForSend)),
+          modelSelection: threadCreateModelSelection,
+          participantId: roomRecipientId,
+        });
+      }
     }
 
     const composerAttachmentsSnapshot = [...composerAttachments];
@@ -5867,11 +5897,6 @@ export default function ChatView(props: ChatViewProps) {
         }
       }
       const title = truncate(titleSeed);
-      const threadCreateModelSelection = createModelSelection(
-        ctxSelectedModelSelection.instanceId,
-        ctxSelectedModel || DEFAULT_MODEL,
-        ctxSelectedModelSelection.options,
-      );
 
       if (askOnTheSide) {
         await dispatchForSend(
@@ -6031,6 +6056,10 @@ export default function ChatView(props: ChatViewProps) {
         },
       );
     })().catch(async (err: unknown) => {
+      // Nothing is on its way any more: a draft goes back to its composer's pick.
+      setFirstSend((current) =>
+        current?.threadKey === scopedThreadKey(threadRefForSend) ? null : current,
+      );
       // Retry can only resend a message the composer got back, as it came back.
       let retryContents: string | null = null;
       if (
@@ -8197,7 +8226,13 @@ export default function ChatView(props: ChatViewProps) {
                   roomAgents={roomAgentLabels}
                   agentModelLabeler={agentModelLabeler}
                   ownAgentLabels={ownAgentLabels}
-                  workingParticipantId={activeThread.session?.participantId ?? null}
+                  workingParticipantId={
+                    activeThread.session
+                      ? (activeThread.session.participantId ?? null)
+                      : isLocalDraftThread
+                        ? (pendingFirstSend?.participantId ?? null)
+                        : null
+                  }
                   {...(activeThread.agentRequests
                     ? { openAgentRequests: activeThread.agentRequests.open }
                     : {})}
@@ -8303,9 +8338,10 @@ export default function ChatView(props: ChatViewProps) {
                     // handoff confirmation.
                     lockedProvider={null}
                     providerStatuses={providerStatuses as ServerProvider[]}
-                    // A local draft has not chosen a concrete model yet. Ignore
-                    // its placeholder Thread value so the composer can resolve
-                    // the active provider instance's live `isDefault` model.
+                    // A local draft's Thread value is its composer's own pick,
+                    // or a placeholder when it has none. The composer reads the
+                    // draft itself, so it can resolve the active provider
+                    // instance's live `isDefault` model instead.
                     activeThreadModelSelection={
                       isLocalDraftThread ? null : activeThread?.modelSelection
                     }
@@ -8447,6 +8483,7 @@ export default function ChatView(props: ChatViewProps) {
                     : {})}
                   {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
                   availableEnvironments={logicalProjectEnvironments}
+                  preparingWorktreeFrom={isPreparingWorktree ? activeThreadBranch : null}
                 />
               )}
             </div>

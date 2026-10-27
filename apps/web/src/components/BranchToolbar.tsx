@@ -67,6 +67,12 @@ interface BranchToolbarProps {
    * shows even while the project is on one computer only.
    */
   onSetUpElsewhere?: () => void;
+  /**
+   * The branch a new worktree is being cut from for the thread's first
+   * message. While it is set the row says so, in place of choices that can
+   * no longer change anything.
+   */
+  preparingWorktreeFrom?: string | null;
 }
 
 interface MobileRunContextSelectorProps {
@@ -230,6 +236,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   availableEnvironments,
   onEnvironmentChange,
   onSetUpElsewhere,
+  preparingWorktreeFrom,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -288,6 +295,22 @@ export const BranchToolbar = memo(function BranchToolbar({
   const isMobile = useIsMobile();
 
   if (!hasActiveThread || !activeProject) return null;
+
+  // The first message's worktree is being cut: where the thread runs is
+  // settled, so the row reads as that work, in the working line's shimmer.
+  if (preparingWorktreeFrom) {
+    return (
+      <div
+        className="mx-auto w-full max-w-4xl px-3 pb-3 pt-2 text-xs leading-5 sm:px-3.5 draft-hero:max-w-[45rem]"
+        role="status"
+        data-testid="branch-toolbar-preparing"
+      >
+        <span className="working-shimmer">
+          Preparing a new worktree from {preparingWorktreeFrom}
+        </span>
+      </div>
+    );
+  }
 
   // A thread that has not started yet states where it will run as a sentence,
   // each choice a picker set in the words. Once it is a real thread the row is

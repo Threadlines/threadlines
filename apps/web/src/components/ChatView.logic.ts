@@ -197,7 +197,7 @@ export function deriveTimelineScrolledFarFromEnd(input: {
 export function buildLocalDraftThread(
   threadId: ThreadId,
   draftThread: DraftThreadState,
-  fallbackModelSelection: ModelSelection,
+  modelSelection: ModelSelection,
   error: string | null,
 ): Thread {
   return {
@@ -206,7 +206,7 @@ export function buildLocalDraftThread(
     codexThreadId: null,
     projectId: draftThread.projectId,
     title: "New thread",
-    modelSelection: fallbackModelSelection,
+    modelSelection,
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
     session: null,

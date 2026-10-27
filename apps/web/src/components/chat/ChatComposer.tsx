@@ -491,9 +491,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         contextCompactInFlight={props.contextCompactInFlight}
         contextCompactDisabledReason={props.contextCompactDisabledReason}
       />
-      {props.isPreparingWorktree ? (
-        <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
-      ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
         isRunning={props.isRunning}
