@@ -393,8 +393,15 @@ export function resolveMarkdownFileLinkMeta(
   cwd?: string,
 ): MarkdownFileLinkMeta | null {
   const targetPath = resolveMarkdownFileLinkTarget(href, cwd);
-  if (!targetPath) return null;
+  return targetPath ? fileLinkMetaForPath(targetPath, cwd) : null;
+}
 
+/**
+ * The chip for a filesystem path (`path[:line[:column]]`) taken as written,
+ * such as one a workspace search returned. Unlike a link's destination it is
+ * not URL text: `%20`, `#` and `?` are part of the name.
+ */
+export function fileLinkMetaForPath(targetPath: string, cwd?: string): MarkdownFileLinkMeta {
   const { path, line, column } = splitPathAndPosition(targetPath);
   const parsedLine = line ? Number.parseInt(line, 10) : Number.NaN;
   const parsedColumn = column ? Number.parseInt(column, 10) : Number.NaN;
