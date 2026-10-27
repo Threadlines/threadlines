@@ -2285,7 +2285,8 @@ export async function waitForStartedServerThread(
 
 export interface LocalDispatchSnapshot {
   startedAt: string;
-  preparingWorktree: boolean;
+  /** The branch a new worktree is being cut from for this send, if one is. */
+  worktreeBase: string | null;
   latestTurnTurnId: TurnId | null;
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
@@ -2296,13 +2297,13 @@ export interface LocalDispatchSnapshot {
 
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
-  options?: { preparingWorktree?: boolean },
+  options?: { worktreeBase?: string | null },
 ): LocalDispatchSnapshot {
   const latestTurn = activeThread?.latestTurn ?? null;
   const session = activeThread?.session ?? null;
   return {
     startedAt: new Date().toISOString(),
-    preparingWorktree: Boolean(options?.preparingWorktree),
+    worktreeBase: options?.worktreeBase ?? null,
     latestTurnTurnId: latestTurn?.turnId ?? null,
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,

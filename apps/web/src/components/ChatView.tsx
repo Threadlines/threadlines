@@ -159,8 +159,6 @@ import {
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
   type ProposedPlan,
-  type SessionPhase,
-  type Thread,
   type ChatAttachment,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
@@ -199,6 +197,7 @@ import { isPageAttended, onPageAttentionChange, SurfaceShownContext } from "~/li
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { failureNotice, stackedThreadToast, toastManager } from "./ui/toast";
 import { addComputerNotConnectedNotice, reconnectComputer } from "./computerConnectionNotices";
+import { useFirstSend, useLocalDispatchState, useLocalDispatchStore } from "./chat/localDispatch";
 import {
   composerContentsKey,
   forgetFailedSend,
@@ -343,7 +342,6 @@ import {
   type ProviderSendPreflightPrompt,
   filterUnresolvedProviderBackgroundRuns,
   type ProviderBackgroundRunState,
-  hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
   shouldShowThreadErrorNotice,
@@ -352,7 +350,6 @@ import {
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS,
   LastInvokedScriptByProjectSchema,
-  type LocalDispatchSnapshot,
   PullRequestDialogState,
   buildModelHandoffConfirmCopy,
   classifyModelSwitch,
@@ -878,8 +875,6 @@ const SCRIPT_TERMINAL_COLS = 120;
 
 const SCRIPT_TERMINAL_ROWS = 30;
 
-const LOCAL_DISPATCH_RECONCILIATION_DELAY_MS = 2_000;
-
 type ChatViewProps =
   | {
       environmentId: EnvironmentId;
@@ -906,100 +901,6 @@ type ChatViewProps =
 /** The same items in the same order: a draft list nobody touched. */
 function sameItems<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-
-function useLocalDispatchState(input: {
-  activeThread: Thread | undefined;
-  activeLatestTurn: Thread["latestTurn"] | null;
-  phase: SessionPhase;
-  activePendingApproval: ApprovalRequestId | null;
-  activePendingUserInput: ApprovalRequestId | null;
-  threadError: string | null | undefined;
-}) {
-  const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
-  const [acceptedLocalDispatch, setAcceptedLocalDispatch] = useState<{
-    readonly threadRef: ScopedThreadRef;
-    readonly acceptedAt: number;
-  } | null>(null);
-
-  const beginLocalDispatch = useCallback(
-    (options?: { preparingWorktree?: boolean }) => {
-      setAcceptedLocalDispatch(null);
-      const preparingWorktree = Boolean(options?.preparingWorktree);
-      setLocalDispatch((current) => {
-        if (current) {
-          return current.preparingWorktree === preparingWorktree
-            ? current
-            : { ...current, preparingWorktree };
-        }
-        return createLocalDispatchSnapshot(input.activeThread, options);
-      });
-    },
-    [input.activeThread],
-  );
-
-  const resetLocalDispatch = useCallback(() => {
-    setLocalDispatch(null);
-    setAcceptedLocalDispatch(null);
-  }, []);
-
-  const markLocalDispatchAccepted = useCallback((threadRef: ScopedThreadRef) => {
-    setAcceptedLocalDispatch({ threadRef, acceptedAt: Date.now() });
-  }, []);
-
-  const serverAcknowledgedLocalDispatch = useMemo(
-    () =>
-      hasServerAcknowledgedLocalDispatch({
-        localDispatch,
-        phase: input.phase,
-        latestTurn: input.activeLatestTurn,
-        session: input.activeThread?.session ?? null,
-        hasPendingApproval: input.activePendingApproval !== null,
-        hasPendingUserInput: input.activePendingUserInput !== null,
-        threadError: input.threadError,
-      }),
-    [
-      input.activeLatestTurn,
-      input.activePendingApproval,
-      input.activePendingUserInput,
-      input.activeThread?.session,
-      input.phase,
-      input.threadError,
-      localDispatch,
-    ],
-  );
-
-  useEffect(() => {
-    if (!serverAcknowledgedLocalDispatch) {
-      return;
-    }
-    resetLocalDispatch();
-  }, [resetLocalDispatch, serverAcknowledgedLocalDispatch]);
-
-  useEffect(() => {
-    if (!localDispatch || !acceptedLocalDispatch || serverAcknowledgedLocalDispatch) {
-      return;
-    }
-
-    const timeoutId = globalThis.setTimeout(() => {
-      refreshThreadDetailSubscription(
-        acceptedLocalDispatch.threadRef.environmentId,
-        acceptedLocalDispatch.threadRef.threadId,
-      );
-    }, LOCAL_DISPATCH_RECONCILIATION_DELAY_MS);
-    return () => {
-      globalThis.clearTimeout(timeoutId);
-    };
-  }, [acceptedLocalDispatch, localDispatch, serverAcknowledgedLocalDispatch]);
-
-  return {
-    beginLocalDispatch,
-    markLocalDispatchAccepted,
-    resetLocalDispatch,
-    localDispatchStartedAt: localDispatch?.startedAt ?? null,
-    isPreparingWorktree: localDispatch?.preparingWorktree ?? false,
-    isSendBusy: localDispatch !== null && !serverAcknowledgedLocalDispatch,
-  };
 }
 
 interface PersistentThreadTerminalDrawerProps {
@@ -1319,25 +1220,6 @@ export default function ChatView(props: ChatViewProps) {
   const composerActiveModelSelection = useComposerDraftStore((store) =>
     composerDraftActiveModelSelection(store.getComposerDraft(composerDraftTarget)),
   );
-  // What a new thread's first message went out with, by scoped thread key.
-  // Until the server has the thread (a new worktree takes a while to cut),
-  // the chat names the agent at work by it, whatever the composer is switched
-  // to meanwhile. A Retry can set another thread's while one is on its way
-  // here. An entry stays until its send fails or this view goes: one small
-  // record per new thread sent from it.
-  const [firstSendByThreadKey, setFirstSendByThreadKey] = useState<
-    Readonly<
-      Record<
-        string,
-        {
-          /** The thread's own model, as the message creates the thread with it. */
-          readonly modelSelection: ModelSelection;
-          /** The agent the message went to; null for the thread's own. */
-          readonly participantId: ThreadParticipantId | null;
-        }
-      >
-    >
-  >({});
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const prefillComposerDraftPrompt = useComposerDraftStore((store) => store.prefillEmptyPrompt);
   const addComposerDraftAttachments = useComposerDraftStore((store) => store.addAttachments);
@@ -1517,7 +1399,9 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server" && serverThread
       ? null
       : ((draftId ? localDraftErrorsByDraftId[draftId] : null) ?? null);
-  const pendingFirstSend = firstSendByThreadKey[routeThreadKey] ?? null;
+  // A new thread's first message on its way: the chat names the agent at
+  // work by it until the server has the thread.
+  const pendingFirstSend = useFirstSend(routeThreadKey);
   const sentModelSelection = pendingFirstSend?.modelSelection ?? null;
   const localDraftThread = useMemo(
     () =>
@@ -2341,9 +2225,11 @@ export default function ChatView(props: ChatViewProps) {
     markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt,
-    isPreparingWorktree: isPreparingWorktreeDispatch,
+    preparingWorktreeFrom: preparingWorktreeFromDispatch,
     isSendBusy,
   } = useLocalDispatchState({
+    environmentId: activeThread?.environmentId,
+    threadId: activeThread?.id,
     activeThread,
     activeLatestTurn,
     phase,
@@ -2353,7 +2239,7 @@ export default function ChatView(props: ChatViewProps) {
   });
   // Raised for the whole bootstrap request; dropped as soon as the thread
   // reports its worktree so the label never outlives the work it describes.
-  const isPreparingWorktree = isPreparingWorktreeDispatch && !activeThread?.worktreePath;
+  const isPreparingWorktree = preparingWorktreeFromDispatch !== null && !activeThread?.worktreePath;
   const isWorking =
     phase === "running" ||
     phase === "connecting" ||
@@ -4994,10 +4880,9 @@ export default function ChatView(props: ChatViewProps) {
   ]);
 
   useEffect(() => {
-    resetLocalDispatch();
     closeExpandedImagePreview();
     setPreviewedFile(null);
-  }, [draftId, resetLocalDispatch, threadId]);
+  }, [draftId, threadId]);
 
   const closePreviewedFile = useCallback(() => {
     setPreviewedFile(null);
@@ -5723,38 +5608,34 @@ export default function ChatView(props: ChatViewProps) {
       ctxSelectedModel || DEFAULT_MODEL,
       ctxSelectedModelSelection.options,
     );
-    const threadKeyForSend = scopedThreadKey(scopeThreadRef(environmentId, threadIdForSend));
-    // The work the send starts, as the thread shows it while it goes:
-    // "Sending" or "Preparing worktree", and for a new thread what it went
-    // out with. A Retry shows it again, maybe from another thread, so the
-    // working state only lands on the thread on screen. An older failure's
-    // error goes first: the working state takes an error as the answer.
+    const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
+    const threadKeyForSend = scopedThreadKey(threadRefForSend);
+    const messageIdForSend = newMessageId();
+    // The thread as it is before the send, which the server's answer changes.
+    const dispatchSnapshotForSend = createLocalDispatchSnapshot(activeThread, {
+      worktreeBase: baseBranchForWorktree,
+    });
+    // The work the send starts, as its thread shows it while it goes
+    // ("Sending" or "Preparing worktree", and for a new thread what it went
+    // out with), in whichever view shows that thread: a Retry can start it
+    // again from anywhere. An older failure's error goes first: the working
+    // state takes an error as the answer.
     const showSendStarted = () => {
       setThreadError(threadIdForSend, null);
       if (isSteeringFollowUp || askOnTheSide) return;
-      if (activeThreadKeyRef.current === threadKeyForSend) {
-        beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
-      }
-      if (isLocalDraftThread) {
-        setFirstSendByThreadKey((current) => ({
-          ...current,
-          [threadKeyForSend]: {
-            modelSelection: threadCreateModelSelection,
-            participantId: roomRecipientId,
-          },
-        }));
-      }
-    };
-    const clearSendStarted = () => {
-      // Nothing is on its way any more: a draft goes back to its composer's pick.
-      setFirstSendByThreadKey((current) => {
-        if (!(threadKeyForSend in current)) return current;
-        const { [threadKeyForSend]: _cleared, ...rest } = current;
-        return rest;
+      useLocalDispatchStore.getState().begin({
+        threadRef: threadRefForSend,
+        sendId: messageIdForSend,
+        snapshot: dispatchSnapshotForSend,
+        firstSend: isLocalDraftThread
+          ? { modelSelection: threadCreateModelSelection, participantId: roomRecipientId }
+          : null,
       });
-      if (!isSteeringFollowUp && !askOnTheSide && activeThreadKeyRef.current === threadKeyForSend) {
-        resetLocalDispatch();
-      }
+    };
+    // Nothing is on its way any more: a draft goes back to its composer's pick.
+    const clearSendStarted = () => {
+      if (isSteeringFollowUp || askOnTheSide) return;
+      useLocalDispatchStore.getState().clear(threadRefForSend, messageIdForSend);
     };
     showSendStarted();
 
@@ -5784,7 +5665,6 @@ export default function ChatView(props: ChatViewProps) {
       messageTextWithPickedElements,
       composerDrawingContextsSnapshot,
     );
-    const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
@@ -5836,7 +5716,6 @@ export default function ChatView(props: ChatViewProps) {
             sizeBytes: attachment.sizeBytes,
           };
     const optimisticAttachments = composerAttachmentsSnapshot.map(toOptimisticAttachment);
-    const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
     const draftIdForSend = draftId;
     const threadTitleForSend =
       isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title;
@@ -6106,7 +5985,7 @@ export default function ChatView(props: ChatViewProps) {
           createdAt: messageCreatedAt,
         },
         async () => {
-          markLocalDispatchAccepted(threadRefForSend);
+          markLocalDispatchAccepted(threadRefForSend, messageIdForSend);
           if (roomsActive) rememberRoomSend(threadRefForSend, true);
           // A turn for an added agent says nothing about the thread's own model.
           if (isServerThread && ctxSelectedModel && roomRecipientId === null) {
@@ -7169,7 +7048,7 @@ export default function ChatView(props: ChatViewProps) {
       const outgoingMessageText = formatOutgoingPrompt(trimmed);
 
       sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
+      const sendId = beginLocalDispatch();
       setThreadError(threadIdForSend, null);
 
       // Scroll to the current end *before* adding the optimistic message.
@@ -7227,7 +7106,7 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           createdAt: messageCreatedAt,
         });
-        markLocalDispatchAccepted(threadRefForSend);
+        markLocalDispatchAccepted(threadRefForSend, sendId);
         if (roomSend.active) {
           const store = useRoomRecipientStore.getState();
           store.choose(threadRefForSend, roomRecipientId);
@@ -7252,7 +7131,7 @@ export default function ChatView(props: ChatViewProps) {
           err instanceof Error ? err.message : "Failed to send plan follow-up.",
         );
         sendInFlightRef.current = false;
-        resetLocalDispatch();
+        resetLocalDispatch(sendId);
       }
     },
     [
@@ -7529,11 +7408,11 @@ export default function ChatView(props: ChatViewProps) {
     const nextThreadId = newThreadId();
 
     sendInFlightRef.current = true;
-    beginLocalDispatch({ preparingWorktree: false });
+    const sendId = beginLocalDispatch();
     setForkDialogState(null);
     const finish = () => {
       sendInFlightRef.current = false;
-      resetLocalDispatch();
+      resetLocalDispatch(sendId);
     };
 
     await api.orchestration
@@ -7648,10 +7527,10 @@ export default function ChatView(props: ChatViewProps) {
       : [];
 
     sendInFlightRef.current = true;
-    beginLocalDispatch({ preparingWorktree: false });
+    const sendId = beginLocalDispatch();
     const finish = () => {
       sendInFlightRef.current = false;
-      resetLocalDispatch();
+      resetLocalDispatch(sendId);
     };
 
     // The thread is made with its first turn in one step on the server, so a
@@ -8545,7 +8424,7 @@ export default function ChatView(props: ChatViewProps) {
                     : {})}
                   {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
                   availableEnvironments={logicalProjectEnvironments}
-                  preparingWorktreeFrom={isPreparingWorktree ? activeThreadBranch : null}
+                  preparingWorktreeFrom={isPreparingWorktree ? preparingWorktreeFromDispatch : null}
                 />
               )}
             </div>
