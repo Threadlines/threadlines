@@ -7,7 +7,7 @@ import {
   type ServerProvider,
   type ThreadId,
   type ServerSettings,
-  type ThreadParticipantId,
+  ThreadParticipantId,
   WS_METHODS,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
@@ -1362,8 +1362,14 @@ describe("ChatView (full app): first sends and worktree setup", () => {
   });
 
   // The server cuts the worktree inside the bootstrap request, so that is the
-  // window in which the user should read "Preparing worktree", not "Sending".
-  it("shows the worktree preparation state while the bootstrap dispatch is in flight", async () => {
+  // window in which the user should read "Preparing worktree", not "Sending",
+  // and the thread does not exist on the server yet: the chat still names the
+  // agent the message went to, as it was sent.
+  it.each([
+    { to: "the thread's own agent", roomAgent: false, working: "Opus 4.7" },
+    { to: "another agent in the room", roomAgent: true, working: "gpt-6-astra" },
+  ])("shows the worktree preparation state for a first message to $to", async (testCase) => {
+    const roomAgentId = ThreadParticipantId.make("5f1e2d3c-4b5a-4c6d-8e7f-9a0b1c2d3e4f");
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
     });
@@ -1380,12 +1386,35 @@ describe("ChatView (full app): first sends and worktree setup", () => {
           branch: "main",
           worktreePath: null,
           envMode: "worktree",
+          ...(testCase.roomAgent
+            ? {
+                room: {
+                  agents: [
+                    {
+                      id: roomAgentId,
+                      handle: "GPT-6 Astra",
+                      modelSelection: createModelSelection(
+                        ProviderInstanceId.make("codex"),
+                        "gpt-6-astra",
+                      ),
+                    },
+                  ],
+                },
+              }
+            : {}),
         },
       },
       logicalProjectDraftThreadKeyByLogicalProjectKey: {
         [PROJECT_DRAFT_KEY]: THREAD_KEY,
       },
     });
+    if (testCase.roomAgent) {
+      useRoomRecipientStore.getState().choose(THREAD_REF, roomAgentId);
+    }
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    useComposerDraftStore
+      .getState()
+      .setModelSelection(THREAD_REF, createModelSelection(claudeInstanceId, "claude-opus-4-7"));
 
     let resolveDispatch!: (value: { sequence: number }) => void;
     const dispatchPromise = new Promise<{ sequence: number }>((resolve) => {
@@ -1394,6 +1423,34 @@ describe("ChatView (full app): first sends and worktree setup", () => {
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            ...nextFixture.serverConfig.providers,
+            {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              instanceId: claudeInstanceId,
+              enabled: true,
+              installed: true,
+              version: "2.1.117",
+              status: "ready",
+              auth: { status: "authenticated" },
+              checkedAt: NOW_ISO,
+              models: [
+                {
+                  slug: "claude-opus-4-7",
+                  name: "Claude Opus 4.7",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({ optionDescriptors: [] }),
+                },
+              ],
+              slashCommands: [],
+              skills: [],
+            },
+          ],
+        };
+      },
       snapshot: withProjectScripts(createDraftOnlySnapshot(), [
         {
           id: "setup",
@@ -1426,10 +1483,38 @@ describe("ChatView (full app): first sends and worktree setup", () => {
           ).toBe(true);
           expect(document.querySelector('button[aria-label="Preparing worktree"]')).toBeTruthy();
           expect(document.querySelector('button[aria-label="Sending"]')).toBeNull();
+          const workingLine = document.querySelector('[data-turn-working-anchor="true"]');
+          expect(workingLine?.textContent).toContain(testCase.working);
+          expect(workingLine?.textContent).not.toContain("gpt-5.6");
+          // The pickers under the composer give way to what is being done.
+          expect(document.querySelector('[data-testid="branch-toolbar-sentence"]')).toBeNull();
+          expect(
+            document.querySelector('[data-testid="branch-toolbar-preparing"]')?.textContent,
+          ).toBe("Preparing a new worktree from main");
         },
         { timeout: 8_000, interval: 16 },
       );
+
+      // A model picked while it waits is for the next message, not this one.
+      useComposerDraftStore
+        .getState()
+        .setModelSelection(
+          THREAD_REF,
+          createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-sol"),
+        );
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector('[data-chat-provider-model-picker="true"]')?.textContent,
+          ).not.toContain("Opus 4.7");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(document.querySelector('[data-turn-working-anchor="true"]')?.textContent).toContain(
+        testCase.working,
+      );
     } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
       resolveDispatch({ sequence: fixture.snapshot.snapshotSequence + 1 });
       await mounted.cleanup();
     }

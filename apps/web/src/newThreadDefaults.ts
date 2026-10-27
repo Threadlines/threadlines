@@ -22,7 +22,12 @@ import { roomsEnabled } from "@threadlines/shared/serverSettings";
 import { nextRoomAgentName } from "@threadlines/shared/threadParticipants";
 
 import { getPickerModelName } from "./components/chat/providerIconUtils";
-import { type DraftId, type DraftRoom, useComposerDraftStore } from "./composerDraftStore";
+import {
+  composerDraftActiveModelSelection,
+  type DraftId,
+  type DraftRoom,
+  useComposerDraftStore,
+} from "./composerDraftStore";
 import {
   readPrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentId,
@@ -188,9 +193,9 @@ export function waitForComputerConfig(
 
 /** The model a draft's own agent has right now, if any. */
 function draftActiveSelection(draftId: DraftId): ModelSelection | null {
-  const draft = useComposerDraftStore.getState().getComposerDraft(draftId);
-  const active = draft?.activeProvider ?? null;
-  return active === null ? null : (draft?.modelSelectionByProvider[active] ?? null);
+  return composerDraftActiveModelSelection(
+    useComposerDraftStore.getState().getComposerDraft(draftId),
+  );
 }
 
 /** The model last picked on this device, if any. */

@@ -4087,6 +4087,14 @@ export function useComposerThreadDraft(threadRef: ComposerThreadTarget): Compose
   });
 }
 
+/** The model a draft's own agent has right now: its active instance's pick, if any. */
+export function composerDraftActiveModelSelection(
+  draft: Pick<ComposerThreadDraftState, "activeProvider" | "modelSelectionByProvider"> | null,
+): ModelSelection | null {
+  const active = draft?.activeProvider ?? null;
+  return active === null ? null : (draft?.modelSelectionByProvider[active] ?? null);
+}
+
 export function useComposerDraftModelState(
   threadRef: ComposerThreadTarget,
 ): ComposerDraftModelState {
