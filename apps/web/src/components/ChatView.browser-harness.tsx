@@ -888,6 +888,10 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
  * Puts a thread to work, or has it wait on the user, the way the shell
  * stream's next summary would, without a server round trip. Use it on a
  * thread that is not open: the open one's detail stream re-derives its row.
+ * The sidebar also loads the open thread's neighbours and its top rows in
+ * the background once the page idles, and those loads re-derive their rows
+ * too: wait for one first (waitForThreadDetailLoaded), or a busy machine
+ * lands it after the edit and undoes it.
  */
 export function setSidebarThreadWork(
   environmentId: EnvironmentId,
