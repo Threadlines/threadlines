@@ -29,6 +29,8 @@ import {
   type OrchestrationWarmUpTurnInput,
   type OutsideTurnOrigin,
   type RuntimeMode,
+  ThreadAccessRaiseDeferredActivityKind,
+  type ThreadAccessRaiseDeferredPayload,
   type ThreadContextSeed,
   ThreadCheckoutMissingActivityKind,
   type ThreadCheckoutMissingPayload,
@@ -563,6 +565,9 @@ const make = Effect.gen(function* () {
    */
   const deferredCheckoutSwitchThreads = new Set<ThreadId>();
 
+  /** Same, for an access raise waiting on the session's background tasks. */
+  const deferredAccessRaiseThreads = new Set<ThreadId>();
+
   /**
    * Threads the user moved to another checkout while their provider session
    * was working somewhere else (a worktree the agent entered on its own). The
@@ -660,6 +665,47 @@ const make = Effect.gen(function* () {
           tone: "info",
           kind: ThreadCheckoutSwitchDeferredActivityKind,
           summary: "Checkout switch deferred: a background task is still running",
+          payload,
+          turnId: null,
+          createdAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      })
+      .pipe(Effect.catch(() => Effect.void));
+  });
+
+  const noteAccessRaiseDeferred = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly fromRuntimeMode: RuntimeMode;
+    readonly toRuntimeMode: RuntimeMode;
+    readonly pendingBackgroundTaskCount: number;
+    readonly createdAt: string;
+  }) {
+    yield* Effect.logInfo("provider command reactor deferred access raise", {
+      threadId: input.threadId,
+      fromRuntimeMode: input.fromRuntimeMode,
+      toRuntimeMode: input.toRuntimeMode,
+      pendingBackgroundTaskCount: input.pendingBackgroundTaskCount,
+    });
+    if (deferredAccessRaiseThreads.has(input.threadId)) {
+      return;
+    }
+    deferredAccessRaiseThreads.add(input.threadId);
+    const payload: ThreadAccessRaiseDeferredPayload = {
+      fromRuntimeMode: input.fromRuntimeMode,
+      toRuntimeMode: input.toRuntimeMode,
+      pendingBackgroundTaskCount: input.pendingBackgroundTaskCount,
+    };
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("thread-access-raise-deferred"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind: ThreadAccessRaiseDeferredActivityKind,
+          summary: "More access once the background task ends",
           payload,
           turnId: null,
           createdAt: input.createdAt,
@@ -1589,18 +1635,22 @@ const make = Effect.gen(function* () {
         ? sessionKey
         : null;
     if (existingSessionThreadId) {
-      // In a room the slot is re-stamped on every handover, so it can not
-      // vouch for the mode this agent's runtime actually started in.
-      // Nor does it for a runtime started early, which the slot never saw,
-      // nor for an outside agent's turn: the decider stamps the slot with
-      // the thread's mode before the runtime has it, and a runtime still at
-      // a higher mode must not take that turn.
+      // The mode the runtime actually started in, never the slot's: a turn
+      // start stamps the slot with the thread's mode before the runtime has
+      // it, so a send right after an access change would read as no change
+      // and the runtime would keep the old access for good. (A room also
+      // re-stamps the slot on every handover, and a runtime started early
+      // was never in it.)
       const inRoom = isRoomThread(thread);
-      const runtimeModeChanged =
-        thread.runtimeMode !==
-        (inRoom || adoptedEarlySession !== undefined || outsideCeiling !== undefined
-          ? (activeSession?.runtimeMode ?? projectedSession?.runtimeMode)
-          : (projectedSession?.runtimeMode ?? activeSession?.runtimeMode));
+      const runtimeMode = activeSession?.runtimeMode ?? projectedSession?.runtimeMode;
+      const runtimeModeChanged = thread.runtimeMode !== runtimeMode;
+      // A runtime with more access than the thread now allows never takes
+      // its turn. One with less can keep working while background work it
+      // would drop runs, as a checkout switch waits: it only asks more.
+      const runtimeModeRaiseWaits =
+        runtimeModeChanged &&
+        runtimeMode !== undefined &&
+        exceedsRuntimeMode(thread.runtimeMode, runtimeMode);
       const cwdChanged =
         !isSameWorkspaceCwd(effectiveCwd, activeSession?.cwd) ||
         threadsMovedAwayFromSession.has(threadId);
@@ -1652,32 +1702,41 @@ const make = Effect.gen(function* () {
         !roomToolsMissing
       ) {
         deferredCheckoutSwitchThreads.delete(threadId);
+        deferredAccessRaiseThreads.delete(threadId);
         yield* rebindAfterHandover;
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
 
-      // A checkout switch is the only restart reason that can wait. Background
-      // tasks (subagents, backgrounded commands) run inside the session's
-      // runtime, so cycling it to move checkouts would kill them — the adapter
-      // refuses that outright, which used to fail the turn. Run the turn where
-      // the session already is and keep the switch queued for the first turn
-      // after the tasks finish. The runtime's own count covers a room agent
-      // taking the session back while a dev server it left is still running.
+      // A checkout switch and an access raise are the restart reasons that
+      // can wait. Background tasks (subagents, backgrounded commands) run
+      // inside the session's runtime, so cycling it would kill them — the
+      // adapter refuses that outright, which used to fail the turn. Run the
+      // turn where the session already is and keep the change queued for the
+      // first turn after the tasks finish. The runtime's own count covers a
+      // room agent taking the session back while a dev server it left is
+      // still running.
       const pendingBackgroundTaskCount = Math.max(
         projectedSession?.pendingBackgroundTaskCount ?? 0,
         activeSession?.pendingBackgroundTaskCount ?? 0,
       );
       const restartRequiredBeyondCwd =
-        runtimeModeChanged || instanceChanged || shouldRestartForModelChange;
+        (runtimeModeChanged && !runtimeModeRaiseWaits) ||
+        instanceChanged ||
+        shouldRestartForModelChange;
       // Picking up room tools can wait the same way, and also for a turn in
       // flight: a goal or access change can get here mid-turn, and restarting
       // then would cut the turn short. The next turn picks them up.
       const turnInFlight = (projectedSession?.activeTurnId ?? null) !== null;
       if (
-        (cwdChanged || roomToolsMissing) &&
+        (cwdChanged || roomToolsMissing || runtimeModeRaiseWaits) &&
         !restartRequiredBeyondCwd &&
-        (pendingBackgroundTaskCount > 0 || (roomToolsMissing && !cwdChanged && turnInFlight))
+        (pendingBackgroundTaskCount > 0 ||
+          (roomToolsMissing && !cwdChanged && !runtimeModeChanged && turnInFlight))
       ) {
+        // A change no longer waiting ends its streak, so its next deferral
+        // is said again.
+        if (!cwdChanged) deferredCheckoutSwitchThreads.delete(threadId);
+        if (!runtimeModeRaiseWaits) deferredAccessRaiseThreads.delete(threadId);
         const currentCwd = activeSession?.cwd ?? projectedSession?.checkoutCwd ?? null;
         if (cwdChanged && currentCwd && effectiveCwd) {
           yield* noteCheckoutSwitchDeferred({
@@ -1688,12 +1747,22 @@ const make = Effect.gen(function* () {
             createdAt,
           });
         }
+        if (runtimeModeRaiseWaits && runtimeMode !== undefined) {
+          yield* noteAccessRaiseDeferred({
+            threadId,
+            fromRuntimeMode: runtimeMode,
+            toRuntimeMode: thread.runtimeMode,
+            pendingBackgroundTaskCount,
+            createdAt,
+          });
+        }
         // The runtime stays where it is, so the slot has to say where that is
         // for the switch to apply once the tasks finish.
         yield* rebindAfterHandover;
         return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
       deferredCheckoutSwitchThreads.delete(threadId);
+      deferredAccessRaiseThreads.delete(threadId);
       threadsMovedAwayFromSession.delete(threadId);
 
       const restartReason = runtimeModeChanged
@@ -1759,6 +1828,7 @@ const make = Effect.gen(function* () {
     // failure degrades (visibly, never silently) to a plain start so the
     // caller can fall back to context-seed seeding.
     deferredCheckoutSwitchThreads.delete(threadId);
+    deferredAccessRaiseThreads.delete(threadId);
     threadsMovedAwayFromSession.delete(threadId);
     const forkFrom = options?.forkFrom;
     if (forkFrom !== undefined) {
@@ -5174,8 +5244,11 @@ const make = Effect.gen(function* () {
           participantId: holderId,
           ...(cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {}),
         }).pipe(
-          // A runtime that refuses the restart (Muse Code with background
-          // work running) keeps the old access level: the chat says why.
+          // A raise waits for the runtime's background work (the chat says
+          // so). A runtime that refuses a lowering restart for that work
+          // (Claude, Muse Code) keeps the old access level here, the chat
+          // says why, and its next turn is refused rather than sent above
+          // the thread's level.
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.failCause(cause)

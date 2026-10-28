@@ -116,7 +116,7 @@ describe("decider thread.start", () => {
       threadId: THREAD,
       create: createThread,
       setupScriptClaim: setupClaim,
-      turn: firstTurn(),
+      first: firstTurn(),
     });
 
     const types = started.events.map((event) => event.type);
@@ -133,6 +133,32 @@ describe("decider thread.start", () => {
     expect(thread?.activities.map((activity) => activity.kind)).toContain("setup-script.requested");
   });
 
+  it("makes a thread whose first work is a goal in its worktree, in one decision", async () => {
+    const started = await run(emptyModel, {
+      type: "thread.start",
+      commandId: START,
+      threadId: THREAD,
+      create: createThread,
+      setupScriptClaim: setupClaim,
+      first: {
+        type: "thread.goal.set",
+        commandId: START,
+        threadId: THREAD,
+        objective: "Get the flaky test green",
+        createdAt: at(5),
+      },
+    });
+
+    expect(started.events.map((event) => event.type)).toEqual([
+      "thread.created",
+      "thread.goal-set-requested",
+      "thread.activity-appended",
+    ]);
+    const thread = started.model.threads.find((entry) => entry.id === THREAD);
+    expect(thread?.worktreePath).toBe(WORKTREE.worktreePath);
+    expect(thread?.messages).toEqual([]);
+  });
+
   it("refuses the whole start when any step is refused, so no thread is made", async () => {
     // An outside agent whose ceiling is below the thread's access.
     const connection = OutsideAgentConnectionId.make("connection-1");
@@ -142,7 +168,7 @@ describe("decider thread.start", () => {
         commandId: START,
         threadId: THREAD,
         create: { ...createThread, outsideOrigin: { connectionId: connection, name: "Codex" } },
-        turn: firstTurn({
+        first: firstTurn({
           fromOutside: {
             connectionId: connection,
             name: "Codex",
@@ -158,9 +184,9 @@ describe("decider thread.start", () => {
         commandId: START,
         threadId: THREAD,
         create: createThread,
-        turn: firstTurn({ commandId: CommandId.make("someone-else") }),
+        first: firstTurn({ commandId: CommandId.make("someone-else") }),
       }),
-    ).toMatch(/its own first turn/);
+    ).toMatch(/its own first work/);
     // A thread that already exists is never created again.
     const existing = await run(emptyModel, {
       ...createThread,
@@ -176,9 +202,28 @@ describe("decider thread.start", () => {
         commandId: START,
         threadId: THREAD,
         create: createThread,
-        turn: firstTurn(),
+        first: firstTurn(),
       }),
     ).toMatch(/already exists/);
+    // First work that asks for a worktree never runs without it, in the
+    // project folder, when it reaches the decider by another way.
+    const worktreeSetup = {
+      prepareWorktree: { projectCwd: "/repo", baseBranch: "main" },
+      runSetupScript: true,
+    };
+    expect(await refusal(existing.model, { ...firstTurn(), bootstrap: worktreeSetup })).toMatch(
+      /needs the app's connection/,
+    );
+    expect(
+      await refusal(existing.model, {
+        type: "thread.goal.set",
+        commandId: START,
+        threadId: THREAD,
+        objective: "Get the flaky test green",
+        bootstrap: worktreeSetup,
+        createdAt: at(5),
+      }),
+    ).toMatch(/needs the app's connection/);
   });
 
   it("gives a thread made without a message its worktree with its first turn, unless it already started", async () => {
@@ -195,7 +240,7 @@ describe("decider thread.start", () => {
       commandId: START,
       threadId: THREAD,
       checkout: WORKTREE,
-      turn: firstTurn(),
+      first: firstTurn(),
     });
     const types = started.events.map((event) => event.type);
     expect(types.indexOf("thread.meta-updated")).toBeLessThan(
@@ -219,7 +264,7 @@ describe("decider thread.start", () => {
         commandId: START,
         threadId: THREAD,
         checkout: WORKTREE,
-        turn: firstTurn(),
+        first: firstTurn(),
       }),
     ).toBe("This thread already started.");
   });

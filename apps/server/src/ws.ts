@@ -686,26 +686,23 @@ const makeWsRpcLayer = (
         }
       };
 
-      // A first send that also creates the thread, cuts its worktree and
-      // launches its setup script (see ThreadBootstrap.runTurnStart).
-      const dispatchBootstrapTurnStart = (
-        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
-      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
-        threadBootstrap.runTurnStart(command);
-
+      // A first send, or a goal set on a draft, that also creates the thread,
+      // cuts its worktree and launches its setup script (see ThreadBootstrap).
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
-            : orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                  ),
-                );
+            ? threadBootstrap.runTurnStart(normalizedCommand)
+            : normalizedCommand.type === "thread.goal.set" && normalizedCommand.bootstrap
+              ? threadBootstrap.runGoalStart(normalizedCommand)
+              : orchestrationEngine
+                  .dispatch(normalizedCommand)
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                    ),
+                  );
 
         return startup
           .enqueueCommand(dispatchEffect)

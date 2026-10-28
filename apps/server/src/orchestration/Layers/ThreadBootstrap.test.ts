@@ -324,7 +324,7 @@ describe("ThreadBootstrap.startChild", () => {
           worktreePath: worktreePathFor(branch),
         });
         expect(start?.setupScriptClaim?.kind).toBe("setup-script.requested");
-        expect(start?.turn).toMatchObject({
+        expect(start?.first).toMatchObject({
           threadId: CHILD,
           message: { messageId: "child-message", text: launch().prompt },
           fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
@@ -554,7 +554,37 @@ describe("ThreadBootstrap.runTurnStart", () => {
       const [start] = world.starts();
       expect(start?.commandId).toBe("client-first-send");
       expect(start?.create).toMatchObject({ branch, worktreePath: worktreePathFor(branch) });
-      expect(start?.turn).not.toHaveProperty("bootstrap");
+      expect(start?.first).not.toHaveProperty("bootstrap");
+      expect(world.setupRuns).toHaveLength(1);
+    }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("sets a draft's goal with its thread, once the worktree is cut", () => {
+    const world = makeWorld();
+    return Effect.gen(function* () {
+      const bootstrap = yield* ThreadBootstrap;
+      yield* bootstrap.runGoalStart({
+        type: "thread.goal.set",
+        commandId: CommandId.make("client-goal"),
+        threadId: NEW_THREAD,
+        objective: "Get the flaky test green",
+        bootstrap: firstSend().bootstrap,
+        createdAt: AT,
+      });
+
+      const branch = firstSendWorktreeBranch("client-goal");
+      // The agent starts on a goal as soon as it is set: no thread existed
+      // for it to start in the project folder while the worktree was cut.
+      expect(world.threadsWhileCutting).toEqual([false]);
+      const [start] = world.starts();
+      expect(start?.create).toMatchObject({ branch, worktreePath: worktreePathFor(branch) });
+      expect(start?.first).toEqual({
+        type: "thread.goal.set",
+        commandId: "client-goal",
+        threadId: NEW_THREAD,
+        objective: "Get the flaky test green",
+        createdAt: AT,
+      });
       expect(world.setupRuns).toHaveLength(1);
     }).pipe(Effect.provide(world.layer));
   });
@@ -583,7 +613,7 @@ describe("ThreadBootstrap.runTurnStart", () => {
       yield* runTurnStart(outsideStart);
       const [start] = world.starts();
       expect(start?.create).toMatchObject({ outsideOrigin: AGENT });
-      expect(start?.turn).toMatchObject({
+      expect(start?.first).toMatchObject({
         fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
       });
       expect(world.threads.get(NEW_THREAD)?.outsideOrigin).toEqual(AGENT);

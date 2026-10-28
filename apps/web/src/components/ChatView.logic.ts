@@ -13,7 +13,9 @@ import {
   type ProviderInstanceId,
   type ScopedThreadRef,
   type ServerProvider,
+  type ThreadBootstrapCreateThread,
   type ThreadId,
+  type ThreadStartBootstrap,
   type TurnId,
 } from "@threadlines/contracts";
 import { backgroundOutputFileFromText } from "@threadlines/shared/backgroundRunOutput";
@@ -23,7 +25,10 @@ import {
   providerCanSignIn,
   serverProviderCanSignIn,
 } from "@threadlines/shared/providerAuth";
-import { isTemporaryWorktreeBranch } from "@threadlines/shared/git";
+import {
+  buildTemporaryWorktreeBranchName,
+  isTemporaryWorktreeBranch,
+} from "@threadlines/shared/git";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isFilesystemPathWithin } from "@threadlines/shared/path";
@@ -1734,6 +1739,47 @@ export function resolveSendEnvMode(input: {
   isGitRepo: boolean;
 }): DraftThreadEnvMode {
   return input.isGitRepo ? input.requestedEnvMode : "local";
+}
+
+/**
+ * Whether a thread's first work (a send, or a goal set on it) has to cut a
+ * new worktree first: it asked for one and has none yet.
+ */
+export function firstWorkNeedsWorktree(input: {
+  readonly isFirstWork: boolean;
+  readonly envMode: DraftThreadEnvMode;
+  readonly worktreePath: string | null;
+}): boolean {
+  return input.isFirstWork && input.envMode === "worktree" && !input.worktreePath;
+}
+
+/**
+ * What a thread's first work (a send, or a goal set on it) takes to the
+ * server: the thread to make while it is still a draft, and the worktree to
+ * cut when it goes into a new one, with its setup script. The server makes
+ * them before the work starts, so an agent never starts in the project folder
+ * on a thread meant for a worktree. Undefined when there is nothing to make.
+ */
+export function buildThreadStartBootstrap(input: {
+  readonly createThread: ThreadBootstrapCreateThread | null;
+  readonly worktree: { readonly projectCwd: string; readonly baseBranch: string } | null;
+}): ThreadStartBootstrap | undefined {
+  if (input.createThread === null && input.worktree === null) {
+    return undefined;
+  }
+  return {
+    ...(input.createThread !== null ? { createThread: input.createThread } : {}),
+    ...(input.worktree !== null
+      ? {
+          prepareWorktree: {
+            projectCwd: input.worktree.projectCwd,
+            baseBranch: input.worktree.baseBranch,
+            branch: buildTemporaryWorktreeBranchName(),
+          },
+          runSetupScript: true,
+        }
+      : {}),
+  };
 }
 
 export function cloneComposerAttachmentForRetry(

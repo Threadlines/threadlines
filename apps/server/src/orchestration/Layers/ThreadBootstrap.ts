@@ -10,8 +10,9 @@
  *    the project folder. Nothing is recorded: the thread doesn't exist yet.
  * 2. start: `thread.start`, one decision that makes the thread (or gives one
  *    made earlier without a message its checkout), records the setup
- *    script's claim and starts the first turn. Its receipt is the turn's;
- *    an accepted one means the whole setup is done.
+ *    script's claim and starts the first work: a turn, or a goal set on a
+ *    draft. Its receipt is the first work's; an accepted one means the whole
+ *    setup is done.
  * 3. the setup script, launched after the start by the run that committed
  *    it. The claim came with the start, so it launches at most once: a run
  *    that finds the start already accepted never launches it, and a crash
@@ -70,6 +71,7 @@ import {
   type ChildBootstrapStage,
   ThreadBootstrap,
   type ThreadBootstrapShape,
+  type ThreadGoalSetCommand,
   type ThreadTurnStartCommand,
 } from "../Services/ThreadBootstrap.ts";
 import {
@@ -178,8 +180,13 @@ interface SetupPlan {
       }
     | undefined;
   readonly runSetup: boolean;
-  /** The first turn; its command id is the start's, and its receipt the setup's. */
-  readonly turn: Omit<ThreadTurnStartCommand, "bootstrap">;
+  /**
+   * The first work (a turn, or a goal set on a draft); its command id is the
+   * start's, and its receipt the setup's.
+   */
+  readonly first:
+    | Omit<ThreadTurnStartCommand, "bootstrap">
+    | Omit<ThreadGoalSetCommand, "bootstrap">;
   /** Before each stage: fails to stop the setup there. */
   readonly proceed: (stage: ChildBootstrapStage) => Effect.Effect<void, SetupStageFailure>;
   /** A thread that already exists is brought within the plan first (a child's modes). */
@@ -426,9 +433,9 @@ const make = Effect.gen(function* () {
   /** The whole setup, from wherever an earlier run of the same plan stopped. */
   const runSetup = (plan: SetupPlan) =>
     Effect.gen(function* () {
-      const startId = plan.turn.commandId;
-      // Accepted: the thread, its claim and its turn landed together, and the
-      // run that made them launched the script.
+      const startId = plan.first.commandId;
+      // Accepted: the thread, its claim and its first work landed together,
+      // and the run that made them launched the script.
       const receipt = yield* orchestrationEngine
         .getCommandReceipt(startId)
         .pipe(Effect.mapError(failedAt("turn")));
@@ -484,7 +491,7 @@ const make = Effect.gen(function* () {
             ? { checkout: { branch: placed.branch, worktreePath: placed.path } }
             : {}),
           ...(claim !== undefined ? { setupScriptClaim: claim } : {}),
-          turn: plan.turn,
+          first: plan.first,
         })
         .pipe(
           Effect.tapError((error) =>
@@ -510,8 +517,8 @@ const make = Effect.gen(function* () {
   // slow, so the setup is keyed by the command id: a retry joins the run in
   // flight, finishes one a restart cut off, or is answered from the receipt
   // the start left, exactly as a plain dispatch would answer it.
-  const clientPlan = (command: ThreadTurnStartCommand): SetupPlan => {
-    const { bootstrap, ...turn } = command;
+  const clientPlan = (command: ThreadTurnStartCommand | ThreadGoalSetCommand): SetupPlan => {
+    const { bootstrap, ...first } = command;
     const key = command.commandId;
     const prepare = bootstrap?.prepareWorktree;
     return {
@@ -532,7 +539,7 @@ const make = Effect.gen(function* () {
               base: { kind: "fresh", branch: prepare.baseBranch },
             },
       runSetup: bootstrap?.runSetupScript === true,
-      turn,
+      first,
       proceed: () => Effect.void,
     };
   };
@@ -553,7 +560,7 @@ const make = Effect.gen(function* () {
         });
   };
 
-  const runTurnStart: ThreadBootstrapShape["runTurnStart"] = (command) =>
+  const runClientStart = (command: ThreadTurnStartCommand | ThreadGoalSetCommand) =>
     bootstrapTurnStartRuns.run(
       command.commandId,
       runSetup(clientPlan(command)).pipe(
@@ -650,7 +657,7 @@ const make = Effect.gen(function* () {
               }
             : undefined,
         runSetup: launch.runSetup,
-        turn: {
+        first: {
           type: "thread.turn.start",
           commandId: childRequestCommandId(input.requestId, "turn"),
           threadId: input.childThreadId,
@@ -695,7 +702,11 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return { runTurnStart, startChild } satisfies ThreadBootstrapShape;
+  return {
+    runTurnStart: runClientStart,
+    runGoalStart: runClientStart,
+    startChild,
+  } satisfies ThreadBootstrapShape;
 });
 
 /**

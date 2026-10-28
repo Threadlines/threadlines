@@ -29,6 +29,7 @@ import {
 } from "../../composerDraftStore";
 import { readEnvironmentApi } from "../../environmentApi";
 import { cloneComposerAttachmentForRetry } from "../ChatView.logic";
+import { isGoalSettingUpThread } from "./goalThreadSetups";
 
 /** The latest retryable failure on each thread, by scoped thread key. */
 const latestFailureByThread = new Map<string, number>();
@@ -156,7 +157,10 @@ export async function retryFailedSend(
   if (
     latestFailureByThread.get(failed.threadKey) !== failed.failureId ||
     draft === null ||
-    composerContentsKey(draft) !== failed.contents
+    composerContentsKey(draft) !== failed.contents ||
+    // A goal is setting the thread up: a retried first send would set it up
+    // a second time. The message stays in its box, to send once that's done.
+    isGoalSettingUpThread(failed.threadKey)
   ) {
     return { outcome: "skipped" };
   }
