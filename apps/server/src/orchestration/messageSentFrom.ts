@@ -1,18 +1,56 @@
-import type {
-  AuthClientMetadata,
-  MessageId,
-  MessageSentFrom,
-  OrchestrationCommand,
-  OrchestrationMessage,
-  ThreadParticipantId,
+import {
+  type AuthClientMetadata,
+  type MessageId,
+  type MessageSentFrom,
+  type OrchestrationCommand,
+  type OrchestrationMessage,
+  RELAY_DEVICE_SESSION_SUBJECT,
+  type ThreadParticipantId,
 } from "@threadlines/contracts";
+
+import {
+  DESKTOP_BOOTSTRAP_SUBJECT,
+  isLoopbackAddress,
+  thisComputerAddresses,
+} from "../auth/utils.ts";
+
+/**
+ * Where a session's device is, as MessageSentFrom.place says it. This
+ * computer's own app window is `here`; a device through the relay, or one
+ * that connected straight from another address, is `elsewhere`. A connection
+ * from one of this computer's own addresses proves nothing either way: a proxy
+ * here (Tailscale Serve, an SSH tunnel) hands other computers' connections on
+ * from it. Undefined then, and when no address was recorded at sign-in.
+ *
+ * The address is the one recorded at sign-in, so a browser on this computer
+ * that signed in through its network address reads as `elsewhere` once that
+ * address changes, and a browser in a VM or WSL on this computer reads as
+ * `elsewhere` too (it is in another environment from the agent's). The app's
+ * own window, and browsers on `localhost`, never do.
+ */
+export function sessionDevicePlace(
+  session: { readonly subject: string; readonly client: AuthClientMetadata },
+  ownAddresses: () => ReadonlySet<string> = thisComputerAddresses,
+): MessageSentFrom["place"] {
+  if (session.subject === DESKTOP_BOOTSTRAP_SUBJECT) return "here";
+  if (session.subject === RELAY_DEVICE_SESSION_SUBJECT) return "elsewhere";
+  const address = session.client.ipAddress;
+  if (address === undefined || isLoopbackAddress(address) || ownAddresses().has(address)) {
+    return undefined;
+  }
+  return "elsewhere";
+}
 
 /**
  * The device a client session was issued to, as a user message records it
  * (see MessageSentFrom): by the name its user gave it, else what it called
- * itself. Undefined for a device of unknown kind.
+ * itself, and where it is (sessionDevicePlace). Undefined for a device of
+ * unknown kind.
  */
-export function messageSentFromClient(client: AuthClientMetadata): MessageSentFrom | undefined {
+export function messageSentFromClient(
+  client: AuthClientMetadata,
+  place: MessageSentFrom["place"],
+): MessageSentFrom | undefined {
   const kind =
     client.deviceType === "desktop"
       ? "computer"
@@ -29,6 +67,9 @@ export function messageSentFromClient(client: AuthClientMetadata): MessageSentFr
     kind,
     ...(name !== undefined ? { name } : {}),
     ...(client.os !== undefined ? { os: client.os } : {}),
+    // A phone or a tablet is away from the agent's computer whatever its
+    // connection: only a computer's place says anything.
+    ...(kind === "computer" && place !== undefined ? { place } : {}),
   };
 }
 
@@ -88,10 +129,10 @@ function isSlashCommand(text: string): boolean {
  * With `answered` (turn starts), it reads the agent's latest delivered turn
  * that said anything about a device: a turn counts once it has an answer or
  * a steer in it (a send that failed never reached the agent), and within it a
- * phone or a tablet wins over a computer, since a driver may have left a
- * steer's note out (Claude, for words the user typed). So a computer note is
- * sent whenever the agent may still think the user is on a phone, at worst
- * once too often. A steer (`answered: false`) asks about the running turn
+ * device away from the agent's computer (a phone, a tablet, another
+ * computer) wins over one that isn't, since a driver may have left a steer's
+ * note out (Claude, for words the user typed). So a note is sent whenever the
+ * agent may still think the user is away, at worst once too often. A steer (`answered: false`) asks about the running turn
  * instead: the latest message that said anything.
  *
  * Messages with no device or a slash command say nothing; side questions and
@@ -141,7 +182,7 @@ export function previousMessageSentFrom(
       delivered = true;
     }
     if (told !== undefined) {
-      if (told.kind !== "computer") {
+      if (isAway(told)) {
         phone ??= told;
       } else {
         computer ??= told;
@@ -162,15 +203,29 @@ export function previousMessageSentFrom(
 }
 
 /**
+ * Whether the device is away from the computer the agent works on: a phone, a
+ * tablet, or a computer that isn't this one.
+ */
+function isAway(sentFrom: MessageSentFrom): boolean {
+  return sentFrom.kind !== "computer" || sentFrom.place === "elsewhere";
+}
+
+/** The same kind of device, in the same place: a steer from it adds nothing. */
+function sameDevice(left: MessageSentFrom, right: MessageSentFrom): boolean {
+  return left.kind === right.kind && left.place === right.place && left.name === right.name;
+}
+
+/**
  * What the agent is told about the device a message came from, or undefined
- * when there is nothing to say. A phone or a tablet is named on every message
- * that starts a turn, so a compacted conversation never loses it; a computer
- * only when the device the agent last heard about (`previous`) was a phone or
- * a tablet, so a user at their desk adds nothing to any transcript. A steer
- * into the running turn names its device only when its kind differs from the
- * turn's, so the turn's own device is not repeated. The note only says where
- * this message came from, so it stays true whatever device the user had in
- * between. A slash command gets no note.
+ * when there is nothing to say. A device away from the computer the agent
+ * works on (a phone, a tablet, another computer) is named on every message
+ * that starts a turn, so a compacted conversation never loses it; this
+ * computer, or a computer the session can't place, only when the device the
+ * agent last heard about (`previous`) was away, so a user at their desk adds
+ * nothing to any transcript. A steer into the running turn names its device
+ * only when it differs from the turn's, so the turn's own device is not
+ * repeated. The note only says where this message came from, so it stays
+ * true whatever device the user had in between. A slash command gets no note.
  */
 export function messageSentFromNote(input: {
   readonly sentFrom: MessageSentFrom | undefined;
@@ -183,18 +238,23 @@ export function messageSentFromNote(input: {
     return undefined;
   }
   const device = describeDevice(sentFrom);
-  switch (sentFrom.kind) {
-    case "phone":
-    case "tablet":
-      if (input.steer === true && previous?.kind === sentFrom.kind) {
-        return undefined;
-      }
-      return sentFrom.kind === "phone"
-        ? `The user sent this message from their phone${device}, so they may be away from the computer you work on and reading on a small screen.`
-        : `The user sent this message from their tablet${device}, so they may be away from the computer you work on.`;
-    case "computer":
-      return previous !== undefined && previous.kind !== "computer"
-        ? `The user sent this message from a computer${device}.`
-        : undefined;
+  if (isAway(sentFrom)) {
+    if (input.steer === true && previous !== undefined && sameDevice(previous, sentFrom)) {
+      return undefined;
+    }
+    switch (sentFrom.kind) {
+      case "phone":
+        return `The user sent this message from their phone${device}, so they may be away from the computer you work on and reading on a small screen.`;
+      case "tablet":
+        return `The user sent this message from their tablet${device}, so they may be away from the computer you work on.`;
+      case "computer":
+        return `The user sent this message from another computer${device}, not the one you work on, so what they see and the commands they run themselves are on that computer.`;
+    }
   }
+  if (previous === undefined || !isAway(previous)) {
+    return undefined;
+  }
+  return sentFrom.place === "here"
+    ? `The user sent this message from the computer you work on${device}.`
+    : `The user sent this message from a computer${device}.`;
 }

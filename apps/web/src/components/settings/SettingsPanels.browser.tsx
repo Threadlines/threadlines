@@ -5424,8 +5424,8 @@ describe("Agents outside Threadlines", () => {
     await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
     await expect.element(row).toMatchTextContent("Sees threads · web · Used 2m ago");
 
-    await row.getByRole("button", { name: "Remove", exact: true }).click();
-    await expect.element(page.getByText("Remove Claude Code?")).toBeVisible();
+    await row.getByRole("button", { name: "Remove access", exact: true }).click();
+    await expect.element(page.getByText("Remove access for Claude Code?")).toBeVisible();
     expect(outsideAgentsHarness.client.remove).not.toHaveBeenCalled();
     await page.getByTestId("outside-agent-remove-confirm").click();
     await vi.waitFor(() => {

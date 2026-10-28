@@ -11,7 +11,8 @@
  *    sign-ins reuse the kept `client_id`, so an approval replaces the
  *    command's old connection; a registered loopback redirect matches any
  *    port.
- * 4. PKCE S256, then the browser on the authorize page (or the link printed).
+ * 4. PKCE S256, then the browser on the authorize page, with its link printed
+ *    in case the page never shows.
  * 5. Up to 5 minutes for the user to approve in Threadlines.
  * 6. The code exchanged for a token bound to the resource, stored with
  *    connectCredentials.ts.
@@ -311,10 +312,12 @@ export const signIn = Effect.fn("cli.connect.signIn")(function* (input: {
       `Open this link in a browser on this computer, then allow the Threadlines command in Threadlines:\n${link}`,
     );
   } else {
+    // A launch that started can still show nothing (a browser that ignores
+    // it, a session without a desktop), so the link is always there to open.
     const opened = yield* input.openBrowser(link);
     yield* input.say(
       opened
-        ? "Opened your browser. Check that its code matches the one Threadlines shows, then allow the Threadlines command there."
+        ? `Opened your browser. Check that its code matches the one Threadlines shows, then allow the Threadlines command there. If no page opened, open this link on this computer:\n${link}`
         : `Couldn't open a browser. Open this link on this computer, then allow the Threadlines command in Threadlines:\n${link}`,
     );
   }

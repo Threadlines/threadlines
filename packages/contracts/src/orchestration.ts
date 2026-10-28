@@ -742,6 +742,14 @@ export const MessageSentFrom = Schema.Struct({
   name: Schema.optional(TrimmedNonEmptyString),
   /** Its operating system, when its sign-in told ("iOS", "Windows"). */
   os: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * For a computer: whether it is the one this server (and so the thread's
+   * agent) runs on. `here` for its own app window, `elsewhere` for one
+   * through the relay or connected straight from another address. Absent
+   * when the session can't tell (a connection from this computer's own
+   * address may be a proxy's), on phones and tablets, and on older messages.
+   */
+  place: Schema.optional(Schema.Literals(["here", "elsewhere"])),
 });
 export type MessageSentFrom = typeof MessageSentFrom.Type;
 
