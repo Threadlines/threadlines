@@ -1681,6 +1681,14 @@ describe("incremental orchestration updates", () => {
         interactionMode: DEFAULT_INTERACTION_MODE,
         branch: null,
         worktreePath: null,
+        // Started over a link: the sidebar nests it under the Mac thread.
+        remoteOrigin: {
+          linkDeviceId: "link-mac",
+          environmentId: EnvironmentId.make("environment-mac"),
+          environmentLabel: "MacBook Pro",
+          threadId: ThreadId.make("thread-on-mac"),
+          threadTitle: "Fix background screenshots",
+        },
         createdAt: "2026-02-27T00:00:01.000Z",
         updatedAt: "2026-02-27T00:00:01.000Z",
       }),
@@ -1721,6 +1729,7 @@ describe("incremental orchestration updates", () => {
     expect(sidebarThreads[0]?.latestUserMessageAt).toBe("2026-02-27T00:00:02.000Z");
     expect(sidebarThreads[0]?.session?.status).toBe("connecting");
     expect(sidebarThreads[0]?.session?.orchestrationStatus).toBe("starting");
+    expect(sidebarThreads[0]?.remoteOrigin?.threadId).toBe("thread-on-mac");
   });
 
   it("adds accepted follow-ups as inline user messages", () => {
