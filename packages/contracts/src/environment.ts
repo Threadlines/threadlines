@@ -119,6 +119,19 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * Older servers omit it; clients then offer no Rename.
    */
   deviceNames: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A goal set on a draft makes its thread, in its worktree when it asks for
+   * one, in the same request (`thread.goal.set.bootstrap`). Older servers
+   * omit it; clients then make the thread first and set the goal after.
+   */
+  draftGoalSetup: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Pull request switches go by number on every row, fix included, and the
+   * thread takes on a pull request it doesn't hold yet. Older servers omit
+   * it: they take a fix switch only as the thread's own (no number), and a
+   * merge switch by number only for a pull request already linked.
+   */
+  pullRequestSwitchesByNumber: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

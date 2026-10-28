@@ -187,9 +187,8 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     }
   });
 
-  it("makes a New worktree draft's thread with its goal only after the worktree is cut", async () => {
-    // The agent starts on an active goal at once, so the goal can't go to a
-    // thread made beforehand in the project folder.
+  /** Sets a goal on a New worktree draft and hands back what the app sent. */
+  const setGoalOnWorktreeDraft = async (olderServer: boolean) => {
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
         [THREAD_KEY]: {
@@ -212,26 +211,45 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        if (olderServer) return;
+        const capabilities = {
+          ...nextFixture.serverConfig.environment.capabilities,
+          draftGoalSetup: true,
+        };
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
       resolveRpc: (body) =>
         body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
           ? { sequence: fixture.snapshot.snapshotSequence + 1 }
           : undefined,
     });
+    await waitForComposerEditor();
+    await page.getByTestId("composer-editor").fill("/goa");
+    await (await waitForComposerMenuItem("slash:goal")).click();
+    await page.getByPlaceholder(/Objective for the agent/).fill("Get the flaky test green");
+    await page.getByRole("button", { name: "Set goal" }).click();
+    const dispatched = () =>
+      wsRequests.filter((request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand);
+    return { mounted, dispatched };
+  };
 
+  it("makes a New worktree draft's thread with its goal only after the worktree is cut", async () => {
+    // The agent starts on an active goal at once, so the goal can't go to a
+    // thread made beforehand in the project folder.
+    const { mounted, dispatched } = await setGoalOnWorktreeDraft(false);
     try {
-      await waitForComposerEditor();
-      await page.getByTestId("composer-editor").fill("/goa");
-      await (await waitForComposerMenuItem("slash:goal")).click();
-      await page.getByPlaceholder(/Objective for the agent/).fill("Get the flaky test green");
-      await page.getByRole("button", { name: "Set goal" }).click();
-
       await vi.waitFor(
         () => {
-          const dispatched = wsRequests.filter(
-            (request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand,
-          );
-          expect(dispatched.map((request) => request.type)).toEqual(["thread.goal.set"]);
-          expect(dispatched[0]).toMatchObject({
+          expect(dispatched().map((request) => request.type)).toEqual(["thread.goal.set"]);
+          expect(dispatched()[0]).toMatchObject({
             threadId: THREAD_ID,
             objective: "Get the flaky test green",
             bootstrap: {
@@ -240,6 +258,25 @@ describe("ChatView (full app): first sends and worktree setup", () => {
               runSetupScript: true,
             },
           });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("makes a draft's thread first for its goal on a computer still on an older version", async () => {
+    // That version can't take the thread and the goal together.
+    const { mounted, dispatched } = await setGoalOnWorktreeDraft(true);
+    try {
+      await vi.waitFor(
+        () => {
+          expect(dispatched().map((request) => request.type)).toEqual([
+            "thread.create",
+            "thread.goal.set",
+          ]);
+          expect(dispatched()[1]).not.toHaveProperty("bootstrap");
         },
         { timeout: 8_000, interval: 16 },
       );

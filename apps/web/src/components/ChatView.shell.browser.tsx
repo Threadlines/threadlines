@@ -1773,6 +1773,43 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("sends the thread's own switch to a computer still on an older version", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-pull-request-older-server" as MessageId,
+        targetText: "pull request on an older server",
+      }),
+      configureFixture: (fixture) => withPullRequestFixture(fixture, { olderServer: true }),
+      resolveRpc: resolvePullRequestRpc,
+    });
+
+    try {
+      const row = await waitForElement(
+        () =>
+          [
+            ...document.querySelectorAll<HTMLElement>('[data-composer-pull-request-row="true"]'),
+          ].find((entry) => entry.textContent?.includes(`#${PULL_REQUEST_NUMBER}`)) ?? null,
+        `The composer had no row for #${PULL_REQUEST_NUMBER}.`,
+      );
+      row.querySelector<HTMLButtonElement>('button[aria-label="Checks"]')!.click();
+      await page.getByRole("checkbox", { name: "Fix failing checks and review comments" }).click();
+      // That version takes a fix switch only as the thread's own, with no number.
+      await vi.waitFor(() => {
+        const switches = wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request as { type?: string }).type === "thread.pull-request-automation.set",
+        );
+        expect(switches).toHaveLength(1);
+        expect(switches[0]).toMatchObject({ autoFix: true });
+        expect(switches[0]).not.toHaveProperty("pullRequestNumber");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("re-expands the bootstrap project using its logical key", async () => {
     useUiStateStore.setState({
       projectExpandedById: {
