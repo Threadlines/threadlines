@@ -853,9 +853,14 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         title: `Thread ${id}`,
         createdAt: "2026-10-21T00:00:01.000Z",
       }));
+      // Followed while a request to it is open: the finished one no longer is.
+      const expectedChildren = [
+        { ...remoteChild, followed: false },
+        { ...startedChild, followed: true },
+      ];
       const shell = yield* snapshotQuery.getShellSnapshot();
       const parent = shell.threads.find((thread) => thread.id === ThreadId.make("thread-parent"));
-      assert.deepEqual(parent?.remoteChildren, [remoteChild, startedChild]);
+      assert.deepEqual(parent?.remoteChildren, expectedChildren);
       assert.deepEqual(parent?.remoteChildStarts, expectedStarts);
       assert.deepEqual(parent?.localChildStarts, expectedLocalStarts);
       // A thread with none carries none of them.
@@ -868,7 +873,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const one = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-parent"));
       assert.equal(one._tag, "Some");
       if (one._tag === "Some") {
-        assert.deepEqual(one.value.remoteChildren, [remoteChild, startedChild]);
+        assert.deepEqual(one.value.remoteChildren, expectedChildren);
         assert.deepEqual(one.value.remoteChildStarts, expectedStarts);
         assert.deepEqual(one.value.localChildStarts, expectedLocalStarts);
       }

@@ -17,6 +17,7 @@ import {
   type OrchestrationChildRequestState,
   type RemoteChildCancel,
   type RemoteChildRequest,
+  type FamilyRemoteChild,
   type RemoteChildStart,
   type RemoteChildThread,
   type RoomAgentRef,
@@ -263,6 +264,24 @@ export const remoteChildOf = (
   threadId: ThreadId,
 ): RemoteChildThread | undefined =>
   (state.remoteChildren ?? []).find((entry) => entry.threadId === threadId);
+
+/**
+ * A parent's children on linked computers as its family shows them, each
+ * marked `followed` while a request to it is open (FamilyRemoteChild). The
+ * thread shell carries these, and the web store derives them the same way
+ * from a loaded thread.
+ */
+export const remoteChildrenOf = (
+  state: OrchestrationChildRequestState,
+): ReadonlyArray<FamilyRemoteChild> =>
+  (state.remoteChildren ?? []).map((child) => ({
+    ...child,
+    followed: state.open.some(
+      (request) =>
+        request.remote?.environmentId === child.environmentId &&
+        request.remote.threadId === child.threadId,
+    ),
+  }));
 
 /**
  * Starts asked of linked computers whose thread hasn't started there yet

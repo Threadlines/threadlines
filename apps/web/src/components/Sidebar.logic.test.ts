@@ -1923,6 +1923,7 @@ describe("families across computers", () => {
       hidden?: readonly string[];
       open?: boolean;
       computersWithThreads?: readonly EnvironmentId[];
+      wrapUpOnFinish?: boolean;
     } = {},
   ) => {
     const inScope = (candidate: Entry) =>
@@ -1946,6 +1947,7 @@ describe("families across computers", () => {
             entries.some(
               (candidate) => candidate.threadKey === keyOf(parent.thread.environmentId, threadId),
             ),
+          wrapUpOnFinish: options.wrapUpOnFinish ?? true,
         }),
       isFamilyOpen: () => options.open ?? false,
       activeThreadKey: null,
@@ -2005,7 +2007,12 @@ describe("families across computers", () => {
   });
 
   it("shows children on a computer the app can't see from the parent's record, never beside the thread", () => {
-    const recorded = (threadId: string, title: string, cachedStatus: string) => ({
+    const recorded = (
+      threadId: string,
+      title: string,
+      cachedStatus: string,
+      followed?: boolean,
+    ) => ({
       environmentId: windows,
       label: "Windows PC",
       threadId: ThreadId.make(threadId),
@@ -2014,6 +2021,7 @@ describe("families across computers", () => {
       attachmentEpoch: 0,
       cachedStatus,
       updatedAt: "2026-10-21T09:05:00.000Z",
+      ...(followed !== undefined ? { followed } : {}),
     });
     const start = (requestId: string, title: string, status: "accepted" | "awaiting_approval") => ({
       requestId: ChildRequestId.make(requestId),
@@ -2027,6 +2035,10 @@ describe("families across computers", () => {
       remoteChildren: [
         recorded("flaky-test", "Fix the flaky test", "needs the user"),
         recorded("docs", "Update the docs", "wrapped"),
+        // Its answer came in: nothing is open to it, so nothing more is heard.
+        recorded("checks", "Run the Windows checks", "idle", false),
+        // Answered too, but a sibling keeps Windows watched and it works again.
+        recorded("rerun", "Rerun the benchmark", "working", false),
       ],
       remoteChildStarts: [
         start("request-changelog", "Write the changelog", "awaiting_approval"),
@@ -2041,6 +2053,8 @@ describe("families across computers", () => {
     ).toEqual([
       ["Fix the flaky test", "needs you"],
       ["Update the docs", "wrapped"],
+      ["Run the Windows checks", "idle"],
+      ["Rerun the benchmark", "working"],
       ["Write the changelog", "Waiting for Windows PC to allow it"],
       ["Draft the notes", "Starting on Windows PC"],
     ]);
@@ -2053,19 +2067,26 @@ describe("families across computers", () => {
       childThreadsSummaryText(
         summarizeChildThreads([...unseen!.children, ...unseen!.remoteChildren]),
       ),
-    ).toBe("4 threads · 2 needs you");
-    expect(countInboxRowAttention([unseen!])).toEqual({ needsYou: 2, working: 1 });
+    ).toBe("6 threads · 2 needs you");
+    expect(countInboxRowAttention([unseen!])).toEqual({ needsYou: 2, working: 2 });
 
-    // Wrapped, and seen through the parent since: it leaves the family like
-    // a thread here, with no row of its own to stand on.
-    const [visited] = sections([{ ...parent, seenAt: "2026-10-21T09:10:00.000Z" }], {
-      computersWithThreads: [mac],
-    }).live;
+    // Wrapped there, or answered and no longer followed, and seen through the
+    // parent since: each leaves the family like a thread here, with no row
+    // of its own to stand on.
+    const visitedParent = { ...parent, seenAt: "2026-10-21T09:10:00.000Z" };
+    const [visited] = sections([visitedParent], { computersWithThreads: [mac] }).live;
     expect(visited!.remoteChildren.map((child) => child.title)).toEqual([
       "Fix the flaky test",
+      "Rerun the benchmark",
       "Write the changelog",
       "Draft the notes",
     ]);
+    // With "wrap up finished child threads" off, the answered one stays.
+    const [kept] = sections([visitedParent], {
+      computersWithThreads: [mac],
+      wrapUpOnFinish: false,
+    }).live;
+    expect(kept!.remoteChildren.map((child) => child.title)).toContain("Run the Windows checks");
 
     // The child's thread is in the list after all: it is the row, once.
     const withThread = sections([parent, flakyTest], { computersWithThreads: [mac] }).live[0]!;

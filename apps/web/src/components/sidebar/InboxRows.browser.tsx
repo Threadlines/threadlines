@@ -619,6 +619,7 @@ describe("child thread families in the inbox", () => {
       canSeeComputer: () => false,
       computerLabel: (_environmentId, lastKnown) => lastKnown,
       hasThread: () => false,
+      wrapUpOnFinish: true,
     });
     // A child started here whose worktree is still being made: nowhere else to name.
     const [settingUp] = resolveRemoteFamilyChildren({
@@ -636,6 +637,7 @@ describe("child thread families in the inbox", () => {
       canSeeComputer: () => true,
       computerLabel: (_environmentId, lastKnown) => lastKnown,
       hasThread: () => false,
+      wrapUpOnFinish: true,
     });
     render(
       <ThreadHoverCardProvider>

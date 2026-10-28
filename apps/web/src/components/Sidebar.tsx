@@ -533,6 +533,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const selectedDestination = useSelectedDestination();
   const sidebarGroupingSetting = useSettings((s) => s.sidebarGrouping);
+  const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
   const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
   // The Rooms filter (in the scope menu) narrows what the inbox shows, never
@@ -801,6 +802,7 @@ export default function Sidebar() {
                 entryByThreadKey.has(
                   scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
                 ),
+              wrapUpOnFinish: wrapUpChildThreadsOnFinish,
             }),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,
@@ -828,6 +830,7 @@ export default function Sidebar() {
     routeThreadKey,
     scopedEnvironmentIdValue,
     scopedProjectKeys,
+    wrapUpChildThreadsOnFinish,
   ]);
 
   // Grouping by computer needs a second computer to mean anything.

@@ -16,6 +16,7 @@ import {
   childSendRefusal,
   childStartRefusal,
   isHandedBackCompletion,
+  remoteChildrenOf,
   remoteChildStartsOf,
 } from "./childThreads.ts";
 
@@ -224,6 +225,15 @@ describe("remoteChildStartsOf", () => {
       updatedAt: "2026-10-04T10:01:00.000Z",
     });
     expect(remoteChildStartsOf(started)).toEqual([]);
+    // Followed while its request is open; once its answer settles it, no
+    // word of it comes any more, and its family can wrap it up.
+    expect(remoteChildrenOf(started).map((child) => child.followed)).toEqual([true]);
+    const answered = childRequestStateOn.settled(
+      started,
+      ChildRequestId.make("request-1"),
+      undefined,
+    );
+    expect(remoteChildrenOf(answered).map((child) => child.followed)).toEqual([false]);
   });
 });
 

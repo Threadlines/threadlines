@@ -35,7 +35,7 @@ import type {
   ProjectId,
   RemoteChildStart,
   LocalChildStart,
-  RemoteChildThread,
+  FamilyRemoteChild,
   ScopedProjectRef,
   ScopedThreadRef,
   ThreadMovedFrom,
@@ -121,6 +121,7 @@ import {
   awaitedChildRequestCount,
   childRequestStateOn,
   hasPendingChildApproval,
+  remoteChildrenOf,
   remoteChildStartsOf,
   localChildStartsOf,
 } from "@threadlines/shared/childThreads";
@@ -446,7 +447,7 @@ function childRequestCounts(thread: {
 function remoteFamily(thread: {
   readonly remoteOrigin?: ThreadRemoteOrigin | null | undefined;
   readonly childRequests?: OrchestrationChildRequestState | undefined;
-  readonly remoteChildren?: ReadonlyArray<RemoteChildThread> | undefined;
+  readonly remoteChildren?: ReadonlyArray<FamilyRemoteChild> | undefined;
   readonly remoteChildStarts?: ReadonlyArray<RemoteChildStart> | undefined;
   readonly localChildStarts?: ReadonlyArray<LocalChildStart> | undefined;
 }): Pick<
@@ -455,7 +456,7 @@ function remoteFamily(thread: {
 > {
   const children =
     thread.childRequests !== undefined
-      ? (thread.childRequests.remoteChildren ?? [])
+      ? remoteChildrenOf(thread.childRequests)
       : (thread.remoteChildren ?? []);
   const starts =
     thread.childRequests !== undefined
@@ -490,8 +491,8 @@ function remoteOriginsEqual(
 }
 
 function remoteChildrenEqual(
-  left: ReadonlyArray<RemoteChildThread> | undefined,
-  right: ReadonlyArray<RemoteChildThread> | undefined,
+  left: ReadonlyArray<FamilyRemoteChild> | undefined,
+  right: ReadonlyArray<FamilyRemoteChild> | undefined,
 ): boolean {
   const a = left ?? [];
   const b = right ?? [];
@@ -505,7 +506,8 @@ function remoteChildrenEqual(
         child.label === other.label &&
         child.title === other.title &&
         child.cachedStatus === other.cachedStatus &&
-        child.updatedAt === other.updatedAt
+        child.updatedAt === other.updatedAt &&
+        child.followed === other.followed
       );
     })
   );

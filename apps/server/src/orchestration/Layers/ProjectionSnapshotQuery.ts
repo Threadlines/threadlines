@@ -78,6 +78,7 @@ import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
+  remoteChildrenOf,
   remoteChildStartsOf,
   localChildStartsOf,
 } from "@threadlines/shared/childThreads";
@@ -199,7 +200,7 @@ const threadMoveFields = (row: Pick<ProjectionThread, "move" | "movedFrom">) => 
  */
 const shellLineageFields = (row: ThreadLineageRow) => {
   const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
-  const remoteChildren = childRequests.remoteChildren ?? [];
+  const remoteChildren = remoteChildrenOf(childRequests);
   const remoteChildStarts = remoteChildStartsOf(childRequests);
   const localChildStarts = localChildStartsOf(childRequests);
   return {
