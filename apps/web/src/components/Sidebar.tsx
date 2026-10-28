@@ -2148,6 +2148,14 @@ export default function Sidebar() {
                                   reopenThread={reopenThread}
                                   lineage={lineageByThreadKey.get(openChild.threadKey)}
                                   onSwipeAction={handleRowSwipe}
+                                  computerLabel={
+                                    openChild.thread.environmentId === entry.thread.environmentId
+                                      ? null
+                                      : computerLabel(
+                                          openChild.thread.environmentId,
+                                          "another computer",
+                                        )
+                                  }
                                 />
                               ) : null}
                             </React.Fragment>

@@ -153,7 +153,8 @@ export function useAgentLabels(): (
       const model = entry?.models.find((candidate) => candidate.slug === selection.model);
       return {
         agent: entry?.displayName ?? selection.instanceId,
-        model: model?.shortName ?? model?.name ?? selection.model,
+        // As the model picker names it: "Opus 5.5" beside "Claude", not "Claude Opus 5.5".
+        model: entry && model ? getPickerModelName(model, entry.driverKind) : selection.model,
         driverKind: entry?.driverKind ?? null,
       };
     },
