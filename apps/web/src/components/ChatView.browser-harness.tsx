@@ -648,8 +648,16 @@ export const PULL_REQUEST_URL = `https://github.com/${PULL_REQUEST_REPOSITORY}/p
  * requests, and whose version skew raises a notice, so the dock has both kinds
  * of row to hold at once.
  */
-export function withPullRequestFixture(nextFixture: TestFixture): void {
-  const capabilities = { repositoryIdentity: true, pullRequests: true } as const;
+export function withPullRequestFixture(
+  nextFixture: TestFixture,
+  options: { readonly olderServer?: boolean } = {},
+): void {
+  // `olderServer`: a computer from before pull request switches went by number.
+  const capabilities = {
+    repositoryIdentity: true,
+    pullRequests: true,
+    ...(options.olderServer === true ? {} : { pullRequestSwitchesByNumber: true }),
+  } as const;
   nextFixture.serverConfig = {
     ...nextFixture.serverConfig,
     environment: {

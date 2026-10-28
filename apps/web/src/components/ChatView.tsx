@@ -236,6 +236,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import {
+  readEnvironmentDescriptor,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
@@ -6501,26 +6502,42 @@ export default function ChatView(props: ChatViewProps) {
       try {
         // A goal on a draft makes its thread with it, so the session spins up
         // and the goal's work begins without waiting for a user message.
-        const bootstrap = buildThreadStartBootstrap({
-          createThread:
-            !isServerThread && input.objective !== undefined
-              ? {
-                  projectId: activeProject.id,
-                  title: truncate(input.objective),
-                  modelSelection: goalModelSelection,
-                  runtimeMode,
-                  interactionMode: "default",
-                  branch: activeThreadBranch,
-                  worktreePath: activeThread.worktreePath,
-                  ...draftRoomCreateFields,
-                  createdAt: new Date().toISOString(),
-                }
-              : null,
-          worktree:
-            goalNeedsWorktree && activeThreadBranch
-              ? { projectCwd: activeProject.cwd, baseBranch: activeThreadBranch }
-              : null,
-        });
+        const createThread =
+          !isServerThread && input.objective !== undefined
+            ? {
+                projectId: activeProject.id,
+                title: truncate(input.objective),
+                modelSelection: goalModelSelection,
+                runtimeMode,
+                interactionMode: "default" as const,
+                branch: activeThreadBranch,
+                worktreePath: activeThread.worktreePath,
+                ...draftRoomCreateFields,
+                createdAt: new Date().toISOString(),
+              }
+            : null;
+        // A computer still on an older version can't set a draft's thread
+        // up with its goal: the thread is made first there, as it always
+        // was, and the goal set after (no worktree is cut for it).
+        const setsUpWithGoal =
+          readEnvironmentDescriptor(environmentId)?.capabilities.draftGoalSetup === true;
+        if (!setsUpWithGoal && createThread !== null) {
+          await api.orchestration.dispatchCommand({
+            type: "thread.create",
+            commandId: newCommandId(),
+            threadId,
+            ...createThread,
+          });
+        }
+        const bootstrap = setsUpWithGoal
+          ? buildThreadStartBootstrap({
+              createThread,
+              worktree:
+                goalNeedsWorktree && activeThreadBranch
+                  ? { projectCwd: activeProject.cwd, baseBranch: activeThreadBranch }
+                  : null,
+            })
+          : undefined;
         if (isServerThread) {
           await persistThreadSettingsForNextTurn({
             threadId,

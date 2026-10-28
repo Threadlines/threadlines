@@ -1,6 +1,6 @@
 import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import { scopeProjectRef } from "@threadlines/client-runtime";
-import type { PullRequestRef } from "@threadlines/contracts";
+import type { PullRequestRef, ScopedThreadRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
@@ -21,7 +21,10 @@ import {
   type DiffPanelMode,
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
-import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
+import {
+  readEnvironmentDescriptor,
+  useSavedEnvironmentRegistryStore,
+} from "../environments/runtime";
 import { deriveHostedStaticThreadRouteState } from "./-chatIndexState";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
@@ -792,10 +795,16 @@ function ChatThreadRouteView() {
         onOpen: () => openPullRequestTab(reference.number),
         onDismiss: () => setComposerPullRequestDismissed(threadRef, reference.number, true),
         // Each change is sent whatever the switch read before it: a click can
-        // come before the read model has caught up with the one before.
+        // come before the read model has caught up with the one before. A
+        // computer still on an older version takes the row on the thread's
+        // own branch only as the thread's own switches, so they stay there.
         autoFix: {
           checked: ownAutoFix || linkedAutoFix,
           onChange: (next: boolean) => {
+            if (own && !switchesByNumber(threadRef)) {
+              void setThreadPullRequestAutoFix(threadRef, next, null);
+              return;
+            }
             void setThreadPullRequestAutoFix(threadRef, next, target);
             if (ownAutoFix) {
               void setThreadPullRequestAutoFix(threadRef, false, null);
@@ -804,6 +813,15 @@ function ChatThreadRouteView() {
         },
         autoMerge: ownAutoMerge ?? linkedAutoMerge,
         onAutoMergeChange: (next) => {
+          if (own && !switchesByNumber(threadRef)) {
+            void setThreadPullRequestAutoMerge(threadRef, next, null);
+            // Turned off, it also clears the one set while this pull request
+            // was linked from another branch, as that version's app did.
+            if (next === null && linkedAutoMerge !== null) {
+              void setThreadPullRequestAutoMerge(threadRef, null, target);
+            }
+            return;
+          }
           void setThreadPullRequestAutoMerge(threadRef, next, target);
           if (ownAutoMerge !== null) {
             void setThreadPullRequestAutoMerge(threadRef, null, null);
@@ -1084,6 +1102,17 @@ function ChatThreadRouteView() {
       </RightPanelSheet>
       <LazyFileViewerOverlay />
     </>
+  );
+}
+
+/**
+ * Whether the thread's computer takes pull request switches by number on
+ * every row (`pullRequestSwitchesByNumber`), read when a switch is clicked.
+ */
+function switchesByNumber(threadRef: ScopedThreadRef): boolean {
+  return (
+    readEnvironmentDescriptor(threadRef.environmentId)?.capabilities.pullRequestSwitchesByNumber ===
+    true
   );
 }
 
