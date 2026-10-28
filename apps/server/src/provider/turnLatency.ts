@@ -5,6 +5,8 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 
+import type { AnalyticsSessionStartKind } from "../telemetry/AnalyticsProperties.ts";
+
 const AGENT_OUTPUT_ITEM_TYPES: ReadonlySet<CanonicalItemType> = new Set([
   "assistant_message",
   "reasoning",
@@ -45,10 +47,33 @@ export interface TurnLatencySample {
   readonly sessionStarted: boolean;
   /** The agent's session was started early, while the user typed, and this was its first turn. */
   readonly sessionStartedEarly: boolean;
+  /**
+   * The start behind `sessionStarted` or `sessionStartedEarly`: what kind it
+   * was and how long the provider took to start. A start for the message falls
+   * within `handoffMs`, and the rest of the hand-off is Threadlines' own; an
+   * early one began before the message, so some or all of it was not waited on.
+   */
+  readonly sessionStart?: SessionStartTiming | undefined;
   /** Until Threadlines handed the message to the agent. */
   readonly handoffMs: number;
   /** Until the agent's first visible output. */
   readonly firstOutputMs: number;
+}
+
+/** One provider session start, as the latency samples describe it. */
+export interface SessionStartTiming {
+  readonly kind: AnalyticsSessionStartKind;
+  /** From asking the provider to start until it had started. */
+  readonly startMs: number;
+}
+
+/** A session start the tracker can attribute to a later turn. */
+interface RecordedSessionStart {
+  /** When the start was asked for and when it finished, on the server's clock. */
+  readonly beganAtMs: number;
+  readonly atMs: number;
+  readonly instanceId: string;
+  readonly timing: SessionStartTiming;
 }
 
 /**
@@ -82,7 +107,7 @@ interface PendingTurn extends Omit<TurnLatencySample, "firstOutputMs"> {
  * exits, before any output is dropped.
  */
 export const makeTurnLatencyTracker = () => {
-  const sessionStarts = new Map<string, { readonly atMs: number; readonly instanceId: string }>();
+  const sessionStarts = new Map<string, RecordedSessionStart>();
   const pending = new Map<string, PendingTurn>();
   let lastSendId = 0;
 
@@ -93,13 +118,15 @@ export const makeTurnLatencyTracker = () => {
     attachmentCount: turn.attachmentCount,
     sessionStarted: turn.sessionStarted,
     sessionStartedEarly: turn.sessionStartedEarly,
+    ...(turn.sessionStart !== undefined ? { sessionStart: turn.sessionStart } : {}),
     handoffMs: turn.handoffMs,
     firstOutputMs: Math.max(0, firstOutputAtMs - turn.requestedAtMs),
   });
 
   return {
-    sessionStarted: (sessionKey: string, atMs: number, instanceId: string) => {
-      sessionStarts.set(sessionKey, { atMs, instanceId });
+    /** The provider finished starting a session for `sessionKey`. */
+    sessionStarted: (sessionKey: string, start: RecordedSessionStart) => {
+      sessionStarts.set(sessionKey, start);
     },
 
     /** The session was stopped or its thread deleted. */
@@ -115,7 +142,10 @@ export const makeTurnLatencyTracker = () => {
      */
     sending: (
       sessionKey: string,
-      input: Omit<PendingTurn, "sendId" | "handoffMs" | "sessionStarted" | "turnId" | "early"> & {
+      input: Omit<
+        PendingTurn,
+        "sendId" | "handoffMs" | "sessionStarted" | "sessionStart" | "turnId" | "early"
+      > & {
         readonly nowMs: number;
       },
     ): { readonly handoffMs: number; readonly sendId: number } => {
@@ -128,14 +158,21 @@ export const makeTurnLatencyTracker = () => {
         return { handoffMs, sendId };
       }
       const start = sessionStarts.get(sessionKey);
+      const ownStart =
+        start !== undefined && start.instanceId === turn.instanceId ? start : undefined;
+      // Named only when all of it was this turn's wait, or it was this turn's
+      // early start: one already underway when the message came is neither.
+      const namedStart =
+        ownStart !== undefined &&
+        (ownStart.beganAtMs >= turn.requestedAtMs || turn.sessionStartedEarly)
+          ? ownStart.timing
+          : undefined;
       pending.set(sessionKey, {
         ...turn,
         sendId,
         handoffMs,
-        sessionStarted:
-          start !== undefined &&
-          start.instanceId === turn.instanceId &&
-          start.atMs >= turn.requestedAtMs,
+        sessionStarted: ownStart !== undefined && ownStart.atMs >= turn.requestedAtMs,
+        ...(namedStart !== undefined ? { sessionStart: namedStart } : {}),
         turnId: undefined,
         early: new Map(),
       });
@@ -172,8 +209,15 @@ export const makeTurnLatencyTracker = () => {
     /** Returns a sample when `event` is the waiting turn's first output. */
     observe: (event: ProviderRuntimeEvent, nowMs: number): TurnLatencySample | undefined => {
       if (event.type === "session.exited") {
-        // A replaced provider's session can exit after its successor started.
-        if (sessionStarts.get(event.threadId)?.instanceId === event.providerInstanceId) {
+        // A replaced runtime can exit after its successor started: on another
+        // instance, or on this one. An exit stamped before the latest start
+        // ended is taken as the replaced one's; if it was the new runtime dying
+        // while it started, its turn stays followed until the next send or stop.
+        const start = sessionStarts.get(event.threadId);
+        if (start !== undefined && Date.parse(event.createdAt) < start.atMs) {
+          return undefined;
+        }
+        if (start?.instanceId === event.providerInstanceId) {
           sessionStarts.delete(event.threadId);
         }
         if (pending.get(event.threadId)?.instanceId === event.providerInstanceId) {
