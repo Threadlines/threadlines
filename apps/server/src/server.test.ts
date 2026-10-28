@@ -5444,8 +5444,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             "sentFrom" in command ? command.sentFrom : undefined,
           ]),
           [
-            // The test client's user agent is no browser: a computer with no name.
-            ["thread.turn.start", { kind: "computer" }],
+            // The test client's user agent is no browser: a computer with no name,
+            // signed in with the desktop's own credential, so this computer.
+            ["thread.turn.start", { kind: "computer", place: "here" }],
             ["thread.follow-up.submit", phone],
             ["thread.side-turn.start", phone],
             ["thread.user-input.respond", phone],

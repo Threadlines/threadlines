@@ -9,7 +9,12 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 
 import { ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
-import { messageSentFromClient, withMessageSentFrom } from "./messageSentFrom.ts";
+import {
+  messageSentFromClient,
+  sessionDevicePlace,
+  withMessageSentFrom,
+  writesUserMessage,
+} from "./messageSentFrom.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
@@ -79,10 +84,13 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
           }),
       ),
     );
-    const normalizedCommand = withMessageSentFrom(
-      yield* normalizeDispatchCommand(command),
-      messageSentFromClient(session.client),
-    );
+    const normalized = yield* normalizeDispatchCommand(command);
+    const normalizedCommand = writesUserMessage(normalized)
+      ? withMessageSentFrom(
+          normalized,
+          messageSentFromClient(session.client, sessionDevicePlace(session)),
+        )
+      : normalized;
     const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
       Effect.mapError(
         (cause) =>

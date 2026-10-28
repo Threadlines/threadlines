@@ -5,6 +5,7 @@ import type {
 } from "@threadlines/contracts";
 import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as Crypto from "node:crypto";
+import { networkInterfaces } from "node:os";
 
 const SESSION_COOKIE_NAME = "threadlines_session";
 
@@ -65,6 +66,22 @@ function normalizeNonEmptyString(value: string | null | undefined): string | und
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
+
+/** This computer's own network addresses, as a socket from it would show them. */
+export function thisComputerAddresses(): ReadonlySet<string> {
+  return new Set(
+    Object.values(networkInterfaces()).flatMap((entries) =>
+      (entries ?? []).map((entry) => entry.address),
+    ),
+  );
+}
+
+/**
+ * Whether a socket's address (as `requestRemoteAddress` reads it, IPv4-mapped
+ * IPv6 unwrapped) is this computer's own loopback.
+ */
+export const isLoopbackAddress = (address: string): boolean =>
+  address === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(address);
 
 function normalizeIpAddress(value: string | null | undefined): string | undefined {
   const normalized = normalizeNonEmptyString(value);

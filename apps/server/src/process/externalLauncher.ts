@@ -275,7 +275,22 @@ function shouldUseWindowsBrowserFromWsl(
   );
 }
 
-function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLaunch {
+/**
+ * PowerShell's `Start`, which hands the URL to the default browser.
+ *
+ * On Windows itself it is not detached: Node starts a detached child with no
+ * console at all, and PowerShell then exits without running anything (seen on
+ * a real PC: the page never opened). Hidden instead, it gets a console of its
+ * own with no window. A child that isn't detached ends with the Node process
+ * that started it, so a caller must outlive `Start`, about a second; server
+ * startup and `threadlines connect` do by far. From WSL the process is Linux's,
+ * and detaching it only leaves the terminal's session.
+ */
+function resolveWindowsBrowserLaunch(
+  target: string,
+  command: string,
+  from: "windows" | "wsl",
+): ProcessLaunch {
   const encodedCommand = encodeUtf16LeBase64(
     `$ProgressPreference = 'SilentlyContinue'; Start ${escapePowerShellStringLiteral(target)}`,
   );
@@ -283,7 +298,7 @@ function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLa
     command,
     args: [...POWERSHELL_ARGUMENTS_PREFIX, encodedCommand],
     options: {
-      detached: true,
+      detached: from === "wsl",
       shell: false,
       stdin: "ignore",
       stdout: "ignore",
@@ -412,11 +427,11 @@ export function resolveBrowserLaunch(
   }
 
   if (platform === "win32") {
-    return resolveWindowsBrowserLaunch(target, resolvePowerShellPath(env));
+    return resolveWindowsBrowserLaunch(target, resolvePowerShellPath(env), "windows");
   }
 
   if (shouldUseWindowsBrowserFromWsl(platform, env)) {
-    return resolveWindowsBrowserLaunch(target, resolveWslPowerShellPath());
+    return resolveWindowsBrowserLaunch(target, resolveWslPowerShellPath(), "wsl");
   }
 
   return {

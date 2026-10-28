@@ -78,6 +78,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import {
   messageSentFromClient,
+  sessionDevicePlace,
   withMessageSentFrom,
   writesUserMessage,
 } from "./orchestration/messageSentFrom.ts";
@@ -383,18 +384,20 @@ const followDeviceName = (
   sessions: SessionCredentialServiceShape,
   sessionId: AuthSessionId,
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
+  /** Where the device is (sessionDevicePlace): fixed for the session. */
+  place: MessageSentFrom["place"],
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
       const changes = yield* sessions.subscribeChanges;
       const current = yield* sessions.clientOf(sessionId);
       if (Option.isSome(current)) {
-        yield* Ref.set(sentFromRef, messageSentFromClient(current.value));
+        yield* Ref.set(sentFromRef, messageSentFromClient(current.value, place));
       }
       yield* changes.pipe(
         Stream.runForEach((change) =>
           change.type === "clientUpserted" && change.clientSession.sessionId === sessionId
-            ? Ref.set(sentFromRef, messageSentFromClient(change.clientSession.client))
+            ? Ref.set(sentFromRef, messageSentFromClient(change.clientSession.client, place))
             : Effect.void,
         ),
       );
@@ -427,6 +430,8 @@ const makeWsRpcLayer = (
   viewerId: string,
   /** The device this connection signs in as, kept current (followDeviceName). */
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
+  /** Where that device is (sessionDevicePlace), worked out once per connection. */
+  devicePlace: MessageSentFrom["place"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -509,7 +514,7 @@ const makeWsRpcLayer = (
       const currentSentFrom = sessions.clientOf(currentSessionId).pipe(
         Effect.flatMap((client) =>
           Option.isSome(client)
-            ? Ref.setAndGet(sentFromRef, messageSentFromClient(client.value))
+            ? Ref.setAndGet(sentFromRef, messageSentFromClient(client.value, devicePlace))
             : Ref.get(sentFromRef),
         ),
         Effect.catch(() => Ref.get(sentFromRef)),
@@ -3165,12 +3170,13 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
         const viewerId = randomUUIDv4Sync();
-        const sentFromRef = yield* Ref.make(messageSentFromClient(session.client));
+        const devicePlace = sessionDevicePlace(session);
+        const sentFromRef = yield* Ref.make(messageSentFromClient(session.client, devicePlace));
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, viewerId, sentFromRef).pipe(
+            makeWsRpcLayer(session, viewerId, sentFromRef, devicePlace).pipe(
               Layer.provide(
                 Layer.succeed(
                   SourceControlToolMaintenance.SourceControlToolMaintenance,
@@ -3240,7 +3246,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               rpcWebSocketHttpEffect,
               Effect.raceFirst(
                 closeWhenRevoked,
-                followDeviceName(sessions, session.sessionId, sentFromRef),
+                followDeviceName(sessions, session.sessionId, sentFromRef, devicePlace),
               ),
             ),
           () =>

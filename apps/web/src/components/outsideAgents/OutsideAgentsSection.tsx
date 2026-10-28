@@ -3,9 +3,12 @@
  * user does"): agents running outside Threadlines that use this computer.
  * This computer's address for agents, how each client connects to it, the
  * `threadlines` command the desktop app puts on PATH (ThreadlinesCommandRow),
- * every connection with what it may do and when it last called (Change, Remove),
  * and after Deny all how long new sign-ins stay turned away, with the way
- * back. Owner only: ConnectionsSettings shows it to the computer's owner.
+ * back. Below it, in a group of their own like the devices above, the agents
+ * signed in, each with what it may do and when it last called (Change,
+ * Remove access): the command signs in under its own name, and its sign-in
+ * must not read as a second copy of the row that installs it. Owner only:
+ * ConnectionsSettings shows it to the computer's owner.
  */
 import type { OutsideAgentConnection, OutsideAgentConnectionId } from "@threadlines/contracts";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -105,7 +108,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
     } catch (error) {
       toastManager.add(
         failureNotice({
-          title: `Couldn't remove ${connection.name}`,
+          title: `Couldn't remove access for ${connection.name}`,
           reason: describeOutsideAgentFailure(error, "Try again."),
         }),
       );
@@ -113,7 +116,12 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
   };
 
   return (
-    <div ref={sectionRef} className="scroll-mt-4" data-testid="outside-agents-section">
+    <div
+      ref={sectionRef}
+      // Two groups, spaced as the page spaces its own sections.
+      className="flex scroll-mt-4 flex-col gap-7"
+      data-testid="outside-agents-section"
+    >
       <SettingsSection
         title="Agents"
         description="Agents you run outside Threadlines, like Claude Code in a terminal, can start and follow threads here once you allow them."
@@ -158,49 +166,54 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
             />
             <ConnectGuideRow address={snapshot.address} />
             <ThreadlinesCommandRow />
-            {snapshot.connections.map((connection) => (
-              <div
-                key={connection.connectionId}
-                className={ROW_CLASS}
-                data-testid={`outside-agent-row-${connection.connectionId}`}
-              >
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <h3 className="truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-                      {connection.name}
-                    </h3>
-                    <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-                      {[
-                        describeOutsideAgentAccess(connection),
-                        describeOutsideAgentProjects(connection.projectIds, projectNames),
-                        describeOutsideAgentLastUse(connection.lastUsedAt, nowMs),
-                      ].join(" · ")}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => setChangingId(connection.connectionId)}
-                      data-testid={`outside-agent-change-${connection.connectionId}`}
-                    >
-                      Change
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="destructive-outline"
-                      onClick={() => setRemoving(connection)}
-                      data-testid={`outside-agent-remove-${connection.connectionId}`}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
           </>
         )}
       </SettingsSection>
+
+      {snapshot !== null && snapshot.connections.length > 0 ? (
+        <SettingsSection title="Agents that can use this computer">
+          {snapshot.connections.map((connection) => (
+            <div
+              key={connection.connectionId}
+              className={ROW_CLASS}
+              data-testid={`outside-agent-row-${connection.connectionId}`}
+            >
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <h3 className="truncate text-[13.5px] leading-[19px] font-medium text-foreground">
+                    {connection.name}
+                  </h3>
+                  <p className="text-[12.5px] leading-[18px] text-muted-foreground">
+                    {[
+                      describeOutsideAgentAccess(connection),
+                      describeOutsideAgentProjects(connection.projectIds, projectNames),
+                      describeOutsideAgentLastUse(connection.lastUsedAt, nowMs),
+                    ].join(" · ")}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => setChangingId(connection.connectionId)}
+                    data-testid={`outside-agent-change-${connection.connectionId}`}
+                  >
+                    Change
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="destructive-outline"
+                    onClick={() => setRemoving(connection)}
+                    data-testid={`outside-agent-remove-${connection.connectionId}`}
+                  >
+                    Remove access
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </SettingsSection>
+      ) : null}
 
       <Dialog
         open={changing !== null}
@@ -227,7 +240,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
       >
         <AlertDialogPopup className="max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {removing?.name}?</AlertDialogTitle>
+            <AlertDialogTitle>Remove access for {removing?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
               It can&apos;t use Threadlines from its next call on, and has to sign in again to come
               back. Threads it started keep its name.
@@ -242,7 +255,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
               }}
               data-testid="outside-agent-remove-confirm"
             >
-              Remove
+              Remove access
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

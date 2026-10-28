@@ -442,6 +442,10 @@ describe("threadlines connect", () => {
         );
 
         assert.equal((yield* connect("allow")).scope, "threads:read threads:start");
+        // The link is printed even when the browser opened: a launch that
+        // started can still show nothing.
+        assert.include(said.join("\n"), `If no page opened, open this link on this computer:`);
+        assert.include(said.join("\n"), `http://127.0.0.1:${threadlines.port}/`);
         const first = readCredentials(base).resources[resource];
         assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
         assert.equal(statSync(join(base, "userdata", "cli")).mode & 0o777, 0o700);

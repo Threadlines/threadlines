@@ -20,7 +20,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type { HttpServerRequest } from "effect/unstable/http";
 
-import { requestRemoteAddress } from "../auth/utils.ts";
+import { isLoopbackAddress, requestRemoteAddress } from "../auth/utils.ts";
 
 export const OUTSIDE_AGENT_MCP_PATH = "/mcp/connect";
 
@@ -42,9 +42,6 @@ const PROXY_HEADERS = [
   "tailscale-user-login",
   "tailscale-user-name",
 ];
-
-const isLoopbackAddress = (address: string): boolean =>
-  address === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(address);
 
 /**
  * The origin a sign-in or an agent's call may arrive under, or null to refuse

@@ -785,8 +785,9 @@ it("resolveBrowserLaunch maps default browser launchers by platform", () => {
       "$ProgressPreference = 'SilentlyContinue'; Start 'https://example.com/some path?name=o''hara'",
     ),
   ]);
+  // Detached, PowerShell gets no console on Windows and never runs `Start`.
   assert.deepEqual(windows.options, {
-    detached: true,
+    detached: false,
     shell: false,
     stdin: "ignore",
     stdout: "ignore",

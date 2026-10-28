@@ -44,6 +44,7 @@ install of Threadlines already has it.
 
 ```sh
 threadlines connect                      # sign in once; approve it in Threadlines
+                                         # (prints the link too, if no page opens)
 threadlines projects
 threadlines thread start app "Fix the flaky login test" --wait
 threadlines thread send <id> "Also update the changelog" --wait
@@ -87,11 +88,13 @@ or delete `/usr/local/bin/threadlines` (macOS), `~/.local/bin/threadlines`
 
 ## Change or remove an agent
 
-Settings → Connections → Agents lists every agent with what it may do and when
-it was last used. **Change** applies on its next call. A tool you newly allowed
-shows up the next time the agent lists its tools, usually when it starts.
-**Remove** cuts it off on its next call; it has to sign in again to come back.
-Threads it started stay, with its name.
+Settings → Connections lists every signed-in agent under **Agents that can use
+this computer**, with what it may do and when it was last used. The
+`threadlines` command shows there under its own name once you've run
+`threadlines connect`, apart from the Install row. **Change** applies on its
+next call. A tool you newly allowed shows up the next time the agent lists its
+tools, usually when it starts. **Remove access** cuts it off on its next call;
+it has to sign in again to come back. Threads it started stay, with its name.
 
 **Deny all** turns down every waiting sign-in and stops new ones for 10
 minutes, in case something keeps asking. **Take requests again** ends that

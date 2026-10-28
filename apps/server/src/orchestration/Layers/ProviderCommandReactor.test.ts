@@ -1573,7 +1573,7 @@ describe("ProviderCommandReactor", () => {
     expect(sent.typed?.context).not.toContain("ultracode the second question");
   });
 
-  it("tells the agent about a phone on every turn, and about the computer once back from it", async () => {
+  it("tells the agent about a phone or another computer on every turn, and about the computer once back from it", async () => {
     const harness = await createHarness();
     const reply = async (id: string) => {
       for (const command of [
@@ -1599,6 +1599,14 @@ describe("ProviderCommandReactor", () => {
     };
     const mac: MessageSentFrom = { kind: "computer", os: "macOS" };
     const phone: MessageSentFrom = { kind: "phone", name: "iPhone", os: "iOS" };
+    // The computer the agent works on, and another one using it (Fleet).
+    const macHere: MessageSentFrom = { ...mac, place: "here" };
+    const pc: MessageSentFrom = {
+      kind: "computer",
+      name: "Will's Windows Desktop",
+      os: "Windows",
+      place: "elsewhere",
+    };
     const turns: ReadonlyArray<
       readonly [string, MessageSentFrom | undefined, "answered" | "unanswered"]
     > = [
@@ -1619,6 +1627,10 @@ describe("ProviderCommandReactor", () => {
       // Automation's answer is its own, not the failed send's before it.
       ["scheduled run", undefined, "answered"],
       ["at my desk", mac, "answered"],
+      ["from the PC", pc, "answered"],
+      ["still on the PC", pc, "answered"],
+      ["back on the Mac", macHere, "answered"],
+      ["still on the Mac", macHere, "answered"],
     ];
     for (const [index, [text, sentFrom, answered]] of turns.entries()) {
       await startTurnAs(harness, `device-${index}`, text, "typed", sentFrom);
@@ -1632,6 +1644,8 @@ describe("ProviderCommandReactor", () => {
     const phoneNote =
       'The user sent this message from their phone ("iPhone", iOS), so they may be away from the computer you work on and reading on a small screen.';
     const backNote = "The user sent this message from a computer (macOS).";
+    const pcNote =
+      'The user sent this message from another computer ("Will\'s Windows Desktop", Windows), not the one you work on, so what they see and the commands they run themselves are on that computer.';
     expect(sent.map((request) => request.deviceNote)).toEqual([
       undefined,
       phoneNote,
@@ -1649,6 +1663,11 @@ describe("ProviderCommandReactor", () => {
       backNote,
       undefined,
       backNote,
+      pcNote,
+      // Every turn from another computer says so too.
+      pcNote,
+      "The user sent this message from the computer you work on (macOS).",
+      undefined,
     ]);
     // The note travels apart: the provider service or the driver places it.
     expect(sent[1]?.input).toBe("from the couch");
