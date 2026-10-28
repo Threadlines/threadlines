@@ -44,9 +44,9 @@ context across tools.
 
 ## Screenshots
 
-| Pick your agents                                                                                                                       | Preview your site                                                                           | Review the changes                                                                                                              |
-| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| ![Threadlines setup asking which agents you use, with nine agents to pick from](apps/marketing/public/Screenshots/app/onboarding.webp) | ![The built-in browser beside a thread](apps/marketing/public/Screenshots/app/browser.webp) | ![Source control with changed files and Git history beside a thread](apps/marketing/public/Screenshots/app/source-control.webp) |
+| See every computer                                                                                                                        | Every project in one sidebar                                                                                                                                     | Pick your agents                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| ![Fleet: a MacBook Pro and a Windows PC, the agents at work on each, and their threads](apps/marketing/public/Screenshots/app/fleet.webp) | ![The sidebar with threads from four projects, one running on a Windows PC under the thread that started it](apps/marketing/public/Screenshots/app/sidebar.webp) | ![Threadlines setup asking which agents you use, with nine agents to pick from](apps/marketing/public/Screenshots/app/onboarding.webp) |
 
 ## Installation
 
