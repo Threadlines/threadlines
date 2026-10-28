@@ -1259,8 +1259,9 @@ export interface InboxChildRowProps {
   reopenThread: (threadKey: string) => void;
   lineage?: ThreadHoverCardLineage | undefined;
   /**
-   * The computer it runs on, when that isn't its parent's: a computer glyph
-   * marks the row (the hover card names the computer).
+   * The computer it runs on, when that isn't its parent's: the cloud (not on
+   * this device) or a computer glyph (here) marks the row; the hover card
+   * names the computer.
    */
   computerLabel?: string | null | undefined;
   /** See InboxThreadRowProps.onSwipeAction. */
@@ -1271,8 +1272,10 @@ export interface InboxChildRowProps {
  * One thread in a family, under its parent: one line, ~26px. The status dot
  * (a grey check once wrapped), the title, the same status words and colours a
  * live row uses, and the agent. Where the work lives is the parent's to say,
- * and the branch is in the hover card; a child on another computer than its
- * parent says so with a computer glyph.
+ * and the branch is in the hover card. A child on another computer than its
+ * parent says so: with the cloud when it isn't on this device, as every
+ * thread from another computer shows, or with a computer glyph when it runs
+ * here and its parent is the one elsewhere.
  */
 export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowProps) {
   const {
@@ -1304,6 +1307,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const isRenaming = renamingThreadKey === threadKey;
   const shownStatus = isDone ? null : status;
@@ -1526,7 +1530,12 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                 data-testid={`child-computer-${thread.id}`}
                 className="inline-flex shrink-0 items-center"
               >
-                <MonitorIcon aria-hidden className="size-3 text-muted-foreground/45" />
+                {/* Until this device is known, nothing is called remote (as ThreadEnvironmentBadge). */}
+                {primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId ? (
+                  <CloudIcon aria-hidden className="size-3 text-muted-foreground/50" />
+                ) : (
+                  <MonitorIcon aria-hidden className="size-3 text-muted-foreground/45" />
+                )}
               </span>
             ) : null}
             <ThreadProviderGlyph thread={thread} />
@@ -1540,8 +1549,8 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
 /**
  * A thread in a family that runs on a computer this app can't see, or a start
  * that has no thread there yet, from the parent's own record. The status dot
- * and title as a child row has them, then under the title a computer glyph
- * with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
+ * and title as a child row has them, then under the title the cloud (it
+ * isn't on this device) with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
  * it"): a second line, so a narrow list keeps both the title and the
  * computer. The app has no thread to open, so the row only explains itself
  * on hover.
@@ -1597,7 +1606,7 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
           >
             {/* Being set up here: no other computer to point at. */}
             {child.phase === "setting_up" ? null : (
-              <MonitorIcon aria-hidden className="size-3 shrink-0" />
+              <CloudIcon aria-hidden className="size-3 shrink-0" />
             )}
             {isStart ? (
               <span className={cn("min-w-0 truncate", tone)}>{statusText}</span>

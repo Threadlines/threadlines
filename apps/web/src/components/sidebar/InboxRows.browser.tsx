@@ -56,6 +56,7 @@ import {
 } from "./InboxRows";
 import { usePendingLinkRequests } from "./linkedComputers";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
+import { writePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const THREAD_ID = ThreadId.make("thread-pull-request");
@@ -460,6 +461,9 @@ describe("InboxThreadRow pull request badge", () => {
 });
 
 describe("child thread families in the inbox", () => {
+  afterEach(() => {
+    writePrimaryEnvironmentDescriptor(null);
+  });
   const rowCallbacks = {
     orderedThreadKeys: [],
     renamingThreadKey: null,
@@ -595,10 +599,26 @@ describe("child thread families in the inbox", () => {
   });
 
   it("says which computer a family's thread runs on, and where a thread on its own came from", async () => {
+    // This device is the Mac: a child on the Windows PC gets the cloud, one
+    // here under a parent elsewhere the computer glyph.
+    writePrimaryEnvironmentDescriptor({
+      environmentId: ENVIRONMENT_ID,
+      label: "Mac mini",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.8.0",
+      capabilities: { repositoryIdentity: true },
+    });
     const remoteChild: SidebarThreadSummary = {
       ...THREAD,
       id: ThreadId.make("thread-on-windows"),
+      environmentId: EnvironmentId.make("environment-windows"),
       title: "Fix the flaky test",
+      branch: null,
+    };
+    const localChild: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-here"),
+      title: "Check the Mac build",
       branch: null,
     };
     // A start Windows PC hasn't allowed yet: there is no thread there.
@@ -667,6 +687,18 @@ describe("child thread families in the inbox", () => {
             reopenThread={() => undefined}
             computerLabel="Windows PC"
           />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={localChild}
+            status={status("Working")}
+            isDone={false}
+            doneAt={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={() => undefined}
+            computerLabel="Mac mini"
+          />
           <InboxRemoteChildRow child={waitingStart!} />
           <InboxRemoteChildRow child={settingUp!} />
         </ul>
@@ -679,9 +711,18 @@ describe("child thread families in the inbox", () => {
     await expect
       .element(page.getByTestId(`child-computer-${remoteChild.id}`))
       .toHaveAttribute("aria-label", "On Windows PC");
-    await expect
-      .element(page.getByTestId("remote-child-meta-start:environment-windows:request-notes"))
-      .toMatchTextContent("Waiting for Windows PC to allow it");
+    // Not on this device: the cloud every thread from another computer shows.
+    expect(
+      page.getByTestId(`child-computer-${remoteChild.id}`).element().querySelector(".lucide-cloud"),
+    ).not.toBeNull();
+    const here = page.getByTestId(`child-computer-${localChild.id}`).element();
+    expect(here.querySelector(".lucide-cloud")).toBeNull();
+    expect(here.querySelector(".lucide-monitor")).not.toBeNull();
+    const waitingMeta = page.getByTestId(
+      "remote-child-meta-start:environment-windows:request-notes",
+    );
+    await expect.element(waitingMeta).toMatchTextContent("Waiting for Windows PC to allow it");
+    expect(waitingMeta.element().querySelector(".lucide-cloud")).not.toBeNull();
     const settingUpMeta = page.getByTestId("remote-child-meta-setup:request-changelog");
     await expect.element(settingUpMeta).toMatchTextContent("Setting up");
     expect(settingUpMeta.element().querySelector("svg")).toBeNull();
