@@ -40,6 +40,8 @@ const appStructuredData = {
       (agent) => `Runs ${agent.name}`,
     ),
     "Several agents in one thread",
+    "Agents start threads on your other computers",
+    "Scheduled and event tasks",
     "Pull requests and CI checks beside the chat",
     "Built-in browser",
     "Source control and Git history",
@@ -65,9 +67,11 @@ const showcases: { id: string; kicker: string; title: string; description: strin
     kicker: "Across your projects",
     title: "Know which thread needs you next",
     description:
-      "See working threads, open pull requests, and active terminals in one inbox. Keep finished work in Wrapped, and open the activity panel to follow tasks and subagents.",
+      "See every project's threads in one sidebar, or tick a few projects to focus on. A thread another computer runs sits under the thread that started it, finished work goes to Wrapped, and one menu does the same things wherever you open it.",
     clips: [
-      { name: "inbox", tab: "Thread inbox", label: "Project threads with working and finished states, pull request badges, active terminals, and Wrapped threads" },
+      { name: "inbox-sidebar", tab: "Thread inbox", image: "sidebar", label: "The sidebar beside a thread, with threads from four projects, a thread running on a Windows PC under the Mac thread that started it, and Wrapped at the bottom" },
+      { name: "inbox-projects", tab: "A few projects", image: "projects", label: "The project picker with two projects ticked, so the sidebar shows only their threads" },
+      { name: "inbox-menu", tab: "Thread menu", image: "thread-menu", label: "A thread's menu with Rename, Pin, Wrap up, Move to another computer, Copy path, Archive and Delete" },
       { name: "activity", tab: "Tasks and activity", label: "The activity panel beside a thread, showing tasks, subagents, and background work" },
     ],
   },
@@ -102,6 +106,17 @@ const showcases: { id: string; kicker: string; title: string; description: strin
     clips: [
       { name: "files", tab: "Project files", label: "Browsing project files and opening a file in the editor beside the thread" },
       { name: "context", tab: "Exact context", label: "Selecting specific content and attaching it to the chat composer" },
+    ],
+  },
+  {
+    id: "tasks",
+    kicker: "Scheduled tasks",
+    title: "Hand off the work that repeats",
+    description:
+      "Write a prompt once, and an agent starts on it at the times you pick or when an issue on GitHub gets a label, while Threadlines is running on that computer. Agents you run in a terminal, like Claude Code or Codex, can start and follow threads here too.",
+    clips: [
+      { name: "tasks-scheduled", tab: "Scheduled tasks", image: "scheduled", label: "Scheduled tasks on two computers: a weekday commit review, a weekly dependency check, a task for new bug reports on GitHub, and nightly Windows tests" },
+      { name: "tasks-outside", tab: "Agents outside", image: "connections", label: "Settings › Connections, with this computer's name, a linked Windows PC, and the address and command that connect Claude Code, Codex, Gemini CLI or Cursor" },
     ],
   },
   {
@@ -190,8 +205,8 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           style="--pv-delay: 1.6s"></circle>
       </svg>
 
-      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.6.0"
-        ><span class="pv-new-tag">New in 0.6.0</span><span>Agents start threads</span><span aria-hidden="true">&rarr;</span></a
+      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.8.0"
+        ><span class="pv-new-tag">New in 0.8.0</span><span>Fleet</span><span aria-hidden="true">&rarr;</span></a
       >
       <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Your coding agents,<br />together in one thread.</h1>
       <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
@@ -264,6 +279,54 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       <figcaption>
         A 46-second demo: Opus and Sol track down a double-charge bug in one thread. A recreated
         conversation in the current app.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="pv-section" id="fleet">
+    <div class="pv-wrap pv-center pv-reveal">
+      <p class="pv-kicker">Fleet</p>
+      <h2>Your computers work as one</h2>
+      <p class="pv-lede">
+        Link your Mac and your PC, and an agent on one can start a thread on the other when it needs
+        to. By default it asks you first, the thread shows up in your sidebar, and its answer comes
+        back. Fleet shows every computer and what it's running.
+      </p>
+    </div>
+    <figure class="pv-showcase pv-reveal">
+      <div class="pv-frame pv-frame-swap">
+        <video
+          class="pv-video pv-clip-wide"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster="/Screenshots/fleet/fleet.webp"
+          width="1600"
+          height="934"
+          aria-label="Opus 5.5 on a MacBook Pro can't test a Windows-only screenshot bug, so it asks to start a thread on the Windows PC. GPT-6.1-Sol runs a probe there, Fleet shows both computers at work, and the answer comes back and changes Opus's plan."
+        >
+          <source src="/Screenshots/fleet/fleet.mp4" type="video/mp4" />
+        </video>
+        <video
+          class="pv-video pv-clip-tall"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster="/Screenshots/fleet/fleet-tall.webp"
+          width="800"
+          height="1000"
+          aria-label="Opus 5.5 on a MacBook Pro can't test a Windows-only screenshot bug, so it asks to start a thread on the Windows PC. GPT-6.1-Sol runs a probe there, Fleet shows both computers at work, and the answer comes back and changes Opus's plan."
+        >
+          <source src="/Screenshots/fleet/fleet-tall.mp4" type="video/mp4" />
+        </video>
+        <button class="pv-expand" type="button" aria-label="Expand the Fleet demo"><span>Expand</span></button>
+        <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
+      </div>
+      <figcaption>
+        A 45-second demo: Opus on a MacBook asks the Windows PC to check a Windows-only bug, and
+        the answer changes its plan. A recreated conversation in the current app.
       </figcaption>
     </figure>
   </section>
