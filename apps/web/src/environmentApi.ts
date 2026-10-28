@@ -213,13 +213,13 @@ export function useEnvironmentApiAvailable(
 ): boolean {
   return useSyncExternalStore(
     subscribeEnvironmentConnections,
-    () => (environmentId ? hasEnvironmentApi(environmentId) : false),
+    () => (environmentId ? isEnvironmentApiAvailable(environmentId) : false),
     () => false,
   );
 }
 
 /** Whether readEnvironmentApi would answer now, without building the API to find out. */
-function hasEnvironmentApi(environmentId: EnvironmentId): boolean {
+export function isEnvironmentApiAvailable(environmentId: EnvironmentId): boolean {
   if (typeof window === "undefined") return false;
   return (
     environmentApiOverridesForTests.has(environmentId) ||

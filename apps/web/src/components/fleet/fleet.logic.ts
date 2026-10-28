@@ -21,7 +21,12 @@ import type {
   SavedEnvironmentRecord,
   SavedEnvironmentRuntimeState,
 } from "../../environments/runtime";
-import { deviceDisplayName, deviceDisplayNames, type NamedDevice } from "../../deviceNames";
+import {
+  deviceDisplayName,
+  deviceDisplayNames,
+  deviceOwnName,
+  type NamedDevice,
+} from "../../deviceNames";
 import { formatElapsedDurationLabel } from "../../timestampFormat";
 import type { ThreadAttention, ThreadStatusPill } from "../Sidebar.logic";
 
@@ -58,6 +63,14 @@ export interface FleetComputerInput {
   readonly lastSeenAt: string | null;
   /** Its latest freeze or sleep, for "Froze 3 min ago" while it is recent. */
   readonly recentStall?: ReceivedComputerStall | null;
+  /** A phone or tablet: its sign-in here, which its Rename names. */
+  readonly device?: {
+    readonly sessionId: string;
+    /** Its name as it is, without a "paired" hint. */
+    readonly name: string;
+    /** What it calls itself, which an empty name goes back to. */
+    readonly ownName: string;
+  };
 }
 
 /** One thread as Fleet reads it. */
@@ -196,6 +209,11 @@ export function linkedDeviceInputs(
     connection: session.connected ? "connected" : "offline",
     route: session.subject === relaySubject ? "relay" : "network",
     lastSeenAt: session.lastConnectedAt,
+    device: {
+      sessionId: session.sessionId,
+      name: deviceDisplayName(session.client),
+      ownName: deviceOwnName(session.client),
+    },
   }));
 }
 

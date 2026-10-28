@@ -71,4 +71,61 @@ describe("FleetGraph", () => {
         .toBe(true);
     }
   });
+
+  it("opens a computer's or a phone's menu where it is right-clicked", async () => {
+    const model = buildFleetModel({
+      center: computer({ id: "env-mac", label: "Studio Mac", kind: "this", glyph: "laptop" }),
+      others: [
+        computer({ id: "env-windows", label: "Wilfredo" }),
+        {
+          ...computer({
+            id: "device:session-phone",
+            label: "iPhone",
+            kind: "device",
+            glyph: "phone",
+          }),
+          environmentId: null,
+          device: { sessionId: "session-phone", name: "iPhone", ownName: "iPhone" },
+        },
+      ],
+      threads: [],
+    });
+    const opened: Array<string> = [];
+    const menus: Array<{ readonly id: string; readonly x: number; readonly y: number }> = [];
+    mounted = await render(
+      <div style={{ width: 720 }}>
+        <FleetGraph
+          model={model}
+          edges={[]}
+          nowMs={Date.parse("2026-10-26T08:25:00.000Z")}
+          height={320}
+          onOpenComputer={(target) => opened.push(target.id)}
+          onComputerMenu={(target, position) => menus.push({ id: target.id, ...position })}
+          providerLabel={() => "Claude"}
+        />
+      </div>,
+    );
+
+    for (const id of ["env-windows", "device:session-phone"]) {
+      const node = page.getByTestId(`fleet-node-${id}`);
+      await expect.element(node).toBeInTheDocument();
+      await node.click({ button: "right" });
+    }
+    expect(menus.map((menu) => menu.id)).toEqual(["env-windows", "device:session-phone"]);
+    expect(menus.every((menu) => menu.x > 0 && menu.y > 0)).toBe(true);
+    // A right-click never also opens the computer.
+    expect(opened).toEqual([]);
+
+    // A finger held well past the menu opening: lifting it opens nothing more.
+    const windows = page.getByTestId("fleet-node-env-windows").element();
+    const box = windows.getBoundingClientRect();
+    const at = { clientX: box.left + box.width / 2, clientY: box.top + 20 };
+    const touch = { ...at, bubbles: true, pointerType: "touch", isPrimary: true, pointerId: 7 };
+    windows.dispatchEvent(new PointerEvent("pointerdown", touch));
+    await expect.poll(() => menus.length, { timeout: 2000 }).toBe(3);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    windows.dispatchEvent(new PointerEvent("pointerup", touch));
+    windows.dispatchEvent(new MouseEvent("click", { ...at, bubbles: true }));
+    expect(opened).toEqual([]);
+  });
 });

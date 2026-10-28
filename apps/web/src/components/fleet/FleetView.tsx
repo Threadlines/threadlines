@@ -15,11 +15,12 @@ import {
   describeQuietComputers,
   type FleetComputer,
 } from "./fleet.logic";
-import { fleetEntryRoute } from "./FleetComputersList";
 import { FleetGraph, FleetGraphLegend } from "./FleetGraph";
 import { useFleetData } from "./FleetLayout";
+import { fleetEntryRoute } from "./fleetLinks.logic";
 import { FleetThreadList } from "./FleetThreadList";
 import { LinkRequestRow } from "./LinkRequestRow";
+import { useFleetComputerMenu } from "./useFleetComputerMenu";
 import { useFleetLabels } from "./useFleetLabels";
 
 /** Graph heights: room for the arc of computers, or just this one and its agents. */
@@ -87,6 +88,18 @@ export function FleetView() {
     },
     [directory, navigate],
   );
+  const openMenu = useFleetComputerMenu();
+  const openComputerMenu = useCallback(
+    (computer: FleetComputer, position: { readonly x: number; readonly y: number }) => {
+      if (computer.kind === "device") {
+        void openMenu({ kind: "device", computer }, position);
+        return;
+      }
+      const entry = directory.find((candidate) => candidate.key === computer.id);
+      if (entry) void openMenu({ kind: "computer", entry }, position);
+    },
+    [directory, openMenu],
+  );
 
   return (
     <div
@@ -134,6 +147,7 @@ export function FleetView() {
                 nowMs={nowMs}
                 height={graphHeight}
                 onOpenComputer={openComputer}
+                onComputerMenu={openComputerMenu}
                 providerLabel={providerLabel}
               />
             </div>
@@ -148,7 +162,9 @@ export function FleetView() {
                   </Button>
                 </div>
               ) : (
-                <FleetGraphLegend hint={isMobile ? null : "Click a computer to open it."} />
+                <FleetGraphLegend
+                  hint={isMobile ? null : "Click a computer to open it, right-click to rename it."}
+                />
               )}
             </div>
           </SettingsGroup>

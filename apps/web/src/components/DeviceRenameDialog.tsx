@@ -16,16 +16,23 @@ import {
   DEVICE_NAME_MAX_LENGTH,
   type EnvironmentId,
   type ExecutionEnvironmentPlatformOs,
+  type ServerConfig,
 } from "@threadlines/contracts";
 import { create } from "zustand";
 
-import { readEnvironmentApi, useEnvironmentApiAvailable } from "../environmentApi";
-import { renameServerClientSession } from "../environments/primary";
 import {
-  readEnvironmentConnection,
-  useSavedEnvironmentRuntimeStore,
-} from "../environments/runtime";
-import { useServerConfig } from "../rpc/serverState";
+  isEnvironmentApiAvailable,
+  readEnvironmentApi,
+  useEnvironmentApiAvailable,
+} from "../environmentApi";
+import { renameServerClientSession } from "../environments/primary";
+import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
+import { getServerConfig, useServerConfig } from "../rpc/serverState";
+import {
+  getWsConnectionStatus,
+  getWsConnectionUiState,
+  useWsConnectionStatus,
+} from "../rpc/wsConnectionState";
 import { RenameDialogForm } from "./RenameDialogForm";
 import { Dialog } from "./ui/dialog";
 
@@ -98,17 +105,44 @@ function closeDeviceRenameDialog(requestId?: number): void {
  */
 export function useComputerNaming(environmentId: EnvironmentId | null): ComputerNaming | null {
   const primaryConfig = useServerConfig();
-  const savedConfig = useSavedEnvironmentRuntimeStore((state) =>
-    environmentId === null ? null : (state.byId[environmentId]?.serverConfig ?? null),
+  const primaryLink = useWsConnectionStatus();
+  const saved = useSavedEnvironmentRuntimeStore((state) =>
+    environmentId === null ? undefined : state.byId[environmentId],
   );
   const reachable = useEnvironmentApiAvailable(environmentId);
-  const config =
-    environmentId === null
-      ? null
-      : primaryConfig?.environment.environmentId === environmentId
-        ? primaryConfig
-        : savedConfig;
-  if (config === null || !reachable || config.environment.capabilities.deviceNames !== true) {
+  if (environmentId === null) return null;
+  const primary = primaryConfig?.environment.environmentId === environmentId;
+  return computerNamingOf(
+    primary ? primaryConfig : (saved?.serverConfig ?? null),
+    reachable &&
+      (primary
+        ? getWsConnectionUiState(primaryLink) === "connected"
+        : saved?.connectionState === "connected"),
+  );
+}
+
+/** useComputerNaming, read once: for a menu, as the computer is when it opens. */
+export function readComputerNaming(environmentId: EnvironmentId): ComputerNaming | null {
+  const primaryConfig = getServerConfig();
+  const primary = primaryConfig?.environment.environmentId === environmentId;
+  const saved = useSavedEnvironmentRuntimeStore.getState().byId[environmentId];
+  return computerNamingOf(
+    primary ? primaryConfig : (saved?.serverConfig ?? null),
+    isEnvironmentApiAvailable(environmentId) &&
+      (primary
+        ? getWsConnectionUiState(getWsConnectionStatus()) === "connected"
+        : saved?.connectionState === "connected"),
+  );
+}
+
+/** Whether this computer's phones, tablets and browsers can be renamed from here. */
+export function readDeviceNamesAvailable(): boolean {
+  return getServerConfig()?.environment.capabilities.deviceNames === true;
+}
+
+/** `connected`: this app reaches the computer now, so the new name can be saved there. */
+function computerNamingOf(config: ServerConfig | null, connected: boolean): ComputerNaming | null {
+  if (config === null || !connected || config.environment.capabilities.deviceNames !== true) {
     return null;
   }
   const { environment } = config;

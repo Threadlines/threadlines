@@ -858,3 +858,10 @@ export function buildFleetGraphEdges(input: {
   }
   return edges;
 }
+
+/** Where a list row goes: a computer's page by environment id, or by device while it waits. */
+export function fleetEntryRoute(entry: Pick<FleetDirectoryEntry, "environmentId" | "deviceId">) {
+  return entry.environmentId !== null
+    ? ({ to: "/fleet/$environmentId", params: { environmentId: entry.environmentId } } as const)
+    : ({ to: "/fleet/device/$deviceId", params: { deviceId: entry.deviceId ?? "" } } as const);
+}
