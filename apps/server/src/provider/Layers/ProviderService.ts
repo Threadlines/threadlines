@@ -341,6 +341,12 @@ const toThreadRuntimeEvent = (event: ProviderRuntimeEvent): ProviderRuntimeEvent
   return { ...event, threadId: target.threadId, participantId: target.participantId };
 };
 
+/** Whole milliseconds since a `Clock.monotonicTimeNanos` reading; a wall-clock change can't skew it. */
+const millisSince = (startNanos: bigint) =>
+  Clock.monotonicTimeNanos.pipe(
+    Effect.map((nowNanos) => Math.round(Number(nowNanos - startNanos) / 1_000_000)),
+  );
+
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -435,6 +441,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           attachmentCount: latency.attachmentCount,
           sessionStarted: latency.sessionStarted,
           sessionStartedEarly: latency.sessionStartedEarly,
+          ...(latency.sessionStart !== undefined
+            ? {
+                sessionStartKind: latency.sessionStart.kind,
+                agentStartMs: latency.sessionStart.startMs,
+              }
+            : {}),
           handoffMs: latency.handoffMs,
           firstOutputMs: latency.firstOutputMs,
         });
@@ -731,6 +743,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
         const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
+        const startBeganAtMs = yield* Clock.currentTimeMillis;
+        const startBeganNanos = yield* Clock.monotonicTimeNanos;
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           provider: input.binding.provider,
@@ -750,11 +764,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
 
-        turnLatency.sessionStarted(
-          input.binding.threadId,
-          yield* Clock.currentTimeMillis,
-          bindingInstanceId,
-        );
+        const startMs = yield* millisSince(startBeganNanos);
+        turnLatency.sessionStarted(input.binding.threadId, {
+          beganAtMs: startBeganAtMs,
+          atMs: yield* Clock.currentTimeMillis,
+          instanceId: bindingInstanceId,
+          timing: { kind: "resume", startMs },
+        });
         yield* upsertSessionBinding(
           { ...resumed, providerInstanceId: bindingInstanceId },
           input.binding.threadId,
@@ -763,6 +779,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           provider: resumed.provider,
           strategy: "resume-thread",
           hasResumeCursor: resumed.resumeCursor !== undefined,
+          startMs,
         });
         return { adapter, session: resumed } as const;
       }),
@@ -963,6 +980,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.cwd.effective": effectiveCwd ?? "",
       });
       const adapter = yield* registry.getByInstance(resolvedInstanceId);
+      const startBeganAtMs = yield* Clock.currentTimeMillis;
+      const startBeganNanos = yield* Clock.monotonicTimeNanos;
       const session = yield* adapter.startSession({
         ...input,
         providerInstanceId: resolvedInstanceId,
@@ -979,7 +998,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
         );
       }
-      turnLatency.sessionStarted(threadId, yield* Clock.currentTimeMillis, resolvedInstanceId);
+      const sessionStart = {
+        kind: classifyProviderSessionStart({
+          hasPreviousBinding: persistedBinding !== undefined,
+          previousProvider: persistedBinding?.provider,
+          previousInstanceId: persistedBinding?.providerInstanceId,
+          nextProvider: resolvedProvider,
+          nextInstanceId: resolvedInstanceId,
+          hasContextSeed: input.contextSeed !== undefined,
+          hasResumeCursor: effectiveResumeCursor !== undefined,
+        }),
+        startMs: yield* millisSince(startBeganNanos),
+      };
+      turnLatency.sessionStarted(threadId, {
+        beganAtMs: startBeganAtMs,
+        atMs: yield* Clock.currentTimeMillis,
+        instanceId: resolvedInstanceId,
+        timing: sessionStart,
+      });
       const sessionWithInstance = {
         ...session,
         providerInstanceId: resolvedInstanceId,
@@ -1004,15 +1040,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           provider: sessionWithInstance.provider,
           communityAgentId: instanceInfo.communityAgentId,
         }),
-        sessionStartKind: classifyProviderSessionStart({
-          hasPreviousBinding: persistedBinding !== undefined,
-          previousProvider: persistedBinding?.provider,
-          previousInstanceId: persistedBinding?.providerInstanceId,
-          nextProvider: resolvedProvider,
-          nextInstanceId: resolvedInstanceId,
-          hasContextSeed: input.contextSeed !== undefined,
-          hasResumeCursor: effectiveResumeCursor !== undefined,
-        }),
+        sessionStartKind: sessionStart.kind,
+        startMs: sessionStart.startMs,
         previousProvider: persistedBinding?.provider ?? "none",
         providerChanged:
           persistedBinding !== undefined &&

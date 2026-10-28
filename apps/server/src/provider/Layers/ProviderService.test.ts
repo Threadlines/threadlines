@@ -730,7 +730,11 @@ it.effect(
         const provider = yield* ProviderService;
         const threadId = asThreadId("thread-turn-latency");
         const requestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        // The message arrived, then the session had to start for it.
+        // The message arrived, then the session had to start for it, which took 700ms.
+        const startNormally = codex.startSession.getMockImplementation()!;
+        codex.startSession.mockImplementationOnce((input) =>
+          advanceTestClock(700).pipe(Effect.andThen(startNormally(input))),
+        );
         yield* advanceTestClock(200);
         yield* provider.startSession(threadId, {
           provider: ProviderDriverKind.make("codex"),
@@ -774,18 +778,22 @@ it.effect(
         yield* advanceTestClock(50);
       }).pipe(Effect.provide(providerLayer));
 
+      const started = recorded.find((entry) => entry.event === "provider.session.started");
+      assert.include(started?.properties, { sessionStartKind: "fresh", startMs: 700 });
       const samples = recorded.filter((entry) => entry.event === "provider.turn.first_output");
       assert.equal(samples.length, 1);
       const sample = samples[0]?.properties;
       assert.include(sample, {
         provider: "codex",
         sessionStarted: true,
+        sessionStartKind: "fresh",
+        agentStartMs: 700,
         attachmentCount: 0,
-        handoffMs: 500,
+        handoffMs: 1_200,
       });
       const firstOutputMs = Number(sample?.firstOutputMs);
-      assert.isAtLeast(firstOutputMs, 2_000);
-      assert.isBelow(firstOutputMs, 2_100);
+      assert.isAtLeast(firstOutputMs, 2_700);
+      assert.isBelow(firstOutputMs, 2_800);
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
