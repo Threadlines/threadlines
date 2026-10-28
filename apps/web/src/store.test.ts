@@ -1681,6 +1681,14 @@ describe("incremental orchestration updates", () => {
         interactionMode: DEFAULT_INTERACTION_MODE,
         branch: null,
         worktreePath: null,
+        // Started over a link: the sidebar nests it under the Mac thread.
+        remoteOrigin: {
+          linkDeviceId: "link-mac",
+          environmentId: EnvironmentId.make("environment-mac"),
+          environmentLabel: "MacBook Pro",
+          threadId: ThreadId.make("thread-on-mac"),
+          threadTitle: "Fix background screenshots",
+        },
         createdAt: "2026-02-27T00:00:01.000Z",
         updatedAt: "2026-02-27T00:00:01.000Z",
       }),
@@ -1721,56 +1729,7 @@ describe("incremental orchestration updates", () => {
     expect(sidebarThreads[0]?.latestUserMessageAt).toBe("2026-02-27T00:00:02.000Z");
     expect(sidebarThreads[0]?.session?.status).toBe("connecting");
     expect(sidebarThreads[0]?.session?.orchestrationStatus).toBe("starting");
-  });
-
-  it("keeps the thread on another computer that started a new thread", () => {
-    const projectId = ProjectId.make("project-1");
-    const threadId = ThreadId.make("thread-from-mac");
-    const remoteOrigin = {
-      linkDeviceId: "device-mac",
-      environmentId: EnvironmentId.make("environment-mac"),
-      environmentPinned: true,
-      environmentLabel: "MacBook Pro",
-      threadId: ThreadId.make("thread-on-mac"),
-      threadTitle: "Enable Background Browser Screenshots",
-    };
-    const created = applyOrchestrationEvent(
-      makeEmptyState({ projectIds: [projectId] }),
-      makeEvent("thread.created", {
-        threadId,
-        projectId,
-        title: "Windows probe",
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL },
-        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
-        interactionMode: DEFAULT_INTERACTION_MODE,
-        branch: null,
-        worktreePath: null,
-        remoteOrigin,
-        createdAt: "2026-02-27T00:00:01.000Z",
-        updatedAt: "2026-02-27T00:00:01.000Z",
-      }),
-      localEnvironmentId,
-    );
-    // Still there after its next event rebuilds the thread.
-    const next = applyOrchestrationEvent(
-      created,
-      makeEvent("thread.message-sent", {
-        threadId,
-        messageId: MessageId.make("message-probe"),
-        role: "user",
-        text: "Run the probe",
-        turnId: null,
-        streaming: false,
-        createdAt: "2026-02-27T00:00:02.000Z",
-        updatedAt: "2026-02-27T00:00:02.000Z",
-      }),
-      localEnvironmentId,
-    );
-    const summary = selectSidebarThreadsForProjectRef(
-      next,
-      scopeProjectRef(localEnvironmentId, projectId),
-    )[0];
-    expect(summary?.remoteOrigin).toEqual(remoteOrigin);
+    expect(sidebarThreads[0]?.remoteOrigin?.threadId).toBe("thread-on-mac");
   });
 
   it("adds accepted follow-ups as inline user messages", () => {

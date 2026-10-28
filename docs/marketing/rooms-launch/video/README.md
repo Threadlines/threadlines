@@ -1,6 +1,6 @@
 # Launch videos
 
-A Remotion project for the launch videos: silent, 30 fps edits in three formats, cut from real app footage recorded by `../source/take.ts` (see its README). There are two stories: Rooms (0.5.0) and agents starting threads (0.6.0). Each story's compositions start with its name; the table shows Rooms, and every `Rooms...` id has a `Threads...` twin (`ThreadsPromoLandscape` is ~51 s, portrait and square ~52 s).
+A Remotion project for the launch videos: silent, 30 fps edits in three formats, cut from real app footage recorded by `../source/take.ts` (see its README). There are three stories: Rooms (0.5.0), agents starting threads (0.6.0) and Fleet (0.8.0). Each story's compositions start with its name; the table shows Rooms, and every `Rooms...` id has a `Threads...` and a `Fleet...` twin (`ThreadsPromoLandscape` is ~51 s, portrait and square ~52 s; `FleetPromoLandscape` ~52 s, its site clips ~45 s).
 
 | Composition           | Size      | Length | Use                |
 | --------------------- | --------- | ------ | ------------------ |
@@ -23,6 +23,8 @@ npm run render               # all three videos, then the posters
 ```
 
 The raw takes (`public/{rooms,threads}-{wide,tall}.mp4`) aren't committed. Record and export them first with `../source` (see its README); their marks and tracks (`src/takes/*.json`) are committed so the edit compiles.
+
+Every script below has a `threads` twin for the 0.6.0 video and a `fleet` twin for 0.8.0 (`render:fleet`, `render:fleet:x`, `render:fleet:site`, writing `out/fleet-*`). The Rooms site clip is the homepage hero: its wide clip shows the whole window, without the scenes' close-ups (`siteWholeWindow` in `src/stories.ts`, `WholeWindow` in `src/components/Stage.tsx`).
 
 Every script below has a `threads` twin for the 0.6.0 video: `npm run render:threads`, `render:threads:landscape` (`:portrait`, `:square`, `:posters`), `render:threads:x` and `render:threads:site`, writing `out/threads-*`.
 

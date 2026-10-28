@@ -3,6 +3,7 @@
 // cards themselves are shared.
 import { SITE_URL } from "./config";
 import { type PosterSpec, ROOMS_POSTER, ROOMS_SCENES, type SceneSpec } from "./scenes";
+import { FLEET_POSTER, FLEET_SCENES } from "./scenes-fleet";
 import { THREADS_POSTER, THREADS_SCENES } from "./scenes-threads";
 import { type StoryId, type Take, type TakeId, TAKES } from "./takes";
 
@@ -15,6 +16,8 @@ export type Story = {
   takes: Record<TakeId, Take>;
   scenes: ReadonlyArray<SceneSpec>;
   poster: PosterSpec;
+  /** Its wide homepage clip shows the whole window, without the camera's close-ups. */
+  siteWholeWindow?: true;
 };
 
 export const STORIES: Record<StoryId, Story> = {
@@ -26,6 +29,8 @@ export const STORIES: Record<StoryId, Story> = {
     takes: TAKES.rooms,
     scenes: ROOMS_SCENES,
     poster: ROOMS_POSTER,
+    // The homepage hero: it shows the app's whole layout around the chat.
+    siteWholeWindow: true,
   },
   threads: {
     id: "threads",
@@ -42,5 +47,18 @@ export const STORIES: Record<StoryId, Story> = {
     takes: TAKES.threads,
     scenes: THREADS_SCENES,
     poster: THREADS_POSTER,
+  },
+  fleet: {
+    id: "fleet",
+    release: "0.8.0",
+    intro: { title: "Fleet", line: "Your computers work as one." },
+    outro: {
+      title: "Fleet",
+      line: "An agent on one computer can ask another.",
+      url: SITE_URL,
+    },
+    takes: TAKES.fleet,
+    scenes: FLEET_SCENES,
+    poster: FLEET_POSTER,
   },
 };

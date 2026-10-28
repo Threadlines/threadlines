@@ -201,15 +201,18 @@ export function museAccountUsage(
   };
 }
 
+/**
+ * What Settings shows for Muse's sign-in. Muse names a Meta account by its
+ * email: that goes in `email`, which Settings hides until clicked as it does
+ * every agent's, and the label says what kind of account it is.
+ */
 export function museAuth(account: typeof MuseAccountState.Type | undefined): ServerProviderAuth {
   switch (account?.state) {
     case "accountLogin": {
-      // Muse names the account by its email. That goes in `email`, which the
-      // app hides until asked, never in the label every provider row prints.
-      const label = account.label?.trim() ?? "";
-      return label.includes("@")
-        ? { status: "authenticated", type: "metaAccount", label: "Meta account", email: label }
-        : { status: "authenticated", type: "metaAccount", label: label || "Meta account" };
+      const name = account.label?.trim();
+      return name && /^[^\s@]+@[^\s@]+$/u.test(name)
+        ? { status: "authenticated", type: "metaAccount", label: "Meta account", email: name }
+        : { status: "authenticated", type: "metaAccount", label: name || "Meta account" };
     }
     case "apiKey":
     case "envKey":

@@ -24,7 +24,7 @@ if take.get("shellResyncs", 0) > 0:
     # which drops the threads only the engine knows.
     sys.exit(f"{take_dir} was rejected by take.ts (thread list reloaded mid-take). Record it again.")
 # The edit's name for each story's files; takes recorded before stories had names are Rooms.
-STORY_PREFIX = {"rooms": "rooms", "child-threads": "threads"}
+STORY_PREFIX = {"rooms": "rooms", "child-threads": "threads", "fleet": "fleet"}
 prefix = STORY_PREFIX[take.get("story", "rooms")]
 
 # frames.txt: "file 'x'" / "duration d" pairs, starting at take.firstFrameAt.
