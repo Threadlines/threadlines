@@ -375,6 +375,29 @@ function isQuietAfterTurn(
 }
 
 /**
+ * A first send or goal that sets its thread up (a `bootstrap`) runs through
+ * ThreadBootstrap, which hands the decider the work without it, inside
+ * `thread.start`. One that reaches the decider still carrying it skipped the
+ * setup: taken as is, its work would run in the project folder, so it is
+ * refused instead.
+ */
+function refuseSkippedSetup(
+  command: Extract<
+    OrchestrationCommand,
+    { readonly type: "thread.turn.start" | "thread.goal.set" }
+  >,
+): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  return command.bootstrap === undefined
+    ? Effect.void
+    : Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Setting up a new thread needs the app's connection; this route can't do it.",
+        }),
+      );
+}
+
+/**
  * Whether a thread already has the user's work in it: a user message, or a
  * turn running or about to. A thread made without a message (the goal flow's,
  * or one an older build left half-made) can still take a first send's start.
@@ -1777,17 +1800,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
-    // A first send once its worktree is ready: the thread, its checkout, the
-    // first turn and the setup script's claim in one decision, so nothing can
-    // reach the thread before it is ready (docs/design/thread-setup-state.md).
-    // The claim comes after the turn so the setup rows sit with the agent's
-    // first reply, not ahead of the user's message.
+    // A first send (or a goal set on a draft) once its worktree is ready: the
+    // thread, its checkout, the first work and the setup script's claim in one
+    // decision, so nothing can reach the thread before it is ready
+    // (docs/design/thread-setup-state.md). The claim comes after the work so
+    // the setup rows sit with the agent's first reply, not ahead of the
+    // user's message.
     case "thread.start": {
-      const { turn } = command;
+      const { first } = command;
       const refuse = (detail: string) =>
         new OrchestrationCommandInvariantError({ commandType: command.type, detail });
-      if (turn.commandId !== command.commandId || turn.threadId !== command.threadId) {
-        return yield* refuse("A thread's start must carry its own first turn.");
+      if (first.commandId !== command.commandId || first.threadId !== command.threadId) {
+        return yield* refuse("A thread's start must carry its own first work.");
       }
       if (command.create !== undefined) {
         if (command.checkout !== undefined) {
@@ -1802,10 +1826,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       // A parent's request it answers must still be open, whether or not the
       // child reports back, so a Stop after the setup's last check wins.
-      if (turn.fromThread?.kind === "request" && !isOpenParentRequest(readModel, turn.fromThread)) {
+      if (
+        first.type === "thread.turn.start" &&
+        first.fromThread?.kind === "request" &&
+        !isOpenParentRequest(readModel, first.fromThread)
+      ) {
         return yield* refuse("The request this turn answers was cancelled.");
       }
-      const { bootstrap: _bootstrap, ...turnStart } = turn;
+      const { bootstrap: _bootstrap, ...firstWork } = first;
       return yield* decideCommandSequence({
         readModel,
         commands: [
@@ -1830,7 +1858,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 },
               ]
             : []),
-          turnStart,
+          firstWork,
           ...(command.setupScriptClaim !== undefined
             ? [
                 {
@@ -2351,6 +2379,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.start": {
+      yield* refuseSkippedSetup(command);
       const targetThread = yield* requireThread({
         readModel,
         command,
@@ -3574,6 +3603,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.goal.set": {
+      yield* refuseSkippedSetup(command);
       yield* requireThread({
         readModel,
         command,

@@ -183,7 +183,6 @@ import {
 import { getModelSelectionBooleanOptionValue } from "@threadlines/shared/model";
 import type { WorkflowRunActions, WorkflowRunViewTab } from "./chat/WorkflowRunCard";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
-import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { ChevronDownIcon } from "lucide-react";
@@ -205,6 +204,7 @@ import {
   retryFailedSend,
   type FailedSend,
 } from "./chat/sendRetry";
+import { beginGoalThreadSetup, isGoalSettingUpThread } from "./chat/goalThreadSetups";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -389,6 +389,8 @@ import {
   deriveThreadContextCompactionInProgress,
   requestSetupTerminalReveal,
   settleSetupTerminalReveal,
+  buildThreadStartBootstrap,
+  firstWorkNeedsWorktree,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -5291,7 +5293,8 @@ export default function ChatView(props: ChatViewProps) {
       isConnecting ||
       activeEnvironmentUnavailable ||
       activeThread.move ||
-      sendInFlightRef.current
+      sendInFlightRef.current ||
+      isGoalSettingUpThread(scopedThreadKey(scopeThreadRef(environmentId, activeThread.id)))
     )
       return;
     if (pendingUserInputs.some(isBlockingUserInput)) return;
@@ -5582,15 +5585,15 @@ export default function ChatView(props: ChatViewProps) {
       : approvalDeclines.length > 0
         ? "steer"
         : settings.followUpDelivery;
-    const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
+    const shouldCreateWorktree = firstWorkNeedsWorktree({
+      isFirstWork: isFirstMessage,
+      envMode: sendEnvMode,
+      worktreePath: activeThread.worktreePath,
+    });
+    const baseBranchForWorktree = shouldCreateWorktree ? activeThreadBranch : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -5916,36 +5919,24 @@ export default function ChatView(props: ChatViewProps) {
       if (baseBranchForWorktree) {
         requestSetupTerminalReveal(scopedThreadKey(threadRefForSend), new Date().toISOString());
       }
-      const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+      const bootstrap = buildThreadStartBootstrap({
+        createThread: isLocalDraftThread
           ? {
-              ...(isLocalDraftThread
-                ? {
-                    createThread: {
-                      projectId: activeProject.id,
-                      title,
-                      modelSelection: threadCreateModelSelection,
-                      runtimeMode,
-                      interactionMode,
-                      branch: activeThreadBranch,
-                      worktreePath: activeThread.worktreePath,
-                      ...draftRoomCreateFields,
-                      createdAt: activeThread.createdAt,
-                    },
-                  }
-                : {}),
-              ...(baseBranchForWorktree
-                ? {
-                    prepareWorktree: {
-                      projectCwd: activeProject.cwd,
-                      baseBranch: baseBranchForWorktree,
-                      branch: buildTemporaryWorktreeBranchName(),
-                    },
-                    runSetupScript: true,
-                  }
-                : {}),
+              projectId: activeProject.id,
+              title,
+              modelSelection: threadCreateModelSelection,
+              runtimeMode,
+              interactionMode,
+              branch: activeThreadBranch,
+              worktreePath: activeThread.worktreePath,
+              ...draftRoomCreateFields,
+              createdAt: activeThread.createdAt,
             }
-          : undefined;
+          : null,
+        worktree: baseBranchForWorktree
+          ? { projectCwd: activeProject.cwd, baseBranch: baseBranchForWorktree }
+          : null,
+      });
       // The worktree is cut inside this request; the flag stays up until the
       // thread reports its worktree path.
       showSendStarted();
@@ -6438,6 +6429,34 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       const threadId = activeThread.id;
+      if (!isServerThread && input.objective === undefined) {
+        return;
+      }
+      // An agent starts on an active goal at once, so a goal that is the
+      // thread's first work goes like a first send: in New worktree mode the
+      // server cuts the worktree before the agent can start anywhere.
+      const goalNeedsWorktree = firstWorkNeedsWorktree({
+        isFirstWork: !isServerThread || activeThread.messages.length === 0,
+        envMode: sendEnvMode,
+        worktreePath: activeThread.worktreePath,
+      });
+      if (goalNeedsWorktree && !activeThreadBranch) {
+        setThreadError(
+          threadId,
+          "Select a base branch before setting a goal in New worktree mode.",
+        );
+        return;
+      }
+      // A first send (or another goal) already setting this thread up makes
+      // it, or its worktree; the goal can go once that is done.
+      const goalThreadKey = scopedThreadKey(scopeThreadRef(environmentId, threadId));
+      const goalSetsThreadUp = !isServerThread || goalNeedsWorktree;
+      if (
+        goalSetsThreadUp &&
+        (isSendBusy || sendInFlightRef.current || isGoalSettingUpThread(goalThreadKey))
+      ) {
+        return;
+      }
       const existingGoal = activeThread.goal ?? null;
       // The composer picker's selection lives in composer state until a send;
       // goals must honor it the same way the send path does, or the goal's
@@ -6478,35 +6497,39 @@ export default function ChatView(props: ChatViewProps) {
           return next;
         });
       setGoalDispatchingThreadId(threadId);
+      const endGoalSetup = goalSetsThreadUp ? beginGoalThreadSetup(goalThreadKey) : () => {};
       try {
-        // Codex starts working the moment a goal becomes active — a goal on a
-        // not-yet-created thread materializes it immediately (same shape as
-        // the plan-implementation flow) so the session spins up and the first
-        // auto-turn begins without waiting for a user message.
-        if (!isServerThread) {
-          if (input.objective === undefined) {
-            return;
-          }
-          await api.orchestration.dispatchCommand({
-            type: "thread.create",
-            commandId: newCommandId(),
-            threadId,
-            projectId: activeProject.id,
-            title: truncate(input.objective),
-            modelSelection: goalModelSelection,
-            runtimeMode,
-            interactionMode: "default",
-            branch: activeThreadBranch,
-            worktreePath: activeThread.worktreePath,
-            ...draftRoomCreateFields,
-            createdAt: new Date().toISOString(),
-          });
-        } else {
+        // A goal on a draft makes its thread with it, so the session spins up
+        // and the goal's work begins without waiting for a user message.
+        const bootstrap = buildThreadStartBootstrap({
+          createThread:
+            !isServerThread && input.objective !== undefined
+              ? {
+                  projectId: activeProject.id,
+                  title: truncate(input.objective),
+                  modelSelection: goalModelSelection,
+                  runtimeMode,
+                  interactionMode: "default",
+                  branch: activeThreadBranch,
+                  worktreePath: activeThread.worktreePath,
+                  ...draftRoomCreateFields,
+                  createdAt: new Date().toISOString(),
+                }
+              : null,
+          worktree:
+            goalNeedsWorktree && activeThreadBranch
+              ? { projectCwd: activeProject.cwd, baseBranch: activeThreadBranch }
+              : null,
+        });
+        if (isServerThread) {
           await persistThreadSettingsForNextTurn({
             threadId,
             createdAt: new Date().toISOString(),
             modelSelection: goalModelSelection,
           });
+        }
+        if (bootstrap?.prepareWorktree !== undefined) {
+          requestSetupTerminalReveal(goalThreadKey, new Date().toISOString());
         }
         await api.orchestration.dispatchCommand({
           type: "thread.goal.set",
@@ -6515,6 +6538,7 @@ export default function ChatView(props: ChatViewProps) {
           ...(input.objective !== undefined ? { objective: input.objective } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          ...(bootstrap !== undefined ? { bootstrap } : {}),
           createdAt: new Date().toISOString(),
         });
       } catch (error) {
@@ -6527,6 +6551,7 @@ export default function ChatView(props: ChatViewProps) {
         );
       } finally {
         setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
+        endGoalSetup();
       }
     },
     [
@@ -6535,9 +6560,12 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadBranch,
       draftRoomCreateFields,
       environmentId,
+      isSendBusy,
       isServerThread,
       persistThreadSettingsForNextTurn,
       runtimeMode,
+      sendEnvMode,
+      setThreadError,
     ],
   );
 

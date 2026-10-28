@@ -5226,9 +5226,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(start.create?.branch, "threadlines/bootstrap-refName");
           assert.equal(start.create?.worktreePath, "/tmp/bootstrap-worktree");
           assert.equal(start.setupScriptClaim?.kind, "setup-script.requested");
-          assert.equal(start.turn.bootstrap, undefined);
+          assertTrue(start.first.type === "thread.turn.start");
+          assert.equal(start.first.bootstrap, undefined);
           // The first message of a new thread is the user's own too.
-          assert.equal(start.turn.composer, "typed");
+          if (start.first.type === "thread.turn.start") {
+            assert.equal(start.first.composer, "typed");
+          }
         }
         assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
           cwd: "/tmp/project",

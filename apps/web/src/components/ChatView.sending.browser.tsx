@@ -53,6 +53,7 @@ import {
   waitForElement,
   waitForURL,
   waitForComposerEditor,
+  waitForComposerMenuItem,
   pressComposerKey,
   waitForComposerText,
   setComposerSelectionByTextOffsets,
@@ -181,6 +182,67 @@ describe("ChatView (full app): first sends and worktree setup", () => {
             request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("makes a New worktree draft's thread with its goal only after the worktree is cut", async () => {
+    // The agent starts on an active goal at once, so the goal can't go to a
+    // thread made beforehand in the project folder.
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: {
+        [THREAD_KEY]: {
+          threadId: THREAD_ID,
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          projectId: PROJECT_ID,
+          logicalProjectKey: PROJECT_DRAFT_KEY,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "worktree",
+        },
+      },
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {
+        [PROJECT_DRAFT_KEY]: THREAD_KEY,
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+          : undefined,
+    });
+
+    try {
+      await waitForComposerEditor();
+      await page.getByTestId("composer-editor").fill("/goa");
+      await (await waitForComposerMenuItem("slash:goal")).click();
+      await page.getByPlaceholder(/Objective for the agent/).fill("Get the flaky test green");
+      await page.getByRole("button", { name: "Set goal" }).click();
+
+      await vi.waitFor(
+        () => {
+          const dispatched = wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand,
+          );
+          expect(dispatched.map((request) => request.type)).toEqual(["thread.goal.set"]);
+          expect(dispatched[0]).toMatchObject({
+            threadId: THREAD_ID,
+            objective: "Get the flaky test green",
+            bootstrap: {
+              createThread: { projectId: PROJECT_ID, branch: "main", worktreePath: null },
+              prepareWorktree: { projectCwd: "/repo/project", baseBranch: "main" },
+              runSetupScript: true,
+            },
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

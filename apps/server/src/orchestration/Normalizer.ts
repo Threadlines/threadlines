@@ -158,7 +158,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     // A client can't claim lineage only the server gives (claimsServerLineage).
     if (
       (command.type === "thread.create" && claimsServerLineage(command)) ||
-      (command.type === "thread.turn.start" &&
+      ((command.type === "thread.turn.start" || command.type === "thread.goal.set") &&
         command.bootstrap?.createThread !== undefined &&
         claimsServerLineage(command.bootstrap.createThread))
     ) {

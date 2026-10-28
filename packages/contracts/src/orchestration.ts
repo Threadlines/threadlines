@@ -871,6 +871,25 @@ export const ThreadCheckoutSwitchDeferredPayload = Schema.Struct({
 export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDeferredPayload.Type;
 
 /**
+ * Payload of the `thread.access.raise-deferred` activity. A raise in the
+ * thread's access restarts its runtime, which would kill the runtime's
+ * background tasks. While any run, turns go on at the lower level the runtime
+ * has (it only asks more often) and the raise applies on the first turn after
+ * they settle; this activity records that once per deferral streak. A lowered
+ * level never waits: a runtime above the thread's level never takes a turn.
+ */
+export const ThreadAccessRaiseDeferredActivityKind = "thread.access.raise-deferred";
+export const ThreadAccessRaiseDeferredPayload = Schema.Struct({
+  /** The level the runtime keeps running at. */
+  fromRuntimeMode: RuntimeMode,
+  /** The level the thread asks for. */
+  toRuntimeMode: RuntimeMode,
+  /** Background tasks that held the raise when it was first deferred. */
+  pendingBackgroundTaskCount: NonNegativeInt,
+});
+export type ThreadAccessRaiseDeferredPayload = typeof ThreadAccessRaiseDeferredPayload.Type;
+
+/**
  * Payload of the `thread.checkout.missing` activity: the folder this thread
  * works in is gone.
  *
@@ -2836,7 +2855,7 @@ export const ThreadBootstrapCreateThread = Schema.Struct({
 });
 export type ThreadBootstrapCreateThread = typeof ThreadBootstrapCreateThread.Type;
 
-const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
+const ThreadStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
   /**
@@ -2847,13 +2866,20 @@ const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   branch: Schema.optional(TrimmedNonEmptyString),
 });
 
-const ThreadTurnStartBootstrap = Schema.Struct({
+/**
+ * What a draft's first work brings: the thread to make, the worktree to cut
+ * for it and whether to run the setup script there. The server makes them
+ * before the work starts, in one decision with it (ThreadBootstrap), so
+ * nothing runs in the project folder while the worktree is cut. A first send
+ * and a goal set on a draft both carry it.
+ */
+const ThreadStartBootstrap = Schema.Struct({
   createThread: Schema.optional(ThreadBootstrapCreateThread),
-  prepareWorktree: Schema.optional(ThreadTurnStartBootstrapPrepareWorktree),
+  prepareWorktree: Schema.optional(ThreadStartBootstrapPrepareWorktree),
   runSetupScript: Schema.optional(Schema.Boolean),
 });
 
-export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
+export type ThreadStartBootstrap = typeof ThreadStartBootstrap.Type;
 
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
@@ -2874,7 +2900,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
-  bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  bootstrap: Schema.optional(ThreadStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   /**
    * Child threads: the message is the parent's request (server only; the
@@ -2956,7 +2982,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  bootstrap: Schema.optional(ThreadStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   /** Whether the user wrote these words. See MessageComposer. */
   composer: Schema.optional(MessageComposer),
@@ -3210,6 +3236,8 @@ const ThreadGoalSetCommand = Schema.Struct({
   objective: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  /** A goal set on a draft: the thread it starts, as a first send's. */
+  bootstrap: Schema.optional(ThreadStartBootstrap),
   createdAt: IsoDateTime,
 });
 
@@ -4035,12 +4063,12 @@ const ThreadImportCommand = Schema.Struct({
 });
 
 /**
- * A new thread's first send, once its worktree is ready
+ * A new thread's first work (a send, or a goal), once its worktree is ready
  * (docs/design/thread-setup-state.md): the thread is created (or, one made
  * earlier without a message, given its checkout), the setup script claimed
- * and the first turn started in one decision, so no thread exists before it
- * can work where it should. `commandId` and `threadId` are the turn's; the
- * receipt is the turn's. Only ThreadBootstrap dispatches it.
+ * and the first turn started or goal set in one decision, so no thread exists
+ * before it can work where it should. `commandId` and `threadId` are the
+ * first work's; the receipt is its. Only ThreadBootstrap dispatches it.
  */
 const ThreadStartCommand = Schema.Struct({
   type: Schema.Literal("thread.start"),
@@ -4060,7 +4088,8 @@ const ThreadStartCommand = Schema.Struct({
    * start so the script launches at most once, after it.
    */
   setupScriptClaim: Schema.optional(OrchestrationThreadActivity),
-  turn: ThreadTurnStartCommand,
+  /** The thread's first work: its first turn, or a goal its agent starts on. */
+  first: Schema.Union([ThreadTurnStartCommand, ThreadGoalSetCommand]),
 });
 
 /** A moved thread's agent was given the conversation: see OrchestrationThread.historySeedOwed. */

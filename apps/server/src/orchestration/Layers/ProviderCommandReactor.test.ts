@@ -6766,6 +6766,137 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  describe("access changes against the runtime's own level", () => {
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const using = (harness: Awaited<ReturnType<typeof createHarness>>) => {
+      const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      return {
+        setMode: (runtimeMode: "approval-required" | "full-access", suffix: string) =>
+          dispatch({
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make(`cmd-mode-${suffix}`),
+            threadId,
+            runtimeMode,
+            createdAt: now,
+          }),
+        send: (runtimeMode: "approval-required" | "full-access", suffix: string) =>
+          dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-turn-${suffix}`),
+            threadId,
+            message: {
+              messageId: asMessageId(`user-message-${suffix}`),
+              role: "user",
+              text: suffix,
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode,
+            createdAt: now,
+          }),
+        /** The turn is over; `tasks` background tasks still run in the runtime. */
+        settle: async (tasks: number, suffix: string) => {
+          const session = (await harness.readModel()).threads.find(
+            (thread) => thread.id === threadId,
+          )?.session;
+          if (!session) throw new Error("expected a projected session for thread-1");
+          await dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-settle-${suffix}`),
+            threadId,
+            session: {
+              ...session,
+              status: "ready",
+              activeTurnId: null,
+              pendingBackgroundTaskCount: tasks,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        },
+      };
+    };
+
+    it("restarts lower for a message sent right after lowering the access", async () => {
+      // The app saves the lower level and sends at once. The turn start
+      // stamps the slot with it before the reactor applies the change, while
+      // the runtime still runs at full access: the reactor's reads wait until
+      // both have landed.
+      let hold: Deferred.Deferred<void> | null = null;
+      const harness = await createHarness({
+        beforeThreadRead: (id) =>
+          id === threadId && hold !== null ? Deferred.await(hold) : Effect.void,
+      });
+      const { setMode, send, settle } = using(harness);
+      await setMode("full-access", "full");
+      await send("full-access", "first");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await settle(0, "first");
+
+      hold = Effect.runSync(Deferred.make<void>());
+      await setMode("approval-required", "lowered");
+      await send("approval-required", "second");
+      Effect.runSync(Deferred.succeed(hold, undefined));
+      hold = null;
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.startSession.mock.calls).toHaveLength(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        runtimeMode: "approval-required",
+      });
+    });
+
+    it("lets a raise wait for background work, but never a lowering", async () => {
+      const harness = await createHarness();
+      const { setMode, send, settle } = using(harness);
+      const raiseNotes = async () =>
+        (await harness.readModel()).threads
+          .find((thread) => thread.id === threadId)
+          ?.activities.filter((activity) => activity.kind === "thread.access.raise-deferred");
+      await setMode("full-access", "full");
+      await send("full-access", "first");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      // A dev server runs in the background. Lowering restarts anyway: the
+      // runtime at full access must not take another turn.
+      await settle(1, "first");
+      await setMode("approval-required", "lowered");
+      await waitFor(() => harness.startSession.mock.calls.length === 2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        runtimeMode: "approval-required",
+      });
+
+      // Raising waits: the turns go on at the lower level, said once.
+      await settle(1, "lowered");
+      await setMode("full-access", "raised");
+      await send("full-access", "second");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      await settle(1, "second");
+      await send("full-access", "third");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+      expect(harness.startSession.mock.calls).toHaveLength(2);
+      const notes = await raiseNotes();
+      expect(notes).toHaveLength(1);
+      expect(notes?.[0]).toMatchObject({
+        tone: "info",
+        payload: {
+          fromRuntimeMode: "approval-required",
+          toRuntimeMode: "full-access",
+          pendingBackgroundTaskCount: 1,
+        },
+      });
+
+      // Once the work ends, the next turn gets the raise.
+      await settle(0, "third");
+      await send("full-access", "fourth");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 4);
+      expect(harness.startSession.mock.calls).toHaveLength(3);
+      expect(harness.startSession.mock.calls[2]?.[1]).toMatchObject({ runtimeMode: "full-access" });
+    });
+  });
+
   it("does not inject derived model options when restarting claude on runtime mode changes", async () => {
     const harness = await createHarness({
       threadModelSelection: {

@@ -174,6 +174,7 @@ function withReactor<A, E>(
       } as unknown as ProjectionSnapshotQueryShape),
       Layer.succeed(ThreadBootstrap, {
         runTurnStart: () => Effect.die("not used"),
+        runGoalStart: () => Effect.die("not used"),
         startChild: (input) =>
           Effect.suspend(() => {
             harness.startChildCalls.push(input.requestId);

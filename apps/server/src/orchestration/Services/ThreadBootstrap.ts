@@ -9,10 +9,11 @@
  * finishes it and never makes a second thread, worktree or turn.
  *
  * - `runTurnStart` is a client's first send with a `bootstrap` (ws.ts, and
- *   outside agents' `thread_start`). Its ids derive from the client's command
- *   id, whose receipt is the start's; a retry of the same command joins the
- *   run in flight, finishes an interrupted one, or is answered from the
- *   receipt.
+ *   outside agents' `thread_start`); `runGoalStart` a goal the client sets on
+ *   a draft, the same setup with the goal as its first work. Their ids derive
+ *   from the client's command id, whose receipt is the start's; a retry of
+ *   the same command joins the run in flight, finishes an interrupted one, or
+ *   is answered from the receipt.
  * - `startChild` sets up a thread an agent started (child threads,
  *   docs/design/child-threads.md), a scheduled task's run, or one a linked
  *   computer asked for (docs/design/fleet.md). Its ids derive from the
@@ -40,6 +41,9 @@ import * as Schema from "effect/Schema";
 
 /** A turn start, as the client sends it (with an optional `bootstrap`). */
 export type ThreadTurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+
+/** A goal set, as the client sends it (with an optional `bootstrap`). */
+export type ThreadGoalSetCommand = Extract<OrchestrationCommand, { type: "thread.goal.set" }>;
 
 /**
  * The stages of a child's setup, in order: its worktree, then its start (the
@@ -114,6 +118,14 @@ export interface ThreadBootstrapShape {
    */
   readonly runTurnStart: (
     command: ThreadTurnStartCommand,
+  ) => Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError>;
+  /**
+   * A goal set on a draft, carrying a `bootstrap`: the same setup as
+   * `runTurnStart`, with the goal in the first turn's place, so the agent
+   * starts on it in the thread's worktree and never in the project folder.
+   */
+  readonly runGoalStart: (
+    command: ThreadGoalSetCommand,
   ) => Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError>;
   /**
    * Set a child thread up and start its first turn, resuming whatever an

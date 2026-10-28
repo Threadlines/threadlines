@@ -624,7 +624,7 @@ describe("decider child threads", () => {
           turnId: null,
           createdAt: at(3),
         },
-        turn: {
+        first: {
           type: "thread.turn.start",
           commandId: turnId,
           threadId: CHILD,

@@ -111,12 +111,12 @@ Server-only (not in the client command union):
 ```ts
 {
   type: "thread.start",
-  commandId,        // must equal turn.commandId
-  threadId,         // must equal turn.threadId
+  commandId,        // must equal first.commandId
+  threadId,         // must equal first.threadId
   create?: ThreadBootstrapCreateThread,      // thread absent
   checkout?: { branch, worktreePath },       // thread present, worktree prepared
-  setupScript?: { worktreePath },            // claim the setup script
-  turn: ThreadTurnStartCommand,              // without bootstrap
+  setupScriptClaim?: OrchestrationThreadActivity, // claim the setup script
+  first: ThreadTurnStartCommand | ThreadGoalSetCommand, // without bootstrap
 }
 ```
 
@@ -126,7 +126,7 @@ session running or starting), else "This thread already started." A start
 whose turn answers a local parent's request needs that request still open,
 attached or not (today only attached children are checked), so a Stop that
 lands after the last checkpoint still wins. Then
-`decideCommandSequence([create | meta.update, turn, claim?])`. Every existing
+`decideCommandSequence([create | meta.update, first, claim?])`. Every existing
 check on the inner commands applies unchanged (lineage, rooms, ceilings, the
 move guard).
 
@@ -138,8 +138,8 @@ detached from the caller, as now). Children keep `checkpoint` before steps 1
 and 2. `ChildBootstrapStage` becomes `worktree | turn`.
 
 A thread that exists without a receipt is one an older build left half-made
-(or a server thread created without a message, like the goal flow's): the
-start goes through the `checkout` form, and a child's modes are narrowed
+(or a server thread created without a message, like an older build's goal
+flow): the start goes through the `checkout` form, and a child's modes are narrowed
 first as today. This form keeps a window: while its worktree is cut, the
 thread already exists without one, and every window shows it as working in
 the project folder. A send from another window in that window runs there, as
@@ -186,6 +186,14 @@ harmless: the turn's session restarts in the new checkout
 - **Implement plan in a new thread** (ChatView) dispatches `thread.create`,
   then a separate `thread.turn.start`; it becomes one turn start with
   `bootstrap.createThread`, so it gets the same atomic start.
+- **A goal set on a draft** is first work too: the agent starts on an active
+  goal at once. It dispatched `thread.create`, then `thread.goal.set`, so in
+  New worktree mode the goal ran in the project folder. Now `thread.goal.set`
+  carries the same `bootstrap` (ws.ts sends it to
+  `ThreadBootstrap.runGoalStart`), and `thread.start`'s first work is the
+  turn or the goal (`first`), with the same order and checks. A server
+  thread that hasn't started and is set to New worktree takes the `checkout`
+  form the same way.
 - **Setup terminal reveal.** The sending window brings the setup script's
   terminal forward when `setup-script.started` arrives. The claim now arrives
   with the thread and its turn, which promotes the draft and remounts
@@ -212,9 +220,6 @@ harmless: the turn's session restarts in the new checkout
 - The sending window has no Stop for a setup that hangs (same as today).
 - A crash between the start's commit and the script's launch skips the setup
   script; its "Starting setup script" line stays with nothing after.
-- The goal flow on a worktree-mode draft creates its thread without a
-  worktree and starts the goal in the project folder. That predates this and
-  is left as a follow-up.
 
 ## Tests
 
