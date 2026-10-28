@@ -1,6 +1,6 @@
 # Launch videos
 
-The launch promos and the tools that made them: Rooms for 0.5.0 (`storyboard.html`) and agents starting their own threads for 0.6.0 (`storyboard-child-threads.html`). `source/` records the real app playing a scripted story (no agent runs, no usage spent), and `video/` edits the recordings into the finished videos and the homepage clips. The folder keeps the name of the first video.
+The launch promos and the tools that made them: Rooms for 0.5.0 (`storyboard.html`), agents starting their own threads for 0.6.0 (`storyboard-child-threads.html`) and Fleet for 0.8.0 (`source/story-fleet.ts`, two computers). `source/` records the real app playing a scripted story (no agent runs, no usage spent), and `video/` edits the recordings into the finished videos and the homepage clips. The folder keeps the name of the first video.
 
 ## Making the next video
 
@@ -15,6 +15,8 @@ The recorder loads the server's decider and projector, and the web app's store, 
 ## Re-recording the homepage hero
 
 The video at the top of the homepage is the Rooms story's site clip (`npm run render:site`), not a release video. Record it again when the app's look changes, not for each release: run the dry run, a rehearsal with `PROMO_SHOTS`, both takes, then `render:site`, and copy the clips and WebP posters over `apps/marketing/public/Screenshots/rooms/`. The edit needs no changes while the story keeps its marks.
+
+It was re-recorded again on Oct 28 2026 for the left bar (0.8.0). Its wide clip now shows the whole window, so the layout around the chat is in view (`siteWholeWindow` in `video/src/stories.ts`); the phone clip keeps its close-ups, since at that width the layout is the chat alone.
 
 It was re-recorded on Oct 8 2026 for the redesign, with GPT-6.1-Sol in place of GPT-6-Astra (`storyboard.html` still shows the 0.5.0 plan with Astra). An added agent starts on its model's default reasoning, Low for GPT-6.1-Sol, so `addSol` in `take.ts` sends `thread.participant.update` with `SOL_OPTIONS` right after the add: the same command the message box's reasoning control sends, applied before the next paint so the default never shows.
 
@@ -35,3 +37,11 @@ It was re-recorded on Oct 8 2026 for the redesign, with GPT-6.1-Sol in place of 
 - **Click a sidebar row on its title.** Hovering a row shows its wrap-up button in the middle, and a click there files the thread under Wrapped.
 - **Lengths.** About 51 s wide and 52 s tall, inside the range that worked for 0.5.0.
 - **Title cards** fit a longer title by setting it smaller on one line; "Agents start threads" needed that in the narrow formats.
+
+## What we learned on 0.8.0
+
+- **Two computers.** A second Threadlines server, added to the studio app as a saved computer and linked to it, plays the other computer (`--pc-home`). The recorder runs a second engine for that computer's threads and applies its events under its own environment. The PC's real thread list never hears of the scripted thread, so any reload of it fails the take, as on 0.6.0. Its descriptor and link platform are dressed in the renderer only (Windows glyph, its own name as system name, the app's version), so the server is the same code as the Mac's.
+- **What the event path leaves out.** The app learns another computer's new thread from that computer's thread list, which carries `remoteOrigin` (the thread that started it here). Applied as events, it didn't (the app's store dropped it; fixed in #689), and the thread showed as its own row instead of under its parent. The take still adds it the way the thread list would, which is harmless once the store keeps it. An empty scripted thread also needs `threadDetailLoadedById`, or it reads "Loading conversation".
+- **Story.** Will wanted the opening message typed on screen, so viewers know the problem, and the reason for the other computer said in so many words ("So it could be a Windows problem"). A child thread on another computer shows the cloud like every thread that isn't on this computer (fixed in the app for this video).
+- **Stills.** `PROMO_HOLD_AT=<mark>` pauses a rehearsal at a moment so stills of the live state can be taken, then the story carries on.
+- **Lengths.** About 52 s for the promo, 45 s for the site cut.

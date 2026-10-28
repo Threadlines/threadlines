@@ -6,9 +6,11 @@ import { AbsoluteFill, Easing, Freeze, Series, useVideoConfig } from "remotion";
 import { Background } from "./components/Background";
 import { Intro } from "./components/Intro";
 import { Outro } from "./components/Outro";
+import { WholeWindow } from "./components/Stage";
 import { AddAgent } from "./components/scenes/AddAgent";
 import { AnswersComeBack } from "./components/scenes/AnswersComeBack";
 import { AskFirst } from "./components/scenes/AskFirst";
+import { AnswerComesBack, AskThePc, RunsOnThePc } from "./components/scenes/FleetScenes";
 import { TalkToAgent } from "./components/scenes/TalkToAgent";
 import { ThreeAtOnce } from "./components/scenes/ThreeAtOnce";
 import { WorkTogether } from "./components/scenes/WorkTogether";
@@ -39,6 +41,11 @@ const VIEWS: Record<StoryId, Record<string, SceneView>> = {
     "ask-first": AskFirst,
     "three-at-once": ThreeAtOnce,
     "answers-come-back": AnswersComeBack,
+  },
+  fleet: {
+    "ask-the-pc": AskThePc,
+    "runs-on-the-pc": RunsOnThePc,
+    "answer-comes-back": AnswerComesBack,
   },
 };
 
@@ -111,16 +118,19 @@ export const SiteClip: React.FC<SiteClipProps> = ({ story: storyId, variant }) =
   const layout = SITE_LAYOUTS[variant];
   return (
     <AbsoluteFill style={{ background: "#09090b" }}>
-      <Series>
-        {scenesFor(STORIES[storyId], layout).map(({ spec, plan, frames }) => {
-          const View = viewOf(storyId, spec);
-          return (
-            <Series.Sequence key={spec.id} name={spec.kicker} durationInFrames={frames}>
-              <View layout={layout} plan={plan} spec={spec} />
-            </Series.Sequence>
-          );
-        })}
-      </Series>
+      {/* The phone clip keeps its close-ups: at that width the layout is the chat alone. */}
+      <WholeWindow.Provider value={STORIES[storyId].siteWholeWindow === true && variant === "wide"}>
+        <Series>
+          {scenesFor(STORIES[storyId], layout).map(({ spec, plan, frames }) => {
+            const View = viewOf(storyId, spec);
+            return (
+              <Series.Sequence key={spec.id} name={spec.kicker} durationInFrames={frames}>
+                <View layout={layout} plan={plan} spec={spec} />
+              </Series.Sequence>
+            );
+          })}
+        </Series>
+      </WholeWindow.Provider>
     </AbsoluteFill>
   );
 };

@@ -8,7 +8,7 @@ import type { StoryId } from "./takes";
 import { totalFrames } from "./timeline";
 
 /** Composition ids start with the story's name: RoomsPromoLandscape, ThreadsPromoLandscape. */
-const NAMES: Record<StoryId, string> = { rooms: "Rooms", threads: "Threads" };
+const NAMES: Record<StoryId, string> = { rooms: "Rooms", threads: "Threads", fleet: "Fleet" };
 const FORMATS: ReadonlyArray<[Format, string]> = [
   ["landscape", "Landscape"],
   ["portrait", "Portrait"],
@@ -85,5 +85,6 @@ export const RemotionRoot: React.FC = () => (
   <>
     <StoryCompositions id="rooms" />
     <StoryCompositions id="threads" />
+    <StoryCompositions id="fleet" />
   </>
 );

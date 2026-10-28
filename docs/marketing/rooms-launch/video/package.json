@@ -2,7 +2,7 @@
   "name": "threadlines-rooms-launch-video",
   "version": "0.0.0",
   "private": true,
-  "description": "Remotion edits for the Threadlines launch videos (landscape, portrait, square): Rooms (0.5.0) and agents starting threads (0.6.0).",
+  "description": "Remotion edits for the Threadlines launch videos (landscape, portrait, square): Rooms (0.5.0), agents starting threads (0.6.0) and Fleet (0.8.0).",
   "type": "module",
   "scripts": {
     "studio": "remotion studio",
@@ -20,7 +20,14 @@
     "render:threads:square": "remotion render ThreadsPromoSquare out/threads-promo-square.mp4",
     "render:threads:x": "ffmpeg -v error -y -ss 1.8 -i out/threads-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/threads-promo-x.mp4",
     "render:threads:site": "remotion render ThreadsSiteClip out/threads-site.mp4 --crf 23 && remotion still ThreadsSitePoster out/threads-site-poster.png && remotion render ThreadsSiteClipTall out/threads-site-tall.mp4 --crf 23 && remotion still ThreadsSitePosterTall out/threads-site-tall-poster.png",
-    "render:threads:posters": "remotion still ThreadsPosterLandscape out/threads-promo-landscape-poster.png && remotion still ThreadsPosterPortrait out/threads-promo-portrait-poster.png && remotion still ThreadsPosterSquare out/threads-promo-square-poster.png"
+    "render:threads:posters": "remotion still ThreadsPosterLandscape out/threads-promo-landscape-poster.png && remotion still ThreadsPosterPortrait out/threads-promo-portrait-poster.png && remotion still ThreadsPosterSquare out/threads-promo-square-poster.png",
+    "render:fleet": "npm run render:fleet:landscape && npm run render:fleet:portrait && npm run render:fleet:square && npm run render:fleet:posters",
+    "render:fleet:landscape": "remotion render FleetPromoLandscape out/fleet-promo-landscape.mp4",
+    "render:fleet:portrait": "remotion render FleetPromoPortrait out/fleet-promo-portrait.mp4",
+    "render:fleet:square": "remotion render FleetPromoSquare out/fleet-promo-square.mp4",
+    "render:fleet:x": "ffmpeg -v error -y -ss 1.8 -i out/fleet-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/fleet-promo-x.mp4",
+    "render:fleet:site": "remotion render FleetSiteClip out/fleet-site.mp4 --crf 23 && remotion still FleetSitePoster out/fleet-site-poster.png && remotion render FleetSiteClipTall out/fleet-site-tall.mp4 --crf 23 && remotion still FleetSitePosterTall out/fleet-site-tall-poster.png",
+    "render:fleet:posters": "remotion still FleetPosterLandscape out/fleet-promo-landscape-poster.png && remotion still FleetPosterPortrait out/fleet-promo-portrait-poster.png && remotion still FleetPosterSquare out/fleet-promo-square-poster.png"
   },
   "dependencies": {
     "@remotion/cli": "4.0.530",
