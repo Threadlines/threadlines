@@ -37,10 +37,12 @@ describe("Muse Code provider snapshot", () => {
   });
 
   it("marks an API key as billed per use, and a Meta sign-in as the plan", () => {
-    expect(museAuth({ state: "accountLogin", label: "me@example.com" })).toEqual({
+    // The account's email goes where Settings hides it, not in the label.
+    expect(museAuth({ state: "accountLogin", label: " me@example.com " })).toEqual({
       status: "authenticated",
       type: "metaAccount",
-      label: "me@example.com",
+      label: "Meta account",
+      email: "me@example.com",
     });
     expect(museAuth({ state: "apiKey" }).type).toBe("apiKey");
     expect(museAuth({ state: "loggedOut", credentialRequired: true }).status).toBe(

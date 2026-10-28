@@ -2474,6 +2474,7 @@ function applyEnvironmentOrchestrationEvent(
           childRequests: EMPTY_CHILD_REQUEST_STATE,
           scheduledRun: event.payload.scheduledRun ?? null,
           outsideOrigin: event.payload.outsideOrigin ?? null,
+          ...(event.payload.remoteOrigin ? { remoteOrigin: event.payload.remoteOrigin } : {}),
           ...(event.payload.movedFrom ? { movedFrom: event.payload.movedFrom } : {}),
         },
         environmentId,
