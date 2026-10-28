@@ -7,7 +7,11 @@ import {
   TabletIcon,
 } from "lucide-react";
 import {
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
   type RefObject,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -17,6 +21,7 @@ import {
 } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { usePageAttended } from "../../lib/pageAttention";
 import { cn } from "../../lib/utils";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
@@ -66,6 +71,9 @@ export const FLEET_CONNECTION_DOT_CLASS = {
   reconnecting: "bg-warning",
   offline: "bg-muted-foreground",
 } as const;
+
+/** Where a menu opens: the pointer, in the window. */
+type MenuPosition = { readonly x: number; readonly y: number };
 
 /** The stage's width, measured; null until the first layout. */
 function useMeasuredWidth(ref: RefObject<HTMLElement | null>): number | null {
@@ -169,12 +177,15 @@ function ComputerNode({
   stageWidth,
   nowMs,
   onOpen,
+  onMenu,
 }: {
   readonly computer: FleetComputer;
   readonly position: Point;
   readonly stageWidth: number;
   readonly nowMs: number;
   readonly onOpen: ((computer: FleetComputer) => void) | null;
+  /** Its menu (right-click, or a held finger); only where it opens. */
+  readonly onMenu: ((computer: FleetComputer, position: MenuPosition) => void) | null;
 }) {
   const Glyph = FLEET_GLYPH_ICONS[computer.glyph];
   // Offline: quiet text, but the node stays opaque so lines never show through it.
@@ -255,6 +266,47 @@ function ComputerNode({
     );
   }
   return (
+    <ComputerNodeButton
+      computer={computer}
+      className={className}
+      style={style}
+      onOpen={onOpen}
+      onMenu={onMenu}
+    >
+      {body}
+    </ComputerNodeButton>
+  );
+}
+
+/** A node that opens: click opens it, right-click or a held finger opens its menu. */
+function ComputerNodeButton({
+  computer,
+  className,
+  style,
+  onOpen,
+  onMenu,
+  children,
+}: {
+  readonly computer: FleetComputer;
+  readonly className: string;
+  readonly style: CSSProperties;
+  readonly onOpen: (computer: FleetComputer) => void;
+  readonly onMenu: ((computer: FleetComputer, position: MenuPosition) => void) | null;
+  readonly children: ReactNode;
+}) {
+  const handleContextMenu = useCallback(
+    (event: MouseEvent) => {
+      if (onMenu === null) return;
+      event.preventDefault();
+      onMenu(computer, { x: event.clientX, y: event.clientY });
+    },
+    [computer, onMenu],
+  );
+  const touchHold = useTouchHoldMenu<HTMLButtonElement>({
+    open: (position) => onMenu?.(computer, position),
+    onContextMenu: handleContextMenu,
+  });
+  return (
     <button
       type="button"
       aria-label={
@@ -263,11 +315,15 @@ function ComputerNode({
           : `Open ${computer.label}`
       }
       data-testid={`fleet-node-${computer.id}`}
-      className={cn(className, "group/node cursor-pointer focus-ring")}
+      className={cn(
+        className,
+        "group/node cursor-pointer focus-ring select-none [-webkit-touch-callout:none]",
+      )}
       style={style}
       onClick={() => onOpen(computer)}
+      {...touchHold}
     >
-      {body}
+      {children}
     </button>
   );
 }
@@ -344,6 +400,7 @@ export function FleetGraph({
   nowMs,
   height,
   onOpenComputer,
+  onComputerMenu,
   providerLabel,
 }: {
   readonly model: FleetModel;
@@ -352,6 +409,8 @@ export function FleetGraph({
   readonly nowMs: number;
   readonly height: number;
   readonly onOpenComputer: (computer: FleetComputer) => void;
+  /** A computer's menu (right-click, or a held finger on a phone). */
+  readonly onComputerMenu?: (computer: FleetComputer, position: MenuPosition) => void;
   readonly providerLabel: (provider: FleetProvider) => string;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -570,6 +629,7 @@ export function FleetGraph({
             stageWidth={width ?? 0}
             nowMs={nowMs}
             onOpen={model.center.environmentId === null ? null : onOpenComputer}
+            onMenu={onComputerMenu ?? null}
           />
           {others.map((computer, index) => (
             <ComputerNode
@@ -579,6 +639,7 @@ export function FleetGraph({
               stageWidth={width ?? 0}
               nowMs={nowMs}
               onOpen={onOpenComputer}
+              onMenu={onComputerMenu ?? null}
             />
           ))}
         </>

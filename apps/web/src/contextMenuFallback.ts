@@ -33,7 +33,8 @@ export function showContextMenuFallback<T extends string>(
     const itemSize = coarse ? "px-4 py-2.5 text-sm" : "px-3 py-1.5 text-[11px]";
     // A menu opened by holding a finger down sits under that finger, and
     // lifting it sends a click. On a touch screen an item answers only once
-    // a press has started on the menu itself.
+    // a press has started on the menu itself, or to a keyboard's Enter or
+    // Space (a click with no press: `detail` 0).
     let pressedOnMenu = !coarse;
 
     const cleanup = (result: T | null) => {
@@ -125,8 +126,8 @@ export function showContextMenuFallback<T extends string>(
             button.addEventListener("mouseenter", () => {
               closeMenusFromLevel(level + 1);
             });
-            button.addEventListener("click", () => {
-              if (pressedOnMenu) cleanup(item.id);
+            button.addEventListener("click", (event) => {
+              if (pressedOnMenu || event.detail === 0) cleanup(item.id);
             });
           }
         }

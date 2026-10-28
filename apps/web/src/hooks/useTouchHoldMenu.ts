@@ -16,9 +16,12 @@ interface HoldState {
   y: number;
   /**
    * When the hold opened the menu: the click that ends that same press must
-   * not also open the row. Any new press, or a second gone by, ends it.
+   * not also open the row, however long the finger stayed. Any new press
+   * ends it, as does a second gone by after the finger lifted.
    */
   openedAt: number | null;
+  /** When the press that opened the menu lifted; null while it's still down. */
+  releasedAt: number | null;
   /** Until when a browser's own long-press menu event is taken as this hold's. */
   nativeMenuUntil: number;
 }
@@ -37,7 +40,14 @@ export function useTouchHoldMenu<E extends Element>(input: {
   readonly onContextMenu: (event: React.MouseEvent<E>) => void;
 }) {
   const { open, onContextMenu } = input;
-  const state = useRef<HoldState>({ timer: null, x: 0, y: 0, openedAt: null, nativeMenuUntil: 0 });
+  const state = useRef<HoldState>({
+    timer: null,
+    x: 0,
+    y: 0,
+    openedAt: null,
+    releasedAt: null,
+    nativeMenuUntil: 0,
+  });
 
   const cancel = useCallback(() => {
     if (state.current.timer !== null) {
@@ -53,6 +63,7 @@ export function useTouchHoldMenu<E extends Element>(input: {
     (event: React.PointerEvent<E>) => {
       cancel();
       state.current.openedAt = null;
+      state.current.releasedAt = null;
       if (event.pointerType !== "touch" || !event.isPrimary) return;
       const x = event.clientX;
       const y = event.clientY;
@@ -82,10 +93,17 @@ export function useTouchHoldMenu<E extends Element>(input: {
     [cancel],
   );
 
+  const onPointerUp = useCallback(() => {
+    cancel();
+    if (state.current.openedAt !== null) state.current.releasedAt = performance.now();
+  }, [cancel]);
+
   const onClickCapture = useCallback((event: React.MouseEvent<E>) => {
-    const openedAt = state.current.openedAt;
+    const { openedAt, releasedAt } = state.current;
     state.current.openedAt = null;
-    if (openedAt === null || performance.now() - openedAt > 1000) return;
+    state.current.releasedAt = null;
+    if (openedAt === null) return;
+    if (releasedAt !== null && performance.now() - releasedAt > 1000) return;
     event.preventDefault();
     event.stopPropagation();
   }, []);
@@ -106,7 +124,7 @@ export function useTouchHoldMenu<E extends Element>(input: {
   return {
     onPointerDownCapture,
     onPointerMove,
-    onPointerUp: cancel,
+    onPointerUp,
     onPointerCancel: cancel,
     onClickCapture,
     onContextMenu: handleContextMenu,

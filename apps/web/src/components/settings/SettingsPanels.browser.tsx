@@ -66,6 +66,10 @@ import { useStore } from "../../store";
 import { useTerminalStateStore } from "../../terminalStateStore";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
+import {
+  recordWsConnectionOpened,
+  resetWsConnectionStateForTests,
+} from "../../rpc/wsConnectionState";
 import { useUiStateStore } from "../../uiStateStore";
 import {
   collectSourceControlToolUpdateNotices,
@@ -1150,6 +1154,7 @@ describe("GeneralSettingsPanel observability", () => {
     await __resetLocalApiForTests();
     authAccessHarness.reset();
     __resetEnvironmentApiOverridesForTests();
+    resetWsConnectionStateForTests();
   });
 
   it("lets a browser-served owner connect devices without listing its own tab", async () => {
@@ -1948,6 +1953,8 @@ describe("GeneralSettingsPanel observability", () => {
     __setEnvironmentApiOverrideForTests(base.environment.environmentId, {
       settings: { update: updateSettings },
     } as unknown as EnvironmentApi);
+    // Renaming saves on the computer, so it's offered only while connected.
+    recordWsConnectionOpened();
     setServerConfigSnapshot(named("WILFREDO", null));
 
     mounted = await renderWithTestRouter(

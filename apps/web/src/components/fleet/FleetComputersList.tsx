@@ -1,12 +1,13 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { LayersIcon, PlusIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { EllipsisIcon, LayersIcon, PlusIcon } from "lucide-react";
+import { type MouseEvent, type ReactNode, useCallback } from "react";
 
 import {
   cancelPendingRelayJoin,
   useSavedEnvironmentRegistryStore,
 } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { cn } from "../../lib/utils";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
 import { AttentionCounts } from "../sidebar/AttentionCounts";
@@ -19,10 +20,14 @@ import { FLEET_CONNECTION_DOT_CLASS, FLEET_GLYPH_ICONS } from "./FleetGraph";
 import {
   FLEET_DEVICE_ENTRY_STATUS,
   FLEET_DEVICE_KEY_PREFIX,
-  type FleetDirectoryEntry,
+  fleetEntryRoute,
   isFleetDeviceEntry,
 } from "./fleetLinks.logic";
 import { useFleetPageStore } from "./fleetPageStore";
+import { useFleetComputerMenu } from "./useFleetComputerMenu";
+
+/** Where a menu opens: the pointer, in the window. */
+type MenuPosition = { readonly x: number; readonly y: number };
 
 function ComputerRow({
   testId,
@@ -33,6 +38,7 @@ function ComputerRow({
   needsYou,
   working,
   onSelect,
+  onMenu,
   action,
 }: {
   readonly testId: string;
@@ -43,21 +49,39 @@ function ComputerRow({
   readonly needsYou: number;
   readonly working: number;
   readonly onSelect: () => void;
+  /**
+   * The computer's menu: right-click, a held finger, or the row's ⋯ (shown
+   * on hover, and always on a touch screen, where it keeps its own room).
+   */
+  readonly onMenu?: ((position: MenuPosition) => void) | undefined;
   /** A row's own action (Cancel a pairing), beside it rather than inside it. */
   readonly action?: ReactNode;
 }) {
+  const handleContextMenu = useCallback(
+    (event: MouseEvent) => {
+      if (!onMenu) return;
+      event.preventDefault();
+      onMenu({ x: event.clientX, y: event.clientY });
+    },
+    [onMenu],
+  );
+  const touchHold = useTouchHoldMenu<HTMLButtonElement>({
+    open: (position) => onMenu?.(position),
+    onContextMenu: handleContextMenu,
+  });
   return (
-    <li className="relative">
+    <li className="group/computer-row relative">
       <button
         type="button"
         data-testid={testId}
         aria-current={selected ? "page" : undefined}
         className={cn(
-          "flex w-full min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring",
+          "flex w-full min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring [-webkit-touch-callout:none]",
           selected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/80",
-          action ? "pe-20" : null,
+          action ? "pe-20" : onMenu ? "pointer-coarse:pe-10" : null,
         )}
         onClick={onSelect}
+        {...touchHold}
       >
         <span className="mt-px flex size-[18px] shrink-0 items-center justify-center text-muted-foreground">
           {icon}
@@ -67,7 +91,15 @@ function ComputerRow({
             <span className="min-w-0 flex-1 truncate text-[13.5px] leading-[19px] font-medium text-foreground">
               {title}
             </span>
-            <AttentionCounts needsYou={needsYou} working={working} />
+            {/* Where the ⋯ shows on hover: the counts step aside for it. */}
+            <span
+              className={cn(
+                onMenu &&
+                  "pointer-fine:group-focus-within/computer-row:invisible pointer-fine:group-hover/computer-row:invisible",
+              )}
+            >
+              <AttentionCounts needsYou={needsYou} working={working} />
+            </span>
           </span>
           {meta ? (
             <span className="truncate font-mono text-[10.5px] leading-4 text-muted-foreground">
@@ -76,7 +108,22 @@ function ComputerRow({
           ) : null}
         </span>
       </button>
-      {action ? <span className="absolute top-1.5 right-2">{action}</span> : null}
+      {action ? (
+        <span className="absolute top-1.5 right-2">{action}</span>
+      ) : onMenu ? (
+        <button
+          type="button"
+          aria-label={`More for ${title}`}
+          data-testid={`${testId}-menu`}
+          className="absolute top-1/2 right-1.5 flex size-7 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-[color,opacity] hover:text-foreground focus-ring pointer-fine:opacity-0 pointer-fine:group-focus-within/computer-row:opacity-100 pointer-fine:group-hover/computer-row:opacity-100"
+          onClick={(event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            onMenu({ x: box.left, y: box.bottom + 4 });
+          }}
+        >
+          <EllipsisIcon aria-hidden="true" className="size-4" />
+        </button>
+      ) : null}
     </li>
   );
 }
@@ -97,13 +144,6 @@ function ComputerGlyph({ computer }: { readonly computer: FleetComputer | null }
   );
 }
 
-/** Where a list row goes: a computer's page by environment id, or by device while it waits. */
-export function fleetEntryRoute(entry: Pick<FleetDirectoryEntry, "environmentId" | "deviceId">) {
-  return entry.environmentId !== null
-    ? ({ to: "/fleet/$environmentId", params: { environmentId: entry.environmentId } } as const)
-    : ({ to: "/fleet/device/$deviceId", params: { deviceId: entry.deviceId ?? "" } } as const);
-}
-
 /**
  * Fleet's list beside the rail: All computers (the graph page), then every
  * computer in the fleet, this one first (docs/design/fleet.md, R4.1). Each
@@ -119,6 +159,7 @@ export function FleetComputersList() {
     closeSheet();
     navigateTo();
   };
+  const openMenu = useFleetComputerMenu();
   const pathname = useLocation({ select: (location) => location.pathname });
   const nowMs = useRelativeTimeTick(30_000);
   const data = useFleetPageStore((state) => state.data);
@@ -185,6 +226,11 @@ export function FleetComputersList() {
                 needsYou={computer?.needsYou ?? 0}
                 working={computer?.working ?? 0}
                 onSelect={() => go(() => void navigate(fleetEntryRoute(entry)))}
+                onMenu={
+                  pairing
+                    ? undefined
+                    : (position) => void openMenu({ kind: "computer", entry }, position, closeSheet)
+                }
                 action={
                   pairing && entry.environmentId !== null ? (
                     <Button
