@@ -203,12 +203,14 @@ export function museAccountUsage(
 
 export function museAuth(account: typeof MuseAccountState.Type | undefined): ServerProviderAuth {
   switch (account?.state) {
-    case "accountLogin":
-      return {
-        status: "authenticated",
-        type: "metaAccount",
-        label: account.label?.trim() || "Meta account",
-      };
+    case "accountLogin": {
+      // Muse names the account by its email. That goes in `email`, which the
+      // app hides until asked, never in the label every provider row prints.
+      const label = account.label?.trim() ?? "";
+      return label.includes("@")
+        ? { status: "authenticated", type: "metaAccount", label: "Meta account", email: label }
+        : { status: "authenticated", type: "metaAccount", label: label || "Meta account" };
+    }
     case "apiKey":
     case "envKey":
       return { status: "authenticated", type: "apiKey", label: "API key, billed per use" };
