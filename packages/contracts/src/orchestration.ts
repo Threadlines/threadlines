@@ -1889,6 +1889,21 @@ export const RemoteChildThread = Schema.Struct({
 export type RemoteChildThread = typeof RemoteChildThread.Type;
 
 /**
+ * A child on a linked computer as a parent's family shows it
+ * (`remoteChildrenOf`): its record, and whether this computer still follows
+ * it. Statuses from that computer only come in while a request to the child is
+ * open. Once none is (its answer is in, or it failed or was stopped),
+ * `cachedStatus` is the last this computer hears, and the child's work for the
+ * parent is over: it wraps up like a finished child here would.
+ */
+export const FamilyRemoteChild = Schema.Struct({
+  ...RemoteChildThread.fields,
+  /** A request to it is open. Absent (an older server): treated as followed. */
+  followed: Schema.optional(Schema.Boolean),
+});
+export type FamilyRemoteChild = typeof FamilyRemoteChild.Type;
+
+/**
  * A start a parent asked of a linked computer that has no thread there yet
  * (sending, or waiting for that computer's user to allow it), as the sidebar
  * shows it in the parent's family.
@@ -2376,7 +2391,7 @@ export const OrchestrationThreadShell = Schema.Struct({
    * status (OrchestrationChildRequestState.remoteChildren), so its family
    * shows them even where the app can't reach that computer. Absent: none.
    */
-  remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
+  remoteChildren: Schema.optional(Schema.Array(FamilyRemoteChild)),
   /** On a parent: starts asked of linked computers with no thread there yet. Absent: none. */
   remoteChildStarts: Schema.optional(Schema.Array(RemoteChildStart)),
   /** On a parent: children started here still at work or being set up. Absent: none. */

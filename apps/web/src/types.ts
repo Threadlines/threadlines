@@ -29,7 +29,7 @@ import type {
   OrchestrationThreadParticipant,
   RemoteChildStart,
   LocalChildStart,
-  RemoteChildThread,
+  FamilyRemoteChild,
   ThreadRemoteOrigin,
   OrchestrationThreadMove,
   ThreadMovedFrom,
@@ -373,7 +373,7 @@ export interface ThreadShell {
    */
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** On a parent: its children on linked computers, with their last known status. */
-  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  remoteChildren?: ReadonlyArray<FamilyRemoteChild>;
   /** On a parent: starts asked of linked computers with no thread there yet. */
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /** On a parent: children started here still at work or being set up. */
@@ -490,7 +490,7 @@ export interface SidebarThreadSummary {
   /** See ThreadShell.remoteOrigin: nested under its parent on the other computer. */
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.remoteChildren. */
-  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  remoteChildren?: ReadonlyArray<FamilyRemoteChild>;
   /** See ThreadShell.remoteChildStarts. */
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /** See ThreadShell.localChildStarts. */

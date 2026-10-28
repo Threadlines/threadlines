@@ -781,7 +781,22 @@ function decideRemoteRequestSettle(
             },
           },
         ]
-      : [];
+      : // A request that settles without naming its child (a refused send,
+        // a link removed) still dates the child's record: its family reads
+        // that as when its work for the parent ended (FamilyRemoteChild).
+        named === undefined && remoteChild?.environmentId === remote.environmentId
+        ? [
+            {
+              ...baseFor(parent.id),
+              type: "thread.remote-child-updated",
+              payload: {
+                threadId: parent.id,
+                child: { ...remoteChild, updatedAt: command.createdAt },
+                updatedAt: command.createdAt,
+              },
+            },
+          ]
+        : [];
   if (
     reply === undefined ||
     request.deliveryEpoch !== parent.childRequests.deliveryEpoch ||

@@ -3,7 +3,7 @@ import type {
   AgentThreadStatusWord,
   EnvironmentId,
   RemoteChildRequestStatus,
-  RemoteChildThread,
+  FamilyRemoteChild,
   ThreadId,
 } from "@threadlines/contracts";
 import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
@@ -1936,11 +1936,17 @@ export function resolveRemoteFamilyChildren(input: {
   readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
   readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
   readonly hasThread: (threadId: ThreadId) => boolean;
+  /** The "wrap up finished child threads" setting (see remoteChildEntry). */
+  readonly wrapUpOnFinish: boolean;
 }): InboxRemoteChild[] {
   const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] =>
     input.canSeeComputer(child.environmentId)
       ? []
-      : [remoteChildEntry(child, input.computerLabel(child.environmentId, child.label))],
+      : [
+          remoteChildEntry(child, input.computerLabel(child.environmentId, child.label), {
+            wrapUpOnFinish: input.wrapUpOnFinish,
+          }),
+        ],
   );
   const starts = (input.parent.remoteChildStarts ?? [])
     .filter((start) => !(start.status === "accepted" && input.canSeeComputer(start.environmentId)))
@@ -1980,8 +1986,12 @@ export function resolveRemoteFamilyChildren(input: {
  * last known status, under `computerLabel`.
  */
 export function remoteChildEntry(
-  child: RemoteChildThread,
+  child: FamilyRemoteChild,
   computerLabel: string,
+  options: {
+    /** "Wrap up finished child threads": one whose work for the parent is over counts as done. */
+    readonly wrapUpOnFinish?: boolean;
+  } = {},
 ): InboxRemoteChild {
   // An unknown word reads as idle, the way the parent's own tools read it.
   const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
@@ -1993,7 +2003,18 @@ export function remoteChildEntry(
     title: child.title,
     phase,
     status: REMOTE_PHASE_PILLS[phase],
-    isDone: phase === "wrapped",
+    // Wrapped there, or quiet and no longer followed from here: its answer
+    // is in (or it failed or was stopped), the way a child here wraps once
+    // its answer went back. Word of it can still come while a sibling keeps
+    // that computer watched, and new work there brings it back. It leaves
+    // the family as one here does, once the parent was seen after it
+    // (`updatedAt`: its record's last change, a status or a request to it
+    // settling).
+    isDone:
+      phase === "wrapped" ||
+      (options.wrapUpOnFinish === true &&
+        child.followed === false &&
+        (phase === "idle" || phase === "failed")),
     settledAt: child.updatedAt,
   };
 }

@@ -1026,11 +1026,18 @@ describe("decider child threads on a linked computer", () => {
     const { model: family } = await familyWithRemoteChild();
     const delivered = await run(family, settleAnswered());
     expect(delivered.events.map((event) => event.type)).toEqual([
+      // The parent's record of the child is dated when its work for the
+      // parent ended, so its family can wrap it up (FamilyRemoteChild).
+      "thread.remote-child-updated",
       "thread.child-request-settled",
       "thread.message-sent",
       "thread.follow-up-queued",
     ]);
     const parent = threadIn(delivered.model, PARENT);
+    expect(parent.childRequests.remoteChildren?.[0]).toMatchObject({
+      cachedStatus: "working",
+      updatedAt: at(10),
+    });
     const report = parent.messages.find((message) => message.id === childReportMessageId(REQUEST));
     expect(report?.fromThread).toMatchObject({
       threadId: REMOTE_CHILD,
