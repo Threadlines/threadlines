@@ -127,10 +127,10 @@ Threadlines runs these coding agents, signed in with your own accounts:
 - [OpenCode](https://www.threadlines.dev/agents/opencode) by Anomaly
 - [Cursor](https://www.threadlines.dev/agents/cursor), through the Cursor CLI
 - [Antigravity](https://www.threadlines.dev/agents/antigravity) by Google
-- [Grok Build](https://www.threadlines.dev/agents/grok) by xAI, in nightly builds until 0.7.0
+- [Grok Build](https://www.threadlines.dev/agents/grok) by xAI
 - [fx](https://www.threadlines.dev/agents/fx) by Vercel
-- [Muse Code](https://www.threadlines.dev/agents/muse-code) by Meta, in nightly builds until 0.7.0
-- [Pi](https://www.threadlines.dev/agents/pi) by Earendil, in nightly builds until 0.7.0
+- [Muse Code](https://www.threadlines.dev/agents/muse-code) by Meta
+- [Pi](https://www.threadlines.dev/agents/pi) by Earendil
 
 Other agents from the open [ACP registry](https://github.com/agentclientprotocol/registry)
 can run as community agents. Threadlines installs them but hasn't tested them.
