@@ -2,13 +2,15 @@
 // ../source/take.ts noted while recording them: when each story moment
 // happened (marks), where the pointer clicked, and where key elements were on
 // screen over time (tracks).
+import fleetTallTake from "./takes/fleet-tall.json";
+import fleetWideTake from "./takes/fleet-wide.json";
 import tallTake from "./takes/tall.json";
 import threadsTallTake from "./takes/threads-tall.json";
 import threadsWideTake from "./takes/threads-wide.json";
 import wideTake from "./takes/wide.json";
 
-/** The videos this project cuts: Rooms (0.5.0) and agents starting threads (0.6.0). */
-export type StoryId = "rooms" | "threads";
+/** The videos this project cuts: Rooms (0.5.0), agents starting threads (0.6.0), Fleet (0.8.0). */
+export type StoryId = "rooms" | "threads" | "fleet";
 export type TakeId = "wide" | "tall";
 
 /** A region of a take, in its pixels. */
@@ -56,6 +58,7 @@ const takesOf = (story: StoryId, wide: unknown, tall: unknown): Record<TakeId, T
 export const TAKES: Record<StoryId, Record<TakeId, Take>> = {
   rooms: takesOf("rooms", wideTake, tallTake),
   threads: takesOf("threads", threadsWideTake, threadsTallTake),
+  fleet: takesOf("fleet", fleetWideTake, fleetTallTake),
 };
 
 export const full = (take: Take): Rect => ({ x: 0, y: 0, w: take.width, h: take.height });
@@ -124,6 +127,9 @@ const NOT_THREAD_ROWS = new Set([
   "sidebar",
   "parent-row",
   "family",
+  "child-row",
+  // Fleet's page: its own layout, not the thread's.
+  "fleet",
 ]);
 const isThreadRow = (name: string) => !NOT_THREAD_ROWS.has(name) && !name.startsWith("child-row-");
 

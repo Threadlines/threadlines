@@ -1,7 +1,9 @@
 import type React from "react";
+import { createContext, useContext } from "react";
 import { useCurrentFrame } from "remotion";
 import { type Camera, type CameraKey, type CameraOptions, cameraAt } from "../camera";
 import type { Plan } from "../plan";
+import { full } from "../takes";
 import { accentAlpha, colors } from "../theme";
 import { TakeVideo } from "./TakeVideo";
 
@@ -18,6 +20,12 @@ export type Float = {
 const STILL: Float = {};
 
 /**
+ * Show the whole window and leave the scene's camera moves out: the homepage
+ * hero, which is there to show the app's layout, not to read its rows.
+ */
+export const WholeWindow = createContext(false);
+
+/**
  * The app window: the scene's footage behind a camera, floating on the
  * background with a hairline edge and a soft accent light. `renderOverlay`
  * draws on top in output pixels, with the camera to place things on the
@@ -32,7 +40,13 @@ export const Stage: React.FC<{
   renderOverlay?: (camera: Camera) => React.ReactNode;
 }> = ({ plan, keys, options, radius, float = STILL, renderOverlay }) => {
   const frame = useCurrentFrame();
-  const camera = cameraAt(plan.take, keys, frame, options);
+  const whole = useContext(WholeWindow);
+  const camera = cameraAt(
+    plan.take,
+    whole ? [{ at: 0, focus: full(plan.take) }] : keys,
+    frame,
+    options,
+  );
   const { window: win, visible: vis } = camera;
   const transform = [
     `translate(${float.translateX ?? 0}px, ${float.translateY ?? 0}px)`,

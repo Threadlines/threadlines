@@ -10,8 +10,15 @@
 //   node take.ts --cleanup          delete every promo thread from the studio
 //   --story=child-threads           record the 0.6.0 story (story-child-threads.ts);
 //                                   the default is the 0.5.0 Rooms story (story.ts)
+//   --story=fleet                   record the 0.8.0 story (story-fleet.ts) on two
+//                                   computers: the studio and a second server
+//                                   added to it as "Windows PC" (--pc-label)
+//                                   whose home is --pc-home
 //   --viewport=480x800              lay the app out at that size (the tall take)
 //   PROMO_DEBUG=1                   log every command the app sends for the thread
+//   PROMO_HOLD_AT=<mark>            at that mark, write /tmp/rooms-promo/hold and
+//                                   wait (at the story's next pause) until it is
+//                                   deleted: time to take stills of that moment
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -34,8 +41,9 @@ const takeName = args.find((arg) => !arg.startsWith("--")) ?? `take-${Date.now()
  * thread detail, and its studio fixtures are set up and removed around the take.
  */
 const STORIES = {
-  rooms: { module: "./story.ts", isolated: false },
-  "child-threads": { module: "./story-child-threads.ts", isolated: true },
+  rooms: { module: "./story.ts", isolated: false, remote: false },
+  "child-threads": { module: "./story-child-threads.ts", isolated: true, remote: false },
+  fleet: { module: "./story-fleet.ts", isolated: true, remote: true },
 } as const;
 const storyName = (args.find((arg) => arg.startsWith("--story="))?.slice("--story=".length) ??
   "rooms") as keyof typeof STORIES;
@@ -51,6 +59,14 @@ const storyModules: Record<string, any> = Object.fromEntries(
 );
 const storyModule = storyModules[storyName];
 const { createStory, OPUS, THREAD_TITLE } = storyModule;
+const PROJECT_NAME: string = storyModule.PROJECT_NAME ?? "Orbit";
+// A story on two computers: the second one, as the studio app knows it.
+const pcLabel =
+  args.find((arg) => arg.startsWith("--pc-label="))?.slice("--pc-label=".length) ?? "Windows PC";
+const pcHome = args.find((arg) => arg.startsWith("--pc-home="))?.slice("--pc-home=".length) ?? null;
+if (STORY.remote && pcHome === null) {
+  throw new Error("--story=fleet needs --pc-home=<the second server's THREADLINES_HOME>.");
+}
 const PROMO_TITLES: string[] = Object.values(storyModules).map((module) => module.THREAD_TITLE);
 // --viewport=864x1080 lays the app out at that size (the tall and square cuts);
 // --hide-sidebar gives the thread the whole width.
@@ -161,17 +177,25 @@ const setup = await page.evaluate(
     threadId,
     studio,
     isolated,
+    projectName,
+    pcLabel,
   }: {
     threadId: string;
     studio: string;
     isolated: boolean;
+    projectName: string;
+    pcLabel: string | null;
   }) => {
-    const [{ useStore }, apiModule, runtime, settingsModule] = await Promise.all([
-      import("/src/store.ts" as string),
-      import("/src/environmentApi.ts" as string),
-      import("/src/environments/runtime/service.ts" as string),
-      import("/src/hooks/useSettings.ts" as string),
-    ]);
+    const [{ useStore }, apiModule, runtime, settingsModule, catalog, links, branding] =
+      await Promise.all([
+        import("/src/store.ts" as string),
+        import("/src/environmentApi.ts" as string),
+        import("/src/environments/runtime/service.ts" as string),
+        import("/src/hooks/useSettings.ts" as string),
+        import("/src/environments/runtime/catalog.ts" as string),
+        import("/src/environments/links/computerLinks.ts" as string),
+        import("/src/branding.ts" as string),
+      ]);
     // Checked before anything is changed: finished child threads wrap
     // themselves only with this client setting.
     if (isolated && settingsModule.getClientSettings().wrapUpChildThreadsOnFinish !== true) {
@@ -195,10 +219,10 @@ const setup = await page.evaluate(
     const env = state.activeEnvironmentId;
     const envState = state.environmentStateById[env];
     const orbit = Object.values(envState.projectById).find(
-      (project: any) => project.name === "Orbit",
+      (project: any) => project.name === projectName,
     ) as any;
     if (!orbit || !orbit.cwd.startsWith(studio))
-      throw new Error("Refusing: Orbit is not a studio project.");
+      throw new Error(`Refusing: ${projectName} is not a studio project.`);
 
     // The studio's threads were seeded weeks ago; show them as recent work.
     // Only dates older than a day move (the seed refreshes some on launch).
@@ -266,6 +290,160 @@ const setup = await page.evaluate(
     };
     (window as any).__promo = promo;
 
+    // The second computer: its thread's commands are caught the same way, and
+    // its events go to its own state. Only the renderer's copy of how it
+    // describes itself is dressed (a Windows PC's glyph, its own name as its
+    // system name, this app's version), so nothing about it is faked on a server.
+    let pc: any = null;
+    if (pcLabel !== null) {
+      const runtimeById = catalog.useSavedEnvironmentRuntimeStore.getState().byId;
+      const pcEnv = Object.keys(runtimeById).find(
+        (id) => runtimeById[id]?.descriptor?.label === pcLabel,
+      );
+      if (pcEnv === undefined) throw new Error(`The studio app has no computer called ${pcLabel}.`);
+      const pcState = state.environmentStateById[pcEnv];
+      const pcProject = Object.values(pcState?.projectById ?? {}).find(
+        (project: any) => project.name === projectName,
+      ) as any;
+      if (!pcProject) throw new Error(`${pcLabel} has no ${projectName} project.`);
+      const inbound = links.useComputerLinksStore
+        .getState()
+        .byEnvironmentId[pcEnv]?.snapshot.inbound.find((entry: any) => entry.environmentId === env);
+      if (!inbound) throw new Error(`${pcLabel} isn't linked to this computer.`);
+      if (inbound.access !== "allowed") {
+        throw new Error(
+          `Set ${pcLabel} to allow this computer's agents (Fleet › ${pcLabel}) first.`,
+        );
+      }
+      const pcIds = new Set<string>();
+      const pcQueue: any[] = [];
+      const pcOriginal = apiModule.readEnvironmentApi(pcEnv);
+      apiModule.__setEnvironmentApiOverrideForTests(pcEnv, {
+        ...pcOriginal,
+        orchestration: {
+          ...pcOriginal.orchestration,
+          dispatchCommand: async (command: any) => {
+            if (pcIds.has(command.threadId)) {
+              pcQueue.push(command);
+              return { sequence: 0 };
+            }
+            return pcOriginal.orchestration.dispatchCommand(command);
+          },
+        },
+      });
+      const pcOrchestration = runtime.readEnvironmentConnection(pcEnv)?.client.orchestration;
+      if (!pcOrchestration) throw new Error(`The studio app has no connection to ${pcLabel}.`);
+      const pcSubscribe = pcOrchestration.subscribeThread;
+      pcOrchestration.subscribeThread = (input: any, listener: any, options: any) =>
+        pcIds.has(input.threadId)
+          ? () => {}
+          : pcSubscribe.call(pcOrchestration, input, listener, options);
+      promo.pcIds = pcIds;
+      promo.pcQueue = pcQueue;
+      // The PC's events, then what its thread-list stream would add: a new
+      // thread's shell there carries the thread that started it on this
+      // computer (remoteOrigin), which the app's event path leaves out.
+      promo.applyPc = (events: any[]) => {
+        useStore.getState().applyOrchestrationEvents(events, pcEnv);
+        for (const event of events) {
+          const origin = event.type === "thread.created" ? event.payload.remoteOrigin : undefined;
+          if (origin === undefined) continue;
+          const threadId = event.payload.threadId;
+          useStore.setState((current: any) => {
+            const target = current.environmentStateById[pcEnv];
+            return {
+              environmentStateById: {
+                ...current.environmentStateById,
+                [pcEnv]: {
+                  ...target,
+                  threadShellById: {
+                    ...target.threadShellById,
+                    [threadId]: { ...target.threadShellById[threadId], remoteOrigin: origin },
+                  },
+                  sidebarThreadSummaryById: {
+                    ...target.sidebarThreadSummaryById,
+                    [threadId]: {
+                      ...target.sidebarThreadSummaryById[threadId],
+                      remoteOrigin: origin,
+                    },
+                  },
+                  threadDetailLoadedById: { ...target.threadDetailLoadedById, [threadId]: true },
+                },
+              },
+            };
+          });
+        }
+      };
+      // Kept dressed: a fresh config from the PC replaces its descriptor.
+      const dress = (descriptor: any) =>
+        descriptor && {
+          ...descriptor,
+          systemLabel: pcLabel,
+          platform: { os: "windows", arch: "x64" },
+          // Both servers run this checkout; only their build stamps differ.
+          serverVersion: branding.APP_VERSION,
+        };
+      const dressed = (entry: any) =>
+        entry?.descriptor?.platform?.os === "windows"
+          ? entry
+          : {
+              ...entry,
+              descriptor: dress(entry.descriptor),
+              serverConfig: entry.serverConfig && {
+                ...entry.serverConfig,
+                environment: dress(entry.serverConfig.environment),
+              },
+            };
+      const applyDress = () => {
+        const store = catalog.useSavedEnvironmentRuntimeStore;
+        const current = store.getState().byId[pcEnv];
+        if (current && current.descriptor?.platform?.os !== "windows") {
+          store.setState((value: any) => ({ byId: { ...value.byId, [pcEnv]: dressed(current) } }));
+        }
+        const linkState = links.useComputerLinksStore.getState().byEnvironmentId;
+        for (const [holder, entry] of Object.entries(linkState) as Array<[string, any]>) {
+          const snapshot = entry.snapshot;
+          const outbound = snapshot.outbound.map((link: any) =>
+            link.remoteEnvironmentId === pcEnv && link.remotePlatform !== "Windows"
+              ? { ...link, remotePlatform: "Windows" }
+              : link,
+          );
+          const inbound = snapshot.inbound.map((link: any) =>
+            link.environmentId === pcEnv && link.platform !== "Windows"
+              ? { ...link, platform: "Windows" }
+              : link,
+          );
+          if (
+            outbound.some((link: any, index: number) => link !== snapshot.outbound[index]) ||
+            inbound.some((link: any, index: number) => link !== snapshot.inbound[index])
+          ) {
+            links.useComputerLinksStore.setState((value: any) => ({
+              byEnvironmentId: {
+                ...value.byEnvironmentId,
+                [holder]: {
+                  ...value.byEnvironmentId[holder],
+                  snapshot: { ...snapshot, outbound, inbound },
+                },
+              },
+            }));
+          }
+        }
+      };
+      applyDress();
+      catalog.useSavedEnvironmentRuntimeStore.subscribe(applyDress);
+      links.useComputerLinksStore.subscribe(applyDress);
+      pc = {
+        environmentId: pcEnv,
+        label: pcLabel,
+        macEnvironmentId: env,
+        linkDeviceId: inbound.deviceId,
+        // The name the PC knows this computer by, as its thread shows it.
+        macLabel: inbound.label,
+        projectId: pcProject.id,
+        projectCwd: pcProject.cwd,
+      };
+    }
+
     if (isolated) {
       // The engine is the only server for the take's threads: a detail
       // subscription the app opens for one (opening it, prewarming its row)
@@ -292,9 +470,15 @@ const setup = await page.evaluate(
         },
       });
     }
-    return { env, projectId: orbit.id, projectCwd: orbit.cwd };
+    return { env, projectId: orbit.id, projectCwd: orbit.cwd, pc };
   },
-  { threadId, studio: STUDIO, isolated: STORY.isolated },
+  {
+    threadId,
+    studio: STUDIO,
+    isolated: STORY.isolated,
+    projectName: PROJECT_NAME,
+    pcLabel: STORY.remote ? pcLabel : null,
+  },
 );
 
 // --- The stand-in server for the thread. ---
@@ -307,12 +491,33 @@ await engine.run(
     type: "project.create",
     commandId: `promo:${randomUUID()}`,
     projectId: setup.projectId,
-    title: "Orbit",
+    title: PROJECT_NAME,
     workspaceRoot: setup.projectCwd,
     createdAt: now(),
   },
   { push: false },
 );
+// The second computer's stand-in server, for its thread.
+const pcEngine = createEngine(async (events) => {
+  await page.evaluate((batch: any[]) => (window as any).__promo.applyPc(batch), events);
+});
+const pc = setup.pc && {
+  ...setup.pc,
+  worktreesDir: pcHome === null ? "" : path.join(pcHome, "worktrees"),
+};
+if (pc) {
+  await pcEngine.run(
+    {
+      type: "project.create",
+      commandId: `promo:${randomUUID()}`,
+      projectId: pc.projectId,
+      title: PROJECT_NAME,
+      workspaceRoot: pc.projectCwd,
+      createdAt: now(),
+    },
+    { push: false },
+  );
+}
 const create = {
   type: "thread.create",
   commandId: `promo:${randomUUID()}`,
@@ -335,11 +540,17 @@ const handled: string[] = [];
 const polling = new AbortController();
 const poll = (async () => {
   while (!polling.signal.aborted) {
-    const commands = await page.evaluate(() => (window as any).__promo.queue.splice(0));
-    for (const command of commands) {
+    const [commands, pcCommands] = await page.evaluate(() => {
+      const promo = (window as any).__promo;
+      return [promo.queue.splice(0), promo.pcQueue?.splice(0) ?? []];
+    });
+    for (const [owner, command] of [
+      ...commands.map((command: any) => [engine, command] as const),
+      ...pcCommands.map((command: any) => [pcEngine, command] as const),
+    ]) {
       handled.push(command.type);
       if (process.env.PROMO_DEBUG) console.log("ui command", JSON.stringify(command).slice(0, 300));
-      await engine.run(command);
+      await owner.run(command);
       const pending = waiters.get(command.type);
       pending?.shift()?.(command);
     }
@@ -445,7 +656,16 @@ async function rest() {
 
 // PROMO_SHOTS=<dir> saves a screenshot at every mark, to check a rehearsal by eye.
 const shots: Array<Promise<unknown>> = [];
+const HOLD_FILE = "/tmp/rooms-promo/hold";
+const holdAt = process.env.PROMO_HOLD_AT ?? null;
+// A hold another take left behind (it was stopped while holding) never stalls this one.
+fs.rmSync(HOLD_FILE, { force: true });
 function mark(name: string) {
+  if (holdAt === name) {
+    fs.mkdirSync(path.dirname(HOLD_FILE), { recursive: true });
+    fs.writeFileSync(HOLD_FILE, `${name}\n`);
+    console.log(`holding at ${name}: delete ${HOLD_FILE} to go on`);
+  }
   log.marks.push({ name, at: at() });
   console.log(`mark ${name} @ ${at().toFixed(2)}s`);
   if (process.env.PROMO_SHOTS) {
@@ -604,6 +824,8 @@ async function stopTracking(offset: number) {
 const composer = page.locator('[data-lexical-editor="true"]').last();
 const story = createStory({
   engine,
+  pcEngine,
+  pc,
   threadId,
   ui: {
     async addSol() {
@@ -657,8 +879,73 @@ const story = createStory({
       mark(`${marks}-sent`);
       return command.message.messageId;
     },
-    async registerThread(id: string) {
-      await page.evaluate((id: string) => (window as any).__promo.ids.add(id), id);
+    async send(text: string) {
+      // Keyboard only, like sendTo: the pointer fades where it is, so nothing
+      // sits over the empty chat while you type.
+      await page.evaluate(() => {
+        const element = document.getElementById("capture-pointer");
+        if (element) {
+          element.style.transition = "opacity 300ms ease";
+          element.style.opacity = "0";
+        }
+      });
+      await composer.focus();
+      mark("typing");
+      await page.keyboard.type(text, { delay: 45 });
+      await pause(600);
+      const sent = nextCommand("thread.turn.start");
+      await page.keyboard.press("Enter");
+      const command = await sent;
+      mark("sent");
+      return { messageId: command.message.messageId };
+    },
+    async registerThread(id: string, on: "mac" | "pc" = "mac") {
+      await page.evaluate(
+        ({ id, on }: { id: string; on: string }) => {
+          const promo = (window as any).__promo;
+          (on === "pc" ? promo.pcIds : promo.ids).add(id);
+        },
+        { id, on },
+      );
+    },
+    async openFleet() {
+      await page.evaluate(() => {
+        const element = document.getElementById("capture-pointer");
+        if (element) element.style.opacity = "1";
+      });
+      // At phone width the left bar's places are a row at the top of the sheet.
+      await openSidebar();
+      await click(page.locator('[data-testid="rail-fleet"]:visible'), { hover: 400, hold: 300 });
+      await until("Fleet to open", () => page.evaluate(() => location.hash.includes("fleet")));
+      // Nothing to type into here: the pointer fades by the rail.
+      await pause(300);
+      await page.evaluate(() => {
+        const element = document.getElementById("capture-pointer");
+        if (element) {
+          element.style.transition = "opacity 400ms ease";
+          element.style.opacity = "0";
+        }
+      });
+      await pause(450);
+    },
+    async unfoldReport() {
+      await page.evaluate(() => {
+        const element = document.getElementById("capture-pointer");
+        if (element) element.style.opacity = "1";
+      });
+      await click(page.locator("[data-agent-message-fold]").last(), { hover: 500, hold: 300 });
+      await rest();
+    },
+    async openFromFleet(id: string) {
+      await page.evaluate(() => {
+        const element = document.getElementById("capture-pointer");
+        if (element) element.style.opacity = "1";
+      });
+      await click(page.locator(`[data-testid="fleet-thread-${id}"]`), { hover: 500, hold: 250 });
+      await until("the thread to open", () =>
+        page.evaluate((id: string) => location.hash.endsWith(id), id),
+      );
+      await rest();
     },
     async clickStart() {
       const responded = nextCommand("thread.child-request.respond");
@@ -694,7 +981,10 @@ const story = createStory({
     trackSelector(name: string, selector: string, closest?: string) {
       void track(name, closest === undefined ? { selector } : { selector, closest });
     },
-    sleep: pause,
+    async sleep(ms: number) {
+      await pause(ms);
+      while (holdAt !== null && fs.existsSync(HOLD_FILE)) await pause(200);
+    },
   },
 });
 
@@ -733,7 +1023,7 @@ let tracks: Awaited<ReturnType<typeof stopTracking>> = {};
 try {
   // Studio fixtures the story needs before its threads appear (worktrees).
   // Inside the guarded part, so a failure here is cleaned up below.
-  await storyModule.prepareStudio?.(threadId);
+  await storyModule.prepareStudio?.(threadId, pc ?? undefined);
   await until("the studio server to create the thread", () =>
     page.evaluate(async (threadId: string) => {
       const { useStore } = await import("/src/store.ts" as string);
@@ -756,6 +1046,26 @@ try {
     // No detail snapshot comes from the server for an isolated story's
     // threads, so the app learns the promo thread from the engine as well.
     await page.evaluate((batch: any[]) => (window as any).__promo.apply(batch), created);
+    // What a detail snapshot would also say: the thread's history is in, so
+    // an empty thread reads as empty, not as still loading.
+    await page.evaluate(
+      async ({ env, threadId }: { env: string; threadId: string }) => {
+        const { useStore } = await import("/src/store.ts" as string);
+        useStore.setState((current: any) => {
+          const target = current.environmentStateById[env];
+          return {
+            environmentStateById: {
+              ...current.environmentStateById,
+              [env]: {
+                ...target,
+                threadDetailLoadedById: { ...target.threadDetailLoadedById, [threadId]: true },
+              },
+            },
+          };
+        });
+      },
+      { env: setup.env, threadId },
+    );
   }
   await pause(1500);
   const prologue = await story.prologue();
@@ -769,6 +1079,7 @@ try {
   await pause(400);
   await story.take(prologue);
 } finally {
+  fs.rmSync(HOLD_FILE, { force: true });
   seconds = at();
   await Promise.all(shots);
   if (process.env.PROMO_SHOTS) {
