@@ -246,6 +246,12 @@ export const COMPARISONS: readonly Comparison[] = [
         other: { mark: "yes", text: "iPhone and Android apps with alerts" },
       },
       {
+        icon: "account",
+        label: "Account for phone alerts",
+        threadlines: { mark: "yes", text: "None needed" },
+        other: { mark: "partial", text: "A T3 Connect sign-in" },
+      },
+      {
         icon: "agents",
         label: "Agents",
         threadlines: THREADLINES_AGENTS,
@@ -290,6 +296,12 @@ export const COMPARISONS: readonly Comparison[] = [
         other: { mark: "yes", text: "With a selection of past messages" },
       },
       {
+        icon: "undo",
+        label: "Undo in a shared folder",
+        threadlines: { mark: "yes", text: "Undoes only that thread's changes" },
+        other: { mark: "partial", text: "Puts the folder back, your edits too" },
+      },
+      {
         icon: "pullRequest",
         label: "Git hosts",
         threadlines: { mark: "partial", text: "GitHub, GitLab, Bitbucket, Azure DevOps" },
@@ -311,6 +323,8 @@ export const COMPARISONS: readonly Comparison[] = [
     pickThreadlines: [
       "You want two agents in the same thread.",
       "You want to ask Codex or Claude something while another agent works.",
+      "You want phone alerts without signing in to anything.",
+      "Your threads share a folder, and undo should touch only one thread's work.",
     ],
     pickOther: [
       "You want native phone apps or a hosted web app.",
@@ -340,6 +354,14 @@ export const COMPARISONS: readonly Comparison[] = [
       {
         label: "outside agents docs",
         url: "https://github.com/pingdotgg/t3code/blob/main/docs/user/outside-agents.md",
+      },
+      {
+        label: "composer docs",
+        url: "https://github.com/pingdotgg/t3code/blob/main/docs/user/composer.md",
+      },
+      {
+        label: "phone alerts docs",
+        url: "https://github.com/pingdotgg/t3code/blob/main/docs/user/mobile-notifications.md",
       },
       {
         label: "v0.1.0 release notes",
