@@ -1367,6 +1367,18 @@ export interface DesktopBridge {
   /** Present in desktop builds that can identify the isolated marketing capture runtime. */
   isMarketingCaptureMode?: () => boolean;
   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
+  /**
+   * The app version that ran on this computer before this one, kept outside
+   * the page (whose storage moves with the backend's port); null on a first
+   * run. "What's new" lists the nightlies after it.
+   */
+  getPreviousAppVersion?: () => string | null;
+  /**
+   * True for the first window that asks, once per launch, when this launch
+   * is the first of a version newer than any this computer ran before: the
+   * one time "What's new" announces it.
+   */
+  claimUpdateNotice?: () => Promise<boolean>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
   getSavedEnvironmentRegistry: () => Promise<readonly PersistedSavedEnvironmentRecord[]>;

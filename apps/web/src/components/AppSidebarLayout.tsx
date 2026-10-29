@@ -33,6 +33,7 @@ import {
   useSelectedDestination,
 } from "./sidebar/NavigationRail";
 import { Sidebar, SidebarProvider, SidebarRail, useSidebar } from "./ui/sidebar";
+import { openWhatsNewDialog } from "./WhatsNewDialog";
 import {
   clearShortcutModifierState,
   syncShortcutModifierStateFromKeyboardEvent,
@@ -144,6 +145,9 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           return;
         case "toggle-command-palette":
           useCommandPaletteStore.getState().toggleOpen();
+          return;
+        case "open-whats-new":
+          openWhatsNewDialog();
           return;
         case "new-thread":
           void startNewThreadFromContext({

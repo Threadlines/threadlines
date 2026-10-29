@@ -177,6 +177,12 @@ const make = Effect.gen(function* () {
     const reportIssueClick = () => {
       runMenuEffect("report-issue", openExternalHelpUrl(GITHUB_NEW_ISSUE_URL));
     };
+    const whatsNewClick = () => {
+      runMenuEffect(
+        DesktopWindow.OPEN_WHATS_NEW_MENU_ACTION,
+        dispatchMenuAction(DesktopWindow.OPEN_WHATS_NEW_MENU_ACTION),
+      );
+    };
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (environment.platform === "darwin") {
@@ -288,6 +294,7 @@ const make = Effect.gen(function* () {
             click: reportIssueClick,
           },
           { type: "separator" },
+          { label: "What's New", click: whatsNewClick },
           {
             label: "Check for Updates...",
             click: checkForUpdatesClick,

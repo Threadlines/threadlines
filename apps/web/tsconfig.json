@@ -13,5 +13,5 @@
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "test"]
+  "include": ["src", "vite.config.ts", "releaseNotesPlugin.ts", "test"]
 }

@@ -1,7 +1,9 @@
+import { parseReleaseNotesBlock } from "@threadlines/shared/releaseNotes";
 import { assert, it } from "vite-plus/test";
 
 import {
   formatReleaseNotes,
+  formatReleaseNotesBody,
   parseCuratedReleaseContent,
   parseGitLogOutput,
 } from "./generate-release-notes.ts";
@@ -266,4 +268,48 @@ alsoImproved: []
 `),
     /still contains a reserved 'TODO:' human-review placeholder/,
   );
+});
+
+it("ends the body with a hidden block that keeps each change's type and the stable title", () => {
+  const curated = parseCuratedReleaseContent(`---
+title: "Fleet: your computers work as one"
+summary: Fleet is here.
+highlights:
+  - title: Fleet
+    description: Every computer in one place.
+alsoImproved: []
+---
+`);
+  const commit = (hash: string, subject: string) => ({
+    hash: hash.repeat(40),
+    shortHash: hash.repeat(8),
+    parentHashes: [],
+    subject,
+    body: "",
+  });
+
+  const body = formatReleaseNotesBody({
+    channel: "stable",
+    currentTag: "v0.8.0",
+    previousTag: "v0.7.1",
+    repository: "Threadlines/threadlines",
+    commits: [
+      commit("a", "fix(web): rename computers from the Fleet list (#581)"),
+      commit("b", "docs(release): prepare the 0.8.0 changelog and announcement (#692)"),
+      commit("c", "feat(telemetry): wait-time reports (#686)"),
+      commit("d", "Cache diagnostics reads"),
+    ],
+    curated,
+  });
+
+  // The visible notes drop the "fix(web):" type; the block keeps what it meant.
+  assert.match(body, /- Rename computers from the Fleet list in \[#581\]/);
+  assert.deepEqual(parseReleaseNotesBlock(body), {
+    v: 1,
+    title: "Fleet: your computers work as one",
+    changes: [
+      { kind: "fixed", text: "Rename computers from the Fleet list", pullRequest: 581 },
+      { kind: "changed", text: "Cache diagnostics reads" },
+    ],
+  });
 });

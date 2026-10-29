@@ -89,6 +89,8 @@ export const OPEN_FLEET_MENU_ACTION = "open-fleet";
 export const OPEN_SCHEDULED_MENU_ACTION = "open-scheduled";
 export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
 export const OPEN_USAGE_MENU_ACTION = "open-usage";
+/** Help › What's New: the release notes for the version you have. */
+export const OPEN_WHATS_NEW_MENU_ACTION = "open-whats-new";
 export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
 export const NAVIGATE_BACK_MENU_ACTION = "navigate-back";
 export const NAVIGATE_FORWARD_MENU_ACTION = "navigate-forward";
