@@ -1,4 +1,4 @@
-import { parseReleaseNotesBlock } from "@threadlines/shared/releaseNotes";
+import { parseReleaseNotesBlock, readReleaseBodyChanges } from "@threadlines/shared/releaseNotes";
 import { assert, it } from "vite-plus/test";
 
 import {
@@ -270,7 +270,7 @@ alsoImproved: []
   );
 });
 
-it("ends the body with a hidden block that keeps each change's type and the stable title", () => {
+it("ends the body with a hidden block that keeps each change's own title and the stable title", () => {
   const curated = parseCuratedReleaseContent(`---
 title: "Fleet: your computers work as one"
 summary: Fleet is here.
@@ -305,11 +305,18 @@ alsoImproved: []
   // The visible notes drop the "fix(web):" type; the block keeps what it meant.
   assert.match(body, /- Rename computers from the Fleet list in \[#581\]/);
   assert.deepEqual(parseReleaseNotesBlock(body), {
-    v: 1,
+    v: 2,
     title: "Fleet: your computers work as one",
     changes: [
-      { kind: "fixed", text: "Rename computers from the Fleet list", pullRequest: 581 },
-      { kind: "changed", text: "Cache diagnostics reads" },
+      { title: "fix(web): rename computers from the Fleet list", pullRequest: 581 },
+      { title: "docs(release): prepare the 0.8.0 changelog and announcement", pullRequest: 692 },
+      { title: "feat(telemetry): wait-time reports", pullRequest: 686 },
+      { title: "Cache diagnostics reads" },
     ],
   });
+  // Sorted by the app's rules: docs and analytics stay out.
+  assert.deepEqual(readReleaseBodyChanges(body), [
+    { kind: "fixed", text: "Rename computers from the Fleet list", pullRequest: 581 },
+    { kind: "changed", text: "Cache diagnostics reads" },
+  ]);
 });

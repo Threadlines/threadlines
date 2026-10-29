@@ -32,24 +32,71 @@ describe("classifyReleaseChange", () => {
       text: "Cache diagnostics reads",
     });
   });
+
+  it("shows security fixes, even as dependency bumps, but not docs or the website", () => {
+    expect(
+      classifyReleaseChange(
+        "fix(deps): bump @hono/node-server to 2.1.5 for the serveStatic path bypass (#702)",
+      ),
+    ).toEqual({
+      kind: "security",
+      text: "Bump @hono/node-server to 2.1.5 for the serveStatic path bypass",
+    });
+    expect(classifyReleaseChange("chore(deps): bump vite for CVE-2026-12345")?.kind).toBe(
+      "security",
+    );
+    expect(classifyReleaseChange("Bump undici to fix a security issue")?.kind).toBe("security");
+    expect(classifyReleaseChange("fix(server): block path traversal in uploads")?.kind).toBe(
+      "security",
+    );
+    expect(
+      classifyReleaseChange("fix(deps): patch the Electron certificate and body-parser advisories"),
+    )?.toMatchObject({ kind: "security" });
+    expect(classifyReleaseChange("docs: write a security policy")).toBeNull();
+    expect(classifyReleaseChange("fix(marketing): escape an XSS in the hero")).toBeNull();
+    // The release pipeline isn't the app, even when the fix is a security one.
+    expect(
+      classifyReleaseChange("fix(ci): prevent command injection in the release workflow"),
+    ).toBeNull();
+    expect(classifyReleaseChange("fix(deps): bump vite")).toBeNull();
+    // Words that only mean security in a dependency update.
+    expect(
+      classifyReleaseChange("fix(web): bypass xterm for global terminal shortcuts")?.kind,
+    ).toBe("fixed");
+  });
 });
 
 describe("release body notes", () => {
   it("round-trips the hidden block, even when a title holds a comment's end", () => {
     const block = formatReleaseNotesBlock({
       title: "Fleet: your computers work as one",
-      changes: [{ kind: "fixed", text: "Arrows --> no longer end comments", pullRequest: 12 }],
+      changes: [
+        { title: "fix: arrows --> no longer end comments", pullRequest: 12 },
+        { title: "docs: a page about arrows" },
+      ],
     });
     // The first "--" after the comment opens is the one that closes it.
     expect(block.indexOf("--", "<!--".length)).toBe(block.length - "-->".length);
     const body = `## Highlights\n\nWords.\n\n${block}\n`;
-    expect(parseReleaseNotesBlock(body)).toEqual({
-      v: 1,
-      title: "Fleet: your computers work as one",
-      changes: [{ kind: "fixed", text: "Arrows --> no longer end comments", pullRequest: 12 }],
-    });
+    expect(parseReleaseNotesBlock(body)?.title).toBe("Fleet: your computers work as one");
     expect(readReleaseBodyChanges(body)).toEqual([
       { kind: "fixed", text: "Arrows --> no longer end comments", pullRequest: 12 },
+    ]);
+  });
+
+  it("reads the bullets of a body with the first, pre-sorted block, so new rules reach it", () => {
+    const body = [
+      "## What's Changed",
+      "",
+      "- fix(deps): bump @hono/node-server for the serveStatic path bypass by @badcuban in https://github.com/Threadlines/threadlines/pull/702",
+      "- fix(server): Explorer shows a file with a comma by @badcuban in https://github.com/Threadlines/threadlines/pull/703",
+      "",
+      '<!-- threadlines-release-notes {"v":1,"title":"Old title","changes":[{"kind":"fixed","text":"Explorer shows a file with a comma","pullRequest":703}]} -->',
+    ].join("\n");
+    expect(parseReleaseNotesBlock(body)?.title).toBe("Old title");
+    expect(readReleaseBodyChanges(body).map((change) => change.kind)).toEqual([
+      "security",
+      "fixed",
     ]);
   });
 

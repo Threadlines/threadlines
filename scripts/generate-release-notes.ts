@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 
 import { parse as parseYaml } from "yaml";
 
-import { classifyReleaseChange, formatReleaseNotesBlock } from "@threadlines/shared/releaseNotes";
+import { formatReleaseNotesBlock } from "@threadlines/shared/releaseNotes";
 
 import { resolveReleaseNotesBaselineTag, type ReleaseChannel } from "./lib/release-tags.ts";
 
@@ -475,21 +475,19 @@ export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
 
 /**
  * The release body: the notes, then the hidden block the app reads for
- * "What's new" (packages/shared/src/releaseNotes.ts). The block's changes come
- * from the commits themselves, so every change keeps the conventional type
- * the visible list may have dropped.
+ * "What's new" (packages/shared/src/releaseNotes.ts). The block keeps each
+ * change's own title, type and scope included, which the visible list may
+ * have dropped; the app sorts them by its current rules.
  */
 export function formatReleaseNotesBody(input: FormatReleaseNotesInput): string {
   const changes = input.commits
     .map(releaseNoteEntryFromCommit)
     .filter((entry) => !isReleasePreparationTitle(entry.title))
-    .flatMap((entry) => {
-      const change = classifyReleaseChange(entry.title);
-      if (!change) return [];
-      return entry.pullRequestNumber === undefined
-        ? [change]
-        : [{ ...change, pullRequest: entry.pullRequestNumber }];
-    });
+    .map((entry) =>
+      entry.pullRequestNumber === undefined
+        ? { title: entry.title }
+        : { title: entry.title, pullRequest: entry.pullRequestNumber },
+    );
   const block = formatReleaseNotesBlock({
     ...(input.curated?.title ? { title: input.curated.title } : {}),
     changes,

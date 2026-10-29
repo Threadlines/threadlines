@@ -95,6 +95,107 @@ export function countChanges(builds: ReadonlyArray<NightlyBuildChanges>): number
   return builds.reduce((total, build) => total + build.changes.length, 0);
 }
 
+function changeCount(count: number): string {
+  return count === 1 ? "1 change" : `${count} changes`;
+}
+
+/** "build 350" for a nightly, "v0.8.0" for anything else. */
+export function describeBuild(version: string): string {
+  const nightly = parseNightlyVersion(version);
+  return nightly ? `build ${nightly.build}` : `v${version}`;
+}
+
+/**
+ * What a nightly's list covers. `since` is the build this device ran before
+ * (null when unknown, or when it was newer); the list reaches back to the
+ * older of that and the last stable release, so the nightlies before it can
+ * still be read.
+ */
+export function planNightlyList(input: {
+  readonly appVersion: string;
+  readonly previousVersion: string | null;
+  readonly lastStableVersion: string | null;
+}): { readonly since: string | null; readonly range: NightlyRange } {
+  const olderThanApp = (version: string | null) =>
+    version !== null && compareSemverVersions(version, input.appVersion) < 0 ? version : null;
+  const since = olderThanApp(input.previousVersion);
+  const starts = [since, olderThanApp(input.lastStableVersion)].filter(
+    (version): version is string => version !== null,
+  );
+  const after = starts.toSorted(compareSemverVersions)[0] ?? null;
+  return { since, range: { after, upTo: input.appVersion } };
+}
+
+/**
+ * The builds new to this device (after `since`, or just this one without
+ * it), and the earlier ones the list also covers, each newest first.
+ */
+export function splitNightlyBuilds(
+  builds: ReadonlyArray<NightlyBuildChanges>,
+  since: string | null,
+  appVersion: string,
+): {
+  readonly fresh: ReadonlyArray<NightlyBuildChanges>;
+  readonly earlier: ReadonlyArray<NightlyBuildChanges>;
+} {
+  const isFresh = (build: NightlyBuildChanges) =>
+    since === null ? build.version === appVersion : compareSemverVersions(build.version, since) > 0;
+  return { fresh: builds.filter(isFresh), earlier: builds.filter((build) => !isFresh(build)) };
+}
+
+/**
+ * The line a nightly's list opens with, about the builds new to this device.
+ * `freshComplete` says the list reached back past `since`, so the count is
+ * all of them rather than the newest part.
+ */
+export function describeNightlyLead(input: {
+  readonly fresh: ReadonlyArray<NightlyBuildChanges>;
+  readonly since: string | null;
+  readonly freshComplete: boolean;
+  readonly appVersion: string;
+}): string {
+  const { fresh, since } = input;
+  if (fresh.length === 0) return "GitHub doesn't list this build's changes yet.";
+  const count = countChanges(fresh);
+  if (since !== null && !fresh.some((build) => build.version === input.appVersion)) {
+    return `${changeCount(count)} since ${describeBuild(since)}. This build's own notes aren't on GitHub yet.`;
+  }
+  if (!input.freshComplete) {
+    return `${changeCount(count)} in the newest ${fresh.length} builds. Older ones are on GitHub.`;
+  }
+  if (since === null) {
+    return count === 0
+      ? "Only internal changes in this build."
+      : `${changeCount(count)} in this build`;
+  }
+  return count === 0
+    ? `Only internal changes since ${describeBuild(since)}.`
+    : `${changeCount(count)} since ${describeBuild(since)}, the one you had before`;
+}
+
+/**
+ * The reason line of the notice after updating to a nightly: its one change,
+ * or how many it brings ("at least" when GitHub's list stopped short or lacks
+ * this build's own release). Null when it only brings internal changes, and
+ * no notice shows.
+ */
+export function describeNightlyUpdate(input: {
+  readonly fresh: ReadonlyArray<NightlyBuildChanges>;
+  readonly since: string | null;
+  readonly complete: boolean;
+  readonly appVersion: string;
+}): string | null {
+  const changes = input.fresh.flatMap((build) => build.changes);
+  if (changes.length === 0) return null;
+  // Without this build's own release the count can only be a lower bound.
+  const whole = input.complete && input.fresh.some((build) => build.version === input.appVersion);
+  if (changes.length === 1 && whole) return changes[0]!.text;
+  const count = whole ? changeCount(changes.length) : `At least ${changeCount(changes.length)}`;
+  return input.since === null
+    ? `${count} in this build`
+    : `${count} since ${describeBuild(input.since)}`;
+}
+
 /**
  * The rail update card's line about a waiting update: a stable release's
  * title, or for a nightly how many changes it brings. Null when there is
@@ -122,6 +223,8 @@ export function releaseChangeTag(kind: ReleaseChange["kind"]): string {
       return "Fixed";
     case "faster":
       return "Faster";
+    case "security":
+      return "Security";
     case "changed":
       return "Changed";
   }
