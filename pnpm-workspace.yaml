@@ -47,7 +47,7 @@ overrides:
   "@effect/platform-node-shared": "catalog:"
   "@effect/sql-sqlite-bun": "catalog:"
   "@effect/vitest": "catalog:"
-  "@hono/node-server": 2.0.11
+  "@hono/node-server": 2.1.5
   "@types/node": "catalog:"
   "@xmldom/xmldom@0.8": 0.8.15
   brace-expansion: 5.0.12
