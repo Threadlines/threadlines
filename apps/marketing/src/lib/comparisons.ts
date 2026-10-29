@@ -44,7 +44,7 @@ export function comparisonPath(comparison: Pick<Comparison, "slug">): string {
 }
 
 const THREADLINES_AGENTS: ComparisonCell = {
-  text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, Grok, Muse Code, Pi, fx, plus community agents",
+  text: "Codex, Claude Code and seven more, plus community agents",
 };
 
 const THREADLINES_DESKTOP: ComparisonCell = { mark: "yes", text: "macOS, Windows, Linux" };
@@ -57,7 +57,7 @@ const THREADLINES_PHONE: ComparisonCell = {
 /** Fleet: linked computers, and agents that start threads on them. */
 const THREADLINES_COMPUTERS: ComparisonCell = {
   mark: "yes",
-  text: "Link them, and an agent can start a thread on any",
+  text: "Agents start threads where the project is set up",
 };
 
 const THREADLINES_TASKS: ComparisonCell = {
@@ -127,7 +127,7 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "clock",
         label: "Scheduled and event tasks",
         threadlines: THREADLINES_TASKS,
-        other: { mark: "partial", text: "Routines in the cloud, on Pro" },
+        other: { mark: "yes", text: "Routines in the cloud, on Pro" },
       },
       {
         icon: "terminal",
@@ -163,13 +163,13 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "phone",
         label: "Phone",
         threadlines: THREADLINES_PHONE,
-        other: { mark: "yes", text: "iPhone app, for cloud work and Remote Control" },
+        other: { mark: "yes", text: "iPhone app, listed under Pro" },
       },
       {
         icon: "account",
         label: "Accounts",
         threadlines: { mark: "yes", text: "None needed, GitHub optional" },
-        other: { mark: "partial", text: "GitHub required, sign-in for cloud" },
+        other: { mark: "partial", text: "GitHub, plus a sign-in for cloud and phone" },
       },
     ],
     pickThreadlines: [
@@ -250,7 +250,7 @@ export const COMPARISONS: readonly Comparison[] = [
         label: "Agents",
         threadlines: THREADLINES_AGENTS,
         other: {
-          text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, Grok, Pi, Muse Code, fx, plus ACP registry agents",
+          text: "The same nine, plus ACP registry agents",
         },
       },
       {
