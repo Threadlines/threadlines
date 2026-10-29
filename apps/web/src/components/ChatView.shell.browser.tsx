@@ -385,129 +385,175 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
-  it("hides the thread list inside the panel, moving no button, and keeps what needs you on the rail", async () => {
-    const askingThreadId = "thread-rail-asking" as ThreadId;
-    const workingThreadId = "thread-rail-working" as ThreadId;
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: addThreadToSnapshot(
-        addThreadToSnapshot(
-          createSnapshotForTargetUser({
-            targetMessageId: "msg-user-rail-hide" as MessageId,
-            targetText: "rail hide",
-          }),
-          askingThreadId,
-        ),
-        workingThreadId,
-      ),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          keybindings: [SIDEBAR_TOGGLE_KEYBINDING],
-        };
-      },
-    });
-
-    try {
-      await waitForServerConfigToApply();
-      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingThreadId, "needs-you");
-      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working");
-      const threadsButton = page.getByTestId("rail-threads");
-      await expect
-        .element(threadsButton.getByTestId("rail-needs-you-badge"))
-        .toMatchTextContent("1");
-      // While the list shows, it says what is working; the rail stays quiet.
-      expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
-      const panel = document.querySelector('[data-testid="app-panel"]')!;
-      const list = document.querySelector('[data-slot="sidebar-container"]')!;
-      // The list opens the work panel, just inside its hairline edge.
-      expect(
-        Math.abs(list.getBoundingClientRect().left - panel.getBoundingClientRect().left),
-      ).toBeLessThanOrEqual(1);
-      const frameButtons = ["titlebar-sidebar-toggle", "new-thread-button", "rail-threads"];
-      const placeOf = (testId: string) => {
-        const rect = document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect();
-        return { left: rect.left, top: rect.top };
+  it(
+    "hides the thread list inside the panel, moving no button, and keeps what needs you on the rail",
+    { repeats: 10 },
+    async () => {
+      // DIAG: find where this spec stalls on CI.
+      const diagStart = performance.now();
+      let diagStep = "mount";
+      let diagLast = performance.now();
+      let diagFrames = 0;
+      let diagFramesAtLast = 0;
+      const diagMark = (step: string) => {
+        console.warn(
+          `DIAG ${Math.round(performance.now() - diagStart)}ms frames=${diagFrames} ${diagStep} -> ${step}`,
+        );
+        diagStep = step;
       };
-      const placesBefore = frameButtons.map(placeOf);
+      const diagFrame = () => {
+        diagFrames += 1;
+        diagRaf = requestAnimationFrame(diagFrame);
+      };
+      let diagRaf = requestAnimationFrame(diagFrame);
+      const diagMonitor = setInterval(() => {
+        const now = performance.now();
+        if (now - diagLast > 1000 || diagFrames === diagFramesAtLast) {
+          console.warn(
+            `DIAG stall gap=${Math.round(now - diagLast)}ms newFrames=${diagFrames - diagFramesAtLast} at ${diagStep} visibility=${document.visibilityState}`,
+          );
+        }
+        diagLast = now;
+        diagFramesAtLast = diagFrames;
+      }, 250);
+      const askingThreadId = "thread-rail-asking" as ThreadId;
+      const workingThreadId = "thread-rail-working" as ThreadId;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: addThreadToSnapshot(
+          addThreadToSnapshot(
+            createSnapshotForTargetUser({
+              targetMessageId: "msg-user-rail-hide" as MessageId,
+              targetText: "rail hide",
+            }),
+            askingThreadId,
+          ),
+          workingThreadId,
+        ),
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [SIDEBAR_TOGGLE_KEYBINDING],
+          };
+        },
+      });
 
-      await page.getByTestId("titlebar-sidebar-toggle").click();
-      await vi.waitFor(() => {
-        expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
-        expect(
-          document
-            .querySelector('[data-slot="sidebar-wrapper"]')
-            ?.getAttribute("data-sidebar-state"),
-        ).toBe("collapsed");
-      });
-      await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
-      // Hiding the list moves no button in the frame; only the page's edge moves.
-      expect(frameButtons.map(placeOf)).toEqual(placesBefore);
-      // The selection grows with the button to take in its count.
-      await vi.waitFor(() => {
-        const button = document
-          .querySelector('[data-testid="rail-threads"]')!
-          .getBoundingClientRect();
-        const fill = document.querySelector('[data-testid="rail-selection"]')!;
-        expect(button.height).toBeGreaterThan(34);
-        expect(fill.getBoundingClientRect().height).toBe(button.height);
-      });
-      await vi.waitFor(() => {
-        const thread = document.querySelector('[data-slot="sidebar-inset"]')!;
-        expect(
-          Math.abs(thread.getBoundingClientRect().left - panel.getBoundingClientRect().left),
-        ).toBeLessThanOrEqual(1);
-      });
-
-      // Mod+B brings the list back.
-      const useMetaForMod = isMacPlatform(navigator.platform);
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "b",
-          metaKey: useMetaForMod,
-          ctrlKey: !useMetaForMod,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      await vi.waitFor(() => {
-        expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      try {
+        diagMark("config");
+        await waitForServerConfigToApply();
+        diagMark("set-work");
+        setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingThreadId, "needs-you");
+        setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working");
+        const threadsButton = page.getByTestId("rail-threads");
+        await expect
+          .element(threadsButton.getByTestId("rail-needs-you-badge"))
+          .toMatchTextContent("1");
+        // While the list shows, it says what is working; the rail stays quiet.
         expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
-      });
-
-      // Another page's list says nothing of the threads, so the rail does.
-      await mounted.router.navigate({ to: "/chats" });
-      await expect.element(page.getByTestId("chats-view-new-chat")).toBeVisible();
-      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
-      await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
-
-      // Usage has no list: it takes the panel, and the toggle stays, disabled,
-      // with the user's choice kept for the pages that have one.
-      await mounted.router.navigate({ to: "/usage" });
-      await vi.waitFor(() => {
+        const panel = document.querySelector('[data-testid="app-panel"]')!;
+        const list = document.querySelector('[data-slot="sidebar-container"]')!;
+        // The list opens the work panel, just inside its hairline edge.
         expect(
-          document
-            .querySelector('[data-slot="sidebar-wrapper"]')
-            ?.getAttribute("data-sidebar-state"),
-        ).toBe("collapsed");
-      });
-      await expect
-        .element(page.getByTestId("titlebar-sidebar-toggle"))
-        .toHaveAttribute("aria-disabled", "true");
-      document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]')!.click();
-      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
-      await mounted.router.navigate({ href: serverThreadPath(THREAD_ID) });
-      await vi.waitFor(() => {
-        expect(
-          document
-            .querySelector('[data-slot="sidebar-wrapper"]')
-            ?.getAttribute("data-sidebar-state"),
-        ).toBe("expanded");
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+          Math.abs(list.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+        ).toBeLessThanOrEqual(1);
+        const frameButtons = ["titlebar-sidebar-toggle", "new-thread-button", "rail-threads"];
+        const placeOf = (testId: string) => {
+          const rect = document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect();
+          return { left: rect.left, top: rect.top };
+        };
+        const placesBefore = frameButtons.map(placeOf);
+
+        diagMark("click-toggle");
+        await page.getByTestId("titlebar-sidebar-toggle").click();
+        diagMark("collapsed-wait");
+        await vi.waitFor(() => {
+          expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
+          expect(
+            document
+              .querySelector('[data-slot="sidebar-wrapper"]')
+              ?.getAttribute("data-sidebar-state"),
+          ).toBe("collapsed");
+        });
+        diagMark("rail-working-count");
+        await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
+        diagMark("frame-buttons");
+        // Hiding the list moves no button in the frame; only the page's edge moves.
+        expect(frameButtons.map(placeOf)).toEqual(placesBefore);
+        // The selection grows with the button to take in its count.
+        await vi.waitFor(() => {
+          const button = document
+            .querySelector('[data-testid="rail-threads"]')!
+            .getBoundingClientRect();
+          const fill = document.querySelector('[data-testid="rail-selection"]')!;
+          expect(button.height).toBeGreaterThan(34);
+          expect(fill.getBoundingClientRect().height).toBe(button.height);
+        });
+        await vi.waitFor(() => {
+          const thread = document.querySelector('[data-slot="sidebar-inset"]')!;
+          expect(
+            Math.abs(thread.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+          ).toBeLessThanOrEqual(1);
+        });
+
+        diagMark("mod-b");
+        // Mod+B brings the list back.
+        const useMetaForMod = isMacPlatform(navigator.platform);
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "b",
+            metaKey: useMetaForMod,
+            ctrlKey: !useMetaForMod,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await vi.waitFor(() => {
+          expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+          expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
+        });
+
+        // Another page's list says nothing of the threads, so the rail does.
+        diagMark("nav-chats");
+        await mounted.router.navigate({ to: "/chats" });
+        await expect.element(page.getByTestId("chats-view-new-chat")).toBeVisible();
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+        await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
+
+        // Usage has no list: it takes the panel, and the toggle stays, disabled,
+        // with the user's choice kept for the pages that have one.
+        diagMark("nav-usage");
+        await mounted.router.navigate({ to: "/usage" });
+        await vi.waitFor(() => {
+          expect(
+            document
+              .querySelector('[data-slot="sidebar-wrapper"]')
+              ?.getAttribute("data-sidebar-state"),
+          ).toBe("collapsed");
+        });
+        await expect
+          .element(page.getByTestId("titlebar-sidebar-toggle"))
+          .toHaveAttribute("aria-disabled", "true");
+        document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]')!.click();
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+        diagMark("nav-back");
+        await mounted.router.navigate({ href: serverThreadPath(THREAD_ID) });
+        diagMark("expanded-wait");
+        await vi.waitFor(() => {
+          expect(
+            document
+              .querySelector('[data-slot="sidebar-wrapper"]')
+              ?.getAttribute("data-sidebar-state"),
+          ).toBe("expanded");
+        });
+      } finally {
+        diagMark("cleanup");
+        await mounted.cleanup();
+        diagMark("done");
+        clearInterval(diagMonitor);
+        cancelAnimationFrame(diagRaf);
+      }
+    },
+  );
 
   it("hides and shows the list from the rail button of the page on screen, and a double-click that opens a page leaves it showing", async () => {
     const mounted = await mountChatView({
