@@ -77,6 +77,20 @@ describe("release body notes", () => {
     ]);
   });
 
+  it("reads long runs of whitespace from GitHub in linear time", () => {
+    const tabs = "\t".repeat(200_000);
+    const started = performance.now();
+    expect(classifyReleaseChange(`a:${tabs}\n`)).toEqual({ kind: "changed", text: "A:" });
+    expect(classifyReleaseChange(`fix:${tabs}a thing${tabs}(#12)`)).toEqual({
+      kind: "fixed",
+      text: "A thing",
+    });
+    expect(
+      readReleaseBodyChanges(`## What's Changed\n- feat: x${" ".repeat(200_000)}by @who in`),
+    ).toEqual([{ kind: "new", text: "X by @who in" }]);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("finds nothing in a body with neither", () => {
     expect(readReleaseBodyChanges("Just words.")).toEqual([]);
     expect(parseReleaseNotesBlock("<!-- threadlines-release-notes {broken -->")).toBeNull();

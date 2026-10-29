@@ -93,7 +93,16 @@ const INTERNAL_SCOPES = new Set([
   "tests",
   "readme",
 ]);
-const CONVENTIONAL_TITLE = /^([a-z][a-z0-9-]*)(?:\(([^)]*)\))?(!)?:\s+(.+)$/i;
+// Run on text whose whitespace is already collapsed to single spaces, and
+// written so no two parts can match the same characters: titles and bodies
+// come from GitHub, and a pattern that backtracks would let a long run of
+// spaces stall the app.
+const CONVENTIONAL_TITLE = /^([a-z][a-z0-9-]*)(?:\(([^)]*)\))?(!)?: (\S.*)$/i;
+
+/** Every run of whitespace as one space, trimmed. */
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
 
 function sentenceCase(text: string): string {
   const trimmed = text.trim();
@@ -110,10 +119,9 @@ function sentenceCase(text: string): string {
 export function classifyReleaseChange(
   title: string,
 ): { readonly kind: ReleaseChangeKind; readonly text: string } | null {
-  const cleaned = title
-    .replace(/\s+\(#\d+\)$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = collapseWhitespace(title)
+    .replace(/ ?\(#\d+\)$/, "")
+    .trimEnd();
   if (cleaned.length === 0) return null;
   const match = CONVENTIONAL_TITLE.exec(cleaned);
   if (!match) {
@@ -164,23 +172,23 @@ export function readReleaseBodyChanges(body: string): ReadonlyArray<ReleaseChang
   if (block) return block.changes;
 
   const lines = body.replaceAll("\r\n", "\n").split("\n");
-  const start = lines.findIndex((line) => /^##\s+What's Changed\s*$/i.test(line.trim()));
+  const start = lines.findIndex((line) => /^## What's Changed$/i.test(collapseWhitespace(line)));
   if (start === -1) return [];
   const changes: Array<ReleaseChange> = [];
   for (const raw of lines.slice(start + 1)) {
-    const line = raw.trim();
-    if (/^\*\*Full Changelog\*\*/i.test(line) || /^##\s+New Contributors/i.test(line)) break;
+    const line = collapseWhitespace(raw);
+    if (/^\*\*Full Changelog\*\*/i.test(line) || /^## New Contributors/i.test(line)) break;
     if (/^<\/details>/i.test(line)) break;
-    if (!/^[-*]\s+/.test(line)) continue;
-    let title = line.replace(/^[-*]\s+/, "");
-    const pullRequest = /\/pull\/(\d+)\)?\s*$/.exec(title)?.[1];
+    if (!/^[-*] /.test(line)) continue;
+    let title = line.slice(2);
+    const pullRequest = /\/pull\/(\d+)\)?$/.exec(title)?.[1];
     title = title
       // GitHub's "by @who in url" (or a linked @who).
-      .replace(/\s+by\s+(?:\[@[^\]]+\]\([^)]*\)|@\S+)\s+in\s+\S+$/i, "")
+      .replace(/ by (?:\[@[^\]]+\]\([^)]*\)|@\S+) in \S+$/i, "")
       // The generator's own "in [#12](url)".
-      .replace(/\s+in\s+\[#\d+\]\([^)]*\)$/i, "")
+      .replace(/ in \[#\d+\]\([^)]*\)$/i, "")
       // A direct commit's leading "[`abc1234`](url)".
-      .replace(/^\[`[0-9a-f]+`\]\([^)]*\)\s+/i, "");
+      .replace(/^\[`[0-9a-f]+`\]\([^)]*\) /i, "");
     const change = classifyReleaseChange(title);
     if (!change) continue;
     changes.push(
