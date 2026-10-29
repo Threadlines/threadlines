@@ -57,12 +57,12 @@ const THREADLINES_PHONE: ComparisonCell = {
 /** Fleet: linked computers, and agents that start threads on them. */
 const THREADLINES_COMPUTERS: ComparisonCell = {
   mark: "yes",
-  text: "Agents start threads where the project is set up",
+  text: "Yes, where the project is set up",
 };
 
 const THREADLINES_TASKS: ComparisonCell = {
   mark: "yes",
-  text: "On a schedule, a GitHub issue or a webhook",
+  text: "Schedules, GitHub issues, webhooks",
 };
 
 /** Outside agents: approved terminal agents and the threadlines command. */
@@ -980,6 +980,249 @@ export const COMPARISONS: readonly Comparison[] = [
       { label: "remote development", url: "https://emdash.com/docs/remote-development" },
       { label: "automations", url: "https://emdash.com/docs/automations" },
       { label: "CI checks", url: "https://emdash.com/docs/ci-checks" },
+    ],
+  },
+  {
+    slug: "monocode",
+    name: "MonoCode",
+    maker: "hardbeat920",
+    title: "MonoCode alternative with several agents in one thread | Threadlines",
+    description:
+      "MonoCode and Threadlines are both free, MIT-licensed apps for running coding agents on Mac, Windows and Linux. Here's where they differ, including where MonoCode is ahead.",
+    headline: "A MonoCode alternative with several agents in one thread",
+    summary:
+      "A fast-moving MIT app with eleven agents and an inbox for automations. Threadlines puts several agents in one thread.",
+    intro:
+      "MonoCode is a free, MIT-licensed app that runs eleven coding agents in tabs and split panes, with an inbox for pull requests and issues. Threadlines is free and MIT-licensed too. It puts several agents in one thread, and an agent on one of your computers can start a thread on another.",
+    rows: [
+      {
+        icon: "dollar",
+        label: "Price and license",
+        threadlines: { mark: "yes", text: "Free, MIT" },
+        other: { mark: "yes", text: "Free, MIT" },
+      },
+      {
+        icon: "monitor",
+        label: "Desktop",
+        threadlines: THREADLINES_DESKTOP,
+        other: { mark: "yes", text: "macOS, Windows, Linux" },
+      },
+      {
+        icon: "phone",
+        label: "Phone",
+        threadlines: THREADLINES_PHONE,
+        other: { mark: "partial", text: "iPhone app in beta" },
+      },
+      {
+        icon: "agents",
+        label: "Agents",
+        threadlines: THREADLINES_AGENTS,
+        other: { text: "Eleven, including Hermes Agent and Devin" },
+      },
+      {
+        icon: "message",
+        label: "Two agents in a thread at once",
+        threadlines: { mark: "yes", text: "One can review the other's work" },
+        other: { mark: "no", text: "One at a time, by handoff" },
+      },
+      {
+        icon: "computers",
+        label: "Your other computers",
+        threadlines: THREADLINES_COMPUTERS,
+        other: { mark: "partial", text: "SSH hosts, experimental" },
+      },
+      {
+        icon: "clock",
+        label: "Scheduled and event tasks",
+        threadlines: THREADLINES_TASKS,
+        other: { mark: "yes", text: "Schedules, plus GitHub, GitLab and Linear events" },
+      },
+      {
+        icon: "terminal",
+        label: "Agents in your terminal",
+        threadlines: THREADLINES_TERMINAL_AGENTS,
+        other: { mark: "partial", text: "Only agents inside MonoCode" },
+      },
+      {
+        icon: "branch",
+        label: "Git worktree per task",
+        threadlines: { mark: "yes", text: "Per thread" },
+        other: { mark: "yes", text: "For parallel tasks" },
+      },
+      {
+        icon: "pullRequest",
+        label: "Pull requests and CI",
+        threadlines: { mark: "yes", text: "Beside the thread" },
+        other: { mark: "yes", text: "An inbox with checks, fixes and merge" },
+      },
+    ],
+    pickThreadlines: [
+      "You want two agents working in the same thread at once.",
+      "You want Claude Code or Codex in your terminal to start threads in the app.",
+    ],
+    pickOther: [
+      "You use Hermes Agent, omp or Devin.",
+      "You want a lead agent that hands work to agents from other providers.",
+      "You start work from GitLab, Jira or Azure DevOps issues.",
+    ],
+    faq: [
+      {
+        question: "Is MonoCode open source?",
+        answer:
+          "Yes. MonoCode is MIT-licensed, like Threadlines. Both are free and use the agent sign-ins you already have.",
+      },
+      {
+        question: "Does MonoCode run on Windows?",
+        answer: "Yes. MonoCode has a Windows installer, plus builds for Mac and Linux.",
+      },
+      {
+        question: "Can I use both?",
+        answer:
+          "Yes. They're separate apps, and both run the agent CLIs already on your computer with your own sign-ins.",
+      },
+    ],
+    checkedOn: "2026-10-29",
+    sources: [
+      { label: "MonoCode's README", url: "https://github.com/hardbeat920/monocode" },
+      {
+        label: "changelog",
+        url: "https://github.com/hardbeat920/monocode/blob/main/CHANGELOG.md",
+      },
+      {
+        label: "remote access",
+        url: "https://github.com/hardbeat920/monocode/blob/main/docs/remote-access.md",
+      },
+      {
+        label: "agent access",
+        url: "https://github.com/hardbeat920/monocode/blob/main/docs/agent-access.md",
+      },
+      {
+        label: "iPhone app",
+        url: "https://github.com/hardbeat920/monocode/blob/main/mobile/README.md",
+      },
+    ],
+  },
+  {
+    slug: "synara",
+    name: "Synara",
+    maker: "Emanuele-web04",
+    title: "Synara alternative with several agents in one thread | Threadlines",
+    description:
+      "Synara and Threadlines are both free, MIT-licensed apps that grew from T3 Code. Here's where they differ, including where Synara is ahead.",
+    headline: "A Synara alternative with several agents in one thread",
+    summary:
+      "Another app that grew from T3 Code, with hubs and a shared browser. Threadlines puts several agents in one thread.",
+    intro:
+      "Synara began as a clone of T3 Code in March, and Threadlines grew from T3 Code too. Both are free and MIT-licensed. Synara adds hubs, where a coordinator runs workers on different agents, and a browser it shares with the agent. Threadlines lets two agents work in one thread at the same time.",
+    rows: [
+      {
+        icon: "dollar",
+        label: "Price and license",
+        threadlines: { mark: "yes", text: "Free, MIT" },
+        other: { mark: "yes", text: "Free, MIT" },
+      },
+      {
+        icon: "monitor",
+        label: "Desktop",
+        threadlines: THREADLINES_DESKTOP,
+        other: { mark: "yes", text: "macOS, Windows, Linux" },
+      },
+      {
+        icon: "phone",
+        label: "Phone",
+        threadlines: THREADLINES_PHONE,
+        other: { mark: "yes", text: "Web client, iPhone app in early access" },
+      },
+      {
+        icon: "agents",
+        label: "Agents",
+        threadlines: THREADLINES_AGENTS,
+        other: { text: "Ten, including Devin and Factory Droid" },
+      },
+      {
+        icon: "message",
+        label: "Two agents in a thread at once",
+        threadlines: { mark: "yes", text: "One can review the other's work" },
+        other: { mark: "no", text: "One at a time, by handoff" },
+      },
+      {
+        icon: "computers",
+        label: "Your other computers",
+        threadlines: THREADLINES_COMPUTERS,
+        other: { mark: "yes", text: "Headless server, Remote in early access" },
+      },
+      {
+        icon: "clock",
+        label: "Scheduled and event tasks",
+        threadlines: THREADLINES_TASKS,
+        other: { mark: "partial", text: "Schedules" },
+      },
+      {
+        icon: "terminal",
+        label: "Agents in your terminal",
+        threadlines: THREADLINES_TERMINAL_AGENTS,
+        other: { mark: "yes", text: "An MCP server for Codex or Claude Code" },
+      },
+      {
+        icon: "branch",
+        label: "Git worktree per task",
+        threadlines: { mark: "yes", text: "Per thread" },
+        other: { mark: "yes", text: "Per task" },
+      },
+      {
+        icon: "pullRequest",
+        label: "Pull requests and CI",
+        threadlines: { mark: "yes", text: "Beside the thread" },
+        other: { mark: "yes", text: "Stacked PRs and auto-fix for CI" },
+      },
+      {
+        icon: "globe",
+        label: "Built-in browser",
+        threadlines: { mark: "yes", text: "Built in" },
+        other: { mark: "yes", text: "Shared with the agent, computer use on macOS" },
+      },
+    ],
+    pickThreadlines: [
+      "You want two agents working in the same thread at once.",
+      "You want phone alerts without signing in to anything.",
+    ],
+    pickOther: [
+      "You want hubs, where a coordinator runs workers on different agents.",
+      "You want the iOS Simulator, or computer use on macOS, beside the chat.",
+      "You want a built-in code editor with a JavaScript debugger.",
+    ],
+    faq: [
+      {
+        question: "Is Synara a fork of T3 Code?",
+        answer:
+          "Its changelog says it started as a clone of T3 Code in March 2026. Threadlines also grew from T3 Code, and all three are MIT-licensed.",
+      },
+      {
+        question: "Can I use both?",
+        answer:
+          "Yes. They're separate apps, and both run the agent CLIs already on your computer with your own sign-ins.",
+      },
+    ],
+    checkedOn: "2026-10-29",
+    sources: [
+      { label: "Synara's README", url: "https://github.com/Emanuele-web04/synara" },
+      { label: "website", url: "https://trysynara.com" },
+      { label: "handoffs", url: "https://trysynara.com/docs/workflows/handoffs" },
+      { label: "hubs", url: "https://trysynara.com/docs/features/hubs" },
+      { label: "pull requests", url: "https://trysynara.com/docs/workflows/pull-requests" },
+      {
+        label: "browser verification",
+        url: "https://trysynara.com/docs/workflows/browser-verification",
+      },
+      { label: "automations", url: "https://trysynara.com/docs/workflows/automations" },
+      { label: "external MCP", url: "https://trysynara.com/docs/workflows/external-mcp" },
+      { label: "headless server", url: "https://trysynara.com/docs/workflows/headless-server" },
+      { label: "computer use", url: "https://trysynara.com/docs/features/computer-use" },
+      { label: "releases", url: "https://github.com/Emanuele-web04/synara/releases" },
+      {
+        label: "changelog",
+        url: "https://github.com/Emanuele-web04/synara/blob/main/CHANGELOG.md",
+      },
     ],
   },
 ];
