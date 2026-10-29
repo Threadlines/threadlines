@@ -60,6 +60,7 @@ import {
   registerChatViewSuiteHooks,
   setSuppressInitialShellSnapshot,
 } from "./ChatView.browser-harness";
+import { useStore as __diagStore } from "../store";
 
 vi.mock("../lib/gitStatusState", () => ({
   // Read synchronously by the draft seeder to skip a checkout already known
@@ -387,7 +388,7 @@ describe("ChatView (full app): app shell", () => {
 
   it(
     "hides the thread list inside the panel, moving no button, and keeps what needs you on the rail",
-    { repeats: 10 },
+    { repeats: 20 },
     async () => {
       // DIAG: find where this spec stalls on CI.
       const diagStart = performance.now();
@@ -475,7 +476,48 @@ describe("ChatView (full app): app shell", () => {
           ).toBe("collapsed");
         });
         diagMark("rail-working-count");
-        await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
+        try {
+          await expect
+            .element(page.getByTestId("rail-threads-working"), { timeout: 5_000 })
+            .toMatchTextContent("1");
+        } catch (error) {
+          const diagEnv = __diagStore.getState().environmentStateById[LOCAL_ENVIRONMENT_ID]!;
+          console.warn(
+            "DIAG rail",
+            document.querySelector('[data-testid="rail-threads"]')?.outerHTML.slice(0, 2000),
+          );
+          console.warn(
+            "DIAG summaries",
+            JSON.stringify(
+              Object.values(diagEnv.sidebarThreadSummaryById).map((summary) => ({
+                id: summary.id,
+                projectId: summary.projectId,
+                archivedAt: summary.archivedAt,
+                latestTurn: summary.latestTurn?.state ?? null,
+                session: summary.session?.status ?? null,
+                orchestration: summary.session?.orchestrationStatus ?? null,
+                pending: summary.hasPendingApprovals,
+                input: summary.hasPendingUserInput,
+                latestUserMessageAt: summary.latestUserMessageAt,
+                updatedAt: summary.updatedAt,
+              })),
+            ),
+          );
+          console.warn(
+            "DIAG ui",
+            JSON.stringify({
+              listOpen: useUiStateStore.getState().sidebarListOpen,
+              sidebarState: document
+                .querySelector('[data-slot="sidebar-wrapper"]')
+                ?.getAttribute("data-sidebar-state"),
+              path: mounted.router.state.location.pathname,
+              railButtons: [...document.querySelectorAll('[data-testid^="rail-"]')].map(
+                (node) => `${node.getAttribute("data-testid")}=${node.textContent}`,
+              ),
+            }),
+          );
+          throw error;
+        }
         diagMark("frame-buttons");
         // Hiding the list moves no button in the frame; only the page's edge moves.
         expect(frameButtons.map(placeOf)).toEqual(placesBefore);
