@@ -3,7 +3,8 @@
  * picked from a menu that starts on the version you have. A stable release
  * shows its reviewed notes (title, summary, video, highlights); a nightly
  * build shows the changes merged since the build you had before, build by
- * build, read from GitHub.
+ * build, then the earlier nightlies back to the last stable release, read
+ * from GitHub.
  */
 import {
   parseNightlyVersion,
@@ -11,7 +12,6 @@ import {
   RELEASE_NOTES_SITE_URL,
   type ReleaseNotesEntry,
 } from "@threadlines/shared/releaseNotes";
-import { compareSemverVersions } from "@threadlines/shared/semver";
 import { PlayIcon } from "lucide-react";
 import { useState } from "react";
 import releaseNotes from "virtual:release-notes";
@@ -20,10 +20,13 @@ import { APP_VERSION } from "../branding";
 import { openExternalUrl } from "../lib/externalLinks";
 import { readPreviousAppVersion, useNightlyBuilds } from "../lib/whatsNew";
 import {
-  countChanges,
+  describeBuild,
+  describeNightlyLead,
   type NightlyBuildChanges,
+  planNightlyList,
   releaseChangeTag,
   releaseNotesUpTo,
+  splitNightlyBuilds,
 } from "../lib/whatsNew.logic";
 import { Button } from "./ui/button";
 import { DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "./ui/dialog";
@@ -101,7 +104,7 @@ export function WhatsNewDialogContent() {
         {entry ? (
           <ReleaseNotesView entry={entry} />
         ) : choice === NIGHTLY_CHOICE ? (
-          <NightlyChangesView />
+          <NightlyChangesView lastStableVersion={entries[0]?.version ?? null} />
         ) : (
           <p className="text-sm text-muted-foreground">This build has no release notes.</p>
         )}
@@ -194,18 +197,17 @@ function ReleaseVideo({ video }: { readonly video: NonNullable<ReleaseNotesEntry
   );
 }
 
-/** "build 350" for a nightly, "v0.8.0" for anything else. */
-function describeBuild(version: string): string {
-  const nightly = parseNightlyVersion(version);
-  return nightly ? `build ${nightly.build}` : `v${version}`;
-}
-
-function NightlyChangesView() {
-  // Moving back to an older build has nothing new to list; show this one's own.
-  const previous = readPreviousAppVersion();
-  const after =
-    previous !== null && compareSemverVersions(previous, APP_VERSION) < 0 ? previous : null;
-  const query = useNightlyBuilds({ after, upTo: APP_VERSION });
+/**
+ * A nightly's list: the builds since the one this device ran before, then the
+ * earlier nightlies back to the last stable release, read from GitHub.
+ */
+function NightlyChangesView({ lastStableVersion }: { readonly lastStableVersion: string | null }) {
+  const { since, range } = planNightlyList({
+    appVersion: APP_VERSION,
+    previousVersion: readPreviousAppVersion(),
+    lastStableVersion,
+  });
+  const query = useNightlyBuilds(range);
 
   if (query.isPending) {
     return <p className="text-sm text-muted-foreground">Reading the changes from GitHub…</p>;
@@ -218,29 +220,36 @@ function NightlyChangesView() {
     );
   }
   const { builds, complete } = query.data;
-  const count = countChanges(builds);
-  const changes = count === 1 ? "1 change" : `${count} changes`;
-  const lead =
-    builds.length === 0
-      ? "GitHub doesn't list this build's changes yet."
-      : after === null
-        ? count === 0
-          ? "Only internal changes in this build."
-          : `${changes} in this build`
-        : !complete
-          ? `${changes} in the newest ${builds.length} builds. Older ones are on GitHub.`
-          : count === 0
-            ? `Only internal changes since ${describeBuild(after)}.`
-            : `${changes} since ${describeBuild(after)}, the one you had before`;
+  const { fresh, earlier } = splitNightlyBuilds(builds, since, APP_VERSION);
+  // Any earlier build means the list reached back past the one you had.
+  const freshComplete = complete || since === null || earlier.length > 0;
+  const earlierWithChanges = earlier.filter((build) => build.changes.length > 0);
 
   return (
     <div className="grid gap-3" data-testid="whats-new-nightly">
-      <p className="text-[13px] text-muted-foreground">{lead}</p>
-      {builds
+      <p className="text-[13px] text-muted-foreground">
+        {describeNightlyLead({ fresh, since, freshComplete, appVersion: APP_VERSION })}
+      </p>
+      {fresh
         .filter((build) => build.changes.length > 0)
         .map((build) => (
           <NightlyBuildSection key={build.version} build={build} />
         ))}
+      {earlierWithChanges.length > 0 ? (
+        <section className="grid gap-3 border-t pt-3" data-testid="whats-new-nightly-earlier">
+          <h3 className="font-semibold text-muted-foreground text-xs">
+            {range.after === null
+              ? "Earlier builds"
+              : `Earlier builds since ${describeBuild(range.after)}`}
+          </h3>
+          {earlierWithChanges.map((build) => (
+            <NightlyBuildSection key={build.version} build={build} />
+          ))}
+        </section>
+      ) : null}
+      {!complete && freshComplete ? (
+        <p className="text-muted-foreground text-xs">Older builds are on GitHub.</p>
+      ) : null}
     </div>
   );
 }

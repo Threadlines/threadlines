@@ -131,12 +131,15 @@ the previous stable tag, so their notes include the full stable-to-stable commit
 range even if some of those commits already appeared in nightly notes.
 
 Every release body ends with a hidden `<!-- threadlines-release-notes {...} -->`
-comment that the app's "What's new" reads: the release's title (stable) and its
-merged changes, sorted from their conventional-commit types before the visible
-list drops them (`packages/shared/src/releaseNotes.ts`). The rail update card
-names a waiting release with it, and the nightly list shows each build's
-changes. Don't strip it when editing a published body. The stable notes
-themselves ship inside the app, built from the changelog files below.
+comment that the app's "What's new" reads: the release's title (stable) and
+every merged change with its own title, conventional type and scope included,
+even where the visible list drops them. The app sorts those titles itself
+(`packages/shared/src/releaseNotes.ts`), so a rule change, such as showing
+security fixes that ship as dependency bumps, also reaches releases already
+published. The rail update card names a waiting release with it, and the
+nightly list and post-update notice show each build's changes. Don't strip it
+when editing a published body. The stable notes themselves ship inside the app,
+built from the changelog files below.
 
 Stable releases also require a human-reviewed changelog entry under
 `apps/marketing/src/content/changelog/v<version>.md`. Nightly releases do not

@@ -54,9 +54,8 @@ export function WhatsNewDialogHost() {
 }
 
 /**
- * Once per version on each device, the first launch of a newer stable
- * release says so (whatsNewNotice.ts, a chunk of its own so startup never
- * carries it).
+ * Once per version on each device, the first launch of a newer build says so
+ * (whatsNewNotice.ts, a chunk of its own so startup never carries it).
  */
 export function announceUpdateOnce(): Promise<void> {
   return import("./whatsNewNotice").then((module) => module.announceUpdateOnce());
