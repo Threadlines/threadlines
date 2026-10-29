@@ -570,7 +570,8 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
-      const filePath = path.join(dir, "preview.html");
+      // Explorer misreads a space or a comma in a path that is not quoted for it.
+      const filePath = path.join(dir, "RMA form, final.pdf");
       yield* fs.writeFileString(filePath, "<!doctype html>");
 
       const launch1 = yield* resolveEditorLaunch(
@@ -590,8 +591,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(launch2, {
         command: "C:\\Windows\\explorer.exe",
-        args: [`/select,${filePath}`],
+        args: [`/select,"${filePath}"`],
         shell: false,
+        verbatimArgs: true,
         windowsHide: false,
       });
 
@@ -601,8 +603,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       });
       assert.deepEqual(launch3, {
         command: "C:\\Windows\\explorer.exe",
-        args: [dir],
+        args: [`"${dir}"`],
         shell: false,
+        verbatimArgs: true,
         windowsHide: false,
       });
 
@@ -683,8 +686,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(launch2, {
         command: "C:\\Windows\\explorer.exe",
-        args: [`/select,${filePath}`],
+        args: [`/select,"${filePath}"`],
         shell: false,
+        verbatimArgs: true,
         windowsHide: false,
       });
     }),
@@ -748,8 +752,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       assert.deepEqual(launch, {
         command: "C:\\Windows\\explorer.exe",
-        args: [dir],
+        args: [`"${dir}"`],
         shell: false,
+        verbatimArgs: true,
         windowsHide: false,
       });
     }),

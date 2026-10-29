@@ -21,6 +21,7 @@ import {
   type CommandPathResolver,
 } from "@threadlines/shared/shell";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
+import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,12 @@ interface EditorLaunch {
   readonly args: ReadonlyArray<string>;
   readonly shell?: boolean;
   readonly windowsHide?: boolean;
+  /**
+   * Windows: the args are already quoted the way the program reads them and
+   * go on its command line as written. Node's own quoting would wrap an arg
+   * with a space in it whole and leave one with only a comma bare.
+   */
+  readonly verbatimArgs?: boolean;
   /**
    * Launched instead when this command fails. A launch with a fallback is a
    * quick request rather than an app: it runs attached, and the fallback
@@ -347,6 +354,17 @@ function resolveNearestExistingDirectory(
   });
 }
 
+/**
+ * Explorer parses its own command line: a comma splits it as a space does,
+ * and only double quotes keep a path whole. As Node quotes args,
+ * `/select,C:\a b.pdf` arrives wrapped whole and `C:\x\a,b.pdf` bare, and
+ * Explorer shows the wrong folder, usually Documents. A Windows path cannot
+ * contain `"`, so wrapping it is all the quoting needed.
+ */
+function quoteExplorerPath(path: string): string {
+  return `"${path}"`;
+}
+
 const resolveWindowsFileManagerLaunch = Effect.fn("resolveWindowsFileManagerLaunch")(function* (
   target: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -356,17 +374,20 @@ const resolveWindowsFileManagerLaunch = Effect.fn("resolveWindowsFileManagerLaun
   const targetType = yield* statTargetType(normalizedTarget);
   const args =
     targetType === "file"
-      ? [`/select,${normalizedTarget}`]
+      ? [`/select,${quoteExplorerPath(normalizedTarget)}`]
       : [
-          targetType === "directory"
-            ? normalizedTarget
-            : ((yield* resolveNearestExistingDirectory(normalizedTarget)) ?? normalizedTarget),
+          quoteExplorerPath(
+            targetType === "directory"
+              ? normalizedTarget
+              : ((yield* resolveNearestExistingDirectory(normalizedTarget)) ?? normalizedTarget),
+          ),
         ];
 
   return {
     command: resolveWindowsExplorerPath(env),
     args,
     shell: false,
+    verbatimArgs: true,
     // `windowsHide` maps to SW_HIDE for GUI processes in libuv. Explorer
     // starts successfully in that state but never presents its window.
     windowsHide: false,
@@ -603,6 +624,34 @@ const runAttached = Effect.fn("externalLauncher.runAttached")(function* (
   );
 });
 
+/**
+ * Starts a detached program with its args on the command line as written
+ * (see {@link EditorLaunch.verbatimArgs}). Effect's process options have no
+ * way to ask Node for that, so this launch goes to Node directly.
+ */
+function launchVerbatim(launch: EditorLaunch): Effect.Effect<void, ExternalLauncherError> {
+  return Effect.callback<void, ExternalLauncherError>((resume) => {
+    const child = spawn(launch.command, launch.args, {
+      detached: true,
+      shell: false,
+      stdio: "ignore",
+      windowsHide: launch.windowsHide ?? true,
+      windowsVerbatimArguments: true,
+    });
+    child.once("error", (cause) => {
+      resume(
+        Effect.fail(
+          new ExternalLauncherError({ message: "failed to spawn detached process", cause }),
+        ),
+      );
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resume(Effect.void);
+    });
+  });
+}
+
 export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(function* (
   launch: EditorLaunch,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
@@ -614,6 +663,9 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
     return yield* new ExternalLauncherError({
       message: `Editor command not found: ${launch.command}`,
     });
+  }
+  if (launch.verbatimArgs === true) {
+    return yield* launchVerbatim(launch);
   }
 
   const isWin32 = process.platform === "win32";
