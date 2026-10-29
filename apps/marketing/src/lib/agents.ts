@@ -136,6 +136,16 @@ export const AGENTS: readonly Agent[] = [
     ],
     faq: [
       {
+        question: "Is Threadlines OpenAI's Codex app?",
+        answer:
+          "No. OpenAI's own Codex app is now part of the ChatGPT desktop app. Threadlines is a separate, free and open-source app that runs the Codex CLI with your ChatGPT sign-in, and can put Claude Code or another agent in the same thread.",
+      },
+      {
+        question: "Can I run Codex on my other computers?",
+        answer:
+          "Yes. Link your Mac, a Windows PC or a Linux box, and Fleet shows what Codex is doing on each. An agent on one computer can start a thread on another when it needs that machine, after asking you first unless you allow it.",
+      },
+      {
         question: "Does Threadlines use my ChatGPT subscription?",
         answer:
           "Yes. It runs the Codex CLI with your ChatGPT sign-in, so it uses the same limits as Codex anywhere else. An OpenAI API key works too, and that bills per token.",
@@ -219,6 +229,16 @@ export const AGENTS: readonly Agent[] = [
       START_STEP,
     ],
     faq: [
+      {
+        question: "Is Threadlines Anthropic's Claude Code app?",
+        answer:
+          "No. Anthropic's own Claude Code app is the Code tab in the Claude desktop app. Threadlines is a separate, free and open-source app that runs Claude Code with your sign-in, and can put Codex or another agent in the same thread.",
+      },
+      {
+        question: "Can I run Claude Code on my other computers?",
+        answer:
+          "Yes. Link your Mac, a Windows PC or a Linux box, and Fleet shows what Claude Code is doing on each. An agent on one computer can start a thread on another when it needs that machine, after asking you first unless you allow it.",
+      },
       {
         question: "Does Threadlines use my Claude subscription?",
         answer:

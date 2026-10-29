@@ -19,10 +19,20 @@ context across tools.
 
 ## Why Threadlines
 
+- **All your computers in one app.** Link your Mac, a Windows PC, a Mac mini or
+  a Linux box. An agent on one can start a thread on another when it needs that
+  machine, after asking you first unless you allow it, and Fleet shows what
+  every computer is running.
 - **Several agents in one thread.** Add a second agent to check the first one's
   work, or ask Codex or Claude a question while another agent keeps going.
 - **Agents start their own threads.** An agent can split a big job across new
   threads, each on the model it picks, and their answers come back to it.
+- **Agents in your terminal can use it too.** Once you approve them, Claude
+  Code, Codex, Gemini CLI or Cursor can start threads here and follow them.
+  Scripts can do the same with the `threadlines` command.
+- **Scheduled and event tasks.** An agent starts on your prompt at the times you
+  pick, or when a GitHub issue gets a label or a webhook comes in, while
+  Threadlines is running on that computer.
 - **Pull requests and CI beside the chat.** Review a pull request and its checks
   next to the thread that made it, and send feedback straight to the agent.
 - **A browser beside every thread.** Review visual changes and send the exact
@@ -38,7 +48,9 @@ context across tools.
 - **Set up in minutes.** A first-run checklist installs the agent CLIs with one
   click and signs you in without leaving the app.
 - **Your phone is a client.** Pair it with a QR code and check on running
-  threads from anywhere, against the desktop app or a self-hosted server.
+  threads from anywhere, against the desktop app or a self-hosted server. It
+  alerts you when an agent needs you, finishes or fails, and a swipe pins a
+  thread or wraps it up.
 - **One usage picture across machines.** Token and cost dashboards read the
   agents' own transcripts on every computer you run, merged into one view.
 
