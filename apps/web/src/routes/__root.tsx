@@ -38,6 +38,11 @@ import { preloadThreadMoveDialog, ThreadMoveDialogHost } from "../components/Thr
 import { DeviceRenameDialogHost } from "../components/DeviceRenameDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import {
+  announceUpdateOnce,
+  preloadWhatsNewDialog,
+  WhatsNewDialogHost,
+} from "../components/WhatsNewDialog";
+import {
   ConnectComputerDialogHost,
   preloadConnectComputerDialog,
 } from "../components/settings/connections/JoinComputerDialog";
@@ -253,11 +258,14 @@ function RootRouteView() {
         <ThreadRenameDialogHost />
         <DeviceRenameDialogHost />
         <ConnectComputerDialogHost />
+        <WhatsNewDialogHost />
         <ExpandedImageViewerHost />
         <ProviderSignInDialogHost />
         {primaryEnvironmentAuthenticated ? <OutsideAgentsHost /> : null}
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+        {/* Not over first-run setup: the one chance would go to a screen about something else. */}
+        {shownRouteId !== "/setup" ? <WhatsNewNotice /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         <ProviderUpdateProgress />
         {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
@@ -834,8 +842,30 @@ function AppShellIdlePreloads() {
       void preloadConnectComputerDialog();
       void preloadProviderSignInDialog();
       void preloadOutsideAgentDialog();
+      void preloadWhatsNewDialog();
     });
   }, [router, workspaceLoaded]);
+
+  return null;
+}
+
+/**
+ * The first launch of a newer version says so, once on each device, once the
+ * workspace has painted (components/WhatsNewDialog.tsx).
+ */
+function WhatsNewNotice() {
+  const workspaceLoaded = useStore(selectBootstrapCompleteForActiveEnvironment);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+    return whenIdleAfterFirstPaint(() => {
+      void announceUpdateOnce().catch((error: unknown) => {
+        console.warn("[threadlines] the update notice failed", error);
+      });
+    });
+  }, [workspaceLoaded]);
 
   return null;
 }

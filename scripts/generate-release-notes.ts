@@ -7,6 +7,8 @@ import { parseArgs } from "node:util";
 
 import { parse as parseYaml } from "yaml";
 
+import { classifyReleaseChange, formatReleaseNotesBlock } from "@threadlines/shared/releaseNotes";
+
 import { resolveReleaseNotesBaselineTag, type ReleaseChannel } from "./lib/release-tags.ts";
 
 export interface ReleaseNoteCommit {
@@ -28,6 +30,8 @@ interface FormatReleaseNotesInput {
 }
 
 export interface CuratedReleaseContent {
+  /** The release's title, the one its changelog page leads with. */
+  readonly title?: string;
   readonly summary: string;
   readonly highlights: ReadonlyArray<{
     readonly title: string;
@@ -401,6 +405,9 @@ export function parseCuratedReleaseContent(content: string): CuratedReleaseConte
   }
 
   return {
+    ...(typeof record.title === "string" && record.title.trim().length > 0
+      ? { title: record.title.trim() }
+      : {}),
     summary: requiredString(record.summary, "summary"),
     highlights: record.highlights.map((value, index) => {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -466,6 +473,30 @@ export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   ].join("\n");
 }
 
+/**
+ * The release body: the notes, then the hidden block the app reads for
+ * "What's new" (packages/shared/src/releaseNotes.ts). The block's changes come
+ * from the commits themselves, so every change keeps the conventional type
+ * the visible list may have dropped.
+ */
+export function formatReleaseNotesBody(input: FormatReleaseNotesInput): string {
+  const changes = input.commits
+    .map(releaseNoteEntryFromCommit)
+    .filter((entry) => !isReleasePreparationTitle(entry.title))
+    .flatMap((entry) => {
+      const change = classifyReleaseChange(entry.title);
+      if (!change) return [];
+      return entry.pullRequestNumber === undefined
+        ? [change]
+        : [{ ...change, pullRequest: entry.pullRequestNumber }];
+    });
+  const block = formatReleaseNotesBlock({
+    ...(input.curated?.title ? { title: input.curated.title } : {}),
+    changes,
+  });
+  return `${formatReleaseNotes(input)}\n${block}\n`;
+}
+
 function main(): void {
   const { values } = parseArgs({
     options: {
@@ -499,7 +530,7 @@ function main(): void {
     typeof values["github-notes-file"] === "string"
       ? values["github-notes-file"].trim() || undefined
       : undefined;
-  const body = formatReleaseNotes({
+  const body = formatReleaseNotesBody({
     channel,
     currentTag,
     previousTag,

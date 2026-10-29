@@ -1,5 +1,5 @@
 import { CircleArrowUpIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
@@ -19,6 +19,8 @@ import { cn } from "~/lib/utils";
 // The ring sits 3px inside the 34px button: a 28-unit box, radius 13.
 const RING_RADIUS = 13;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
+
+const RailUpdateNote = lazy(() => import("./RailUpdateNote"));
 
 const DOT_TONE: Record<SidebarDesktopUpdateTagTone, UpdateStatusTone | null> = {
   idle: null,
@@ -81,7 +83,18 @@ export function RailUpdateButton() {
       label={`${versionLabel}. ${card.line}`}
       testId="rail-update"
       side="right"
-      tooltip={<RailUpdateCard card={card} />}
+      tooltip={
+        <RailUpdateCard
+          card={card}
+          note={
+            card.lead === "Update to" && state ? (
+              <Suspense fallback={null}>
+                <RailUpdateNote state={state} />
+              </Suspense>
+            ) : null
+          }
+        />
+      }
       // Its card says what the click started ("Checking for updates…", then
       // the answer), so it stays up while the pointer does. Restarting opens
       // its confirmation instead.

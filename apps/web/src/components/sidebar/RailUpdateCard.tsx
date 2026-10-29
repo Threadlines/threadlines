@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { RailUpdateCard as RailUpdateCardModel } from "../desktopUpdate.logic";
 import { cn } from "~/lib/utils";
@@ -207,6 +215,12 @@ function RollingText({
   );
 }
 
+/** Widens the card to its content; while it stays open it never narrows. */
+function growToFit(content: HTMLElement, setWidth: Dispatch<SetStateAction<number | null>>) {
+  const need = Math.ceil(content.offsetWidth);
+  setWidth((current) => (current === null ? need : Math.max(current, need)));
+}
+
 /**
  * The rail's update card: the version as an odometer. While a check runs its
  * digits spin; the answer lands them, back on the version the user has, or
@@ -217,16 +231,29 @@ function RollingText({
  * open it only grows (gliding), so a shorter line never makes it shrink and
  * grow back. It fits exactly again the next time it opens.
  */
-export function RailUpdateCard({ card }: { readonly card: RailUpdateCardModel }) {
+export function RailUpdateCard({
+  card,
+  note = null,
+}: {
+  readonly card: RailUpdateCardModel;
+  /** A line about what the waiting update brings, between the title and the status. */
+  readonly note?: ReactNode;
+}) {
   const contentRef = useRef<HTMLSpanElement>(null);
   const [width, setWidth] = useState<number | null>(null);
 
   useLayoutEffect(() => {
-    const content = contentRef.current;
-    if (!content) return;
-    const need = Math.ceil(content.offsetWidth);
-    setWidth((current) => (current === null ? need : Math.max(current, need)));
+    if (contentRef.current) growToFit(contentRef.current, setWidth);
   });
+  // A line that arrives on its own (the waiting update's note, once fetched)
+  // changes the content without rendering the card again.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => growToFit(content, setWidth));
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
 
   const versionTone = card.changed.triple ? "text-primary-readable" : undefined;
   return (
@@ -262,6 +289,7 @@ export function RailUpdateCard({ card }: { readonly card: RailUpdateCardModel })
             </span>
           ) : null}
         </span>
+        {note}
         <RollingText
           text={card.line}
           rollKey={card.lineKind}

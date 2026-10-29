@@ -44,6 +44,7 @@ import * as DesktopLifecycle from "./app/DesktopLifecycle.ts";
 import * as DesktopObservability from "./app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
+import * as DesktopVersionHistory from "./app/DesktopVersionHistory.ts";
 import * as DesktopSavedEnvironments from "./settings/DesktopSavedEnvironments.ts";
 import * as DesktopScreenCapture from "./screenCapture/DesktopScreenCapture.ts";
 import * as PreviewAutomation from "./preview/PreviewAutomation.ts";
@@ -264,7 +265,11 @@ const desktopFoundationLayer = Layer.mergeAll(
   DesktopClientSettings.layer,
   DesktopSavedEnvironments.layer,
   DesktopAssets.layer,
-  DesktopObservability.layer.pipe(Layer.provideMerge(DesktopDataMigration.layer)),
+  // Both write into the Threadlines folder, so both wait for the legacy data
+  // to move in first: an entry there would make the migration skip it.
+  Layer.mergeAll(DesktopObservability.layer, DesktopVersionHistory.layer).pipe(
+    Layer.provideMerge(DesktopDataMigration.layer),
+  ),
 ).pipe(Layer.provideMerge(desktopSecretStorageLayer), Layer.provideMerge(desktopEnvironmentLayer));
 
 const desktopSshLayer = Layer.mergeAll(desktopSshEnvironmentLayer, DesktopSshRemoteApi.layer).pipe(

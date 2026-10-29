@@ -74,6 +74,7 @@ import {
   type AutoArchiveProjectGroup,
 } from "../../threadAutoArchive";
 import { Button } from "../ui/button";
+import { openWhatsNewDialog } from "../WhatsNewDialog";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -244,6 +245,20 @@ function AboutVersionTitle() {
   );
 }
 
+/** Opens "What's new" from the Version row, on every kind of device. */
+function WhatsNewLink() {
+  return (
+    <button
+      type="button"
+      className="font-medium text-foreground underline-offset-2 hover:underline focus-ring"
+      onClick={openWhatsNewDialog}
+      data-testid="settings-whats-new"
+    >
+      See what's new
+    </button>
+  );
+}
+
 function AboutVersionSection() {
   const queryClient = useQueryClient();
   const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
@@ -299,10 +314,14 @@ function AboutVersionSection() {
   };
   const buttonLabel =
     actionLabel[updateAction] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    updateAction === "download" || updateAction === "install"
-      ? "Update available."
-      : "Current version of the application.";
+  const description = (
+    <>
+      {updateAction === "download" || updateAction === "install"
+        ? "Update available."
+        : "Current version of the application."}{" "}
+      <WhatsNewLink />
+    </>
+  );
 
   return (
     <>
@@ -1177,7 +1196,11 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         ) : (
           <SettingsRow
             title={<AboutVersionTitle />}
-            description="Current version of the application."
+            description={
+              <>
+                Current version of the application. <WhatsNewLink />
+              </>
+            }
           />
         )}
         {!isPhoneSurface ? (

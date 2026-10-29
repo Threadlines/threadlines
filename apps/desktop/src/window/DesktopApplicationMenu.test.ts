@@ -287,4 +287,14 @@ describe("DesktopApplicationMenu", () => {
       );
     }),
   );
+
+  it.effect("opens What's new in the app from the Help menu", () =>
+    Effect.gen(function* () {
+      const { template, selectedAction } = yield* configureMenu("win32");
+
+      const helpItems = submenuItems(template, (item) => item.role === "help", "Help");
+      clickMenuItem(helpItems, "What's New");
+      assert.equal(yield* Deferred.await(selectedAction), DesktopWindow.OPEN_WHATS_NEW_MENU_ACTION);
+    }),
+  );
 });

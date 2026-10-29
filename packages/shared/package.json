@@ -127,6 +127,10 @@
       "types": "./src/semver.ts",
       "import": "./src/semver.ts"
     },
+    "./releaseNotes": {
+      "types": "./src/releaseNotes.ts",
+      "import": "./src/releaseNotes.ts"
+    },
     "./checkBacks": {
       "types": "./src/checkBacks.ts",
       "import": "./src/checkBacks.ts"

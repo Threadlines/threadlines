@@ -9,6 +9,7 @@ import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 import type { PluginOption } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
+import { releaseNotesPlugin } from "./releaseNotesPlugin";
 
 const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
@@ -155,6 +156,7 @@ export function createWebPlugins(options?: {
       ],
     }),
     tailwindcss(),
+    releaseNotesPlugin(),
   ];
 }
 

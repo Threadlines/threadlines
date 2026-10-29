@@ -142,6 +142,29 @@ describe("RailUpdateButton", () => {
     expect(bridge.installUpdate).not.toHaveBeenCalled();
   });
 
+  it("names what a waiting update brings, read from its GitHub release when the card opens", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        tag_name: "v1.0.1",
+        body: '## Highlights\n\n<!-- threadlines-release-notes {"v":1,"title":"Fleet: your computers work as one","changes":[]} -->',
+        html_url: "https://github.com/Threadlines/threadlines/releases/tag/v1.0.1",
+        published_at: "2026-10-30T12:00:00Z",
+        draft: false,
+      }),
+    );
+    stubDesktopBridge({ ...idleUpdateState, status: "available", availableVersion: "1.0.1" });
+    await mountButton();
+    await expect.element(dot()).toHaveAttribute("data-tone", "progress");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    await button().hover();
+    await expect
+      .element(page.getByTestId("rail-update-card-note"))
+      .toHaveTextContent("Fleet: your computers work as one");
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("/releases/tags/v1.0.1");
+    fetchSpy.mockRestore();
+  });
+
   it("rolls its line when what it says changes, and ticks a download's percent in place", async () => {
     const cardFor = (state: Partial<DesktopUpdateState>) =>
       describeRailUpdateCard({

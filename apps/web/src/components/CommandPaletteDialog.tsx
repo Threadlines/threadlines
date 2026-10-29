@@ -31,6 +31,7 @@ import {
   ArrowUpIcon,
   BotIcon,
   ChartColumnIcon,
+  CircleArrowUpIcon,
   CornerLeftUpIcon,
   EraserIcon,
   FileTextIcon,
@@ -169,6 +170,8 @@ import { editorLabel } from "./EditorOpenOptions";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { openThreadMoveDialog } from "./ThreadMoveDialog";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { openWhatsNewDialog } from "./WhatsNewDialog";
+import { APP_VERSION } from "../branding";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useThreadMoveOffered } from "../environments/links/threadMoves";
 import { useOutsideAgentsSnapshot } from "../environments/outsideAgents/outsideAgents";
@@ -1761,6 +1764,17 @@ export function OpenCommandPaletteDialog() {
       },
     });
   }
+  actionItems.push({
+    kind: "action",
+    value: "action:whats-new",
+    searchTerms: ["what's new", "whats new", "changelog", "release notes", "version", "update"],
+    title: "What's new in Threadlines",
+    description: `The notes for v${APP_VERSION}`,
+    icon: <CircleArrowUpIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openWhatsNewDialog();
+    },
+  });
   actionItems.push({
     kind: "action",
     value: "action:connect-computer",

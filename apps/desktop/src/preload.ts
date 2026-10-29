@@ -75,6 +75,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     localEnvironmentBootstrap = result as ReturnType<DesktopBridge["getLocalEnvironmentBootstrap"]>;
     return localEnvironmentBootstrap;
   },
+  getPreviousAppVersion: () => {
+    const result = ipcRenderer.sendSync(IpcChannels.GET_PREVIOUS_APP_VERSION_CHANNEL);
+    return typeof result === "string" ? result : null;
+  },
+  claimUpdateNotice: () =>
+    ipcRenderer
+      .invoke(IpcChannels.CLAIM_UPDATE_NOTICE_CHANNEL)
+      .then((claimed: unknown) => claimed === true),
   getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
   setClientSettings: (settings) =>
     ipcRenderer.invoke(IpcChannels.SET_CLIENT_SETTINGS_CHANNEL, settings),
