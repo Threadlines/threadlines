@@ -894,12 +894,13 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
 
 /**
  * Puts a thread to work, or has it wait on the user, the way the shell
- * stream's next summary would, without a server round trip. Use it on a
- * thread that is not open: the open one's detail stream re-derives its row.
- * The sidebar also loads the open thread's neighbours and its top rows in
- * the background once the page idles, and those loads re-derive their rows
- * too: wait for one first (waitForThreadDetailLoaded), or a busy machine
- * lands it after the edit and undoes it.
+ * stream's next summary would, without a server round trip. A thread at work
+ * is at work in this computer's fixture too, so a later load of its detail
+ * says the same: the open thread's stream, or the sidebar's background load
+ * of the open thread's neighbours and top rows once the page idles, which a
+ * busy machine lands after the edit. Waiting on the user needs nothing there:
+ * a detail with no activities keeps the row's pending approval. `overrides`
+ * reach the row only.
  */
 export function setSidebarThreadWork(
   environmentId: EnvironmentId,
@@ -907,6 +908,30 @@ export function setSidebarThreadWork(
   work: "working" | "needs-you",
   overrides: Partial<SidebarThreadSummary> = {},
 ): void {
+  const runningTurn = {
+    turnId: `turn-${threadId}` as TurnId,
+    state: "running" as const,
+    requestedAt: NOW_ISO,
+    startedAt: NOW_ISO,
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  if (work === "working" && environmentId === LOCAL_ENVIRONMENT_ID) {
+    fixture.snapshot = {
+      ...fixture.snapshot,
+      threads: fixture.snapshot.threads.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              latestTurn: runningTurn,
+              session: thread.session
+                ? { ...thread.session, status: "running", activeTurnId: runningTurn.turnId }
+                : thread.session,
+            }
+          : thread,
+      ),
+    };
+  }
   useStore.setState((state) => {
     const environment = state.environmentStateById[environmentId];
     const summary = environment?.sidebarThreadSummaryById[threadId];
@@ -917,14 +942,7 @@ export function setSidebarThreadWork(
       work === "working"
         ? {
             ...summary,
-            latestTurn: {
-              turnId: `turn-${threadId}` as TurnId,
-              state: "running",
-              requestedAt: NOW_ISO,
-              startedAt: NOW_ISO,
-              completedAt: null,
-              assistantMessageId: null,
-            },
+            latestTurn: runningTurn,
             session: summary.session
               ? { ...summary.session, status: "running", orchestrationStatus: "running" }
               : summary.session,
@@ -1461,9 +1479,8 @@ export async function waitForThreadDetailSubscription(threadId: ThreadId): Promi
 /**
  * Waits for a local thread's first detail snapshot to land. A page subscribes
  * to the details of the threads it shows, and that snapshot rewrites the
- * thread's summary: a thread marked working with `setSidebarThreadWork`
- * before then goes back to idle when the snapshot arrives, which on a slow
- * machine can be after the test has started looking.
+ * thread's summary from the fixture, which on a slow machine can be after the
+ * test has started looking.
  */
 export async function waitForThreadDetailLoaded(threadId: ThreadId): Promise<void> {
   await vi.waitFor(
