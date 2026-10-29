@@ -44,14 +44,31 @@ export function comparisonPath(comparison: Pick<Comparison, "slug">): string {
 }
 
 const THREADLINES_AGENTS: ComparisonCell = {
-  text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, fx. Grok, Muse Code and Pi in 0.7.0.",
+  text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, Grok, Muse Code, Pi, fx, plus community agents",
 };
 
 const THREADLINES_DESKTOP: ComparisonCell = { mark: "yes", text: "macOS, Windows, Linux" };
 
 const THREADLINES_PHONE: ComparisonCell = {
-  mark: "partial",
-  text: "Pair your phone and use its browser",
+  mark: "yes",
+  text: "Home Screen web app with alerts",
+};
+
+/** Fleet: linked computers, and agents that start threads on them. */
+const THREADLINES_COMPUTERS: ComparisonCell = {
+  mark: "yes",
+  text: "Link them, and an agent can start a thread on any",
+};
+
+const THREADLINES_TASKS: ComparisonCell = {
+  mark: "yes",
+  text: "On a schedule, a GitHub issue or a webhook",
+};
+
+/** Outside agents: approved terminal agents and the threadlines command. */
+const THREADLINES_TERMINAL_AGENTS: ComparisonCell = {
+  mark: "yes",
+  text: "Claude Code, Codex, Gemini CLI, Cursor, scripts",
 };
 
 export const COMPARISONS: readonly Comparison[] = [
@@ -101,6 +118,24 @@ export const COMPARISONS: readonly Comparison[] = [
         other: { mark: "no", text: "Each agent gets its own tab" },
       },
       {
+        icon: "computers",
+        label: "Your other computers",
+        threadlines: THREADLINES_COMPUTERS,
+        other: { mark: "no", text: "Its own cloud machines on Pro, not yours" },
+      },
+      {
+        icon: "clock",
+        label: "Scheduled and event tasks",
+        threadlines: THREADLINES_TASKS,
+        other: { mark: "partial", text: "Routines in the cloud, on Pro" },
+      },
+      {
+        icon: "terminal",
+        label: "Agents in your terminal",
+        threadlines: THREADLINES_TERMINAL_AGENTS,
+        other: { mark: "partial", text: "MCP and a CLI for cloud work, on Pro" },
+      },
+      {
         icon: "branch",
         label: "Git worktree per task",
         threadlines: { mark: "yes", text: "Per thread" },
@@ -128,26 +163,27 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "phone",
         label: "Phone",
         threadlines: THREADLINES_PHONE,
-        other: { mark: "yes", text: "iPhone app on Pro" },
+        other: { mark: "yes", text: "iPhone app, for cloud work and Remote Control" },
       },
       {
         icon: "account",
         label: "Accounts",
         threadlines: { mark: "yes", text: "None needed, GitHub optional" },
-        other: { mark: "partial", text: "Conductor sign-in, GitHub required" },
+        other: { mark: "partial", text: "GitHub required, sign-in for cloud" },
       },
     ],
     pickThreadlines: [
       "You work on Windows or Linux.",
       "You want open source with no paid tier.",
       "You want Codex to check Claude's work in the same chat.",
+      "You want your own Windows PC or Linux box to share the work.",
       "You use Antigravity or fx.",
     ],
     pickOther: [
       "You want agents to keep working in the cloud.",
       "Your team shares chats live or needs SSO.",
       "You use GitHub stacks or Graphite.",
-      "You want scheduled or pull-request-triggered runs.",
+      "You want routines that keep running in the cloud with your computer off.",
     ],
     faq: [
       {
@@ -166,11 +202,16 @@ export const COMPARISONS: readonly Comparison[] = [
           "No. Threadlines runs agents on your own computer. You can reach it from your phone or another computer, but the work happens on your machine.",
       },
     ],
-    checkedOn: "2026-10-18",
+    checkedOn: "2026-10-29",
     sources: [
       { label: "Conductor's install guide", url: "https://www.conductor.build/docs/installation" },
       { label: "pricing page", url: "https://www.conductor.build/pricing" },
       { label: "docs and terms", url: "https://www.conductor.build/llms-full.txt" },
+      { label: "API and MCP docs", url: "https://www.conductor.build/docs/api" },
+      {
+        label: "Remote Control release notes",
+        url: "https://www.conductor.build/changelog/0.92.0-remote-control",
+      },
     ],
   },
   {
@@ -202,14 +243,14 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "phone",
         label: "Phone",
         threadlines: THREADLINES_PHONE,
-        other: { mark: "yes", text: "iPhone and Android apps" },
+        other: { mark: "yes", text: "iPhone and Android apps with alerts" },
       },
       {
         icon: "agents",
         label: "Agents",
         threadlines: THREADLINES_AGENTS,
         other: {
-          text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, Grok, Pi, and Muse Code in beta.",
+          text: "Codex, Claude Code, OpenCode, Cursor, Antigravity, Grok, Pi, Muse Code, fx, plus ACP registry agents",
         },
       },
       {
@@ -223,6 +264,24 @@ export const COMPARISONS: readonly Comparison[] = [
         label: "Agents start threads",
         threadlines: { mark: "yes", text: "Yes" },
         other: { mark: "yes", text: "Yes" },
+      },
+      {
+        icon: "computers",
+        label: "Your other computers",
+        threadlines: THREADLINES_COMPUTERS,
+        other: { mark: "yes", text: "Linked machines in beta, plus SSH" },
+      },
+      {
+        icon: "clock",
+        label: "Scheduled and event tasks",
+        threadlines: THREADLINES_TASKS,
+        other: { mark: "yes", text: "On a schedule or a webhook" },
+      },
+      {
+        icon: "terminal",
+        label: "Agents in your terminal",
+        threadlines: THREADLINES_TERMINAL_AGENTS,
+        other: { mark: "yes", text: "An MCP server and a t3 command" },
       },
       {
         icon: "refresh",
@@ -252,13 +311,12 @@ export const COMPARISONS: readonly Comparison[] = [
     pickThreadlines: [
       "You want two agents in the same thread.",
       "You want to ask Codex or Claude something while another agent works.",
-      "You use fx.",
     ],
     pickOther: [
       "You want native phone apps or a hosted web app.",
       "Your code lives on Forgejo or Gitea.",
-      "You want pooled limits, scheduled tasks or webhooks.",
-      "You'd rather use the bigger project, with about 28,000 stars.",
+      "You want usage limits pooled across accounts.",
+      "You'd rather use the bigger project, with about 31,000 stars.",
     ],
     faq: [
       {
@@ -272,9 +330,17 @@ export const COMPARISONS: readonly Comparison[] = [
           "Yes. They're separate apps with separate data, and both run the agents with the sign-ins already on your computer.",
       },
     ],
-    checkedOn: "2026-10-18",
+    checkedOn: "2026-10-29",
     sources: [
       { label: "T3 Code's README", url: "https://github.com/pingdotgg/t3code" },
+      {
+        label: "remote access docs",
+        url: "https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md",
+      },
+      {
+        label: "outside agents docs",
+        url: "https://github.com/pingdotgg/t3code/blob/main/docs/user/outside-agents.md",
+      },
       {
         label: "v0.1.0 release notes",
         url: "https://github.com/pingdotgg/t3code/releases/tag/v0.1.0",
