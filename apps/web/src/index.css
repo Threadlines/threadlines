@@ -882,6 +882,13 @@ label:has(> select#reasoning-effort) select {
   text-decoration: none;
 }
 
+/* A place chip (PlaceLink) likewise, and its page glyph takes the chip's text
+   color rather than the link blue: the chip, not the color, says it opens. */
+.chat-markdown a.chat-markdown-place-link {
+  color: var(--foreground);
+  text-decoration: none;
+}
+
 .chat-markdown blockquote {
   border-left: 2px solid var(--border);
   padding-left: 0.8rem;
@@ -1043,6 +1050,25 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown-file-link[data-missing]:not(:hover) .chat-markdown-file-link-icon {
+  opacity: 0.45;
+}
+
+/* A place link to a setting of another computer's thread (PlaceLink): this app
+   can't open it, so it names the place as an outline and hover changes
+   nothing; its tooltip says where it is. */
+.chat-markdown-file-link[data-elsewhere],
+.chat-markdown-file-link[data-elsewhere]:hover {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--border) 92%, transparent);
+  background: transparent;
+  cursor: default;
+}
+
+.chat-markdown-file-link[data-elsewhere] .chat-markdown-file-link-label {
+  color: var(--muted-foreground);
+}
+
+.chat-markdown-file-link[data-elsewhere] .chat-markdown-file-link-icon {
   opacity: 0.45;
 }
 
@@ -1400,6 +1426,28 @@ label:has(> select#reasoning-effort) select {
 
 .diff-file-flash {
   animation: diff-file-flash 1.1s ease-out 150ms both;
+}
+
+/* Where a place link landed (usePlaceArrival): a tint laid over the place that
+   fades once. Opacity only, so the fade never repaints; the hook skips it
+   under reduced motion. */
+.place-arrival-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-color: color-mix(in srgb, var(--primary) 16%, transparent);
+  animation: place-arrival-fade 1.5s ease-out both;
+}
+
+@keyframes place-arrival-fade {
+  0%,
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 /* A loading state holds back a beat, so content that lands fast (a diff, a

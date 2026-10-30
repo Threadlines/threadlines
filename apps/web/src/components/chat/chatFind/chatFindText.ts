@@ -18,6 +18,7 @@ import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 
+import { placeIdFromHref } from "@threadlines/shared/appPlaces";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
 
 import {
@@ -27,6 +28,7 @@ import {
   GITHUB_HTML_REHYPE_PLUGINS,
   type MarkdownDocumentFileLinks,
   normalizeMarkdownLinkHrefKey,
+  placeLinkLabel,
   pullRequestLinkLabel,
   repairStreamingMarkdownTail,
   resolveMarkdownDocumentFileLinks,
@@ -255,7 +257,7 @@ function walkChildren(nodes: ReadonlyArray<WalkNode>, context: WalkContext) {
   }
 }
 
-/** MarkdownAnchor: a file chip, a pull request chip, or the link's own words. */
+/** MarkdownAnchor: a file chip, a pull request chip, a place chip, or the link's own words. */
 function walkAnchor(element: HastElement, context: WalkContext) {
   const { document } = context;
   const rawHref = element.properties["href"];
@@ -263,6 +265,16 @@ function walkAnchor(element: HastElement, context: WalkContext) {
     rawHref === undefined || rawHref === null
       ? undefined
       : chatMarkdownUrlTransform(String(rawHref), document.cwd);
+  // A place this build no longer knows reads as the link's words.
+  const placeId = href ? placeIdFromHref(href) : null;
+  if (placeId !== null) {
+    document.collector.add(
+      context.block,
+      placeLinkLabel(hastText(element.children), placeId),
+      "chip",
+    );
+    return;
+  }
   const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
   const fileLinkMeta = normalizedHref
     ? (document.fileLinks.markdownFileLinkMetaByHref.get(normalizedHref) ??
