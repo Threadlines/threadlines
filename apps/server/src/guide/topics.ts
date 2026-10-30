@@ -155,6 +155,32 @@ How much of each plan you've used is on {place:usage}.`,
 {place:general.sitesAgentsCanVisit} decides which sites agents may open without asking you first. Local addresses always work.`,
   },
   {
+    id: "file-viewer",
+    title: "The file viewer",
+    keywords: [
+      "file",
+      "files",
+      "viewer",
+      "editor",
+      "edit a file",
+      "open a file",
+      "pdf",
+      "svg",
+      "outside the project",
+      "restore original",
+      "reveal in finder",
+    ],
+    body: `The file viewer opens over the chat: from the folder button in the chat header (Browse project files), or by clicking a file name in the chat. Its file list holds the project's files and a Go to file search; files from outside the project are listed apart, under Outside this project.
+
+Click a line number to select lines (drag for a range) and add them to the chat, or attach the whole file. The open button in its header opens the file in one of your editors, or reveals it in Finder or Explorer.
+
+Edit (or double-click, or start typing) edits the file in place, and it saves as you type. If the file changed on disk meanwhile, for example an agent edited it, the footer offers Reload file or Keep my version. Editing is off for files over 1 MB, read-only files, text that isn't UTF-8, and on touch screens.
+
+A file outside the project opens and edits the same way, but git doesn't track it, so Threadlines keeps the original before the first save, for 30 days. Restore original in the footer puts it back.
+
+Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a picture, with Show source for its code. Any other file offers Reveal in Finder (Explorer on Windows) and Copy path. A folder outside the project opens in Finder or Explorer.`,
+  },
+  {
     id: "pages-and-command-requests",
     title: "Agent pages and command requests",
     keywords: ["page", "chart", "diagram", "mockup", "run command", "card", "artifact"],
