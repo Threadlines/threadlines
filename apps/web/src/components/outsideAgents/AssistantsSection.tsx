@@ -94,7 +94,7 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
       data-testid="assistants-section"
     >
       <SettingsSection
-        title="Assistants"
+        place="connections.assistants"
         description="Always-on assistants like Grok Bot, dots, Muse and Claude Duet can use Threadlines from their own cloud."
       >
         {snapshot === null || assistants === null ? (
@@ -113,7 +113,7 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
             />
             <SettingsRow
               data-testid="assistants-address-row"
-              title="Address for assistants"
+              place="connections.assistantAddress"
               description={
                 ready ? (
                   <>
@@ -153,7 +153,7 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
             ) : (
               <SettingsRow
                 data-testid="assistants-connect-row"
-                title="Add an assistant"
+                place="connections.addAssistant"
                 description="Most assistants sign in with a code, and Muse takes a key instead."
                 control={
                   <>
@@ -191,7 +191,7 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
 
       <OutsideAgentConnectionList
         connections={assistantConnections}
-        heading={{ title: "Assistants that can use this computer" }}
+        place="connections.assistantsUsingThis"
         testId="assistants-connections"
       />
 

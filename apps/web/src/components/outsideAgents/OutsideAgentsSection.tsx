@@ -98,7 +98,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
 
       <OutsideAgentConnectionList
         connections={localConnections}
-        heading={{ place: "connections.agentsUsingThis" }}
+        place="connections.agentsUsingThis"
       />
     </div>
   );

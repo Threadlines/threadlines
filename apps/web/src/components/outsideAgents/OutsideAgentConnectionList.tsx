@@ -46,14 +46,14 @@ function describeRemoval(connection: OutsideAgentConnection): string {
     : "It can't use Threadlines from its next call on, and has to sign in again to come back. Threads it started keep its name.";
 }
 
-/** Nothing while `connections` is empty. `heading`: the group's app place, or its own title. */
+/** Nothing while `connections` is empty. `place`: the group's app place, which gives its title. */
 export function OutsideAgentConnectionList({
   connections,
-  heading,
+  place,
   testId,
 }: {
   readonly connections: ReadonlyArray<OutsideAgentConnection>;
-  readonly heading: { readonly place: SettingsPlaceId } | { readonly title: string };
+  readonly place: SettingsPlaceId;
   readonly testId?: string;
 }) {
   const projects = useThisComputerProjects();
@@ -88,7 +88,7 @@ export function OutsideAgentConnectionList({
   return (
     <>
       {connections.length > 0 ? (
-        <SettingsSection {...heading} data-testid={testId}>
+        <SettingsSection place={place} data-testid={testId}>
           {connections.map((connection) => (
             <div
               key={connection.connectionId}
