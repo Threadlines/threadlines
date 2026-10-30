@@ -95,17 +95,35 @@ export const AgentsResult = Schema.Struct({
 });
 export type AgentsResult = typeof AgentsResult.Type;
 
+/**
+ * A thread an assistant's `thread_start` answered for before its setup ran
+ * (docs/design/assistants.md, "Tools"), while it doesn't exist yet: still
+ * `starting`, or `failed` with why.
+ */
+export const OutsideStartingThread = Schema.Struct({
+  threadId: Schema.String,
+  title: Schema.String,
+  projectId: Schema.String,
+  project: Schema.String,
+  status: Schema.Literals(["starting", "failed"]),
+  detail: Detail,
+});
+export type OutsideStartingThread = typeof OutsideStartingThread.Type;
+
 export const ThreadsListResult = Schema.Struct({
   outcome: Schema.Literals(["ok", "not_allowed", "not_found", "limit"]),
   detail: Detail,
   retryAfterSeconds: RetryAfter,
   threads: Schema.Array(OutsideThreadSummary),
+  /** Assistants: threads it started that are still being set up, or whose setup failed. */
+  starting: Schema.optional(Schema.Array(OutsideStartingThread)),
 });
 export type ThreadsListResult = typeof ThreadsListResult.Type;
 
 export const OutsideThreadReadResult = Schema.Struct({
   ...AgentThreadReadResult.fields,
-  outcome: Schema.Literals(["ok", "not_allowed", "not_found", "limit"]),
+  /** `starting` / `failed` (assistants): a thread it started that is still being set up, or never was. */
+  outcome: Schema.Literals(["ok", "starting", "failed", "not_allowed", "not_found", "limit"]),
   retryAfterSeconds: RetryAfter,
   thread: Schema.optional(OutsideThreadSummary),
   waitingOn: Schema.optional(OutsideWaitingOn),
@@ -113,8 +131,19 @@ export const OutsideThreadReadResult = Schema.Struct({
 export type OutsideThreadReadResult = typeof OutsideThreadReadResult.Type;
 
 export const ThreadWaitResult = Schema.Struct({
-  /** `done`: it left `working`. `still_working`: the wait ran out first; wait again. */
-  outcome: Schema.Literals(["done", "still_working", "not_allowed", "not_found", "limit"]),
+  /**
+   * `done`: it left `working`. `still_working`: the wait ran out first (or,
+   * for an assistant, it is still being set up); wait again. `failed`
+   * (assistants): its setup failed before it existed.
+   */
+  outcome: Schema.Literals([
+    "done",
+    "still_working",
+    "failed",
+    "not_allowed",
+    "not_found",
+    "limit",
+  ]),
   detail: Detail,
   retryAfterSeconds: RetryAfter,
   thread: Schema.optional(OutsideThreadSummary),
@@ -125,8 +154,10 @@ export const ThreadWaitResult = Schema.Struct({
 export type ThreadWaitResult = typeof ThreadWaitResult.Type;
 
 export const OutsideThreadStartResult = Schema.Struct({
+  /** `starting` (assistants): it answered before the setup; thread_wait follows it from here. */
   outcome: Schema.Literals([
     "started",
+    "starting",
     "not_allowed",
     "not_found",
     "limit",
@@ -171,6 +202,7 @@ export const OutsideThreadStopResult = Schema.Struct({
     "stopped",
     "not_running",
     "not_yours",
+    "conflict",
     "not_allowed",
     "not_found",
     "limit",
@@ -190,7 +222,7 @@ const ProjectParameter = Schema.String.annotate({
   description: "A project's id or name, from projects.",
 });
 
-const RequestIdParameter = Schema.optional(
+export const RequestIdParameter = Schema.optional(
   Schema.String.annotate({
     description:
       "Any unique string. Sending the same call again with the same requestId returns the first result instead of doing it twice.",
@@ -312,7 +344,7 @@ export const OutsideThreadStopTool = drivesThreads(
   Tool.make("thread_stop", {
     description:
       "Stop the running turn in a thread you started, as the Stop button does. A later thread_send starts it again.",
-    parameters: Schema.Struct({ threadId: ThreadIdParameter }),
+    parameters: Schema.Struct({ threadId: ThreadIdParameter, requestId: RequestIdParameter }),
     success: OutsideThreadStopResult,
     dependencies,
   }).annotate(Tool.Title, "Stop a thread"),
@@ -345,3 +377,11 @@ export const START_ONLY_TOOLS: ReadonlySet<string> = new Set([
   OutsideThreadSendTool.name,
   OutsideThreadStopTool.name,
 ]);
+
+const SEE_TOOLS: ReadonlySet<string> = new Set(Object.keys(SeeToolkit.tools));
+const ALL_TOOLS: ReadonlySet<string> = new Set([...SEE_TOOLS, ...START_ONLY_TOOLS]);
+const NO_TOOLS: ReadonlySet<string> = new Set();
+
+/** What a connection's `tools/list` shows, on either door: none once it is removed (null). */
+export const listedToolsFor = (access: "see" | "start" | null): ReadonlySet<string> =>
+  access === null ? NO_TOOLS : access === "start" ? ALL_TOOLS : SEE_TOOLS;

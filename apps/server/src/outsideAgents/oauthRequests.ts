@@ -49,7 +49,7 @@ const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["127.0.0.1", "localhost
  * characters (a right-to-left override could make "Claude Code" read as
  * something else), whitespace collapsed, at most `max` characters.
  */
-const displayText = (value: string, max: number): string =>
+export const displayText = (value: string, max: number): string =>
   Array.from(
     value
       .replace(/[\p{Cc}\p{Cf}]/gu, "")

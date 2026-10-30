@@ -27,9 +27,24 @@
  * in flight or after. A claimed row keeps the fresh ids its call dispatches
  * with, so an id reused after its row was pruned is new work under new ids,
  * never a write over an old message. A replay answers only while the
- * thread it names is still in the connection's projects.
+ * thread it names is still in the connection's projects. Stops take a
+ * request id too, and a retried stop answers from its row.
+ *
+ * The assistants door (docs/design/assistants.md, "Tools") runs the same
+ * handlers with `door: "assistant"`, which changes three things:
+ * - `requestId` is required on `thread_start`, `thread_send` and
+ *   `thread_stop`;
+ * - `thread_start` answers `starting` with the thread id at once, before the
+ *   worktree is made: its request row is the durable record, with the thread
+ *   id set before work begins, and the setup runs on after the answer, its
+ *   outcome recorded on the row. Until the thread exists, `thread_read`,
+ *   `thread_wait` and `threads_list` answer for it as `starting`, or
+ *   `failed` with why;
+ * - `thread_wait` holds at most ASSISTANT_THREAD_WAIT_MAX_SECONDS, under the
+ *   relay's request timeout.
  */
 import {
+  ASSISTANT_THREAD_WAIT_MAX_SECONDS,
   CommandId,
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
   MessageId,
@@ -51,6 +66,7 @@ import {
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { truncate } from "@threadlines/shared/String";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -99,6 +115,7 @@ import {
   type OutsideThreadSendTool,
   type OutsideThreadStartResult,
   type OutsideThreadStartTool,
+  type OutsideStartingThread,
   type OutsideThreadStopResult,
   type OutsideThreadStopTool,
   type OutsideThreadSummary,
@@ -140,6 +157,32 @@ const CONFLICT = {
   outcome: "conflict" as const,
   detail: "That requestId was already used for a different call. Use a new requestId for new work.",
 };
+const REQUEST_ID_REQUIRED =
+  "Send a requestId: any unique string with every thread_start, thread_send and thread_stop, and the same one when you retry the call. Then a retry never does the work twice.";
+const SETTING_UP =
+  "It's still being set up (its worktree and setup script). Follow it with thread_wait.";
+const SET_UP_CUT_OFF =
+  "Threadlines restarted while this thread was being set up, before it was made. Start again with a new requestId.";
+/** How long a start whose setup failed before its thread existed stays in threads_list. */
+const FAILED_START_KEPT = Duration.hours(1);
+
+/** Which door the calls come through (docs/design/assistants.md). */
+export type ConnectToolDoor = "local" | "assistant";
+
+/** An assistant's start that answered before its setup, while it has no thread yet. */
+interface SettingUp {
+  readonly connectionId: OutsideAgentConnectionId;
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly project: string;
+  readonly title: string;
+  /** The `starting` answer, for a retry under the same request id. */
+  readonly answer: OutsideThreadStartResult;
+  state: "starting" | "failed";
+  detail: string | undefined;
+  /** Done once the setup ended, either way. */
+  readonly settled: Deferred.Deferred<void>;
+}
 
 export interface ConnectToolDeps {
   readonly connections: Pick<OutsideAgentConnectionsShape, "grant">;
@@ -190,6 +233,7 @@ type Refusal = {
 
 type StartInput = Tool.Parameters<typeof OutsideThreadStartTool>;
 type SendInput = Tool.Parameters<typeof OutsideThreadSendTool>;
+type StopInput = Tool.Parameters<typeof OutsideThreadStopTool>;
 
 const nowMillis = Clock.currentTimeMillis;
 const isoOf = (millis: number) => new Date(millis).toISOString();
@@ -265,8 +309,19 @@ const hasRunningTurn = (thread: OrchestrationThread) =>
       thread.session.status === "running" ||
       thread.session.status === "starting"));
 
-export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
+export const makeConnectToolHandlers = (
+  deps: ConnectToolDeps,
+  options: { readonly door?: ConnectToolDoor } = {},
+) =>
   Effect.gen(function* () {
+    const door = options.door ?? "local";
+    const assistant = door === "assistant";
+    /** Where an assistant's setups run on after their answers: the handlers' own scope. */
+    const scope = yield* Effect.scope;
+    /** An assistant's starts still being set up (or failed before their thread existed), by thread id. */
+    const settingUp = new Map<string, SettingUp>();
+    const waitMaxSeconds = assistant ? ASSISTANT_THREAD_WAIT_MAX_SECONDS : THREAD_WAIT_MAX_SECONDS;
+    const waitDefaultSeconds = Math.min(THREAD_WAIT_DEFAULT_SECONDS, waitMaxSeconds);
     /**
      * One start or send per (connection, request id): a retry while the
      * first runs joins it, and the run finishes even if the call that began
@@ -336,6 +391,49 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const project = yield* deps.readProject(shell.projectId);
         if (project === undefined || project.kind === "general-chat") return undefined;
         return { shell, project };
+      });
+
+    /**
+     * An assistant's own start of `threadId` that has no thread yet: still
+     * `starting`, or `failed` with why (from memory, else its request row,
+     * which a restart left `failed`). Undefined for anything else, and on the
+     * local door.
+     */
+    const pendingStart = (
+      caller: OutsideAgentCaller,
+      grant: OutsideAgentLiveGrant,
+      threadId: string,
+    ): Effect.Effect<
+      | {
+          readonly outcome: "starting" | "failed";
+          readonly detail: string;
+          readonly entry?: SettingUp;
+        }
+      | undefined
+    > =>
+      Effect.gen(function* () {
+        if (!assistant) return undefined;
+        const trimmed = threadId.trim();
+        if (trimmed.length === 0) return undefined;
+        const entry = settingUp.get(trimmed);
+        if (entry !== undefined && entry.connectionId === caller.connectionId) {
+          if (!grantsProject(grant, entry.projectId)) return undefined;
+          return entry.state === "starting"
+            ? { outcome: "starting" as const, detail: SETTING_UP, entry }
+            : { outcome: "failed" as const, detail: entry.detail ?? SET_UP_CUT_OFF, entry };
+        }
+        const row = yield* deps.requests
+          .findStart({ connectionId: caller.connectionId, threadId: ThreadId.make(trimmed) })
+          .pipe(Effect.orElseSucceed(() => Option.none<OutsideAgentRequestRow>()));
+        if (Option.isNone(row)) return undefined;
+        if (row.value.state === "starting")
+          return { outcome: "starting" as const, detail: SETTING_UP };
+        if (row.value.state !== "failed") return undefined;
+        const recorded =
+          row.value.resultJson === null
+            ? undefined
+            : (JSON.parse(row.value.resultJson) as { readonly detail?: string }).detail;
+        return { outcome: "failed" as const, detail: recorded ?? SET_UP_CUT_OFF };
       });
 
     /** One thread as the outside tools report it. */
@@ -522,7 +620,33 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
               titleOf: (threadId) => titles.get(threadId),
             }),
           );
-        return { outcome: "ok", threads } satisfies ThreadsListResult;
+        if (!assistant) return { outcome: "ok", threads } satisfies ThreadsListResult;
+        // An assistant's starts that have no thread yet: still being set up, or failed.
+        const starting: Array<OutsideStartingThread> = [];
+        for (const entry of settingUp.values()) {
+          if (
+            entry.connectionId !== caller.connectionId ||
+            titles.has(entry.threadId) ||
+            !projectIds.includes(entry.projectId) ||
+            (input.status !== undefined &&
+              !(input.status === "failed" && entry.state === "failed")) ||
+            (query.length > 0 && !entry.title.toLowerCase().includes(query.toLowerCase())) ||
+            (yield* deps.status.readShell(entry.threadId)) !== undefined
+          ) {
+            continue;
+          }
+          starting.push({
+            threadId: entry.threadId,
+            title: entry.title,
+            projectId: entry.projectId,
+            project: entry.project,
+            status: entry.state,
+            ...(entry.state === "failed" && entry.detail !== undefined
+              ? { detail: entry.detail }
+              : {}),
+          });
+        }
+        return { outcome: "ok", threads, starting } satisfies ThreadsListResult;
       });
 
     const threadRead = (
@@ -536,6 +660,10 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const visible = yield* visibleThread(gated.grant, input.threadId);
         const target = visible === undefined ? undefined : yield* deps.readThread(visible.shell.id);
         if (visible === undefined || target === undefined) {
+          const pending = yield* pendingStart(caller, gated.grant, input.threadId);
+          if (pending !== undefined) {
+            return { outcome: pending.outcome, detail: pending.detail, ...none };
+          }
           return { outcome: "not_found", detail: THREAD_NOT_FOUND, ...none };
         }
         const providers = yield* deps.providers;
@@ -561,19 +689,36 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
       Effect.gen(function* () {
         const gated = yield* gate(caller, "see");
         if ("refusal" in gated) return gated.refusal;
-        const visible = yield* visibleThread(gated.grant, input.threadId);
-        if (visible === undefined) {
-          return { outcome: "not_found", detail: THREAD_NOT_FOUND };
-        }
-        const seconds = Math.max(
+        const startedAt = yield* nowMillis;
+        let seconds = Math.max(
           0,
           Math.min(
-            THREAD_WAIT_MAX_SECONDS,
+            waitMaxSeconds,
             input.seconds !== undefined && Number.isFinite(input.seconds)
               ? input.seconds
-              : THREAD_WAIT_DEFAULT_SECONDS,
+              : waitDefaultSeconds,
           ),
         );
+        let visible = yield* visibleThread(gated.grant, input.threadId);
+        if (visible === undefined) {
+          // An assistant's start still being set up: wait for its thread first.
+          const pending = yield* pendingStart(caller, gated.grant, input.threadId);
+          if (pending === undefined) return { outcome: "not_found", detail: THREAD_NOT_FOUND };
+          if (pending.outcome === "failed") return { outcome: "failed", detail: pending.detail };
+          if (pending.entry === undefined) return { outcome: "still_working", detail: SETTING_UP };
+          const ended = yield* Deferred.await(pending.entry.settled).pipe(
+            Effect.timeoutOption(Duration.millis(seconds * 1000)),
+          );
+          if (Option.isNone(ended)) return { outcome: "still_working", detail: SETTING_UP };
+          visible = yield* visibleThread(gated.grant, input.threadId);
+          if (visible === undefined) {
+            const after = yield* pendingStart(caller, gated.grant, input.threadId);
+            return after?.outcome === "failed"
+              ? { outcome: "failed", detail: after.detail }
+              : { outcome: "not_found", detail: THREAD_NOT_FOUND };
+          }
+          seconds = Math.max(0, seconds - ((yield* nowMillis) - startedAt) / 1000);
+        }
         const settled = yield* watchThreadStatus(deps.status, visible.shell.id).pipe(
           Stream.filter((reading) => reading.status?.word !== "working"),
           Stream.runHead,
@@ -608,12 +753,16 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
     // Request ids
     // -------------------------------------------------------------------------
 
-    /** The caller's request id, or one made up (then a retry is not recognized). */
+    /**
+     * The caller's request id, or (on the local door) one made up, so a
+     * retry is not recognized. An assistant must send one.
+     */
     const requestIdOf = (requestId: string | undefined) => {
       const trimmed = requestId?.trim() ?? "";
       if (trimmed.length > REQUEST_ID_CHAR_LIMIT) {
         return { detail: `Keep requestId under ${REQUEST_ID_CHAR_LIMIT} characters.` };
       }
+      if (trimmed.length === 0 && assistant) return { detail: REQUEST_ID_REQUIRED };
       return { requestId: trimmed.length > 0 ? trimmed : crypto.randomUUID() };
     };
 
@@ -646,8 +795,15 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
             };
           }
         }
-        if (row.state === "done" && row.resultJson !== null) {
+        // Answered, or (an assistant's start) failed after its answer went out.
+        if ((row.state === "done" || row.state === "failed") && row.resultJson !== null) {
           return JSON.parse(row.resultJson) as { readonly outcome: string };
+        }
+        // An assistant's start whose setup is still running in this process
+        // (a restart turns every `starting` row `failed`): the same answer.
+        if (row.state === "starting" && assistant && row.tool === "thread_start") {
+          const entry = row.threadId === null ? undefined : settingUp.get(row.threadId);
+          return entry?.answer ?? { outcome: "starting" as const, detail: SETTING_UP };
         }
         // Cut off before it answered: never run again (a second bootstrap
         // would fail on the thread it made, or cut a second worktree).
@@ -660,6 +816,20 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const reached = Option.isSome(receipt) && receipt.value.status === "accepted";
         const shell =
           row.threadId === null ? undefined : yield* deps.status.readShell(row.threadId);
+        if (row.tool === "thread_stop") {
+          return reached
+            ? {
+                outcome: "stopped" as const,
+                detail: "Stopped. A later thread_send starts it again.",
+                ...(row.threadId !== null ? { threadId: row.threadId } : {}),
+              }
+            : {
+                outcome: "failed" as const,
+                detail:
+                  "Threadlines restarted while stopping it, and it may not have stopped. Read the thread, then stop it again with a new requestId.",
+                ...(row.threadId !== null ? { threadId: row.threadId } : {}),
+              };
+        }
         if (row.tool === "thread_send") {
           return reached
             ? { outcome: "sent" as const, detail: "Sent.", threadId: row.threadId ?? undefined }
@@ -956,36 +1126,10 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           },
         };
 
-        const admitted = yield* deps.limits.admit({
-          connectionId: caller.connectionId,
-          threadId: ids.threadId,
-          decide: (inFlight) =>
-            Effect.gen(function* () {
-              const running = yield* runningThreads(caller, grant, inFlight);
-              if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
-              const starts = yield* deps.requests
-                .countStartsSince({
-                  connectionId: caller.connectionId,
-                  since: isoOf(now - DAY_MS),
-                })
-                .pipe(Effect.orElseSucceed(() => 0));
-              if (starts >= CONNECT_STARTS_PER_DAY) {
-                return {
-                  outcome: "limit" as const,
-                  detail: `You started ${CONNECT_STARTS_PER_DAY} threads in the last day, the most allowed. Try again later.`,
-                };
-              }
-              return yield* claim(caller, {
-                connectionId: caller.connectionId,
-                requestId,
-                tool: "thread_start",
-                inputHash,
-                threadId: ids.threadId,
-                commandId,
-                createdAt,
-              });
-            }),
-          work: deps.bootstrap.runTurnStart(command).pipe(
+        // The local door answers once the setup ran and the first turn started.
+        const localStart: Effect.Effect<OutsideThreadStartResult> = deps.bootstrap
+          .runTurnStart(command)
+          .pipe(
             Effect.matchEffect({
               onSuccess: () => remember(caller, requestId, started),
               onFailure: (error) =>
@@ -1007,7 +1151,144 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
                   });
                 }),
             }),
+          );
+
+        // An assistant's start answers this at once; its setup runs on after the answer.
+        const entry: SettingUp = {
+          connectionId: caller.connectionId,
+          threadId: ids.threadId,
+          projectId: project.id,
+          project: project.title,
+          title,
+          answer: {
+            ...started,
+            outcome: "starting",
+            detail:
+              placement.kind === "worktree"
+                ? "It's being set up in its own worktree, with the project's setup script, and then starts on its own. Follow it with thread_wait."
+                : "It's being set up in the project folder, and then starts on its own. Follow it with thread_wait.",
+          },
+          state: "starting",
+          detail: undefined,
+          settled: yield* Deferred.make<void>(),
+        };
+        /** Records how an assistant's setup ended, on its row and for its waiters. */
+        const setupEnded = (
+          result: OutsideThreadStartResult,
+          outcome: "started" | "failed" | "made",
+        ) =>
+          Effect.gen(function* () {
+            if (outcome === "started") {
+              yield* remember(caller, requestId, result);
+            } else {
+              yield* deps.requests
+                .fail({
+                  connectionId: caller.connectionId,
+                  requestId,
+                  resultJson: JSON.stringify(result),
+                })
+                .pipe(Effect.ignore({ log: true }));
+            }
+            if (outcome === "failed") {
+              // No thread: threads_list shows the failure for a while.
+              entry.state = "failed";
+              entry.detail = result.detail;
+              yield* Effect.sleep(FAILED_START_KEPT).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    if (settingUp.get(ids.threadId) === entry) settingUp.delete(ids.threadId);
+                  }),
+                ),
+                Effect.forkIn(scope),
+              );
+            } else {
+              settingUp.delete(ids.threadId);
+            }
+            yield* Deferred.succeed(entry.settled, undefined);
+          });
+        const setUpLater = deps.bootstrap.runTurnStart(command).pipe(
+          Effect.matchEffect({
+            onSuccess: () => setupEnded(started, "started"),
+            onFailure: (error) =>
+              Effect.gen(function* () {
+                const made = yield* deps.status.readShell(ids.threadId);
+                if (made === undefined) {
+                  return yield* setupEnded(
+                    {
+                      outcome: "failed",
+                      detail:
+                        error.refusal === "above_ceiling"
+                          ? `${error.message} Start again with a new requestId.`
+                          : `It couldn't be started: ${error.message} Start again with a new requestId.`,
+                    },
+                    "failed",
+                  );
+                }
+                return yield* setupEnded(
+                  {
+                    outcome: "failed",
+                    detail: `The thread "${made.title}" (${made.id}) was made, but its first turn didn't start: ${error.message} The user can delete it in Threadlines. Start again with a new requestId.`,
+                  },
+                  "made",
+                );
+              }),
+          }),
+          Effect.catchDefect((defect) =>
+            Effect.logWarning("outside agents: an assistant's thread setup failed", {
+              defect,
+            }).pipe(
+              Effect.andThen(
+                setupEnded(
+                  {
+                    outcome: "failed",
+                    detail:
+                      "It couldn't be started: Threadlines hit an internal error. Start again with a new requestId.",
+                  },
+                  "failed",
+                ),
+              ),
+            ),
           ),
+        );
+
+        const admitted = yield* deps.limits.admit({
+          connectionId: caller.connectionId,
+          threadId: ids.threadId,
+          decide: (inFlight) =>
+            Effect.gen(function* () {
+              const running = yield* runningThreads(caller, grant, inFlight);
+              if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
+              const starts = yield* deps.requests
+                .countStartsSince({
+                  connectionId: caller.connectionId,
+                  since: isoOf(now - DAY_MS),
+                })
+                .pipe(Effect.orElseSucceed(() => 0));
+              if (starts >= CONNECT_STARTS_PER_DAY) {
+                return {
+                  outcome: "limit" as const,
+                  detail: `You started ${CONNECT_STARTS_PER_DAY} threads in the last day, the most allowed. Try again later.`,
+                };
+              }
+              const refusal = yield* claim(caller, {
+                connectionId: caller.connectionId,
+                requestId,
+                tool: "thread_start",
+                inputHash,
+                threadId: ids.threadId,
+                commandId,
+                createdAt,
+              });
+              // In place before the lock is let go, so a retry finds it.
+              if (refusal === null && assistant) settingUp.set(ids.threadId, entry);
+              return refusal;
+            }),
+          ...(assistant
+            ? {
+                work: Effect.succeed<OutsideThreadStartResult>(entry.answer),
+                after: { run: setUpLater, scope },
+              }
+            : { work: localStart }),
         });
         return "refused" in admitted ? admitted.refused : admitted.done;
       });
@@ -1091,7 +1372,13 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           )) as OutsideThreadSendResult;
         }
         const owned = yield* ownThread(caller, grant, input.threadId);
-        if ("refusal" in owned) return owned.refusal;
+        if ("refusal" in owned) {
+          const pending = yield* pendingStart(caller, grant, input.threadId);
+          if (pending?.outcome === "starting") {
+            return { outcome: "busy", detail: SETTING_UP, threadId: input.threadId.trim() };
+          }
+          return owned.refusal;
+        }
         const { thread } = owned;
         if (exceedsRuntimeMode(thread.runtimeMode, grant.maxRuntimeMode)) {
           return {
@@ -1190,14 +1477,71 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
 
     const threadStop = (
       caller: OutsideAgentCaller,
-      input: Tool.Parameters<typeof OutsideThreadStopTool>,
+      input: StopInput,
     ): Effect.Effect<OutsideThreadStopResult> =>
       Effect.gen(function* () {
         const gated = yield* gate(caller, "start");
         if ("refusal" in gated) return gated.refusal;
-        const owned = yield* ownThread(caller, gated.grant, input.threadId);
-        if ("refusal" in owned) return owned.refusal;
+        // Without a request id (the local door may leave it out), a stop is
+        // just tried: stopping twice finds nothing running the second time.
+        if ((input.requestId?.trim() ?? "") === "" && !assistant) {
+          return yield* stopNow(caller, gated.grant, input.threadId, null);
+        }
+        const id = requestIdOf(input.requestId);
+        if ("detail" in id) return { outcome: "failed", detail: id.detail };
+        const normalized = { threadId: input.threadId.trim() };
+        const inputHash = inputHashOf("thread_stop", normalized);
+        return yield* once({
+          key: `${caller.connectionId}\u0000${id.requestId}`,
+          signature: inputHash,
+          run: Effect.gen(function* () {
+            const earlier = yield* deps.requests
+              .get({ connectionId: caller.connectionId, requestId: id.requestId })
+              .pipe(Effect.result);
+            if (earlier._tag === "Failure") {
+              return {
+                outcome: "failed" as const,
+                detail: NO_STORE,
+              } satisfies OutsideThreadStopResult;
+            }
+            if (Option.isSome(earlier.success)) {
+              return (yield* earlierAnswer(
+                gated.grant,
+                earlier.success.value,
+                inputHash,
+              )) as OutsideThreadStopResult;
+            }
+            return yield* stopNow(caller, gated.grant, normalized.threadId, {
+              requestId: id.requestId,
+              inputHash,
+            });
+          }),
+          conflict: CONFLICT,
+        });
+      });
+
+    /** Stops the thread's running turn; with a request id, recorded for its retries. */
+    const stopNow = (
+      caller: OutsideAgentCaller,
+      grant: OutsideAgentLiveGrant,
+      threadId: string,
+      request: { readonly requestId: string; readonly inputHash: string } | null,
+    ): Effect.Effect<OutsideThreadStopResult> =>
+      Effect.gen(function* () {
+        const owned = yield* ownThread(caller, grant, threadId);
+        if ("refusal" in owned) {
+          const pending = yield* pendingStart(caller, grant, threadId);
+          if (pending?.outcome === "starting") {
+            return {
+              outcome: "not_running",
+              detail: "It's still being set up; its first turn starts on its own.",
+              threadId: threadId.trim(),
+            };
+          }
+          return owned.refusal;
+        }
         const { thread } = owned;
+        const gated = { grant };
         // A thread the user raised above the ceiling is out of the agent's
         // reach, Stop included; the decider checks again, in order.
         if (exceedsRuntimeMode(thread.runtimeMode, gated.grant.maxRuntimeMode)) {
@@ -1215,10 +1559,29 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           };
         }
         const turnId = thread.session?.activeTurnId ?? thread.latestTurn?.turnId ?? undefined;
+        const commandId = CommandId.make(`server:outside-stop:${crypto.randomUUID()}`);
+        if (request !== null) {
+          const refused = yield* claim(caller, {
+            connectionId: caller.connectionId,
+            requestId: request.requestId,
+            tool: "thread_stop",
+            inputHash: request.inputHash,
+            threadId: thread.id,
+            commandId,
+            createdAt: isoOf(yield* nowMillis),
+          });
+          if (refused !== null) return refused;
+        }
+        const answered = (result: OutsideThreadStopResult) =>
+          request === null ? Effect.succeed(result) : remember(caller, request.requestId, result);
+        const refusedBefore = (result: OutsideThreadStopResult) =>
+          request === null
+            ? Effect.succeed(result)
+            : forget(caller, request.requestId).pipe(Effect.as(result));
         const stopped = yield* deps.engine
           .dispatch({
             type: "thread.turn.interrupt",
-            commandId: CommandId.make(`server:outside-stop:${crypto.randomUUID()}`),
+            commandId,
             threadId: thread.id,
             ...(turnId !== undefined ? { turnId } : {}),
             fromOutside: {
@@ -1230,20 +1593,22 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           })
           .pipe(Effect.result);
         if (stopped._tag === "Success") {
-          return {
+          return yield* answered({
             outcome: "stopped",
             detail: "Stopped. A later thread_send starts it again.",
             threadId: thread.id,
-          };
+          });
         }
         const error = stopped.failure;
-        return "refusal" in error && error.refusal === "above_ceiling"
-          ? { outcome: "not_allowed", detail: error.detail, threadId: thread.id }
-          : {
-              outcome: "failed",
-              detail: `It couldn't be stopped: ${error.message}`,
-              threadId: thread.id,
-            };
+        return yield* refusedBefore(
+          "refusal" in error && error.refusal === "above_ceiling"
+            ? { outcome: "not_allowed", detail: error.detail, threadId: thread.id }
+            : {
+                outcome: "failed",
+                detail: `It couldn't be stopped: ${error.message}`,
+                threadId: thread.id,
+              },
+        );
       });
 
     return {

@@ -47,6 +47,7 @@ import {
 } from "../outsideAgents/connectTools.ts";
 import * as McpConnectServer from "../outsideAgents/McpConnectServer.ts";
 import { outsideAgentSignInRouteLayer } from "../outsideAgents/oauthHttp.ts";
+import { AssistantsWithoutRelayLive } from "../assistants/AssistantsLive.ts";
 import { OutsideAgentConnectionsLive } from "../outsideAgents/OutsideAgentConnectionsLive.ts";
 import { OutsideAgentRequests } from "../outsideAgents/OutsideAgentRequests.ts";
 import {
@@ -353,6 +354,7 @@ const serveThreadlines = Effect.gen(function* () {
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-cli-" })));
   const services = yield* Layer.build(
     OutsideAgentConnectionsLive.pipe(
+      Layer.provide(AssistantsWithoutRelayLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provide(ServerSecretStoreLive),
       Layer.provide(

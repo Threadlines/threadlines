@@ -156,6 +156,28 @@ const makeRequests = () => {
           });
         }
       }),
+    fail: (input) =>
+      Effect.sync(() => {
+        const row = rows.get(key(input.connectionId, input.requestId));
+        if (row !== undefined) {
+          rows.set(key(input.connectionId, input.requestId), {
+            ...row,
+            state: "failed",
+            resultJson: input.resultJson,
+          });
+        }
+      }),
+    findStart: (input) =>
+      Effect.sync(() =>
+        Option.fromNullishOr(
+          [...rows.values()].find(
+            (row) =>
+              row.connectionId === input.connectionId &&
+              row.threadId === input.threadId &&
+              row.tool === "thread_start",
+          ),
+        ),
+      ),
     release: (input) =>
       Effect.sync(() => {
         rows.delete(key(input.connectionId, input.requestId));

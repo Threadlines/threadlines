@@ -35,6 +35,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { outsideAgentSignInRouteLayer } from "./oauthHttp.ts";
 import { OutsideAgentConnections } from "./OutsideAgentConnections.ts";
+import { AssistantsWithoutRelayLive } from "../assistants/AssistantsLive.ts";
 import { OutsideAgentConnectionsLive } from "./OutsideAgentConnectionsLive.ts";
 import { OutsideAgentSignIn } from "./OutsideAgentSignIn.ts";
 
@@ -54,6 +55,7 @@ const startSignIn = Effect.gen(function* () {
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "outside-agents-test-" })));
   const services = yield* Layer.build(
     OutsideAgentConnectionsLive.pipe(
+      Layer.provide(AssistantsWithoutRelayLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provide(ServerSecretStoreLive),
       Layer.provide(
