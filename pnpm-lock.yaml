@@ -194,6 +194,9 @@ importers:
       '@threadlines/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      effect:
+        specifier: 4.0.0-beta.107
+        version: 4.0.0-beta.107(patch_hash=ccee8481ed28c1fa1bb88e1ad0787aea2596f3d866b9b70fe04da9e6a38ce2cb)
     devDependencies:
       typescript:
         specifier: 'catalog:'

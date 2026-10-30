@@ -29,6 +29,13 @@
     // Event tasks: deliveries each computer accepts per UTC day. The address
     // mac key is a secret: `wrangler secret put HOOK_PATH_KEY`.
     "THREADLINES_RELAY_HOST_DAILY_HOOKS": "1000",
+    // Assistants (docs/design/assistants.md): the door's public origin, its
+    // kill switch, and the requests each computer forwards per UTC day. Off
+    // until it is verified live. Its two keys are secrets:
+    // `wrangler secret put ASSISTANT_ROUTE_KEY` and `ASSISTANT_CLIENT_KEY`.
+    "ASSISTANTS_ORIGIN": "",
+    "ASSISTANTS_ENABLED": "false",
+    "THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS": "20000",
   },
   "ratelimits": [
     {
@@ -91,6 +98,34 @@
         "period": 60,
       },
     },
+    // Assistants, all checked at the edge and failing closed. Per client IP:
+    // registrations, sign-in pages and typed codes (separate keys, 10 a minute
+    // each), and sign-in pages waiting for the computer's decision.
+    {
+      "name": "ASSISTANT_SIGN_IN_RATE_LIMITER",
+      "namespace_id": "2026103001",
+      "simple": {
+        "limit": 10,
+        "period": 60,
+      },
+    },
+    {
+      "name": "ASSISTANT_STATUS_RATE_LIMITER",
+      "namespace_id": "2026103002",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
+    // Per connection (`mcp:` and `token:` keys), matching the computer's own rate.
+    {
+      "name": "ASSISTANT_CONNECTION_RATE_LIMITER",
+      "namespace_id": "2026103003",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
   ],
   "durable_objects": {
     "bindings": [
@@ -110,6 +145,10 @@
         "name": "RELAY_LEDGER",
         "class_name": "RelayLedger",
       },
+      {
+        "name": "RELAY_ASSISTANT_SIGN_IN",
+        "class_name": "RelayAssistantSignIn",
+      },
     ],
   },
   "migrations": [
@@ -120,6 +159,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["RelayHost", "RelayCodeShard", "RelayLedger"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["RelayAssistantSignIn"],
     },
   ],
 }

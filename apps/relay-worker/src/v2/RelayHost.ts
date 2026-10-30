@@ -26,6 +26,22 @@ import {
   RELAY_HEARTBEAT_PONG_FRAME,
   RELAY_RAW_CONTROL_PREFIX,
 } from "@threadlines/contracts/relay";
+import {
+  ASSISTANT_MCP_PATH,
+  ASSISTANT_SIGN_IN_TTL_MS,
+  type RelayAssistantCodeResult,
+  type RelayAssistantDecisionFrame,
+  type RelayAssistantInfo,
+  type RelayAssistantRelayFrame,
+  type RelayAssistantRouteTagResult,
+  type RelayAssistantSignIn,
+} from "@threadlines/contracts/relayAssistants";
+import {
+  assistantRouteTag,
+  generateAssistantSignInCode,
+  parseAssistantCredential,
+  verifyAssistantRouteTag,
+} from "@threadlines/shared/assistantCredentials";
 import { hookDeliveryAad, sealHookDelivery } from "@threadlines/shared/relayHookSeal";
 import { decodePublicKey } from "@threadlines/shared/relaySecure";
 
@@ -33,6 +49,21 @@ import { randomDigits, sha256Base64Url } from "../crypto.ts";
 import { log, loggedPath } from "../log.ts";
 import { createJsonResponse, parseBearerToken, parseRelayTokenProtocol } from "../protocol.ts";
 import { RELAY_WEBSOCKET_PROTOCOL } from "../protocol.ts";
+import {
+  type AssistantAnswer,
+  doorOff,
+  invalidGrant,
+  mcpUnauthorized,
+} from "./assistants/answers.ts";
+import { assistantCodeShardName } from "./assistants/codes.ts";
+import { ASSISTANTS_OFF_CODE, assistantsConfig } from "./assistants/config.ts";
+import { AssistantDoor, type AssistantDoorRequest, parseHostFrame } from "./assistants/door.ts";
+import {
+  AssistantHostCore,
+  parseRevokeRequest,
+  parseRouteTagRequest,
+} from "./assistants/hostAssistants.ts";
+import { signInShardName } from "./assistants/signIns.ts";
 import { codeShardName } from "./codeShardCore.ts";
 import { hostLimitsFromEnv, isPushEnabled, publicRelayOrigin, type RelayV2Env } from "./env.ts";
 import {
@@ -82,7 +113,7 @@ const CODE_CLAIM_ATTEMPTS = 8;
 /** Whole deliveries replayed on one (re)connect, in sealed bytes; the rest are announced and fetched. */
 const HOOK_REPLAY_INLINE_BYTES = 4 * 1024 * 1024;
 
-type SocketRole = "control" | "device" | "host-pipe" | "watch";
+type SocketRole = "control" | "device" | "host-pipe" | "watch" | "assistant";
 
 interface SocketAttachment {
   readonly role: SocketRole;
@@ -90,6 +121,10 @@ interface SocketAttachment {
   readonly deviceId?: string;
   readonly pipeId?: string;
   readonly requestId?: string;
+  /** Assistant sockets only: which socket a forwarded request went out on. */
+  readonly socketId?: string;
+  /** Assistant sockets only: requests forwarded and not yet committed to today's allowance. */
+  readonly pendingRequests?: number;
   /** Control sockets only: last lease frame, kept on the socket so it survives hibernation. */
   readonly leaseAt?: number;
   /**
@@ -131,9 +166,18 @@ export type RelayHostJoinOutcome =
  * `pipe:<id>` tag), so devices never see each other's frames. RPC heartbeats
  * are answered at the edge by the auto-response, so idle connections never
  * wake this object; host liveness comes from the control socket's lease.
+ *
+ * The assistants door (docs/design/assistants.md) adds one more socket, the
+ * host's `assistant` socket: assistants' `/mcp` and `/token` requests go out
+ * on it as JSON frames and come back as answers (assistants/door.ts), and
+ * sign-ins whose page typed this host's code wait here for its decision.
  */
 export class RelayHost extends DurableObject<RelayV2Env> {
   private readonly core: HostCore;
+  private readonly assistants: AssistantHostCore;
+  private readonly door: AssistantDoor;
+  /** Sign-ins whose decision is being passed to their shard right now. */
+  private readonly decidingSignIns = new Set<string>();
   private readonly reservations = new Map<string, PipeReservation>();
   private readonly earlyPipeFrames = new Map<string, Array<string | ArrayBuffer>>();
   private ledgerBusy = false;
@@ -148,6 +192,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   constructor(ctx: DurableObjectState, env: RelayV2Env) {
     super(ctx, env);
     this.core = new HostCore(ctx.storage.sql, hostLimitsFromEnv(env));
+    this.assistants = new AssistantHostCore(ctx.storage.sql);
+    this.door = new AssistantDoor(this.assistants);
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(RELAY_HEARTBEAT_PING_FRAME, RELAY_HEARTBEAT_PONG_FRAME),
     );
@@ -187,6 +233,65 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       }
       throw error;
     }
+  }
+
+  /**
+   * An assistant's `POST /mcp` or `POST /token`, from the edge, which already
+   * parsed its credential and checked the route tag (assistants/route.ts).
+   * The computer authenticates the credential; this object only routes,
+   * refuses removed connections, and answers for an offline computer.
+   */
+  async assistantRequest(
+    input: AssistantDoorRequest & { readonly hostId: string },
+  ): Promise<AssistantAnswer> {
+    const config = await assistantsConfig(this.env);
+    if (!config.enabled) return doorOff();
+    const host = this.core.host();
+    if (!host || host.host_id !== input.hostId) {
+      // Not (or no longer) registered here: the credential can't work again.
+      return input.route === "mcp" ? mcpUnauthorized(config.origin, true) : invalidGrant();
+    }
+    const now = Date.now();
+    const live = this.liveAssistantSocket(now);
+    const answer = await this.door.request(input, {
+      now,
+      origin: config.origin,
+      resource: config.resource,
+      dailyRequests: config.dailyRequests,
+      socket: live
+        ? { socketId: live.socketId, send: (text: string) => live.socket.send(text) }
+        : null,
+      relayBusy: this.knownRelayBusy(now),
+      uncommittedRequests: live ? (readAttachment(live.socket)?.pendingRequests ?? 0) : 0,
+      onForwarded: () => {
+        if (live) this.tallyAssistantRequest(live.socket);
+      },
+    });
+    if (live) this.commitAssistantUsage(live.socket, Date.now(), false);
+    return answer;
+  }
+
+  /**
+   * From a sign-in shard: a page typed this host's code. The sign-in waits
+   * here for the computer's decision; it goes out on the assistant socket
+   * now if there is one, and again after every reconnect until it ends.
+   */
+  async beginAssistantSignIn(input: {
+    readonly hostId: string;
+    readonly signIn: RelayAssistantSignIn;
+    readonly code: string;
+  }): Promise<void> {
+    const host = this.core.host();
+    if (!host || host.host_id !== input.hostId) {
+      throw new Error("This computer isn't registered with the relay.");
+    }
+    this.assistants.addSignIn(input.signIn);
+    // The code is used up; the computer's screen moves on to the sign-in.
+    this.assistants.clearCode(input.code);
+    for (const socket of this.ctx.getWebSockets("assistant")) {
+      this.sendAssistant(socket, { type: "signin", signIn: input.signIn });
+    }
+    await this.scheduleDeadlines();
   }
 
   // ----- HTTP and WebSocket routes ----------------------------------------------
@@ -255,6 +360,9 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       }
       if (section === "pipes" && id && rest.length === 2) {
         return await this.handlePipe(request, id);
+      }
+      if (section === "assistants" && rest.length <= 2) {
+        return await this.handleAssistants(request, id);
       }
       return json({ error: "Not found." }, 404);
     } catch (error) {
@@ -417,6 +525,292 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     if (!(await this.requireHostSecret(request))) return badHostSecret();
     const delivery = this.core.hookDelivery(deliveryId);
     return delivery ? json(delivery) : json({ error: "Not found." }, 404);
+  }
+
+  // ----- assistants (host routes) ----------------------------------------------
+
+  /** `/v2/hosts/{h}/assistants[/{action}]`, all with the host secret. */
+  private async handleAssistants(request: Request, action: string | undefined): Promise<Response> {
+    const method = request.method;
+    if (action === undefined && method === "GET") return this.handleAssistantInfo(request);
+    if (action === "socket") return this.handleAssistantSocket(request);
+    if (action === "code" && method === "POST") return this.handleAssistantCode(request);
+    if (action === "code" && method === "DELETE") return this.handleForgetAssistantCode(request);
+    if (action === "route-tags" && method === "POST") return this.handleAssistantRouteTag(request);
+    if (action === "revocations" && method === "POST") return this.handleAssistantRevoke(request);
+    return json({ error: "Not found." }, 404);
+  }
+
+  /** `GET .../assistants`: the address to paste, and whether the door is on. */
+  private async handleAssistantInfo(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const config = await assistantsConfig(this.env);
+    const origin = config.origin ?? publicRelayOrigin(request, this.env);
+    return json({
+      address: `${origin}${ASSISTANT_MCP_PATH}`,
+      enabled: config.enabled,
+    } satisfies RelayAssistantInfo);
+  }
+
+  /** `POST .../assistants/code`: a new sign-in code; the host's earlier one stops working. */
+  private async handleAssistantCode(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    if (!(await assistantsConfig(this.env)).enabled) return assistantsOff();
+    const hostId = this.core.host()!.host_id;
+    const expiresAt = Date.now() + ASSISTANT_SIGN_IN_TTL_MS;
+    let code: string | null = null;
+    for (let attempt = 0; attempt < CODE_CLAIM_ATTEMPTS && code === null; attempt += 1) {
+      const candidate = generateAssistantSignInCode();
+      const claimed = await this.env.RELAY_CODE_SHARD.getByName(
+        assistantCodeShardName(candidate),
+      ).claimAssistantCode({ code: candidate, hostId, expiresAt });
+      if (claimed) code = candidate;
+    }
+    if (code === null) return json({ error: "Couldn't make a code right now. Try again." }, 503);
+    // Read after the waits above: whichever code is stored last is the live one.
+    const replaced = this.assistants.setCode(code, expiresAt);
+    if (replaced) this.releaseAssistantCode(replaced, hostId);
+    await this.scheduleDeadlines();
+    return json(
+      { code, expiresAt: new Date(expiresAt).toISOString() } satisfies RelayAssistantCodeResult,
+      201,
+    );
+  }
+
+  /** `DELETE .../assistants/code`: the code showing stops working. */
+  private async handleForgetAssistantCode(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const forgotten = this.assistants.clearCode();
+    if (forgotten) this.releaseAssistantCode(forgotten, this.core.host()!.host_id);
+    return json({ ok: true });
+  }
+
+  /** `POST .../assistants/route-tags`: the tag every credential of a new connection carries. */
+  private async handleAssistantRouteTag(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const config = await assistantsConfig(this.env);
+    if (!config.enabled) return assistantsOff();
+    const connectionId = parseRouteTagRequest(await readJson(request));
+    if (connectionId === null) return json({ error: "Missing or invalid connection id." }, 400);
+    const routeTag = await assistantRouteTag(
+      config.routeKey,
+      this.core.host()!.host_id,
+      connectionId,
+    );
+    return json({ routeTag } satisfies RelayAssistantRouteTagResult);
+  }
+
+  /**
+   * `POST .../assistants/revocations`: removed connections, refused from now
+   * on, offline or not. Taken even while the door is off, so a removal made
+   * then still holds when it comes back.
+   */
+  private async handleAssistantRevoke(request: Request): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const connectionIds = parseRevokeRequest(await readJson(request));
+    if (connectionIds === null) return json({ error: "Missing or invalid connection ids." }, 400);
+    if (!this.assistants.revoke(connectionIds, Date.now())) {
+      return json(
+        { error: "This computer has removed too many connections.", code: "too-many-revocations" },
+        409,
+      );
+    }
+    return json({ ok: true });
+  }
+
+  /**
+   * `GET .../assistants/socket`: the assistant socket (host secret as the
+   * token protocol). One per host: a newer one replaces the older, whose
+   * requests in flight fail at once. Sign-ins still waiting go out again.
+   */
+  private async handleAssistantSocket(request: Request): Promise<Response> {
+    if (!isWebSocketUpgrade(request)) return json({ error: "Expected WebSocket upgrade." }, 400);
+    if (!(await this.requireHostSecret(request, true))) return badHostSecret();
+    if (!(await assistantsConfig(this.env)).enabled) return assistantsOff();
+    const now = Date.now();
+    for (const socket of this.ctx.getWebSockets("assistant")) {
+      this.closeAssistantSocket(
+        socket,
+        RELAY_CLOSE_CODE_REPLACED,
+        "Replaced by a newer connection.",
+      );
+    }
+    const { client, server } = this.accept(
+      ["assistant"],
+      { role: "assistant", connectedAt: now, socketId: crypto.randomUUID(), lastCommitAt: now },
+      request,
+    );
+    for (const signIn of this.assistants.signIns(now)) {
+      this.sendAssistant(server, { type: "signin", signIn });
+    }
+    return upgradeResponse(client, request);
+  }
+
+  private async handleAssistantMessage(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
+    if (!(await this.allowMessage(`assistant:${this.core.host()?.host_id}`))) {
+      this.closeAssistantSocket(ws, 1013, "Relay message rate limit exceeded.");
+      return;
+    }
+    const parsed = parseHostFrame(message);
+    if (!parsed.ok) {
+      if (parsed.reason === "too-large") this.closeAssistantSocket(ws, 1009, "Frame too large.");
+      else if (parsed.reason === "binary") this.closeAssistantSocket(ws, 1003, "Text frames only.");
+      else log("warn", "assistant frame not understood");
+      return;
+    }
+    if (parsed.frame.type === "response") {
+      // An answer that comes after its request timed out finds nothing waiting; it's dropped.
+      if (attachment.socketId) this.door.resolve(attachment.socketId, parsed.frame);
+      return;
+    }
+    await this.handleAssistantDecision(ws, parsed.frame);
+  }
+
+  /**
+   * The computer's decision on a sign-in it was shown: passed to the sign-in's
+   * shard, which sends the page on to the assistant. Allow must carry an
+   * authorization code that routes back to this host, or `/token` couldn't
+   * find it; anything else ends the sign-in.
+   */
+  private async handleAssistantDecision(
+    ws: WebSocket,
+    frame: RelayAssistantDecisionFrame,
+  ): Promise<void> {
+    // The same decision sent twice: the first one is on its way.
+    if (this.decidingSignIns.has(frame.signInId)) return;
+    const hostId = this.core.host()?.host_id;
+    const now = Date.now();
+    const signIn = hostId ? this.assistants.signIn(frame.signInId, now) : null;
+    if (!hostId || !signIn) {
+      this.sendAssistant(ws, { type: "signin.gone", signInId: frame.signInId, reason: "expired" });
+      return;
+    }
+    this.decidingSignIns.add(frame.signInId);
+    try {
+      await this.deliverAssistantDecision(ws, frame, hostId);
+    } finally {
+      this.decidingSignIns.delete(frame.signInId);
+    }
+  }
+
+  private async deliverAssistantDecision(
+    ws: WebSocket,
+    frame: RelayAssistantDecisionFrame,
+    hostId: string,
+  ): Promise<void> {
+    if (frame.decision === "allow") {
+      const config = await assistantsConfig(this.env);
+      const code = parseAssistantCredential(frame.authorizationCode);
+      const routable =
+        config.enabled &&
+        code?.kind === "code" &&
+        code.route.hostId === hostId &&
+        (await verifyAssistantRouteTag(config.routeKey, code.route));
+      if (!routable) {
+        log("warn", "assistant sign-in allowed with an unusable authorization code");
+        this.assistants.removeSignIn(frame.signInId);
+        this.sendAssistant(ws, {
+          type: "signin.gone",
+          signInId: frame.signInId,
+          reason: "cancelled",
+        });
+        return;
+      }
+    }
+    let outcome: "applied" | "expired" | "gone";
+    try {
+      outcome = await this.env.RELAY_ASSISTANT_SIGN_IN.getByName(
+        signInShardName(frame.signInId),
+      ).decide({
+        signInId: frame.signInId,
+        hostId,
+        decision: frame.decision,
+        ...(frame.decision === "allow" ? { authorizationCode: frame.authorizationCode } : {}),
+      });
+    } catch (error) {
+      log("warn", "assistant sign-in decision not delivered", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      outcome = "gone";
+    }
+    this.assistants.removeSignIn(frame.signInId);
+    if (outcome !== "applied") {
+      this.sendAssistant(ws, {
+        type: "signin.gone",
+        signInId: frame.signInId,
+        reason: outcome === "expired" ? "expired" : "cancelled",
+      });
+    }
+  }
+
+  /**
+   * The open assistant socket, when the computer is there: its control
+   * socket's lease is fresh too (a sleeping computer's sockets can look open
+   * for a while; its lease lapses in 150 s).
+   */
+  private liveAssistantSocket(
+    now: number,
+  ): { readonly socket: WebSocket; readonly socketId: string } | null {
+    if (!this.liveControlSocket(now)) return null;
+    for (const socket of this.ctx.getWebSockets("assistant")) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const socketId = readAttachment(socket)?.socketId;
+      if (socketId) return { socket, socketId };
+    }
+    return null;
+  }
+
+  /** Fails what's in flight on the socket, keeps its tally, and closes it. */
+  private closeAssistantSocket(socket: WebSocket, code: number, reason: string): void {
+    const socketId = readAttachment(socket)?.socketId;
+    if (socketId) this.door.dropSocket(socketId);
+    this.commitAssistantUsage(socket, Date.now(), true);
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Already closing.
+    }
+  }
+
+  private tallyAssistantRequest(socket: WebSocket): void {
+    const attachment = readAttachment(socket);
+    if (!attachment) return;
+    socket.serializeAttachment({
+      ...attachment,
+      pendingRequests: (attachment.pendingRequests ?? 0) + 1,
+    } satisfies SocketAttachment);
+  }
+
+  /** Moves the socket's tally into today's allowance: at most once a minute, or now (`force`). */
+  private commitAssistantUsage(socket: WebSocket, now: number, force: boolean): void {
+    const attachment = readAttachment(socket);
+    const pending = attachment?.pendingRequests ?? 0;
+    if (!attachment || pending === 0) return;
+    const lastCommitAt = attachment.lastCommitAt ?? attachment.connectedAt;
+    if (!force && now - lastCommitAt < USAGE_COMMIT_INTERVAL_MS) return;
+    this.assistants.commitRequests(now, pending);
+    socket.serializeAttachment({
+      ...attachment,
+      pendingRequests: 0,
+      lastCommitAt: now,
+    } satisfies SocketAttachment);
+    this.ctx.waitUntil(this.reportToLedger(pending));
+  }
+
+  private releaseAssistantCode(code: string, hostId: string): void {
+    this.ctx.waitUntil(
+      this.env.RELAY_CODE_SHARD.getByName(assistantCodeShardName(code))
+        .releaseAssistantCode({ code, hostId })
+        .catch(() => undefined),
+    );
+  }
+
+  private sendAssistant(socket: WebSocket, frame: RelayAssistantRelayFrame): void {
+    this.send(socket, frame);
   }
 
   private async handleCreateInvite(request: Request): Promise<Response> {
@@ -857,6 +1251,10 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
     const now = Date.now();
 
+    if (attachment.role === "assistant") {
+      await this.handleAssistantMessage(ws, attachment, message);
+      return;
+    }
     if (attachment.role === "control") {
       const parsed = parseControlMessage(message);
       if (parsed?.type === "hook.ack") {
@@ -977,6 +1375,12 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private handleSocketGone(ws: WebSocket): void {
     const attachment = readAttachment(ws);
     if (!attachment) return;
+    if (attachment.role === "assistant") {
+      // Requests waiting on this socket can't be answered any more: 502 now.
+      if (attachment.socketId) this.door.dropSocket(attachment.socketId);
+      this.commitAssistantUsage(ws, Date.now(), true);
+      return;
+    }
     if (attachment.role === "device" && (attachment.pendingMessages ?? 0) > 0) {
       // This socket's tally would vanish with it; commit it now.
       const now = Date.now();
@@ -1013,6 +1417,11 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   override async alarm(): Promise<void> {
     const now = Date.now();
     await this.applyEffects(this.core.expireDue(now));
+    for (const signInId of this.assistants.expireDue(now)) {
+      for (const socket of this.ctx.getWebSockets("assistant")) {
+        this.sendAssistant(socket, { type: "signin.gone", signInId, reason: "expired" });
+      }
+    }
     await this.scheduleDeadlines();
   }
 
@@ -1186,8 +1595,11 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   private async scheduleDeadlines(): Promise<void> {
-    const next = this.core.nextDeadline();
-    if (next === null) return;
+    const deadlines = [this.core.nextDeadline(), this.assistants.nextDeadline()].filter(
+      (deadline): deadline is number => deadline !== null,
+    );
+    if (deadlines.length === 0) return;
+    const next = Math.min(...deadlines);
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > next) {
       await this.ctx.storage.setAlarm(next);
@@ -1334,6 +1746,13 @@ function parseControlMessage(message: string | ArrayBuffer): ControlMessage | nu
 
 function badHostSecret(): Response {
   return json({ error: "Invalid host secret.", code: RELAY_ERROR_BAD_HOST_SECRET }, 401);
+}
+
+function assistantsOff(): Response {
+  return json(
+    { error: "Assistants are turned off on this relay.", code: ASSISTANTS_OFF_CODE },
+    503,
+  );
 }
 
 function hookRefusal(refusal: Extract<HookAdmission, { ok: false }>): HookDeliveryOutcome {
