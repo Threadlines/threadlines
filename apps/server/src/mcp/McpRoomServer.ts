@@ -21,6 +21,7 @@ import type { ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
@@ -30,9 +31,12 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
+import { GUIDE_TOOL_NAME, SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
+import { ComputerLinks } from "../links/ComputerLinks.ts";
+import { OutsideAgentSignIn } from "../outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
 import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
@@ -48,13 +52,20 @@ import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
+import { makeGuideToolHandler } from "./guideToolHandlers.ts";
+import { GuideToolkit } from "./guideTools.ts";
 import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
 import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
 import { ThreadToolkit } from "./threadTools.ts";
 
 /** Every tool the endpoint serves. */
-const RoomEndpointToolkit = Toolkit.merge(RoomToolkit, ThreadToolkit, ScheduleToolkit);
+const RoomEndpointToolkit = Toolkit.merge(
+  RoomToolkit,
+  ThreadToolkit,
+  ScheduleToolkit,
+  GuideToolkit,
+);
 
 const authenticate = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
@@ -204,6 +215,101 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       providers: providers.getProviders,
       localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
+    // The app guide reads this computer's values only as an answer shows them.
+    const environment = yield* Effect.serviceOption(ServerEnvironment);
+    // A read that fails leaves its value out of the answer.
+    const orUndefined = <A, E>(read: Effect.Effect<A, E>) =>
+      read.pipe(
+        Effect.map((value): A | undefined => value),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const computerLinks = yield* Effect.serviceOption(ComputerLinks);
+    const outsideAgents = yield* Effect.serviceOption(OutsideAgentSignIn);
+    const guide = makeGuideToolHandler({
+      computerName: Effect.sync(() =>
+        Option.isSome(environment) ? environment.value.currentLabel() : "this computer",
+      ),
+      settings: orUndefined(settings.getSettings),
+      linkedComputers: orUndefined(
+        Effect.gen(function* () {
+          const outbound = links === undefined ? [] : yield* links.computers;
+          const inbound = Option.isSome(computerLinks)
+            ? (yield* computerLinks.value.snapshot).inbound
+            : [];
+          const inboundByEnvironment = new Map(
+            inbound.flatMap((link) =>
+              link.environmentId === null ? [] : [[link.environmentId, link]],
+            ),
+          );
+          const fromOutbound = outbound.map((computer) => {
+            const here = inboundByEnvironment.get(computer.environmentId);
+            return {
+              name: computer.label,
+              reachable: computer.reachable,
+              theirAgentsHere:
+                here === undefined
+                  ? null
+                  : { access: here.access, maxRuntimeMode: here.maxRuntimeMode },
+              ourAgentsThere:
+                computer.descriptor === null
+                  ? null
+                  : {
+                      access: computer.descriptor.access,
+                      maxRuntimeMode: computer.descriptor.maxRuntimeMode,
+                      fresh: computer.reachable,
+                    },
+            };
+          });
+          const known = new Set(outbound.map((computer) => computer.environmentId));
+          const inboundOnly = inbound
+            .filter((link) => link.environmentId === null || !known.has(link.environmentId))
+            .map((link) => ({
+              name: link.label,
+              reachable: false,
+              theirAgentsHere: { access: link.access, maxRuntimeMode: link.maxRuntimeMode },
+              ourAgentsThere: null,
+            }));
+          return [...fromOutbound, ...inboundOnly];
+        }),
+      ),
+      providers: providers.getProviders.pipe(
+        Effect.map((all) =>
+          all.map((provider) => ({
+            name: provider.displayName ?? provider.instanceId,
+            enabled: provider.enabled,
+            signedIn:
+              provider.auth.status === "authenticated"
+                ? true
+                : provider.auth.status === "unauthenticated"
+                  ? false
+                  : null,
+          })),
+        ),
+      ),
+      // The Agents group as Settings shows it: its first snapshot is now.
+      outsideAgents: Option.isSome(outsideAgents)
+        ? orUndefined(
+            outsideAgents.value.changes.pipe(
+              Stream.take(1),
+              Stream.runHead,
+              Effect.map(Option.getOrUndefined),
+              Effect.map((snapshot) =>
+                snapshot?.connections.map((connection) => ({ name: connection.name })),
+              ),
+            ),
+          )
+        : Effect.succeed(undefined),
+      scheduledTasks: Option.isSome(scheduledTasks)
+        ? orUndefined(
+            scheduledTasks.value.snapshot.pipe(
+              Effect.map(({ tasks }) => ({
+                active: tasks.filter((task) => task.status === "active").length,
+                paused: tasks.filter((task) => task.status === "paused").length,
+              })),
+            ),
+          )
+        : Effect.succeed(undefined),
+    });
     const caller = Effect.service(McpRoomInvocation);
     return {
       room_agents: () => Effect.flatMap(caller, handlers.room_agents),
@@ -236,6 +342,17 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_update(scope, input)),
       scheduled_run_finish: (input) =>
         Effect.flatMap(caller, (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
+      // Listed only to runtimes granted it; a call from any other is refused
+      // too (a review runtime reads the checkout and nothing else).
+      app_guide: (input) =>
+        Effect.flatMap(caller, (scope) =>
+          scope.roomTools.has(GUIDE_TOOL_NAME)
+            ? guide(input)
+            : Effect.succeed({
+                outcome: "refused" as const,
+                answer: "The Threadlines guide isn't available to you here.",
+              }),
+        ),
     };
   }),
 );

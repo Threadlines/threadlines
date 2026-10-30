@@ -24,6 +24,7 @@ import {
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import { placeById } from "@threadlines/shared/appPlaces";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   PROVIDER_ACCOUNT_DRIVER_KINDS,
@@ -239,7 +240,7 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
 function AboutVersionTitle() {
   return (
     <span className="inline-flex items-center gap-2">
-      <span>Version</span>
+      <span>{placeById("general.version").title}</span>
       <code className="text-[11px] font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
   );
@@ -326,6 +327,7 @@ function AboutVersionSection() {
   return (
     <>
       <SettingsRow
+        place="general.version"
         title={<AboutVersionTitle />}
         description={description}
         control={
@@ -348,8 +350,7 @@ function AboutVersionSection() {
       />
       {hasDesktopBridge ? (
         <SettingsRow
-          title="Update track"
-          description="Stable gets full releases. Nightly gets a new build every day, and you can switch back any time."
+          place="general.updateTrack"
           control={
             <Select
               value={selectedUpdateChannel}
@@ -623,8 +624,7 @@ function AssistantStreamingRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Stream replies"
-      description="Show the agent's reply while it's being written."
+      place="general.streamReplies"
       resetAction={
         settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
           <SettingResetButton
@@ -655,7 +655,7 @@ function PreventSleepRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Keep awake during turns"
+      place="general.keepAwake"
       description="Stops the computer sleeping while an agent works. The screen still locks. macOS and Windows."
       resetAction={
         settings.preventSleepDuringActiveTurns !==
@@ -689,10 +689,9 @@ function TerminalSettingsSection() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
-    <SettingsSection title="Terminal">
+    <SettingsSection place="general.terminal">
       <SettingsRow
-        title="Text size"
-        description="The size of the terminal's text on this device."
+        place="general.terminalTextSize"
         resetAction={
           settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize ? (
             <SettingResetButton
@@ -725,8 +724,7 @@ function TerminalSettingsSection() {
         }
       />
       <SettingsRow
-        title="Screen reader support"
-        description="Lets a screen reader read what the terminal prints. Busy output draws a little slower."
+        place="general.terminalScreenReader"
         resetAction={
           settings.terminalScreenReaderMode !==
           DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode ? (
@@ -764,8 +762,7 @@ function OpenLinksRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Open links in"
-      description="Where chat and terminal links open. Right-click a link for the other choice."
+      place="general.openLinksIn"
       resetAction={
         settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? (
           <SettingResetButton
@@ -806,7 +803,7 @@ function AgentBrowserSitesRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Sites agents can visit"
+      place="general.sitesAgentsCanVisit"
       description="Local addresses always open. Other sites can ask you first or open freely. Each project can change this in the browser menu."
       resetAction={
         settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy ? (
@@ -849,8 +846,7 @@ function UsageAnalyticsRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Usage analytics"
-      description="Anonymous usage counts that show us installs and reliability. Never prompts, code, file paths, repository names, terminal output, or secrets."
+      place="general.usageAnalytics"
       resetAction={
         settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled ? (
           <SettingResetButton
@@ -914,8 +910,7 @@ function ClearBrowserDataRow() {
 
   return (
     <SettingsRow
-      title="Clear all browser data"
-      description="Signs you out of every site in the built-in browser, in every project."
+      place="general.clearBrowserData"
       control={
         <Button
           type="button"
@@ -961,10 +956,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
     <SettingsPageContainer>
       <SettingsPageHeader section="/settings/general" />
       <PushAlertsSettingsSection />
-      <SettingsSection title="Appearance">
+      <SettingsSection place="general.appearance">
         <SettingsRow
-          title="Theme"
-          description="How Threadlines looks."
+          place="general.theme"
           resetAction={
             theme !== "system" ? (
               <SettingResetButton label="theme" onClick={() => setTheme("system")} />
@@ -996,8 +990,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
 
         <SettingsRow
-          title="Time format"
-          description="System default follows your computer's clock setting."
+          place="general.timeFormat"
           resetAction={
             settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
               <SettingResetButton
@@ -1032,13 +1025,12 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
       </SettingsSection>
 
-      <SettingsSection title="Chat & diffs">
+      <SettingsSection place="general.chatAndDiffs">
         {/* On a phone this one is the paired computer's: it sits under This Computer. */}
         {!isPhoneSurface ? <AssistantStreamingRow /> : null}
 
         <SettingsRow
-          title="Changed files in chat"
-          description="Open the list of changed files under each reply."
+          place="general.changedFilesInChat"
           resetAction={
             settings.chatChangedFilesDefaultExpanded !==
             DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
@@ -1067,8 +1059,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         {/* Not on a phone: the panel covers the conversation there, so it never opens itself. */}
         {!isPhoneSurface ? (
           <SettingsRow
-            title="Agents panel"
-            description="Open it on the right when a thread starts subagents."
+            place="general.agentsPanel"
             resetAction={
               settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel ? (
                 <SettingResetButton
@@ -1094,8 +1085,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         ) : null}
 
         <SettingsRow
-          title="Wrap diff lines"
-          description="Wrap long lines when the diff panel opens."
+          place="general.wrapDiffLines"
           resetAction={
             settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
               <SettingResetButton
@@ -1118,8 +1108,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
 
         <SettingsRow
-          title="Hide whitespace changes"
-          description="Leave out edits that only change spacing."
+          place="general.hideWhitespace"
           resetAction={
             settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
               <SettingResetButton
@@ -1148,7 +1137,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
       <DictationSettings />
 
-      <SettingsSection title="This computer">
+      <SettingsSection place="general.thisComputer">
         {isPhoneSurface ? <AssistantStreamingRow /> : null}
 
         <PreventSleepRow />
@@ -1156,8 +1145,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
         {!isPhoneSurface ? (
           <SettingsRow
-            title="Add project starts in"
-            description="Where the folder picker opens. Empty means your home folder (~/)."
+            place="general.addProjectStartsIn"
             resetAction={
               settings.addProjectBaseDirectory !==
               DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
@@ -1190,11 +1178,13 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
       </SettingsSection>
 
-      <SettingsSection title={isPhoneSurface ? "About" : "Privacy & about"}>
+      {/* A phone has no privacy rows here, so the section is only "About". */}
+      <SettingsSection place="general.about" title={isPhoneSurface ? "About" : undefined}>
         {isElectron ? (
           <AboutVersionSection />
         ) : (
           <SettingsRow
+            place="general.version"
             title={<AboutVersionTitle />}
             description={
               <>
@@ -1207,7 +1197,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           <>
             <UsageAnalyticsRow />
             <SettingsRow
-              title="Diagnostics"
+              place="general.diagnostics"
               description={diagnosticsDescription}
               control={
                 <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
@@ -1218,7 +1208,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           </>
         ) : (
           <SettingsRow
-            title="Phone settings"
+            place="general.phoneSettings"
             description={
               'Appearance, chat and thread-closing preferences are stored in this browser. Settings under "This Computer", and the Threads page\'s new-thread, Rooms and writing settings, apply to your paired computer.'
             }
@@ -2376,10 +2366,9 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
   return (
     <SettingsPageContainer>
       <SettingsPageHeader section="/settings/archived" />
-      <SettingsSection title="Thread cleanup">
+      <SettingsSection place="archived.cleanup">
         <SettingsRow
-          title="Auto-archive inactive threads"
-          description="Moves old inactive threads out of active lists without deleting their history."
+          place="archived.autoArchive"
           status={
             settings.autoArchiveInactiveThreadsDays === 0
               ? formatAutoArchiveCandidateSummary(inactiveThreadCandidates.length, 0)
@@ -2432,8 +2421,7 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
           />
         </SettingsRow>
         <SettingsRow
-          title="Archive inactive threads now"
-          description="Review the same safe candidates and move them to Archive immediately."
+          place="archived.archiveNow"
           control={
             <Button
               type="button"
@@ -2459,8 +2447,7 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
           }
         />
         <SettingsRow
-          title="Delete old archived threads"
-          description="Permanently removes archived threads by how long they have been in Archive."
+          place="archived.deleteOld"
           status={`${formatThreadCount(archivedDeleteSelection.threads.length)} archived for ${archivedThreadDeleteAgeDays}+ days.`}
           control={
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">

@@ -3300,6 +3300,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }),
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
           ...(input.roomTools === true ? { roomTools: true } : {}),
+          ...(input.guideTools === true && sideAnswer === undefined ? { guideTools: true } : {}),
           ...(input.roomTools === true && input.scheduledRunTools === true
             ? { scheduledRunTools: true }
             : {}),

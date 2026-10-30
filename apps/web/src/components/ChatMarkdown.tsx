@@ -86,6 +86,7 @@ import {
 } from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
+import { isPlaceLinkHref } from "../appPlaceLinks";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {
   type MarkdownFileLinkKind,
@@ -115,6 +116,12 @@ import { fencedBlockIsClosed } from "../lib/markdownFences";
 import { DisplayMath, InlineMath } from "./chat/MarkdownMath";
 import { MarkdownDiagram } from "./chat/MarkdownDiagram";
 import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
+import {
+  MARKDOWN_FILE_LINK_CLASS_NAME,
+  MARKDOWN_FILE_LINK_ICON_CLASS_NAME,
+  MARKDOWN_FILE_LINK_LABEL_CLASS_NAME,
+} from "./chat/markdownChipClasses";
+import { PlaceLink } from "./chat/PlaceLink";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -755,6 +762,19 @@ const InsideMarkdownLinkContext = createContext(false);
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
   const documentContext = useContext(MarkdownDocumentContext);
   const { cwd, threadRef, searchHighlightQuery, markdownFileLinkMetaByHref } = documentContext;
+  if (href && isPlaceLinkHref(href)) {
+    return (
+      <PlaceLink
+        href={href}
+        linkText={markdownChildrenText(children)}
+        threadEnvironmentId={threadRef?.environmentId ?? documentContext.environmentId ?? null}
+        threadRef={threadRef}
+        className={props.className}
+      >
+        <InsideMarkdownLinkContext value>{children}</InsideMarkdownLinkContext>
+      </PlaceLink>
+    );
+  }
   const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
   const fileLinkMeta = normalizedHref
     ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
@@ -1058,10 +1078,6 @@ interface MarkdownFileLinkProps {
   isMissing?: boolean | undefined;
 }
 
-const MARKDOWN_FILE_LINK_CLASS_NAME =
-  "chat-markdown-file-link relative top-[2px] max-w-full no-underline";
-const MARKDOWN_FILE_LINK_ICON_CLASS_NAME = "chat-markdown-file-link-icon size-3.5 shrink-0";
-const MARKDOWN_FILE_LINK_LABEL_CLASS_NAME = "chat-markdown-file-link-label truncate";
 /** Inline code that does something when clicked, whether a file or an address. */
 const CLICKABLE_INLINE_CODE_CLASS_NAME =
   "cursor-pointer transition-colors hover:text-foreground hover:underline hover:decoration-dotted hover:underline-offset-2";

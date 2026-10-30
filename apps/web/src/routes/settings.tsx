@@ -21,6 +21,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
+import { usePlaceArrival } from "../hooks/usePlaceArrival";
 
 function isEditableElementTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -65,6 +66,7 @@ function SettingsContentLayout() {
     ? "Settings"
     : (settingsSectionLabelForPath(location.pathname) ?? "Settings");
   const handleRestored = () => setRestoreSignal((value) => value + 1);
+  usePlaceArrival();
   useEffect(() => {
     rememberVisibleSettingsSection(location.pathname);
   }, [location.pathname]);

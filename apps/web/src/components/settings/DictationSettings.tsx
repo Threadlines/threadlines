@@ -47,7 +47,7 @@ export function DictationSettings() {
 
   if (status?.runtime.supported === false) {
     return (
-      <SettingsSection id="dictation" title="Dictation">
+      <SettingsSection id="dictation" place="general.dictation">
         <div className="px-4 py-3.5 text-muted-foreground text-xs sm:px-5">
           Dictation isn&apos;t available on this server&apos;s platform.
         </div>
@@ -60,9 +60,9 @@ export function DictationSettings() {
   const readyBytes = readyModels.reduce((sum, model) => sum + model.bytesTotal, 0);
 
   return (
-    <SettingsSection id="dictation" title="Dictation">
+    <SettingsSection id="dictation" place="general.dictation">
       <SettingsRow
-        title="Speech model"
+        place="general.speechModel"
         description="Speech is turned into text on this computer. Nothing is sent to the internet. Pick the small model on an older or low-memory machine."
       >
         <RadioGroup
@@ -170,8 +170,7 @@ export function DictationSettings() {
       </SettingsRow>
 
       <SettingsRow
-        title="Hold to record"
-        description="Hold the mic button to record and let go to finish. Off: click to start, click again to stop."
+        place="general.holdToRecord"
         control={
           <Switch
             checked={holdToRecord}
@@ -185,7 +184,7 @@ export function DictationSettings() {
 
       {readyModels.length > 0 && status ? (
         <SettingsRow
-          title="Downloaded models"
+          place="general.downloadedModels"
           description={
             <span className="font-mono text-[11px]">
               {formatDownloadSize(readyBytes)} · {status.modelsDir}

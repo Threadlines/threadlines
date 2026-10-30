@@ -11,7 +11,6 @@
  * so each is read from, and changed through, that computer's snapshot.
  */
 import type {
-  ComputerLinkAccess,
   ComputerLinkPendingRequest,
   ComputerLinksSnapshot,
   EnvironmentId,
@@ -32,12 +31,8 @@ export interface FleetLinksEntry {
 
 export type FleetLinksByEnvironment = Readonly<Record<string, FleetLinksEntry>>;
 
-/** What a link's access is called wherever the user sees or sets it. */
-export const COMPUTER_LINK_ACCESS_LABELS: Record<ComputerLinkAccess, string> = {
-  allowed: "Allowed",
-  ask: "Ask first",
-  off: "Off",
-};
+/** What a link's access is called wherever the user sees or sets it (one copy, shared with agents' guide). */
+export { COMPUTER_LINK_ACCESS_LABELS } from "@threadlines/shared/appPlaces";
 
 // ── The list of computers (R4.1) ────────────────────────────────────
 

@@ -88,7 +88,8 @@ import {
 } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
-import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { buildGuideInstructions } from "../../mcp/guideTools.ts";
+import { ROOM_MCP_SERVER_NAME, roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
@@ -301,8 +302,9 @@ interface SessionContext {
   readonly workspaceRoot: string;
   readonly scope: Scope.Closeable;
   readonly runtimeMode: RuntimeMode;
-  readonly roomTools: boolean;
-  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  /** The room endpoint is attached: every room tool, or the app guide alone (roomEndpointGrant). */
+  readonly roomEndpoint: boolean;
+  /** With the room tools: agents may change scheduled tasks; its instructions say so. */
   readonly scheduleTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
@@ -1767,7 +1769,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       return {
         mcpServers: {
           [BROWSER_MCP_SERVER_NAME]: server(mcpEndpointUrl(serverConfig.port)),
-          ...(ctx.roomTools
+          ...(ctx.roomEndpoint
             ? { [ROOM_MCP_SERVER_NAME]: server(mcpRoomEndpointUrl(serverConfig.port)) }
             : {}),
           ...(ctx.agentPageAssetsDir !== undefined
@@ -1789,6 +1791,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
         ...(ctx.scheduleTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.roomEndpoint ? [buildGuideInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2179,6 +2182,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
           const roomTools = input.roomTools === true;
+          const roomGrant = roomEndpointGrant(input, undefined);
           const commandRequests = input.commandRequests === true;
           const agentPageAssetsDir =
             input.agentPages === true
@@ -2190,10 +2194,11 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           const credential = yield* mcpSessionRegistry.credentialFor({
             sessionKey: input.threadId,
             browser: true,
-            room: roomTools,
+            room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
             scheduledRun: input.scheduledRunTools === true,
+            guideOnly: roomGrant.guideOnly,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -2223,7 +2228,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             workspaceRoot: museWorkspaceRoot(directory),
             scope,
             runtimeMode: input.runtimeMode,
-            roomTools,
+            roomEndpoint: roomGrant.attach,
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests,

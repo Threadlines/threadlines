@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import { type PlaceId, placeById } from "@threadlines/shared/appPlaces";
 import {
   ArchiveIcon,
   BotIcon,
@@ -45,6 +46,7 @@ export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
 export type HostedStaticSettingsSectionPath = (typeof HOSTED_STATIC_SETTINGS_SECTION_PATHS)[number];
 
 export interface SettingsNavItem {
+  /** The page place's title (`@threadlines/shared/appPlaces`). */
   readonly label: string;
   readonly to: SettingsSectionPath;
   readonly icon: ComponentType<{ className?: string }>;
@@ -53,75 +55,69 @@ export interface SettingsNavItem {
    * can use, then this computer's tools. A thin line separates clusters.
    */
   readonly group: "threads" | "agents" | "computer";
-  /** One line under the page title (and under the label in the phone index). */
+  /**
+   * One line under the page title (and under the label in the phone index):
+   * the page place's `about`.
+   */
   readonly description: string;
 }
 
+/** A menu entry for a page place: its label and description are the catalog's. */
+function settingsNavItem(
+  place: PlaceId,
+  item: Omit<SettingsNavItem, "label" | "description">,
+): SettingsNavItem {
+  const page = placeById(place);
+  return { ...item, label: page.title, description: page.about };
+}
+
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [
-  {
-    label: "General",
+  settingsNavItem("settings.general", {
     to: "/settings/general",
     icon: Settings2Icon,
     group: "threads",
-    description: "How Threadlines looks, how chats show, and this computer.",
-  },
-  {
-    label: "Threads",
+  }),
+  settingsNavItem("settings.threads", {
     to: "/settings/threads",
     icon: MessagesSquareIcon,
     group: "threads",
-    description: "How new threads start, who's in them, and what happens when they're done.",
-  },
-  {
-    label: "Archives",
+  }),
+  settingsNavItem("settings.archived", {
     to: "/settings/archived",
     icon: ArchiveIcon,
     group: "threads",
-    description: "Threads you've put away, and when old ones get archived for you.",
-  },
-  {
-    label: "Providers",
+  }),
+  settingsNavItem("settings.providers", {
     to: "/settings/providers",
     icon: BotIcon,
     group: "agents",
-    description: "The agents you can run, their accounts and their models.",
-  },
+  }),
   // The route stays /settings/plugins: links, panel memory, and the tab search param all key off it.
-  {
-    label: "Plugins & Skills",
+  settingsNavItem("settings.plugins", {
     to: "/settings/plugins",
     icon: PlugIcon,
     group: "agents",
-    description: "Plugins, skills and connections your agents can use.",
-  },
-  {
-    label: "Agent Instructions",
+  }),
+  settingsNavItem("settings.instructions", {
     to: "/settings/instructions",
     icon: FileTextIcon,
     group: "agents",
-    description: "The instruction files agents read before they start work.",
-  },
-  {
-    label: "Source Control",
+  }),
+  settingsNavItem("settings.sourceControl", {
     to: "/settings/source-control",
     icon: SourceControlIcon,
     group: "computer",
-    description: "How Threadlines works with Git and the sites that host your code.",
-  },
-  {
-    label: "Connections",
+  }),
+  settingsNavItem("settings.connections", {
     to: CONNECTIONS_SETTINGS_SECTION_PATH,
     icon: SmartphoneIcon,
     group: "computer",
-    description: "Use this computer from your phone, or other computers from here.",
-  },
-  {
-    label: "Keybindings",
+  }),
+  settingsNavItem("settings.keybindings", {
     to: "/settings/keybindings",
     icon: KeyboardIcon,
     group: "computer",
-    description: "Keyboard shortcuts for commands, and when each one applies.",
-  },
+  }),
 ];
 
 /** Whether a menu item opens a new cluster, so a line goes above it. */

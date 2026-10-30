@@ -1248,13 +1248,18 @@ const make = Effect.gen(function* () {
     // through its tools the agent could reach past what it was allowed
     // (docs/design/outside-agents.md, "Fence").
     const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
+    const fencedOff =
+      (thread.remoteOrigin ?? null) !== null || (thread.outsideOrigin ?? null) !== null;
     const roomToolsWanted =
-      (thread.remoteOrigin ?? null) === null &&
-      (thread.outsideOrigin ?? null) === null &&
+      !fencedOff &&
       (hasAgentRecords(thread) ||
         agentInvitesMode(toolSettings) !== "off" ||
         agentThreadsMode(toolSettings) !== "off" ||
         scheduledRunTools);
+    // Every other local thread still gets the app guide, alone: asked why
+    // it can't start threads, its agent can say where that is turned on
+    // (docs/design/app-guide.md, "The tool").
+    const guideTools = !fencedOff && !roomToolsWanted;
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1427,6 +1432,7 @@ const make = Effect.gen(function* () {
       ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
       ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
       ...(roomToolsWanted ? { roomTools: true } : {}),
+      ...(guideTools ? { guideTools: true } : {}),
       ...(roomToolsWanted && scheduledRunTools ? { scheduledRunTools: true } : {}),
       ...(roomToolsWanted && agentThreadsMode(toolSettings) !== "off"
         ? { scheduleTools: true }

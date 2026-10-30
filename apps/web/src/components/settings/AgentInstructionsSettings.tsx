@@ -26,6 +26,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { usePlaceScopeArrival } from "../../hooks/usePlaceArrival";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
 
 interface InstructionDraft {
@@ -263,6 +264,21 @@ export function AgentInstructionsSettingsPanel() {
     }
   }, [cwd, projectOptions]);
 
+  // A place link from a thread opens on that thread's project once it's
+  // listed. After the default pick above, so it wins when projects arrive
+  // late. Only when that path is the linked computer's alone: this page picks
+  // a project by its path, so a path two computers share is left to the user
+  // rather than opened (and saved) on the wrong one.
+  usePlaceScopeArrival((scope) => {
+    if (scope.project === null) return true;
+    const owners = projects.filter((project) => project.cwd === scope.project);
+    if (owners.length === 0) return false;
+    if (owners.length === 1 && owners[0]?.environmentId === scope.environmentId) {
+      setCwd(scope.project);
+    }
+    return true;
+  });
+
   const refresh = useCallback(async () => {
     const requestCwd = cwd.trim();
     const providersApi = readProjectProvidersApi();
@@ -456,9 +472,10 @@ export function AgentInstructionsSettingsPanel() {
           </Tooltip>
         }
       />
+      {/* An untitled group: its one row, the project picker, is the place. */}
       <SettingsSection>
         <SettingsRow
-          title="Project"
+          place="instructions.project"
           description={
             instructions?.generatedAt
               ? `Files loaded ${new Date(instructions.generatedAt).toLocaleString()}.`
@@ -522,7 +539,7 @@ export function AgentInstructionsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection
-        title="Instruction files"
+        place="instructions.files"
         headerAction={
           instructionFiles.length > 0 ? (
             <span className="text-[11px] text-muted-foreground">
