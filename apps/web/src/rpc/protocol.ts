@@ -351,16 +351,21 @@ export function createWsRpcProtocolLayer(
   // even one made a moment later, and every send until a new socket is up. So
   // that failure is dropped in `run` below, and sends are held here until a
   // socket connects, as they are while a socket will not open. Streams move to
-  // the new socket when it opens (WsTransport).
+  // the new socket when it opens (WsTransport). A different failure after it
+  // (a refused credential ends the connect loop) releases what is held, and
+  // fails it as before.
   let heldUntilConnected: Latch.Latch | undefined;
+  const releaseHeld = () => {
+    const held = heldUntilConnected;
+    heldUntilConnected = undefined;
+    held?.openUnsafe();
+  };
+  const isHeartbeatFailure = (error: RpcClientError.RpcClientError) =>
+    error.reason._tag === "SocketReadError";
   const connectionHooksLayer = Layer.succeed(
     RpcClient.ConnectionHooks,
     RpcClient.ConnectionHooks.of({
-      onConnect: Effect.suspend(() => {
-        const held = heldUntilConnected;
-        heldUntilConnected = undefined;
-        return held === undefined ? Effect.void : Effect.asVoid(held.open);
-      }),
+      onConnect: Effect.sync(releaseHeld),
       onDisconnect: Effect.void,
     }),
   );
@@ -372,7 +377,7 @@ export function createWsRpcProtocolLayer(
     Effect.suspend(() => protocol.send(clientId, request, transferables)).pipe(
       Effect.catch((error) => {
         const held = heldUntilConnected;
-        return held === undefined || request._tag !== "Request"
+        return held === undefined || request._tag !== "Request" || !isHeartbeatFailure(error)
           ? Effect.fail(error)
           : held.await.pipe(
               Effect.andThen(() => sendWhenConnected(protocol, clientId, request, transferables)),
@@ -430,13 +435,12 @@ export function createWsRpcProtocolLayer(
           }),
         run: (clientId, writeResponse) =>
           protocol.run(clientId, (response) => {
-            // The heartbeat timeout's own failure (see above).
-            if (
-              response._tag === "ClientProtocolError" &&
-              heldUntilConnected !== undefined &&
-              response.error.reason._tag === "SocketReadError"
-            ) {
-              return Effect.void;
+            if (response._tag === "ClientProtocolError" && heldUntilConnected !== undefined) {
+              // The heartbeat timeout's own failure (see above).
+              if (isHeartbeatFailure(response.error)) {
+                return Effect.void;
+              }
+              releaseHeld();
             }
             if (response._tag === "ClientProtocolError" || response._tag === "Defect") {
               clearAllTrackedRpcRequests();
