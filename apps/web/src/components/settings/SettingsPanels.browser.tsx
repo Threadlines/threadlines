@@ -98,6 +98,15 @@ import { SidebarProvider } from "../ui/sidebar";
 import { SettingsSearchResultsBody, useSettingsSearchActive } from "./SettingsSearch";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
 import { useSettingsSearchStore } from "./settingsSearchStore";
+import { placePage } from "@threadlines/shared/appPlaces";
+import { SettingsGroup } from "./settingsLayout";
+import {
+  SettingsPlaceSignalsProvider,
+  type SettingsPlaceSearchId,
+  type SettingsRowPlaceId,
+  useSettingsPlaceShown,
+} from "./settingsPlaceAvailability";
+import { SETTINGS_ROWS } from "./settingsRowRegistry";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
 import { ThreadsSettingsPanel } from "./ThreadsSettings";
 import {
@@ -5632,5 +5641,102 @@ describe("Settings search", () => {
       ).not.toBeNull();
     });
     expect(document.querySelector('[data-testid="settings-search-results"]')).toBeNull();
+  });
+});
+
+describe("Settings search rows", () => {
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    resetSourceControlDiscoveryStateForTests();
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    Reflect.deleteProperty(window, "nativeApi");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  // The drift check's rendered half (docs/design/settings-search.md): every
+  // live row draws its own place, alone as a result does, and a page draws
+  // exactly the live rows the search says are shown here.
+  it("draws every live row as its own place, alone and on its page", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),
+        discoverSourceControl: async (): Promise<SourceControlDiscoveryResult> => ({
+          versionControlSystems: [
+            {
+              kind: "git",
+              label: "Git",
+              executable: "git",
+              implemented: true,
+              status: "available",
+              version: Option.some("2.55.0"),
+              installHint: "Install Git.",
+              detail: Option.none(),
+            },
+          ],
+          sourceControlProviders: [],
+        }),
+        getSourceControlSetup: async () => ({
+          tools: [],
+          githubAuth: { status: "idle", verificationUrl: null, userCode: null, message: null },
+        }),
+      },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    let shown: ((id: SettingsPlaceSearchId) => boolean) | null = null;
+    function ReadShown() {
+      shown = useSettingsPlaceShown();
+      return null;
+    }
+    const liveRows = Object.entries(SETTINGS_ROWS).flatMap(([id, entry]) =>
+      entry.kind === "live" ? [{ id: id as SettingsRowPlaceId, Row: entry.Row }] : [],
+    );
+    const drawn = (id: string) => document.querySelector(`[data-place="${id}"]`) !== null;
+
+    for (const [page, Panel] of [
+      ["settings.general", GeneralSettingsPanel],
+      ["settings.threads", ThreadsSettingsPanel],
+      ["settings.sourceControl", SourceControlSettingsPanel],
+    ] as const) {
+      const screen = await renderWithTestRouter(
+        <TestAppProviders>
+          <SettingsPlaceSignalsProvider>
+            <ReadShown />
+            <Panel />
+          </SettingsPlaceSignalsProvider>
+        </TestAppProviders>,
+      );
+      const onPage = liveRows.filter(({ id }) => placePage(id).id === page);
+      await vi.waitFor(() => {
+        for (const { id } of onPage) expect(drawn(id), id).toBe(shown!(id));
+      });
+      for (const { id, Row } of onPage.filter(({ id }) => shown!(id))) {
+        const alone = await renderWithTestRouter(
+          <TestAppProviders>
+            <SettingsGroup data-testid="alone">
+              <Row />
+            </SettingsGroup>
+          </TestAppProviders>,
+        );
+        await vi.waitFor(() =>
+          expect(
+            document.querySelector(`[data-testid="alone"] [data-place="${id}"]`),
+            id,
+          ).not.toBeNull(),
+        );
+        await alone.unmount();
+      }
+      await screen.unmount();
+    }
   });
 });

@@ -1,6 +1,14 @@
 import type { AppPlace } from "@threadlines/shared/appPlaces";
 import { placeById } from "@threadlines/shared/appPlaces";
-import { createContext, type ReactNode, useCallback, useContext, useMemo } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import { useDictationStatus } from "../../dictation/dictationStatusStore";
 import {
@@ -15,6 +23,8 @@ import {
   canSetDesktopBackgroundOptions,
   useDesktopBackgroundOptions,
 } from "./desktopBackgroundOptions";
+import { isRemotelyReachable } from "./connections/serverReach";
+import { selectSettingsSearchActive, useSettingsSearchStore } from "./settingsSearchStore";
 
 /**
  * Which settings places are on screen here (docs/design/settings-search.md).
@@ -64,6 +74,8 @@ interface PlaceSignals {
   readonly alertKindsShown: boolean;
   readonly owner: boolean;
   readonly outsideAgents: boolean;
+  /** Other devices can reach this computer directly (the one-time link needs it). */
+  readonly remotelyReachable: boolean;
 }
 
 /**
@@ -100,7 +112,7 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "connections.options": (s) => !s.phone && s.owner,
   "connections.sameNetwork": (s) => !s.phone && s.owner,
   "connections.tailscale": (s) => !s.phone && s.owner,
-  "connections.oneTimeLink": (s) => !s.phone && s.owner,
+  "connections.oneTimeLink": (s) => !s.phone && s.owner && s.remotelyReachable,
 };
 
 /**
@@ -119,9 +131,39 @@ const STATIC_SIGNALS: PlaceSignals = {
   alertKindsShown: true,
   owner: true,
   outsideAgents: true,
+  remotelyReachable: true,
 };
 
 const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
+
+/**
+ * Whether the desktop app's computer is reachable from other devices, read
+ * from the desktop app when a search starts (Connections can change it, so
+ * each search reads it fresh). False until it answers.
+ */
+function useDesktopReach(enabled: boolean): boolean {
+  const [reachable, setReachable] = useState(false);
+  useEffect(() => {
+    const bridge = window.desktopBridge;
+    if (!enabled || bridge === undefined) return;
+    let cancelled = false;
+    void Promise.all([bridge.getServerExposureState(), bridge.getAdvertisedEndpoints()])
+      .then(([state, endpoints]) => {
+        if (cancelled) return;
+        setReachable(
+          isRemotelyReachable({
+            networkAccessible: state.mode === "network-accessible",
+            endpoints,
+          }),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return reachable;
+}
 
 function usePlaceSignals(): PlaceSignals {
   const phone = useSettingsSurface() === "phone";
@@ -132,7 +174,9 @@ function usePlaceSignals(): PlaceSignals {
   const alertComputers = useSavedEnvironmentRegistryStore(
     (state) => Object.values(state.byId).filter((record) => relayLinkOf(record) !== null).length,
   );
-  const { role } = usePrimarySessionAccess(!phone);
+  const { role, authPolicy } = usePrimarySessionAccess(!phone);
+  const searching = useSettingsSearchStore(selectSettingsSearchActive);
+  const desktopReach = useDesktopReach(isElectron && !phone && role === "owner" && searching);
   const outsideAgents = usePrimaryEnvironmentDescriptor()?.capabilities.outsideAgents === true;
   const alertsSupport = pushAlertsSupport();
   const alertsShown = alertsSupport !== "unsupported" && alertComputers > 0;
@@ -153,14 +197,17 @@ function usePlaceSignals(): PlaceSignals {
         alertsPermission === "granted",
       owner: role === "owner",
       outsideAgents,
+      remotelyReachable: isElectron ? desktopReach : authPolicy === "remote-reachable",
     }),
     [
       alertsEnabled,
       alertsPermission,
       alertsShown,
       alertsSupport,
+      authPolicy,
       background,
       canSetBackground,
+      desktopReach,
       dictation,
       outsideAgents,
       phone,

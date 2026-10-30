@@ -6,7 +6,7 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import {
@@ -96,6 +96,14 @@ function SettingsContentLayout() {
   }, [location.pathname]);
   // A search doesn't outlive Settings: opened again, it starts clean.
   useEffect(() => () => useSettingsSearchStore.getState().clear(), []);
+  // Nor its page: any way to another one (a link inside a result, a place
+  // link) ends it, so the results never cover where the user went.
+  const searchedOnPath = useRef(location.pathname);
+  useEffect(() => {
+    if (searchedOnPath.current === location.pathname) return;
+    searchedOnPath.current = location.pathname;
+    useSettingsSearchStore.getState().clear();
+  }, [location.pathname]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

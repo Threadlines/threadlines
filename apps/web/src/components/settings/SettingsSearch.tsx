@@ -165,8 +165,14 @@ const PAGE_ICONS: Readonly<Record<string, ReactNode>> = Object.fromEntries(
   ]),
 );
 
-/** What a result opens: a place (highlighted on arrival), or a page with its own reveal. */
-type ResultTarget = { readonly placeId: PlaceId } | { readonly href: string };
+/**
+ * What a result opens: a place (highlighted on arrival), a page with its own
+ * reveal, or Keybindings filtered to a shortcut.
+ */
+type ResultTarget =
+  | { readonly placeId: PlaceId }
+  | { readonly href: string }
+  | { readonly shortcut: string };
 
 /** Opens the result the control sits in (ResultFrame provides it). */
 const ResultOpenContext = createContext<() => void>(() => undefined);
@@ -186,6 +192,14 @@ function OpenButton({ label }: { readonly label: string }) {
       <ChevronRightIcon className="size-4" />
     </Button>
   );
+}
+
+let shortcutOpenings = 0;
+
+/** Numbers each opening of a shortcut, so the Keybindings page filters again for it. */
+function nextShortcutOpening(): number {
+  shortcutOpenings += 1;
+  return shortcutOpenings;
 }
 
 /** On the phone app, a setting stored on the paired computer says so: the rest are this phone's. */
@@ -218,10 +232,16 @@ function ResultFrame({
   const { openPlace, openHref } = useOpenFromSearch();
   const targetPlace = "placeId" in target ? target.placeId : null;
   const targetHref = "href" in target ? target.href : null;
+  const targetShortcut = "shortcut" in target ? target.shortcut : null;
   const open = useCallback(() => {
     if (targetPlace !== null) openPlace(targetPlace);
     else if (targetHref !== null) openHref(targetHref);
-  }, [openHref, openPlace, targetHref, targetPlace]);
+    else if (targetShortcut !== null) {
+      openHref(
+        `/settings/keybindings?q=${encodeURIComponent(targetShortcut)}&n=${nextShortcutOpening()}`,
+      );
+    }
+  }, [openHref, openPlace, targetHref, targetPlace, targetShortcut]);
   const page = placeById(result.item.page);
   const where = trail === null ? null : [page.title, ...trail].join(" › ");
   const note =
@@ -362,12 +382,7 @@ function ResultRow({
     case "shortcut": {
       const label = commandLabel(item.binding.command);
       return (
-        <ResultFrame
-          result={result}
-          query={query}
-          trail={[]}
-          target={{ href: `/settings/keybindings?q=${encodeURIComponent(label)}` }}
-        >
+        <ResultFrame result={result} query={query} trail={[]} target={{ shortcut: label }}>
           <SettingsRow
             title={<SearchHighlight text={label} query={query} />}
             description={item.binding.when ? `When ${item.binding.when}` : "Always"}

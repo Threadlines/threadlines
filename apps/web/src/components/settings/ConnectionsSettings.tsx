@@ -7,7 +7,11 @@ import {
   SmartphoneIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { placeChain } from "@threadlines/shared/appPlaces";
+
+import { placeIdFromArrivalHash } from "../../appPlaceLinks";
+import { isRemotelyReachable, isTailscaleHttpsEndpoint } from "./connections/serverReach";
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AdvertisedEndpoint,
@@ -146,10 +150,6 @@ function selectPairingEndpoint(
     availableEndpoints.find((endpoint) => endpoint.compatibility.hostedHttpsApp === "compatible") ??
     null
   );
-}
-
-function isTailscaleHttpsEndpoint(endpoint: AdvertisedEndpoint): boolean {
-  return endpoint.id.startsWith("tailscale-magicdns:");
 }
 
 function endpointDefaultPreferenceKey(endpoint: AdvertisedEndpoint): string {
@@ -994,6 +994,19 @@ export function ConnectionsSettings({
   const [confirmRemoveAllOpen, setConfirmRemoveAllOpen] = useState(false);
   const [connectDeviceOpen, setConnectDeviceOpen] = useState(false);
   const [connectionOptionsOpen, setConnectionOptionsOpen] = useState(false);
+  // A place link or settings search result opening a row inside Connection
+  // options unfolds it, once per arrival, so the row is there to highlight.
+  const arrivalHash = useLocation({ select: (location) => location.hash });
+  const [unfoldedFor, setUnfoldedFor] = useState<string | null>(null);
+  const arrivalPlace = placeIdFromArrivalHash(arrivalHash);
+  if (
+    arrivalPlace !== null &&
+    arrivalHash !== unfoldedFor &&
+    placeChain(arrivalPlace).some((place) => place.id === "connections.options")
+  ) {
+    setUnfoldedFor(arrivalHash);
+    setConnectionOptionsOpen(true);
+  }
   const [directLinkDialogOpen, setDirectLinkDialogOpen] = useState(false);
   const [directLinkLabel, setDirectLinkLabel] = useState("");
   const [isCreatingDirectLink, setIsCreatingDirectLink] = useState(false);
@@ -1380,8 +1393,10 @@ export function ConnectionsSettings({
         : visibleDesktopNetworkAdvertisedEndpoints,
     [tailscaleHttpsEndpoint, visibleDesktopNetworkAdvertisedEndpoints],
   );
-  const isLocalBackendRemotelyReachable =
-    isLocalBackendNetworkAccessible || tailscaleHttpsEndpoint?.status === "available";
+  const isLocalBackendRemotelyReachable = isRemotelyReachable({
+    networkAccessible: isLocalBackendNetworkAccessible,
+    endpoints: desktopAdvertisedEndpoints,
+  });
   const defaultDesktopNetworkAdvertisedEndpoint = useMemo(
     () =>
       selectPairingEndpoint(visibleDesktopNetworkAdvertisedEndpoints, defaultAdvertisedEndpointKey),

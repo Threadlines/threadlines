@@ -1077,17 +1077,18 @@ export function KeybindingsSettingsPanel() {
   const commandOptions = useMemo(() => buildKeybindingCommandOptions(keybindings), [keybindings]);
   const whenVariables = useMemo(() => buildWhenVariableOptions(), []);
 
-  // A settings search result opens the table filtered to its shortcut. Applied
-  // whenever it changes: the page may already be open under the search.
-  const seededQuery = useSearch({
+  // A settings search result opens the table filtered to its shortcut, each
+  // opening numbered: the page may already be open under the search, and the
+  // same result opened again filters again even after the filter changed.
+  const seedKey = useSearch({
     strict: false,
     select: (search: Record<string, unknown>) =>
-      typeof search["q"] === "string" ? search["q"] : null,
+      typeof search["q"] === "string" ? `${search["n"] ?? ""}\n${search["q"]}` : null,
   });
   const [appliedSeed, setAppliedSeed] = useState<string | null>(null);
-  if (seededQuery !== null && seededQuery !== appliedSeed) {
-    setAppliedSeed(seededQuery);
-    setQuery(seededQuery);
+  if (seedKey !== null && seedKey !== appliedSeed) {
+    setAppliedSeed(seedKey);
+    setQuery(seedKey.slice(seedKey.indexOf("\n") + 1));
     setIsSearchOpen(true);
   }
 
