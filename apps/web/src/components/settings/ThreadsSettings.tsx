@@ -1,7 +1,5 @@
 import { InfoIcon, PlusIcon, XIcon } from "lucide-react";
 import {
-  type AgentInvitesMode,
-  type AgentThreadsMode,
   type ClaudeWorkflowSize,
   type ModelSelection,
   type NewThreadRoomAgent,
@@ -11,6 +9,7 @@ import {
   ROOM_AGENT_ROLE_MAX_LENGTH,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
+import { AGENT_INVITES_LABELS, AGENT_THREADS_LABELS } from "@threadlines/shared/appPlaces";
 import { createModelSelection } from "@threadlines/shared/model";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
@@ -61,7 +60,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
   return (
     <SettingsPageContainer>
       <SettingsPageHeader section="/settings/threads" />
-      <SettingsSection title="New threads" description={computerNote}>
+      <SettingsSection place="threads.newThreads" description={computerNote}>
         <NewThreadAgentRow />
         <NewThreadRoomRow />
         <DefaultThreadEnvModeRow />
@@ -75,16 +74,16 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <StartAgentsWhileTypingRow />
       </SettingsSection>
 
-      <SettingsSection title="Rooms" description={computerNote}>
+      <SettingsSection place="threads.rooms" description={computerNote}>
         <RoomsRow />
         <AgentInvitesRow />
       </SettingsSection>
 
-      <SettingsSection title="Titles & writing" description={computerNote}>
+      <SettingsSection place="threads.titlesAndWriting" description={computerNote}>
         <WritingModelRows />
       </SettingsSection>
 
-      <SettingsSection title="When a thread is done">
+      <SettingsSection place="threads.whenDone">
         <WrapUpIdleThreadsRow />
         <WrapUpMergedThreadsRow />
         <WrapUpChildThreadsRow />
@@ -143,7 +142,7 @@ function NewThreadAgentRow() {
         );
   return (
     <SettingsRow
-      title="Agent"
+      place="threads.agent"
       description={
         selection === null
           ? "New threads start with the model you picked last on this device."
@@ -200,7 +199,7 @@ function NewThreadRoomRow() {
 
   return (
     <SettingsRow
-      title="Room"
+      place="threads.room"
       description={
         roomsOn
           ? "Other agents every new thread starts with. They stay quiet until you or the agent asks them something."
@@ -314,8 +313,7 @@ function DefaultThreadEnvModeRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Start in"
-      description="Work in the project folder, or give each new thread its own worktree."
+      place="threads.startIn"
       resetAction={
         settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
           <SettingResetButton
@@ -386,7 +384,7 @@ function NewWorktreeBaseRow() {
     NEW_WORKTREE_BASE_OPTIONS[0];
   return (
     <SettingsRow
-      title="New worktrees from"
+      place="threads.worktreesFrom"
       description={
         base.from === "named" && base.branch.length === 0
           ? "Pick a branch. Until you do, new worktrees start from the default branch."
@@ -448,7 +446,7 @@ function RoomsRow() {
   const roomsOn = roomsEnabledFor(settings);
   return (
     <SettingsRow
-      title="Rooms"
+      place="threads.enableRooms"
       description="Let a thread hold more than one agent. Rooms have no revert. Applies on every device using this computer."
       resetAction={
         !roomsOn ? (
@@ -472,8 +470,7 @@ function AgentPagesRow() {
   const pagesOn = settings.enableAgentPages !== false;
   return (
     <SettingsRow
-      title="Agent pages"
-      description="Agents can show a chart, diagram, mockup or document as a page in their reply. Pages already shown stay when this is off."
+      place="threads.agentPages"
       resetAction={
         !pagesOn ? (
           <SettingResetButton
@@ -500,8 +497,7 @@ function CommandRequestsRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Command requests"
-      description="Agents can ask you to run a command they can't run themselves, as a card you run from the chat. Cards already shown stay when this is off."
+      place="threads.commandRequests"
       resetAction={
         !requestsOn ? (
           <SettingResetButton
@@ -528,8 +524,7 @@ function StartAgentsWhileTypingRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Start agents while you type"
-      description="A stopped Claude or Codex agent starts in the background as you type, so your message gets a faster first reply."
+      place="threads.startWhileTyping"
       resetAction={
         !startOn ? (
           <SettingResetButton
@@ -562,7 +557,7 @@ function ClaudeArtifactsRow() {
   const artifactsOn = settings.enableClaudeArtifacts === true;
   return (
     <SettingsRow
-      title="Claude artifacts"
+      place="threads.claudeArtifacts"
       description={
         pagesOn
           ? "Claude can also publish a page to claude.ai for a link you can share, which uploads it to Anthropic."
@@ -621,7 +616,7 @@ function ClaudeWorkflowSizeRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Claude workflow size"
+      place="threads.claudeWorkflowSize"
       description={CLAUDE_WORKFLOW_SIZE_NOTES[size]}
       resetAction={
         size !== "default" ? (
@@ -667,7 +662,7 @@ function ClaudeSuggestionsRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Keep Claude's suggestions when you're using a lot"
+      place="threads.claudeSuggestions"
       description="Claude stops suggesting your next message (the gray text you can take with Tab) when you're on track to run out of usage early. Turn this on to keep them. Each one uses a little usage."
       resetAction={
         on ? (
@@ -690,12 +685,6 @@ function ClaudeSuggestionsRow() {
   );
 }
 
-const AGENT_INVITES_LABELS: Record<AgentInvitesMode, string> = {
-  off: "Off",
-  ask: "Ask me first",
-  auto: "Without asking",
-};
-
 /**
  * Whether the thread's agent may bring in another agent for a review
  * (docs/design/rooms-agent-invites.md). A setting of this computer's server:
@@ -707,7 +696,7 @@ function AgentInvitesRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Agents bringing in other agents"
+      place="threads.agentInvites"
       description={
         !roomsOn
           ? "Turn on Rooms to let the thread's agent bring in another model to review its work."
@@ -749,12 +738,6 @@ function AgentInvitesRow() {
   );
 }
 
-const AGENT_THREADS_LABELS: Record<AgentThreadsMode, string> = {
-  off: "Off",
-  ask: "Ask me first",
-  auto: "Automatic",
-};
-
 /**
  * Whether the thread's agent may start threads of its own
  * (docs/design/child-threads.md). A setting of this computer's server, like
@@ -765,7 +748,7 @@ function AgentThreadsRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Agents can start threads"
+      place="threads.agentThreads"
       description={
         mode === "auto"
           ? "The thread's agent can start threads of its own and change scheduled tasks, without asking you."
@@ -840,8 +823,7 @@ function WritingModelRows() {
   return (
     <>
       <SettingsRow
-        title="Writing model"
-        description="Writes thread titles. Also commit and PR text, unless Source Control picks its own."
+        place="threads.writingModel"
         resetAction={
           isWritingModelDirty ? (
             <SettingResetButton
@@ -887,8 +869,7 @@ function WritingModelRows() {
         }
       />
       <SettingsRow
-        title="Backup writing model"
-        description="Takes over when the writing model's provider fails."
+        place="threads.backupWritingModel"
         resetAction={
           isBackupDirty ? (
             <SettingResetButton
@@ -948,8 +929,7 @@ function WrapUpIdleThreadsRow() {
   return (
     <SettingsRow
       id="wrap-up-idle-threads"
-      title="Wrap up idle threads"
-      description="Move a thread to Wrapped after two quiet days, unless it's pinned or has news you haven't seen."
+      place="threads.wrapUpIdle"
       resetAction={
         settings.wrapUpIdleThreads !== DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads ? (
           <SettingResetButton
@@ -977,7 +957,7 @@ function WrapUpMergedThreadsRow() {
   return (
     <SettingsRow
       id="wrap-up-merged-threads"
-      title="Wrap up merged threads"
+      place="threads.wrapUpMerged"
       description="Move a thread to Wrapped when its pull request merges or closes, unless it's pinned. A new message brings it back, and a thread's pull request row can say otherwise."
       resetAction={
         settings.wrapUpThreadsOnPullRequestSettled !==
@@ -1012,8 +992,7 @@ function WrapUpChildThreadsRow() {
   return (
     <SettingsRow
       id="wrap-up-finished-child-threads"
-      title="Wrap up finished child threads"
-      description="File a thread an agent started under Wrapped once its answer went back to that agent, or once the thread that started it is wrapped."
+      place="threads.wrapUpChildren"
       resetAction={
         settings.wrapUpChildThreadsOnFinish !==
         DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish ? (
@@ -1045,8 +1024,7 @@ function ConfirmArchiveRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Confirm archive"
-      description="Ask for a second click before archiving a thread."
+      place="threads.confirmArchive"
       resetAction={
         settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive ? (
           <SettingResetButton
@@ -1075,8 +1053,7 @@ function ConfirmDeleteRow() {
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      title="Confirm delete"
-      description="Ask before deleting a thread and its history."
+      place="threads.confirmDelete"
       resetAction={
         settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete ? (
           <SettingResetButton

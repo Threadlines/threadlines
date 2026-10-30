@@ -1440,7 +1440,7 @@ export function ConnectionsSettings({
 
   const devicesSection = (
     <SettingsSection
-      title="Devices that can use this computer"
+      place="connections.devices"
       headerAction={
         otherDeviceCount >= 2 ? (
           <Button
@@ -1456,8 +1456,7 @@ export function ConnectionsSettings({
       }
     >
       <SettingsRow
-        title="Connect a phone, tablet, or computer"
-        description="Get a code to type on the other device, or a QR code for a phone. Works from anywhere while this computer is on."
+        place="connections.connectDevice"
         status={
           relayStatusLine ? (
             <span
@@ -1535,7 +1534,7 @@ export function ConnectionsSettings({
   // The computers this app uses live in Fleet now (docs/design/fleet.md, R4.4):
   // here is only how many, and the two ways there.
   const computersSection = (
-    <SettingsSection title="Computers you use from here">
+    <SettingsSection place="connections.computersFromHere">
       <SettingsRow
         data-testid="connections-computers-summary"
         title={
@@ -1563,7 +1562,7 @@ export function ConnectionsSettings({
 
   const connectionOptionsSection = (
     <SettingsSection
-      title="Connection options"
+      place="connections.options"
       headerAction={
         <Button
           size="xs"
@@ -1581,8 +1580,7 @@ export function ConnectionsSettings({
       {desktopBridge ? (
         <>
           <SettingsRow
-            title="Same network"
-            description="Devices on your home or office network connect straight to this computer, which can be faster and doesn't use the relay. Turning it on or off restarts Threadlines."
+            place="connections.sameNetwork"
             status={
               desktopServerExposureError ? (
                 <span className="block text-destructive-foreground">
@@ -1626,7 +1624,7 @@ export function ConnectionsSettings({
               ))
             : null}
           <SettingsRow
-            title="Tailscale"
+            place="connections.tailscale"
             description={
               tailscaleHttpsEndpoint?.status === "available"
                 ? tailscaleHttpsEndpoint.httpBaseUrl
@@ -1654,7 +1652,7 @@ export function ConnectionsSettings({
         </>
       ) : (
         <SettingsRow
-          title="Same network"
+          place="connections.sameNetwork"
           description={
             currentAuthPolicy === "remote-reachable"
               ? "This computer is already reachable on its network. Change this where Threadlines was started."
@@ -1664,8 +1662,7 @@ export function ConnectionsSettings({
       )}
       {isLocalBackendRemotelyReachable ? (
         <SettingsRow
-          title="One-time link for this network"
-          description="For devices that can reach this computer directly. The link works once and expires in 5 minutes."
+          place="connections.oneTimeLink"
           control={
             <Button size="xs" variant="outline" onClick={() => setDirectLinkDialogOpen(true)}>
               Make a link
@@ -1694,7 +1691,7 @@ export function ConnectionsSettings({
       ) : null}
 
       {isPhoneSurface ? null : (
-        <SettingsSection title="This computer">
+        <SettingsSection place="connections.thisComputer">
           <SettingsRow
             title={
               <span className="flex items-center gap-1.5">
@@ -1731,7 +1728,7 @@ export function ConnectionsSettings({
       {isPhoneSurface ? null : canManageLocalBackend ? (
         devicesSection
       ) : (
-        <SettingsSection title="Devices that can use this computer">
+        <SettingsSection place="connections.devices">
           <SettingsRow
             title="Owner only"
             description="Only the computer's owner can connect devices or remove their access."

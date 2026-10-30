@@ -1,3 +1,4 @@
+import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import { Undo2Icon } from "lucide-react";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
@@ -77,8 +78,14 @@ export function SettingsPageHeader({
  * and header action) above, the rows in a quiet group below. `bare` drops the
  * group for content that brings its own (a list split into several groups, a
  * grid of tiles).
+ *
+ * A section that is one of the app's places (`@threadlines/shared/appPlaces`)
+ * passes `place`: its title comes from the catalog, so agents and the screen
+ * use the same words, and `data-place` lets a place link find it. Unlike rows,
+ * a section shows no description unless it passes one.
  */
 export function SettingsSection({
+  place,
   title,
   description,
   headerAction,
@@ -88,7 +95,9 @@ export function SettingsSection({
   contentClassName,
   ...sectionProps
 }: ComponentPropsWithoutRef<"section"> & {
-  title?: string;
+  place?: SettingsPlaceId;
+  /** The place's title by default; pass one only where this surface words it differently. */
+  title?: string | undefined;
   /** One line saying what this section is, for surfaces whose subject is not self-evident. */
   description?: ReactNode;
   /** An action on the whole section, drawn solid (Add agent, Browse catalog). */
@@ -98,14 +107,18 @@ export function SettingsSection({
   children: ReactNode;
   contentClassName?: string;
 }) {
-  const hasHeader = title !== undefined || description !== undefined || headerAction !== undefined;
+  const resolvedTitle = title ?? (place === undefined ? undefined : placeById(place).title);
+  const hasHeader =
+    resolvedTitle !== undefined || description !== undefined || headerAction !== undefined;
   return (
-    <section {...sectionProps} className={cn("flex flex-col gap-2", className)}>
+    <section {...sectionProps} data-place={place} className={cn("flex flex-col gap-2", className)}>
       {hasHeader ? (
         <div className="flex items-end justify-between gap-3 px-1">
           <div className="min-w-0 space-y-0.5">
-            {title !== undefined ? (
-              <h2 className="text-[15px] leading-5 font-semibold text-foreground">{title}</h2>
+            {resolvedTitle !== undefined ? (
+              <h2 className="text-[15px] leading-5 font-semibold text-foreground">
+                {resolvedTitle}
+              </h2>
             ) : null}
             {description ? (
               <p className="text-[12.5px] leading-[18px] text-muted-foreground">{description}</p>
@@ -125,7 +138,27 @@ export function SettingsSection({
   );
 }
 
+/**
+ * What a row says: a place's words, or its own for rows built from data (one
+ * per provider, device or computer), whose section is the place.
+ */
+type SettingsRowWords =
+  | {
+      /** The app place this row is: its title, its description and `data-place`. */
+      place: SettingsPlaceId;
+      /** The place's title by default; pass one only where this surface words it differently. */
+      title?: ReactNode;
+      /** The place's `about` by default; pass live text (a status, the current choice). */
+      description?: ReactNode;
+    }
+  | { place?: undefined; title: ReactNode; description: ReactNode };
+
+/**
+ * One setting in a group: title and description on the left, its control on
+ * the right, and anything it opens (`children`) below.
+ */
 export function SettingsRow({
+  place,
   title,
   description,
   status,
@@ -134,17 +167,18 @@ export function SettingsRow({
   children,
   className,
   ...rowProps
-}: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
-  title: ReactNode;
-  description: ReactNode;
-  status?: ReactNode;
-  resetAction?: ReactNode;
-  control?: ReactNode;
-  children?: ReactNode;
-}) {
+}: Omit<ComponentPropsWithoutRef<"div">, "title"> &
+  SettingsRowWords & {
+    status?: ReactNode;
+    resetAction?: ReactNode;
+    control?: ReactNode;
+    children?: ReactNode;
+  }) {
+  const words = place === undefined ? null : placeById(place);
   return (
     <div
       {...rowProps}
+      data-place={place}
       className={cn(
         SETTINGS_GROUP_ROW_CLASS,
         "px-3.5",
@@ -155,12 +189,16 @@ export function SettingsRow({
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1 space-y-0.5">
           <div className="flex min-h-5 items-center gap-1.5">
-            <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">{title}</h3>
+            <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">
+              {title ?? words?.title}
+            </h3>
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               {resetAction}
             </span>
           </div>
-          <p className="text-[12.5px] leading-[18px] text-muted-foreground">{description}</p>
+          <p className="text-[12.5px] leading-[18px] text-muted-foreground">
+            {description ?? words?.about}
+          </p>
           {status ? <div className="pt-0.5 text-[11px] text-muted-foreground">{status}</div> : null}
         </div>
         {control ? (

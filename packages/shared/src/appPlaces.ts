@@ -531,11 +531,254 @@ const SECTIONS = [
     title: "Devices",
     about: "How many devices can use the computer; managed in Settings › Connections.",
   },
+  {
+    id: "fleet.thisApp",
+    kind: "section",
+    parent: "fleet",
+    title: "This app",
+    about: "This app's own connection to a computer it opens, and removing it.",
+  },
 ] as const satisfies ReadonlyArray<AppPlaceSpec>;
 
 // ----- rows ------------------------------------------------------------------------
 
 const ROWS = [
+  // General › Alerts
+  {
+    id: "general.alertsOnThisDevice",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Alerts on this device",
+    about: "An alert when an agent needs you or finishes, even with Threadlines closed.",
+    keywords: ["notifications", "push"],
+    scope: "device",
+  },
+  // General › Appearance
+  {
+    id: "general.theme",
+    kind: "row",
+    parent: "general.appearance",
+    title: "Theme",
+    about: "How Threadlines looks.",
+    keywords: ["dark mode", "light mode"],
+    scope: "device",
+  },
+  {
+    id: "general.timeFormat",
+    kind: "row",
+    parent: "general.appearance",
+    title: "Time format",
+    about: "System default follows your computer's clock setting.",
+    keywords: ["12-hour", "24-hour", "clock"],
+    scope: "device",
+  },
+  // General › Chat & diffs (on a phone, Stream replies sits under This computer)
+  {
+    id: "general.streamReplies",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Stream replies",
+    about: "Show the agent's reply while it's being written.",
+    keywords: ["streaming"],
+  },
+  {
+    id: "general.changedFilesInChat",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Changed files in chat",
+    about: "Open the list of changed files under each reply.",
+    scope: "device",
+  },
+  {
+    id: "general.agentsPanel",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Agents panel",
+    about: "Open it on the right when a thread starts subagents.",
+    keywords: ["subagents"],
+    scope: "device",
+  },
+  {
+    id: "general.wrapDiffLines",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Wrap diff lines",
+    about: "Wrap long lines when the diff panel opens.",
+    scope: "device",
+  },
+  {
+    id: "general.hideWhitespace",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Hide whitespace changes",
+    about: "Leave out edits that only change spacing.",
+    keywords: ["diff", "whitespace"],
+    scope: "device",
+  },
+  // General › Terminal
+  {
+    id: "general.terminalTextSize",
+    kind: "row",
+    parent: "general.terminal",
+    title: "Text size",
+    about: "The size of the terminal's text on this device.",
+    keywords: ["font size"],
+    scope: "device",
+  },
+  {
+    id: "general.terminalScreenReader",
+    kind: "row",
+    parent: "general.terminal",
+    title: "Screen reader support",
+    about: "Lets a screen reader read what the terminal prints. Busy output draws a little slower.",
+    keywords: ["accessibility"],
+    scope: "device",
+  },
+  // General › Dictation
+  {
+    id: "general.speechModel",
+    kind: "row",
+    parent: "general.dictation",
+    title: "Speech model",
+    about:
+      "The model that turns your speech into text, on this computer, with nothing sent to the internet.",
+    keywords: ["parakeet", "moonshine", "download"],
+  },
+  {
+    id: "general.holdToRecord",
+    kind: "row",
+    parent: "general.dictation",
+    title: "Hold to record",
+    about:
+      "Hold the mic button to record and let go to finish. Off: click to start, click again to stop.",
+    keywords: ["push to talk"],
+    scope: "device",
+  },
+  {
+    id: "general.downloadedModels",
+    kind: "row",
+    parent: "general.dictation",
+    title: "Downloaded models",
+    about:
+      "How much disk the downloaded speech models use and where they are, with Remove all to free it.",
+    keywords: ["disk space"],
+  },
+  // General › This computer
+  {
+    id: "general.keepAwake",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Keep awake during turns",
+    about: "Stops the computer sleeping while an agent works, on macOS and Windows.",
+    keywords: ["sleep", "caffeinate"],
+  },
+  {
+    id: "general.keepAwakeForScheduledTasks",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Keep this computer awake for scheduled tasks",
+    about: "Stops this computer sleeping while it has an active scheduled task.",
+    keywords: ["sleep"],
+    scope: "desktop",
+    appliesWhen: "desktop",
+    widensAgents: true,
+  },
+  {
+    id: "general.runInBackground",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Keep running in the background when the window closes",
+    about:
+      "On Windows and Linux, closing the window leaves Threadlines in the tray, so scheduled tasks and linked computers keep working.",
+    keywords: ["tray", "close window", "quit"],
+    scope: "desktop",
+    appliesWhen: "desktop",
+    widensAgents: true,
+  },
+  {
+    id: "general.addProjectStartsIn",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Add project starts in",
+    about: "Where the folder picker opens. Empty means your home folder (~/).",
+    keywords: ["folder", "base directory"],
+  },
+  {
+    id: "general.openLinksIn",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Open links in",
+    about: "Where chat and terminal links open. Right-click a link for the other choice.",
+    keywords: ["browser", "built-in browser", "external browser"],
+    scope: "device",
+    appliesWhen: "desktop",
+  },
+  {
+    id: "general.sitesAgentsCanVisit",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Sites agents can visit",
+    about: "Which sites agents may open in the browser panel without asking first.",
+    keywords: ["browser", "allowed sites", "domains"],
+    scope: "device",
+    appliesWhen: "desktop",
+    widensAgents: true,
+  },
+  {
+    id: "general.clearBrowserData",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Clear all browser data",
+    about: "Signs you out of every site in the built-in browser, in every project.",
+    keywords: ["cookies", "sign out"],
+    appliesWhen: "desktop",
+  },
+  // General › Privacy & about (on a phone, Usage analytics sits under This computer)
+  {
+    id: "general.version",
+    kind: "row",
+    parent: "general.about",
+    title: "Version",
+    about:
+      "The version of Threadlines you're running and what's new in it, with updates in the desktop app.",
+    keywords: ["update", "what's new", "release notes"],
+  },
+  {
+    id: "general.updateTrack",
+    kind: "row",
+    parent: "general.about",
+    title: "Update track",
+    about:
+      "Stable gets full releases. Nightly gets a new build every day, and you can switch back any time.",
+    keywords: ["nightly", "stable", "channel", "beta"],
+    scope: "desktop",
+    appliesWhen: "desktop",
+  },
+  {
+    id: "general.usageAnalytics",
+    kind: "row",
+    parent: "general.about",
+    title: "Usage analytics",
+    about:
+      "Anonymous usage counts that show us installs and reliability. Never prompts, code, file paths, repository names, terminal output, or secrets.",
+    keywords: ["telemetry", "privacy", "tracking"],
+  },
+  {
+    id: "general.diagnostics",
+    kind: "row",
+    parent: "general.about",
+    title: "Diagnostics",
+    about: "Where this computer's traces go, with a link to the Diagnostics page.",
+    keywords: ["logs", "traces", "otel"],
+  },
+  {
+    id: "general.phoneSettings",
+    kind: "row",
+    parent: "general.about",
+    title: "Phone settings",
+    about:
+      "On a phone, which settings the phone's browser keeps and which apply to your paired computer.",
+  },
   // Threads › New threads
   {
     id: "threads.agent",
@@ -544,6 +787,7 @@ const ROWS = [
     title: "Agent",
     about: "The agent and model new threads start with.",
     keywords: ["default model"],
+    widensAgents: true,
   },
   {
     id: "threads.room",
@@ -551,13 +795,14 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Room",
     about: "Other agents new threads start with in the room, if any.",
+    widensAgents: true,
   },
   {
     id: "threads.startIn",
     kind: "row",
     parent: "threads.newThreads",
     title: "Start in",
-    about: "Whether new threads start in the project folder or a new worktree.",
+    about: "Work in the project folder, or give each new thread its own worktree.",
     keywords: ["worktree", "local checkout"],
   },
   {
@@ -588,7 +833,8 @@ const ROWS = [
     kind: "row",
     parent: "threads.newThreads",
     title: "Agent pages",
-    about: "Agents can show a chart, diagram, mockup or document as a page in their reply.",
+    about:
+      "Agents can show a chart, diagram, mockup or document as a page in their reply. Pages already shown stay when this is off.",
     value: onOff((settings) => settings.enableAgentPages !== false),
     widensAgents: true,
   },
@@ -622,7 +868,7 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Command requests",
     about:
-      "Agents can ask you to run a command they can't run themselves, as a card you run from the chat.",
+      "Agents can ask you to run a command they can't run themselves, as a card you run from the chat. Cards already shown stay when this is off.",
     keywords: ["ask_user_to_run", "run command"],
     value: onOff((settings) => settings.enableCommandRequests !== false),
     widensAgents: true,
@@ -632,7 +878,8 @@ const ROWS = [
     kind: "row",
     parent: "threads.newThreads",
     title: "Start agents while you type",
-    about: "A stopped Claude or Codex agent starts in the background as you type.",
+    about:
+      "A stopped Claude or Codex agent starts in the background as you type, so your message gets a faster first reply.",
     value: onOff((settings) => settings.startAgentsWhileTyping !== false),
     widensAgents: true,
   },
@@ -662,16 +909,152 @@ const ROWS = [
     },
     widensAgents: true,
   },
-  // General › This computer
+  // Threads › Titles & writing
   {
-    id: "general.sitesAgentsCanVisit",
+    id: "threads.writingModel",
     kind: "row",
-    parent: "general.thisComputer",
-    title: "Sites agents can visit",
-    about: "Which sites agents may open in the browser panel without asking first.",
-    keywords: ["browser", "allowed sites", "domains"],
+    parent: "threads.titlesAndWriting",
+    title: "Writing model",
+    about: "Writes thread titles. Also commit and PR text, unless Source Control picks its own.",
+    keywords: ["title model", "text generation"],
+  },
+  {
+    id: "threads.backupWritingModel",
+    kind: "row",
+    parent: "threads.titlesAndWriting",
+    title: "Backup writing model",
+    about: "Takes over when the writing model's provider fails.",
+    keywords: ["fallback"],
+  },
+  // Threads › When a thread is done
+  {
+    id: "threads.wrapUpIdle",
+    kind: "row",
+    parent: "threads.whenDone",
+    title: "Wrap up idle threads",
+    about:
+      "Move a thread to Wrapped after two quiet days, unless it's pinned or has news you haven't seen.",
+    keywords: ["wrapped"],
     scope: "device",
-    appliesWhen: "desktop",
+  },
+  {
+    id: "threads.wrapUpMerged",
+    kind: "row",
+    parent: "threads.whenDone",
+    title: "Wrap up merged threads",
+    about: "Move a thread to Wrapped when its pull request merges or closes, unless it's pinned.",
+    keywords: ["wrapped", "pull request"],
+    scope: "device",
+  },
+  {
+    id: "threads.wrapUpChildren",
+    kind: "row",
+    parent: "threads.whenDone",
+    title: "Wrap up finished child threads",
+    about:
+      "File a thread an agent started under Wrapped once its answer went back to that agent, or once the thread that started it is wrapped.",
+    keywords: ["wrapped", "child threads"],
+    scope: "device",
+  },
+  {
+    id: "threads.confirmArchive",
+    kind: "row",
+    parent: "threads.whenDone",
+    title: "Confirm archive",
+    about: "Ask for a second click before archiving a thread.",
+    scope: "device",
+  },
+  {
+    id: "threads.confirmDelete",
+    kind: "row",
+    parent: "threads.whenDone",
+    title: "Confirm delete",
+    about: "Ask before deleting a thread and its history.",
+    scope: "device",
+  },
+  // Archives › Thread cleanup
+  {
+    id: "archived.autoArchive",
+    kind: "row",
+    parent: "archived.cleanup",
+    title: "Auto-archive inactive threads",
+    about: "Moves old inactive threads out of active lists without deleting their history.",
+  },
+  {
+    id: "archived.archiveNow",
+    kind: "row",
+    parent: "archived.cleanup",
+    title: "Archive inactive threads now",
+    about: "Review the same safe candidates and move them to Archive immediately.",
+  },
+  {
+    id: "archived.deleteOld",
+    kind: "row",
+    parent: "archived.cleanup",
+    title: "Delete old archived threads",
+    about: "Permanently removes archived threads by how long they have been in Archive.",
+  },
+  // Plugins & Skills › Advanced
+  {
+    id: "plugins.marketplaceSources",
+    kind: "row",
+    parent: "plugins.advanced",
+    title: "Marketplace sources",
+    about: "The marketplaces each provider installs plugins from, to add or remove.",
+    widensAgents: true,
+  },
+  {
+    id: "plugins.mcpContext",
+    kind: "row",
+    parent: "plugins.advanced",
+    title: "MCP context",
+    about: "The Codex thread this page uses to run MCP tools and list what a thread can use.",
+  },
+  // Source Control
+  {
+    id: "sourceControl.openPanelByDefault",
+    kind: "row",
+    parent: "sourceControl.panel",
+    title: "Open panel by default",
+    about:
+      "Show the source control panel when you enter a thread. Narrow windows always start with it closed, since the panel covers the conversation there.",
+    scope: "device",
+  },
+  {
+    id: "sourceControl.writingStyle",
+    kind: "row",
+    parent: "sourceControl.textGeneration",
+    title: "Source control writing style",
+    about:
+      "How commit messages and pull requests are written: in the repository's style, as Conventional Commits, or by your own instructions.",
+    keywords: ["commit message", "conventional commits"],
+  },
+  {
+    id: "sourceControl.followPrTemplates",
+    kind: "row",
+    parent: "sourceControl.textGeneration",
+    title: "Follow PR templates",
+    about:
+      "Structures PR descriptions using the repository's pull request template when one is available.",
+    keywords: ["pull request template"],
+  },
+  {
+    id: "sourceControl.writerModel",
+    kind: "row",
+    parent: "sourceControl.textGeneration",
+    title: "Source control writer model",
+    about:
+      "Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the writing model from Settings › Threads.",
+  },
+  // Connections › Devices that can use this computer
+  {
+    id: "connections.connectDevice",
+    kind: "row",
+    parent: "connections.devices",
+    title: "Connect a phone, tablet, or computer",
+    about:
+      "Get a code to type on the other device, or a QR code for a phone. Works from anywhere while this computer is on.",
+    keywords: ["connect a device", "pair", "qr code", "relay"],
     widensAgents: true,
   },
   // Connections › Agents
@@ -681,6 +1064,15 @@ const ROWS = [
     parent: "connections.agents",
     title: "Address for agents",
     about: "The address outside agents use to reach this computer.",
+    widensAgents: true,
+  },
+  {
+    id: "connections.connectAgent",
+    kind: "row",
+    parent: "connections.agents",
+    title: "Connect an agent",
+    about: "What to run so an agent like Claude Code or Codex connects to this computer.",
+    keywords: ["claude code", "mcp", "setup"],
     widensAgents: true,
   },
   {
@@ -694,6 +1086,47 @@ const ROWS = [
     scope: "desktop",
     appliesWhen: "desktop",
     widensAgents: true,
+  },
+  // Connections › Connection options
+  {
+    id: "connections.sameNetwork",
+    kind: "row",
+    parent: "connections.options",
+    title: "Same network",
+    about:
+      "Devices on your home or office network connect straight to this computer, which can be faster and doesn't use the relay. Turning it on or off restarts Threadlines.",
+    keywords: ["lan", "wifi", "local network"],
+    scope: "desktop",
+    widensAgents: true,
+  },
+  {
+    id: "connections.tailscale",
+    kind: "row",
+    parent: "connections.options",
+    title: "Tailscale",
+    about: "Lets devices on your Tailscale network reach this computer.",
+    appliesWhen: "desktop",
+    widensAgents: true,
+  },
+  {
+    id: "connections.oneTimeLink",
+    kind: "row",
+    parent: "connections.options",
+    title: "One-time link for this network",
+    about:
+      "For devices that can reach this computer directly. The link works once and expires in 5 minutes.",
+    keywords: ["link", "pairing link"],
+    widensAgents: true,
+  },
+  // Fleet › This app
+  {
+    id: "fleet.removeFromApp",
+    kind: "row",
+    parent: "fleet.thisApp",
+    title: "Remove from this app",
+    about:
+      "This app forgets its connection to the computer. Its threads stay there, and you can connect again with a new code.",
+    keywords: ["forget", "disconnect"],
   },
 ] as const satisfies ReadonlyArray<AppPlaceSpec>;
 
