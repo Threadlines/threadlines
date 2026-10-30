@@ -83,15 +83,15 @@ body:
     id: version
     attributes:
       label: Version or commit
-      description: Release version, commit SHA, or branch name if known.
-      placeholder: main @ abc1234
+      description: The Threadlines version (Settings › General › Version), or a commit or branch if you run from source.
+      placeholder: 0.8.0, or main @ abc1234
 
   - type: input
     id: environment
     attributes:
       label: Environment
-      description: OS, browser or desktop app version, Node/Vite+ version, provider/model if relevant.
-      placeholder: macOS 15.3, Chrome 135, Node 24.10, Vite+ 0.2.4, Codex app-server ...
+      description: OS, desktop app or browser, and the agent and model if relevant. Add the Node version if you run the server yourself.
+      placeholder: Windows 11, desktop app, Claude Code with Opus 5.5
 
   - type: textarea
     id: logs
