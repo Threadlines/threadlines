@@ -1,6 +1,6 @@
 # Settings search
 
-Status: plan, rev 2 (Oct 30 2026). Design approved by Will from the mockup
+Status: built, rev 3 (Oct 30 2026). "As built" at the end says where the build differs from the plan. Design approved by Will from the mockup
 (option B, real controls in results, page not popover). Rev 2 takes Sol's ten
 findings on rev 1 (see "Rev 2 changes" at the end).
 
@@ -96,13 +96,10 @@ export const SETTINGS_ROWS: Record<SettingsRowPlaceId, SettingsRowEntry>;
   Connections rows bound to the page's relay/network state, the outside
   agents rows). In results they draw as a plain row (title, about, path
   line, chevron) that opens the place.
-- **Pages render the same components through the registry**
-  (`<RegisteredSettingsRow place="general.agentsPanel" />`), which applies
-  `shown`. So a page and the search agree on which rows exist on this
-  surface; the conditions move out of page JSX into the registry.
-- **Drift check** (extends `settingsPlaces.test.ts`): the registry's keys are
-  exactly the catalog's rows on settings pages, and a live row's component
-  renders `SettingsRow place=<its id>`.
+- **Pages render the same components**, and their conditions come from the
+  same rules as the search, so a page and the search agree on which rows
+  exist on this surface (see "As built").
+- **Drift check**: see "As built".
 - Sections and pages that match appear as link rows (Installed plugins,
   Community agents, Archived threads, Keybindings…).
 
@@ -203,3 +200,38 @@ scoring. Skills are searched by name after all: provider snapshots already
 carry them (`ServerProvider.skills`), so no inventory read is needed. They
 link to Plugins & Skills › Skills. ⌘F respects `defaultPrevented` (shortcut
 recording) and passes the real terminal context.
+
+## As built
+
+Where the build differs from rev 2, and what Sol's two reviews of the diff
+changed:
+
+- **Registry and pages.** Pages render the row components directly (there is
+  no `SettingsPlaceRow`); `SETTINGS_ROWS` is typed over every settings row, so
+  a new catalog row doesn't compile until it is live or a link. Rows a page
+  draws only sometimes go through `ShownPlace`, which asks the same rules as
+  the search (`settingsPlaceAvailability.tsx`).
+- **Link rows**: all three Archives cleanup rows (they share the page's thread
+  lists and confirmation flows), Plugins › Advanced, every Connections and
+  outside-agents row. Everything else is live.
+- **Drift check**, three parts: the registry's type; `settingsPlaces.test.ts`
+  (every catalogued place is named on screen, `place="…"` or `place: "…"`);
+  a browser test drawing General, Threads and Source Control under the real
+  signals, where what a page draws must equal what the search calls shown,
+  and drawing every live row alone (except Downloaded models, which needs a
+  downloaded speech model) to prove each one draws its own place.
+- **Leaving search**: any pathname change clears it (a link inside a result,
+  like "View diagnostics"); results navigate with `replace` like the menu.
+  The place arrival skips the results' copies (`data-place-copies`) and inert
+  subtrees, so it always lands on the page's row.
+- **Connection options** unfolds when a place inside it arrives. The one-time
+  link is found only while the computer is reachable (`connections/serverReach.ts`,
+  shared with the page); the desktop app is asked once per search.
+- **Shortcuts** open Keybindings with `?q=<label>&n=<opening>`; the table's
+  filter matches labels and applies each opening's seed once. Shortcuts score
+  at 0.3 of a match, so they sit below a section's settings and above
+  settings that only mention the word.
+- **Ranking**: an exact title scores above a title it starts; a section's
+  keywords count as its title does (weight 2), not as the row's own.
+- **Fetch interval** is a row of its own under Git (it was inside a details
+  expander on the Git row, which is gone).
