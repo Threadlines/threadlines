@@ -100,7 +100,11 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
-import { ShownPlace, type SettingsRowPlaceId } from "./settingsPlaceAvailability";
+import {
+  SettingsSurfaceContext,
+  ShownPlace,
+  type SettingsRowPlaceId,
+} from "./settingsPlaceAvailability";
 import {
   type ArchivedThreadItem,
   type ArchivedThreadProject,
@@ -1184,71 +1188,73 @@ export function PhoneSettingsRow() {
 export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
   const isPhoneSurface = surface === "phone";
   return (
-    <SettingsPageContainer>
-      <SettingsPageHeader section="/settings/general" />
-      <PushAlertsSettingsSection />
-      <SettingsSection place="general.appearance">
-        <ThemeRow />
-        <TimeFormatRow />
-      </SettingsSection>
+    <SettingsSurfaceContext.Provider value={surface}>
+      <SettingsPageContainer>
+        <SettingsPageHeader section="/settings/general" />
+        <PushAlertsSettingsSection />
+        <SettingsSection place="general.appearance">
+          <ThemeRow />
+          <TimeFormatRow />
+        </SettingsSection>
 
-      <SettingsSection place="general.chatAndDiffs">
-        {/* On a phone this one is the paired computer's: it sits under This Computer. */}
-        {!isPhoneSurface ? <AssistantStreamingRow /> : null}
-        <ChangedFilesInChatRow />
-        <ShownPlace place="general.agentsPanel">
-          <AgentsPanelRow />
-        </ShownPlace>
-        <WrapDiffLinesRow />
-        <HideWhitespaceRow />
-      </SettingsSection>
+        <SettingsSection place="general.chatAndDiffs">
+          {/* On a phone this one is the paired computer's: it sits under This Computer. */}
+          {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <ChangedFilesInChatRow />
+          <ShownPlace place="general.agentsPanel">
+            <AgentsPanelRow />
+          </ShownPlace>
+          <WrapDiffLinesRow />
+          <HideWhitespaceRow />
+        </SettingsSection>
 
-      <SettingsSection place="general.terminal">
-        <TerminalTextSizeRow />
-        <TerminalScreenReaderRow />
-      </SettingsSection>
+        <SettingsSection place="general.terminal">
+          <TerminalTextSizeRow />
+          <TerminalScreenReaderRow />
+        </SettingsSection>
 
-      <DictationSettings />
+        <DictationSettings />
 
-      <SettingsSection place="general.thisComputer">
-        {isPhoneSurface ? <AssistantStreamingRow /> : null}
-        <PreventSleepRow />
-        <ShownPlace place="general.keepAwakeForScheduledTasks">
-          <KeepAwakeForScheduledTasksRow />
-        </ShownPlace>
-        <ShownPlace place="general.runInBackground">
-          <RunInBackgroundRow />
-        </ShownPlace>
-        <ShownPlace place="general.addProjectStartsIn">
-          <AddProjectStartsInRow />
-        </ShownPlace>
-        {isPhoneSurface ? <UsageAnalyticsRow /> : null}
-        <ShownPlace place="general.openLinksIn">
-          <OpenLinksRow />
-        </ShownPlace>
-        <ShownPlace place="general.sitesAgentsCanVisit">
-          <AgentBrowserSitesRow />
-        </ShownPlace>
-        <ShownPlace place="general.clearBrowserData">
-          <ClearBrowserDataRow />
-        </ShownPlace>
-      </SettingsSection>
+        <SettingsSection place="general.thisComputer">
+          {isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <PreventSleepRow />
+          <ShownPlace place="general.keepAwakeForScheduledTasks">
+            <KeepAwakeForScheduledTasksRow />
+          </ShownPlace>
+          <ShownPlace place="general.runInBackground">
+            <RunInBackgroundRow />
+          </ShownPlace>
+          <ShownPlace place="general.addProjectStartsIn">
+            <AddProjectStartsInRow />
+          </ShownPlace>
+          {isPhoneSurface ? <UsageAnalyticsRow /> : null}
+          <ShownPlace place="general.openLinksIn">
+            <OpenLinksRow />
+          </ShownPlace>
+          <ShownPlace place="general.sitesAgentsCanVisit">
+            <AgentBrowserSitesRow />
+          </ShownPlace>
+          <ShownPlace place="general.clearBrowserData">
+            <ClearBrowserDataRow />
+          </ShownPlace>
+        </SettingsSection>
 
-      {/* A phone has no privacy rows here, so the section is only "About". */}
-      <SettingsSection place="general.about" title={isPhoneSurface ? "About" : undefined}>
-        <VersionRow />
-        <ShownPlace place="general.updateTrack">
-          <UpdateTrackRow />
-        </ShownPlace>
-        {!isPhoneSurface ? <UsageAnalyticsRow /> : null}
-        <ShownPlace place="general.diagnostics">
-          <DiagnosticsRow />
-        </ShownPlace>
-        <ShownPlace place="general.phoneSettings">
-          <PhoneSettingsRow />
-        </ShownPlace>
-      </SettingsSection>
-    </SettingsPageContainer>
+        {/* A phone has no privacy rows here, so the section is only "About". */}
+        <SettingsSection place="general.about" title={isPhoneSurface ? "About" : undefined}>
+          <VersionRow />
+          <ShownPlace place="general.updateTrack">
+            <UpdateTrackRow />
+          </ShownPlace>
+          {!isPhoneSurface ? <UsageAnalyticsRow /> : null}
+          <ShownPlace place="general.diagnostics">
+            <DiagnosticsRow />
+          </ShownPlace>
+          <ShownPlace place="general.phoneSettings">
+            <PhoneSettingsRow />
+          </ShownPlace>
+        </SettingsSection>
+      </SettingsPageContainer>
+    </SettingsSurfaceContext.Provider>
   );
 }
 

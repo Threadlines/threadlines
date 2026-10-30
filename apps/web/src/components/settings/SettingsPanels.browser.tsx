@@ -46,6 +46,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { render } from "vitest-browser-react";
 import { useState, type ReactNode } from "react";
 import {
+  Outlet,
   RouterProvider,
   createMemoryHistory,
   createRootRoute,
@@ -92,6 +93,11 @@ import {
 } from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
+import { usePlaceArrival } from "../../hooks/usePlaceArrival";
+import { SidebarProvider } from "../ui/sidebar";
+import { SettingsSearchResultsBody, useSettingsSearchActive } from "./SettingsSearch";
+import { SettingsSidebarNav } from "./SettingsSidebarNav";
+import { useSettingsSearchStore } from "./settingsSearchStore";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
 import { ThreadsSettingsPanel } from "./ThreadsSettings";
 import {
@@ -5502,5 +5508,129 @@ describe("Agents outside Threadlines", () => {
     await expect.element(page.getByTestId("outside-agents-section")).not.toBeInTheDocument();
     await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
     expect(outsideAgentsHarness.listenerCount()).toBe(0);
+  });
+});
+
+describe("Settings search", () => {
+  let mounted: Awaited<ReturnType<typeof render>> | null = null;
+
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    localStorage.clear();
+    useSettingsSearchStore.getState().clear();
+  });
+
+  afterEach(async () => {
+    await mounted?.unmount().catch(() => {});
+    mounted = null;
+    useSettingsSearchStore.getState().clear();
+    Reflect.deleteProperty(window, "nativeApi");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("finds settings, changes one where it stands, narrows from the menu and opens the page at a setting", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS) },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    // Stands in for the settings layout: the menu, the results while there is
+    // a query, and the page with its place arrival.
+    function ResultsWhileSearching() {
+      return useSettingsSearchActive() ? <SettingsSearchResultsBody /> : null;
+    }
+    function SettingsPage({ children }: { children: ReactNode }) {
+      usePlaceArrival();
+      return children;
+    }
+    const rootRoute = createRootRoute({
+      component: () => (
+        <TestAppProviders>
+          <SidebarProvider>
+            <SettingsSidebarNav pathname="/settings/general" />
+            <ResultsWhileSearching />
+            <Outlet />
+          </SidebarProvider>
+        </TestAppProviders>
+      ),
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: "/settings/general",
+          component: () => (
+            <SettingsPage>
+              <GeneralSettingsPanel />
+            </SettingsPage>
+          ),
+        }),
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: "/settings/archived",
+          component: () => <div>Archives page</div>,
+        }),
+      ]),
+      history: createMemoryHistory({ initialEntries: ["/settings/general"] }),
+    });
+    mounted = await render(<RouterProvider router={router} />);
+
+    const field = page.getByRole("textbox", { name: "Search settings" });
+    await field.fill("wrap");
+    const results = page.getByTestId("settings-search-results");
+    await expect.element(results).toBeInTheDocument();
+    await expect
+      .element(page.getByText("4 matches for “wrap”.", { exact: false }))
+      .toBeInTheDocument();
+
+    // A result is the setting's own switch: it changes the setting the page shows too.
+    const resultSwitch = results.getByRole("switch", { name: "Wrap diff lines by default" });
+    const pageSwitch = () =>
+      document.querySelector<HTMLElement>(
+        '[data-place="general.wrapDiffLines"]:not([data-testid="settings-search-results"] *) [role="switch"]',
+      );
+    const before = resultSwitch.element().getAttribute("aria-checked");
+    await resultSwitch.click();
+    await vi.waitFor(() => {
+      expect(resultSwitch.element().getAttribute("aria-checked")).not.toBe(before);
+      expect(pageSwitch()?.getAttribute("aria-checked")).not.toBe(before);
+    });
+
+    // The menu keeps every section; one with matches narrows the results to itself.
+    const menuButton = (label: string) =>
+      page.elementLocator(
+        [...document.querySelectorAll<HTMLElement>('[data-sidebar="menu-button"]')].find((button) =>
+          button.textContent?.startsWith(label),
+        )!,
+      );
+    expect(menuButton("Threads").element().textContent).toBe("Threads3");
+    await menuButton("Threads").click();
+    await expect
+      .element(page.getByText("3 of 4 matches for “wrap”, in Threads.", { exact: false }))
+      .toBeInTheDocument();
+
+    // One without matches leaves the search for its page.
+    await menuButton("Archives").click();
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/settings/archived"));
+    expect(useSettingsSearchStore.getState().query).toBe("");
+
+    // The line under a result opens its page at the setting, highlighted there.
+    await router.navigate({ to: "/settings/general" });
+    await field.fill("font size");
+    await page.getByRole("button", { name: "Open General › Terminal" }).click();
+    await vi.waitFor(() => {
+      expect(router.state.location.hash).toContain("place=general.terminalTextSize");
+      expect(
+        document.querySelector('[data-place="general.terminalTextSize"] > .place-arrival-overlay'),
+      ).not.toBeNull();
+    });
+    expect(document.querySelector('[data-testid="settings-search-results"]')).toBeNull();
   });
 });

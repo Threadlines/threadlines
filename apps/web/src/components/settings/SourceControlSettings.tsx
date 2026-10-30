@@ -1,7 +1,7 @@
 import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import type {
   EnvironmentId,
@@ -741,15 +741,12 @@ export function SourceControlSettingsPanel() {
           {result.versionControlSystems.length > 0 ? (
             <SettingsSection place="sourceControl.versionControl" headerAction={scanButton}>
               {result.versionControlSystems.map((item) => (
-                <DiscoveryItemRow
-                  key={`vcs:${item.kind}`}
-                  item={item}
-                  environmentId={activeEnvironmentId}
-                />
+                <Fragment key={`vcs:${item.kind}`}>
+                  <DiscoveryItemRow item={item} environmentId={activeEnvironmentId} />
+                  {/* Right under the Git it applies to. */}
+                  {item.kind === "git" ? <FetchIntervalRow /> : null}
+                </Fragment>
               ))}
-              {result.versionControlSystems.some((item) => item.kind === "git") ? (
-                <FetchIntervalRow />
-              ) : null}
             </SettingsSection>
           ) : null}
 

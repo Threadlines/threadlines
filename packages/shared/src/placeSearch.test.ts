@@ -51,10 +51,13 @@ describe("settings search matching", () => {
     expect(match("source control", templates)).toBeNull();
   });
 
-  it("ranks a title read from its start above the same words elsewhere", () => {
+  it("ranks a title read from its start above the same words elsewhere, and an exact title first", () => {
     const theme = { title: "Theme", keywords: ["dark mode"] };
     const terminalTheme = { title: "Terminal colors", about: "Follows the app's theme." };
     expect(match("theme", theme)!.score).toBeGreaterThan(match("theme", terminalTheme)!.score);
+    expect(match("claude", { title: "Claude" })!.score).toBeGreaterThan(
+      match("claude", { title: "Claude artifacts" })!.score,
+    );
   });
 
   it("keeps file names whole and drops finished filler words", () => {

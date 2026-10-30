@@ -152,8 +152,9 @@ function placeItems(surface: SettingsSurface): ReadonlyArray<SettingsSearchItem>
       order,
       fields: {
         title: place.title,
-        keywords: [...keywordsOf(place.id), ...(section.keywords ?? [])],
-        section: section.title,
+        keywords: keywordsOf(place.id),
+        // A section's words find its rows as its title does, below a row's own.
+        section: [section.title, ...(section.keywords ?? [])].join(" "),
         page: placeById(pageId).title,
         about: place.about,
       },

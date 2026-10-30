@@ -180,7 +180,13 @@ export function SettingsPlaceSignalsProvider({ children }: { readonly children: 
 
 /** Answers whether a settings place is on screen here; follows the live facts. */
 export function useSettingsPlaceShown(): (id: SettingsPlaceSearchId) => boolean {
-  const signals = useContext(PlaceSignalsContext) ?? STATIC_SIGNALS;
+  const gathered = useContext(PlaceSignalsContext) ?? STATIC_SIGNALS;
+  // The nearest surface wins: a page drawn as the phone's says so itself.
+  const phone = useSettingsSurface() === "phone";
+  const signals = useMemo(
+    () => (gathered.phone === phone ? gathered : { ...gathered, phone }),
+    [gathered, phone],
+  );
   return useCallback(
     (id) => {
       const place = placeById(id);

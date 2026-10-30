@@ -108,8 +108,11 @@ export function matchSearchFields(query: SearchQuery, fields: SearchFields): Sea
     score += best;
   }
   if (ownWords === 0) return null;
-  // The title reading as the query, from its start, is the best match there is.
-  if (fields.title.toLowerCase().startsWith(query.text.toLowerCase())) score += 2;
+  // The title reading as the query, from its start, is the best match there
+  // is, and the title being exactly the query better still.
+  const typed = query.text.toLowerCase();
+  const titleText = fields.title.toLowerCase();
+  if (titleText.startsWith(typed)) score += titleText === typed ? 3 : 2;
   const inTitle = titleWords === query.words.length;
   return {
     score: score - pageWords * 0.25,

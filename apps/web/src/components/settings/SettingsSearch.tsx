@@ -140,6 +140,9 @@ function useOpenFromSearch() {
         href: `${target.href}#${nextPlaceArrivalHash(placeId)}`,
         // The hash names a place, not an element id; usePlaceArrival scrolls.
         hashScrollIntoView: false,
+        // Like the menu: moving within Settings replaces, so leaving it goes
+        // back to where the user was before opening it.
+        replace: true,
       });
     },
     [clear, navigate, primaryEnvironmentId],
@@ -147,7 +150,7 @@ function useOpenFromSearch() {
   const openHref = useCallback(
     (href: string) => {
       clear();
-      void navigate({ href });
+      void navigate({ href, replace: true });
     },
     [clear, navigate],
   );
