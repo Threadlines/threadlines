@@ -16,6 +16,7 @@ import {
   ProjectionThreadSessionRepository,
   type ProjectionThreadSessionRepositoryShape,
   DeleteProjectionThreadSessionInput,
+  DismissProjectionThreadSessionErrorInput,
   GetProjectionThreadSessionInput,
 } from "../Services/ProjectionThreadSessions.ts";
 
@@ -49,6 +50,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           awaited_background_tasks,
           startup,
           last_error,
+          last_error_at,
+          last_error_dismissed_at,
           updated_at
         )
         VALUES (
@@ -81,6 +84,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
             ELSE ${row.startup == null ? null : JSON.stringify(row.startup)}
           END,
           ${row.lastError},
+          ${row.lastErrorAt ?? null},
+          ${row.lastErrorDismissedAt ?? null},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -99,6 +104,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           awaited_background_tasks = excluded.awaited_background_tasks,
           startup = excluded.startup,
           last_error = excluded.last_error,
+          last_error_at = excluded.last_error_at,
+          last_error_dismissed_at = excluded.last_error_dismissed_at,
           updated_at = excluded.updated_at
       `,
   });
@@ -124,9 +131,23 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           awaited_background_tasks AS "awaitedBackgroundTasks",
           startup,
           last_error AS "lastError",
+          last_error_at AS "lastErrorAt",
+          last_error_dismissed_at AS "lastErrorDismissedAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
+      `,
+  });
+
+  const dismissProjectionThreadSessionError = SqlSchema.void({
+    Request: DismissProjectionThreadSessionErrorInput,
+    execute: ({ threadId, lastError, lastErrorAt, dismissedAt }) =>
+      sql`
+        UPDATE projection_thread_sessions
+        SET last_error_dismissed_at = ${dismissedAt}
+        WHERE thread_id = ${threadId}
+          AND last_error = ${lastError}
+          AND last_error_at IS ${lastErrorAt}
       `,
   });
 
@@ -151,6 +172,13 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       ),
     );
 
+  const dismissError: ProjectionThreadSessionRepositoryShape["dismissError"] = (input) =>
+    dismissProjectionThreadSessionError(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadSessionRepository.dismissError:query"),
+      ),
+    );
+
   const deleteByThreadId: ProjectionThreadSessionRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadSessionRow(input).pipe(
       Effect.mapError(
@@ -161,6 +189,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   return {
     upsert,
     getByThreadId,
+    dismissError,
     deleteByThreadId,
   } satisfies ProjectionThreadSessionRepositoryShape;
 });

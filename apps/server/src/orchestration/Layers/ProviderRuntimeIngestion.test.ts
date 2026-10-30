@@ -2570,6 +2570,66 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
   });
 
+  it("leaves the last turn's error behind once the next turn's runtime is up", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-offline"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "error", reason: "API Error: Can't reach the API server (ENOTFOUND)" },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "error");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-offline"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-after-offline"),
+          role: "user",
+          text: "pick up where you were",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "starting");
+
+    // The runtime comes up while the turn start is still pending.
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-session-back-online"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { message: "ready" },
+    });
+    await harness.drain();
+    const starting = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(starting?.session).toMatchObject({ status: "starting", lastError: null });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-retry-started"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId: asTurnId("turn-retry"),
+    });
+    const running = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+    );
+    expect(running.session).toMatchObject({ activeTurnId: "turn-retry", lastError: null });
+  });
+
   it("does not clear active turn when session/thread started arrives mid-turn", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

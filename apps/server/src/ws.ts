@@ -227,6 +227,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.turn-diff-summary-updated"
       | "thread.reverted"
       | "thread.session-set"
+      | "thread.error-dismissed"
       | "thread.realtime-start-requested"
       | "thread.realtime-stop-requested"
       | "thread.realtime-state-set"
@@ -294,6 +295,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.turn-diff-summary-updated" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set" ||
+    event.type === "thread.error-dismissed" ||
     event.type === "thread.realtime-start-requested" ||
     event.type === "thread.realtime-stop-requested" ||
     event.type === "thread.realtime-state-set"

@@ -1048,6 +1048,43 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
+  it("closes a failed turn's error on the server and keeps the message's Retry", async () => {
+    const offline = "API Error: Can't reach the API server (ENOTFOUND)";
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-error-close" as MessageId,
+      targetText: "error close target",
+      sessionStatus: "error",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.session
+            ? { ...thread, session: { ...thread.session, activeTurnId: null, lastError: offline } }
+            : thread,
+        ),
+      },
+    });
+    try {
+      await expect.element(page.getByText(offline)).toBeVisible();
+      await page.getByLabelText("Dismiss error").click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.error.dismiss",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID, lastError: offline, lastErrorAt: null });
+      });
+      await expect.element(page.getByText(offline)).not.toBeInTheDocument();
+      await expect.element(page.getByLabelText("Retry this message")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("offers Stop for the background work a failed turn left running", async () => {
     // A turn that died on a usage limit while two dev servers it started kept
     // going: the thread still waits on them, and the agent can't be asked to

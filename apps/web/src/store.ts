@@ -297,7 +297,14 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
+    ...(session.lastErrorAt ? { lastErrorAt: session.lastErrorAt } : {}),
+    ...(session.lastErrorDismissedAt ? { lastErrorDismissedAt: session.lastErrorDismissedAt } : {}),
   };
+}
+
+/** The error the composer shows for a session: none once the user has closed it. */
+function sessionNoticeError(session: OrchestrationSession | null | undefined): string | null {
+  return session?.lastErrorDismissedAt ? null : sanitizeThreadErrorMessage(session?.lastError);
 }
 
 /**
@@ -729,7 +736,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pages: thread.pages ?? [],
     commandRequests: thread.commandRequests ?? [],
     commandRuns: thread.commandRuns ?? [],
-    error: sanitizeThreadErrorMessage(thread.session?.lastError),
+    error: sessionNoticeError(thread.session),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
@@ -785,7 +792,7 @@ function mapThreadShell(
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
-    error: sanitizeThreadErrorMessage(thread.session?.lastError),
+    error: sessionNoticeError(thread.session),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
@@ -1059,6 +1066,8 @@ function threadSessionsEqual(
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError &&
+    left.lastErrorAt === right.lastErrorAt &&
+    left.lastErrorDismissedAt === right.lastErrorDismissedAt &&
     left.pendingBackgroundTaskCount === right.pendingBackgroundTaskCount &&
     left.awaitedBackgroundTaskCount === right.awaitedBackgroundTaskCount &&
     sameAwaitedBackgroundTasks(left.awaitedBackgroundTasks, right.awaitedBackgroundTasks)
@@ -2741,6 +2750,10 @@ function applyEnvironmentOrchestrationEvent(
               createdAt: thread.session?.createdAt ?? event.payload.createdAt,
               updatedAt: event.payload.createdAt,
               ...(thread.session?.lastError ? { lastError: thread.session.lastError } : {}),
+              ...(thread.session?.lastErrorAt ? { lastErrorAt: thread.session.lastErrorAt } : {}),
+              ...(thread.session?.lastErrorDismissedAt
+                ? { lastErrorDismissedAt: thread.session.lastErrorDismissedAt }
+                : {}),
             } satisfies ThreadSession);
         return {
           ...thread,
@@ -2915,11 +2928,23 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
 
+    case "thread.error-dismissed":
+      return updateThreadState(state, event.payload.threadId, (thread) =>
+        thread.session?.lastError === event.payload.lastError &&
+        (thread.session.lastErrorAt ?? null) === event.payload.lastErrorAt
+          ? {
+              ...thread,
+              session: { ...thread.session, lastErrorDismissedAt: event.payload.dismissedAt },
+              error: null,
+            }
+          : thread,
+      );
+
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         session: mapSessionUpdate(event.payload.session, thread.session),
-        error: sanitizeThreadErrorMessage(event.payload.session.lastError),
+        error: sessionNoticeError(event.payload.session),
         latestTurn:
           event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
             ? buildLatestTurn({

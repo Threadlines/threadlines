@@ -3537,13 +3537,20 @@ const make = Effect.gen(function* () {
         const sessionUpdatedAt = shouldPreservePendingTurnStartup
           ? (thread.session?.updatedAt ?? now)
           : now;
+        // A turn that starts, or a runtime that reports ready (even while a
+        // turn start is still pending), leaves the last failure behind. The
+        // reactor clears it too, but this event may have read the thread
+        // before that landed, and carrying the old error here would put it
+        // back for the whole turn.
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
             : event.type === "turn.completed" &&
                 normalizeRuntimeTurnState(event.payload.state) === "failed"
               ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-              : status === "ready" || status === "interrupted"
+              : event.type === "turn.started" ||
+                  runtimeStatus === "ready" ||
+                  status === "interrupted"
                 ? null
                 : (thread.session?.lastError ?? null);
 
