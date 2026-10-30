@@ -27,6 +27,10 @@ skips the relay altogether.
   registration and control socket.
 - `apps/relay-worker/src/v2/hookRoute.ts`, `hooks.ts`: event task addresses
   at the edge; `hostCore.ts` keeps hooks and waiting deliveries.
+- `apps/relay-worker/src/v2/assistants/`: the assistants door (see
+  Assistants below). `packages/contracts/src/relayAssistants.ts` has its
+  relay <-> computer shapes, `packages/shared/src/assistantCredentials.ts` its
+  credential and sign-in code formats.
 - `apps/web/src/relayDevice.ts` and `environments/runtime/relayJoins.ts`: the
   joiner side (typing a code, claiming a QR invite, waiting for Allow).
   `rpc/secureRelaySocket.ts` is the device end of every encrypted connection.
@@ -157,6 +161,125 @@ A call whose revision isn't newer than the last applied one is ignored
 doesn't know gets `404` with code `unknown-host`, a wrong secret `401` with
 `bad-host-secret`; the server then registers again and mints its hooks anew.
 
+## Assistants
+
+Always-on assistants in their makers' clouds (Grok Bot, dots, Muse, Claude
+Duet) reach a user's computer through a public door on the relay: MCP over
+HTTPS, with OAuth sign-in (docs/design/assistants.md). The relay routes,
+refuses and answers for an offline computer; the computer approves every
+connection and mints and checks every credential.
+
+The door answers only on its own origin, `ASSISTANTS_ORIGIN` (for example
+`https://connect.threadlines.dev`, or the worker's own `workers.dev` origin on
+a staging deploy). A request there on one of these paths goes to
+`src/v2/assistants/route.ts` before v1 and v2 routing; anything else falls
+through as usual.
+
+| Route                                             | What it does                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------ |
+| `GET /.well-known/oauth-protected-resource[/mcp]` | RFC 9728 metadata for `<origin>/mcp`, static                       |
+| `GET /.well-known/oauth-authorization-server`     | RFC 8414 metadata: public clients, code + S256, CIMD, `iss`        |
+| `POST /register`                                  | Stateless DCR: the client id is the registration, signed           |
+| `GET /authorize`                                  | Checks the request, keeps a pending sign-in, shows the page        |
+| `POST /authorize/code`                            | The page sends the code the app showed                             |
+| `GET /authorize/status`                           | The page waits for the computer's decision                         |
+| `POST /token`                                     | Routed by the code or refresh token to the computer                |
+| `POST /mcp`                                       | Routed by the access token or key to the computer (GET/DELETE 405) |
+
+Clients are either registered (`POST /register` returns
+`tlrc1.<base64url JSON>.<mac>`, signed with `ASSISTANT_CLIENT_KEY`; nothing is
+stored) or CIMD (the client id is an https URL whose metadata document the
+relay fetches: DNS names only, no redirects, 5 KiB, 10 s, cached an hour).
+Return addresses are https, exact, without user info or fragment; plain http
+only for loopback while the door itself is on loopback. Any bad request to
+`/authorize` shows an error page and never redirects, so the door can't be
+used to send people to a registered address.
+
+Sign-in: `/authorize` keeps a pending sign-in in one of 32
+`RelayAssistantSignIn` shards (the shard comes from a hash of the page's IP,
+so at most 10 can wait per network; the sign-in id names its shard). The page
+holds a secret that only it has (no cookies). The user types the code
+Threadlines shows (`POST /v2/hosts/{h}/assistants/code`; 8 characters, 10
+minutes, one use, one per computer, kept in the `RelayCodeShard` objects as
+`assistant-codes:<last character>`). A match binds that page's sign-in to the
+computer, whose `RelayHost` sends it on the assistant socket as `signin` (and
+again after every reconnect). Each sign-in gets 3 tries; after 10 minutes the
+page says it timed out and the computer gets `signin.gone`. The computer's
+`signin.decision` makes the page go to the return address with `code`,
+`state` and `iss`, or `error=access_denied`.
+
+Requests: `/token` and `/mcp` read the credential's host, connection and route
+tag (`tlac1`/`tlar1` for `/token`, `tlaa1`/`tlak1` for `/mcp`) and recompute
+the tag with `ASSISTANT_ROUTE_KEY` before anything wakes a Durable Object; a
+made-up one gets `400 invalid_grant` or `401` with `WWW-Authenticate` right
+there. The host's object then refuses removed connections (`401`, offline or
+not), and when the computer has no live assistant socket (or its control
+lease lapsed) it answers for it, saying nothing about the computer: a
+`tools/call` gets a tool error ("Your Threadlines computer is offline
+(asleep, or Threadlines is closed). Try again later."), any other MCP request
+a 503 JSON-RPC error with the same words, `/token` a 503
+`temporarily_unavailable` with `Retry-After: 60` (never `invalid_grant`).
+Otherwise the request goes out as a `request` frame (only `content-type`,
+`mcp-protocol-version`, `mcp-method`, `mcp-name` and `mcp-session-id`) and
+the computer's `response` frame comes back as the HTTP answer, with only
+`content-type`, `mcp-session-id`, `mcp-protocol-version` and
+`www-authenticate` (`/token`: `content-type`, `cache-control`, `pragma`).
+No answer in 30 s is a 504; a socket that drops fails its requests with 502.
+
+Host routes, all with the host secret, under `/v2/hosts/{h}/assistants`:
+`GET /` (the address and whether the door is on), `POST /code` and
+`DELETE /code`, `POST /route-tags`, `POST /revocations` (kept as long as the
+host is registered, up to 10,000), and `GET /socket`, the assistant socket
+(host secret as the token protocol, like pipes; one per host, a newer one
+replaces the older). Frames are JSON text up to 768 KiB, parsed with the
+contract's schemas. While the door is off these answer `503` with code
+`assistants-off`, except `GET /` (`enabled: false`) and revocations, which
+are always kept.
+
+**What the relay sees:** unlike device traffic, this door is plain text at
+the relay. It sees thread titles, messages, tool results and credentials in
+transit. It keeps no bodies and logs none: no bodies, credentials or query
+strings are ever logged (`loggedPath()` drops every query string).
+
+Limits, all at the edge and failing closed (`503`, `Retry-After: 60`):
+
+- `ASSISTANT_SIGN_IN_RATE_LIMITER`: 10 a minute per IP, each for
+  registrations, sign-in pages and typed codes.
+- `ASSISTANT_STATUS_RATE_LIMITER`: 120 a minute per IP for sign-in pages
+  waiting on a decision.
+- `ASSISTANT_CONNECTION_RATE_LIMITER`: 120 a minute per connection, each for
+  `/mcp` and `/token`.
+- Bodies: `/mcp` 256 KiB, `/token` and `/register` 16 KiB, read within 10 s.
+- In the host's object: 32 requests in flight (`503`), and
+  `THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS` (20,000) forwarded MCP
+  requests per UTC day (`429`). They also count toward the relay-wide budget.
+
+Vars and secrets: `ASSISTANTS_ORIGIN` (empty: no door) and
+`ASSISTANTS_ENABLED` (`false` answers 503 everywhere) are vars;
+`ASSISTANT_ROUTE_KEY` and `ASSISTANT_CLIENT_KEY` are secrets, base64url of at
+least 32 random bytes, and permanent: a new route key breaks every
+connection, a new client key every registered client. Without either the
+door is off.
+
+```sh
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' | wrangler secret put ASSISTANT_ROUTE_KEY
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' | wrangler secret put ASSISTANT_CLIENT_KEY
+```
+
+Running it locally (from `apps/relay-worker`, state in a temp folder):
+
+```sh
+./node_modules/.bin/wrangler dev --port 18787 --persist-to "$TMPDIR/threadlines-relay" \
+  --var ASSISTANTS_ORIGIN:http://127.0.0.1:18787 --var ASSISTANTS_ENABLED:true \
+  --var ASSISTANT_ROUTE_KEY:<key> --var ASSISTANT_CLIENT_KEY:<key>
+```
+
+`--var` values show in `ps`; for keys you'd rather not, put
+`ASSISTANT_ROUTE_KEY=...` and `ASSISTANT_CLIENT_KEY=...` in
+`apps/relay-worker/.dev.vars` instead and drop those two flags. The door then
+answers on `http://127.0.0.1:18787` only (not `localhost`), and loopback
+return addresses are allowed.
+
 ## Limits (Workers Free)
 
 The relay stays on Workers Free, which has a hard daily ceiling. Each host gets
@@ -212,6 +335,9 @@ to decrypt and ends the connection. What still relies on trust:
 - Devices keep their keys where they keep other saved-computer secrets (the OS
   keychain on desktop, browser storage in the hosted app).
 
+The assistants door is the exception: assistants' requests are plain text
+at the relay (see Assistants).
+
 Old v1 phone links were not end-to-end encrypted; they are retired. Users who
 want no third party at all can use Same network, Tailscale, or SSH under
 Connection options, or self-host the relay and set `THREADLINES_RELAY_URL` on
@@ -251,7 +377,8 @@ Every relay log line goes through `loggedPath()` (`src/log.ts`), which cuts
 `/v2/hooks/...` to `/v2/hooks/…`.
 
 Deploying v2 the first time applies the `v2` Durable Object migration
-(`RelayHost`, `RelayCodeShard`, `RelayLedger`). Deploy the relay before
+(`RelayHost`, `RelayCodeShard`, `RelayLedger`); the assistants door adds
+`v3` (`RelayAssistantSignIn`). Deploy the relay before
 shipping a desktop or server build that uses it; older relays answer `/v2/`
 with 404, which Settings reports as "This relay doesn't support device codes
 yet."
