@@ -8,17 +8,7 @@ import type { KeybindingCommand } from "@threadlines/contracts";
 import { formatTokensCompact } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
-import {
-  CalendarClockIcon,
-  ChartColumnIcon,
-  GitPullRequestIcon,
-  InboxIcon,
-  type LucideIcon,
-  MessagesSquareIcon,
-  SettingsIcon,
-  SquarePenIcon,
-  WaypointsIcon,
-} from "lucide-react";
+import { type LucideIcon, SquarePenIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -68,6 +58,7 @@ import { useListNewThreadStore } from "./listNewThreadStore";
 import { RailUpdateButton } from "./RailUpdateButton";
 import { useSidebar } from "../ui/sidebar";
 import {
+  NAVIGATION_DESTINATION_ICONS,
   NAVIGATION_DESTINATION_LABELS,
   NAVIGATION_DESTINATION_SHORT_LABELS,
   NAVIGATION_DESTINATION_ORDER,
@@ -77,16 +68,6 @@ import {
 
 /** The rail's width: a 34px button and its margins. */
 export const NAVIGATION_RAIL_WIDTH_PX = 48;
-
-const DESTINATION_ICONS: Record<NavigationDestinationId, LucideIcon> = {
-  threads: InboxIcon,
-  chats: MessagesSquareIcon,
-  "pull-requests": GitPullRequestIcon,
-  fleet: WaypointsIcon,
-  scheduled: CalendarClockIcon,
-  usage: ChartColumnIcon,
-  settings: SettingsIcon,
-};
 
 const DESTINATION_SHORTCUTS: Partial<Record<NavigationDestinationId, KeybindingCommand>> = {
   fleet: "navigate.fleet",
@@ -357,7 +338,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           id,
           label: NAVIGATION_DESTINATION_LABELS[id],
           shortLabel: NAVIGATION_DESTINATION_SHORT_LABELS[id],
-          icon: DESTINATION_ICONS[id],
+          icon: NAVIGATION_DESTINATION_ICONS[id],
           selected: selected === id,
           listOpen:
             selected === id && !isMobile && destinationHasList(id) ? options.listOpen : undefined,

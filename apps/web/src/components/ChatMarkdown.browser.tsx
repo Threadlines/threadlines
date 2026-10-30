@@ -12,7 +12,15 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactElement, ReactNode } from "react";
+import {
+  Outlet,
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -76,6 +84,8 @@ import {
 } from "../environmentApi";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { writePrimaryEnvironmentDescriptor } from "../environments/primary/context";
+import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
+import { usePlaceArrival } from "../hooks/usePlaceArrival";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../rpc/serverState";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { editorLabel } from "./EditorOpenOptions";
@@ -885,6 +895,132 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("opens a place link's page and highlights the place once it is drawn, on every click", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.8.0",
+      capabilities: { repositoryIdentity: true },
+    });
+    // Stands in for the Threads settings page: its row mounts a beat after the
+    // page does, as settings rows do while their data loads.
+    function ThreadsSettingsPage() {
+      usePlaceArrival();
+      const [drawn, setDrawn] = useState(false);
+      useEffect(() => {
+        const timer = setTimeout(() => setDrawn(true), 150);
+        return () => clearTimeout(timer);
+      }, []);
+      return drawn ? <div data-place="threads.agentThreads">Agents can start threads</div> : null;
+    }
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <ChatMarkdown
+            text={[
+              "Turn on [Settings › Threads › New threads › Agents can start threads](threadlines-place:threads.agentThreads).",
+              "The [old switch](threadlines-place:threads.renamedSince) is gone.",
+            ].join(" ")}
+            cwd="/repo/project"
+            environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+            threadId={CHAT_MARKDOWN_THREAD_ID}
+          />
+          <Outlet />
+        </>
+      ),
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([
+        createRoute({ getParentRoute: () => rootRoute, path: "/" }),
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: "/settings/threads",
+          component: ThreadsSettingsPage,
+        }),
+      ]),
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+    });
+    const screen = await renderWithAppProviders(<RouterProvider router={router} />);
+
+    try {
+      const chip = page.getByRole("link", {
+        name: "Settings › Threads › New threads › Agents can start threads",
+      });
+      // Opened another way (a new tab), it still names the place to highlight.
+      await expect
+        .element(chip)
+        .toHaveAttribute("href", "/settings/threads#place=threads.agentThreads&n=0");
+      // A place this build doesn't know keeps its words and loses its link.
+      await expect.element(page.getByText("old switch")).toBeVisible();
+      expect(document.querySelectorAll("a")).toHaveLength(1);
+
+      await chip.click();
+      await vi.waitFor(() => expect(router.state.location.pathname).toBe("/settings/threads"));
+      const overlayIn = () =>
+        document.querySelector('[data-place="threads.agentThreads"] > .place-arrival-overlay');
+      await vi.waitFor(() => expect(overlayIn()).not.toBeNull());
+      const firstOverlay = overlayIn();
+
+      await chip.click();
+      await vi.waitFor(() => {
+        expect(overlayIn()).not.toBeNull();
+        expect(overlayIn()).not.toBe(firstOverlay);
+      });
+      // The tint fades once and leaves nothing behind.
+      await vi.waitFor(() => expect(overlayIn()).toBeNull(), { timeout: 3_000 });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names another computer's setting without linking to this computer's", async () => {
+    const otherComputer = EnvironmentId.make("environment-other-computer");
+    writePrimaryEnvironmentDescriptor({
+      environmentId: otherComputer,
+      label: "This PC",
+      platform: { os: "windows", arch: "x64" },
+      serverVersion: "0.8.0",
+      capabilities: { repositoryIdentity: true },
+    });
+    const savedBefore = useSavedEnvironmentRegistryStore.getState().byId;
+    useSavedEnvironmentRegistryStore.setState({
+      byId: {
+        [CHAT_MARKDOWN_ENVIRONMENT_ID]: {
+          environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+          label: "Mac mini",
+          wsBaseUrl: "ws://mac-mini.local",
+          httpBaseUrl: "http://mac-mini.local",
+          createdAt: new Date().toISOString(),
+          lastConnectedAt: null,
+        },
+      },
+    });
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="Turn on [Agents can start threads](threadlines-place:threads.agentThreads) and check [Alerts](threadlines-place:general.alerts)."
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+        threadId={CHAT_MARKDOWN_THREAD_ID}
+      />,
+    );
+
+    try {
+      // This device's alerts open here; the thread's computer's switch is over there.
+      await expect.element(page.getByRole("link", { name: "Alerts" })).toBeVisible();
+      const elsewhere = document.querySelector<HTMLElement>(
+        '[data-place-link="threads.agentThreads"]',
+      );
+      expect(elsewhere?.tagName).toBe("SPAN");
+      expect(elsewhere?.getAttribute("aria-disabled")).toBe("true");
+      await parkPointer();
+      expect(await hoverLabelOf(elsewhere)).toBe("In Threadlines on Mac mini");
+    } finally {
+      useSavedEnvironmentRegistryStore.setState({ byId: savedBefore });
+      await screen.unmount();
+    }
+  });
+
   it("renders Codex inline visualization directives in a script-only sandbox", async () => {
     const readVisualization = vi.fn(async () => ({
       file: "connection-map.html",
@@ -1451,6 +1587,8 @@ describe("find in chat reads what ChatMarkdown draws", () => {
         "Open [the reader](/repo/src/reader.ts), `src/writer.ts:12` and `src/a/index.ts` beside `src/b/index.ts`.",
         "",
         "Merged [Fix the flake](https://github.com/acme/app/pull/12) and https://github.com/acme/app/pull/13 too.",
+        "",
+        "Turn on [Agents can start threads](threadlines-place:threads.agentThreads), [](threadlines-place:fleet.worksWith) and [the old switch](threadlines-place:threads.renamedSince).",
         "",
         "Plain `inline code` and `http://localhost:5173/app` and http://localhost:3000 bare.",
       ].join("\n"),

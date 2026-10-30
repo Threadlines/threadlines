@@ -208,6 +208,8 @@ function toRuntimePayloadFromSession(
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
     readonly earlyUnused?: boolean;
+    /** A start: what it asked of the room endpoint, recorded over any older start's. */
+    readonly startedWith?: { readonly guideTools: boolean };
   },
 ): Record<string, unknown> {
   return {
@@ -217,6 +219,12 @@ function toRuntimePayloadFromSession(
     lastError: session.lastError ?? null,
     // Kept so a recovered runtime gets the room tools it was started with.
     ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
+    // A start replaces both (null clears an older start's room tools in the
+    // merged payload), so a runtime started with the app guide alone is
+    // recovered with it, and not with room tools it no longer has.
+    ...(extra?.startedWith !== undefined
+      ? { roomTools: session.roomTools ?? null, guideTools: extra.startedWith.guideTools }
+      : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
@@ -265,6 +273,19 @@ function readPersistedRoomToolsRequest(
     !Array.isArray(runtimePayload) &&
     "roomTools" in runtimePayload &&
     typeof runtimePayload.roomTools === "boolean"
+  );
+}
+
+/** Whether the runtime was started with the app guide alone (ProviderSessionStartInput.guideTools). */
+function readPersistedGuideToolsRequest(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "guideTools" in runtimePayload &&
+    runtimePayload.guideTools === true
   );
 }
 
@@ -595,6 +616,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly earlyUnused?: boolean;
+      readonly startedWith?: { readonly guideTools: boolean };
     },
   ) =>
     Effect.gen(function* () {
@@ -754,6 +776,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
             ? { roomTools: true }
+            : {}),
+          ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
+            ? { guideTools: true }
             : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
         });
@@ -1034,6 +1059,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* upsertSessionBinding(sessionWithInstance, threadId, {
         modelSelection: input.modelSelection,
         earlyUnused: early && fresh,
+        startedWith: { guideTools: input.guideTools === true },
       });
       yield* analytics.record("provider.session.started", {
         ...analyticsAgentProperties({

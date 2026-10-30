@@ -17,7 +17,8 @@ import {
 } from "../../mcp/pageTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
-import { ROOM_MCP_SERVER_NAME, roomToolsFor } from "../../mcp/roomToolAccess.ts";
+import { ROOM_MCP_SERVER_NAME, roomEndpointGrant, roomToolsFor } from "../../mcp/roomToolAccess.ts";
+import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import {
   type CodexBorrowedSignIn,
@@ -238,6 +239,8 @@ export interface CodexSessionRuntimeOptions {
   readonly scheduledRunTools?: boolean;
   /** With `roomTools`: agents may change scheduled tasks (ProviderSessionStartInput.scheduleTools). */
   readonly scheduleTools?: boolean;
+  /** Without `roomTools`: the room endpoint with the app guide alone (ProviderSessionStartInput.guideTools). */
+  readonly guideTools?: boolean;
   /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
@@ -661,6 +664,8 @@ function buildCodexCollaborationMode(input: {
   readonly commandRequests?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
+  /** The thread's own runtime has the room endpoint, so the app guide. */
+  readonly guide?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -691,6 +696,9 @@ function buildCodexCollaborationMode(input: {
         ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
+        ...(input.guide
+          ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
@@ -717,6 +725,8 @@ export function buildTurnStartParams(input: {
   readonly commandRequests?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
+  /** The thread's own runtime has the room endpoint, so the app guide. */
+  readonly guide?: boolean;
   /** A side answer: every turn is read-only with no approvals. */
   readonly lockdown?: boolean;
 }): Effect.Effect<
@@ -750,6 +760,7 @@ export function buildTurnStartParams(input: {
       : {}),
     ...(input.commandRequests ? { commandRequests: true } : {}),
     ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
+    ...(input.guide && !input.lockdown ? { guide: true } : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -1983,18 +1994,22 @@ const makeCodexSessionRuntimeIn = (
     // never gets the browser; in a room it gets the room's read tools. The
     // credential dies with the runtime's scope, whichever way it ends.
     const roomTools = options.roomTools === true;
+    // The room endpoint, with every room tool its kind allows or the app
+    // guide alone (roomEndpointGrant).
+    const roomGrant = roomEndpointGrant(options, lockdown?.kind);
     const agentPages = options.agentPages === true && lockdown === undefined;
     const commandRequests = options.commandRequests === true && lockdown === undefined;
     const credential =
-      lockdown === undefined || roomTools
+      lockdown === undefined || roomGrant.attach
         ? yield* mcpSessionRegistry.credentialFor({
             sessionKey: options.threadId,
             browser: lockdown === undefined,
-            room: roomTools,
+            room: roomGrant.attach,
             pages: agentPages,
             commands: commandRequests,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
             scheduledRun: options.scheduledRunTools === true,
+            guideOnly: roomGrant.guideOnly,
           })
         : undefined;
     if (credential !== undefined) {
@@ -2025,7 +2040,7 @@ const makeCodexSessionRuntimeIn = (
               url: mcpEndpointUrl(options.serverPort),
               serverName: BROWSER_MCP_SERVER_NAME,
             },
-            ...(roomTools ? { room: roomServer } : {}),
+            ...(roomGrant.attach ? { room: roomServer } : {}),
             ...(agentPages
               ? {
                   pages: {
@@ -2912,6 +2927,7 @@ const makeCodexSessionRuntimeIn = (
             ...(roomTools && options.scheduleTools === true && lockdown === undefined
               ? { scheduleTools: true }
               : {}),
+            ...(roomGrant.attach && lockdown === undefined ? { guide: true } : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(

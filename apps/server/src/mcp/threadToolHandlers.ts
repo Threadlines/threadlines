@@ -42,6 +42,7 @@ import {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
 import {
   type ChildRequestRefusal,
   childSendRefusal,
@@ -152,8 +153,7 @@ export interface ThreadToolLinks {
   readonly projectPlace: (workspaceRoot: string) => Effect.Effect<ProjectPlace | null>;
 }
 
-const THREADS_OFF =
-  "Starting threads is turned off in Settings, so the thread tools are off. Do the work in this thread.";
+const THREADS_OFF = `Starting threads is turned off (${placeMarkdownLink("threads.agentThreads")}), so the thread tools are off. Do the work in this thread.`;
 const SIDE_REFUSAL = "Only the agent working in this thread can use the thread tools.";
 const GONE = "This thread is gone.";
 const REMOTE_ORIGIN_REFUSAL =
@@ -358,7 +358,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 ),
               })),
             }
-          : {}),
+          : only === undefined && deps.links !== undefined
+            ? {
+                computersNote: `No other computer is linked to this one. The user links one in ${placeMarkdownLink("fleet")}, with + at the top of its Computers list.`,
+              }
+            : {}),
       } satisfies ThreadAgentsResult;
     });
 
@@ -746,7 +750,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       return {
         refused:
           computers.length === 0
-            ? "This computer isn't linked to any other, so threads can only start here."
+            ? `This computer isn't linked to any other, so threads can only start here. The user links computers in ${placeMarkdownLink("fleet")}, with + at the top of its Computers list.`
             : `No linked computer is called "${name}". Linked computers: ${computers.map((entry) => entry.label).join(", ")}.`,
       };
     });

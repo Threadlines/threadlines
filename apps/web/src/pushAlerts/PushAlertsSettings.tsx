@@ -106,9 +106,9 @@ export function PushAlertsSettingsSection() {
   if (support === "unsupported" || computers.length === 0) return null;
   if (support === "needs-home-screen") {
     return (
-      <SettingsSection title="Alerts">
+      <SettingsSection place="general.alerts">
         <SettingsRow
-          title="Alerts on this device"
+          place="general.alertsOnThisDevice"
           description="Add Threadlines to your Home Screen from the Share menu, then turn alerts on in the app there."
         />
       </SettingsSection>
@@ -117,9 +117,9 @@ export function PushAlertsSettingsSection() {
 
   const on = enabled && permission === "granted";
   return (
-    <SettingsSection title="Alerts">
+    <SettingsSection place="general.alerts">
       <SettingsRow
-        title="Alerts on this device"
+        place="general.alertsOnThisDevice"
         description={
           permission === "denied"
             ? "Alerts are blocked for this app. Allow them in this device's settings."

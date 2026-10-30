@@ -12,6 +12,14 @@
  */
 import { RUNTIME_MODES, type RuntimeMode } from "@threadlines/contracts";
 
+/** What each access level is called wherever the user sees or picks it. */
+export const RUNTIME_MODE_LABELS: Readonly<Record<RuntimeMode, string>> = {
+  "approval-required": "Supervised",
+  "auto-accept-edits": "Auto-accept edits",
+  auto: "Auto",
+  "full-access": "Full access",
+};
+
 /**
  * The level from `supported` that a chat set to `requested` runs at: the
  * chosen one, else the nearest safer one. Supervised when `supported` has

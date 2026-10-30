@@ -11,6 +11,9 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
+import { type PlaceId, placePathLabel } from "@threadlines/shared/appPlaces";
+
+import { isPlaceLinkHref } from "../appPlaceLinks";
 import { parseChatFileReference } from "../fileViewerStore";
 import {
   isAbsoluteInlineFilePath,
@@ -379,12 +382,23 @@ export function pullRequestLinkLabel(linkText: string, href: string): string {
 }
 
 /**
+ * The words a place chip wears: the link's own text, or the place's path when
+ * the link has none.
+ */
+export function placeLinkLabel(linkText: string, placeId: PlaceId): string {
+  return linkText.trim() || placePathLabel(placeId);
+}
+
+/**
  * Where a link or image in a chat document points once the renderer has read
- * it: file URIs and dev-server addresses rewritten, file references resolved
+ * it: place links kept as written (the anchor decides what an id is worth),
+ * file URIs and dev-server addresses rewritten, file references resolved
  * against the working directory, everything else through react-markdown's own
- * safety filter.
+ * safety filter, which would drop the place scheme.
  */
 export function chatMarkdownUrlTransform(href: string, cwd: string | undefined): string {
+  if (isPlaceLinkHref(href)) return href;
+
   const rewrittenFileHref = rewriteMarkdownFileUriHref(href);
   if (rewrittenFileHref) return rewrittenFileHref;
 

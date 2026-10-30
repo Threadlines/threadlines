@@ -87,7 +87,8 @@ import {
 } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
-import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { ROOM_MCP_SERVER_NAME, roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
+import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
@@ -300,7 +301,8 @@ interface SessionContext {
   readonly directory: string;
   readonly scope: Scope.Closeable;
   readonly runtimeMode: RuntimeMode;
-  readonly roomTools: boolean;
+  /** The room endpoint is attached: every room tool, or the app guide alone (roomEndpointGrant). */
+  readonly roomEndpoint: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
   readonly managedWorktree: boolean;
@@ -477,6 +479,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
       readonly scheduleTools: boolean;
+      readonly roomEndpoint: boolean;
       readonly managedWorktree: boolean;
     }) =>
       [
@@ -490,17 +493,20 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
+        ...(input.roomEndpoint
+          ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
 
     const toolServers = (ctx: {
-      readonly roomTools: boolean;
+      readonly roomEndpoint: boolean;
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
     }): ReadonlyArray<PiToolServer> => [
       { name: BROWSER_MCP_SERVER_NAME, url: mcpEndpointUrl(serverConfig.port) },
-      ...(ctx.roomTools
+      ...(ctx.roomEndpoint
         ? [{ name: ROOM_MCP_SERVER_NAME, url: mcpRoomEndpointUrl(serverConfig.port) }]
         : []),
       ...(ctx.agentPageAssetsDir !== undefined
@@ -1707,6 +1713,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
           const roomTools = input.roomTools === true;
+          const roomGrant = roomEndpointGrant(input, undefined);
           const commandRequests = input.commandRequests === true;
           const agentPageAssetsDir =
             input.agentPages === true
@@ -1718,10 +1725,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const credential = yield* mcpSessionRegistry.credentialFor({
             sessionKey: input.threadId,
             browser: true,
-            room: roomTools,
+            room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
             scheduledRun: input.scheduledRunTools === true,
+            guideOnly: roomGrant.guideOnly,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -1734,6 +1742,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             agentPageAssetsDir,
             commandRequests,
             scheduleTools: roomTools && input.scheduleTools === true,
+            roomEndpoint: roomGrant.attach,
             managedWorktree,
           });
           const instructionsPath = NodePath.join(
@@ -1772,7 +1781,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             directory,
             scope,
             runtimeMode: input.runtimeMode,
-            roomTools,
+            roomEndpoint: roomGrant.attach,
             agentPageAssetsDir,
             commandRequests,
             managedWorktree,

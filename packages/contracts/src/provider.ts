@@ -178,6 +178,14 @@ export const ProviderSessionStartInput = Schema.Struct({
    */
   roomTools: Schema.optional(Schema.Boolean),
   /**
+   * Without `roomTools`: attach the room endpoint with `app_guide` alone, the
+   * agents' guide to Threadlines (docs/design/app-guide.md), for a thread
+   * whose rooms, invites and agent-started threads are all off. The session
+   * doesn't count as having the room tools, so turning one of those on still
+   * restarts it with them.
+   */
+  guideTools: Schema.optional(Schema.Boolean),
+  /**
    * With `roomTools`: the thread is a scheduled run's, so its main runtime
    * also gets `scheduled_run_finish` (docs/design/fleet.md, Part 6).
    */

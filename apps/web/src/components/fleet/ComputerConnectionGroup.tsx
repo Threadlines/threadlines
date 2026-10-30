@@ -205,7 +205,7 @@ export function ComputerConnectionGroup({
   );
 
   return (
-    <SettingsSection title="Connection" data-testid="fleet-connection-group">
+    <SettingsSection place="fleet.connection" data-testid="fleet-connection-group">
       <SettingsRow
         title={
           <span className="flex items-center gap-1.5">

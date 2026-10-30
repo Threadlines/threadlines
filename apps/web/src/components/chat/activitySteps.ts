@@ -445,6 +445,11 @@ function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
       );
     case "scheduled_run_finish":
       return routine(phrase("Finished the scheduled run", "Finishing the scheduled run"), "clock");
+    // The app guide: an agent looking up how Threadlines works.
+    case "app_guide":
+      return routine(
+        phrase("Looked it up in the Threadlines guide", "Looking it up in the Threadlines guide"),
+      );
     default:
       return null;
   }

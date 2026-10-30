@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { effectiveRuntimeMode, RUNTIME_MODE_LABELS } from "@threadlines/shared/runtimeMode";
 
 import {
   getModelUnsupportedRuntimeModes,
@@ -32,7 +32,7 @@ interface RuntimeModePresentation {
 
 export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
   "approval-required": {
-    label: "Supervised",
+    label: RUNTIME_MODE_LABELS["approval-required"],
     description: "Asks before commands and file changes.",
     // Muse's strictest profile (Ask me) lets edits inside the project through.
     descriptionByDriver: {
@@ -41,7 +41,7 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
     icon: LockIcon,
   },
   "auto-accept-edits": {
-    label: "Auto-accept edits",
+    label: RUNTIME_MODE_LABELS["auto-accept-edits"],
     description: "Auto-approve edits, ask before other actions.",
     descriptionByDriver: {
       claudeAgent: "Edits run without asking; commands still ask.",
@@ -51,7 +51,7 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
     icon: PenLineIcon,
   },
   auto: {
-    label: "Auto",
+    label: RUNTIME_MODE_LABELS.auto,
     description: "No routine prompts; a safety model reviews risky actions.",
     descriptionByDriver: {
       claudeAgent: "No routine prompts; a classifier blocks risky actions.",
@@ -60,7 +60,7 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
     icon: ShieldCheckIcon,
   },
   "full-access": {
-    label: "Full access",
+    label: RUNTIME_MODE_LABELS["full-access"],
     description: "No prompts or sandbox. Trusted repos only.",
     icon: LockOpenIcon,
   },

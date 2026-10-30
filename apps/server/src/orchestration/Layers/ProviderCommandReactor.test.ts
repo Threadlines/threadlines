@@ -2822,7 +2822,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("restarts the thread's own agent with resume once, to pick up the room tools", async () => {
+  it("restarts the thread's own agent with resume once, to trade the guide alone for the room tools", async () => {
     // Agents bringing in others and starting threads off: only a room gives
     // the agent room tools.
     const harness = await createHarness({
@@ -2859,10 +2859,11 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
       });
 
-    // Before the thread is a room: no room tools.
+    // Before the thread is a room: no room tools, only the app guide.
     await startTurn("before-room");
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({ guideTools: true });
     await settleReady("1");
     await dispatch({
       type: "thread.participant.add",
@@ -2883,6 +2884,7 @@ describe("ProviderCommandReactor", () => {
       roomTools: true,
       resumeCursor: { opaque: "resume-1" },
     });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("guideTools");
 
     // Once it has them, it keeps its runtime.
     await settleReady("2");

@@ -15,8 +15,6 @@ import { SettingsRow } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { failureNotice, toastManager } from "../ui/toast";
 
-const TITLE = "Threadlines command";
-
 function describeStatus(status: DesktopCliCommandStatus): string {
   switch (status.state) {
     case "not_installed":
@@ -85,7 +83,7 @@ export function ThreadlinesCommandRow() {
     return (
       <SettingsRow
         data-testid="threadlines-command"
-        title={TITLE}
+        place="connections.threadlinesCommand"
         description={
           <>
             This is a dev build, so run it from the repo:
@@ -127,7 +125,7 @@ export function ThreadlinesCommandRow() {
   return (
     <SettingsRow
       data-testid="threadlines-command"
-      title={TITLE}
+      place="connections.threadlinesCommand"
       description={describeStatus(status)}
       control={button}
     />

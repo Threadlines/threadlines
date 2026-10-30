@@ -323,6 +323,10 @@
       "types": "./src/childThreads.ts",
       "import": "./src/childThreads.ts"
     },
+    "./appPlaces": {
+      "types": "./src/appPlaces.ts",
+      "import": "./src/appPlaces.ts"
+    },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",
       "import": "./src/messageAuthor.ts"

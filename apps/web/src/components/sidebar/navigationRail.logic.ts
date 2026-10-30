@@ -2,6 +2,16 @@
  * The app's destinations, as the rail (wide screens) and the phone sheet's
  * row of icons both offer them. Pure: which one a route selects.
  */
+import {
+  CalendarClockIcon,
+  ChartColumnIcon,
+  GitPullRequestIcon,
+  InboxIcon,
+  type LucideIcon,
+  MessagesSquareIcon,
+  SettingsIcon,
+  WaypointsIcon,
+} from "lucide-react";
 
 export type NavigationDestinationId =
   | "threads"
@@ -21,6 +31,17 @@ export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, stri
   scheduled: "Scheduled",
   usage: "Usage",
   settings: "Settings",
+};
+
+/** Each destination's glyph, in the rail and wherever a link names the destination. */
+export const NAVIGATION_DESTINATION_ICONS: Record<NavigationDestinationId, LucideIcon> = {
+  threads: InboxIcon,
+  chats: MessagesSquareIcon,
+  "pull-requests": GitPullRequestIcon,
+  fleet: WaypointsIcon,
+  scheduled: CalendarClockIcon,
+  usage: ChartColumnIcon,
+  settings: SettingsIcon,
 };
 
 /**

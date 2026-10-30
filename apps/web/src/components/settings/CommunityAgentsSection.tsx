@@ -29,6 +29,7 @@ import {
   filterAcpRegistryAgents,
 } from "@threadlines/shared/acpRegistry";
 import { LoaderIcon, SearchIcon, XIcon } from "lucide-react";
+import { placeById } from "@threadlines/shared/appPlaces";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openExternalUrl } from "../../lib/externalLinks";
@@ -44,6 +45,7 @@ import { ProviderGroupHeading } from "./ProviderGroupHeading";
 import { SettingsGroup } from "./settingsLayout";
 
 const REGISTRY_URL = "https://github.com/agentclientprotocol/registry";
+const COMMUNITY_AGENTS_TITLE = placeById("providers.community").title;
 /** Below this many agents a search field is more clutter than help. */
 const SEARCH_MIN_AGENTS = 8;
 /**
@@ -224,9 +226,14 @@ export function CommunityAgentsSection(props: {
   };
 
   return (
-    <section ref={sectionRef} aria-label="Community agents" data-testid="community-agents">
+    <section
+      ref={sectionRef}
+      aria-label={COMMUNITY_AGENTS_TITLE}
+      data-testid="community-agents"
+      data-place="providers.community"
+    >
       <ProviderGroupHeading
-        label="Community agents"
+        label={COMMUNITY_AGENTS_TITLE}
         count={
           catalog === null
             ? undefined

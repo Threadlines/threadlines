@@ -15,6 +15,7 @@ import type {
   ServerProvider,
   ThreadId,
 } from "@threadlines/contracts";
+import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
 import { ProviderInstanceId, ScheduledTaskId } from "@threadlines/contracts";
 import { describeCadence, formatWallTime } from "@threadlines/shared/scheduledTasks";
 import * as Clock from "effect/Clock";
@@ -47,8 +48,7 @@ export interface ScheduleToolDeps {
 }
 
 const SIDE_REFUSAL = "Only the agent working in this thread can use the schedule tools.";
-const SCHEDULES_OFF =
-  'Agents changing scheduled tasks is turned off in Settings ("Agents can start threads").';
+const SCHEDULES_OFF = `Agents changing scheduled tasks is turned off: ${placeMarkdownLink("threads.agentThreads")} is Off.`;
 const NO_SCHEDULES = "This computer doesn't run scheduled tasks.";
 const REMOTE_ORIGIN_REFUSAL =
   "This thread was started by an agent on another computer, so it has no schedule tools.";

@@ -67,7 +67,7 @@ import {
 import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { COMMANDS_MCP_SERVER_NAME } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
-import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { ROOM_MCP_SERVER_NAME, roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
 import {
   type ProviderAdapterError,
   ProviderAdapterProcessError,
@@ -1185,6 +1185,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // with the session's scope.
           const reachesHost = descriptor.reachesHostLoopback?.(process.platform) !== false;
           const roomToolsRequested = input.roomTools === true;
+          // The room endpoint, with every room tool or the app guide alone
+          // (roomEndpointGrant). ACP runtimes here are never side runtimes.
+          const roomGrant = roomEndpointGrant(input, undefined);
           // The page tools ride the same credential. An ACP agent hears no
           // instructions of ours, so the tool descriptions carry the rules and
           // a misplaced image's error names the thread's image folder.
@@ -1195,10 +1198,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ? yield* mcpSessionRegistry.credentialFor({
                 sessionKey: input.threadId,
                 browser: true,
-                room: roomToolsRequested,
+                room: roomGrant.attach,
                 pages: agentPagesRequested,
                 commands: commandRequestsRequested,
                 scheduledRun: input.scheduledRunTools === true,
+                guideOnly: roomGrant.guideOnly,
               })
             : undefined;
           if (credential !== undefined) {
@@ -1220,7 +1224,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     url: mcpEndpointUrl(serverConfig.port),
                     headers: authorization,
                   },
-                  ...(roomToolsRequested
+                  ...(roomGrant.attach
                     ? [
                         {
                           type: "http" as const,

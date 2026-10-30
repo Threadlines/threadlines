@@ -2177,6 +2177,37 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect(
+    "brings a recovered runtime back with the app guide alone, not room tools an older start had",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-guide-recover");
+        const start = (tools: { readonly roomTools?: true; readonly guideTools?: true }) =>
+          provider.startSession(threadId, {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codexInstanceId,
+            threadId,
+            cwd: "/tmp/project-guide",
+            runtimeMode: "full-access",
+            ...tools,
+          });
+        // Once a room, then started again with rooms and the rest turned off.
+        yield* start({ roomTools: true });
+        const initial = yield* start({ guideTools: true });
+
+        yield* routing.codex.stopAll();
+        routing.codex.startSession.mockClear();
+        yield* provider.sendTurn({ threadId: initial.threadId, input: "resume", attachments: [] });
+
+        const resumed = routing.codex.startSession.mock.calls[0]?.[0] as
+          | { readonly roomTools?: boolean; readonly guideTools?: boolean }
+          | undefined;
+        assert.equal(resumed?.guideTools, true);
+        assert.equal(resumed?.roomTools, undefined);
+      }),
+  );
+
   it.effect("puts the device note in front for a driver without its own way to send it", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
