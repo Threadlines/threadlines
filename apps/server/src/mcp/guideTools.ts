@@ -22,7 +22,7 @@ export type AppGuideResult = typeof AppGuideResult.Type;
 
 export const AppGuideTool = Tool.make(GUIDE_TOOL_NAME, {
   description:
-    'Threadlines\' guide to itself, the app you are running in. Use it before answering any question about Threadlines from memory: where a setting or page is, how a feature works (threads, worktrees, access levels, rooms, threads agents start, linked computers in Fleet, phones, scheduled tasks, outside agents, providers, plugins and skills, the browser panel), or why one of your Threadlines tools said no. `query` takes plain words ("link my windows pc", "turn off agent pages"); `topic` reads one topic; neither lists the pages and topics. Answers give each place\'s path as the screen shows it, what it does, its current value on this computer when the server can see it, and a markdown link: put those links in your reply, and the user can click straight to the place. You can\'t change settings: tell the user where to.',
+    'Threadlines\' guide to itself, the app you are running in. Use it before answering any question about Threadlines from memory or the web: where a setting or page is, how a feature works (threads, worktrees, access levels, rooms, threads agents start, linked computers in Fleet, phones, scheduled tasks, outside agents, providers, plugins and skills, the browser panel), or why one of your Threadlines tools said no. `query` takes plain words ("link my windows pc", "turn off agent pages"); `topic` reads one topic; neither lists the pages and topics. Answers give each place\'s path as the screen shows it, what it does, its current value on this computer when the server can see it, and a markdown link: put those links in your reply, and the user can click straight to the place. You can\'t change settings: tell the user where to.',
   parameters: Schema.Struct({
     query: Schema.optional(
       Schema.String.annotate({ description: "What the user asked about, in plain words." }),
@@ -51,5 +51,5 @@ export function buildGuideInstructions(input: {
   /** What precedes the tool's name for this provider. */
   readonly toolPrefix: string;
 }): string {
-  return `<threadlines_guide>\nYou run inside Threadlines. When the user asks about Threadlines itself (where a setting is, how a feature works, why a Threadlines tool said no), look it up with \`${input.toolPrefix}${GUIDE_TOOL_NAME}\` before answering, and link the places it names with the links it gives.\n</threadlines_guide>`;
+  return `<threadlines_guide>\nYou run inside Threadlines, the app the user drives you from. Questions about it (its threads, settings, linked computers, what you can or can't do here and why) are answered by \`${input.toolPrefix}${GUIDE_TOOL_NAME}\`, which knows this computer's actual settings; your memory and the web don't. Call it directly, before answering, and link the places it names with the links it gives.\n</threadlines_guide>`;
 }

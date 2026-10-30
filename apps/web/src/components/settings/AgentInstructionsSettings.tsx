@@ -218,13 +218,6 @@ export function AgentInstructionsSettingsPanel() {
     [projects],
   );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
-  // A place link from a thread opens on that thread's project, once it's listed.
-  usePlaceScopeArrival((scope) => {
-    if (scope.project === null) return true;
-    if (!projectOptions.some((option) => option.value === scope.project)) return false;
-    setCwd(scope.project);
-    return true;
-  });
   // Instruction files live on the machine that owns the project, and the picker
   // spans machines, so the API is resolved from the project rather than from
   // whichever backend this client happens to be paired with. Resolved per call:
@@ -270,6 +263,17 @@ export function AgentInstructionsSettingsPanel() {
       setCwd(projectOptions[0].value);
     }
   }, [cwd, projectOptions]);
+
+  // A place link from a thread opens on that thread's project once it's
+  // listed. After the default pick above, so it wins when projects arrive
+  // late; and only on the computer the link names, so a project at the same
+  // path on another computer is never opened (or saved) in its place.
+  usePlaceScopeArrival((scope) => {
+    if (scope.project === null) return true;
+    if (!projectOptions.some((option) => option.value === scope.project)) return false;
+    if (environmentIdByCwd.get(scope.project) === scope.environmentId) setCwd(scope.project);
+    return true;
+  });
 
   const refresh = useCallback(async () => {
     const requestCwd = cwd.trim();

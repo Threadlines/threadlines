@@ -135,11 +135,18 @@ export function usePlaceScopeArrival(
       return scope === null ? null : `${scope.environmentId}\n${scope.project ?? ""}`;
     },
   });
-  const hash = useLocation({ select: (location) => location.hash });
+  // Only a link's own arrival counts (its click number in `#place=…&n=`): a
+  // tab switch that drops the hash is not one.
+  const click = useLocation({
+    select: (location) =>
+      placeIdFromArrivalHash(location.hash) === null
+        ? null
+        : new URLSearchParams(location.hash).get("n"),
+  });
   const applied = useRef<string | null>(null);
   useEffect(() => {
-    if (scopeKey === null) return;
-    const arrival = `${scopeKey}\n${hash}`;
+    if (scopeKey === null || click === null) return;
+    const arrival = `${scopeKey}\n${click}`;
     if (applied.current === arrival) return;
     const [environmentId = "", project = ""] = scopeKey.split("\n");
     if (

@@ -4453,14 +4453,23 @@ export function ExtensionsSettingsPanel() {
     () => deriveExtensionScopeGroups(projects, sidebarThreads, machineOptions),
     [machineOptions, projects, sidebarThreads],
   );
+  // A place link from a thread opens on that thread's computer and project,
+  // once the page lists them. A computer it doesn't list is left alone rather
+  // than shown as this one (resolveExtensionScope would fall back to it).
+  usePlaceScopeArrival((scope) => {
+    if (scopeGroups.length === 0) return false;
+    const group = scopeGroups.find((entry) => entry.environmentId === scope.environmentId);
+    if (group === undefined) return true;
+    const selection = { environmentId: scope.environmentId, cwd: scope.project };
+    const listed =
+      scope.project === null ||
+      group.projects.some((entry) => entry.key === extensionScopeKey(selection));
+    setRememberedScope(listed ? selection : { environmentId: scope.environmentId, cwd: null });
+    return true;
+  });
   const [rememberedScope, setRememberedScope] = useState<ExtensionScopeSelection | null>(
     () => extensionsSettingsPanelMemoryState.scope ?? null,
   );
-  // A place link from a thread opens on that thread's computer and project.
-  usePlaceScopeArrival((scope) => {
-    setRememberedScope({ environmentId: scope.environmentId, cwd: scope.project });
-    return true;
-  });
   const scope = useMemo(
     () => resolveExtensionScope(scopeGroups, rememberedScope),
     [rememberedScope, scopeGroups],

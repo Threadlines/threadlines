@@ -80,7 +80,9 @@ export function PlaceLink({
     if (threadRef === null) return null;
     const environment = selectEnvironmentState(state, threadRef.environmentId);
     const projectId = environment.threadShellById[threadRef.threadId]?.projectId;
-    return projectId === undefined ? null : (environment.projectById[projectId]?.cwd ?? null);
+    const project = projectId === undefined ? undefined : environment.projectById[projectId];
+    // A General Chat's folder is no project those pages list: name the computer only.
+    return project?.kind === "workspace" ? project.cwd : null;
   });
   const target = resolvePlaceLink({
     href,
