@@ -59,10 +59,7 @@ const make = ElectronShell.of({
         () => false,
       ),
     ),
-  copyText: (text) =>
-    Effect.sync(() => {
-      Electron.clipboard.writeText(text);
-    }),
+  copyText: (text) => Effect.promise(() => Electron.clipboard.writeText(text)),
 });
 
 export const layer = Layer.succeed(ElectronShell, make);

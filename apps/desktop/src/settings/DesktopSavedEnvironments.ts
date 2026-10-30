@@ -9,7 +9,8 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
+import * as EncodingError from "effect/encoding/EncodingError";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -90,7 +91,7 @@ export class DesktopSavedEnvironmentsWriteError extends Data.TaggedError(
 export class DesktopSavedEnvironmentSecretDecodeError extends Data.TaggedError(
   "DesktopSavedEnvironmentSecretDecodeError",
 )<{
-  readonly cause: Encoding.EncodingError;
+  readonly cause: EncodingError.EncodingError;
 }> {
   override get message() {
     return "Failed to decode desktop saved environment secret.";
@@ -233,7 +234,7 @@ function preserveExistingSecrets(
 function decodeSecretBytes(
   encoded: string,
 ): Effect.Effect<Uint8Array, DesktopSavedEnvironmentSecretDecodeError> {
-  return Effect.fromResult(Encoding.decodeBase64(encoded)).pipe(
+  return Effect.fromResult(Base64.decode(encoded)).pipe(
     Effect.mapError((cause) => new DesktopSavedEnvironmentSecretDecodeError({ cause })),
   );
 }
@@ -297,9 +298,7 @@ export const layer = Layer.effect(
           return false;
         }
 
-        const encryptedBearerToken = Encoding.encodeBase64(
-          yield* safeStorage.encryptString(secret),
-        );
+        const encryptedBearerToken = Base64.encode(yield* safeStorage.encryptString(secret));
         let found = false;
         const nextDocument: SavedEnvironmentRegistryDocument = {
           version: document.version,

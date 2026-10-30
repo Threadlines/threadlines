@@ -1,4 +1,4 @@
-import type { ChildProcess } from "effect/unstable/process";
+import type { ChildProcess } from "effect/process";
 
 export type WindowsHiddenCommandOptions = ChildProcess.CommandOptions & {
   readonly windowsHide?: boolean | undefined;

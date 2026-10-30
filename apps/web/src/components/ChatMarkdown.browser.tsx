@@ -442,6 +442,38 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("opens a file outside the project in the file viewer, and says so", async () => {
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd: "/repo/project",
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    await parkPointer();
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="Updated `/Users/me/.claude/CLAUDE.md:4`."
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      const chip = document.querySelector('a[data-workspace-scope="external"]');
+      expect(await hoverLabelOf(chip)).toBe(
+        "/Users/me/.claude/CLAUDE.md:4Outside this project · opens in the file viewer",
+      );
+      await page.getByRole("link", { name: "CLAUDE.md · L4" }).click();
+      await vi.waitFor(() => {
+        const state = useFileViewerStore.getState();
+        expect(state.activePath).toBe("/Users/me/.claude/CLAUDE.md");
+        expect(state.revealLine).toBe(4);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps another computer's files out of this computer's apps", async () => {
     installAvailableEditors(["vscode", "file-manager"]);
     writePrimaryEnvironmentDescriptor({
@@ -1350,9 +1382,12 @@ describe("ChatMarkdown", () => {
         .toHaveAttribute("src", `data:image/png;base64,${PIXEL_PNG_BASE64}`);
       // The chip stays under the picture and still opens the file.
       await expect.element(page.getByRole("link", { name: "shot.png" })).toBeInTheDocument();
+      // Asked for by its absolute path, as the file viewer opens it, so the
+      // two share one read (and a picture on another drive still loads).
       expect(readFile.mock.calls[0]?.[0]).toEqual({
         cwd: "/tmp/project",
-        relativePath: "../Temp/shot.png",
+        relativePath: "/tmp/Temp/shot.png",
+        documents: true,
       });
     } finally {
       await screen.unmount();

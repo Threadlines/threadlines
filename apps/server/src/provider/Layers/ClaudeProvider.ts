@@ -21,7 +21,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { planCliSpawn } from "../../cliSpawn.ts";

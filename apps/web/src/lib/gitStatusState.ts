@@ -10,7 +10,7 @@ import {
 } from "@threadlines/contracts";
 import { applyGitStatusStreamEvent } from "@threadlines/shared/git";
 import * as Cause from "effect/Cause";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useEffect, useMemo } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";

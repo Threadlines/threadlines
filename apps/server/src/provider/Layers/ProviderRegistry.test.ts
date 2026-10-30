@@ -30,8 +30,8 @@ import {
   type ServerSettings as ContractServerSettings,
 } from "@threadlines/contracts";
 import * as PlatformError from "effect/PlatformError";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import { deepMerge } from "@threadlines/shared/Struct";
 import { createModelCapabilities } from "@threadlines/shared/model";
 import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";

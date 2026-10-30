@@ -10,7 +10,7 @@ import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const CODEX_PROTOCOL_VERSION = "0.163.0";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;

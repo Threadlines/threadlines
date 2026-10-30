@@ -2,7 +2,7 @@ import { networkInterfaces } from "node:os";
 
 import { QrCode } from "@threadlines/shared/qrCode";
 import * as Effect from "effect/Effect";
-import { HttpServer } from "effect/unstable/http";
+import { HttpServer } from "effect/http";
 
 import { ServerConfig } from "./config.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";

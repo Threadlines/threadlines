@@ -54,7 +54,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import { PtyAdapter } from "./terminal/Services/PTY.ts";
 import {
   FetchHttpClient,
@@ -64,10 +64,10 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
-import * as Socket from "effect/unstable/socket/Socket";
+} from "effect/http";
+import { OtlpSerialization, OtlpTracer } from "effect/observability";
+import { RpcClient, RpcSerialization } from "effect/rpc";
+import * as Socket from "effect/socket/Socket";
 import { vi } from "vite-plus/test";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
@@ -92,6 +92,7 @@ import { OutsideAgentConnections } from "./outsideAgents/OutsideAgentConnections
 import { OutsideAgentRequests } from "./outsideAgents/OutsideAgentRequests.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { PushAlerts, type PushAlertsShape } from "./pushAlerts/PushAlerts.ts";
+import { relayDirectRouteLayer } from "./relay/directRoute.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { Assistants } from "./assistants/Assistants.ts";
@@ -186,6 +187,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
+import type * as NetAddress from "effect/net/NetAddress";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -1158,18 +1160,13 @@ const parseSessionCookieFromWsUrl = (
 
 const wsRpcProtocolLayer = (wsUrl: string) => {
   const { cookie, url } = parseSessionCookieFromWsUrl(wsUrl);
-  const webSocketConstructorLayer = Layer.succeed(
-    Socket.WebSocketConstructor,
-    (socketUrl, protocols) =>
-      new NodeSocket.NodeWS.WebSocket(
-        socketUrl,
-        protocols,
-        cookie ? { headers: { cookie } } : undefined,
-      ) as unknown as globalThis.WebSocket,
-  );
 
   return RpcClient.layerProtocolSocket().pipe(
-    Layer.provide(Socket.layerWebSocket(url).pipe(Layer.provide(webSocketConstructorLayer))),
+    Layer.provide(
+      Socket.layerWebSocket(url, cookie ? { headers: { cookie } } : undefined).pipe(
+        Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+      ),
+    ),
     Layer.provide(RpcSerialization.layerJson),
   );
 };
@@ -1193,7 +1190,7 @@ const appendSessionCookieToWsUrl = (url: string, sessionCookieHeader: string) =>
 const getHttpServerUrl = (pathname = "") =>
   Effect.gen(function* () {
     const server = yield* HttpServer.HttpServer;
-    const address = server.address as HttpServer.TcpAddress;
+    const address = server.address as NetAddress.InetAddress;
     return `http://127.0.0.1:${address.port}${pathname}`;
   });
 
@@ -1353,7 +1350,7 @@ const getWsServerUrl = (
 ) =>
   Effect.gen(function* () {
     const server = yield* HttpServer.HttpServer;
-    const address = server.address as HttpServer.TcpAddress;
+    const address = server.address as NetAddress.InetAddress;
     const baseUrl = `ws://127.0.0.1:${address.port}${pathname}`;
     if (options?.authenticated === false) {
       return baseUrl;
@@ -1365,6 +1362,63 @@ const getWsServerUrl = (
   });
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("carries a direct device connection both ways and reports when it ends", () =>
+    Effect.gen(function* () {
+      const received: Array<string> = [];
+      const ended = yield* Deferred.make<void>();
+      // An echo stands in for the encrypted pipe the relay host would open.
+      yield* relayDirectRouteLayer.pipe(
+        HttpRouter.serve,
+        Layer.provide(
+          Layer.mock(RelayHost)({
+            admitDirect: () => ({ release: () => undefined }),
+            acceptDirect: ({ duplex }) =>
+              Effect.succeed({
+                receive: (data) => {
+                  const text = String(data);
+                  received.push(text);
+                  duplex.send(new TextEncoder().encode(`echo ${text}`));
+                },
+                closed: () => Effect.runSync(Deferred.succeed(ended, undefined)),
+                close: () => undefined,
+              }),
+            isRevokedDevice: () => Effect.succeed(false),
+          }),
+        ),
+        Layer.build,
+      );
+
+      const server = yield* HttpServer.HttpServer;
+      const address = server.address as NetAddress.InetAddress;
+      const socket = yield* Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
+        const socket = new NodeSocket.NodeWS.WebSocket(
+          `ws://127.0.0.1:${address.port}/relay/direct/device-1`,
+        );
+        socket.once("open", () => resume(Effect.succeed(socket)));
+        socket.once("error", (error) => resume(Effect.fail(error)));
+      });
+      const reply = yield* Effect.callback<string>((resume) => {
+        socket.once("message", (data) => resume(Effect.succeed(String(data))));
+        socket.send("hello");
+      });
+      assert.strictEqual(reply, "echo hello");
+      assert.deepStrictEqual(received, ["hello"]);
+
+      socket.close();
+      yield* Deferred.await(ended).pipe(Effect.timeout("5 seconds"));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.unwrap(
+          Effect.promise(async () => {
+            const NodeHttp = await import("node:http");
+            return NodeHttpServer.layer(NodeHttp.createServer, { port: 0 });
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("forwards WebSocket compression options through the Node HTTP server", () =>
     Effect.gen(function* () {
       yield* HttpRouter.add(
@@ -1373,13 +1427,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           const socket = yield* Effect.orDie(request.upgrade);
-          yield* Effect.orDie(socket.run(() => Effect.void));
+          const { pull } = yield* Effect.orDie(socket.reader);
+          yield* Effect.forever(pull).pipe(Effect.ignore);
           return HttpServerResponse.empty();
         }),
       ).pipe(HttpRouter.serve, Layer.build);
 
       const server = yield* HttpServer.HttpServer;
-      const address = server.address as HttpServer.TcpAddress;
+      const address = server.address as NetAddress.InetAddress;
       const socket = yield* Effect.acquireRelease(
         Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
           const socket = new NodeSocket.NodeWS.WebSocket(
@@ -1412,7 +1467,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("answers 503 before the router attaches instead of leaving requests hanging", () =>
     Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer;
-      const address = server.address as HttpServer.TcpAddress;
+      const address = server.address as NetAddress.InetAddress;
       const url = `http://127.0.0.1:${address.port}/.well-known/threadlines/environment`;
       const get = () => Effect.promise(() => fetch(url, { signal: AbortSignal.timeout(5_000) }));
 
@@ -3398,9 +3453,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectWriteFileError");
+      // Outside the project, only an existing file can be saved over.
       assert.equal(
         result.failure.message,
-        "Workspace file path must stay within the project root.",
+        "Files outside the project can be saved only if they already exist.",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

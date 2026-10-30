@@ -15,11 +15,7 @@ import {
   ScheduledTaskStatus,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
-
-import { McpRoomInvocation } from "./roomTools.ts";
-
-const dependencies = [McpRoomInvocation];
+import { Tool, Toolkit } from "effect/ai";
 
 export const AgentScheduledTask = Schema.Struct({
   id: Schema.String,
@@ -119,7 +115,6 @@ export const ScheduleListTool = Tool.make("schedule_list", {
   // `Schema.Struct({})` lists as "object or array", and Claude then rejects
   // the whole room endpoint's tool list.
   success: ScheduleListResult,
-  dependencies,
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -154,7 +149,6 @@ export const ScheduleCreateTool = changesSchedules(
       ),
     }),
     success: ScheduleChangeResult,
-    dependencies,
   }).annotate(Tool.Title, "Create a scheduled task"),
 );
 
@@ -174,7 +168,6 @@ export const ScheduleUpdateTool = changesSchedules(
       ),
     }),
     success: ScheduleChangeResult,
-    dependencies,
   }).annotate(Tool.Title, "Change a scheduled task"),
 );
 
@@ -189,7 +182,6 @@ export const ScheduledRunFinishTool = changesSchedules(
       ),
     }),
     success: ScheduledRunFinishResult,
-    dependencies,
   }).annotate(Tool.Title, "Finish a scheduled run"),
 );
 

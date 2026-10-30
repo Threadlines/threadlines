@@ -9,14 +9,15 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Tracer from "effect/Tracer";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
 
 import { browserApiCorsLayer } from "./http.ts";
 import {
   hasSecretPath,
   redactedRequestPath,
   requestPrivacy,
-  requestTracingPrivacyLayer,
+  requestTracingLayer,
 } from "./httpRequestPrivacy.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { localHookRouteLayer } from "./scheduled/webhookRoute.ts";
@@ -58,7 +59,7 @@ describe("request privacy", () => {
       yield* HttpRouter.serve(localHookRouteLayer.pipe(Layer.provide(browserApiCorsLayer)), {
         middleware: requestPrivacy(true),
       }).pipe(
-        Layer.provide(requestTracingPrivacyLayer),
+        Layer.provide(requestTracingLayer),
         Layer.provide(
           Layer.mock(ScheduledTasks)({ receiveLocalEvent: () => Effect.succeed(202 as const) }),
         ),
@@ -66,7 +67,7 @@ describe("request privacy", () => {
         Layer.build,
       );
       const server = yield* HttpServer.HttpServer;
-      const origin = `http://127.0.0.1:${(server.address as HttpServer.TcpAddress).port}`;
+      const origin = `http://127.0.0.1:${(server.address as NetAddress.InetAddress).port}`;
       const path = `/api/hooks/task-1/${TOKEN}`;
       const preflight = yield* Effect.promise(() =>
         fetch(`${origin}${path}`, {
@@ -142,13 +143,13 @@ describe("request privacy", () => {
       yield* HttpRouter.serve(routes.pipe(Layer.provide(browserApiCorsLayer)), {
         middleware: requestPrivacy(true),
       }).pipe(
-        Layer.provide(requestTracingPrivacyLayer),
+        Layer.provide(requestTracingLayer),
         Layer.provide(Layer.succeed(Tracer.Tracer, tracer)),
         Layer.provide(Logger.layer([capture], { mergeWithExisting: false })),
         Layer.build,
       );
       const server = yield* HttpServer.HttpServer;
-      const origin = `http://127.0.0.1:${(server.address as HttpServer.TcpAddress).port}`;
+      const origin = `http://127.0.0.1:${(server.address as NetAddress.InetAddress).port}`;
       const connect = yield* Effect.promise(() =>
         fetch(`${origin}/mcp/connect`, {
           method: "POST",
@@ -179,10 +180,8 @@ describe("request privacy", () => {
 
       const connectSpan = spans.find((span) => span.attributes.get("url.path") === "/mcp/connect");
       assert.isDefined(connectSpan);
-      assert.equal(
-        String(connectSpan?.attributes.get("http.request.header.authorization")),
-        "<redacted>",
-      );
+      // Only the `upgrade` header is recorded at all.
+      assert.isUndefined(connectSpan?.attributes.get("http.request.header.authorization"));
       assert.isFalse(
         spans.some((span) => String(span.attributes.get("url.path")).startsWith("/oauth")),
       );

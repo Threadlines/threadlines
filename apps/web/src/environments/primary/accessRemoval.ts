@@ -1,5 +1,5 @@
 import type { AuthSessionState } from "@threadlines/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useAtomValue } from "@effect/atom-react";
 
 import { appAtomRegistry } from "../../rpc/atomRegistry";

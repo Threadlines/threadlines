@@ -29,7 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";

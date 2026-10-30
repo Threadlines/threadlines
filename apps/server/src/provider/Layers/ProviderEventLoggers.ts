@@ -91,7 +91,7 @@ export const ProviderEventLoggersLive = Layer.effect(
     }
     // Token-sized stream pieces are left out of both logs unless this is set
     // (see EventLogWriteOptions.streamFragment).
-    const keepStreamFragments = yield* Config.boolean(
+    const keepStreamFragments = yield* Config.Boolean(
       "THREADLINES_PROVIDER_LOG_STREAM_FRAGMENTS",
     ).pipe(
       Config.withDefault(false),

@@ -6,15 +6,17 @@
  * for composing providers, changing paths, and installing providers through
  * layers.
  *
+ * @stability stable
  * @since 4.0.0
  */
 
+import * as Arr from "./Array.ts"
 import * as Context from "./Context.ts"
 import * as Data from "./Data.ts"
 import * as Effect from "./Effect.ts"
 import * as FileSystem from "./FileSystem.ts"
 import { format } from "./Formatter.ts"
-import { dual, flow } from "./Function.ts"
+import { dual } from "./Function.ts"
 import { PipeInspectableProto } from "./internal/core.ts"
 import * as Layer from "./Layer.ts"
 import * as Path_ from "./Path.ts"
@@ -49,6 +51,7 @@ import * as Str from "./String.ts"
  * @see {@link makeRecord} – construct a `Record` node
  * @see {@link makeArray} – construct an `Array` node
  *
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -94,6 +97,7 @@ export type Node =
  * @see {@link makeRecord} – for object-like containers
  * @see {@link makeArray} – for array-like containers
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -132,6 +136,7 @@ export function makeValue(value: string): Node {
  * @see {@link makeValue} – for terminal leaves
  * @see {@link makeArray} – for array-like containers
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -164,6 +169,7 @@ export function makeRecord(keys: ReadonlySet<string>, value?: string): Node {
  * @see {@link makeValue} – for terminal leaves
  * @see {@link makeRecord} – for object-like containers
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -201,6 +207,7 @@ export function makeArray(length: number, value?: string): Node {
  * @see {@link ConfigProvider} – the interface whose `load` may fail with this
  *   error
  *
+ * @stability stable
  * @category errors
  * @since 4.0.0
  */
@@ -228,6 +235,7 @@ export class SourceError extends Data.TaggedError("SourceError")<{
  * path.join(".") // => "database.replicas.0.host"
  * ```
  *
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -263,6 +271,7 @@ export type Path = ReadonlyArray<string | number>
  * @see {@link make} – construct a provider from a lookup function
  * @see {@link orElse} – compose providers with fallback
  *
+ * @stability stable
  * @category services
  * @since 4.0.0
  */
@@ -335,6 +344,7 @@ export interface ConfigProvider extends Pipeable {
  * @see {@link layer} – install a provider as a Layer
  * @see {@link layerAdd} – add a fallback provider as a Layer
  *
+ * @stability stable
  * @category services
  * @since 4.0.0
  */
@@ -370,7 +380,7 @@ function makeSource(
 ): ConfigProvider {
   return makeProvider(
     (path) => get(transform(path)),
-    (f) => makeSource(get, flow(transform, f))
+    (f) => makeSource(get, (path) => f(transform(path)))
   )
 }
 
@@ -428,6 +438,7 @@ function makeOrElse(first: ConfigProvider, second: ConfigProvider): ConfigProvid
  * @see {@link fromEnv} – pre-built provider for environment variables
  * @see {@link fromUnknown} – pre-built provider for JSON objects
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -474,6 +485,7 @@ export function make(get: (path: Path) => Effect.Effect<Node | undefined, Source
  *
  * @see {@link layerAdd} – install a fallback provider via a Layer
  *
+ * @stability stable
  * @category combinators
  * @since 2.0.0
  */
@@ -527,6 +539,7 @@ export const orElse: {
  * @see {@link constantCase} – a preset that converts to `CONSTANT_CASE`
  * @see {@link nested} – for prepending a prefix instead of transforming
  *
+ * @stability stable
  * @category combinators
  * @since 4.0.0
  */
@@ -568,6 +581,7 @@ export const mapInput: {
  *
  * @see {@link mapInput} – for arbitrary path transformations
  *
+ * @stability stable
  * @category combinators
  * @since 2.0.0
  */
@@ -614,6 +628,7 @@ export const constantCase: (self: ConfigProvider) => ConfigProvider = mapInput((
  *
  * @see {@link mapInput} – for arbitrary path transformations
  *
+ * @stability stable
  * @category combinators
  * @since 2.0.0
  */
@@ -651,7 +666,7 @@ export const nested: {
  * )
  *
  * const program = Effect.gen(function*() {
- *   const port = yield* Config.number("port")
+ *   const port = yield* Config.Number("port")
  *   return port
  * })
  *
@@ -660,6 +675,7 @@ export const nested: {
  *
  * @see {@link layerAdd} – add a provider without replacing the existing one
  *
+ * @stability stable
  * @category layers
  * @since 4.0.0
  */
@@ -697,7 +713,7 @@ export const layer = <E = never, R = never>(
  * // The current env provider is tried first; `defaults` is the fallback
  * const DefaultsLayer = ConfigProvider.layerAdd(defaults)
  * const BaseLayer = ConfigProvider.layer(ConfigProvider.fromUnknown({}))
- * const program = Config.string("HOST")
+ * const program = Config.String("HOST")
  *
  * const layer = Layer.provide(DefaultsLayer, BaseLayer)
  * Effect.runSync(Effect.provide(program, layer)) // => "localhost"
@@ -706,6 +722,7 @@ export const layer = <E = never, R = never>(
  * @see {@link layer} – replace the provider entirely
  * @see {@link orElse} – compose providers without layers
  *
+ * @stability stable
  * @category layers
  * @since 4.0.0
  */
@@ -763,7 +780,7 @@ export const layerAdd = <E = never, R = never>(
  *   }
  * })
  *
- * const host = Config.string("host").parse(
+ * const host = Config.String("host").parse(
  *   provider.pipe(ConfigProvider.nested("database"))
  * )
  *
@@ -773,6 +790,7 @@ export const layerAdd = <E = never, R = never>(
  * @see {@link fromEnv} – for environment variables
  * @see {@link make} – for custom backing stores
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -857,6 +875,7 @@ function emptyStringAsMissing(value: string | undefined, preserveEmptyStrings: b
  *
  * @see {@link fromEnv} – automatically reads the runtime environment
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -908,7 +927,7 @@ export function fromEnvRecord(
  *   }
  * })
  *
- * const host = Config.string("HOST").parse(
+ * const host = Config.String("HOST").parse(
  *   provider.pipe(ConfigProvider.nested("DATABASE"))
  * )
  *
@@ -919,6 +938,7 @@ export function fromEnvRecord(
  * @see {@link fromEnvRecord} – for explicit records in restricted runtimes
  * @see {@link constantCase} – bridge camelCase keys to SCREAMING_SNAKE_CASE
  *
+ * @stability stable
  * @category constructors
  * @since 2.0.0
  */
@@ -958,8 +978,6 @@ function buildEnvTrie(env: Record<string, string | undefined>): EnvTrieNode {
   return trie
 }
 
-const NUMERIC_INDEX = /^(0|[1-9][0-9]*)$/
-
 function nodeAtEnv(
   trie: EnvTrieNode,
   env: Record<string, string | undefined>,
@@ -976,7 +994,7 @@ function nodeAtEnv(
     return leafValue === undefined ? undefined : makeValue(leafValue)
   }
 
-  const allNumeric = children.every((k) => NUMERIC_INDEX.test(k))
+  const allNumeric = children.every(Arr.isCanonicalArrayIndex)
   if (allNumeric) {
     const length = Math.max(...children.map((k) => parseInt(k, 10))) + 1
     return makeArray(length, leafValue)
@@ -1040,6 +1058,7 @@ function trieNodeAt(root: EnvTrieNode, path: Path): EnvTrieNode | undefined {
  * @see {@link fromEnvRecord} – for explicit environment records
  * @see {@link fromEnv} – for raw environment variable access
  *
+ * @stability stable
  * @category constructors
  * @since 4.0.0
  */
@@ -1097,56 +1116,53 @@ function dotEnvExpand(parsed: Record<string, string>): Record<string, string> {
 
   for (const configKey of Object.keys(parsed)) {
     // resolve escape sequences
-    newParsed[configKey] = interpolate(parsed[configKey], parsed).replace(/\\\$/g, "$")
+    newParsed[configKey] = interpolate(parsed[configKey], parsed, new Set([configKey])).replace(/\\\$/g, "$")
   }
 
   return newParsed
 }
 
-function interpolate(envValue: string, parsed: Record<string, string>): string {
-  // find the last unescaped dollar sign in the
-  // value so that we can evaluate it
-  const lastUnescapedDollarSignIndex = searchLast(envValue, /(?!(?<=\\))\$/g)
+function interpolate(
+  envValue: string,
+  parsed: Record<string, string>,
+  seen: ReadonlySet<string>
+): string {
+  const reference = /\${?(\w+)/g
+  let result = ""
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = reference.exec(envValue)) != null) {
+    if (match.index > 0 && envValue[match.index - 1] === "\\") continue
+    const [, name] = match
+    let end = reference.lastIndex
+    let defaultValue = ""
+    if (envValue.startsWith(":-", end)) {
+      end += 2
+      const start = end
+      let depth = 0
+      // Match default braces in the source, not in substituted values.
+      for (; end < envValue.length; end++) {
+        if (envValue.startsWith("${", end)) {
+          depth++
+          end++
+        } else if (envValue[end] === "}") {
+          if (depth === 0) break
+          depth--
+        }
+      }
+      defaultValue = envValue.slice(start, end)
+    }
+    if (envValue[end] === "}") end++
 
-  // If we couldn't match any unescaped dollar sign
-  // let's return the string as is
-  if (lastUnescapedDollarSignIndex === -1) return envValue
-
-  // This is the right-most group of variables in the string
-  const rightMostGroup = envValue.slice(lastUnescapedDollarSignIndex)
-
-  /**
-   * This finds the inner most variable/group divided
-   * by variable name and default value (if present)
-   * (
-   *   (?!(?<=\\))\$        // only match dollar signs that are not escaped
-   *   {?                   // optional opening curly brace
-   *     ([\w]+)            // match the variable name
-   *     (?::-([^}\\]*))?   // match an optional default value
-   *   }?                   // optional closing curly brace
-   * )
-   */
-  const matchGroup = /((?!(?<=\\))\${?([\w]+)(?::-([^}\\]*))?}?)/
-  const match = rightMostGroup.match(matchGroup)
-
-  if (match !== null) {
-    const [_, group, variableName, defaultValue] = match
-    const value = Object.hasOwn(parsed, variableName) && parsed[variableName] !== ""
-      ? parsed[variableName]
-      : defaultValue ?? ""
-
-    return interpolate(
-      envValue.replace(group, value),
-      parsed
-    )
+    // References already being expanded resolve as unset.
+    const expanded = Object.hasOwn(parsed, name) && !seen.has(name)
+      ? interpolate(parsed[name], parsed, new Set([...seen, name]))
+      : ""
+    result += envValue.slice(cursor, match.index) + (expanded || interpolate(defaultValue, parsed, seen))
+    cursor = end
+    reference.lastIndex = end
   }
-
-  return envValue
-}
-
-function searchLast(str: string, rgx: RegExp): number {
-  const matches = Array.from(str.matchAll(rgx))
-  return matches.length > 0 ? matches.slice(-1)[0].index : -1
+  return result + envValue.slice(cursor)
 }
 
 /**
@@ -1195,6 +1211,7 @@ function searchLast(str: string, rgx: RegExp): number {
  * @see {@link fromDotEnvContents} – parse a `.env` string directly
  * @see {@link fromEnv} – read from the runtime environment
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -1266,6 +1283,7 @@ export const fromDotEnv: (options?: {
  * @see {@link fromEnv} – for environment variables
  * @see {@link fromDotEnv} – for `.env` files
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */

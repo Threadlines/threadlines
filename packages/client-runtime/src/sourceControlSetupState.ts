@@ -3,7 +3,7 @@ import {
   type SourceControlSetupState,
   type SourceControlToolUpdateInput,
 } from "@threadlines/contracts";
-import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { Atom, type AtomRegistry } from "effect/reactivity";
 
 export const EMPTY_SOURCE_CONTROL_SETUP: SourceControlSetupState = {
   tools: [],

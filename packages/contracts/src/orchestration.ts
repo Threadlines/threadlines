@@ -107,7 +107,7 @@ const ModelSelectionSource = Schema.Struct({
 export const ModelSelection = ModelSelectionSource.pipe(
   Schema.decodeTo(
     ModelSelectionWire,
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (raw) => {
         // Resolve the routing key: prefer an explicit `instanceId`; fall
         // back to promoting the legacy `provider` slug (the canonical
@@ -291,7 +291,7 @@ const decodeChatAttachmentExit = Schema.decodeUnknownExit(ChatAttachment);
 export const ChatAttachmentListLenient = Schema.Array(Schema.Unknown).pipe(
   Schema.decodeTo(
     Schema.Array(ChatAttachment),
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (entries) =>
         Effect.succeed(
           entries.filter((entry) =>

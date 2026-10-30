@@ -25,8 +25,8 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
+import type { Tool } from "effect/ai";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 
 import { ConnectError, NOT_RUNNING_MESSAGE, SIGNED_OUT_MESSAGE } from "./connectExit.ts";
 

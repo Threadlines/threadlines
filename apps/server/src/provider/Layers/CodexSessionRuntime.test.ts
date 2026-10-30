@@ -7,7 +7,7 @@ import * as Deferred from "effect/Deferred";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe, it } from "vite-plus/test";
 import { SideTurnId, ThreadId, TurnId, type ProviderEvent } from "@threadlines/contracts";
 import { sideSessionKey } from "@threadlines/shared/threadParticipants";

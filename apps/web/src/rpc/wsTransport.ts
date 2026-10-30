@@ -7,7 +7,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { RpcClient } from "effect/unstable/rpc";
+import { RpcClient } from "effect/rpc";
 
 import { ClientTracingLive } from "../observability/clientTracing";
 import {
@@ -154,7 +154,7 @@ export class WsTransport {
   private nextSessionId = 0;
   private activeSessionId = 0;
   private session: TransportSession;
-  private lastHeartbeatPongAt = 0;
+  private lastInboundMessageAt = 0;
   private readonly streamRequestStartListeners = new Set<(info: StreamRequestStartInfo) => void>();
   // Session-replacement invariant: no subscription stream may keep awaiting a
   // session that is no longer `this.session`. A half-open socket never fails
@@ -444,7 +444,7 @@ export class WsTransport {
       }
 
       clearAllTrackedRpcRequests();
-      this.lastHeartbeatPongAt = 0;
+      this.lastInboundMessageAt = 0;
       const previousSession = this.session;
       this.session = this.createSession();
       // Interrupt before closing: a half-open socket may never fail its
@@ -459,8 +459,12 @@ export class WsTransport {
     await reconnectOperation;
   }
 
+  /**
+   * Whether the server sent anything in the last `maxAgeMs`. A live socket
+   * answers the protocol's heartbeat every 5 seconds even when idle.
+   */
   isHeartbeatFresh(maxAgeMs = 15_000): boolean {
-    return this.lastHeartbeatPongAt > 0 && Date.now() - this.lastHeartbeatPongAt <= maxAgeMs;
+    return this.lastInboundMessageAt > 0 && Date.now() - this.lastInboundMessageAt <= maxAgeMs;
   }
 
   /** Whether this socket is the app's own connection (see `reportsAppConnection`). */
@@ -555,14 +559,15 @@ export class WsTransport {
               hasOpenedPhysicalSocket = true;
               this.lifecycleHandlers?.onOpen?.();
             },
-            onHeartbeatPong: () => {
-              this.lastHeartbeatPongAt = Date.now();
-              this.lifecycleHandlers?.onHeartbeatPong?.();
+            onMessage: () => {
+              this.lastInboundMessageAt = Date.now();
+              this.lifecycleHandlers?.onMessage?.();
             },
             onHeartbeatTimeout: () => {
-              // Runs before the protocol drops the socket, so every request
-              // still pending here went out on it. A request made from now on
-              // waits for the replacement socket and is left alone.
+              // Runs once the protocol has dropped the socket and before it
+              // opens a replacement, so every request still pending here went
+              // out on the dead one. A request made from now on waits for the
+              // replacement socket and is left alone.
               if (session !== null) {
                 for (const abort of session.pendingRequests) {
                   abort();

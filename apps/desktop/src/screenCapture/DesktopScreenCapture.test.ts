@@ -10,18 +10,18 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { createFromBufferMock, getMediaAccessStatusMock, readImageMock } = vi.hoisted(() => ({
+const { createFromBufferMock, getMediaAccessStatusMock, readClipboardMock } = vi.hoisted(() => ({
   createFromBufferMock: vi.fn(),
   getMediaAccessStatusMock: vi.fn(() => "granted"),
-  readImageMock: vi.fn(),
+  readClipboardMock: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
   clipboard: {
-    readImage: readImageMock,
+    read: readClipboardMock,
   },
   nativeImage: {
     createFromBuffer: createFromBufferMock,
@@ -152,7 +152,8 @@ describe("DesktopScreenCapture", () => {
     createFromBufferMock.mockReset();
     getMediaAccessStatusMock.mockReset();
     getMediaAccessStatusMock.mockReturnValue("granted");
-    readImageMock.mockReset();
+    readClipboardMock.mockReset();
+    readClipboardMock.mockResolvedValue([]);
   });
 
   it.effect("captures a new Windows clipboard image after opening screen clip", () =>
@@ -163,7 +164,16 @@ describe("DesktopScreenCapture", () => {
       });
       const oldImage = makeNativeImage({ png: Buffer.from("old"), width: 12, height: 8 });
       const newImage = makeNativeImage({ png: Buffer.from("new"), width: 640, height: 480 });
-      readImageMock.mockReturnValueOnce(oldImage).mockReturnValueOnce(newImage);
+      // The clipboard hands over PNG bytes, which become an image again.
+      const clipboardPng = (text: string) => [
+        { types: ["image/png"], getType: async () => new Blob([text]) },
+      ];
+      readClipboardMock
+        .mockResolvedValueOnce(clipboardPng("old"))
+        .mockResolvedValueOnce(clipboardPng("new"));
+      createFromBufferMock.mockImplementation((png: Buffer) =>
+        png.toString() === "new" ? newImage : oldImage,
+      );
       const openScreenClip = vi.fn(() => Effect.succeed(true));
 
       const result = yield* Effect.gen(function* () {

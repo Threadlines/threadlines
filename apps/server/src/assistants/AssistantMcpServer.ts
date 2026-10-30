@@ -15,7 +15,7 @@ import {
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { Tool } from "effect/unstable/ai";
+import type { Tool } from "effect/ai";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { makeConnectToolDeps } from "../outsideAgents/connectToolDeps.ts";

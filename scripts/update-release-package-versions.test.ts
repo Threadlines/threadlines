@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Command, CliError } from "effect/unstable/cli";
+import { Command, CliError } from "effect/cli";
 import * as TestConsole from "effect/testing/TestConsole";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 

@@ -56,13 +56,13 @@ export interface ConnectTarget {
 }
 
 /** `THREADLINES_URL`: the assistants door's address to use instead of this computer's Threadlines. */
-export const remoteAddressConfig = Config.string("THREADLINES_URL").pipe(
+export const remoteAddressConfig = Config.String("THREADLINES_URL").pipe(
   Config.option,
   Config.map((value) => Option.filter(value, (url) => url.trim().length > 0)),
 );
 
 /** `THREADLINES_KEY`: a key to sign the calls with instead of the one `connect --key` kept. */
-export const remoteKeyConfig = Config.string("THREADLINES_KEY").pipe(
+export const remoteKeyConfig = Config.String("THREADLINES_KEY").pipe(
   Config.option,
   Config.map((value) => Option.filter(value, (key) => key.trim().length > 0)),
 );

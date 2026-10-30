@@ -18,7 +18,7 @@ import type {
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
-import type { HttpServerRequest } from "effect/unstable/http";
+import type { HttpServerRequest } from "effect/http";
 
 import { isLoopbackAddress, requestRemoteAddress } from "../auth/utils.ts";
 

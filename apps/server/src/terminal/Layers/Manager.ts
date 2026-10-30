@@ -25,7 +25,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -37,7 +37,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { ServerConfig } from "../../config.ts";
@@ -1143,11 +1143,11 @@ function legacySafeThreadId(threadId: string): string {
 }
 
 function toSafeThreadId(threadId: string): string {
-  return `terminal_${Encoding.encodeBase64Url(threadId)}`;
+  return `terminal_${Base64Url.encode(threadId)}`;
 }
 
 function toSafeTerminalId(terminalId: string): string {
-  return Encoding.encodeBase64Url(terminalId);
+  return Base64Url.encode(terminalId);
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1571,11 +1571,11 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 function decodeSafeId(encoded: string): string | null {
   if (encoded.length === 0) return null;
-  const decoded = Encoding.decodeBase64UrlString(encoded);
+  const decoded = Base64Url.decodeString(encoded);
   if (decoded._tag === "Failure") return null;
   const value = decoded.success;
   // Only a canonical encoding of printable text is an id we wrote.
-  if (Encoding.encodeBase64Url(value) !== encoded || !/^[\x20-\x7e]+$/.test(value)) return null;
+  if (Base64Url.encode(value) !== encoded || !/^[\x20-\x7e]+$/.test(value)) return null;
   return value;
 }
 

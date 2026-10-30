@@ -21,7 +21,7 @@ import {
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import { agentParameter, drivesThreads, readsThreads } from "../mcp/threadTools.ts";
 import type { OutsideAgentCaller } from "./OutsideAgentConnections.ts";
@@ -31,8 +31,6 @@ export class McpConnectInvocation extends Context.Service<
   McpConnectInvocation,
   OutsideAgentCaller
 >()("@threadlines/server/outsideAgents/McpConnectInvocation") {}
-
-const dependencies = [McpConnectInvocation];
 
 /** Longest a `thread_wait` holds the call, under the tool timeouts agents use. */
 export const THREAD_WAIT_MAX_SECONDS = 50;
@@ -234,7 +232,6 @@ export const ProjectsTool = readsThreads(
     description:
       "The Threadlines projects you may use on this computer: each one's id, name and folder.",
     success: ProjectsResult,
-    dependencies,
   }).annotate(Tool.Title, "List projects"),
 );
 
@@ -248,7 +245,6 @@ export const AgentsTool = readsThreads(
       ),
     }),
     success: AgentsResult,
-    dependencies,
   }).annotate(Tool.Title, "List agents"),
 );
 
@@ -264,7 +260,6 @@ export const ThreadsListTool = readsThreads(
       limit: Schema.optional(Schema.Number),
     }),
     success: ThreadsListResult,
-    dependencies,
   }).annotate(Tool.Title, "List threads"),
 );
 
@@ -278,7 +273,6 @@ export const OutsideThreadReadTool = readsThreads(
       limit: Schema.optional(Schema.Number),
     }),
     success: OutsideThreadReadResult,
-    dependencies,
   }).annotate(Tool.Title, "Read a thread"),
 );
 
@@ -290,7 +284,6 @@ export const ThreadWaitTool = readsThreads(
       seconds: Schema.optional(Schema.Number),
     }),
     success: ThreadWaitResult,
-    dependencies,
   }).annotate(Tool.Title, "Wait for a thread"),
 );
 
@@ -322,7 +315,6 @@ export const OutsideThreadStartTool = drivesThreads(
       requestId: RequestIdParameter,
     }),
     success: OutsideThreadStartResult,
-    dependencies,
   }).annotate(Tool.Title, "Start a thread"),
 );
 
@@ -336,7 +328,6 @@ export const OutsideThreadSendTool = drivesThreads(
       requestId: RequestIdParameter,
     }),
     success: OutsideThreadSendResult,
-    dependencies,
   }).annotate(Tool.Title, "Message a thread"),
 );
 
@@ -346,7 +337,6 @@ export const OutsideThreadStopTool = drivesThreads(
       "Stop the running turn in a thread you started, as the Stop button does. A later thread_send starts it again.",
     parameters: Schema.Struct({ threadId: ThreadIdParameter, requestId: RequestIdParameter }),
     success: OutsideThreadStopResult,
-    dependencies,
   }).annotate(Tool.Title, "Stop a thread"),
 );
 

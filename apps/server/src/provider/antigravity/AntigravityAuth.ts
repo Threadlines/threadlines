@@ -28,8 +28,8 @@ import type { AntigravitySettings } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import { HttpClient } from "effect/unstable/http";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import type { ChildProcessSpawner } from "effect/process";
 
 import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";

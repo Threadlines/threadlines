@@ -11,7 +11,7 @@ import {
   type ServerSettings,
 } from "@threadlines/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@threadlines/shared/keybindings";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useCallback, useRef } from "react";
 
 import type { WsRpcClient } from "./wsRpcClient";

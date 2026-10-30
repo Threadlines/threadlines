@@ -267,7 +267,7 @@ const makeBinaryPathSetting = (fallback: string, retiredDefaults: ReadonlyArray<
   TrimmedString.pipe(
     Schema.decodeTo(
       Schema.String,
-      SchemaTransformation.transformOrFail({
+      SchemaTransformation.transformEffect({
         decode: (value) =>
           Effect.succeed(value === "" || retiredDefaults.includes(value) ? fallback : value),
         encode: (value) => Effect.succeed(value),

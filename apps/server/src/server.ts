@@ -1,7 +1,7 @@
 import type { Server as NodeHttpServerInstance } from "node:http";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 
 import { ServerConfig, shouldEnableTransferCompression } from "./config.ts";
 import {
@@ -46,7 +46,7 @@ import {
   ScheduledTasksLive,
 } from "./scheduled/ScheduledTasks.ts";
 import { localHookRouteLayer } from "./scheduled/webhookRoute.ts";
-import { requestPrivacy, requestTracingPrivacyLayer } from "./httpRequestPrivacy.ts";
+import { requestPrivacy, requestTracingLayer } from "./httpRequestPrivacy.ts";
 import { WebhookTaskRepositoryLive } from "./scheduled/WebhookTaskRepository.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -785,7 +785,7 @@ export const makeServerLayer = Layer.unwrap(
         // Paths that carry a credential (event tasks' local addresses) are
         // logged cut short and never traced, preflights included.
         middleware: requestPrivacy(config.logWebSocketEvents),
-      }).pipe(Layer.provide(requestTracingPrivacyLayer)),
+      }).pipe(Layer.provide(requestTracingLayer)),
       httpListeningLayer,
       runtimeStateLayer,
       relayStartLayer,

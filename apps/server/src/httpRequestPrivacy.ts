@@ -23,7 +23,7 @@ import {
   type HttpServerRequest,
   HttpServerRequest as HttpServerRequestTag,
   type HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { makeRoutePatternMatcher } from "./httpRoutePaths.ts";
 import { isOutsideAgentSignInPath } from "./outsideAgents/oauthPaths.ts";
@@ -83,9 +83,20 @@ export const requestPrivacy =
     });
 
 /**
- * Leaves requests whose path or query carries a credential out of server
- * tracing, whose spans record both.
+ * How the HTTP server traces requests. Requests whose path or query carries a
+ * credential are left out, since spans record both. The rest keep the names
+ * trace diagnostics and the Diagnostics settings group by (`http.server GET`;
+ * Effect now names them by method alone), and record one header, `upgrade`,
+ * which tells a WebSocket upgrade apart (Effect now records none by default).
  */
-export const requestTracingPrivacyLayer = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
-  (request: HttpServerRequest.HttpServerRequest) => carriesCredential(request.url),
+export const requestTracingLayer = Layer.mergeAll(
+  Layer.succeed(HttpMiddleware.TracerDisabledWhen)((request: HttpServerRequest.HttpServerRequest) =>
+    carriesCredential(request.url),
+  ),
+  Layer.succeed(HttpMiddleware.SpanNameGenerator)(
+    (request: HttpServerRequest.HttpServerRequest) => `http.server ${request.method}`,
+  ),
+  Layer.succeed(HttpMiddleware.TracerHeaderFilter)(
+    (name: string, phase: "request" | "response") => phase === "request" && name === "upgrade",
+  ),
 );

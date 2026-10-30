@@ -22,13 +22,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { McpProtocol, McpServer } from "effect/ai";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import {
   listOnlyGrantedTools,
@@ -45,6 +40,7 @@ import {
   outsideAgentRequestOrigin,
   outsideAgentResource,
 } from "./OutsideAgentConnections.ts";
+import { requestService } from "../mcp/requestService.ts";
 
 /** A request from off this computer: approval promised the agent runs on it. */
 const misdirectedResponse = (port: number | null) =>
@@ -146,7 +142,7 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
   Effect.gen(function* () {
     const handlers = yield* makeConnectToolHandlers(yield* makeConnectToolDeps);
     const counted = yield* makeToolCallCounts;
-    const caller = Effect.service(McpConnectInvocation);
+    const caller = requestService(McpConnectInvocation);
     return {
       projects: () => counted("projects", Effect.flatMap(caller, handlers.projects)),
       agents: (input) =>

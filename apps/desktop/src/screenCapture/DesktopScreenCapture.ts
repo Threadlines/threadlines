@@ -14,7 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { clipboard, nativeImage, systemPreferences } from "electron";
 import type * as Electron from "electron";
 
@@ -100,10 +100,17 @@ function nativeImageToClipboardSnapshot(image: Electron.NativeImage): ClipboardP
   };
 }
 
-const readClipboardPngSnapshot: Effect.Effect<ClipboardPngSnapshot | null> = Effect.try({
-  try: () => nativeImageToClipboardSnapshot(clipboard.readImage()),
-  catch: () => null,
-}).pipe(Effect.catch(() => Effect.succeed(null)));
+/** The image on the clipboard as a PNG, or null when there is none. */
+const readClipboardPngSnapshot: Effect.Effect<ClipboardPngSnapshot | null> = Effect.tryPromise(
+  async () => {
+    for (const item of await clipboard.read()) {
+      if (!item.types.includes("image/png")) continue;
+      const png = await (await item.getType("image/png")).arrayBuffer();
+      return nativeImageToClipboardSnapshot(nativeImage.createFromBuffer(Buffer.from(png)));
+    }
+    return null;
+  },
+).pipe(Effect.orElseSucceed(() => null));
 
 function capturedScreenshotFromPng(input: {
   readonly png: Buffer;

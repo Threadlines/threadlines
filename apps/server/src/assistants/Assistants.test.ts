@@ -28,13 +28,9 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { Socket } from "effect/unstable/socket";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
+import { Socket } from "effect/socket";
 
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -846,16 +842,20 @@ describe("the assistant socket", () => {
               const request = yield* HttpServerRequest.HttpServerRequest;
               relaySide.protocols.push(request.headers["sec-websocket-protocol"] ?? "");
               const socket = yield* request.upgrade;
-              const write = yield* socket.writer;
-              const running = yield* socket
-                .runRaw((data) => {
-                  relaySide.received.push(
-                    typeof data === "string" ? data : new TextDecoder().decode(data),
-                  );
-                })
-                .pipe(Effect.ignore, Effect.forkChild);
+              // Take the reader first: writes wait until one is taken.
+              const reader = yield* socket.reader;
+              const writer = yield* socket.writer;
+              const running = yield* Effect.gen(function* () {
+                while (true) {
+                  for (const data of yield* reader.pull) {
+                    relaySide.received.push(
+                      typeof data === "string" ? data : new TextDecoder().decode(data),
+                    );
+                  }
+                }
+              }).pipe(Effect.ignore, Effect.forkChild);
               relaySide.sockets += 1;
-              relaySide.write = write;
+              relaySide.write = writer.write;
               yield* Fiber.join(running);
               return HttpServerResponse.empty();
             }).pipe(Effect.scoped),
@@ -867,7 +867,7 @@ describe("the assistant socket", () => {
           ),
           Layer.build,
         );
-        const port = (Context.get(server, HttpServer.HttpServer).address as HttpServer.TcpAddress)
+        const port = (Context.get(server, HttpServer.HttpServer).address as NetAddress.InetAddress)
           .port;
         const relay = yield* makeAssistantRelay.pipe(
           Effect.provideService(RelayHostLink, {

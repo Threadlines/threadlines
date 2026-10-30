@@ -34,7 +34,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Tool } from "effect/unstable/ai";
+import { Tool } from "effect/ai";
 
 import type { OutsideAgentCaller } from "../outsideAgents/OutsideAgentConnections.ts";
 import type {

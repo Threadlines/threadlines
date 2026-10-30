@@ -25,8 +25,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { HttpRouter, HttpServer } from "effect/http";
+import * as SqlClient from "effect/sql/SqlClient";
+import type * as NetAddress from "effect/net/NetAddress";
 
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -47,7 +48,7 @@ const CALLBACK = "http://127.0.0.1:5571/callback";
  */
 const startSignIn = Effect.gen(function* () {
   const server = yield* HttpServer.HttpServer;
-  const port = (server.address as HttpServer.TcpAddress).port;
+  const port = (server.address as NetAddress.InetAddress).port;
   const recorded: Array<{ readonly event: string; readonly properties: unknown }> = [];
   const config = Layer.effect(
     ServerConfig,
@@ -602,8 +603,8 @@ describe("outside agents' OAuth", () => {
           code: "x".repeat(32 * 1024),
         });
         assert.equal(token.status, 413);
-        // A body with no declared length: reading stops at the limit and the
-        // connection is dropped; the server goes on answering.
+        // A body with no declared length: reading stops at the limit and it
+        // is refused as too large; the server goes on answering.
         const undeclared = yield* Effect.promise(() =>
           fetch(`${server.origin}/oauth/token`, {
             method: "POST",
@@ -622,7 +623,7 @@ describe("outside agents' OAuth", () => {
             () => "dropped" as const,
           ),
         );
-        assert.equal(undeclared, "dropped");
+        assert.equal(undeclared, 413);
         assert.equal(
           (yield* call(`${server.origin}/.well-known/oauth-authorization-server`)).status,
           200,

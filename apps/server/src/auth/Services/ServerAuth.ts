@@ -16,7 +16,7 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
-import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import type { ClientSessionRole, SessionRole } from "./SessionCredentialService.ts";
 
 export interface AuthenticatedSession {

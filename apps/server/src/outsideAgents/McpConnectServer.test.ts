@@ -4,7 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
 import * as NodeHttp from "node:http";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -137,7 +138,7 @@ const withServer = <A>(test: (port: number) => Promise<A>) =>
       Effect.gen(function* () {
         yield* McpConnectServer.layer.pipe(Layer.provide(stubs), HttpRouter.serve, Layer.build);
         const server = yield* HttpServer.HttpServer;
-        const port = (server.address as HttpServer.TcpAddress).port;
+        const port = (server.address as NetAddress.InetAddress).port;
         return yield* Effect.promise(() => test(port));
       }),
     ).pipe(Effect.provide(NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0 }))),

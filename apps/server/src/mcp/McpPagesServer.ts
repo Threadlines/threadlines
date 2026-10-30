@@ -19,8 +19,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
+import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
+import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { AgentPages } from "../pages/AgentPages.ts";
 import {

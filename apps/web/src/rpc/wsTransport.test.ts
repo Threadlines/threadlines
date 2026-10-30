@@ -894,6 +894,42 @@ describe("WsTransport", () => {
     expect(sockets).toHaveLength(0);
   }, 5_000);
 
+  it("fails requests after a heartbeat timeout once reconnecting is refused for good", async () => {
+    // The request waits out the reconnect, but a refused credential ends the
+    // connect loop: it must fail then, not wait for a socket that never comes.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let refuseNextAttempt: ((error: Error) => void) | undefined;
+    let attempts = 0;
+    const transport = createTransport(() => {
+      attempts += 1;
+      return attempts === 1
+        ? Promise.resolve("ws://localhost:3020")
+        : new Promise<string>((_, reject) => {
+            refuseNextAttempt = reject;
+          });
+    });
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    getSocket().open();
+
+    // No pong comes back, so the socket is given up on and a new one asked for.
+    await vi.advanceTimersByTimeAsync(12_000);
+    await waitFor(() => {
+      expect(refuseNextAttempt).toBeDefined();
+    });
+    const upsert = () =>
+      transport.request((client) =>
+        client[WS_METHODS.serverUpsertKeybinding]({ command: "terminal.toggle", key: "ctrl+k" }),
+      );
+    // One request waits for the new socket before the refusal, one comes after.
+    const waiting = expect(upsert()).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(100);
+    refuseNextAttempt?.(new Error("Unauthorized"));
+    await waiting;
+    await expect(upsert()).rejects.toThrow();
+  }, 5_000);
+
   it("delivers stream chunks to subscribers", async () => {
     const transport = createTransport("ws://localhost:3020");
     const listener = vi.fn();

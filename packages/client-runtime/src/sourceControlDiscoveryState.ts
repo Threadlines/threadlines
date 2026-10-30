@@ -1,5 +1,5 @@
 import type { SourceControlDiscoveryResult } from "@threadlines/contracts";
-import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { Atom, type AtomRegistry } from "effect/reactivity";
 
 /* --- Types ---------------------------------------------------------- */
 

@@ -1,4 +1,4 @@
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import { CheckpointRef, type ProjectId, type ThreadId, type TurnId } from "@threadlines/contracts";
 
 import { CHECKPOINT_REFS_PREFIX } from "../vcs/checkpointRefs.ts";
@@ -7,7 +7,7 @@ export { CHECKPOINT_REFS_PREFIX };
 
 export function checkpointRefForThreadTurn(threadId: ThreadId, turnCount: number): CheckpointRef {
   return CheckpointRef.make(
-    `${CHECKPOINT_REFS_PREFIX}/${Encoding.encodeBase64Url(threadId)}/turn/${turnCount}`,
+    `${CHECKPOINT_REFS_PREFIX}/${Base64Url.encode(threadId)}/turn/${turnCount}`,
   );
 }
 
@@ -16,7 +16,7 @@ export function checkpointPreTurnRefForThreadTurn(
   turnId: TurnId,
 ): CheckpointRef {
   return CheckpointRef.make(
-    `${CHECKPOINT_REFS_PREFIX}/${Encoding.encodeBase64Url(threadId)}/pre-turn/${Encoding.encodeBase64Url(turnId)}`,
+    `${CHECKPOINT_REFS_PREFIX}/${Base64Url.encode(threadId)}/pre-turn/${Base64Url.encode(turnId)}`,
   );
 }
 
@@ -25,7 +25,7 @@ export function checkpointPreTurnRefForThreadTurnCount(
   turnCount: number,
 ): CheckpointRef {
   return CheckpointRef.make(
-    `${CHECKPOINT_REFS_PREFIX}/${Encoding.encodeBase64Url(threadId)}/pre-turn-count/${turnCount}`,
+    `${CHECKPOINT_REFS_PREFIX}/${Base64Url.encode(threadId)}/pre-turn-count/${turnCount}`,
   );
 }
 

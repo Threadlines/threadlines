@@ -35,14 +35,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const target = join(root, ".repos", "effect");
 const manifestPath = join(target, "SOURCE.json");
 
-// Repo-level guides for agents: the LLM guide, curated examples, coding
-// patterns and the Effect 3 to 4 migration notes.
+// Repo-level guides for agents: the LLM guide, curated examples, the Effect
+// team's API conventions and the Effect 3 to 4 migration notes.
 const TOP_LEVEL_ENTRIES = [
   "LICENSE",
   "README.md",
   "LLMS.md",
   "MIGRATION.md",
-  ".patterns",
+  ".agents/skills/effect-development",
   "ai-docs/README.md",
   "ai-docs/src",
   "migration",
@@ -53,9 +53,9 @@ const TOP_LEVEL_ENTRIES = [
 // shows the import paths.
 const PACKAGES = [
   "effect",
-  "platform-node",
-  "platform-node-shared",
-  "platform-bun",
+  "platform/node",
+  "platform/node-shared",
+  "platform/bun",
   "sql/sqlite-bun",
   "sql/sqlite-node",
   "vitest",
@@ -70,8 +70,8 @@ const SKIPPED = new Set([
   "migration/annotations",
   // The Scalar and Swagger pages HttpApi serves, about 5 MB of minified
   // bundles in string literals. Unused here, and they swamp search results.
-  "packages/effect/src/unstable/httpapi/internal/httpApiScalar.ts",
-  "packages/effect/src/unstable/httpapi/internal/httpApiSwagger.ts",
+  "packages/effect/src/http-api/internal/httpApiScalar.ts",
+  "packages/effect/src/http-api/internal/httpApiSwagger.ts",
 ]);
 
 interface Manifest {

@@ -8,10 +8,9 @@
  * description alone, so the description carries the rules.
  */
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import { GUIDE_TOOL_NAME } from "./roomToolAccess.ts";
-import { McpRoomInvocation } from "./roomTools.ts";
 
 export const AppGuideResult = Schema.Struct({
   outcome: Schema.Literals(["ok", "no_match", "refused"]),
@@ -32,7 +31,6 @@ export const AppGuideTool = Tool.make(GUIDE_TOOL_NAME, {
     ),
   }),
   success: AppGuideResult,
-  dependencies: [McpRoomInvocation],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)

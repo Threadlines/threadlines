@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
 import { McpInvocationContext } from "./McpInvocationContext.ts";
+import { requestService } from "./requestService.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 import type { PreviewAutomationError, PreviewAutomationOperation } from "@threadlines/contracts";
 
@@ -20,18 +21,12 @@ import type { PreviewAutomationError, PreviewAutomationOperation } from "@thread
  */
 const forward =
   (operation: PreviewAutomationOperation) =>
-  (
-    input: unknown,
-  ): Effect.Effect<never, PreviewAutomationError, McpInvocationContext | PreviewAutomationBroker> =>
+  (input: unknown): Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker> =>
     Effect.gen(function* () {
-      const { threadId, agentId } = yield* McpInvocationContext;
+      const { threadId, agentId } = yield* requestService(McpInvocationContext);
       const broker = yield* PreviewAutomationBroker;
       return yield* broker.invoke({ threadId, agentId, operation, input });
-    }) as Effect.Effect<
-      never,
-      PreviewAutomationError,
-      McpInvocationContext | PreviewAutomationBroker
-    >;
+    }) as Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker>;
 
 export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_snapshot: forward("snapshot"),

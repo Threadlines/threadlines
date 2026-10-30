@@ -1,9 +1,9 @@
-import Mime from "@effect/platform-node/Mime";
 import { DESKTOP_LAUNCH_ID_HEADER } from "@threadlines/contracts";
 import { decodeOtlpTraceRecords } from "@threadlines/shared/observability";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Mime from "effect/http/Mime";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -15,8 +15,8 @@ import {
   HttpRouter,
   HttpServerResponse,
   HttpServerRequest,
-} from "effect/unstable/http";
-import { OtlpTracer } from "effect/unstable/observability";
+} from "effect/http";
+import { OtlpTracer } from "effect/observability";
 
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -498,7 +498,14 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       });
     }
 
-    const contentType = Mime.getType(filePath) ?? "application/octet-stream";
+    // Effect's table has only the standard types, so `.ico` (the app's
+    // favicon) falls back to our image table.
+    const contentType = Option.getOrElse(
+      Mime.getType(filePath),
+      () =>
+        IMAGE_MIME_TYPE_BY_EXTENSION[path.extname(filePath).toLowerCase()] ??
+        "application/octet-stream",
+    );
     const data = yield* fileSystem
       .readFile(filePath)
       .pipe(Effect.catch(() => Effect.succeed(null)));

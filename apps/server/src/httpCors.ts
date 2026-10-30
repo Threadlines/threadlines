@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { HttpMiddleware, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
+import { HttpMiddleware, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { isOutsideAgentSignInPath } from "./outsideAgents/oauthPaths.ts";
 

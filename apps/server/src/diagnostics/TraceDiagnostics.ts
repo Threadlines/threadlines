@@ -8,6 +8,7 @@ import type {
   ServerTraceDiagnosticsSpanSummary,
   ServerTraceDiagnosticsTraceSummary,
 } from "@threadlines/contracts";
+import type * as ByteSize from "effect/ByteSize";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -621,7 +622,7 @@ function readTraceFile(
 function traceFileSignature(input: {
   readonly path: string;
   readonly type: FileSystem.File.Type;
-  readonly size: FileSystem.Size;
+  readonly size: ByteSize.ByteSize;
   readonly mode: number;
   readonly mtime: Option.Option<Date>;
 }): string {

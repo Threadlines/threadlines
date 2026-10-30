@@ -11,7 +11,7 @@ import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -22,7 +22,7 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 
 import type { ListeningPortRow, ProcessRow } from "../../diagnostics/ProcessDiagnostics.ts";
@@ -191,7 +191,7 @@ function posixLocalNodeModulesBinPath(root: string): string {
 
 const historyLogPath = (logsDir: string, threadId = "thread-1") =>
   Effect.service(Path.Path).pipe(
-    Effect.map(({ join }) => join(logsDir, `terminal_${Encoding.encodeBase64Url(threadId)}.log`)),
+    Effect.map(({ join }) => join(logsDir, `terminal_${Base64Url.encode(threadId)}.log`)),
   );
 
 const multiTerminalHistoryLogPath = (
@@ -201,12 +201,12 @@ const multiTerminalHistoryLogPath = (
 ) =>
   Effect.service(Path.Path).pipe(
     Effect.map(({ join }) => {
-      const threadPart = `terminal_${Encoding.encodeBase64Url(threadId)}`;
+      const threadPart = `terminal_${Base64Url.encode(threadId)}`;
       return join(
         logsDir,
         terminalId === DEFAULT_TERMINAL_ID
           ? `${threadPart}.log`
-          : `${threadPart}_${Encoding.encodeBase64Url(terminalId)}.log`,
+          : `${threadPart}_${Base64Url.encode(terminalId)}.log`,
       );
     }),
   );
@@ -849,7 +849,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       // Kept with the tab list while it runs, so a restart can offer it again.
       const fileSystem = yield* FileSystem.FileSystem;
       const savedCatalog = fileSystem
-        .readFileString(`${logsDir}/terminal_${Encoding.encodeBase64Url("thread-1")}.tabs.json`)
+        .readFileString(`${logsDir}/terminal_${Base64Url.encode("thread-1")}.tabs.json`)
         .pipe(Effect.orElseSucceed(() => ""));
       yield* waitFor(Effect.map(savedCatalog, (text) => text.includes("Start-Sleep")));
 
@@ -1999,10 +1999,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       const shell = first.ptyAdapter.processes[0];
       if (!shell) return;
       const target = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
-      const catalogFile = path.join(
-        logsDir,
-        `terminal_${Encoding.encodeBase64Url("thread-1")}.tabs.json`,
-      );
+      const catalogFile = path.join(logsDir, `terminal_${Base64Url.encode("thread-1")}.tabs.json`);
       const savedCatalog = fileSystem
         .readFileString(catalogFile)
         .pipe(Effect.orElseSucceed(() => ""));

@@ -21,16 +21,17 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import * as TestConsole from "effect/testing/TestConsole";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
-import { Command } from "effect/unstable/cli";
-import * as CliError from "effect/unstable/cli/CliError";
+import { McpProtocol, McpServer } from "effect/ai";
+import { Command } from "effect/cli";
+import * as CliError from "effect/cli/CliError";
 import {
   FetchHttpClient,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
 
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { cli } from "../bin.ts";
@@ -304,7 +305,7 @@ const withStandIn = <A, E, R>(
         Layer.build,
       );
       const server = yield* HttpServer.HttpServer.pipe(Effect.provide(context));
-      return yield* body((server.address as HttpServer.TcpAddress).port);
+      return yield* body((server.address as NetAddress.InetAddress).port);
     }),
   );
 
@@ -349,7 +350,7 @@ const toolStubs = Layer.mergeAll(
  */
 const serveThreadlines = Effect.gen(function* () {
   const server = yield* HttpServer.HttpServer;
-  const port = (server.address as HttpServer.TcpAddress).port;
+  const port = (server.address as NetAddress.InetAddress).port;
   const config = Layer.effect(
     ServerConfig,
     Effect.map(Effect.service(ServerConfig), (base) => ({ ...base, port })),

@@ -9,9 +9,9 @@ import {
 } from "@threadlines/shared/searchRanking";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import type * as Statement from "effect/unstable/sql/Statement";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
+import type * as Statement from "effect/sql/Statement";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { ThreadSearch, type ThreadSearchShape } from "../Services/ThreadSearch.ts";

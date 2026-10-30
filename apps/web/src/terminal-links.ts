@@ -118,7 +118,7 @@ function joinPath(base: string, next: string, separator: "/" | "\\"): string {
   return `${cleanBase}/${next.replace(/^\/+/, "")}`;
 }
 
-function inferHomeFromCwd(cwd: string): string | undefined {
+export function inferHomeFromCwd(cwd: string): string | undefined {
   const posixUser = cwd.match(/^\/Users\/([^/]+)/);
   if (posixUser?.[1]) {
     return `/Users/${posixUser[1]}`;

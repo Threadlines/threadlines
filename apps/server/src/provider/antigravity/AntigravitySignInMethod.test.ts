@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 
 import { antigravityEnvironment } from "./AntigravityProfile.ts";
 import {

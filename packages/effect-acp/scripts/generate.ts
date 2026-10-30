@@ -9,9 +9,9 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const CURRENT_SCHEMA_RELEASE = "v0.11.3";
 
@@ -281,7 +281,7 @@ const generateSchemas = Effect.fn("generateSchemas")(function* (skipDownload: bo
 const generateCommand = Command.make(
   "generate",
   {
-    skipDownload: Flag.boolean("skip-download").pipe(Flag.withDefault(false)),
+    skipDownload: Flag.Boolean("skip-download").pipe(Flag.withDefault(false)),
   },
   ({ skipDownload }) => generateSchemas(skipDownload),
 ).pipe(Command.withDescription("Generate Effect ACP schemas from the pinned ACP release assets."));

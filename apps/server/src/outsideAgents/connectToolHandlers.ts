@@ -71,7 +71,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
+import type { Tool } from "effect/ai";
 
 import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";

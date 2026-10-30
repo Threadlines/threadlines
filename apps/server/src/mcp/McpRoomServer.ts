@@ -23,8 +23,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
+import { McpProtocol, McpServer, Toolkit } from "effect/ai";
+import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -58,6 +58,7 @@ import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
 import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
 import { ThreadToolkit } from "./threadTools.ts";
+import { requestService } from "./requestService.ts";
 
 /** Every tool the endpoint serves. */
 const RoomEndpointToolkit = Toolkit.merge(
@@ -310,7 +311,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           )
         : Effect.succeed(undefined),
     });
-    const caller = Effect.service(McpRoomInvocation);
+    const caller = requestService(McpRoomInvocation);
     return {
       room_agents: () => Effect.flatMap(caller, handlers.room_agents),
       room_history: (input) =>

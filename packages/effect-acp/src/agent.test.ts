@@ -98,7 +98,6 @@ it.effect("effect-acp agent handles core agent requests and outbound client requ
         },
         options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
       });
-      assert.deepEqual(permissionRequest.headers, []);
 
       yield* Queue.offer(
         input,
@@ -134,7 +133,6 @@ it.effect("effect-acp agent handles core agent requests and outbound client requ
               version: "0.0.0",
             },
           },
-          headers: [],
         }),
       );
 

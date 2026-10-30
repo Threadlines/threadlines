@@ -16,11 +16,11 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Context from "effect/Context";
 import * as Stream from "effect/Stream";
-import * as Reactivity from "effect/unstable/reactivity/Reactivity";
-import * as Client from "effect/unstable/sql/SqlClient";
-import type { Connection } from "effect/unstable/sql/SqlConnection";
-import { SqlError, classifySqliteError } from "effect/unstable/sql/SqlError";
-import * as Statement from "effect/unstable/sql/Statement";
+import * as Reactivity from "effect/reactivity/Reactivity";
+import * as Client from "effect/sql/SqlClient";
+import type { Connection } from "effect/sql/SqlConnection";
+import { ConnectionError, SqlError, classifySqliteError } from "effect/sql/SqlError";
+import * as Statement from "effect/sql/Statement";
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
@@ -177,7 +177,7 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
           }),
       );
 
-    return identity<Connection>({
+    const connection = identity<Connection>({
       execute(sql, params, rowTransform) {
         return rowTransform ? Effect.map(run(sql, params), rowTransform) : run(sql, params);
       },
@@ -198,10 +198,52 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         return Stream.die("executeStream not implemented");
       },
     });
+    return { connection, isTransaction: () => db.isTransaction };
   });
 
   const semaphore = yield* Semaphore.make(1);
-  const connection = yield* makeConnection;
+  const { connection, isTransaction } = yield* makeConnection;
+
+  // SQLite can keep a transaction open after COMMIT fails (a deferred foreign
+  // key violation, for one). `onCommitFailure` rolls it back before anyone
+  // else gets the connection. If that ROLLBACK fails too, the connection stays
+  // marked: every later statement and transaction retries the ROLLBACK first
+  // and fails until it works, so nothing lands in the dead transaction.
+  let needsRollback = false;
+  const rollbackOpenTransaction = Effect.suspend(() =>
+    isTransaction()
+      ? Effect.asVoid(connection.executeUnprepared("ROLLBACK", [], undefined))
+      : Effect.void,
+  );
+  const onCommitFailure = () =>
+    rollbackOpenTransaction.pipe(
+      Effect.tapCause(() =>
+        Effect.sync(() => {
+          needsRollback = true;
+        }),
+      ),
+    );
+  const ensureUsable = Effect.suspend(() =>
+    needsRollback
+      ? rollbackOpenTransaction.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              needsRollback = false;
+            }),
+          ),
+          Effect.mapError(
+            (cause) =>
+              new SqlError({
+                reason: new ConnectionError({
+                  message: "SQLite connection cannot be reused after failed COMMIT cleanup",
+                  operation: "rollback",
+                  cause,
+                }),
+              }),
+          ),
+        )
+      : Effect.void,
+  );
 
   // Plain statements and transactions share the one connection, so each holds
   // it for its whole run: a plain statement while it executes, a transaction
@@ -215,7 +257,7 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
   // unprepared methods call `db.prepare` as soon as they are called. Statements
   // inside a transaction run on the bare connection the transaction holds.
   const holdConnection = <A>(statement: () => Effect.Effect<A, SqlError>) =>
-    semaphore.withPermits(1)(Effect.suspend(statement));
+    semaphore.withPermits(1)(Effect.andThen(ensureUsable, Effect.suspend(statement)));
   const plainConnection = identity<Connection>({
     execute: (sql, params, rowTransform) =>
       holdConnection(() => connection.execute(sql, params, rowTransform)),
@@ -232,15 +274,17 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
   // Taken without interruption, so the permit is never counted without its
   // release. `withTransaction` masks interruption here anyway; the one cost is
   // that a waiting `sql.reserve` (unused here) cannot be cancelled.
-  const transactionAcquirer = Effect.as(
-    Effect.acquireRelease(semaphore.take(1), () => semaphore.release(1)),
-    connection,
-  );
+  const transactionAcquirer = Effect.acquireRelease(semaphore.take(1), () =>
+    semaphore.release(1),
+  ).pipe(Effect.andThen(ensureUsable), Effect.as(connection));
 
   return yield* Client.make({
+    driver: "sqlite-node",
     acquirer: Effect.succeed(plainConnection),
     compiler,
     transactionAcquirer,
+    onCommitFailure,
+    isTransaction,
     spanAttributes: [
       ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
       [ATTR_DB_SYSTEM_NAME, "sqlite"],
