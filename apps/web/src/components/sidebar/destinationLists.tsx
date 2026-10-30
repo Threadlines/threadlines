@@ -1,7 +1,6 @@
 import type { ComponentType } from "react";
 
 import { lazyWithPreload } from "../../lib/lazyWithPreload";
-import { SettingsDestinationList } from "../settings/SettingsSidebarNav";
 import type { NavigationDestinationId } from "./navigationRail.logic";
 
 // The pages' own lists are chunks of their own: a launch shows the threads,
@@ -16,12 +15,17 @@ const FleetComputersList = lazyWithPreload(() =>
 const ScheduledTasksList = lazyWithPreload(() =>
   import("../scheduled/ScheduledTasksList").then((module) => module.ScheduledTasksList),
 );
+// Settings' menu holds its search, which knows every settings row.
+const SettingsDestinationList = lazyWithPreload(() =>
+  import("../settings/SettingsSidebarNav").then((module) => module.SettingsDestinationList),
+);
 
 /** Fetches every page's list ahead of its first showing. */
 export function preloadDestinationLists(): void {
   void GeneralChatsList.preload();
   void FleetComputersList.preload();
   void ScheduledTasksList.preload();
+  void SettingsDestinationList.preload();
 }
 
 /** What the list beside the rail shows while a destination is on screen. */
@@ -50,7 +54,7 @@ export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList 
   fleet: { body: FleetComputersList.Component, inPhoneSheet: true },
   scheduled: { body: ScheduledTasksList.Component, inPhoneSheet: true },
   usage: null,
-  settings: { body: SettingsDestinationList, ownFooter: true },
+  settings: { body: SettingsDestinationList.Component, ownFooter: true },
 };
 
 export function destinationHasList(id: NavigationDestinationId): boolean {

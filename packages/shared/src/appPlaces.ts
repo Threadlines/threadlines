@@ -555,6 +555,33 @@ const ROWS = [
     keywords: ["notifications", "push"],
     scope: "device",
   },
+  {
+    id: "general.alertNeedsYou",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Needs you",
+    about: "An approval, a question or a plan to review.",
+    keywords: ["approval", "question", "notifications"],
+    scope: "device",
+  },
+  {
+    id: "general.alertFinished",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Finished",
+    about: "An agent finished its work.",
+    keywords: ["done", "notifications"],
+    scope: "device",
+  },
+  {
+    id: "general.alertFailed",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Failed",
+    about: "A turn stopped with an error, or couldn't start.",
+    keywords: ["error", "notifications"],
+    scope: "device",
+  },
   // General › Appearance
   {
     id: "general.theme",
@@ -562,7 +589,7 @@ const ROWS = [
     parent: "general.appearance",
     title: "Theme",
     about: "How Threadlines looks.",
-    keywords: ["dark mode", "light mode"],
+    keywords: ["dark mode", "light mode", "night mode", "colors"],
     scope: "device",
   },
   {
@@ -590,6 +617,7 @@ const ROWS = [
     parent: "general.chatAndDiffs",
     title: "Changed files in chat",
     about: "Open the list of changed files under each reply.",
+    keywords: ["files", "edits"],
     scope: "device",
   },
   {
@@ -607,6 +635,7 @@ const ROWS = [
     parent: "general.chatAndDiffs",
     title: "Wrap diff lines",
     about: "Wrap long lines when the diff panel opens.",
+    keywords: ["word wrap", "long lines"],
     scope: "device",
   },
   {
@@ -625,7 +654,7 @@ const ROWS = [
     parent: "general.terminal",
     title: "Text size",
     about: "The size of the terminal's text on this device.",
-    keywords: ["font size"],
+    keywords: ["font size", "zoom", "bigger text", "smaller text"],
     scope: "device",
   },
   {
@@ -634,7 +663,7 @@ const ROWS = [
     parent: "general.terminal",
     title: "Screen reader support",
     about: "Lets a screen reader read what the terminal prints. Busy output draws a little slower.",
-    keywords: ["accessibility"],
+    keywords: ["accessibility", "voiceover"],
     scope: "device",
   },
   // General › Dictation
@@ -840,6 +869,7 @@ const ROWS = [
     title: "Agent pages",
     about:
       "Agents can show a chart, diagram, mockup or document as a page in their reply. Pages already shown stay when this is off.",
+    keywords: ["charts", "diagrams", "mockups"],
     value: onOff((settings) => settings.enableAgentPages !== false),
     widensAgents: true,
   },
@@ -849,6 +879,7 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Claude artifacts",
     about: "Claude can publish a page to claude.ai for a link you can share. Needs agent pages.",
+    keywords: ["share", "publish"],
     value: onOff((settings) => settings.enableClaudeArtifacts === true),
     widensAgents: true,
   },
@@ -866,6 +897,7 @@ const ROWS = [
     title: "Keep Claude's suggestions when you're using a lot",
     about:
       "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
+    keywords: ["autocomplete", "prompt suggestions"],
     value: onOff((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
   },
   {
@@ -886,6 +918,7 @@ const ROWS = [
     title: "Start agents while you type",
     about:
       "A stopped Claude or Codex agent starts in the background as you type, so your message gets a faster first reply.",
+    keywords: ["faster", "warm up"],
     value: onOff((settings) => settings.startAgentsWhileTyping !== false),
     widensAgents: true,
   },
@@ -985,6 +1018,7 @@ const ROWS = [
     parent: "archived.cleanup",
     title: "Auto-archive inactive threads",
     about: "Moves old inactive threads out of active lists without deleting their history.",
+    keywords: ["cleanup", "old threads"],
   },
   {
     id: "archived.archiveNow",
@@ -999,6 +1033,7 @@ const ROWS = [
     parent: "archived.cleanup",
     title: "Delete old archived threads",
     about: "Permanently removes archived threads by how long they have been in Archive.",
+    keywords: ["cleanup", "disk space", "storage"],
   },
   // Plugins & Skills › Advanced
   {
@@ -1024,8 +1059,20 @@ const ROWS = [
     title: "Open panel by default",
     about:
       "Show the source control panel when you enter a thread. Narrow windows always start with it closed, since the panel covers the conversation there.",
+    keywords: ["git", "changes"],
     scope: "device",
   },
+  // Source Control › Version control
+  {
+    id: "sourceControl.fetchInterval",
+    kind: "row",
+    parent: "sourceControl.versionControl",
+    title: "Fetch interval",
+    about:
+      "How often Git checks remote branches in the background. 0 seconds leaves it to the Git actions you run.",
+    keywords: ["git fetch", "background", "remote branches"],
+  },
+  // Source Control › Text generation
   {
     id: "sourceControl.writingStyle",
     kind: "row",
@@ -1051,6 +1098,7 @@ const ROWS = [
     title: "Source control writer model",
     about:
       "Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the writing model from Settings › Threads.",
+    keywords: ["commit message", "model"],
   },
   // Connections › Devices that can use this computer
   {
@@ -1111,6 +1159,7 @@ const ROWS = [
     parent: "connections.options",
     title: "Tailscale",
     about: "Lets devices on your Tailscale network reach this computer.",
+    keywords: ["vpn", "remote"],
     appliesWhen: "desktop",
     widensAgents: true,
   },

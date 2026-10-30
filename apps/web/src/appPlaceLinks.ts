@@ -36,7 +36,7 @@ export type PlaceLinkTarget =
 export const isPlaceLinkHref = (href: string): boolean => href.startsWith(PLACE_HREF_SCHEME);
 
 /** Where a place's value lives: its own scope, else the nearest holder's, else the computer. */
-function placeScope(placeId: PlaceId) {
+export function placeScope(placeId: PlaceId) {
   for (const place of placeChain(placeId).toReversed()) {
     if (place.scope !== undefined) return place.scope;
   }
@@ -116,6 +116,18 @@ export function resolvePlaceLink(input: {
  */
 export const placeArrivalHash = (placeId: PlaceId, click: number): string =>
   new URLSearchParams({ place: placeId, n: String(click) }).toString();
+
+let placeArrivals = 0;
+
+/**
+ * The hash for opening a place now: each opening gets its own number, so
+ * opening the same place again (a chip, a settings search result) highlights
+ * it again.
+ */
+export function nextPlaceArrivalHash(placeId: PlaceId): string {
+  placeArrivals += 1;
+  return placeArrivalHash(placeId, placeArrivals);
+}
 
 /** The place a route hash (without its `#`) asks to highlight, or null. */
 export function placeIdFromArrivalHash(hash: string): PlaceId | null {

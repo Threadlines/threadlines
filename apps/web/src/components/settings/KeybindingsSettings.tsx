@@ -1,3 +1,4 @@
+import { useSearch } from "@tanstack/react-router";
 import {
   CircleXIcon,
   EllipsisIcon,
@@ -1076,30 +1077,20 @@ export function KeybindingsSettingsPanel() {
   const commandOptions = useMemo(() => buildKeybindingCommandOptions(keybindings), [keybindings]);
   const whenVariables = useMemo(() => buildWhenVariableOptions(), []);
 
-  useEffect(() => {
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      const isMod = event.metaKey || event.ctrlKey;
-      if (!isMod || event.altKey || event.key.toLowerCase() !== "f") return;
-
-      const target = event.target;
-      if (
-        target !== searchInputRef.current &&
-        target instanceof HTMLElement &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      setIsSearchOpen(true);
-      requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  // A settings search result opens the table filtered to its shortcut, each
+  // opening numbered: the page may already be open under the search, and the
+  // same result opened again filters again even after the filter changed.
+  const seedKey = useSearch({
+    strict: false,
+    select: (search: Record<string, unknown>) =>
+      typeof search["q"] === "string" ? `${search["n"] ?? ""}\n${search["q"]}` : null,
+  });
+  const [appliedSeed, setAppliedSeed] = useState<string | null>(null);
+  if (seedKey !== null && seedKey !== appliedSeed) {
+    setAppliedSeed(seedKey);
+    setQuery(seedKey.slice(seedKey.indexOf("\n") + 1));
+    setIsSearchOpen(true);
+  }
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;

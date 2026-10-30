@@ -327,6 +327,10 @@
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"
     },
+    "./placeSearch": {
+      "types": "./src/placeSearch.ts",
+      "import": "./src/placeSearch.ts"
+    },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",
       "import": "./src/messageAuthor.ts"

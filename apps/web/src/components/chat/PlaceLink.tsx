@@ -3,7 +3,7 @@ import { type PlaceId, placePage } from "@threadlines/shared/appPlaces";
 import { useRouter } from "@tanstack/react-router";
 import { type ComponentType, createElement, type ReactNode } from "react";
 
-import { placeArrivalHash, resolvePlaceLink } from "../../appPlaceLinks";
+import { nextPlaceArrivalHash, placeArrivalHash, resolvePlaceLink } from "../../appPlaceLinks";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { isElectron } from "../../env";
 import { selectEnvironmentState, useStore } from "../../store";
@@ -33,14 +33,6 @@ function placePageIcon(
       resolveSelectedDestination({ pathname, openThreadIsGeneralChat: false })
     ]
   );
-}
-
-let placeLinkClicks = 0;
-
-/** Each click's number, so clicking a place link again highlights the place again. */
-function nextPlaceLinkClick(): number {
-  placeLinkClicks += 1;
-  return placeLinkClicks;
 }
 
 /**
@@ -135,7 +127,7 @@ export function PlaceLink({
 
   const open = () => {
     void router?.navigate({
-      href: `${target.href}#${placeArrivalHash(placeId, nextPlaceLinkClick())}`,
+      href: `${target.href}#${nextPlaceArrivalHash(placeId)}`,
       // The hash names a place, not an element id; usePlaceArrival scrolls.
       hashScrollIntoView: false,
     });

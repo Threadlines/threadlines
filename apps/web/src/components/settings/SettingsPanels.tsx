@@ -99,7 +99,12 @@ import {
 } from "../ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
-import { DesktopBackgroundRows } from "./DesktopBackgroundRows";
+import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
+import {
+  SettingsSurfaceContext,
+  ShownPlace,
+  type SettingsRowPlaceId,
+} from "./settingsPlaceAvailability";
 import {
   type ArchivedThreadItem,
   type ArchivedThreadProject,
@@ -260,9 +265,24 @@ function WhatsNewLink() {
   );
 }
 
-function AboutVersionSection() {
-  const queryClient = useQueryClient();
-  const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
+/** The app's version, with the desktop app's update button where it has one. */
+export function VersionRow() {
+  return isElectron ? (
+    <DesktopVersionRow />
+  ) : (
+    <SettingsRow
+      place="general.version"
+      title={<AboutVersionTitle />}
+      description={
+        <>
+          Current version of the application. <WhatsNewLink />
+        </>
+      }
+    />
+  );
+}
+
+function DesktopVersionRow() {
   const {
     state: updateState,
     kind: updateAction,
@@ -270,7 +290,56 @@ function AboutVersionSection() {
     run: runUpdateAction,
   } = useDesktopUpdateAction();
 
-  const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
+  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
+
+  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
+  const statusLabel: Record<string, string> = {
+    checking: "Checking…",
+    downloading: "Downloading…",
+    "up-to-date": "Up to Date",
+  };
+  const buttonLabel =
+    actionLabel[updateAction] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
+  const description = (
+    <>
+      {updateAction === "download" || updateAction === "install"
+        ? "Update available."
+        : "Current version of the application."}{" "}
+      <WhatsNewLink />
+    </>
+  );
+
+  return (
+    <SettingsRow
+      place="general.version"
+      title={<AboutVersionTitle />}
+      description={description}
+      control={
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="xs"
+                variant={updateAction === "install" ? "default" : "outline"}
+                disabled={updateButtonDisabled}
+                onClick={runUpdateAction}
+              >
+                {buttonLabel}
+              </Button>
+            }
+          />
+          {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
+        </Tooltip>
+      }
+    />
+  );
+}
+
+/** The desktop app's update track: full releases, or a build every day. */
+export function UpdateTrackRow() {
+  const queryClient = useQueryClient();
+  const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
+  const { state: updateState } = useDesktopUpdateAction();
   const selectedUpdateChannel = updateState?.channel ?? "latest";
 
   const handleUpdateChannelChange = useCallback(
@@ -305,77 +374,30 @@ function AboutVersionSection() {
     [queryClient, selectedUpdateChannel],
   );
 
-  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
-
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
-  const statusLabel: Record<string, string> = {
-    checking: "Checking…",
-    downloading: "Downloading…",
-    "up-to-date": "Up to Date",
-  };
-  const buttonLabel =
-    actionLabel[updateAction] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description = (
-    <>
-      {updateAction === "download" || updateAction === "install"
-        ? "Update available."
-        : "Current version of the application."}{" "}
-      <WhatsNewLink />
-    </>
-  );
-
   return (
-    <>
-      <SettingsRow
-        place="general.version"
-        title={<AboutVersionTitle />}
-        description={description}
-        control={
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="xs"
-                  variant={updateAction === "install" ? "default" : "outline"}
-                  disabled={updateButtonDisabled}
-                  onClick={runUpdateAction}
-                >
-                  {buttonLabel}
-                </Button>
-              }
-            />
-            {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
-          </Tooltip>
-        }
-      />
-      {hasDesktopBridge ? (
-        <SettingsRow
-          place="general.updateTrack"
-          control={
-            <Select
-              value={selectedUpdateChannel}
-              onValueChange={(value) => {
-                handleUpdateChannelChange(value as DesktopUpdateChannel);
-              }}
-            >
-              <SelectTrigger
-                className="w-full sm:w-40"
-                aria-label="Update track"
-                disabled={isChangingUpdateChannel}
-              >
-                <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="latest">Stable</SelectItem>
-                <SelectItem value="nightly">Nightly</SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      ) : null}
-    </>
+    <SettingsRow
+      place="general.updateTrack"
+      control={
+        <Select
+          value={selectedUpdateChannel}
+          onValueChange={(value) => {
+            handleUpdateChannelChange(value as DesktopUpdateChannel);
+          }}
+        >
+          <SelectTrigger
+            className="w-full sm:w-40"
+            aria-label="Update track"
+            disabled={isChangingUpdateChannel}
+          >
+            <SelectValue>{selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="latest">Stable</SelectItem>
+            <SelectItem value="nightly">Nightly</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
   );
 }
 
@@ -619,7 +641,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 // Server-authoritative rows shared between the desktop General page and the
 // phone surface's "This Computer" section. Each row reads and writes the
 // unified settings store itself so both surfaces stay in sync by construction.
-function AssistantStreamingRow() {
+export function AssistantStreamingRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -650,7 +672,7 @@ function AssistantStreamingRow() {
   );
 }
 
-function PreventSleepRow() {
+export function PreventSleepRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -684,71 +706,76 @@ function PreventSleepRow() {
   );
 }
 
-/** How the terminal drawer reads on this device. */
-function TerminalSettingsSection() {
-  const settings = useSettings();
+/** The terminal's text size on this device. */
+export function TerminalTextSizeRow() {
+  const terminalFontSize = useSettings((settings) => settings.terminalFontSize);
   const { updateSettings } = useUpdateSettings();
   return (
-    <SettingsSection place="general.terminal">
-      <SettingsRow
-        place="general.terminalTextSize"
-        resetAction={
-          settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize ? (
-            <SettingResetButton
-              label="terminal text size"
-              onClick={() =>
-                updateSettings({ terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize })
-              }
-            />
-          ) : null
-        }
-        control={
-          <NumberField
-            value={settings.terminalFontSize}
-            min={9}
-            max={24}
-            step={1}
-            size="sm"
-            className="w-28"
-            onValueChange={(value) => {
-              if (value === null || !Number.isFinite(value)) return;
-              updateSettings({ terminalFontSize: Math.min(24, Math.max(9, Math.round(value))) });
-            }}
-          >
-            <NumberFieldGroup>
-              <NumberFieldDecrement aria-label="Smaller terminal text" />
-              <NumberFieldInput aria-label="Terminal text size in pixels" />
-              <NumberFieldIncrement aria-label="Larger terminal text" />
-            </NumberFieldGroup>
-          </NumberField>
-        }
-      />
-      <SettingsRow
-        place="general.terminalScreenReader"
-        resetAction={
-          settings.terminalScreenReaderMode !==
-          DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode ? (
-            <SettingResetButton
-              label="terminal screen reader support"
-              onClick={() =>
-                updateSettings({
-                  terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <Switch
-            checked={settings.terminalScreenReaderMode}
-            onCheckedChange={(checked) =>
-              updateSettings({ terminalScreenReaderMode: Boolean(checked) })
+    <SettingsRow
+      place="general.terminalTextSize"
+      resetAction={
+        terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize ? (
+          <SettingResetButton
+            label="terminal text size"
+            onClick={() =>
+              updateSettings({ terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize })
             }
-            aria-label="Terminal screen reader support"
           />
-        }
-      />
-    </SettingsSection>
+        ) : null
+      }
+      control={
+        <NumberField
+          value={terminalFontSize}
+          min={9}
+          max={24}
+          step={1}
+          size="sm"
+          className="w-28"
+          onValueChange={(value) => {
+            if (value === null || !Number.isFinite(value)) return;
+            updateSettings({ terminalFontSize: Math.min(24, Math.max(9, Math.round(value))) });
+          }}
+        >
+          <NumberFieldGroup>
+            <NumberFieldDecrement aria-label="Smaller terminal text" />
+            <NumberFieldInput aria-label="Terminal text size in pixels" />
+            <NumberFieldIncrement aria-label="Larger terminal text" />
+          </NumberFieldGroup>
+        </NumberField>
+      }
+    />
+  );
+}
+
+/** Whether a screen reader can read what the terminal prints. */
+export function TerminalScreenReaderRow() {
+  const terminalScreenReaderMode = useSettings((settings) => settings.terminalScreenReaderMode);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.terminalScreenReader"
+      resetAction={
+        terminalScreenReaderMode !== DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode ? (
+          <SettingResetButton
+            label="terminal screen reader support"
+            onClick={() =>
+              updateSettings({
+                terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={terminalScreenReaderMode}
+          onCheckedChange={(checked) =>
+            updateSettings({ terminalScreenReaderMode: Boolean(checked) })
+          }
+          aria-label="Terminal screen reader support"
+        />
+      }
+    />
   );
 }
 
@@ -757,7 +784,7 @@ function TerminalSettingsSection() {
  * browser or the computer's own. Kept on this computer, since only the
  * desktop app has a built-in browser.
  */
-function OpenLinksRow() {
+export function OpenLinksRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -798,7 +825,7 @@ function OpenLinksRow() {
  * computer with the browser it governs; each project can choose otherwise from
  * the browser's own menu.
  */
-function AgentBrowserSitesRow() {
+export function AgentBrowserSitesRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -841,7 +868,7 @@ function AgentBrowserSitesRow() {
   );
 }
 
-function UsageAnalyticsRow() {
+export function UsageAnalyticsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -875,7 +902,7 @@ function UsageAnalyticsRow() {
  * profile all projects shared before each had its own. Desktop only, like the
  * browser itself. The desktop reloads open tabs, so none stays signed in.
  */
-function ClearBrowserDataRow() {
+export function ClearBrowserDataRow() {
   const [isClearing, setIsClearing] = useState(false);
 
   const clearBrowserData = useCallback(async () => {
@@ -932,290 +959,302 @@ function ClearBrowserDataRow() {
   );
 }
 
+/** A switch on one of the unified settings, with the reset beside its title. */
+function UnifiedSwitchRow({
+  place,
+  setting,
+  resetLabel,
+  ariaLabel,
+}: {
+  readonly place: SettingsRowPlaceId;
+  readonly setting:
+    | "chatChangedFilesDefaultExpanded"
+    | "autoOpenAgentsPanel"
+    | "diffWordWrap"
+    | "diffIgnoreWhitespace";
+  readonly resetLabel: string;
+  readonly ariaLabel: string;
+}) {
+  const value = useSettings((settings) => settings[setting]);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place={place}
+      resetAction={
+        value !== DEFAULT_UNIFIED_SETTINGS[setting] ? (
+          <SettingResetButton
+            label={resetLabel}
+            onClick={() => updateSettings({ [setting]: DEFAULT_UNIFIED_SETTINGS[setting] })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={value}
+          onCheckedChange={(checked) => updateSettings({ [setting]: Boolean(checked) })}
+          aria-label={ariaLabel}
+        />
+      }
+    />
+  );
+}
+
+export function ThemeRow() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <SettingsRow
+      place="general.theme"
+      resetAction={
+        theme !== "system" ? (
+          <SettingResetButton label="theme" onClick={() => setTheme("system")} />
+        ) : null
+      }
+      control={
+        <Select
+          value={theme}
+          onValueChange={(value) => {
+            if (value === "system" || value === "light" || value === "dark") {
+              setTheme(value);
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
+            <SelectValue>
+              {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {THEME_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+export function TimeFormatRow() {
+  const timestampFormat = useSettings((settings) => settings.timestampFormat);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.timeFormat"
+      resetAction={
+        timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
+          <SettingResetButton
+            label="time format"
+            onClick={() =>
+              updateSettings({
+                timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={timestampFormat}
+          onValueChange={(value) => {
+            if (value === "locale" || value === "12-hour" || value === "24-hour") {
+              updateSettings({ timestampFormat: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-40" aria-label="Timestamp format">
+            <SelectValue>{TIMESTAMP_FORMAT_LABELS[timestampFormat]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
+            <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
+            <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+export const ChangedFilesInChatRow = () => (
+  <UnifiedSwitchRow
+    place="general.changedFilesInChat"
+    setting="chatChangedFilesDefaultExpanded"
+    resetLabel="changed files in chat"
+    ariaLabel="Expand changed files tree in chat by default"
+  />
+);
+
+export const AgentsPanelRow = () => (
+  <UnifiedSwitchRow
+    place="general.agentsPanel"
+    setting="autoOpenAgentsPanel"
+    resetLabel="agents panel"
+    ariaLabel="Open the Agents panel when a thread starts subagents"
+  />
+);
+
+export const WrapDiffLinesRow = () => (
+  <UnifiedSwitchRow
+    place="general.wrapDiffLines"
+    setting="diffWordWrap"
+    resetLabel="wrap diff lines"
+    ariaLabel="Wrap diff lines by default"
+  />
+);
+
+export const HideWhitespaceRow = () => (
+  <UnifiedSwitchRow
+    place="general.hideWhitespace"
+    setting="diffIgnoreWhitespace"
+    resetLabel="diff whitespace changes"
+    ariaLabel="Hide whitespace changes by default"
+  />
+);
+
+export function AddProjectStartsInRow() {
+  const addProjectBaseDirectory = useSettings((settings) => settings.addProjectBaseDirectory);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.addProjectStartsIn"
+      resetAction={
+        addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
+          <SettingResetButton
+            label="add project base directory"
+            onClick={() =>
+              updateSettings({
+                addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <DraftInput
+          className="w-full sm:w-72"
+          value={addProjectBaseDirectory}
+          onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+          placeholder="~/"
+          spellCheck={false}
+          aria-label="Add project base directory"
+        />
+      }
+    />
+  );
+}
+
+export function DiagnosticsRow() {
+  const observability = useServerObservability();
+  return (
+    <SettingsRow
+      place="general.diagnostics"
+      description={formatDiagnosticsDescription({
+        localTracingEnabled: observability?.localTracingEnabled ?? false,
+        otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
+        otlpTracesUrl: observability?.otlpTracesUrl,
+        otlpMetricsEnabled: observability?.otlpMetricsEnabled ?? false,
+        otlpMetricsUrl: observability?.otlpMetricsUrl,
+      })}
+      control={
+        <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
+          View diagnostics
+        </Button>
+      }
+    />
+  );
+}
+
+export function PhoneSettingsRow() {
+  return (
+    <SettingsRow
+      place="general.phoneSettings"
+      description={
+        'Appearance, chat and thread-closing preferences are stored in this browser. Settings under "This Computer", and the Threads page\'s new-thread, Rooms and writing settings, apply to your paired computer.'
+      }
+    />
+  );
+}
+
 /**
  * Settings › General: how the app looks, chat and diff display, dictation,
  * this computer, privacy and version. How threads start and end lives on the
  * Threads page. On a phone, settings stored with the paired computer sit under
- * "This Computer"; the rest are stored in the phone's browser.
+ * "This Computer"; the rest are stored in the phone's browser. Rows a surface
+ * doesn't draw are left out through `ShownPlace`, which the settings search
+ * asks too.
  */
 export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
-  const { theme, setTheme } = useTheme();
-  const settings = useSettings();
-  const { updateSettings } = useUpdateSettings();
   const isPhoneSurface = surface === "phone";
-  const observability = useServerObservability();
-  const diagnosticsDescription = formatDiagnosticsDescription({
-    localTracingEnabled: observability?.localTracingEnabled ?? false,
-    otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
-    otlpTracesUrl: observability?.otlpTracesUrl,
-    otlpMetricsEnabled: observability?.otlpMetricsEnabled ?? false,
-    otlpMetricsUrl: observability?.otlpMetricsUrl,
-  });
-
   return (
-    <SettingsPageContainer>
-      <SettingsPageHeader section="/settings/general" />
-      <PushAlertsSettingsSection />
-      <SettingsSection place="general.appearance">
-        <SettingsRow
-          place="general.theme"
-          resetAction={
-            theme !== "system" ? (
-              <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-            ) : null
-          }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
+    <SettingsSurfaceContext.Provider value={surface}>
+      <SettingsPageContainer>
+        <SettingsPageHeader section="/settings/general" />
+        <PushAlertsSettingsSection />
+        <SettingsSection place="general.appearance">
+          <ThemeRow />
+          <TimeFormatRow />
+        </SettingsSection>
 
-        <SettingsRow
-          place="general.timeFormat"
-          resetAction={
-            settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
-              <SettingResetButton
-                label="time format"
-                onClick={() =>
-                  updateSettings({
-                    timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.timestampFormat}
-              onValueChange={(value) => {
-                if (value === "locale" || value === "12-hour" || value === "24-hour") {
-                  updateSettings({ timestampFormat: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Timestamp format">
-                <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
-                <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
-                <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
+        <SettingsSection place="general.chatAndDiffs">
+          {/* On a phone this one is the paired computer's: it sits under This Computer. */}
+          {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <ChangedFilesInChatRow />
+          <ShownPlace place="general.agentsPanel">
+            <AgentsPanelRow />
+          </ShownPlace>
+          <WrapDiffLinesRow />
+          <HideWhitespaceRow />
+        </SettingsSection>
 
-      <SettingsSection place="general.chatAndDiffs">
-        {/* On a phone this one is the paired computer's: it sits under This Computer. */}
-        {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+        <SettingsSection place="general.terminal">
+          <TerminalTextSizeRow />
+          <TerminalScreenReaderRow />
+        </SettingsSection>
 
-        <SettingsRow
-          place="general.changedFilesInChat"
-          resetAction={
-            settings.chatChangedFilesDefaultExpanded !==
-            DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
-              <SettingResetButton
-                label="changed files in chat"
-                onClick={() =>
-                  updateSettings({
-                    chatChangedFilesDefaultExpanded:
-                      DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.chatChangedFilesDefaultExpanded}
-              onCheckedChange={(checked) =>
-                updateSettings({ chatChangedFilesDefaultExpanded: Boolean(checked) })
-              }
-              aria-label="Expand changed files tree in chat by default"
-            />
-          }
-        />
+        <DictationSettings />
 
-        {/* Not on a phone: the panel covers the conversation there, so it never opens itself. */}
-        {!isPhoneSurface ? (
-          <SettingsRow
-            place="general.agentsPanel"
-            resetAction={
-              settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel ? (
-                <SettingResetButton
-                  label="agents panel"
-                  onClick={() =>
-                    updateSettings({
-                      autoOpenAgentsPanel: DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.autoOpenAgentsPanel}
-                onCheckedChange={(checked) =>
-                  updateSettings({ autoOpenAgentsPanel: Boolean(checked) })
-                }
-                aria-label="Open the Agents panel when a thread starts subagents"
-              />
-            }
-          />
-        ) : null}
+        <SettingsSection place="general.thisComputer">
+          {isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <PreventSleepRow />
+          <ShownPlace place="general.keepAwakeForScheduledTasks">
+            <KeepAwakeForScheduledTasksRow />
+          </ShownPlace>
+          <ShownPlace place="general.runInBackground">
+            <RunInBackgroundRow />
+          </ShownPlace>
+          <ShownPlace place="general.addProjectStartsIn">
+            <AddProjectStartsInRow />
+          </ShownPlace>
+          {isPhoneSurface ? <UsageAnalyticsRow /> : null}
+          <ShownPlace place="general.openLinksIn">
+            <OpenLinksRow />
+          </ShownPlace>
+          <ShownPlace place="general.sitesAgentsCanVisit">
+            <AgentBrowserSitesRow />
+          </ShownPlace>
+          <ShownPlace place="general.clearBrowserData">
+            <ClearBrowserDataRow />
+          </ShownPlace>
+        </SettingsSection>
 
-        <SettingsRow
-          place="general.wrapDiffLines"
-          resetAction={
-            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
-              <SettingResetButton
-                label="wrap diff lines"
-                onClick={() =>
-                  updateSettings({
-                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffWordWrap}
-              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
-              aria-label="Wrap diff lines by default"
-            />
-          }
-        />
-
-        <SettingsRow
-          place="general.hideWhitespace"
-          resetAction={
-            settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
-              <SettingResetButton
-                label="diff whitespace changes"
-                onClick={() =>
-                  updateSettings({
-                    diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffIgnoreWhitespace}
-              onCheckedChange={(checked) =>
-                updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
-              }
-              aria-label="Hide whitespace changes by default"
-            />
-          }
-        />
-      </SettingsSection>
-
-      <TerminalSettingsSection />
-
-      <DictationSettings />
-
-      <SettingsSection place="general.thisComputer">
-        {isPhoneSurface ? <AssistantStreamingRow /> : null}
-
-        <PreventSleepRow />
-        {isElectron && !isPhoneSurface ? <DesktopBackgroundRows /> : null}
-
-        {!isPhoneSurface ? (
-          <SettingsRow
-            place="general.addProjectStartsIn"
-            resetAction={
-              settings.addProjectBaseDirectory !==
-              DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
-                <SettingResetButton
-                  label="add project base directory"
-                  onClick={() =>
-                    updateSettings({
-                      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <DraftInput
-                className="w-full sm:w-72"
-                value={settings.addProjectBaseDirectory}
-                onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
-                placeholder="~/"
-                spellCheck={false}
-                aria-label="Add project base directory"
-              />
-            }
-          />
-        ) : null}
-
-        {isPhoneSurface ? <UsageAnalyticsRow /> : null}
-        {isElectron ? <OpenLinksRow /> : null}
-        {isElectron ? <AgentBrowserSitesRow /> : null}
-        {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
-      </SettingsSection>
-
-      {/* A phone has no privacy rows here, so the section is only "About". */}
-      <SettingsSection place="general.about" title={isPhoneSurface ? "About" : undefined}>
-        {isElectron ? (
-          <AboutVersionSection />
-        ) : (
-          <SettingsRow
-            place="general.version"
-            title={<AboutVersionTitle />}
-            description={
-              <>
-                Current version of the application. <WhatsNewLink />
-              </>
-            }
-          />
-        )}
-        {!isPhoneSurface ? (
-          <>
-            <UsageAnalyticsRow />
-            <SettingsRow
-              place="general.diagnostics"
-              description={diagnosticsDescription}
-              control={
-                <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
-                  View diagnostics
-                </Button>
-              }
-            />
-          </>
-        ) : (
-          <SettingsRow
-            place="general.phoneSettings"
-            description={
-              'Appearance, chat and thread-closing preferences are stored in this browser. Settings under "This Computer", and the Threads page\'s new-thread, Rooms and writing settings, apply to your paired computer.'
-            }
-          />
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
+        {/* A phone has no privacy rows here, so the section is only "About". */}
+        <SettingsSection place="general.about" title={isPhoneSurface ? "About" : undefined}>
+          <VersionRow />
+          <ShownPlace place="general.updateTrack">
+            <UpdateTrackRow />
+          </ShownPlace>
+          {!isPhoneSurface ? <UsageAnalyticsRow /> : null}
+          <ShownPlace place="general.diagnostics">
+            <DiagnosticsRow />
+          </ShownPlace>
+          <ShownPlace place="general.phoneSettings">
+            <PhoneSettingsRow />
+          </ShownPlace>
+        </SettingsSection>
+      </SettingsPageContainer>
+    </SettingsSurfaceContext.Provider>
   );
 }
 
