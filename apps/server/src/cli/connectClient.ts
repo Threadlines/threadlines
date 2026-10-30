@@ -11,6 +11,10 @@
  *   once per call. The call is sent again: a 404 comes before the server
  *   looks at it.
  * - A 401 is `signed_out`; nothing answering is `not_running`.
+ * - The same client reaches another computer's Threadlines through the
+ *   assistants door (docs/design/assistants.md) with a key as the bearer:
+ *   that door speaks 2025-06-18 too, takes any session id, and never
+ *   answers 404 for one.
  * - Results are decoded with the tool's own schema from connectTools.ts.
  *   Refusals are outcomes in those results, never errors.
  */
@@ -146,7 +150,11 @@ export const makeConnectClient = Effect.fn("cli.connect.makeClient")(function* (
   readonly sessionId?: string | null | undefined;
   /** Told about each session this client opens, to keep for the next command. */
   readonly onSession?: ((sessionId: string) => Effect.Effect<void>) | undefined;
+  /** What to say when nothing answers, and when the credential is refused (a remote door says it its own way). */
+  readonly messages?: { readonly notRunning: string; readonly signedOut: string } | undefined;
 }) {
+  const notRunning = input.messages?.notRunning ?? NOT_RUNNING_MESSAGE;
+  const signedOut = input.messages?.signedOut ?? SIGNED_OUT_MESSAGE;
   const httpClient = yield* HttpClient.HttpClient;
   const session = yield* Ref.make<string | null>(input.sessionId ?? null);
   const nextId = yield* Ref.make(1);
@@ -165,16 +173,14 @@ export const makeConnectClient = Effect.fn("cli.connect.makeClient")(function* (
         ),
       )
       .pipe(
-        Effect.mapError(
-          () => new ConnectError({ reason: "not_running", message: NOT_RUNNING_MESSAGE }),
-        ),
+        Effect.mapError(() => new ConnectError({ reason: "not_running", message: notRunning })),
       );
 
   /** Checks the status every answer shares. */
   const checkStatus = (response: HttpClientResponse.HttpClientResponse, sessionId: string | null) =>
     Effect.gen(function* () {
       if (response.status === 401) {
-        return yield* new ConnectError({ reason: "signed_out", message: SIGNED_OUT_MESSAGE });
+        return yield* new ConnectError({ reason: "signed_out", message: signedOut });
       }
       if (response.status === 404) {
         // With a session, the server forgot it; without one, nothing here

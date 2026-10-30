@@ -783,16 +783,20 @@ The shared payload (`data`), all written by Threadlines or named by the user:
 
 ## Storage
 
-**The computer** (one migration, 091):
+**The computer** (step 1 built it as migration 092; the record's tables come
+with step 2):
 
 - `outside_agent_connections` gains:
   - `kind` (`local` | `assistant`);
   - `sign_in` (`oauth` | `key`);
-  - `client_identity` (the CIMD URL or the redirect origin);
-  - `route_tag`;
+  - `identity_host`, `identity_verified`, `identity_known` (the contract's
+    identity: the CIMD host or the redirect's host);
+  - `host_id` and `route_tag`;
   - `refresh_generation`, `refresh_rotated_at`, `refresh_seen_generation`;
-  - `key_hash`.
-  - `access` gains `work`.
+  - `key_hash`;
+  - `relay_revoke_pending`: a removal the relay hasn't heard about yet,
+    retried until it has, across restarts.
+  - `access` gains `work` (step 3).
 - **New tables:**
   - `assistant_events`: `event_id` (primary key), `subject_key` (unique),
     `state` (`settling` | `recorded` | `dropped`), `settle_until`, `seq` (set
@@ -1143,3 +1147,30 @@ All 9 findings checked against the code; all hold.
    `thread.proposed-plan-upserted`, and every send attempt re-checks the event.
 9. **Pending sign-ins had nowhere to live before a computer was known.**
    Fixed: `RelayAssistantSignIn` shards.
+
+## Build notes: step 1 on the computer
+
+Choices the build made inside the plan, for the relay and web builds to match:
+
+- **Reading Settings never registers the computer with the relay.** The
+  address stays null until Connect an assistant or Create a key registers it;
+  after that the snapshot asks the relay again when its answer is stale.
+- **A missing `requestId`** is a tool result with outcome `failed` that says
+  so (the tools' house rule: decisions are outcomes), not a JSON-RPC error.
+  This door's tool list marks `requestId` required on `thread_start`,
+  `thread_send` and `thread_stop`.
+- **Stops take a `requestId` on both doors**, recorded like starts and sends,
+  so a retried stop answers from its row.
+- **`server/discover`** lists `2026-07-28` and `2025-06-18`; modern requests
+  without the `Mcp-Method` header (or `Mcp-Name` on `tools/call`) get
+  HeaderMismatch. `ping` is legacy only, as 2026-07-28 removed it.
+- **The assistant socket** sends the relay's heartbeat ping every 20 s; once a
+  pong came back on a socket, 45 s of silence reconnects it.
+- **Token requests are bound by the code or refresh token**, not by the
+  frame's `resource`; a `resource` in the body must match. MCP requests must
+  carry, in the frame's `resource`, the exact string the connection was made
+  for: the sign-in's `resource`, or for a key the relay's info `address`.
+- **The `threadlines` command** makes up a `requestId` for starts, sends and
+  stops only when it talks to an assistants door; locally it still leaves it
+  out unless `--request-id` is given.
+- **No telemetry** for assistants yet; it needs a line in `docs/telemetry.md`.

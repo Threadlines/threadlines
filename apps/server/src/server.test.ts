@@ -94,6 +94,7 @@ import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { PushAlerts, type PushAlertsShape } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
+import { Assistants } from "./assistants/Assistants.ts";
 import {
   RelayDeviceRepository,
   type RelayDeviceRepositoryShape,
@@ -867,6 +868,7 @@ const buildAppUnderTest = (options?: {
           Layer.mock(ProjectSetups)({}),
           Layer.mock(ProjectSetupSource)({}),
           Layer.mock(OutsideAgentSignIn)({ bootId: "test-boot" }),
+          Layer.mock(Assistants)({ serveMcp: () => Effect.void }),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
             ...options?.layers?.threadSearch,

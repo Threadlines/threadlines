@@ -16,11 +16,14 @@ import type {
   OutsideAgentApproveInput,
   OutsideAgentConnection,
   OutsideAgentConnectionInput,
+  OutsideAgentCreateKeyInput,
+  OutsideAgentCreateKeyResult,
   OutsideAgentError,
   OutsideAgentRequestId,
   OutsideAgentRequestInput,
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
+  RelayAssistantCodeResult,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -141,8 +144,16 @@ export interface OutsideAgentSignInShape {
   readonly update: (
     input: OutsideAgentUpdateInput,
   ) => Effect.Effect<OutsideAgentConnection, OutsideAgentError>;
-  /** Removes a connection: its next call is refused. */
+  /** Removes a connection: its next call is refused (an assistant's at the relay too). */
   readonly remove: (input: OutsideAgentConnectionInput) => Effect.Effect<void, OutsideAgentError>;
+  /** Assistants (docs/design/assistants.md): shows a sign-in code for an assistant's page. */
+  readonly assistantCode: Effect.Effect<RelayAssistantCodeResult, OutsideAgentError>;
+  /** Forgets the code showing, if any. */
+  readonly assistantCodeCancel: Effect.Effect<void, OutsideAgentError>;
+  /** A key-signed assistant connection; the key is in the result only. */
+  readonly createKey: (
+    input: OutsideAgentCreateKeyInput,
+  ) => Effect.Effect<OutsideAgentCreateKeyResult, OutsideAgentError>;
 }
 
 export class OutsideAgentSignIn extends Context.Service<

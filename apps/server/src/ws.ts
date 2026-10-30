@@ -62,7 +62,6 @@ import {
   WS_METHODS,
   WsRpcGroup,
   WsOwnerRequiredError,
-  OutsideAgentError,
 } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -205,11 +204,6 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-
-/** The assistants door (docs/design/assistants.md) until its RPCs are built. */
-const assistantsNotReady = new OutsideAgentError({
-  detail: "Assistants aren't available in this version of Threadlines yet.",
-});
 
 export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -3149,12 +3143,12 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),
-        // Assistants (docs/design/assistants.md): placeholders until the door is built.
+        // Assistants (docs/design/assistants.md): codes and keys, owner only too.
         [WS_METHODS.outsideAgentsAssistantCode]: (_input) =>
           observeRpcEffect(
             WS_METHODS.outsideAgentsAssistantCode,
             requireOwner(WS_METHODS.outsideAgentsAssistantCode).pipe(
-              Effect.andThen(Effect.fail(assistantsNotReady)),
+              Effect.andThen(outsideAgents.assistantCode),
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),
@@ -3162,15 +3156,15 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.outsideAgentsAssistantCodeCancel,
             requireOwner(WS_METHODS.outsideAgentsAssistantCodeCancel).pipe(
-              Effect.andThen(Effect.fail(assistantsNotReady)),
+              Effect.andThen(outsideAgents.assistantCodeCancel),
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),
-        [WS_METHODS.outsideAgentsCreateKey]: (_input) =>
+        [WS_METHODS.outsideAgentsCreateKey]: (input) =>
           observeRpcEffect(
             WS_METHODS.outsideAgentsCreateKey,
             requireOwner(WS_METHODS.outsideAgentsCreateKey).pipe(
-              Effect.andThen(Effect.fail(assistantsNotReady)),
+              Effect.andThen(outsideAgents.createKey(input)),
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),

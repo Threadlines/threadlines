@@ -18,6 +18,10 @@ import {
   RelayJoinResult,
   RelayRegisterHostResult,
   RelayRequestStatusResult,
+  RelayAssistantCodeResult,
+  RelayAssistantInfo,
+  type RelayAssistantRevokeRequest,
+  RelayAssistantRouteTagResult,
 } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -48,6 +52,9 @@ const decodeRelayDeviceAlertResult = Schema.decodeUnknownEffect(RelayDeviceAlert
 const decodeRelayHookStateResult = Schema.decodeUnknownEffect(RelayHookStateResult);
 const decodeRelayHookStatusResult = Schema.decodeUnknownEffect(RelayHookStatusResult);
 const decodeRelayHookDelivery = Schema.decodeUnknownEffect(RelayHookDelivery);
+const decodeRelayAssistantInfo = Schema.decodeUnknownEffect(RelayAssistantInfo);
+const decodeRelayAssistantCodeResult = Schema.decodeUnknownEffect(RelayAssistantCodeResult);
+const decodeRelayAssistantRouteTagResult = Schema.decodeUnknownEffect(RelayAssistantRouteTagResult);
 
 /** A failure that may pass by itself: the relay couldn't be reached, was busy, or failed. */
 export function isTransientRelayError(error: RelayApiError): boolean {
@@ -270,6 +277,64 @@ export const relayApi = {
       path: `/v2/hosts/${hostId}/hooks/deliveries/${encodeURIComponent(deliveryId)}`,
       bearer: hostSecret,
       decode: (value) => decodeRelayHookDelivery(value),
+    }),
+
+  /** The assistants door (docs/design/assistants.md): its public address, and whether it is on. */
+  assistantInfo: (origin: string, hostId: string, hostSecret: string) =>
+    request({
+      origin,
+      method: "GET",
+      path: `/v2/hosts/${hostId}/assistants`,
+      bearer: hostSecret,
+      decode: (value) => decodeRelayAssistantInfo(value),
+    }),
+
+  /** A new sign-in code for an assistant's page; replaces this computer's last one. */
+  createAssistantCode: (origin: string, hostId: string, hostSecret: string) =>
+    request({
+      origin,
+      method: "POST",
+      path: `/v2/hosts/${hostId}/assistants/code`,
+      bearer: hostSecret,
+      body: {},
+      decode: (value) => decodeRelayAssistantCodeResult(value),
+    }),
+
+  /** Forgets this computer's sign-in code. */
+  cancelAssistantCode: (origin: string, hostId: string, hostSecret: string) =>
+    request({
+      origin,
+      method: "DELETE",
+      path: `/v2/hosts/${hostId}/assistants/code`,
+      bearer: hostSecret,
+      decode: ignoreBody,
+    }),
+
+  /** The route tag every credential of a new assistant connection carries. */
+  assistantRouteTag: (origin: string, hostId: string, hostSecret: string, connectionId: string) =>
+    request({
+      origin,
+      method: "POST",
+      path: `/v2/hosts/${hostId}/assistants/route-tags`,
+      bearer: hostSecret,
+      body: { connectionId },
+      decode: (value) => decodeRelayAssistantRouteTagResult(value),
+    }),
+
+  /** Removed assistant connections: the relay refuses them from now on, even while this computer sleeps. */
+  revokeAssistants: (
+    origin: string,
+    hostId: string,
+    hostSecret: string,
+    body: RelayAssistantRevokeRequest,
+  ) =>
+    request({
+      origin,
+      method: "POST",
+      path: `/v2/hosts/${hostId}/assistants/revocations`,
+      bearer: hostSecret,
+      body,
+      decode: ignoreBody,
     }),
 
   join: (origin: string, body: RelayJoinInput) =>
