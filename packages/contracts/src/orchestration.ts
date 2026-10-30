@@ -1307,6 +1307,21 @@ export const OrchestrationSession = Schema.Struct({
    */
   startup: Schema.optional(Schema.NullOr(OrchestrationSessionStartup)),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * When the failure in `lastError` happened, so the same words failing again
+   * count as a new failure. The decider stamps it when the error changes or
+   * the session lands in `error`; a writer recording a failure the status
+   * doesn't show (a turn that failed to start) stamps it itself. Absent on
+   * sessions an older build recorded.
+   */
+  lastErrorAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /**
+   * When the user closed that failure's notice above the composer
+   * (`thread.error.dismiss`). The decider owns it and drops it as soon as
+   * `lastErrorAt` moves, so the next failure always shows. The failed turn
+   * keeps its Retry either way.
+   */
+  lastErrorDismissedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -3303,6 +3318,20 @@ const ThreadProposedPlanDismissCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Close a failed turn's notice above the composer. `lastError` and
+ * `lastErrorAt` name the failure the user saw: a newer one is left showing.
+ * See `OrchestrationSession.lastErrorDismissedAt`.
+ */
+const ThreadErrorDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.error.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  lastError: TrimmedNonEmptyString,
+  lastErrorAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+});
+
 /** Skip a command an agent asked the user to run, or bring it back. */
 const ThreadCommandRequestDismissCommand = Schema.Struct({
   type: Schema.Literal("thread.command-request.dismiss"),
@@ -3359,6 +3388,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
   ThreadCommandRequestDismissCommand,
+  ThreadErrorDismissCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -3409,6 +3439,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
   ThreadCommandRequestDismissCommand,
+  ThreadErrorDismissCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -4254,6 +4285,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-stop-requested",
   "thread.check-back-cancel-requested",
   "thread.session-set",
+  "thread.error-dismissed",
   "thread.effective-cwd-set",
   "thread.check-backs-set",
   "thread.goal-set-requested",
@@ -4863,6 +4895,14 @@ export const ThreadSessionSetPayload = Schema.Struct({
   session: OrchestrationSession,
 });
 
+/** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */
+export const ThreadErrorDismissedPayload = Schema.Struct({
+  threadId: ThreadId,
+  lastError: TrimmedNonEmptyString,
+  lastErrorAt: Schema.NullOr(IsoDateTime),
+  dismissedAt: IsoDateTime,
+});
+
 export const ThreadEffectiveCwdSetPayload = Schema.Struct({
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
@@ -5340,6 +5380,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-set"),
     payload: ThreadSessionSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.error-dismissed"),
+    payload: ThreadErrorDismissedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

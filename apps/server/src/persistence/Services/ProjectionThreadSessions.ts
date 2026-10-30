@@ -49,6 +49,10 @@ export const ProjectionThreadSession = Schema.Struct({
    */
   startup: Schema.optional(Schema.NullOr(OrchestrationSessionStartup)),
   lastError: Schema.NullOr(Schema.String),
+  /** See OrchestrationSession.lastErrorAt. Absent on write clears it. */
+  lastErrorAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** See OrchestrationSession.lastErrorDismissedAt. Absent on write clears it. */
+  lastErrorDismissedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
@@ -57,6 +61,15 @@ export const GetProjectionThreadSessionInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type GetProjectionThreadSessionInput = typeof GetProjectionThreadSessionInput.Type;
+
+export const DismissProjectionThreadSessionErrorInput = Schema.Struct({
+  threadId: ThreadId,
+  lastError: Schema.String,
+  lastErrorAt: Schema.NullOr(IsoDateTime),
+  dismissedAt: IsoDateTime,
+});
+export type DismissProjectionThreadSessionErrorInput =
+  typeof DismissProjectionThreadSessionErrorInput.Type;
 
 export const DeleteProjectionThreadSessionInput = Schema.Struct({
   threadId: ThreadId,
@@ -80,6 +93,13 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly getByThreadId: (
     input: GetProjectionThreadSessionInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadSession>, ProjectionRepositoryError>;
+
+  /**
+   * Mark the session's error notice closed, if it still holds that failure.
+   */
+  readonly dismissError: (
+    input: DismissProjectionThreadSessionErrorInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread-session state by thread id.

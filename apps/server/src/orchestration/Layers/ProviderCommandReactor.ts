@@ -920,6 +920,9 @@ const make = Effect.gen(function* () {
         status: session.status === "stopped" ? "stopped" : "ready",
         activeTurnId: null,
         lastError: input.detail,
+        // A failed start in the same words as the last failure is still a
+        // new one: say so, since the status alone doesn't (see lastErrorAt).
+        lastErrorAt: input.createdAt,
         updatedAt: input.createdAt,
       },
       createdAt: input.createdAt,

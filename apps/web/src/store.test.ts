@@ -2452,6 +2452,67 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(cleared)[0]?.session?.launchingInstanceId).toBeUndefined();
   });
 
+  it("hides a closed error from the composer while the failed turn keeps it", () => {
+    const thread = makeThread();
+    const offline = "API Error: Can't reach the API server (ENOTFOUND)";
+    const sessionSet = (sequence: number, lastError: string, dismissedAt?: string) =>
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "error",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError,
+            ...(dismissedAt ? { lastErrorDismissedAt: dismissedAt } : {}),
+            updatedAt: "2026-02-27T00:00:02.000Z",
+          },
+        },
+        { sequence },
+      );
+
+    const failed = applyOrchestrationEvents(
+      makeState(thread),
+      [sessionSet(2, offline)],
+      localEnvironmentId,
+    );
+    expect(threadsOf(failed)[0]?.error).toBe(offline);
+
+    const closed = applyOrchestrationEvent(
+      failed,
+      makeEvent(
+        "thread.error-dismissed",
+        {
+          threadId: thread.id,
+          lastError: offline,
+          lastErrorAt: null,
+          dismissedAt: "2026-02-27T00:00:03.000Z",
+        },
+        { sequence: 3 },
+      ),
+      localEnvironmentId,
+    );
+    expect(threadsOf(closed)[0]?.error).toBeNull();
+    expect(threadsOf(closed)[0]?.session?.lastError).toBe(offline);
+
+    // Later updates say whether it is still closed.
+    const stillClosed = applyOrchestrationEvent(
+      closed,
+      sessionSet(4, offline, "2026-02-27T00:00:03.000Z"),
+      localEnvironmentId,
+    );
+    expect(threadsOf(stillClosed)[0]?.error).toBeNull();
+    const failedAgain = applyOrchestrationEvent(
+      stillClosed,
+      sessionSet(5, offline),
+      localEnvironmentId,
+    );
+    expect(threadsOf(failedAgain)[0]?.error).toBe(offline);
+  });
+
   it("keeps legacy assistant completion events non-terminal while their turn is active", () => {
     const thread = makeThread({
       latestTurn: {
