@@ -57,7 +57,7 @@ docker rm -f threadlines
 ```
 
 Your data lives in the volume, so this is safe. Pin a version tag
-(for example `ghcr.io/threadlines/threadlines:0.3.3`) if you prefer
+(for example `ghcr.io/threadlines/threadlines:0.8.0`) if you prefer
 updates on your own schedule.
 
 ## Reaching it from outside your network
