@@ -533,5 +533,9 @@ export interface ThreadSession {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  /** Which failure `lastError` is; see OrchestrationSession.lastErrorAt. */
+  lastErrorAt?: string;
+  /** The user closed `lastError`'s notice; see OrchestrationSession.lastErrorDismissedAt. */
+  lastErrorDismissedAt?: string;
   orchestrationStatus: OrchestrationSessionStatus;
 }

@@ -519,6 +519,8 @@ function mapSessionRow(
     awaitedBackgroundTasks: row.awaitedBackgroundTasks,
     ...(row.startup ? { startup: row.startup } : {}),
     lastError: row.lastError,
+    ...(row.lastErrorAt ? { lastErrorAt: row.lastErrorAt } : {}),
+    ...(row.lastErrorDismissedAt ? { lastErrorDismissedAt: row.lastErrorDismissedAt } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -1295,6 +1297,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           awaited_background_tasks AS "awaitedBackgroundTasks",
           startup,
           last_error AS "lastError",
+          last_error_at AS "lastErrorAt",
+          last_error_dismissed_at AS "lastErrorDismissedAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -1346,6 +1350,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
           sessions.startup,
           sessions.last_error AS "lastError",
+          sessions.last_error_at AS "lastErrorAt",
+          sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1377,6 +1383,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
           sessions.startup,
           sessions.last_error AS "lastError",
+          sessions.last_error_at AS "lastErrorAt",
+          sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -2227,6 +2235,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           awaited_background_tasks AS "awaitedBackgroundTasks",
           startup,
           last_error AS "lastError",
+          last_error_at AS "lastErrorAt",
+          last_error_dismissed_at AS "lastErrorDismissedAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -3645,6 +3655,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               awaited_background_tasks AS "awaitedBackgroundTasks",
               startup,
               last_error AS "lastError",
+              last_error_at AS "lastErrorAt",
+              last_error_dismissed_at AS "lastErrorDismissedAt",
               updated_at AS "updatedAt"
             FROM projection_thread_sessions
             WHERE ${sql.in("thread_id", threadIds)}

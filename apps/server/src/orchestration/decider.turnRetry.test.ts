@@ -126,7 +126,19 @@ function makeReadModel(thread: OrchestrationThread): OrchestrationReadModel {
   return {
     snapshotSequence: 1,
     updatedAt: now,
-    projects: [],
+    projects: [
+      {
+        id: thread.projectId,
+        kind: "workspace",
+        title: "Retry",
+        workspaceRoot: "/tmp/project",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      },
+    ],
     threads: [thread],
   };
 }
@@ -308,6 +320,103 @@ describe("decider turn retry", () => {
         }),
       ),
     ).rejects.toThrow("has no failed turn to retry");
+  });
+
+  it("keeps a closed error closed until the session fails again", async () => {
+    const run = async (readModel: OrchestrationReadModel, command: OrchestrationCommand) => {
+      const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+      const events = Array.isArray(decided) ? decided : [decided];
+      let projected = readModel;
+      for (const event of events) {
+        projected = await Effect.runPromise(
+          projectEvent(projected, { ...event, sequence: projected.snapshotSequence + 1 }),
+        );
+      }
+      return { events, session: projected.threads[0]?.session ?? null, readModel: projected };
+    };
+    const dismiss = (lastError: string, lastErrorAt: string | null, createdAt: string) =>
+      ({
+        type: "thread.error.dismiss",
+        commandId: CommandId.make(`cmd-dismiss-${createdAt}`),
+        threadId,
+        lastError,
+        lastErrorAt,
+        createdAt,
+      }) as const;
+    const setSession = (session: OrchestrationSession) =>
+      ({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-session-${session.status}-${session.updatedAt}`),
+        threadId,
+        session,
+        createdAt: session.updatedAt,
+      }) as const;
+    const failure = failedSession.lastError ?? "";
+
+    // A close aimed at an error the user never saw does nothing.
+    const stale = await run(
+      makeReadModel(makeThread()),
+      dismiss("an older error", null, "2026-01-01T00:00:04.500Z"),
+    );
+    expect(stale.events).toEqual([]);
+
+    const closed = await run(
+      makeReadModel(makeThread()),
+      dismiss(failure, null, "2026-01-01T00:00:04.500Z"),
+    );
+    expect(closed.session?.lastErrorDismissedAt).toBe("2026-01-01T00:00:04.500Z");
+
+    // The session stopping, and the retry starting, carry the same failure.
+    const stopped = await run(
+      closed.readModel,
+      setSession({ ...failedSession, status: "stopped", updatedAt: "2026-01-01T00:00:05.000Z" }),
+    );
+    expect(stopped.session?.lastErrorDismissedAt).toBe("2026-01-01T00:00:04.500Z");
+    const retried = await run(stopped.readModel, {
+      ...retryCommand,
+      createdAt: "2026-01-01T00:00:06.000Z",
+    });
+    expect(retried.session).toMatchObject({
+      status: "starting",
+      lastError: failure,
+      lastErrorDismissedAt: "2026-01-01T00:00:04.500Z",
+    });
+
+    // Stopping the retry before it starts is not a new failure.
+    const stoppedWhileStarting = await run(
+      retried.readModel,
+      setSession({ ...failedSession, status: "stopped", updatedAt: "2026-01-01T00:00:06.500Z" }),
+    );
+    expect(stoppedWhileStarting.session?.lastErrorDismissedAt).toBe("2026-01-01T00:00:04.500Z");
+    const retriedAgain = await run(stoppedWhileStarting.readModel, {
+      ...retryCommand,
+      createdAt: "2026-01-01T00:00:06.700Z",
+    });
+
+    // The retry failing to start the same way is a new failure, so it shows,
+    // even though a start failure leaves the session `ready`: its writer says so.
+    const failedAgain = await run(
+      retriedAgain.readModel,
+      setSession({
+        ...failedSession,
+        status: "ready",
+        lastErrorAt: "2026-01-01T00:00:07.000Z",
+        updatedAt: "2026-01-01T00:00:07.000Z",
+      }),
+    );
+    expect(failedAgain.session).toMatchObject({
+      lastError: failure,
+      lastErrorAt: "2026-01-01T00:00:07.000Z",
+    });
+    expect(failedAgain.session?.lastErrorDismissedAt).toBeUndefined();
+
+    // A close sent for the first failure, landing after the second, leaves
+    // the second showing.
+    const late = await run(
+      failedAgain.readModel,
+      dismiss(failure, null, "2026-01-01T00:00:07.500Z"),
+    );
+    expect(late.events).toEqual([]);
   });
 
   it("rejects retrying a thread without user messages", async () => {

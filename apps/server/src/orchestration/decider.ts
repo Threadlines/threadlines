@@ -6,6 +6,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationSession,
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
@@ -395,6 +396,44 @@ function refuseSkippedSetup(
           detail: "Setting up a new thread needs the app's connection; this route can't do it.",
         }),
       );
+}
+
+/**
+ * Stamps which failure a session update holds (`lastErrorAt`) and whether the
+ * user closed its notice (`lastErrorDismissedAt`). A different error is a new
+ * failure, and so are the same words when the session lands in `error` from
+ * another status (the next attempt failing the same way) or when the writer
+ * stamps `lastErrorAt` itself (a turn that fails to start leaves the session
+ * `ready`). Anything else carries both, so a closed notice stays closed while
+ * the session stops, restarts or starts the next attempt. The writer's
+ * `lastErrorDismissedAt` is ignored: only `thread.error.dismiss` closes.
+ */
+function withLastErrorState(
+  next: OrchestrationSession,
+  prior: OrchestrationSession | null | undefined,
+  at: string,
+): OrchestrationSession {
+  const { lastErrorAt: sentAt, lastErrorDismissedAt: _sentDismissedAt, ...session } = next;
+  if (next.lastError === null) {
+    return session;
+  }
+  const priorAt = prior?.lastErrorAt ?? null;
+  const restamped = sentAt != null && sentAt !== priorAt;
+  if (
+    prior == null ||
+    next.lastError !== prior.lastError ||
+    (next.status === "error" && prior.status !== "error") ||
+    restamped
+  ) {
+    return { ...session, lastErrorAt: restamped ? sentAt : at };
+  }
+  return {
+    ...session,
+    ...(priorAt !== null ? { lastErrorAt: priorAt } : {}),
+    ...(prior.lastErrorDismissedAt != null
+      ? { lastErrorDismissedAt: prior.lastErrorDismissedAt }
+      : {}),
+  };
 }
 
 /**
@@ -2588,34 +2627,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               type: "thread.session-set",
               payload: {
                 threadId: command.threadId,
-                session: {
-                  threadId: command.threadId,
-                  status: "starting",
-                  providerName: priorSession?.providerName ?? null,
-                  // After a handover, the incoming agent's own last provider:
-                  // the reactor compares the requested one against it to
-                  // detect a provider switch.
-                  providerInstanceId:
-                    priorSession?.providerInstanceId ??
-                    (handsOverSlot
-                      ? (participant?.modelSelection.instanceId ??
-                        targetThread.modelSelection.instanceId)
-                      : requestedModelSelection.instanceId),
-                  providerSessionId: priorSession?.providerSessionId ?? null,
-                  providerThreadId: priorSession?.providerThreadId ?? null,
-                  runtimeMode: targetThread.runtimeMode,
-                  // The runtime is still in whatever checkout it started in;
-                  // the reactor rewrites this once the session is (re)bound.
-                  checkoutCwd: priorSession?.checkoutCwd ?? null,
-                  participantId,
-                  // Same reasoning: the live runtime still owns its background
-                  // tasks. Dropping the count here would tell the reactor the
-                  // session is free to be cycled into another checkout.
-                  ...carriedBackgroundTasks(priorSession),
-                  activeTurnId: null,
-                  lastError: priorSession?.lastError ?? null,
-                  updatedAt: command.createdAt,
-                },
+                session: withLastErrorState(
+                  {
+                    threadId: command.threadId,
+                    status: "starting",
+                    providerName: priorSession?.providerName ?? null,
+                    // After a handover, the incoming agent's own last provider:
+                    // the reactor compares the requested one against it to
+                    // detect a provider switch.
+                    providerInstanceId:
+                      priorSession?.providerInstanceId ??
+                      (handsOverSlot
+                        ? (participant?.modelSelection.instanceId ??
+                          targetThread.modelSelection.instanceId)
+                        : requestedModelSelection.instanceId),
+                    providerSessionId: priorSession?.providerSessionId ?? null,
+                    providerThreadId: priorSession?.providerThreadId ?? null,
+                    runtimeMode: targetThread.runtimeMode,
+                    // The runtime is still in whatever checkout it started in;
+                    // the reactor rewrites this once the session is (re)bound.
+                    checkoutCwd: priorSession?.checkoutCwd ?? null,
+                    participantId,
+                    // Same reasoning: the live runtime still owns its background
+                    // tasks. Dropping the count here would tell the reactor the
+                    // session is free to be cycled into another checkout.
+                    ...carriedBackgroundTasks(priorSession),
+                    activeTurnId: null,
+                    lastError: priorSession?.lastError ?? null,
+                    updatedAt: command.createdAt,
+                  },
+                  priorSession,
+                  command.createdAt,
+                ),
               },
             };
       const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
@@ -2764,22 +2807,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: {
-            threadId: command.threadId,
-            status: "starting",
-            participantId: retryParticipantId,
-            providerName: session.providerName ?? null,
-            providerInstanceId:
-              session.providerInstanceId ?? targetThread.modelSelection.instanceId,
-            providerSessionId: session.providerSessionId ?? null,
-            providerThreadId: session.providerThreadId ?? null,
-            runtimeMode: targetThread.runtimeMode,
-            checkoutCwd: session.checkoutCwd ?? null,
-            ...carriedBackgroundTasks(session),
-            activeTurnId: null,
-            lastError: session.lastError,
-            updatedAt: command.createdAt,
-          },
+          session: withLastErrorState(
+            {
+              threadId: command.threadId,
+              status: "starting",
+              participantId: retryParticipantId,
+              providerName: session.providerName ?? null,
+              providerInstanceId:
+                session.providerInstanceId ?? targetThread.modelSelection.instanceId,
+              providerSessionId: session.providerSessionId ?? null,
+              providerThreadId: session.providerThreadId ?? null,
+              runtimeMode: targetThread.runtimeMode,
+              checkoutCwd: session.checkoutCwd ?? null,
+              ...carriedBackgroundTasks(session),
+              activeTurnId: null,
+              lastError: session.lastError,
+              updatedAt: command.createdAt,
+            },
+            session,
+            command.createdAt,
+          ),
         },
       };
       const retryTurnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
@@ -3507,7 +3554,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: withLastErrorState(command.session, thread.session, command.createdAt),
         },
       } as const;
 
@@ -3553,6 +3600,40 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       ];
+    }
+
+    // Closing is not work on the thread, so nothing else about the session
+    // changes. A failure newer than the one the user saw stays showing.
+    case "thread.error.dismiss": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const session = thread.session;
+      if (
+        session === null ||
+        session.lastError !== command.lastError ||
+        (session.lastErrorAt ?? null) !== command.lastErrorAt ||
+        session.lastErrorDismissedAt != null
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.error-dismissed",
+        payload: {
+          threadId: command.threadId,
+          lastError: command.lastError,
+          lastErrorAt: command.lastErrorAt,
+          dismissedAt: command.createdAt,
+        },
+      };
     }
 
     case "thread.realtime.state.set": {
