@@ -2,12 +2,13 @@ import { WsRpcGroup } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
-import type { Rpc, RpcClientError, RpcGroup } from "effect/unstable/rpc";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
-import * as Socket from "effect/unstable/socket/Socket";
+import type { Rpc, RpcClientError, RpcGroup } from "effect/rpc";
+import { RpcClient, RpcSchema, RpcSerialization } from "effect/rpc";
+import * as Socket from "effect/socket/Socket";
 
 import {
   acknowledgeRpcRequest,
@@ -50,25 +51,23 @@ export interface WsProtocolLifecycleHandlers {
    * that the desktop peer is actually reachable — an open socket is not.
    */
   readonly onFirstMessage?: () => void;
-  readonly onHeartbeatPing?: () => void;
-  readonly onHeartbeatPong?: () => void;
+  /**
+   * Every inbound frame, heartbeat replies included. Any frame proves the
+   * server is still answering; the protocol's own heartbeat counts liveness
+   * the same way.
+   */
+  readonly onMessage?: () => void;
+  /**
+   * The heartbeat found the connection silent. Runs after the protocol has
+   * dropped the socket and before it opens a replacement.
+   */
   readonly onHeartbeatTimeout?: () => void;
+  /** A request is about to go out on the socket. */
   readonly onRequestStart?: (info: {
     readonly id: string;
     readonly tag: string;
     readonly stream: boolean;
   }) => void;
-  readonly onRequestChunk?: (info: {
-    readonly id: string;
-    readonly tag: string;
-    readonly chunkCount: number;
-  }) => void;
-  readonly onRequestExit?: (info: {
-    readonly id: string;
-    readonly tag: string;
-    readonly stream: boolean;
-  }) => void;
-  readonly onRequestInterrupt?: (info: { readonly id: string; readonly tag?: string }) => void;
   readonly onError?: (message: string) => void;
   readonly onClose?: (
     details: { readonly code: number; readonly reason: string },
@@ -77,6 +76,11 @@ export interface WsProtocolLifecycleHandlers {
 }
 
 type WsRpcs = typeof WsRpcGroup extends RpcGroup.RpcGroup<infer Rpcs> ? Rpcs : never;
+const STREAM_RPC_TAGS: ReadonlySet<string> = new Set(
+  Array.from(WsRpcGroup.requests.values(), (rpc) =>
+    RpcSchema.isStreamSchema(rpc.successSchema) ? rpc._tag : null,
+  ).filter((tag) => tag !== null),
+);
 /**
  * Named rather than inferred: the generated client expands to one method per
  * RPC, so letting the compiler infer it puts the whole surface (every command
@@ -148,7 +152,7 @@ function normalizeProtocols(
 type ComposedWsProtocolLifecycleHandlers = Required<
   Pick<
     WsProtocolLifecycleHandlers,
-    "isActive" | "onAttempt" | "onOpen" | "onFirstMessage" | "onError" | "onClose"
+    "isActive" | "onAttempt" | "onOpen" | "onFirstMessage" | "onMessage" | "onError" | "onClose"
   >
 >;
 
@@ -169,6 +173,7 @@ function defaultLifecycleHandlers(
       if (reports) recordWsConnectionOpened(resolveConnectionMetadata(handlers));
     },
     onFirstMessage: () => undefined,
+    onMessage: () => undefined,
     onError: (message) => {
       clearAllTrackedRpcRequests();
       if (reports) recordWsConnectionErrored(message, resolveConnectionMetadata(handlers));
@@ -210,6 +215,12 @@ function composeLifecycleHandlers(
         return;
       }
       handlers?.onFirstMessage?.();
+    },
+    onMessage: () => {
+      if (!isActive()) {
+        return;
+      }
+      handlers?.onMessage?.();
     },
     onError: (message) => {
       if (!isActive()) {
@@ -285,6 +296,7 @@ export function createWsRpcProtocolLayer(
     // funnels message listeners and does not honor listener options.
     let sawFirstMessage = false;
     socket.addEventListener("message", () => {
+      lifecycle.onMessage();
       if (sawFirstMessage) {
         return;
       }
@@ -333,94 +345,54 @@ export function createWsRpcProtocolLayer(
   const retryPolicy = Schedule.addDelay(Schedule.forever, ({ output: retryCount }) =>
     Effect.succeed(Duration.millis(getWsReconnectDelayMsForRetry(retryCount))),
   );
+  // A heartbeat timeout should fail only the requests in flight on the silent
+  // socket, whose answers are lost; WsTransport does that in
+  // `onHeartbeatTimeout`. Effect also fails every request the client knows of,
+  // even one made a moment later, and every send until a new socket is up. So
+  // that failure is dropped in `run` below, and sends are held here until a
+  // socket connects, as they are while a socket will not open. Streams move to
+  // the new socket when it opens (WsTransport).
+  let heldUntilConnected: Latch.Latch | undefined;
+  const connectionHooksLayer = Layer.succeed(
+    RpcClient.ConnectionHooks,
+    RpcClient.ConnectionHooks.of({
+      onConnect: Effect.suspend(() => {
+        const held = heldUntilConnected;
+        heldUntilConnected = undefined;
+        return held === undefined ? Effect.void : Effect.asVoid(held.open);
+      }),
+      onDisconnect: Effect.void,
+    }),
+  );
+  const sendWhenConnected = (
+    protocol: RpcClient.Protocol["Service"],
+    ...[clientId, request, transferables]: Parameters<RpcClient.Protocol["Service"]["send"]>
+  ): ReturnType<RpcClient.Protocol["Service"]["send"]> =>
+    // Suspended: the protocol's `send` checks its error state when called.
+    Effect.suspend(() => protocol.send(clientId, request, transferables)).pipe(
+      Effect.catch((error) => {
+        const held = heldUntilConnected;
+        return held === undefined || request._tag !== "Request"
+          ? Effect.fail(error)
+          : held.await.pipe(
+              Effect.andThen(() => sendWhenConnected(protocol, clientId, request, transferables)),
+            );
+      }),
+    );
+
+  // Request tracking and the heartbeat ride on the protocol itself: requests
+  // are seen as they go out, chunks and exits as they come back.
   const protocolLayer = Layer.effect(
     RpcClient.Protocol,
     Effect.map(
       RpcClient.makeProtocolSocket({
         retryPolicy,
         retryTransientErrors: true,
-      }),
-      (protocol) => ({
-        ...protocol,
-        run: (clientId, writeResponse) =>
-          protocol.run(clientId, (response) => {
-            if (response._tag === "ClientProtocolError" || response._tag === "Defect") {
-              clearAllTrackedRpcRequests();
-            }
-            return writeResponse(response);
-          }),
-      }),
-    ),
-  );
-  const requestHooksLayer = Layer.succeed(
-    RpcClient.RequestHooks,
-    RpcClient.RequestHooks.of({
-      onRequestStart: (info) =>
-        Effect.sync(() => {
+        onPingTimeout: Effect.sync(() => {
+          heldUntilConnected ??= Latch.makeUnsafe(false);
           if (!lifecycle.isActive()) {
             return;
           }
-          handlers?.onRequestStart?.({
-            id: String(info.id),
-            tag: info.tag,
-            stream: info.stream,
-          });
-          trackRpcRequestSent(String(info.id), info.tag);
-        }),
-      onRequestChunk: (info) =>
-        Effect.sync(() => {
-          if (!lifecycle.isActive()) {
-            return;
-          }
-          handlers?.onRequestChunk?.({
-            id: String(info.id),
-            tag: info.tag,
-            chunkCount: info.chunkCount,
-          });
-          acknowledgeRpcRequest(String(info.id));
-        }),
-      onRequestExit: (info) =>
-        Effect.sync(() => {
-          if (!lifecycle.isActive()) {
-            return;
-          }
-          handlers?.onRequestExit?.({
-            id: String(info.id),
-            tag: info.tag,
-            stream: info.stream,
-          });
-          acknowledgeRpcRequest(String(info.id));
-        }),
-      onRequestInterrupt: (info) =>
-        Effect.sync(() => {
-          if (!lifecycle.isActive()) {
-            return;
-          }
-          handlers?.onRequestInterrupt?.({
-            id: String(info.id),
-            ...(info.tag === undefined ? {} : { tag: info.tag }),
-          });
-          acknowledgeRpcRequest(String(info.id));
-        }),
-    }),
-  );
-  const connectionHooksLayer = Layer.succeed(
-    RpcClient.ConnectionHooks,
-    RpcClient.ConnectionHooks.of({
-      onConnect: Effect.void,
-      onDisconnect: Effect.void,
-      onPing: Effect.sync(() => {
-        if (lifecycle.isActive()) {
-          handlers?.onHeartbeatPing?.();
-        }
-      }),
-      onPong: Effect.sync(() => {
-        if (lifecycle.isActive()) {
-          handlers?.onHeartbeatPong?.();
-        }
-      }),
-      onPingTimeout: Effect.sync(() => {
-        if (lifecycle.isActive()) {
           clearAllTrackedRpcRequests();
           if (reportsAppConnection(handlers)) {
             recordWsConnectionErrored(
@@ -429,16 +401,58 @@ export function createWsRpcProtocolLayer(
             );
           }
           handlers?.onHeartbeatTimeout?.();
-        }
+        }),
       }),
-    }),
+      (protocol): RpcClient.Protocol["Service"] => ({
+        ...protocol,
+        send: (clientId, request, transferables) =>
+          Effect.suspend(() => {
+            const send = sendWhenConnected(protocol, clientId, request, transferables);
+            if (!lifecycle.isActive()) {
+              return send;
+            }
+            if (request._tag === "Interrupt") {
+              acknowledgeRpcRequest(String(request.requestId));
+              return send;
+            }
+            if (request._tag !== "Request") {
+              return send;
+            }
+            const id = String(request.id);
+            handlers?.onRequestStart?.({
+              id,
+              tag: request.tag,
+              stream: STREAM_RPC_TAGS.has(request.tag),
+            });
+            trackRpcRequestSent(id, request.tag);
+            // A send the protocol refused never gets an answer to wait for.
+            return Effect.onError(send, () => Effect.sync(() => acknowledgeRpcRequest(id)));
+          }),
+        run: (clientId, writeResponse) =>
+          protocol.run(clientId, (response) => {
+            // The heartbeat timeout's own failure (see above).
+            if (
+              response._tag === "ClientProtocolError" &&
+              heldUntilConnected !== undefined &&
+              response.error.reason._tag === "SocketReadError"
+            ) {
+              return Effect.void;
+            }
+            if (response._tag === "ClientProtocolError" || response._tag === "Defect") {
+              clearAllTrackedRpcRequests();
+            } else if (
+              (response._tag === "Chunk" || response._tag === "Exit") &&
+              lifecycle.isActive()
+            ) {
+              acknowledgeRpcRequest(String(response.requestId));
+            }
+            return writeResponse(response);
+          }),
+      }),
+    ),
   );
 
-  return Layer.mergeAll(
-    protocolLayer.pipe(
-      Layer.provide(Layer.mergeAll(socketLayer, RpcSerialization.layerJson, connectionHooksLayer)),
-    ),
-    requestHooksLayer,
-    connectionHooksLayer,
+  return protocolLayer.pipe(
+    Layer.provide(Layer.mergeAll(socketLayer, RpcSerialization.layerJson, connectionHooksLayer)),
   );
 }

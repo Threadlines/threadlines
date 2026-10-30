@@ -35,12 +35,12 @@ import {
   PreviewAutomationWaitForInputSchema,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
-import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 
-const dependencies = [McpInvocationContext, PreviewAutomationBroker];
+// The caller comes with each request (`requestService`), not from the layer.
+const dependencies = [PreviewAutomationBroker];
 
 /** Everything here reaches out of the machine and into a live page. */
 const pageTool = <T extends Tool.Any>(tool: T): T => tool.annotate(Tool.OpenWorld, true) as T;

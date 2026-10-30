@@ -24,13 +24,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { McpProtocol, McpServer } from "effect/ai";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import {
   listOnlyGrantedTools,
@@ -61,6 +56,7 @@ import {
   outsideAgentResource,
 } from "./OutsideAgentConnections.ts";
 import { OutsideAgentRequests } from "./OutsideAgentRequests.ts";
+import { requestService } from "../mcp/requestService.ts";
 
 /** What a `see` connection lists, and what a `start` one does. */
 const SEE_TOOLS: ReadonlySet<string> = new Set(Object.keys(SeeToolkit.tools));
@@ -231,7 +227,7 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
       limits: makeConnectLimits(),
     });
     const counted = yield* makeToolCallCounts;
-    const caller = Effect.service(McpConnectInvocation);
+    const caller = requestService(McpConnectInvocation);
     return {
       projects: () => counted("projects", Effect.flatMap(caller, handlers.projects)),
       agents: (input) =>

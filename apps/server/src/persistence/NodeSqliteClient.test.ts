@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqliteClient from "./NodeSqliteClient.ts";
 
@@ -116,6 +116,34 @@ it.live("an interrupted query never keeps the connection", () =>
         assert.isTrue(Option.isSome(next), `contended ${contended}, delay ${delay}`);
       }
     }
+  }).pipe(Effect.provide(SqliteClient.layerMemory())),
+);
+
+it.effect("rolls back a transaction whose COMMIT failed before the connection is used again", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA foreign_keys = ON`;
+    yield* sql`CREATE TABLE parent(id INTEGER PRIMARY KEY)`;
+    yield* sql`CREATE TABLE child(
+      parent_id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED
+    )`;
+    yield* sql`CREATE TABLE later(kind TEXT NOT NULL)`;
+
+    // A deferred foreign key is checked at COMMIT, which fails and leaves
+    // SQLite's transaction open.
+    const failed = yield* sql
+      .withTransaction(sql`INSERT INTO child(parent_id) VALUES (1)`)
+      .pipe(Effect.flip);
+    assert.equal(failed._tag, "SqlError");
+
+    yield* sql`INSERT INTO later(kind) VALUES ('plain')`;
+    yield* sql.withTransaction(sql`INSERT INTO later(kind) VALUES ('transaction')`);
+
+    assert.deepStrictEqual(yield* sql`SELECT parent_id FROM child`, []);
+    assert.deepStrictEqual(yield* sql`SELECT kind FROM later ORDER BY rowid`, [
+      { kind: "plain" },
+      { kind: "transaction" },
+    ]);
   }).pipe(Effect.provide(SqliteClient.layerMemory())),
 );
 

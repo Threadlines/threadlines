@@ -16,13 +16,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { AuthControlPlaneRuntimeLive } from "../auth/Layers/AuthControlPlane.ts";
 import { AuthControlPlane } from "../auth/Services/AuthControlPlane.ts";
@@ -313,10 +308,10 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
 
 const projectAddCommand = Command.make("add", {
   ...projectLocationFlags,
-  workspaceRoot: Argument.string("path").pipe(
+  workspaceRoot: Argument.String("path").pipe(
     Argument.withDescription("Workspace root to add as a project."),
   ),
-  title: Flag.string("title").pipe(Flag.withDescription("Optional project title."), Flag.optional),
+  title: Flag.String("title").pipe(Flag.withDescription("Optional project title."), Flag.optional),
 }).pipe(
   Command.withDescription("Add a project."),
   Command.withHandler((flags) =>
@@ -363,11 +358,12 @@ const projectAddCommand = Command.make("add", {
 
 const projectRemoveCommand = Command.make("remove", {
   ...projectLocationFlags,
-  project: Argument.string("project").pipe(
+  project: Argument.String("project").pipe(
     Argument.withDescription("Project id or workspace root to remove."),
   ),
-  force: Flag.boolean("force").pipe(
+  force: Flag.Boolean("force").pipe(
     Flag.withDescription("Delete the project even if it still has threads (deletes them too)."),
+    Flag.withDefault(false),
   ),
 }).pipe(
   Command.withDescription("Remove a project."),
@@ -401,10 +397,10 @@ const projectRemoveCommand = Command.make("remove", {
 
 const projectRenameCommand = Command.make("rename", {
   ...projectLocationFlags,
-  project: Argument.string("project").pipe(
+  project: Argument.String("project").pipe(
     Argument.withDescription("Project id or workspace root to rename."),
   ),
-  title: Argument.string("title").pipe(Argument.withDescription("New project title.")),
+  title: Argument.String("title").pipe(Argument.withDescription("New project title.")),
 }).pipe(
   Command.withDescription("Rename a project."),
   Command.withHandler((flags) =>

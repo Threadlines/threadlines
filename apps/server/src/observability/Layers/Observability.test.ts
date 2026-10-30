@@ -1,11 +1,19 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { EffectTraceRecord } from "@threadlines/shared/observability";
+import * as Effect from "effect/Effect";
+import * as Tracer from "effect/Tracer";
+import * as SqlClient from "effect/sql/SqlClient";
 
+import * as NodeSqliteClient from "../../persistence/NodeSqliteClient.ts";
 import { shouldRecordServerLocalTrace } from "./Observability.ts";
 
-const span = (index: number, events: EffectTraceRecord["events"] = []): EffectTraceRecord => ({
+const span = (
+  index: number,
+  events: EffectTraceRecord["events"] = [],
+  name = "handleSdkMessage",
+): EffectTraceRecord => ({
   type: "effect-span",
-  name: "handleSdkMessage",
+  name,
   kind: "internal",
   traceId: "trace",
   spanId: `span-${index}`,
@@ -37,4 +45,25 @@ describe("shouldRecordServerLocalTrace", () => {
     );
     assert.strictEqual(logged.filter(shouldRecordServerLocalTrace).length, 1_000);
   });
+
+  it.effect("writes few of the spans our SQLite client opens for statements", () =>
+    Effect.gen(function* () {
+      const names: Array<string> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          names.push(options.name);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`SELECT 1`.pipe(Effect.withTracer(tracer));
+      const statementName = names.at(-1);
+      assert.isDefined(statementName);
+
+      const statements = Array.from({ length: 1_000 }, (_, index) =>
+        span(index, [], statementName),
+      );
+      assert.isBelow(statements.filter(shouldRecordServerLocalTrace).length, 50);
+    }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+  );
 });

@@ -7,12 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import * as Tracer from "effect/Tracer";
-import {
-  OtlpExporter,
-  OtlpMetrics,
-  OtlpSerialization,
-  OtlpTracer,
-} from "effect/unstable/observability";
+import { OtlpExporter, OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerLoggerLive } from "../../serverLogger.ts";
@@ -28,7 +23,9 @@ const SQL_TRACE_SAMPLE_MODULO = 100;
 const PROJECTION_TRACE_SAMPLE_MODULO = 20;
 const PROVIDER_MESSAGE_TRACE_SAMPLE_MODULO = 100;
 
-const sampledSqlSpanNames = new Set(["sql.execute", "sql.transaction"]);
+// Statement spans are named after the database (`db.system.name`, "sqlite"
+// for ours) since effect 4.0.1; older trace files say "sql.execute".
+const sampledSqlSpanNames = new Set(["sqlite", "sql.execute", "sql.transaction"]);
 const sampledProjectionSpanNames = new Set([
   "applyPendingApprovalsProjection",
   "applyProjectsProjection",
