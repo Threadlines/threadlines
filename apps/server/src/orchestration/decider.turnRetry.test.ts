@@ -432,3 +432,215 @@ describe("decider turn retry", () => {
     ).rejects.toThrow("has no user message to retry");
   });
 });
+
+describe("decider continue at reset", () => {
+  const run = async (readModel: OrchestrationReadModel, command: OrchestrationCommand) => {
+    const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+    const events = Array.isArray(decided) ? decided : [decided];
+    let projected = readModel;
+    for (const event of events) {
+      projected = await Effect.runPromise(
+        projectEvent(projected, { ...event, sequence: projected.snapshotSequence + 1 }),
+      );
+    }
+    return { events, session: projected.threads[0]?.session ?? null, readModel: projected };
+  };
+  const limitText = "You've hit your session limit · resets 2:20pm (America/New_York)";
+  const resetsAt = "2026-01-01T05:00:00.000Z";
+  // A usage limit landing on the thread's failed turn, as ingestion records it.
+  const limitHit = (settingOn: boolean, at = "2026-01-01T00:00:04.000Z") =>
+    ({
+      type: "thread.session.set",
+      commandId: CommandId.make(`cmd-limit-${at}`),
+      threadId,
+      session: { ...failedSession, lastError: limitText, updatedAt: at },
+      usageLimit: { window: "session", resetsAt },
+      continueAfterUsageLimits: settingOn,
+      createdAt: at,
+    }) as const;
+  const typed = (thread: OrchestrationThread): OrchestrationThread => ({
+    ...thread,
+    session: null,
+    messages: thread.messages.map((message) =>
+      message.role === "user" ? { ...message, composer: "typed" as const } : message,
+    ),
+  });
+  const fire = (lastErrorAt: string, createdAt: string) =>
+    ({
+      type: "thread.continue-at-reset.fire",
+      commandId: CommandId.make(`cmd-fire-${createdAt}`),
+      threadId,
+      lastErrorAt,
+      messageId: MessageId.make(`message-continue-${createdAt}`),
+      createdAt,
+    }) as const;
+
+  it("waits for a limit the user's own turn hit only when the setting is on", async () => {
+    const off = await run(makeReadModel(typed(makeThread())), limitHit(false));
+    expect(off.session?.lastErrorUsageLimit).toEqual({ window: "session", resetsAt });
+    expect(off.session?.continueAtReset).toBeUndefined();
+
+    const on = await run(makeReadModel(typed(makeThread())), limitHit(true));
+    expect(on.session?.continueAtReset).toEqual({ resetsAt, at: "2026-01-01T05:01:00.000Z" });
+
+    // A turn another thread's agent asked for doesn't belong to the user.
+    const requested = await run(makeReadModel(makeThread({ session: null })), limitHit(true));
+    expect(requested.session?.continueAtReset).toBeUndefined();
+  });
+
+  it("continues with a new message at reset, unless the user sent one first", async () => {
+    const armed = await run(makeReadModel(typed(makeThread())), limitHit(true));
+    const lastErrorAt = armed.session?.lastErrorAt ?? "";
+
+    const continued = await run(armed.readModel, fire(lastErrorAt, "2026-01-01T05:01:30.000Z"));
+    expect(continued.session?.continueAtReset).toBeUndefined();
+    expect(continued.session?.status).toBe("starting");
+    const sent = continued.readModel.threads[0]?.messages.at(-1);
+    expect(sent).toMatchObject({
+      role: "user",
+      text: "Continue where you left off.",
+      trigger: "usageLimitReset",
+    });
+    expect(continued.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+
+    // The user's own message lands first: the wait is over and the fire refused.
+    const userSent = await run(armed.readModel, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-user-send"),
+      threadId,
+      message: {
+        messageId: MessageId.make("message-user-3"),
+        role: "user",
+        text: "keep going",
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: "2026-01-01T05:01:00.000Z",
+    });
+    expect(userSent.session?.continueAtReset).toBeUndefined();
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: fire(lastErrorAt, "2026-01-01T05:01:30.000Z"),
+          readModel: userSent.readModel,
+        }),
+      ),
+    ).rejects.toThrow("no longer waiting");
+  });
+
+  it("lets the user's message overtake a continue on its way, never both", async () => {
+    const armed = await run(makeReadModel(typed(makeThread())), limitHit(true));
+    const continued = await run(
+      armed.readModel,
+      fire(armed.session?.lastErrorAt ?? "", "2026-01-01T05:01:30.000Z"),
+    );
+    const continueId = MessageId.make("message-continue-2026-01-01T05:01:30.000Z");
+    const userSend = (createdAt: string) =>
+      ({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-user-${createdAt}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`message-user-${createdAt}`),
+          role: "user",
+          text: "actually, stop and fix the tests",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        composer: "typed",
+        createdAt,
+      }) as const;
+
+    // Still starting: the user's message waits, marked to overtake it; no second start.
+    const starting = await run(continued.readModel, userSend("2026-01-01T05:01:31.000Z"));
+    expect(starting.events.map((event) => event.type)).not.toContain("thread.turn-start-requested");
+    const queued = starting.readModel.threads[0]?.queuedFollowUps ?? [];
+    expect(queued).toMatchObject([{ overtakes: continueId }]);
+
+    // The continue never reached the agent: it is marked not sent.
+    const skipped = await run(starting.readModel, {
+      type: "thread.continue-at-reset.skip",
+      commandId: CommandId.make("cmd-skip"),
+      threadId,
+      messageId: continueId,
+      createdAt: "2026-01-01T05:01:32.000Z",
+    });
+    expect(skipped.readModel.threads[0]?.messages.find((m) => m.id === continueId)).toMatchObject({
+      notSent: true,
+    });
+
+    // It did reach the agent and its turn runs: the queued message is steered in.
+    const steered = await run(starting.readModel, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("cmd-steer-overtaking"),
+      threadId,
+      messageId: MessageId.make("message-user-2026-01-01T05:01:31.000Z"),
+      steerIntoTurnId: TurnId.make("turn-continue"),
+      createdAt: "2026-01-01T05:01:33.000Z",
+    });
+    expect(
+      steered.events.find((event) => event.type === "thread.follow-up-submitted")?.payload,
+    ).toMatchObject({
+      turnId: TurnId.make("turn-continue"),
+      text: "actually, stop and fix the tests",
+    });
+
+    // Sent while the continue's turn already runs: a steer into that turn.
+    const running = {
+      ...continued.readModel,
+      threads: continued.readModel.threads.map((thread) => ({
+        ...thread,
+        session:
+          thread.session === null
+            ? null
+            : {
+                ...thread.session,
+                status: "running" as const,
+                activeTurnId: TurnId.make("turn-continue"),
+              },
+      })),
+    };
+    const late = await run(running, userSend("2026-01-01T05:01:40.000Z"));
+    expect(late.events.map((event) => event.type)).toContain("thread.follow-up-submitted");
+    expect(late.events.map((event) => event.type)).not.toContain("thread.turn-start-requested");
+  });
+
+  it("keeps a continued thread going after its next limit, without the setting", async () => {
+    const armed = await run(makeReadModel(typed(makeThread())), limitHit(true));
+    const continued = await run(
+      armed.readModel,
+      fire(armed.session?.lastErrorAt ?? "", "2026-01-01T05:01:30.000Z"),
+    );
+    const again = await run(continued.readModel, {
+      ...limitHit(false, "2026-01-01T05:30:00.000Z"),
+      usageLimit: { window: "weekly", resetsAt: "2026-01-03T00:00:00.000Z" },
+    });
+    expect(again.session?.continueAtReset).toEqual({
+      resetsAt: "2026-01-03T00:00:00.000Z",
+      at: "2026-01-03T00:01:00.000Z",
+    });
+  });
+
+  it("turned on after the reset passed, continues at the next check; archiving ends the wait", async () => {
+    const hit = await run(makeReadModel(typed(makeThread())), limitHit(false));
+    const lastErrorAt = hit.session?.lastErrorAt ?? "";
+    const late = await run(hit.readModel, {
+      type: "thread.continue-at-reset.set",
+      commandId: CommandId.make("cmd-switch-on"),
+      threadId,
+      lastErrorAt,
+      enabled: true,
+      createdAt: "2026-01-01T06:00:00.000Z",
+    });
+    expect(late.session?.continueAtReset).toEqual({ resetsAt, at: "2026-01-01T06:00:00.000Z" });
+
+    const archived = await run(late.readModel, {
+      type: "thread.archive",
+      commandId: CommandId.make("cmd-archive"),
+      threadId,
+    });
+    expect(archived.session?.continueAtReset).toBeUndefined();
+  });
+});

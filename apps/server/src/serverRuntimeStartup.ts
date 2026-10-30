@@ -33,6 +33,7 @@ import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
+import { ContinueAtResetSweeper } from "./orchestration/Services/ContinueAtResetSweeper.ts";
 import { PullRequestAutomationWatcher } from "./orchestration/Services/PullRequestAutomationWatcher.ts";
 import { ThreadPullRequestLinker } from "./orchestration/Services/ThreadPullRequestLinker.ts";
 import { AutomaticGitFetchSupervisor } from "./vcs/AutomaticGitFetchSupervisor.ts";
@@ -341,6 +342,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const pushAlerts = yield* Effect.serviceOption(PushAlerts);
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
+  const continueAtResetSweeper = yield* ContinueAtResetSweeper;
   const pullRequestAutomationWatcher = yield* PullRequestAutomationWatcher;
   const threadPullRequestLinker = yield* ThreadPullRequestLinker;
   const automaticGitFetchSupervisor = yield* AutomaticGitFetchSupervisor;
@@ -414,6 +416,9 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         }
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
+        // After the orchestration reactor settled the sessions the previous
+        // process left, so a thread it continues starts like any other turn.
+        yield* continueAtResetSweeper.start().pipe(Scope.provide(reactorScope));
         yield* pullRequestAutomationWatcher.start().pipe(Scope.provide(reactorScope));
         yield* threadPullRequestLinker.start().pipe(Scope.provide(reactorScope));
         yield* automaticGitFetchSupervisor.start().pipe(Scope.provide(reactorScope));

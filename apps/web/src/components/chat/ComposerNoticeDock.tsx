@@ -95,6 +95,7 @@ function ComposerNoticeRow({
       data-composer-notice-severity={notice.severity}
       className={cn(
         "flex min-w-0 items-center gap-2.5 px-3 py-1.5 text-xs",
+        notice.wrapActions && "max-sm:flex-wrap max-sm:gap-y-1.5",
         divided && "border-b border-border/60",
       )}
     >
@@ -107,7 +108,15 @@ function ComposerNoticeRow({
         {notice.detail ? <span className="text-muted-foreground"> {notice.detail}</span> : null}
       </span>
       {notice.actions ? (
-        <span className="flex shrink-0 items-center gap-1">{notice.actions}</span>
+        <span
+          className={cn(
+            "flex shrink-0 items-center gap-1",
+            // Under the text, lined up with it past the dot.
+            notice.wrapActions && "max-sm:order-last max-sm:basis-full max-sm:pl-[17px]",
+          )}
+        >
+          {notice.actions}
+        </span>
       ) : null}
       {expander}
       {notice.onDismiss ? (

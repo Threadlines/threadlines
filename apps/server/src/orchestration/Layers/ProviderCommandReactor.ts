@@ -2787,6 +2787,78 @@ const make = Effect.gen(function* () {
       return true;
     });
 
+    /**
+     * "Continue where you left off." that the user's own message overtook
+     * before it reached the agent (OrchestrationQueuedFollowUp.overtakes): the
+     * user's goes as the turn instead, and this one is marked not sent. Read
+     * afresh, like Stop: the user may have written while this was prepared.
+     */
+    const continueOvertaken = Effect.gen(function* () {
+      if (message.trigger !== "usageLimitReset") {
+        return false;
+      }
+      const latest = yield* resolveThread(event.payload.threadId);
+      const overtaking = (latest?.queuedFollowUps ?? []).find(
+        (queued) => queued.overtakes === event.payload.messageId,
+      );
+      if (overtaking === undefined) {
+        return false;
+      }
+      const createdAt = yield* nowIso;
+      // Theirs first: if it can't go, this one goes and theirs is steered in
+      // after. Refused if Stop landed since this turn was asked for: then
+      // neither goes, and theirs waits in the queue Stop holds.
+      const sent = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: serverCommandId("continue-overtaken-send"),
+          threadId: event.payload.threadId,
+          messageId: overtaking.messageId,
+          ...(event.payload.chainEpoch !== undefined
+            ? { ifChainEpoch: event.payload.chainEpoch }
+            : {}),
+          createdAt,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "provider command reactor could not send the message that overtook a continue",
+              {
+                threadId: event.payload.threadId,
+                messageId: overtaking.messageId,
+                detail: String(error),
+              },
+            ).pipe(Effect.as(false)),
+          ),
+        );
+      if (!sent) {
+        return yield* stoppedSinceRequested;
+      }
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.continue-at-reset.skip",
+          commandId: serverCommandId("continue-at-reset-skip"),
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          createdAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("provider command reactor could not mark a continue not sent", {
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              detail: String(error),
+            }),
+          ),
+        );
+      yield* Effect.logInfo("continue not sent: the user wrote first", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      return true;
+    });
+
     /** Whether this turn is still the thread's latest start (a newer one replaces it). */
     const stillLatestStart = projectionTurnRepository
       .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
@@ -2860,7 +2932,7 @@ const make = Effect.gen(function* () {
 
     // Preparing the session and sending the turn, in this thread's worker.
     const prepareAndSend: ContinueWork = Effect.gen(function* () {
-      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld) || (yield* continueOvertaken)) {
         return;
       }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
@@ -2941,8 +3013,9 @@ const make = Effect.gen(function* () {
 
       // Stop pressed while this turn was being prepared waited behind it in
       // this worker, but has already raised the chain epoch. A linked
-      // computer may have taken the request back meanwhile too.
-      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
+      // computer may have taken the request back meanwhile too, or the user
+      // may have written over a continue.
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld) || (yield* continueOvertaken)) {
         return;
       }
       // The turn request already recorded the model it expected to go out.
@@ -2985,7 +3058,10 @@ const make = Effect.gen(function* () {
         Effect.tap(() =>
           worker.enqueue(String(event.payload.threadId), {
             type: "continue",
-            run: steerQueuedAgentMessages(event.payload.threadId),
+            run: Effect.andThen(
+              steerQueuedAgentMessages(event.payload.threadId),
+              steerOvertakingFollowUps(event.payload.threadId),
+            ),
           }),
         ),
         Effect.catchCause(recoverTurnStartFailure),
@@ -3110,6 +3186,11 @@ const make = Effect.gen(function* () {
         return;
       }
       const rejection = steerRejectionIn(cause);
+      // The message that overtook a continue was the user's turn: it never
+      // goes missing, so a steer that failed puts it back to go after the turn.
+      if (rejection === undefined && event.payload.overtakes !== undefined) {
+        return yield* requeue;
+      }
       if (rejection === undefined) {
         yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,
@@ -4428,6 +4509,73 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ensuring(Effect.sync(() => steeringAgentMessages.delete(queued.messageId))));
   });
 
+  /**
+   * The user's message that overtook "Continue where you left off." after that
+   * reached the agent (OrchestrationQueuedFollowUp.overtakes): it goes into the
+   * turn the continue started, like a message typed while it ran, once the
+   * provider has taken that turn and it runs. One that misses the turn waits
+   * in the queue and goes after it.
+   */
+  const steerOvertakingFollowUps = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const thread = yield* resolveThread(threadId);
+    const session = thread?.session ?? null;
+    const turnId = session?.status === "running" ? session.activeTurnId : null;
+    if (
+      thread === undefined ||
+      session === null ||
+      turnId === null ||
+      turnId === undefined ||
+      providerTakenTurns.get(threadId) !== turnId ||
+      queueHeldByStop.has(threadId)
+    ) {
+      return;
+    }
+    const overtaking = (thread.queuedFollowUps ?? []).filter(
+      (queued) =>
+        queued.overtakes !== undefined &&
+        !isAgentOrigin(queued) &&
+        (queued.participantId ?? null) === sessionSlotParticipantId(session),
+    );
+    for (const queued of overtaking) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: serverCommandId("continue-overtaken-steer"),
+          threadId,
+          messageId: queued.messageId,
+          steerIntoTurnId: turnId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo(
+              "provider command reactor could not steer the message that overtook a continue",
+              {
+                threadId,
+                messageId: queued.messageId,
+                detail: String(error),
+              },
+            ),
+          ),
+        );
+    }
+  });
+
+  /** The user's message that overtook a continue whose start failed: it goes as its own turn. */
+  const sendOvertakingFollowUp = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    createdAt: string,
+  ) {
+    if (queueHeldByStop.has(threadId)) return;
+    const thread = yield* resolveThread(threadId);
+    const overtaking = (thread?.queuedFollowUps ?? []).find(
+      (queued) => queued.overtakes !== undefined && !isAgentOrigin(queued),
+    );
+    if (overtaking !== undefined) {
+      yield* sendQueuedFollowUpWhenFree(threadId, overtaking.messageId, createdAt);
+    }
+  });
+
   /** Steer every reply and report queued for the agent now at work; see steerQueuedAgentMessage. */
   const steerQueuedAgentMessages = Effect.fnUntraced(function* (threadId: ThreadId) {
     const thread = yield* resolveThread(threadId);
@@ -4642,9 +4790,12 @@ const make = Effect.gen(function* () {
       return;
     }
     if (status === "running" || status === "starting") {
-      // A reply or a report for the agent at work goes into its turn now.
+      // A reply or a report for the agent at work goes into its turn now, and
+      // so does the user's message that overtook a continue already sent.
       if (!fromUser) {
         yield* steerQueuedAgentMessage(thread.id, event.payload.followUp.messageId);
+      } else if (event.payload.followUp.overtakes !== undefined) {
+        yield* steerOvertakingFollowUps(thread.id);
       }
       return;
     }
@@ -4776,6 +4927,23 @@ const make = Effect.gen(function* () {
       );
     }
     yield* maybeSendNextQueuedFollowUp(event);
+    // A continue's turn now runs: the user's message that overtook it goes in.
+    if (
+      previousStatus !== "running" &&
+      event.payload.session.status === "running" &&
+      event.payload.session.activeTurnId !== null
+    ) {
+      yield* steerOvertakingFollowUps(event.payload.threadId);
+    }
+    // The continue's start failed before it ran: the user's message that
+    // overtook it goes now, instead of waiting for a turn that never ends.
+    if (
+      previousStatus === "starting" &&
+      event.payload.session.status !== "starting" &&
+      event.payload.session.status !== "running"
+    ) {
+      yield* sendOvertakingFollowUp(event.payload.threadId, event.occurredAt);
+    }
     if (event.payload.session.status !== "stopped") {
       if (
         event.payload.session.status === "starting" ||

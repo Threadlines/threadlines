@@ -1,4 +1,5 @@
 import {
+  type OrchestrationSessionUsageLimit,
   CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type AssistantDeliveryMode,
   CommandId,
@@ -3554,6 +3555,30 @@ const make = Effect.gen(function* () {
                 ? null
                 : (thread.session?.lastError ?? null);
 
+        // A turn the user's plan usage limit stopped: the decider keeps the
+        // limit with the failure and arms "Continue at reset" by the setting.
+        const failedUsageLimit =
+          event.type === "turn.completed" &&
+          normalizeRuntimeTurnState(event.payload.state) === "failed"
+            ? event.payload.usageLimit
+            : undefined;
+        const usageLimitFields: {
+          readonly usageLimit?: OrchestrationSessionUsageLimit;
+          readonly continueAfterUsageLimits?: boolean;
+        } =
+          failedUsageLimit === undefined
+            ? {}
+            : {
+                usageLimit: {
+                  window: failedUsageLimit.window ?? "other",
+                  resetsAt: failedUsageLimit.resetsAt ?? null,
+                },
+                continueAfterUsageLimits: yield* serverSettingsService.getSettings.pipe(
+                  Effect.map((settings) => settings.continueAfterUsageLimits),
+                  Effect.orElseSucceed(() => false),
+                ),
+              };
+
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
@@ -3600,6 +3625,7 @@ const make = Effect.gen(function* () {
               lastError,
               updatedAt: sessionUpdatedAt,
             },
+            ...usageLimitFields,
             createdAt: now,
           });
         }

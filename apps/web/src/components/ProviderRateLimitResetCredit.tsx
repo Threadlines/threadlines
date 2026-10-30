@@ -169,6 +169,9 @@ export function isProviderUsageLimitErrorMessage(message: string | null | undefi
   if (!normalized) return false;
 
   return (
+    // Claude: "You've hit your session limit · resets 2:20pm (America/New_York)".
+    normalized.startsWith("you've hit your") ||
+    normalized.startsWith("you've reached your") ||
     normalized.includes("usage limit") ||
     normalized.includes("usagelimitexceeded") ||
     normalized.includes("usage limited") ||

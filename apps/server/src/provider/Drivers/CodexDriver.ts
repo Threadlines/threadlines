@@ -22,6 +22,7 @@
  * @module provider/Drivers/CodexDriver
  */
 import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -31,12 +32,14 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import { usageLimitFromAccountUsage } from "@threadlines/shared/usageLimits";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
 import { realtimeAudioHub } from "../../realtime/RealtimeAudioHub.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
+import { freshOrCurrentSnapshot } from "../freshProviderSnapshot.ts";
 import {
   checkCodexProviderStatus,
   consumeCodexRateLimitResetCredit,
@@ -232,6 +235,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         publishRealtimeAudio: realtimeAudioHub.publish,
         releaseRealtimeAudio: realtimeAudioHub.remove,
+        // Codex's usage-limit error has no reset time. A fresh read right
+        // after the failure shows which window is spent and when it resets;
+        // a slow or failed read falls back to the reading already held.
+        readUsageLimit: Effect.gen(function* () {
+          const known = yield* snapshot.getSnapshot;
+          const current = yield* freshOrCurrentSnapshot(snapshot.refresh, snapshot.getSnapshot);
+          const nowMs = yield* Clock.currentTimeMillis;
+          // A read that failed carries no usage; the reading already held still counts.
+          return (
+            usageLimitFromAccountUsage(current.accountUsage, nowMs) ??
+            usageLimitFromAccountUsage(known.accountUsage, nowMs)
+          );
+        }),
         onAccountRateLimitsUpdated: (rateLimits) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);

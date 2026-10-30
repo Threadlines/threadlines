@@ -516,6 +516,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
         ? ["Keep Claude's suggestions when you're using a lot"]
         : []),
+      ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
+        ? ["Continue after usage limits"]
+        : []),
       ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
       ...(settings.startAgentsWhileTyping === false ? ["Start agents while you type"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
@@ -618,6 +621,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
       claudeSuggestionsWhenUsageRunsFast:
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
+      continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,
       agentInvites: "ask",

@@ -13,6 +13,7 @@ import {
   MessageAgentModel,
   MessageComposer,
   MessageSentFrom,
+  MessageTrigger,
   NonNegativeInt,
   RoomAgentMessageKind,
   RoomAgentRef,
@@ -59,6 +60,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     ),
     composer: Schema.NullOr(MessageComposer),
     sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
+    trigger: Schema.NullOr(MessageTrigger),
+    notSent: Schema.NullOr(Schema.Number),
   }),
 );
 
@@ -92,6 +95,8 @@ function toProjectionThreadMessage(
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
     ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
+    ...(row.trigger !== null ? { trigger: row.trigger } : {}),
+    ...(row.notSent === 1 ? { notSent: true as const } : {}),
   };
 }
 
@@ -129,6 +134,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           agent_models,
           composer,
           sent_from,
+          message_trigger,
+          not_sent,
           is_streaming,
           created_at,
           updated_at
@@ -171,6 +178,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.agentModels !== undefined ? JSON.stringify(row.agentModels) : null},
           ${row.composer ?? null},
           ${row.sentFrom !== undefined ? JSON.stringify(row.sentFrom) : null},
+          ${row.trigger ?? null},
+          ${row.notSent === true ? 1 : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -209,6 +218,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           agent_models = COALESCE(projection_thread_messages.agent_models, excluded.agent_models),
           composer = COALESCE(projection_thread_messages.composer, excluded.composer),
           sent_from = COALESCE(projection_thread_messages.sent_from, excluded.sent_from),
+          message_trigger = COALESCE(projection_thread_messages.message_trigger, excluded.message_trigger),
+          not_sent = COALESCE(excluded.not_sent, projection_thread_messages.not_sent),
           is_streaming = excluded.is_streaming,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -245,6 +256,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           agent_models AS "agentModels",
           composer,
           sent_from AS "sentFrom",
+          message_trigger AS "trigger",
+          not_sent AS "notSent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -283,6 +296,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           agent_models AS "agentModels",
           composer,
           sent_from AS "sentFrom",
+          message_trigger AS "trigger",
+          not_sent AS "notSent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

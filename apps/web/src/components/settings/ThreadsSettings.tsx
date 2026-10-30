@@ -70,6 +70,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
         <ClaudeSuggestionsRow />
+        <ContinueAfterUsageLimitsRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
       </SettingsSection>
@@ -680,6 +681,39 @@ export function ClaudeSuggestionsRow() {
             updateSettings({ claudeSuggestionsWhenUsageRunsFast: Boolean(checked) })
           }
           aria-label="Keep Claude's suggestions when you're using a lot"
+        />
+      }
+    />
+  );
+}
+
+/**
+ * Turns on "Continue at reset" for every thread a Claude or Codex usage limit
+ * stops, the switch on the limit's notice above the composer. Read by the
+ * thread's computer as each limit lands.
+ */
+export function ContinueAfterUsageLimitsRow() {
+  const on = useSettings((settings) => settings.continueAfterUsageLimits);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="threads.continueAfterUsageLimits"
+      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer."
+      resetAction={
+        on ? (
+          <SettingResetButton
+            label="Continue after usage limits"
+            onClick={() => updateSettings({ continueAfterUsageLimits: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) =>
+            updateSettings({ continueAfterUsageLimits: Boolean(checked) })
+          }
+          aria-label="Continue after usage limits"
         />
       }
     />

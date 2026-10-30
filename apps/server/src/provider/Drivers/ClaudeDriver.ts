@@ -14,6 +14,7 @@
  */
 import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
@@ -26,6 +27,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import { usageLimitFromAccountUsage } from "@threadlines/shared/usageLimits";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
@@ -592,6 +594,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
           Effect.orElseSucceed(() => false),
         ),
+        readUsageLimit: Effect.gen(function* () {
+          const current = yield* snapshot.getSnapshot;
+          // A reading of another account says nothing about this chat's limit.
+          if (claudeChatAndUsageAccountsDiffer(current.auth)) return undefined;
+          return usageLimitFromAccountUsage(current.accountUsage, yield* Clock.currentTimeMillis);
+        }),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);

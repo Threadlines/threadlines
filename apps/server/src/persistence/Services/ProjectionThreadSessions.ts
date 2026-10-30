@@ -11,7 +11,9 @@ import {
   IsoDateTime,
   NonNegativeInt,
   OrchestrationAwaitedBackgroundTask,
+  OrchestrationContinueAtReset,
   OrchestrationSessionStartup,
+  OrchestrationSessionUsageLimit,
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ThreadId,
@@ -53,6 +55,10 @@ export const ProjectionThreadSession = Schema.Struct({
   lastErrorAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** See OrchestrationSession.lastErrorDismissedAt. Absent on write clears it. */
   lastErrorDismissedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** See OrchestrationSession.lastErrorUsageLimit. Absent on write clears it. */
+  lastErrorUsageLimit: Schema.optional(Schema.NullOr(OrchestrationSessionUsageLimit)),
+  /** See OrchestrationSession.continueAtReset. Absent on write clears it. */
+  continueAtReset: Schema.optional(Schema.NullOr(OrchestrationContinueAtReset)),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
@@ -70,6 +76,23 @@ export const DismissProjectionThreadSessionErrorInput = Schema.Struct({
 });
 export type DismissProjectionThreadSessionErrorInput =
   typeof DismissProjectionThreadSessionErrorInput.Type;
+
+export const SetProjectionThreadSessionContinueAtResetInput = Schema.Struct({
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  continueAtReset: Schema.NullOr(OrchestrationContinueAtReset),
+});
+export type SetProjectionThreadSessionContinueAtResetInput =
+  typeof SetProjectionThreadSessionContinueAtResetInput.Type;
+
+/** A thread waiting to continue after a usage limit, as the server's sweep reads it. */
+export const ProjectionThreadContinueAtReset = Schema.Struct({
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  continueAtReset: OrchestrationContinueAtReset,
+});
+export type ProjectionThreadContinueAtReset = typeof ProjectionThreadContinueAtReset.Type;
 
 export const DeleteProjectionThreadSessionInput = Schema.Struct({
   threadId: ThreadId,
@@ -100,6 +123,20 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly dismissError: (
     input: DismissProjectionThreadSessionErrorInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Set or clear the wait to continue after a usage limit, if the session
+   * still holds the failure `lastErrorAt` names.
+   */
+  readonly setContinueAtReset: (
+    input: SetProjectionThreadSessionContinueAtResetInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Every thread waiting to continue after a usage limit. */
+  readonly listContinueAtReset: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadContinueAtReset>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Delete projected thread-session state by thread id.

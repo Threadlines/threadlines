@@ -901,6 +901,16 @@ const ROWS = [
     value: onOff((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
   },
   {
+    id: "threads.continueAfterUsageLimits",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Continue after usage limits",
+    about:
+      "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets. Each limit's notice above the composer also has a Continue at reset switch.",
+    keywords: ["usage limit", "rate limit", "resume", "reset"],
+    value: onOff((settings) => settings.continueAfterUsageLimits),
+  },
+  {
     id: "threads.commandRequests",
     kind: "row",
     parent: "threads.newThreads",

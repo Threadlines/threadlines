@@ -299,6 +299,8 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     ...(session.lastError ? { lastError: session.lastError } : {}),
     ...(session.lastErrorAt ? { lastErrorAt: session.lastErrorAt } : {}),
     ...(session.lastErrorDismissedAt ? { lastErrorDismissedAt: session.lastErrorDismissedAt } : {}),
+    ...(session.lastErrorUsageLimit ? { lastErrorUsageLimit: session.lastErrorUsageLimit } : {}),
+    ...(session.continueAtReset ? { continueAtReset: session.continueAtReset } : {}),
   };
 }
 
@@ -385,6 +387,8 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.fromOutside ? { fromOutside: message.fromOutside } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
     ...(message.sentFrom ? { sentFrom: message.sentFrom } : {}),
+    ...(message.trigger ? { trigger: message.trigger } : {}),
+    ...(message.notSent ? { notSent: true as const } : {}),
     ...(message.imported ? { imported: true as const } : {}),
   };
 }
@@ -1977,6 +1981,12 @@ function upsertThreadMessage(
     ...(existingMessage.sentFrom === undefined && message.sentFrom !== undefined
       ? { sentFrom: message.sentFrom }
       : {}),
+    ...(existingMessage.trigger === undefined && message.trigger !== undefined
+      ? { trigger: message.trigger }
+      : {}),
+    ...(existingMessage.notSent === true || message.notSent === true
+      ? { notSent: true as const }
+      : {}),
   };
   const nextMessages = messages.slice();
   nextMessages[existingIndex] = nextMessage;
@@ -2862,6 +2872,7 @@ function applyEnvironmentOrchestrationEvent(
             ? { agentModels: event.payload.agentModels }
             : {}),
           ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
+          ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
           ...(event.payload.imported ? { imported: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
@@ -2939,6 +2950,32 @@ function applyEnvironmentOrchestrationEvent(
             }
           : thread,
       );
+
+    case "thread.continue-at-reset-skipped":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        messages: thread.messages.map((message) =>
+          message.id === event.payload.messageId ? { ...message, notSent: true as const } : message,
+        ),
+      }));
+
+    case "thread.continue-at-reset-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (
+          thread.session == null ||
+          (thread.session.lastErrorAt ?? null) !== event.payload.lastErrorAt
+        ) {
+          return thread;
+        }
+        const { continueAtReset: _previous, ...session } = thread.session;
+        return {
+          ...thread,
+          session:
+            event.payload.continueAtReset === null
+              ? session
+              : { ...session, continueAtReset: event.payload.continueAtReset },
+        };
+      });
 
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

@@ -6,7 +6,9 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
   OrchestrationAwaitedBackgroundTask,
+  OrchestrationContinueAtReset,
   OrchestrationSessionStartup,
+  OrchestrationSessionUsageLimit,
 } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
@@ -18,12 +20,26 @@ import {
   DeleteProjectionThreadSessionInput,
   DismissProjectionThreadSessionErrorInput,
   GetProjectionThreadSessionInput,
+  ProjectionThreadContinueAtReset,
+  SetProjectionThreadSessionContinueAtResetInput,
 } from "../Services/ProjectionThreadSessions.ts";
 
 const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
   Struct.assign({
     awaitedBackgroundTasks: Schema.fromJsonString(Schema.Array(OrchestrationAwaitedBackgroundTask)),
     startup: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionStartup))),
+    lastErrorUsageLimit: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionUsageLimit)),
+    ),
+    continueAtReset: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationContinueAtReset)),
+    ),
+  }),
+);
+
+const ProjectionThreadContinueAtResetDbRow = ProjectionThreadContinueAtReset.mapFields(
+  Struct.assign({
+    continueAtReset: Schema.fromJsonString(OrchestrationContinueAtReset),
   }),
 );
 
@@ -52,6 +68,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error,
           last_error_at,
           last_error_dismissed_at,
+          last_error_usage_limit,
+          continue_at_reset,
           updated_at
         )
         VALUES (
@@ -86,6 +104,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.lastError},
           ${row.lastErrorAt ?? null},
           ${row.lastErrorDismissedAt ?? null},
+          ${row.lastErrorUsageLimit == null ? null : JSON.stringify(row.lastErrorUsageLimit)},
+          ${row.continueAtReset == null ? null : JSON.stringify(row.continueAtReset)},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -106,6 +126,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error = excluded.last_error,
           last_error_at = excluded.last_error_at,
           last_error_dismissed_at = excluded.last_error_dismissed_at,
+          last_error_usage_limit = excluded.last_error_usage_limit,
+          continue_at_reset = excluded.continue_at_reset,
           updated_at = excluded.updated_at
       `,
   });
@@ -133,6 +155,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_at AS "lastErrorAt",
           last_error_dismissed_at AS "lastErrorDismissedAt",
+          last_error_usage_limit AS "lastErrorUsageLimit",
+          continue_at_reset AS "continueAtReset",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -148,6 +172,33 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND last_error = ${lastError}
           AND last_error_at IS ${lastErrorAt}
+      `,
+  });
+
+  const setProjectionThreadSessionContinueAtReset = SqlSchema.void({
+    Request: SetProjectionThreadSessionContinueAtResetInput,
+    execute: ({ threadId, lastErrorAt, continueAtReset }) =>
+      sql`
+        UPDATE projection_thread_sessions
+        SET continue_at_reset = ${continueAtReset === null ? null : JSON.stringify(continueAtReset)}
+        WHERE thread_id = ${threadId}
+          AND last_error_at IS ${lastErrorAt}
+      `,
+  });
+
+  const listProjectionThreadContinueAtReset = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadContinueAtResetDbRow,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          last_error_at AS "lastErrorAt",
+          provider_instance_id AS "providerInstanceId",
+          continue_at_reset AS "continueAtReset"
+        FROM projection_thread_sessions
+        WHERE continue_at_reset IS NOT NULL
+          AND last_error_at IS NOT NULL
       `,
   });
 
@@ -179,6 +230,22 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       ),
     );
 
+  const setContinueAtReset: ProjectionThreadSessionRepositoryShape["setContinueAtReset"] = (
+    input,
+  ) =>
+    setProjectionThreadSessionContinueAtReset(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadSessionRepository.setContinueAtReset:query"),
+      ),
+    );
+
+  const listContinueAtReset: ProjectionThreadSessionRepositoryShape["listContinueAtReset"] = () =>
+    listProjectionThreadContinueAtReset(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadSessionRepository.listContinueAtReset:query"),
+      ),
+    );
+
   const deleteByThreadId: ProjectionThreadSessionRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadSessionRow(input).pipe(
       Effect.mapError(
@@ -190,6 +257,8 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
     upsert,
     getByThreadId,
     dismissError,
+    setContinueAtReset,
+    listContinueAtReset,
     deleteByThreadId,
   } satisfies ProjectionThreadSessionRepositoryShape;
 });

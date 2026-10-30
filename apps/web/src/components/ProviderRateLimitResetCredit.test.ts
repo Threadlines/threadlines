@@ -87,6 +87,11 @@ describe("ProviderRateLimitResetCredit", () => {
       ),
     ).toBe(true);
     expect(isProviderUsageLimitErrorMessage("usageLimitExceeded")).toBe(true);
+    expect(
+      isProviderUsageLimitErrorMessage(
+        "You've hit your session limit · resets 2:20pm (America/New_York)",
+      ),
+    ).toBe(true);
     expect(isProviderUsageLimitErrorMessage("Sandbox setup failed")).toBe(false);
   });
 

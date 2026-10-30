@@ -17,10 +17,12 @@ export interface ComposerNotice {
   readonly id: string;
   readonly severity: ComposerNoticeSeverity;
   /** Bold opening phrase naming the condition, e.g. "Codex needs sign-in." */
-  readonly lead: string;
+  readonly lead: ReactNode;
   /** Plain continuation of the lead. Truncates with the row. */
   readonly detail?: ReactNode;
   readonly actions?: ReactNode;
+  /** On a phone the actions take a line of their own under the text: too many to share one. */
+  readonly wrapActions?: boolean;
   readonly dismissLabel?: string;
   readonly onDismiss?: () => void;
 }

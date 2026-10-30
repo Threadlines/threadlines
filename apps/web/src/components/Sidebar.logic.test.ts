@@ -560,6 +560,34 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Completed" });
   });
 
+  it("shows a thread waiting out a usage limit as coming back, not failed", () => {
+    const limited = {
+      ...baseThread,
+      latestTurn: makeLatestTurn(),
+      session: {
+        ...baseThread.session,
+        status: "error" as const,
+        orchestrationStatus: "error" as const,
+        lastError: "You've hit your session limit · resets 2:20pm (America/New_York)",
+      },
+    };
+    expect(resolveThreadStatusPill({ thread: limited })).toMatchObject({ label: "Failed" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...limited,
+          session: {
+            ...limited.session,
+            continueAtReset: {
+              resetsAt: "2026-03-09T19:20:00.000Z",
+              at: "2026-03-09T19:21:00.000Z",
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Continues at reset", checkBackAt: "2026-03-09T19:21:00.000Z" });
+  });
+
   it("does not keep working after the matching latest turn has completed", () => {
     const threadWithMatchingMessage = {
       ...baseThread,
