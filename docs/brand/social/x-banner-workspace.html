@@ -2,7 +2,12 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <!-- The X profile banner. Render at 1500x500 with device scale 2 and save as x-banner-workspace.png. Re-render whenever two-agents.webp changes; Will uploads it to X by hand. -->
+    <!--
+      The X profile banner. Render at 1500x500 with device scale 2 and save as
+      x-banner-workspace.png. Re-render whenever two-agents.webp changes; Will uploads it
+      to X by hand. Words on the left and the app on the right, like og-card.html. X puts
+      the profile picture over the bottom-left corner, so that corner stays empty.
+    -->
     <link
       href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@500;600;700&display=swap"
       rel="stylesheet"
@@ -39,14 +44,12 @@
       }
       .masthead {
         position: absolute;
-        top: 34px;
-        right: 62px;
+        top: 56px;
         left: 62px;
         display: flex;
-        height: 52px;
-        align-items: center;
-        justify-content: space-between;
-        gap: 32px;
+        width: 470px;
+        flex-direction: column;
+        gap: 26px;
       }
       .brand {
         display: flex;
@@ -65,20 +68,21 @@
       }
       .positioning {
         color: rgba(250, 250, 250, 0.7);
-        font-size: 22px;
+        font-size: 34px;
         font-weight: 500;
-        letter-spacing: -0.018em;
-        white-space: nowrap;
+        line-height: 1.18;
+        letter-spacing: -0.025em;
       }
       .positioning strong {
+        display: block;
         color: oklch(0.7 0.17 264);
         font-weight: 600;
       }
       .window {
         position: absolute;
-        left: 62px;
-        top: 106px;
-        width: 1376px;
+        left: 560px;
+        top: 48px;
+        width: 878px;
         border-radius: 14px 14px 0 0;
         overflow: hidden;
         border: 1px solid rgba(255, 255, 255, 0.16);
@@ -90,12 +94,11 @@
       .window {
         bottom: 0;
       }
-      /* Shows the middle of the shot: Opus asking GPT-6.1-Sol on the side, and Sol's answer. */
+      /* Shows the top of the shot: the left bar, then Opus asking GPT-6.1-Sol on the side and Sol's answer. */
       .window img {
         display: block;
         width: 100%;
         height: auto;
-        margin-top: -300px;
       }
     </style>
   </head>
