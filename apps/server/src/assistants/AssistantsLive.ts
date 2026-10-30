@@ -799,10 +799,8 @@ export const makeAssistants = Effect.gen(function* () {
       if (!pkceMatches(tokenRequest.codeVerifier, issued.codeChallenge)) {
         return tokenError("invalid_grant", "The code_verifier doesn't match the code_challenge.");
       }
-      if (
-        (tokenRequest.resource !== null && tokenRequest.resource !== issued.resource) ||
-        request.resource !== issued.resource
-      ) {
+      // The code binds the resource; the body may name it (RFC 8707), and then it must match.
+      if (tokenRequest.resource !== null && tokenRequest.resource !== issued.resource) {
         return tokenError("invalid_target", `The resource must be ${issued.resource}.`);
       }
       if ((yield* relay.hostId) !== issued.route.hostId) {
@@ -891,7 +889,7 @@ export const makeAssistants = Effect.gen(function* () {
       if (found === null) return revoked;
       const { row, parsed } = found;
       const resource = params.get("resource");
-      if ((resource !== null && resource !== row.resource) || request.resource !== row.resource) {
+      if (resource !== null && resource !== row.resource) {
         return tokenError("invalid_target", `The resource must be ${row.resource}.`);
       }
       const clientId = params.get("client_id");
