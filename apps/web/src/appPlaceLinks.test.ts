@@ -8,9 +8,29 @@ const THIS_MAC = EnvironmentId.make("environment-this-mac");
 const WINDOWS_PC = EnvironmentId.make("environment-windows-pc");
 
 const fromThread = (href: string, threadEnvironmentId: EnvironmentId | null) =>
-  resolvePlaceLink({ href, threadEnvironmentId, primaryEnvironmentId: THIS_MAC });
+  resolvePlaceLink({
+    href,
+    threadEnvironmentId,
+    primaryEnvironmentId: THIS_MAC,
+    isDesktopApp: true,
+  });
 
 describe("resolvePlaceLink", () => {
+  it("names a desktop app place without linking anywhere in a browser or on a phone", () => {
+    const inBrowser = (href: string) =>
+      resolvePlaceLink({
+        href,
+        threadEnvironmentId: THIS_MAC,
+        primaryEnvironmentId: THIS_MAC,
+        isDesktopApp: false,
+      });
+    expect(inBrowser(placeHref("connections.threadlinesCommand"))).toEqual({
+      kind: "desktopOnly",
+      placeId: "connections.threadlinesCommand",
+    });
+    expect(inBrowser(placeHref("threads.agentThreads"))).toMatchObject({ kind: "open" });
+  });
+
   it("opens a known place with the search that reveals it, and ignores unknown ones", () => {
     expect(fromThread(placeHref("threads.agentThreads"), THIS_MAC)).toEqual({
       kind: "open",

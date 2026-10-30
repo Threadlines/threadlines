@@ -20,7 +20,8 @@ import {
  * What a place link does:
  * - `open`: go to `href` (an in-app path with the search that reveals the place);
  * - `elsewhere`: the place is a setting of the computer the thread runs on, which
- *   this app does not show, so the chip only names it.
+ *   this app does not show, so the chip only names it;
+ * - `desktopOnly`: only the desktop app has the place, and this isn't it.
  */
 export type PlaceLinkTarget =
   | { readonly kind: "open"; readonly placeId: PlaceId; readonly href: string }
@@ -28,7 +29,8 @@ export type PlaceLinkTarget =
       readonly kind: "elsewhere";
       readonly placeId: PlaceId;
       readonly environmentId: EnvironmentId;
-    };
+    }
+  | { readonly kind: "desktopOnly"; readonly placeId: PlaceId };
 
 /** Whether an href is a place link at all, known to this build or not. */
 export const isPlaceLinkHref = (href: string): boolean => href.startsWith(PLACE_HREF_SCHEME);
@@ -60,9 +62,14 @@ export function resolvePlaceLink(input: {
   readonly threadEnvironmentId: EnvironmentId | null;
   /** The app's own environment; null before it is known. */
   readonly primaryEnvironmentId: EnvironmentId | null;
+  /** This is the desktop app, which has places a browser or phone doesn't. */
+  readonly isDesktopApp: boolean;
 }): PlaceLinkTarget | null {
   const placeId = placeIdFromHref(input.href);
   if (placeId === null) return null;
+  if (!input.isDesktopApp && placeChain(placeId).some((place) => place.appliesWhen === "desktop")) {
+    return { kind: "desktopOnly", placeId };
+  }
   const page = placePage(placeId);
   const open = (href: string): PlaceLinkTarget => ({ kind: "open", placeId, href });
 

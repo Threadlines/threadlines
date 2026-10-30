@@ -5,6 +5,7 @@ import { type ComponentType, createElement, type ReactNode } from "react";
 
 import { placeArrivalHash, resolvePlaceLink } from "../../appPlaceLinks";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { isElectron } from "../../env";
 import { placeLinkLabel } from "../../lib/chatMarkdownDocument";
 import { cn } from "../../lib/utils";
 import { SETTINGS_NAV_ITEMS } from "../settings/settingsNavigation";
@@ -71,7 +72,12 @@ export function PlaceLink({
   const router: ReturnType<typeof useRouter> | undefined = useRouter({ warn: false });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const computerLabel = useComputerLabel();
-  const target = resolvePlaceLink({ href, threadEnvironmentId, primaryEnvironmentId });
+  const target = resolvePlaceLink({
+    href,
+    threadEnvironmentId,
+    primaryEnvironmentId,
+    isDesktopApp: isElectron,
+  });
   if (target === null) return children;
 
   const { placeId } = target;
@@ -88,7 +94,7 @@ export function PlaceLink({
     </>
   );
 
-  if (target.kind === "elsewhere") {
+  if (target.kind !== "open") {
     return (
       <Tooltip>
         <TooltipTrigger
@@ -106,7 +112,9 @@ export function PlaceLink({
           }
         />
         <TooltipPopup side="top" className="text-[11px] leading-tight">
-          In Threadlines on {computerLabel(target.environmentId, "another computer")}
+          {target.kind === "elsewhere"
+            ? `In Threadlines on ${computerLabel(target.environmentId, "another computer")}`
+            : "Only in the Threadlines desktop app"}
         </TooltipPopup>
       </Tooltip>
     );
