@@ -20,6 +20,15 @@ describe("provider auth helpers", () => {
         "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
       ),
     ).toBe(true);
+    // Codex's other failed renewals, which a running session keeps until it restarts.
+    for (const message of [
+      "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+      "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
+      "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.",
+      "Your access token could not be refreshed. Please log out and sign in again.",
+    ]) {
+      expect(isProviderAuthErrorMessage(message)).toBe(true);
+    }
     expect(isProviderAuthErrorMessage("Not logged in • Please run /login")).toBe(true);
     expect(isProviderAuthErrorMessage("Not logged in · Please run /login")).toBe(true);
     // The ACP providers' own status lines.

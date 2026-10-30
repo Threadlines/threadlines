@@ -2365,6 +2365,50 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("stops the session on a sign-in failure Codex codes but words its own way", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.error" || event.type === "session.exited",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-coded-auth-error"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "error",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          error: {
+            message: "Your session has ended. Sign in to continue.",
+            codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+          },
+          willRetry: false,
+        },
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const runtimeError = events.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type !== "runtime.error") {
+        return;
+      }
+      assert.equal(runtimeError.payload.class, "authentication_error");
+      assert.equal(runtimeError.payload.failureCategory, "auth");
+      // The next turn starts a fresh app server, which reads the sign-in on disk.
+      assert.equal(
+        events.some((event) => event.type === "session.exited"),
+        true,
+      );
+      assert.equal(runtime.closeImpl.mock.calls.length, 1);
+    }),
+  );
+
   it.effect("preserves Codex permission approval environment identity", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

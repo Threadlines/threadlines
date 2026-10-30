@@ -26,6 +26,10 @@ const AUTH_ERROR_PATTERNS = [
   /\binvalid authorization\b/u,
   /\bmissing api key\b/u,
   /\brefresh token (?:has been |is |was )?revoked\b/u,
+  // Codex's every failed sign-in renewal: the refresh token expired, was
+  // already used (another Codex renewed first), was revoked, or the user has
+  // since signed in to another account.
+  /\baccess token could not be refreshed\b/u,
   /\brequires openai auth\b/u,
 ] as const;
 

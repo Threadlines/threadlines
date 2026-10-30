@@ -3017,15 +3017,20 @@ export function mapToRuntimeEvents(
   if (event.method === "error") {
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
     const message = payload?.error.message ?? event.message ?? "Provider runtime error";
-    const errorClass = providerErrorClass(message);
+    const codedCategory = codexFailureCategory(payload?.error.codexErrorInfo);
+    // Codex's own code names a sign-in failure whatever its wording (a 401 can
+    // carry the service's message); the wording catches errors without one.
+    // Either way the session is stopped below, so the next turn starts a
+    // fresh app server that reads the sign-in on disk: a running one keeps a
+    // renewal that failed, even after the user signs in again elsewhere.
+    const errorClass =
+      codedCategory === "auth" ? "authentication_error" : providerErrorClass(message);
     // An expired credential cannot heal by retrying: reporting each retry as
     // a warning kept the sign-in surface away until the app-server exhausted
     // its whole reconnect schedule (20-30s of visible noise). An auth-shaped
     // error is terminal on the first attempt.
     const willRetry = payload?.willRetry === true && errorClass !== "authentication_error";
-    const failureCategory = willRetry
-      ? undefined
-      : codexFailureCategory(payload?.error.codexErrorInfo);
+    const failureCategory = willRetry ? undefined : codedCategory;
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
