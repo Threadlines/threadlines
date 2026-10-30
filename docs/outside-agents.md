@@ -65,7 +65,25 @@ Every command takes `--json`. `--wait` and `threadlines thread wait` exit with:
 | 5    | Not signed in (run `threadlines connect`), or Threadlines isn't open. |
 
 The installed command never starts a second Threadlines; it only talks to the
-app. Removing the app leaves the command behind; remove it from Settings first,
+app.
+
+### From another computer, with a key
+
+On an assistant's own computer (or any machine without your Threadlines), make
+a key in Settings → Connections → Assistants → Create a key, then:
+
+```sh
+threadlines connect --url https://connect.threadlines.dev/mcp --key tlak1.…
+export THREADLINES_URL=https://connect.threadlines.dev/mcp
+threadlines thread list
+```
+
+`connect --url` keeps the key on that computer; `THREADLINES_KEY` works instead
+if you'd rather not keep it. With `THREADLINES_URL` set, every command goes to
+your computer through the relay, and `thread start` answers as soon as the
+thread is being set up (use `--wait` to follow it). Your computer has to be
+awake with Threadlines open. Removing the key in Settings cuts it off at its
+next call. Removing the app leaves the command behind; remove it from Settings first,
 or delete `/usr/local/bin/threadlines` (macOS), `~/.local/bin/threadlines`
 (Linux) or `%LOCALAPPDATA%\Threadlines\bin` (Windows).
 
