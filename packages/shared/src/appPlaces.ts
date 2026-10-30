@@ -580,6 +580,7 @@ const ROWS = [
     title: "Stream replies",
     about: "Show the agent's reply while it's being written.",
     keywords: ["streaming"],
+    value: onOff((settings) => settings.enableAssistantStreaming),
   },
   {
     id: "general.changedFilesInChat",
@@ -671,6 +672,7 @@ const ROWS = [
     title: "Keep awake during turns",
     about: "Stops the computer sleeping while an agent works, on macOS and Windows.",
     keywords: ["sleep", "caffeinate"],
+    value: onOff((settings) => settings.preventSleepDuringActiveTurns),
   },
   {
     id: "general.keepAwakeForScheduledTasks",
@@ -762,6 +764,7 @@ const ROWS = [
     about:
       "Anonymous usage counts that show us installs and reliability. Never prompts, code, file paths, repository names, terminal output, or secrets.",
     keywords: ["telemetry", "privacy", "tracking"],
+    value: onOff((settings) => settings.usageAnalyticsEnabled),
   },
   {
     id: "general.diagnostics",
@@ -861,6 +864,7 @@ const ROWS = [
     title: "Keep Claude's suggestions when you're using a lot",
     about:
       "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
+    value: onOff((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
   },
   {
     id: "threads.commandRequests",
