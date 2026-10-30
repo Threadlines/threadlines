@@ -692,7 +692,7 @@ export function ClaudeSuggestionsRow() {
  * stops, the switch on the limit's notice above the composer. Read by the
  * thread's computer as each limit lands.
  */
-function ContinueAfterUsageLimitsRow() {
+export function ContinueAfterUsageLimitsRow() {
   const on = useSettings((settings) => settings.continueAfterUsageLimits);
   const { updateSettings } = useUpdateSettings();
   return (
