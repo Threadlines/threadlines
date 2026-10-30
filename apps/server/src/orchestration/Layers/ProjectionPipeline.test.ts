@@ -3325,6 +3325,97 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("keeps a closed error closed in every read until the error changes", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-dismissed-error");
+      const offline = "API Error: Can't reach the API server (ENOTFOUND)";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-error-project"),
+        projectId: ProjectId.make("project-error"),
+        title: "Error Project",
+        workspaceRoot: "/tmp/project-error",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-error-thread"),
+        threadId,
+        projectId: ProjectId.make("project-error"),
+        title: "Error Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      const setSession = (id: string, status: "error" | "stopped", lastError: string) =>
+        engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(id),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        });
+      yield* setSession("cmd-error-failed", "error", offline);
+      yield* engine.dispatch({
+        type: "thread.error.dismiss",
+        commandId: CommandId.make("cmd-error-dismiss"),
+        threadId,
+        lastError: offline,
+        lastErrorAt: createdAt,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      // The session stopping later carries the same error.
+      yield* setSession("cmd-error-stopped", "stopped", offline);
+
+      // Read back from SQL, the way a restarted server answers the app.
+      const query = yield* ProjectionSnapshotQuery.pipe(
+        Effect.provide(
+          OrchestrationProjectionSnapshotQueryLive.pipe(
+            Layer.provide(RepositoryIdentityResolverLive),
+          ),
+        ),
+      );
+      const reads = Effect.gen(function* () {
+        const shell = (yield* query.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        const shellById = Option.getOrUndefined(yield* query.getThreadShellById(threadId));
+        const detail = Option.getOrUndefined(yield* query.getThreadDetailById(threadId));
+        const readModel = (yield* query.getCommandReadModel()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        return [shell, shellById, detail, readModel].map(
+          (thread) => thread?.session?.lastErrorDismissedAt ?? null,
+        );
+      });
+      assert.deepEqual(yield* reads, Array(4).fill("2026-01-01T00:00:01.000Z"));
+
+      yield* setSession("cmd-error-new", "error", "Turn failed");
+      assert.deepEqual(yield* reads, Array(4).fill(null));
+    }),
+  );
+
   it.effect("keeps a provider diff placeholder from completing the active turn projection", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

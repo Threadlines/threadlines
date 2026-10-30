@@ -109,6 +109,7 @@ import Migration0087 from "./Migrations/087_ProjectionThreadMessagesSentFrom.ts"
 import Migration0088 from "./Migrations/088_PushAlerts.ts";
 import Migration0089 from "./Migrations/089_OutsideAgents.ts";
 import Migration0090 from "./Migrations/090_AuthSessionClientName.ts";
+import Migration0091 from "./Migrations/091_ProjectionThreadSessionErrorState.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -211,6 +212,7 @@ export const migrationEntries = [
   [88, "PushAlerts", Migration0088],
   [89, "OutsideAgents", Migration0089],
   [90, "AuthSessionClientName", Migration0090],
+  [91, "ProjectionThreadSessionErrorState", Migration0091],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

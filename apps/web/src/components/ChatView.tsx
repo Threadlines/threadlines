@@ -6797,6 +6797,48 @@ export default function ChatView(props: ChatViewProps) {
     launching: launchingStartupNotice,
     environmentId: threadComputerEnvironmentId,
   });
+  // An error the server holds is closed there too, so it stays closed through
+  // later session updates, a reload and on other devices. One this screen set
+  // itself only lives here.
+  const activeThreadIdForError = activeThread?.id ?? null;
+  const activeThreadShownError = activeThread?.error ?? null;
+  const activeSessionLastError = activeThread?.session?.lastError;
+  const activeSessionLastErrorAt = activeThread?.session?.lastErrorAt ?? null;
+  const onDismissThreadError = useCallback(async () => {
+    if (!activeThreadIdForError) return;
+    const threadId = activeThreadIdForError;
+    const lastError = activeSessionLastError;
+    setThreadError(threadId, null);
+    if (
+      !isServerThread ||
+      !lastError ||
+      sanitizeThreadErrorMessage(lastError) !== activeThreadShownError
+    ) {
+      return;
+    }
+    const api = readEnvironmentApi(environmentId);
+    if (!api) return;
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.error.dismiss",
+        commandId: newCommandId(),
+        threadId,
+        lastError,
+        lastErrorAt: activeSessionLastErrorAt,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      toastManager.add(failureNotice({ title: "Couldn't close the error", error: err }));
+    }
+  }, [
+    activeSessionLastError,
+    activeSessionLastErrorAt,
+    activeThreadIdForError,
+    activeThreadShownError,
+    environmentId,
+    isServerThread,
+    setThreadError,
+  ]);
   const threadErrorNotice = useMemo(
     () =>
       buildThreadErrorNotice({
@@ -6814,17 +6856,16 @@ export default function ChatView(props: ChatViewProps) {
         providerLabel: activeProviderLabel,
         planUpgradeUrl: activeProviderStatus?.planUpgradeUrl ?? null,
         signIn: composerSignInView,
-        onDismiss: () => setThreadError(activeThread?.id ?? null, null),
+        onDismiss: () => void onDismissThreadError(),
       }),
     [
       activeProviderLabel,
       activeProviderStatus?.planUpgradeUrl,
       activeThread?.error,
-      activeThread?.id,
       checkoutRecovery,
       composerSignInView,
+      onDismissThreadError,
       providerAuthReconnectPrompt,
-      setThreadError,
       threadErrorNoticeVisible,
       threadErrorRetryAction,
       threadErrorUsageResetAction,

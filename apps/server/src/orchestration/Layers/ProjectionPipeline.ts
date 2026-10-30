@@ -2011,6 +2011,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadSessionsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadSessionsProjection",
     )(function* (event, _attachmentSideEffects) {
+      if (event.type === "thread.error-dismissed") {
+        yield* projectionThreadSessionRepository.dismissError(event.payload);
+        return;
+      }
       if (event.type !== "thread.session-set") {
         return;
       }
@@ -2034,6 +2038,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ? { startup: event.payload.session.startup }
           : {}),
         lastError: event.payload.session.lastError,
+        lastErrorAt: event.payload.session.lastErrorAt ?? null,
+        lastErrorDismissedAt: event.payload.session.lastErrorDismissedAt ?? null,
         updatedAt: event.payload.session.updatedAt,
       });
     });

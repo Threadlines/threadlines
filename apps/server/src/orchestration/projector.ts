@@ -66,6 +66,7 @@ import {
   ThreadPagePublishedPayload,
   ThreadCommandRequestedPayload,
   ThreadCommandRequestDismissedPayload,
+  ThreadErrorDismissedPayload,
   ThreadCommandRunStartedPayload,
   ThreadCommandRunUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
@@ -1433,6 +1434,24 @@ export function projectEvent(
               ),
             }),
           };
+        }),
+      );
+
+    // Closing a notice is not work on the thread, so `updatedAt` stays.
+    case "thread.error-dismissed":
+      return decodeForEvent(ThreadErrorDismissedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const session = nextBase.threads.find((entry) => entry.id === payload.threadId)?.session;
+          return session == null ||
+            session.lastError !== payload.lastError ||
+            (session.lastErrorAt ?? null) !== payload.lastErrorAt
+            ? nextBase
+            : {
+                ...nextBase,
+                threads: updateThread(nextBase.threads, payload.threadId, {
+                  session: { ...session, lastErrorDismissedAt: payload.dismissedAt },
+                }),
+              };
         }),
       );
 

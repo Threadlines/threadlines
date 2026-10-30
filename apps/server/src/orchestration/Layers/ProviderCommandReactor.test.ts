@@ -979,7 +979,7 @@ describe("ProviderCommandReactor", () => {
   const startTurn = (
     harness: Awaited<ReturnType<typeof createHarness>>,
     id: string,
-    extra?: { readonly modelSelection?: ModelSelection },
+    extra?: { readonly modelSelection?: ModelSelection; readonly createdAt?: string },
   ) =>
     Effect.runPromise(
       harness.engine.dispatch({
@@ -995,7 +995,7 @@ describe("ProviderCommandReactor", () => {
         ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
+        createdAt: extra?.createdAt ?? "2026-01-01T00:00:00.000Z",
       }),
     );
 
@@ -1058,6 +1058,49 @@ describe("ProviderCommandReactor", () => {
     expect(await launchingWrites(harness)).toHaveLength(1);
     expect((await projectedSession(harness))?.startup ?? null).toBeNull();
     expect(harness.sendTurn.mock.calls.length).toBe(0);
+  });
+
+  it("shows a failed start again after the user closed the same failure", async () => {
+    const harness = await createHarness();
+    const spawnFails = () =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed in test harness",
+        }),
+      );
+    harness.startSession.mockImplementationOnce(spawnFails).mockImplementationOnce(spawnFails);
+    const failedWithoutTurn = async () => {
+      const session = await projectedSession(harness);
+      return session?.status === "ready" && session.lastError != null;
+    };
+
+    await startTurn(harness, "first");
+    await waitFor(failedWithoutTurn);
+    const first = await projectedSession(harness);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.error.dismiss",
+        commandId: CommandId.make("cmd-dismiss-failed-start"),
+        threadId: ThreadId.make("thread-1"),
+        lastError: first?.lastError ?? "",
+        lastErrorAt: first?.lastErrorAt ?? null,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    expect((await projectedSession(harness))?.lastErrorDismissedAt).toBe(
+      "2026-01-01T00:00:01.000Z",
+    );
+
+    await startTurn(harness, "second", { createdAt: "2026-01-01T00:00:02.000Z" });
+    await waitFor(async () => {
+      const session = await projectedSession(harness);
+      return (await failedWithoutTurn()) && session?.lastErrorAt !== first?.lastErrorAt;
+    });
+    const second = await projectedSession(harness);
+    expect(second?.lastError).toBe(first?.lastError);
+    expect(second?.lastErrorDismissedAt).toBeUndefined();
   });
 
   it("says launching while a message waits on an agent still starting early", async () => {
