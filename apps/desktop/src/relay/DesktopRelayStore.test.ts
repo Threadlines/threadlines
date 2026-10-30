@@ -1,7 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -94,7 +94,7 @@ const writeLeftoverPhoneLink = Effect.gen(function* () {
         relayOrigin: pairingSession.relayOrigin,
         desktopSocketUrl: pairingSession.desktopSocketUrl,
         expiresAt: pairingSession.expiresAt,
-        encryptedDesktopToken: Encoding.encodeBase64(
+        encryptedDesktopToken: Base64.encode(
           textEncoder.encode(`enc:${pairingSession.desktopToken}`),
         ),
       },

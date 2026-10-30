@@ -46,7 +46,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { SessionCredentialService } from "../auth/Services/SessionCredentialService.ts";

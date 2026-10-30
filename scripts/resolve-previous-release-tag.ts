@@ -9,8 +9,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as String from "effect/String";
-import { Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolvePreviousReleaseTag } from "./lib/release-tags.ts";
 
@@ -40,7 +40,7 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 
   if (writeGithubOutput) {
     const fs = yield* FileSystem.FileSystem;
-    const githubOutputPath = yield* Config.nonEmptyString("GITHUB_OUTPUT");
+    const githubOutputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT");
     yield* fs.writeFileString(githubOutputPath, entry, { flag: "a" });
     return;
   }
@@ -51,13 +51,13 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 const command = Command.make(
   "resolve-previous-release-tag",
   {
-    channel: Flag.choice("channel", ReleaseChannelSchema.literals).pipe(
+    channel: Flag.Literals("channel", ReleaseChannelSchema.literals).pipe(
       Flag.withDescription("Release channel whose previous tag should be resolved."),
     ),
-    currentTag: Flag.string("current-tag").pipe(
+    currentTag: Flag.String("current-tag").pipe(
       Flag.withDescription("Current release tag to compare against."),
     ),
-    githubOutput: Flag.boolean("github-output").pipe(
+    githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),

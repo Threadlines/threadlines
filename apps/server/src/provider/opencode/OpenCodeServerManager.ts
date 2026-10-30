@@ -25,7 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import { OpenCodeError, openCodeErrorDetail } from "./OpenCodeClient.ts";
 import { decodeOpenCodeFrame, type OpenCodeEvent } from "./OpenCodeEvents.ts";

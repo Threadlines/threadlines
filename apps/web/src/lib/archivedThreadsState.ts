@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { EnvironmentId, type OrchestrationShellSnapshot } from "@threadlines/contracts";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useCallback, useMemo } from "react";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

@@ -23,7 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import { type OpenCodeClient, OpenCodeError, runOpenCode } from "../opencode/OpenCodeClient.ts";
 import {

@@ -20,8 +20,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
-import { McpSchema, McpProtocol, McpServer, Tool } from "effect/unstable/ai";
-import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { McpSchema, McpProtocol, McpServer, Tool } from "effect/ai";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import {
   BrowserScreenshotTool,

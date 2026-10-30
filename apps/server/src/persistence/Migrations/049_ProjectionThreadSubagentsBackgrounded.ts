@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 /** Whether the provider runs a spawned agent in the background (its spawn
  *  returned without blocking the turn). NULL when the provider never said;

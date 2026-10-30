@@ -6,7 +6,8 @@ import { RELAY_HOOK_MAX_BODY_BYTES } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
 
 import { ScheduledTasks } from "./ScheduledTasks.ts";
 import { draft, makeComputer, setClock } from "./scheduledTestComputer.ts";
@@ -42,7 +43,7 @@ it.layer(NodeServices.layer)("event tasks' local address", (it) => {
           Layer.build,
         );
         const server = yield* HttpServer.HttpServer;
-        const origin = `http://127.0.0.1:${(server.address as HttpServer.TcpAddress).port}`;
+        const origin = `http://127.0.0.1:${(server.address as NetAddress.InetAddress).port}`;
         const post = (
           path: string,
           body: string | ReadableStream<Uint8Array>,

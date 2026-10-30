@@ -16,7 +16,7 @@ import {
   type SourceControlToolUpdateResult,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
 import { readPrimaryEnvironmentDescriptor } from "../environments/primary";

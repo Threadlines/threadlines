@@ -8,7 +8,7 @@ import { AcpRegistrySettings } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 
 import { makeAcpRegistryTestAgent } from "../testUtils/acpRegistryAgentFixture.ts";
 import { makeAcpRegistryDescriptor } from "./AcpRegistrySupport.ts";

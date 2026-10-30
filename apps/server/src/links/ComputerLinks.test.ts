@@ -22,7 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
-import { RpcTest } from "effect/unstable/rpc";
+import { RpcTest } from "effect/rpc";
 
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";

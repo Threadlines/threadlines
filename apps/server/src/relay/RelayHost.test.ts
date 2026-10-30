@@ -11,13 +11,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { Socket } from "effect/unstable/socket";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Socket } from "effect/socket";
 import { createServer } from "node:http";
 
 import { AuthCoreLive } from "../auth/Layers/AuthControlPlane.ts";
@@ -121,17 +116,22 @@ function makeFakeRelay(knownHosts: ReadonlyArray<string>) {
           Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
             const socket = yield* request.upgrade;
-            const write = yield* socket.writer;
-            // Writes go out once the socket runs.
-            const running = yield* socket
-              .runRaw((data) => {
-                const message = JSON.parse(typeof data === "string" ? data : fromUtf8(data)) as {
-                  type?: string;
-                  deliveryIds?: string[];
-                };
-                if (message.type === "hook.ack") state.acked.push(...(message.deliveryIds ?? []));
-              })
-              .pipe(Effect.ignore, Effect.forkChild);
+            // Writes wait until the socket is being read, so take the reader first.
+            const { pull } = yield* socket.reader;
+            const { write } = yield* socket.writer;
+            const running = yield* Effect.gen(function* () {
+              while (true) {
+                for (const data of yield* pull) {
+                  const message = JSON.parse(typeof data === "string" ? data : fromUtf8(data)) as {
+                    type?: string;
+                    deliveryIds?: string[];
+                  };
+                  if (message.type === "hook.ack") {
+                    state.acked.push(...(message.deliveryIds ?? []));
+                  }
+                }
+              }
+            }).pipe(Effect.ignore, Effect.forkChild);
             state.controls.push(hostId);
             state.write = write;
             yield* write(

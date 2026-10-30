@@ -1,4 +1,4 @@
-import { FindMyWay } from "effect/unstable/http";
+import { FindMyWay } from "effect/http";
 
 /**
  * A check of which routes a request URL reaches, read the way the server's

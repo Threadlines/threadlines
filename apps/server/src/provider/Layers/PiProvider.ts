@@ -27,7 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import { detectPiBinary } from "../pi/PiBinary.ts";
 import type { PiInstallation } from "../pi/PiInstallation.ts";

@@ -33,8 +33,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
@@ -310,15 +310,15 @@ const resolveEnvAliasWithDefault = <A>(alias: EnvAlias<A>, defaultValue: A): A =
   Option.getOrElse(resolveEnvAlias(alias), () => defaultValue);
 
 const AzureTrustedSigningOptionsConfig = Config.all({
-  publisherName: Config.string("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
-  endpoint: Config.string("AZURE_TRUSTED_SIGNING_ENDPOINT"),
-  certificateProfileName: Config.string("AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME"),
-  codeSigningAccountName: Config.string("AZURE_TRUSTED_SIGNING_ACCOUNT_NAME"),
-  fileDigest: Config.string("AZURE_TRUSTED_SIGNING_FILE_DIGEST").pipe(Config.withDefault("SHA256")),
-  timestampDigest: Config.string("AZURE_TRUSTED_SIGNING_TIMESTAMP_DIGEST").pipe(
+  publisherName: Config.String("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
+  endpoint: Config.String("AZURE_TRUSTED_SIGNING_ENDPOINT"),
+  certificateProfileName: Config.String("AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME"),
+  codeSigningAccountName: Config.String("AZURE_TRUSTED_SIGNING_ACCOUNT_NAME"),
+  fileDigest: Config.String("AZURE_TRUSTED_SIGNING_FILE_DIGEST").pipe(Config.withDefault("SHA256")),
+  timestampDigest: Config.String("AZURE_TRUSTED_SIGNING_TIMESTAMP_DIGEST").pipe(
     Config.withDefault("SHA256"),
   ),
-  timestampRfc3161: Config.string("AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161").pipe(
+  timestampRfc3161: Config.String("AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161").pipe(
     Config.withDefault("http://timestamp.acs.microsoft.com"),
   ),
 });
@@ -330,9 +330,9 @@ const BuildEnvConfig = Config.all({
     Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM"),
   ),
   target: desktopEnvAlias(
-    Config.string("THREADLINES_DESKTOP_TARGET"),
-    Config.string("BADCODE_DESKTOP_TARGET"),
-    Config.string("T3CODE_DESKTOP_TARGET"),
+    Config.String("THREADLINES_DESKTOP_TARGET"),
+    Config.String("BADCODE_DESKTOP_TARGET"),
+    Config.String("T3CODE_DESKTOP_TARGET"),
   ),
   arch: desktopEnvAlias(
     Config.schema(BuildArch, "THREADLINES_DESKTOP_ARCH"),
@@ -340,44 +340,44 @@ const BuildEnvConfig = Config.all({
     Config.schema(BuildArch, "T3CODE_DESKTOP_ARCH"),
   ),
   version: desktopEnvAlias(
-    Config.string("THREADLINES_DESKTOP_VERSION"),
-    Config.string("BADCODE_DESKTOP_VERSION"),
-    Config.string("T3CODE_DESKTOP_VERSION"),
+    Config.String("THREADLINES_DESKTOP_VERSION"),
+    Config.String("BADCODE_DESKTOP_VERSION"),
+    Config.String("T3CODE_DESKTOP_VERSION"),
   ),
   outputDir: desktopEnvAlias(
-    Config.string("THREADLINES_DESKTOP_OUTPUT_DIR"),
-    Config.string("BADCODE_DESKTOP_OUTPUT_DIR"),
-    Config.string("T3CODE_DESKTOP_OUTPUT_DIR"),
+    Config.String("THREADLINES_DESKTOP_OUTPUT_DIR"),
+    Config.String("BADCODE_DESKTOP_OUTPUT_DIR"),
+    Config.String("T3CODE_DESKTOP_OUTPUT_DIR"),
   ),
   skipBuild: desktopEnvAlias(
-    Config.boolean("THREADLINES_DESKTOP_SKIP_BUILD"),
-    Config.boolean("BADCODE_DESKTOP_SKIP_BUILD"),
-    Config.boolean("T3CODE_DESKTOP_SKIP_BUILD"),
+    Config.Boolean("THREADLINES_DESKTOP_SKIP_BUILD"),
+    Config.Boolean("BADCODE_DESKTOP_SKIP_BUILD"),
+    Config.Boolean("T3CODE_DESKTOP_SKIP_BUILD"),
   ),
   keepStage: desktopEnvAlias(
-    Config.boolean("THREADLINES_DESKTOP_KEEP_STAGE"),
-    Config.boolean("BADCODE_DESKTOP_KEEP_STAGE"),
-    Config.boolean("T3CODE_DESKTOP_KEEP_STAGE"),
+    Config.Boolean("THREADLINES_DESKTOP_KEEP_STAGE"),
+    Config.Boolean("BADCODE_DESKTOP_KEEP_STAGE"),
+    Config.Boolean("T3CODE_DESKTOP_KEEP_STAGE"),
   ),
   signed: desktopEnvAlias(
-    Config.boolean("THREADLINES_DESKTOP_SIGNED"),
-    Config.boolean("BADCODE_DESKTOP_SIGNED"),
-    Config.boolean("T3CODE_DESKTOP_SIGNED"),
+    Config.Boolean("THREADLINES_DESKTOP_SIGNED"),
+    Config.Boolean("BADCODE_DESKTOP_SIGNED"),
+    Config.Boolean("T3CODE_DESKTOP_SIGNED"),
   ),
   verbose: desktopEnvAlias(
-    Config.boolean("THREADLINES_DESKTOP_VERBOSE"),
-    Config.boolean("BADCODE_DESKTOP_VERBOSE"),
-    Config.boolean("T3CODE_DESKTOP_VERBOSE"),
+    Config.Boolean("THREADLINES_DESKTOP_VERBOSE"),
+    Config.Boolean("BADCODE_DESKTOP_VERBOSE"),
+    Config.Boolean("T3CODE_DESKTOP_VERBOSE"),
   ),
   mockUpdates: desktopEnvAlias(
-    Config.boolean("THREADLINES_DESKTOP_MOCK_UPDATES"),
-    Config.boolean("BADCODE_DESKTOP_MOCK_UPDATES"),
-    Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES"),
+    Config.Boolean("THREADLINES_DESKTOP_MOCK_UPDATES"),
+    Config.Boolean("BADCODE_DESKTOP_MOCK_UPDATES"),
+    Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   ),
   mockUpdateServerPort: desktopEnvAlias(
-    Config.string("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
-    Config.string("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
-    Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
+    Config.String("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
+    Config.String("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
+    Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
   ),
 });
 
@@ -1294,55 +1294,55 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
-  platform: Flag.choice("platform", BuildPlatform.literals).pipe(
+  platform: Flag.Literals("platform", BuildPlatform.literals).pipe(
     Flag.withDescription("Build platform (env: THREADLINES_DESKTOP_PLATFORM)."),
     Flag.optional,
   ),
-  target: Flag.string("target").pipe(
+  target: Flag.String("target").pipe(
     Flag.withDescription(
       "Artifact target, for example dmg/AppImage/nsis (env: THREADLINES_DESKTOP_TARGET).",
     ),
     Flag.optional,
   ),
-  arch: Flag.choice("arch", BuildArch.literals).pipe(
+  arch: Flag.Literals("arch", BuildArch.literals).pipe(
     Flag.withDescription(
       "Build arch, for example arm64/x64/universal (env: THREADLINES_DESKTOP_ARCH).",
     ),
     Flag.optional,
   ),
-  buildVersion: Flag.string("build-version").pipe(
+  buildVersion: Flag.String("build-version").pipe(
     Flag.withDescription("Artifact version metadata (env: THREADLINES_DESKTOP_VERSION)."),
     Flag.optional,
   ),
-  outputDir: Flag.string("output-dir").pipe(
+  outputDir: Flag.String("output-dir").pipe(
     Flag.withDescription("Output directory for artifacts (env: THREADLINES_DESKTOP_OUTPUT_DIR)."),
     Flag.optional,
   ),
-  skipBuild: Flag.boolean("skip-build").pipe(
+  skipBuild: Flag.Boolean("skip-build").pipe(
     Flag.withDescription(
       "Skip `vp run build:desktop` and use existing dist artifacts (env: THREADLINES_DESKTOP_SKIP_BUILD).",
     ),
     Flag.optional,
   ),
-  keepStage: Flag.boolean("keep-stage").pipe(
+  keepStage: Flag.Boolean("keep-stage").pipe(
     Flag.withDescription("Keep temporary staging files (env: THREADLINES_DESKTOP_KEEP_STAGE)."),
     Flag.optional,
   ),
-  signed: Flag.boolean("signed").pipe(
+  signed: Flag.Boolean("signed").pipe(
     Flag.withDescription(
       "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: THREADLINES_DESKTOP_SIGNED).",
     ),
     Flag.optional,
   ),
-  verbose: Flag.boolean("verbose").pipe(
+  verbose: Flag.Boolean("verbose").pipe(
     Flag.withDescription("Stream subprocess stdout (env: THREADLINES_DESKTOP_VERBOSE)."),
     Flag.optional,
   ),
-  mockUpdates: Flag.boolean("mock-updates").pipe(
+  mockUpdates: Flag.Boolean("mock-updates").pipe(
     Flag.withDescription("Enable mock updates (env: THREADLINES_DESKTOP_MOCK_UPDATES)."),
     Flag.optional,
   ),
-  mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
+  mockUpdateServerPort: Flag.Int("mock-update-server-port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription(
       "Mock update server port (env: THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT).",

@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { resolveCommandOutsideWorkingFolder } from "@threadlines/shared/shell";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 

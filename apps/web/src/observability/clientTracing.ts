@@ -5,8 +5,8 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 import { resolvePrimaryEnvironmentHttpUrl } from "../environments/primary";
 import { isElectron } from "../env";

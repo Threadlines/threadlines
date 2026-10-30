@@ -33,7 +33,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import type { ProviderAuthQuestion } from "../ProviderDriver.ts";
 import { type PiLaunch, piProcessArgs, piProcessEnvironment } from "./PiLaunch.ts";

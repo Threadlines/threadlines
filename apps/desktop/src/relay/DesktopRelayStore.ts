@@ -2,7 +2,7 @@ import { fromLenientJson } from "@threadlines/shared/schemaJson";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -103,7 +103,7 @@ export const layer = Layer.effect(
           return Option.none<PersistedRelayPairingSession>();
         }
         const tokenBytes = yield* Effect.fromResult(
-          Encoding.decodeBase64(stored.encryptedDesktopToken),
+          Base64.decode(stored.encryptedDesktopToken),
         ).pipe(Effect.option);
         if (Option.isNone(tokenBytes)) {
           return Option.none<PersistedRelayPairingSession>();

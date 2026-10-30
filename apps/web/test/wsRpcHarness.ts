@@ -4,7 +4,7 @@ import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { RpcMessage, RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { RpcMessage, RpcSerialization, RpcServer } from "effect/rpc";
 
 type RpcServerInstance = RpcServer.RpcServer<any>;
 

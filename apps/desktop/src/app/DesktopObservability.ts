@@ -15,7 +15,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Tracer from "effect/Tracer";
-import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 import * as DesktopDataMigration from "./DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";

@@ -18,8 +18,8 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcess } from "effect/unstable/process";
+import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess } from "effect/process";
 
 const BASE_SERVER_PORT = 13773;
 const BASE_WEB_PORT = 5733;
@@ -65,27 +65,27 @@ class DevRunnerError extends Data.TaggedError("DevRunnerError")<{
 }> {}
 
 const optionalStringConfig = (name: string): Config.Config<string | undefined> =>
-  Config.string(name).pipe(
+  Config.String(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
 const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined> =>
-  Config.boolean(name).pipe(
+  Config.Boolean(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
 const optionalPortConfig = (name: string): Config.Config<number | undefined> =>
-  Config.port(name).pipe(
+  Config.Port(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
 const optionalIntegerConfig = (name: string): Config.Config<number | undefined> =>
-  Config.int(name).pipe(
+  Config.Int(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
 const optionalUrlConfig = (name: string): Config.Config<URL | undefined> =>
-  Config.url(name).pipe(
+  Config.URL(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
@@ -589,10 +589,10 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
 }
 
 const devRunnerCli = Command.make("dev-runner", {
-  mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
+  mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
-  threadlinesHome: Flag.string("home-dir").pipe(
+  threadlinesHome: Flag.String("home-dir").pipe(
     Flag.withDescription(
       "Base directory for all Threadlines data (equivalent to THREADLINES_HOME; legacy BADCODE_HOME is still accepted).",
     ),
@@ -605,7 +605,7 @@ const devRunnerCli = Command.make("dev-runner", {
       ]).pipe(Config.map(([threadlinesHome, badcodeHome]) => threadlinesHome ?? badcodeHome)),
     ),
   ),
-  noBrowser: Flag.boolean("no-browser").pipe(
+  noBrowser: Flag.Boolean("no-browser").pipe(
     Flag.withDescription("Browser auto-open toggle (equivalent to THREADLINES_NO_BROWSER)."),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
@@ -615,7 +615,7 @@ const devRunnerCli = Command.make("dev-runner", {
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
-  autoBootstrapProjectFromCwd: Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
+  autoBootstrapProjectFromCwd: Flag.Boolean("auto-bootstrap-project-from-cwd").pipe(
     Flag.withDescription(
       "Auto-bootstrap toggle (equivalent to THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).",
     ),
@@ -627,7 +627,7 @@ const devRunnerCli = Command.make("dev-runner", {
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
-  logWebSocketEvents: Flag.boolean("log-websocket-events").pipe(
+  logWebSocketEvents: Flag.Boolean("log-websocket-events").pipe(
     Flag.withDescription(
       "WebSocket event logging toggle (equivalent to THREADLINES_LOG_WS_EVENTS).",
     ),
@@ -640,7 +640,7 @@ const devRunnerCli = Command.make("dev-runner", {
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
-  host: Flag.string("host").pipe(
+  host: Flag.String("host").pipe(
     Flag.withDescription("Server host/interface override (forwards to THREADLINES_HOST)."),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
@@ -650,7 +650,7 @@ const devRunnerCli = Command.make("dev-runner", {
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
-  port: Flag.integer("port").pipe(
+  port: Flag.Int("port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription("Server port override (forwards to THREADLINES_PORT)."),
     Flag.withFallbackConfig(
@@ -661,16 +661,16 @@ const devRunnerCli = Command.make("dev-runner", {
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
-  devUrl: Flag.string("dev-url").pipe(
+  devUrl: Flag.String("dev-url").pipe(
     Flag.withSchema(Schema.URLFromString),
     Flag.withDescription("Web dev URL override (forwards to VITE_DEV_SERVER_URL)."),
     Flag.withFallbackConfig(optionalUrlConfig("VITE_DEV_SERVER_URL")),
   ),
-  dryRun: Flag.boolean("dry-run").pipe(
+  dryRun: Flag.Boolean("dry-run").pipe(
     Flag.withDescription("Resolve mode/ports/env and print, but do not spawn Vite+."),
     Flag.withDefault(false),
   ),
-  runArgs: Argument.string("run-arg").pipe(
+  runArgs: Argument.String("run-arg").pipe(
     Argument.withDescription("Additional Vite+ run args (pass after `--`)."),
     Argument.variadic(),
   ),

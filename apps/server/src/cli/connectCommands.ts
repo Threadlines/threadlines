@@ -19,10 +19,10 @@ import type * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import type { Tool } from "effect/ai";
+import { Argument, Command, Flag } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
 import { AgentThreadStatusWord, RuntimeMode } from "@threadlines/contracts";
 import packageJson from "../../package.json" with { type: "json" };
@@ -75,11 +75,11 @@ const SETTINGS_PLACE = "Threadlines > Settings > Connections > Agents";
 
 const sharedFlags = {
   baseDir: baseDirFlag,
-  dev: Flag.boolean("dev").pipe(
+  dev: Flag.Boolean("dev").pipe(
     Flag.withDescription("Use the Threadlines a dev build runs (its `dev` data folder)."),
     Flag.withDefault(false),
   ),
-  json: Flag.boolean("json").pipe(
+  json: Flag.Boolean("json").pipe(
     Flag.withDescription("Print each result as JSON on one line, as Threadlines sent it."),
     Flag.withDefault(false),
   ),
@@ -91,23 +91,23 @@ interface SharedFlags {
   readonly json: boolean;
 }
 
-const threadIdArgument = Argument.string("thread").pipe(
+const threadIdArgument = Argument.String("thread").pipe(
   Argument.withDescription("The thread's id, from thread start or thread list."),
 );
 
-const requestIdFlag = Flag.string("request-id").pipe(
+const requestIdFlag = Flag.String("request-id").pipe(
   Flag.withDescription(
     "Any unique string. Running the same command again with it returns the first result instead of doing it twice.",
   ),
   Flag.optional,
 );
 
-const waitFlag = Flag.boolean("wait").pipe(
+const waitFlag = Flag.Boolean("wait").pipe(
   Flag.withDescription("Then wait until the thread stops working, and print its reply."),
   Flag.withDefault(false),
 );
 
-const timeoutFlag = Flag.integer("timeout").pipe(
+const timeoutFlag = Flag.Int("timeout").pipe(
   Flag.withDescription("Give up waiting after this many seconds (exit code 3). Default: never."),
   Flag.optional,
 );
@@ -310,7 +310,7 @@ const resolveAgent = (client: ConnectClient, flags: SharedFlags, raw: string) =>
 
 export const connectCommand = Command.make("connect", {
   ...sharedFlags,
-  noBrowser: Flag.boolean("no-browser").pipe(
+  noBrowser: Flag.Boolean("no-browser").pipe(
     Flag.withDescription("Print the sign-in link instead of opening a browser."),
     Flag.withDefault(false),
   ),
@@ -399,15 +399,15 @@ const statusWord = (choice: (typeof STATUS_CHOICES)[number]): AgentThreadStatusW
 
 const threadListCommand = Command.make("list", {
   ...sharedFlags,
-  project: Flag.string("project").pipe(
+  project: Flag.String("project").pipe(
     Flag.withDescription("Only this project (its id or name)."),
     Flag.optional,
   ),
-  status: Flag.choice("status", STATUS_CHOICES).pipe(
+  status: Flag.Literals("status", STATUS_CHOICES).pipe(
     Flag.withDescription("Only threads with this status."),
     Flag.optional,
   ),
-  mine: Flag.boolean("mine").pipe(
+  mine: Flag.Boolean("mine").pipe(
     Flag.withDescription("Only threads this command started."),
     Flag.withDefault(false),
   ),
@@ -434,28 +434,28 @@ const threadListCommand = Command.make("list", {
 
 const threadStartCommand = Command.make("start", {
   ...sharedFlags,
-  project: Argument.string("project").pipe(
+  project: Argument.String("project").pipe(
     Argument.withDescription("The project's id or name, from threadlines projects."),
   ),
-  prompt: Argument.string("prompt").pipe(
+  prompt: Argument.String("prompt").pipe(
     Argument.withDescription(
       "Everything the thread needs to do the work. `-` or left out with stdin piped: read from stdin.",
     ),
     Argument.optional,
   ),
-  title: Flag.string("title").pipe(
+  title: Flag.String("title").pipe(
     Flag.withDescription("A few words naming the work."),
     Flag.optional,
   ),
-  agent: Flag.string("agent").pipe(
+  agent: Flag.String("agent").pipe(
     Flag.withDescription("<instance>[/<model>] from threadlines agents. Default: the user's."),
     Flag.optional,
   ),
-  local: Flag.boolean("local").pipe(
+  local: Flag.Boolean("local").pipe(
     Flag.withDescription("Work in the project folder itself, not a new worktree."),
     Flag.withDefault(false),
   ),
-  access: Flag.choice("access", RuntimeMode.literals).pipe(
+  access: Flag.Literals("access", RuntimeMode.literals).pipe(
     Flag.withDescription("The access to ask for. It gets at most what the user allowed."),
     Flag.optional,
   ),
@@ -495,7 +495,7 @@ const threadStartCommand = Command.make("start", {
 const threadSendCommand = Command.make("send", {
   ...sharedFlags,
   thread: threadIdArgument,
-  message: Argument.string("message").pipe(
+  message: Argument.String("message").pipe(
     Argument.withDescription(
       "What you want it to do or answer. `-` or left out with stdin piped: read from stdin.",
     ),
@@ -530,11 +530,11 @@ const threadSendCommand = Command.make("send", {
 const threadReadCommand = Command.make("read", {
   ...sharedFlags,
   thread: threadIdArgument,
-  after: Flag.integer("after").pipe(
+  after: Flag.Int("after").pipe(
     Flag.withDescription("Only messages after this one (a read's `next`)."),
     Flag.optional,
   ),
-  limit: Flag.integer("limit").pipe(
+  limit: Flag.Int("limit").pipe(
     Flag.withDescription("At most this many messages. Default: 20."),
     Flag.optional,
   ),

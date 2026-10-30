@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { GitCommandError } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import type { ExecuteGitResult } from "../vcs/GitVcsDriver.ts";
 import { detectPrTemplate, type ExecuteGitCommand } from "./PrTemplateDetection.ts";

@@ -4,8 +4,8 @@ import { AcpRegistrySettings } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
 import { makeAcpRegistryDescriptor } from "../acp/AcpRegistrySupport.ts";
 import { makeAcpRegistryTestAgent } from "../testUtils/acpRegistryAgentFixture.ts";

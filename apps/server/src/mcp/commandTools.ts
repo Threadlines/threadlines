@@ -5,7 +5,7 @@
  * Skip. Nothing runs until the user chooses.
  */
 import * as Schema from "effect/Schema";
-import { Tool } from "effect/unstable/ai";
+import { Tool } from "effect/ai";
 
 export const COMMANDS_MCP_SERVER_NAME = "threadlines_commands";
 export const ASK_USER_TO_RUN_TOOL_NAME = "ask_user_to_run";

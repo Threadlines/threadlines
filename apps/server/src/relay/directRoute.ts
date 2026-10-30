@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import * as Socket from "effect/unstable/socket/Socket";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import * as Socket from "effect/socket/Socket";
 
 import { RelayHost } from "./RelayHost.ts";
 import type { SecureDuplex } from "./securePipe.ts";
@@ -56,16 +56,20 @@ export const relayDirectRouteLayer = HttpRouter.add(
     const socket = yield* request.upgrade.pipe(
       Effect.tapError(() => Effect.sync(() => handle.close("Upgrade failed."))),
     );
-    write = yield* socket.writer;
-    if (closeRequested) {
-      yield* write(closeRequested).pipe(Effect.ignore);
-      return HttpServerResponse.empty();
-    }
-    yield* socket
-      .runRaw((data) => {
-        handle.receive(data);
-      })
-      .pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => handle.closed())));
+    // Writes wait until the socket is being read, so take the reader first.
+    // `closed` is a no-op once the pipe has closed itself.
+    yield* Effect.gen(function* () {
+      const { pull } = yield* socket.reader;
+      write = (yield* socket.writer).write;
+      if (closeRequested) {
+        return yield* write(closeRequested);
+      }
+      while (true) {
+        for (const frame of yield* pull) {
+          handle.receive(frame);
+        }
+      }
+    }).pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => handle.closed())));
     return HttpServerResponse.empty();
   }).pipe(Effect.scoped),
 );

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 
 import { checkXaiApiKey } from "./GrokAuth.ts";
 

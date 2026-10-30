@@ -19,8 +19,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
 
 /** How long a request is remembered: a retry later than this is a new call. */
 export const OUTSIDE_REQUEST_RETENTION_MS = 24 * 60 * 60 * 1000;

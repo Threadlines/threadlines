@@ -6,7 +6,7 @@ import { vi } from "vite-plus/test";
 
 import { ProcessRunner, ProcessSpawnError, type ProcessRunnerShape } from "../../processRunner.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 const runMock = vi.fn<ProcessRunnerShape["run"]>();
 

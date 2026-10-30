@@ -6,8 +6,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { McpProtocol, McpServer, Tool, Toolkit } from "effect/unstable/ai";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import type * as NetAddress from "effect/net/NetAddress";
 import * as NodeHttp from "node:http";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -183,7 +184,7 @@ const serve = <A, E>(routes: Layer.Layer<A, E, HttpRouter.HttpRouter>) =>
   Effect.gen(function* () {
     yield* routes.pipe(HttpRouter.serve, Layer.build);
     const server = yield* HttpServer.HttpServer;
-    return `http://127.0.0.1:${(server.address as HttpServer.TcpAddress).port}`;
+    return `http://127.0.0.1:${(server.address as NetAddress.InetAddress).port}`;
   });
 
 const onLoopback = Effect.provide(NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0 }));

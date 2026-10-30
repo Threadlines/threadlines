@@ -8,7 +8,7 @@ const trimNonEmptyOption = (value: string): Option.Option<string> => {
 };
 
 const trimmedString = (name: string) =>
-  Config.string(name).pipe(Config.option, Config.map(Option.flatMap(trimNonEmptyOption)));
+  Config.String(name).pipe(Config.option, Config.map(Option.flatMap(trimNonEmptyOption)));
 
 const firstSomeOption = <A>(
   configs: ReadonlyArray<Config.Config<Option.Option<A>>>,
@@ -32,9 +32,9 @@ const optionalBooleanAlias = (
   legacyT3CodeName: string,
 ) =>
   firstSomeOption([
-    Config.boolean(threadlinesName).pipe(Config.option),
-    Config.boolean(badcodeName).pipe(Config.option),
-    Config.boolean(legacyT3CodeName).pipe(Config.option),
+    Config.Boolean(threadlinesName).pipe(Config.option),
+    Config.Boolean(badcodeName).pipe(Config.option),
+    Config.Boolean(legacyT3CodeName).pipe(Config.option),
   ]).pipe(Config.map((value) => Option.getOrElse(value, () => false)));
 
 const optionalPortAlias = (
@@ -43,9 +43,9 @@ const optionalPortAlias = (
   legacyT3CodeName: string,
 ) =>
   firstSomeOption([
-    Config.port(threadlinesName).pipe(Config.option),
-    Config.port(badcodeName).pipe(Config.option),
-    Config.port(legacyT3CodeName).pipe(Config.option),
+    Config.Port(threadlinesName).pipe(Config.option),
+    Config.Port(badcodeName).pipe(Config.option),
+    Config.Port(legacyT3CodeName).pipe(Config.option),
   ]);
 
 const intAliasWithDefault = (
@@ -55,9 +55,9 @@ const intAliasWithDefault = (
   defaultValue: number,
 ) =>
   firstSomeOption([
-    Config.int(threadlinesName).pipe(Config.option),
-    Config.int(badcodeName).pipe(Config.option),
-    Config.int(legacyT3CodeName).pipe(Config.option),
+    Config.Int(threadlinesName).pipe(Config.option),
+    Config.Int(badcodeName).pipe(Config.option),
+    Config.Int(legacyT3CodeName).pipe(Config.option),
   ]).pipe(Config.map((value) => Option.getOrElse(value, () => defaultValue)));
 
 const commaSeparatedStringsOption = (name: string) =>
@@ -100,9 +100,9 @@ const urlAliasWithDefault = (
   defaultValue: string,
 ) =>
   firstSomeOption([
-    Config.url(threadlinesName).pipe(Config.option),
-    Config.url(badcodeName).pipe(Config.option),
-    Config.url(legacyT3CodeName).pipe(Config.option),
+    Config.URL(threadlinesName).pipe(Config.option),
+    Config.URL(badcodeName).pipe(Config.option),
+    Config.URL(legacyT3CodeName).pipe(Config.option),
   ]).pipe(Config.map((value) => Option.getOrElse(value, () => new URL(defaultValue))));
 
 const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<string, string> =>
@@ -134,7 +134,7 @@ export const DesktopConfig = Config.all({
     trimmedString("THREADLINES_HOME"),
     trimmedString("BADCODE_HOME"),
   ]),
-  devServerUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option),
+  devServerUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option),
   devRemoteThreadlinesServerEntryPath: firstSomeOption([
     trimmedString("THREADLINES_DEV_REMOTE_THREADLINES_SERVER_ENTRY_PATH"),
     trimmedString("BADCODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH"),
@@ -184,7 +184,7 @@ export const DesktopConfig = Config.all({
     "BADCODE_DESKTOP_OPEN_DEVTOOLS",
     "T3CODE_DESKTOP_OPEN_DEVTOOLS",
   ),
-  marketingCaptureMode: Config.boolean("THREADLINES_DESKTOP_MARKETING_CAPTURE").pipe(
+  marketingCaptureMode: Config.Boolean("THREADLINES_DESKTOP_MARKETING_CAPTURE").pipe(
     Config.option,
     Config.map((value) => Option.getOrElse(value, () => false)),
   ),

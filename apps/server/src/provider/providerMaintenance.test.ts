@@ -7,7 +7,7 @@ import path from "node:path";
 import { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import {
   clearLatestProviderVersionCacheForTests,
   createProviderVersionAdvisory,

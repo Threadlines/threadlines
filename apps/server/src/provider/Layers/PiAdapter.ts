@@ -66,7 +66,7 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- hashing instruction text for a file name.
 import { createHash } from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path arithmetic.

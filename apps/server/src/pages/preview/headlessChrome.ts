@@ -29,7 +29,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import { previewProxy } from "./previewProxy.ts";

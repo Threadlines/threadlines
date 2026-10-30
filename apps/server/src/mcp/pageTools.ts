@@ -14,7 +14,7 @@ import {
   AGENT_PAGE_THEME_GUIDE,
 } from "@threadlines/shared/agentPages";
 import * as Schema from "effect/Schema";
-import { Tool } from "effect/unstable/ai";
+import { Tool } from "effect/ai";
 
 /** How the tools are namespaced to a provider: `mcp__threadlines_pages__show_page`. */
 export const PAGES_MCP_SERVER_NAME = "threadlines_pages";

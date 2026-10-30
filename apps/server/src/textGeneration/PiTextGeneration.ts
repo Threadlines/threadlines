@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { piTurnFailure } from "../provider/pi/PiFailure.ts";
 import { type PiLaunch, piProcessArgs, piProcessEnvironment } from "../provider/pi/PiLaunch.ts";

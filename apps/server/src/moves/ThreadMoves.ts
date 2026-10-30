@@ -43,7 +43,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import type * as RpcClientError from "effect/unstable/rpc/RpcClientError";
+import type * as RpcClientError from "effect/rpc/RpcClientError";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 

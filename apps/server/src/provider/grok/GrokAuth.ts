@@ -27,8 +27,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import type { ChildProcessSpawner } from "effect/process";
 
 import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";
