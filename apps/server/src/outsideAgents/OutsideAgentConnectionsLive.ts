@@ -5,16 +5,19 @@
  * period and the rate limits.
  *
  * `OutsideAgentConnectionsLive` provides both services:
- * - OutsideAgentConnections, which `/mcp/connect` checks every call against;
+ * - OutsideAgentConnections, which `/mcp/connect` checks every call against
+ *   (and whose `grant` both doors' tools read);
  * - OutsideAgentSignIn, behind the OAuth routes (`oauthHttp.ts`) and the
  *   owner-only `outsideAgents.*` RPCs.
+ *
+ * Assistants (docs/design/assistants.md) are in the same rows and the same
+ * snapshot: their sign-ins, codes and keys are the Assistants service's,
+ * which the snapshot, Approve, Deny, Deny all and Remove reach through here.
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import { randomUUID } from "node:crypto";
 
 import {
-  type OutsideAgentAccess,
-  type OutsideAgentConnection,
   OutsideAgentConnectionId,
   OutsideAgentError,
   type OutsideAgentGrant,
@@ -37,9 +40,11 @@ import {
   SERVER_SIGNING_SECRET_BYTES,
   SERVER_SIGNING_SECRET_NAME,
 } from "../auth/Layers/SessionCredentialService.ts";
+import { Assistants } from "../assistants/Assistants.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
+import { connectionOfRow, grantRefusal, normalizedGrant } from "./connectionShapes.ts";
 import {
   clientIdHash,
   makeOutsideAgentSigner,
@@ -51,7 +56,6 @@ import {
 import {
   OutsideAgentConnectionRepository,
   OutsideAgentConnectionRepositoryLive,
-  type OutsideAgentConnectionRow,
 } from "./OutsideAgentConnectionRepository.ts";
 import {
   OutsideAgentConnections,
@@ -161,16 +165,6 @@ export const clientFamily = (name: string, softwareId: string | null): string =>
   return "other";
 };
 
-const toConnection = (row: OutsideAgentConnectionRow): OutsideAgentConnection => ({
-  connectionId: row.connectionId,
-  name: row.clientName,
-  access: row.access,
-  maxRuntimeMode: row.maxRuntimeMode,
-  projectIds: row.projectIds,
-  createdAt: row.createdAt,
-  lastUsedAt: row.lastUsedAt,
-});
-
 const storeFailure = new OutsideAgentError({
   detail: "Threadlines couldn't save that change. Try again.",
 });
@@ -180,6 +174,7 @@ const makeOutsideAgents = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const analytics = yield* AnalyticsService;
   const secretStore = yield* ServerSecretStore;
+  const assistants = yield* Assistants;
   const signer = makeOutsideAgentSigner(
     yield* secretStore.getOrCreateRandom(SERVER_SIGNING_SECRET_NAME, SERVER_SIGNING_SECRET_BYTES),
   );
@@ -253,7 +248,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       for (const entry of pending.values()) {
         if (!isWaiting(entry, now)) continue;
         const hash = clientIdHash(entry.request.clientId);
-        const earlier = rows.find((row) => row.clientIdHash === hash);
+        const earlier = rows.find((row) => row.kind === "local" && row.clientIdHash === hash);
         waiting.push({
           requestId: entry.requestId,
           name: entry.request.client.name,
@@ -271,19 +266,22 @@ const makeOutsideAgents = Effect.gen(function* () {
       waiting.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       return {
         address: `http://127.0.0.1:${config.port}${OUTSIDE_AGENT_MCP_PATH}`,
-        connections: rows.map(toConnection),
+        connections: rows.map(connectionOfRow),
         pending: waiting,
         quietUntil: quietUntil !== null && quietUntil > now ? isoAt(quietUntil) : null,
+        assistants: yield* assistants.state,
       };
     },
   );
 
   // Subscribes before the first read, so a change can't fall between the two.
+  // An assistant's change (a sign-in, a code, a connection used) counts too.
   const changes: OutsideAgentSignInShape["changes"] = Stream.unwrap(
     Effect.map(PubSub.subscribe(changed), (subscription) =>
-      Stream.concat(Stream.make(undefined), Stream.fromSubscription(subscription)).pipe(
-        Stream.mapEffect(() => snapshot),
-      ),
+      Stream.concat(
+        Stream.make(undefined),
+        Stream.merge(Stream.fromSubscription(subscription), assistants.changes),
+      ).pipe(Stream.mapEffect(() => snapshot)),
     ),
   );
 
@@ -312,25 +310,9 @@ const makeOutsideAgents = Effect.gen(function* () {
     return entry !== undefined && isWaiting(entry, now) ? entry : undefined;
   };
 
-  /** Why a grant the user picked can't be given: more than the sign-in asked for, or no projects. */
-  const grantRefusal = (grant: OutsideAgentGrant, requested: OutsideAgentAccess | null) => {
-    if (requested === "see" && grant.access === "start") {
-      return "This agent asked only to see threads, so it can't be allowed to start them.";
-    }
-    if (grant.projectIds !== null && grant.projectIds.length === 0) {
-      return "Pick at least one project, or allow all of them.";
-    }
-    return null;
-  };
-
-  const normalizedGrant = (grant: OutsideAgentGrant): OutsideAgentGrant => ({
-    access: grant.access,
-    maxRuntimeMode: grant.maxRuntimeMode,
-    projectIds: grant.projectIds === null ? null : [...new Set(grant.projectIds)],
-  });
-
   const approve: OutsideAgentSignInShape["approve"] = (input) =>
     Effect.gen(function* () {
+      if (yield* assistants.isWaiting(input.requestId)) return yield* assistants.approve(input);
       const now = yield* Clock.currentTimeMillis;
       const entry = waitingEntry(input.requestId, now);
       if (entry === undefined) {
@@ -348,6 +330,9 @@ const makeOutsideAgents = Effect.gen(function* () {
       return {
         connectionId,
         name: entry.request.client.name,
+        kind: "local",
+        signIn: "oauth",
+        identity: null,
         ...grant,
         createdAt: isoAt(now),
         lastUsedAt: null,
@@ -356,6 +341,9 @@ const makeOutsideAgents = Effect.gen(function* () {
 
   const deny: OutsideAgentSignInShape["deny"] = (input) =>
     Effect.gen(function* () {
+      if (yield* assistants.isWaiting(input.requestId)) {
+        return yield* assistants.deny(input.requestId);
+      }
       const entry = waitingEntry(input.requestId, yield* Clock.currentTimeMillis);
       if (entry === undefined) return;
       entry.outcome = { kind: "denied" };
@@ -368,6 +356,8 @@ const makeOutsideAgents = Effect.gen(function* () {
       if (isWaiting(entry, now)) entry.outcome = { kind: "denied" };
     }
     quietUntil = now + Duration.toMillis(QUIET_PERIOD);
+    // Assistants' sign-ins too: the waiting ones now, new ones until it ends.
+    yield* assistants.setQuiet(quietUntil);
     yield* scheduleQuietEnd;
     yield* notify;
   });
@@ -375,7 +365,7 @@ const makeOutsideAgents = Effect.gen(function* () {
   const resumeRequests: OutsideAgentSignInShape["resumeRequests"] = Effect.suspend(() => {
     if (quietUntil === null) return Effect.void;
     quietUntil = null;
-    return notify;
+    return assistants.setQuiet(null).pipe(Effect.andThen(notify));
   });
 
   const update: OutsideAgentSignInShape["update"] = (input) =>
@@ -398,7 +388,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         return yield* new OutsideAgentError({ detail: "That connection was removed." });
       }
       yield* notify;
-      return toConnection(row.value);
+      return connectionOfRow(row.value);
     });
 
   const remove: OutsideAgentSignInShape["remove"] = (input) =>
@@ -407,13 +397,17 @@ const makeOutsideAgents = Effect.gen(function* () {
         const row = yield* repository.get(input.connectionId);
         // The removal outranks any approval of the same agent still waiting for its exchange.
         if (Option.isSome(row)) decide(row.value.clientIdHash);
-        return yield* repository.markRemoved({
+        const done = yield* repository.markRemoved({
           connectionId: input.connectionId,
           reason: "removed",
           now: isoAt(yield* Clock.currentTimeMillis),
         });
+        return done ? Option.map(row, (found) => found.kind) : Option.none();
       }).pipe(decisionLock.withPermits(1), storeError("remove a connection"));
-      if (removed) yield* notify;
+      if (Option.isNone(removed)) return;
+      // An assistant's is refused at the relay too, even while this computer sleeps.
+      if (removed.value === "assistant") yield* assistants.connectionsChanged;
+      yield* notify;
     });
 
   // ---------------------------------------------------------------------------
@@ -608,6 +602,8 @@ const makeOutsideAgents = Effect.gen(function* () {
         return yield* repository
           .insertReplacing({
             connectionId,
+            kind: "local",
+            signIn: "oauth",
             clientIdHash: hash,
             clientName: request.client.name,
             softwareId: request.client.softwareId,
@@ -615,6 +611,11 @@ const makeOutsideAgents = Effect.gen(function* () {
             resource: request.resource,
             ...grant,
             tokenGeneration: 1,
+            identity: null,
+            hostId: null,
+            routeTag: null,
+            refresh: null,
+            keyHash: null,
             createdAt: isoAt(now),
             lastUsedAt: null,
             removedAt: null,
@@ -664,6 +665,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       );
       if (
         row === null ||
+        row.kind !== "local" ||
         row.removedAt !== null ||
         row.tokenGeneration !== named.generation ||
         row.resource !== resource
@@ -734,6 +736,9 @@ const makeOutsideAgents = Effect.gen(function* () {
         resumeRequests,
         update,
         remove,
+        assistantCode: assistants.createCode,
+        assistantCodeCancel: assistants.cancelCode,
+        createKey: assistants.createKey,
       }),
     ),
   );
@@ -741,8 +746,8 @@ const makeOutsideAgents = Effect.gen(function* () {
 
 /**
  * Both outside-agent services over the connection rows. Needs the database,
- * the server config (its port names the agents' address), telemetry and the
- * secret store (the signing key).
+ * the server config (its port names the agents' address), telemetry, the
+ * secret store (the signing key) and the assistants door (Assistants).
  */
 export const OutsideAgentConnectionsLive = Layer.effectContext(makeOutsideAgents).pipe(
   Layer.provide(OutsideAgentConnectionRepositoryLive),

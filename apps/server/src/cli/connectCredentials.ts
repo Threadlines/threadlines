@@ -10,6 +10,11 @@
  * connection instead of adding one. Disconnecting or a 401 forgets only the
  * token. The token is never printed. Every change is made under a lock, so
  * commands running at once never undo each other's.
+ *
+ * A key for another computer's Threadlines, reached through the assistants
+ * door (`connect --url <address> --key <key>`, docs/design/assistants.md),
+ * is kept the same way under that address, with no registration: forgetting
+ * it forgets the entry.
  */
 import { randomBytes } from "node:crypto";
 
@@ -24,7 +29,8 @@ import * as Schema from "effect/Schema";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 
 export const ConnectCredential = Schema.Struct({
-  clientId: Schema.String,
+  /** The command's registration; absent for a key, which has none. */
+  clientId: Schema.optional(Schema.String),
   accessToken: Schema.optional(Schema.String),
   /** What the user allowed at sign-in: `threads:read`, maybe with `threads:start`. */
   scope: Schema.optional(Schema.String),
@@ -149,6 +155,22 @@ export const writeConnectCredential = (
   credential: ConnectCredential,
 ) => updateCredentials(filePath, (resources) => ({ ...resources, [resource]: credential }));
 
+/** Stores a key for a Threadlines reached through the assistants door, at its address. */
+export const writeConnectKey = (filePath: string, resource: string, key: string) =>
+  updateCredentials(filePath, (resources) => ({ ...resources, [resource]: { accessToken: key } }));
+
+/** What is left of an entry once its token is forgotten: its registration, or nothing for a key. */
+const withoutToken = (
+  resources: ConnectCredentialsFile["resources"],
+  resource: string,
+  credential: ConnectCredential,
+): ConnectCredentialsFile["resources"] => {
+  const { [resource]: _forgotten, ...others } = resources;
+  return credential.clientId === undefined
+    ? others
+    : { ...others, [resource]: { clientId: credential.clientId } };
+};
+
 /** Keeps a new registration for `resource`, unless one is already kept there. */
 export const keepConnectRegistration = (filePath: string, resource: string, clientId: string) =>
   updateCredentials(filePath, (resources) =>
@@ -177,7 +199,7 @@ export const forgetConnectToken = (filePath: string, resource: string, token: st
   updateCredentials(filePath, (resources) => {
     const existing = resources[resource];
     if (existing?.accessToken !== token) return resources;
-    return { ...resources, [resource]: { clientId: existing.clientId } };
+    return withoutToken(resources, resource, existing);
   });
 
 /** `disconnect`: forgets every token kept here, whichever port it was for; true when there was one. */
@@ -191,12 +213,11 @@ export const forgetAllConnectTokens = Effect.fn("cli.connect.forgetAllTokens")(f
     );
     if (!signedIn) return resources;
     forgot = true;
-    return Object.fromEntries(
-      Object.entries(resources).map(([resource, credential]) => [
-        resource,
-        { clientId: credential.clientId },
-      ]),
-    );
+    let kept: ConnectCredentialsFile["resources"] = resources;
+    for (const [resource, credential] of Object.entries(resources)) {
+      if (credential.accessToken !== undefined) kept = withoutToken(kept, resource, credential);
+    }
+    return kept;
   });
   return forgot;
 });

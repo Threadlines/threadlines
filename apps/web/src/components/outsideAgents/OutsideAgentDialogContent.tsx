@@ -1,25 +1,37 @@
 /**
  * The body of the dialog an agent outside Threadlines is approved in
- * (docs/design/outside-agents.md, "The dialog"), and changed in later. For a
- * sign-in it shows who asks (the name is the agent's own word for itself),
- * the code its browser page shows too, and what it would replace; then what
- * it may do, in which projects and with how much access, with Deny and
- * Allow. Change opens the same choices on a connection, with Save.
+ * (docs/design/outside-agents.md, "The dialog"), and changed in later; and
+ * the same for assistants in their makers' clouds (docs/design/assistants.md).
+ *
+ * For a sign-in it shows who asks and what it would replace: a local agent's
+ * name is its own word for itself, with the code its browser page shows too;
+ * an assistant's comes with what the relay could tell about it (where it
+ * signs in from, whether Threadlines knows it, roughly where its sign-in page
+ * was opened). Then what it may do, in which projects and with how much
+ * access, with Deny and Allow. Change opens the same choices on a
+ * connection, with Save. Create a key opens them for a new key-signed
+ * assistant connection, then shows the key once.
  *
  * A chunk of its own (outsideAgentDialog.tsx): the host at the root and
- * Settings' Agents group render it inside their own Dialog root.
+ * Settings' Agents and Assistants groups render it inside their own Dialog
+ * root.
  */
 import {
+  type OutsideAgentAccess,
+  type OutsideAgentAssistantSignIn,
   type OutsideAgentConnection,
+  type OutsideAgentCreateKeyResult,
   type OutsideAgentPendingRequest,
   type ProjectId,
   RUNTIME_MODES,
   type RuntimeMode,
 } from "@threadlines/contracts";
+import { TriangleAlertIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import {
   approveOutsideAgent,
+  createAssistantKey,
   denyAllOutsideAgents,
   denyOutsideAgent,
   describeOutsideAgentFailure,
@@ -27,6 +39,7 @@ import {
   useThisComputerProjects,
 } from "../../environments/outsideAgents/outsideAgents";
 import {
+  describeAssistantIdentity,
   describeOutsideAgentsWaiting,
   initialOutsideAgentDraft,
   OUTSIDE_AGENT_ACCESS_CHOICES,
@@ -35,6 +48,7 @@ import {
 } from "../../environments/outsideAgents/outsideAgents.logic";
 import { cn } from "../../lib/utils";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { CopyButton } from "../CopyButton";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import {
@@ -45,19 +59,31 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { Input } from "../ui/input";
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 
-/** What the dialog is about: a sign-in waiting for the user, or a connection to change. */
+/**
+ * What the dialog is about: a sign-in waiting for the user (a local agent's
+ * or an assistant's), a connection to change, or a new assistant key.
+ */
 export type OutsideAgentDialogSubject =
   | {
       readonly kind: "request";
       readonly request: OutsideAgentPendingRequest;
-      /** Sign-ins waiting behind this one. */
+      /** Sign-ins waiting behind this one, of both kinds. */
       readonly waitingBehind: number;
     }
-  | { readonly kind: "change"; readonly connection: OutsideAgentConnection };
+  | {
+      readonly kind: "assistant";
+      readonly signIn: OutsideAgentAssistantSignIn;
+      readonly waitingBehind: number;
+    }
+  | { readonly kind: "change"; readonly connection: OutsideAgentConnection }
+  | { readonly kind: "key" };
+
+type GrantSubject = Exclude<OutsideAgentDialogSubject, { readonly kind: "key" }>;
 
 const FIELD_LABEL_CLASS = "text-xs font-medium text-foreground";
 const HINT_CLASS = "text-[12.5px] leading-[18px] text-muted-foreground";
@@ -67,9 +93,12 @@ const ACCESS_DETAILS = {
   start: "All of that, and start threads of its own.",
 } as const;
 
+/** A key's name, as the server takes it. */
+const KEY_NAME_MAX_LENGTH = 60;
+
 /**
- * The dialog's popup. `onClose` closes a Change (a sign-in's dialog closes
- * when its answer leaves the waiting list).
+ * The dialog's popup. `onClose` closes a Change or a new key (a sign-in's
+ * dialog closes when its answer leaves the waiting list).
  */
 export function OutsideAgentDialogContent({
   subject,
@@ -78,9 +107,40 @@ export function OutsideAgentDialogContent({
   readonly subject: OutsideAgentDialogSubject;
   readonly onClose: () => void;
 }) {
+  return subject.kind === "key" ? (
+    <CreateKeyContent onClose={onClose} />
+  ) : (
+    <GrantContent subject={subject} onClose={onClose} />
+  );
+}
+
+/** What it says about a connection being changed: whose word its name is, and when the change lands. */
+function describeChange(connection: OutsideAgentConnection): string {
+  const lands = "It gets the change on its next call.";
+  if (connection.kind === "local") return `Name given by the agent. ${lands}`;
+  if (connection.signIn === "key") return lands;
+  return connection.identity?.verified === true
+    ? `Signs in from ${connection.identity.host}. ${lands}`
+    : `Name given by the assistant. ${lands}`;
+}
+
+/** A sign-in to answer, or a connection to change. */
+function GrantContent({
+  subject,
+  onClose,
+}: {
+  readonly subject: GrantSubject;
+  readonly onClose: () => void;
+}) {
   const projects = useThisComputerProjects();
-  const name = subject.kind === "request" ? subject.request.name : subject.connection.name;
-  const requestedAccess = subject.kind === "request" ? subject.request.requestedAccess : "start";
+  const signIn =
+    subject.kind === "request"
+      ? subject.request
+      : subject.kind === "assistant"
+        ? subject.signIn
+        : null;
+  const name = signIn?.name ?? (subject.kind === "change" ? subject.connection.name : "");
+  const requestedAccess: OutsideAgentAccess = signIn?.requestedAccess ?? "start";
   const [draft, setDraft] = useState<OutsideAgentGrantDraft>(() =>
     initialOutsideAgentDraft(subject.kind === "change" ? subject.connection : null),
   );
@@ -89,7 +149,6 @@ export function OutsideAgentDialogContent({
   // Focus lands on the dialog itself: it opens on its own, often while the
   // user types elsewhere, and a key meant for that must not answer it.
   const focusRef = useRef<HTMLDivElement>(null);
-  const fieldId = useId();
 
   const grant = outsideAgentGrantFromDraft(draft, {
     requestedAccess,
@@ -111,8 +170,7 @@ export function OutsideAgentDialogContent({
     }
   };
   const disabled = busy !== null;
-  // What it may do as the dialog shows it: never more than it asked for.
-  const shownAccess = requestedAccess === "see" ? "see" : draft.access;
+  const waitingBehind = subject.kind === "change" ? 0 : subject.waitingBehind;
 
   return (
     <DialogPopup
@@ -124,9 +182,7 @@ export function OutsideAgentDialogContent({
         <div ref={focusRef} tabIndex={-1} className="flex flex-col gap-2 outline-none">
           <div className="flex items-start justify-between gap-3">
             <DialogTitle>
-              {subject.kind === "request"
-                ? `${name} wants to use Threadlines`
-                : `Change what ${name} can do`}
+              {signIn !== null ? `${name} wants to use Threadlines` : `Change what ${name} can do`}
             </DialogTitle>
             {subject.kind === "request" ? (
               <span
@@ -138,123 +194,54 @@ export function OutsideAgentDialogContent({
               </span>
             ) : null}
           </div>
-          <DialogDescription className="text-[12.5px] leading-[18px]">
+          <DialogDescription
+            className="text-[12.5px] leading-[18px]"
+            data-testid="outside-agent-identity"
+          >
             {subject.kind === "request"
               ? `Name given by the agent. It signs in on this computer (port ${subject.request.callbackPort}).`
-              : "Name given by the agent. It gets the change on its next call."}
+              : subject.kind === "assistant"
+                ? describeAssistantIdentity(subject.signIn.identity)
+                : describeChange(subject.connection)}
           </DialogDescription>
-          {subject.kind === "request" && subject.request.replaces !== null ? (
+          {subject.kind === "assistant" && !subject.signIn.identity.known ? (
+            <p
+              className="flex items-start gap-1.5 text-[12.5px] leading-[18px] text-warning-foreground"
+              data-testid="outside-agent-unknown"
+            >
+              <TriangleAlertIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+              Threadlines doesn&apos;t know this assistant. Only allow it if you added it yourself.
+            </p>
+          ) : null}
+          {subject.kind === "assistant" && subject.signIn.place !== null ? (
+            <p className={HINT_CLASS} data-testid="outside-agent-place">
+              The sign-in page was opened near {subject.signIn.place}.
+            </p>
+          ) : null}
+          {signIn !== null && signIn.replaces !== null ? (
             <p className={HINT_CLASS} data-testid="outside-agent-replaces">
-              Replaces your earlier {subject.request.replaces.name} connection.
+              Replaces your earlier {signIn.replaces.name} connection.
             </p>
           ) : null}
         </div>
       </DialogHeader>
       <DialogPanel className="space-y-4">
-        <div className="grid gap-1.5">
-          <span className={FIELD_LABEL_CLASS} id={`${fieldId}-access`}>
-            It can
-          </span>
-          <RadioGroup
-            value={shownAccess}
-            onValueChange={(value) => update({ access: value as OutsideAgentGrantDraft["access"] })}
-            aria-labelledby={`${fieldId}-access`}
-            disabled={disabled}
-            className="gap-1"
-          >
-            {(["see", "start"] as const).map((access) => {
-              const unavailable = access === "start" && requestedAccess === "see";
-              return (
-                <label
-                  key={access}
-                  className={cn(
-                    "flex items-start gap-2.5 rounded-lg px-1 py-1",
-                    unavailable ? "cursor-default" : "cursor-pointer",
-                  )}
-                >
-                  <Radio
-                    value={access}
-                    disabled={unavailable}
-                    className="mt-0.5"
-                    data-testid={`outside-agent-access-${access}`}
-                  />
-                  <span className="min-w-0">
-                    <span
-                      className={cn(
-                        "block text-[13.5px] leading-[19px] font-medium",
-                        unavailable ? "text-muted-foreground" : "text-foreground",
-                      )}
-                    >
-                      {OUTSIDE_AGENT_ACCESS_CHOICES[access]}
-                    </span>
-                    <span className={cn("block", HINT_CLASS)}>
-                      {unavailable ? "It only asked to see threads." : ACCESS_DETAILS[access]}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </RadioGroup>
-        </div>
-
-        <ProjectsField
-          labelId={`${fieldId}-projects`}
+        <GrantFields
           projects={projects}
           draft={draft}
+          requestedAccess={requestedAccess}
           disabled={disabled}
-          onChange={(change) => update(change)}
+          onChange={update}
         />
-
-        {shownAccess === "start" ? (
-          <div className="grid gap-1.5">
-            <span className={FIELD_LABEL_CLASS} id={`${fieldId}-ceiling`}>
-              Highest access
-            </span>
-            <Select
-              value={draft.maxRuntimeMode}
-              disabled={disabled}
-              onValueChange={(value) => update({ maxRuntimeMode: value as RuntimeMode })}
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-48"
-                aria-labelledby={`${fieldId}-ceiling`}
-                data-testid="outside-agent-ceiling"
-              >
-                <SelectValue>{runtimeModeConfig[draft.maxRuntimeMode].label}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup alignItemWithTrigger={false}>
-                {RUNTIME_MODES.map((mode) => (
-                  <SelectItem key={mode} value={mode}>
-                    {runtimeModeConfig[mode].label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-            <p className={HINT_CLASS}>
-              It can start threads, and send to or stop the ones it started. It can&apos;t answer
-              their approvals. You do that here.
-            </p>
-          </div>
-        ) : null}
-
-        {error !== null ? (
-          <p
-            role="alert"
-            className="text-[12.5px] text-destructive"
-            data-testid="outside-agent-error"
-          >
-            {error}
-          </p>
-        ) : null}
+        <ErrorLine error={error} />
       </DialogPanel>
       <DialogFooter>
-        {subject.kind === "request" ? (
+        {signIn !== null ? (
           <>
-            {subject.waitingBehind > 0 ? (
+            {waitingBehind > 0 ? (
               <div className="flex items-center gap-2 sm:me-auto">
                 <span className="text-[12.5px] text-muted-foreground">
-                  {describeOutsideAgentsWaiting(subject.waitingBehind)}
+                  {describeOutsideAgentsWaiting(waitingBehind)}
                 </span>
                 <Button
                   variant="outline"
@@ -271,7 +258,7 @@ export function OutsideAgentDialogContent({
               variant="outline"
               size="sm"
               disabled={disabled}
-              onClick={() => void run("deny", () => denyOutsideAgent(subject.request.requestId))}
+              onClick={() => void run("deny", () => denyOutsideAgent(signIn.requestId))}
               data-testid="outside-agent-deny"
             >
               {busy === "deny" ? "Denying…" : "Deny"}
@@ -282,7 +269,7 @@ export function OutsideAgentDialogContent({
               onClick={() => {
                 if (grant === null) return;
                 void run("allow", () =>
-                  approveOutsideAgent({ requestId: subject.request.requestId, ...grant }),
+                  approveOutsideAgent({ requestId: signIn.requestId, ...grant }),
                 );
               }}
               data-testid="outside-agent-allow"
@@ -290,7 +277,7 @@ export function OutsideAgentDialogContent({
               {busy === "allow" ? "Allowing…" : "Allow"}
             </Button>
           </>
-        ) : (
+        ) : subject.kind === "change" ? (
           <>
             <Button variant="outline" size="sm" disabled={disabled} onClick={onClose}>
               Cancel
@@ -313,9 +300,270 @@ export function OutsideAgentDialogContent({
               {busy === "save" ? "Saving…" : "Save"}
             </Button>
           </>
-        )}
+        ) : null}
       </DialogFooter>
     </DialogPopup>
+  );
+}
+
+/**
+ * A key for an assistant that can't sign in (Muse): its name and the same
+ * choices as a sign-in, then the key and the address, once. The key lives in
+ * this view's state only; closing the dialog lets it go for good.
+ */
+function CreateKeyContent({ onClose }: { readonly onClose: () => void }) {
+  const projects = useThisComputerProjects();
+  const [name, setName] = useState("");
+  const [draft, setDraft] = useState<OutsideAgentGrantDraft>(() => initialOutsideAgentDraft(null));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [made, setMade] = useState<OutsideAgentCreateKeyResult | null>(null);
+  const nameId = useId();
+
+  const grant = outsideAgentGrantFromDraft(draft, {
+    requestedAccess: "start",
+    availableProjectIds: projects.map((project) => project.id),
+  });
+  const trimmedName = name.trim();
+  const canCreate = !busy && trimmedName.length > 0 && grant !== null;
+  const update = (change: Partial<OutsideAgentGrantDraft>) => {
+    setDraft((current) => ({ ...current, ...change }));
+    setError(null);
+  };
+  const create = async () => {
+    if (!canCreate) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setMade(await createAssistantKey({ name: trimmedName, ...grant }));
+    } catch (cause) {
+      setError(describeOutsideAgentFailure(cause, "Threadlines didn't answer. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (made !== null) {
+    return (
+      <DialogPopup showCloseButton={false} data-testid="assistant-key-made">
+        <DialogHeader>
+          <DialogTitle>Key for {made.connection.name}</DialogTitle>
+          <DialogDescription className="text-[12.5px] leading-[18px]">
+            You won&apos;t see this key again. Paste both into your assistant.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel className="space-y-3">
+          <SecretField label="Key" value={made.key} testId="assistant-key-value" />
+          <SecretField label="Address" value={made.address} testId="assistant-key-address" />
+        </DialogPanel>
+        <DialogFooter>
+          <Button size="sm" onClick={onClose} data-testid="assistant-key-done">
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    );
+  }
+
+  return (
+    <DialogPopup data-testid="assistant-key-dialog">
+      <DialogHeader>
+        <DialogTitle>Create a key</DialogTitle>
+        <DialogDescription className="text-[12.5px] leading-[18px]">
+          For an assistant that takes a key instead of signing in, like Muse.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogPanel className="space-y-4">
+        <div className="grid gap-1.5">
+          <label className={FIELD_LABEL_CLASS} htmlFor={nameId}>
+            Name
+          </label>
+          <Input
+            id={nameId}
+            value={name}
+            maxLength={KEY_NAME_MAX_LENGTH}
+            placeholder="e.g. Muse"
+            disabled={busy}
+            autoFocus
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void create();
+            }}
+            data-testid="assistant-key-name"
+          />
+        </div>
+        <GrantFields
+          projects={projects}
+          draft={draft}
+          requestedAccess="start"
+          disabled={busy}
+          onChange={update}
+        />
+        <ErrorLine error={error} />
+      </DialogPanel>
+      <DialogFooter>
+        <Button variant="outline" size="sm" disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          disabled={!canCreate}
+          onClick={() => void create()}
+          data-testid="assistant-key-create"
+        >
+          {busy ? "Creating…" : "Create key"}
+        </Button>
+      </DialogFooter>
+    </DialogPopup>
+  );
+}
+
+/** One value to paste elsewhere: its label, the value in full, and Copy. */
+function SecretField({
+  label,
+  value,
+  testId,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly testId: string;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <span className={FIELD_LABEL_CLASS}>{label}</span>
+      <div className="surface-group flex items-center gap-3 rounded-lg px-3 py-2">
+        <code
+          className="min-w-0 flex-1 font-mono text-[12px] leading-[18px] break-all text-foreground select-text"
+          data-testid={testId}
+        >
+          {value}
+        </code>
+        <CopyButton value={value} label={`Copy the ${label.toLowerCase()}`} />
+      </div>
+    </div>
+  );
+}
+
+function ErrorLine({ error }: { readonly error: string | null }) {
+  return error !== null ? (
+    <p role="alert" className="text-[12.5px] text-destructive" data-testid="outside-agent-error">
+      {error}
+    </p>
+  ) : null;
+}
+
+/**
+ * What a connection may do (never more than it asked for), in which
+ * projects, and with how much access the threads it starts may run.
+ */
+function GrantFields({
+  projects,
+  draft,
+  requestedAccess,
+  disabled,
+  onChange,
+}: {
+  readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly name: string }>;
+  readonly draft: OutsideAgentGrantDraft;
+  readonly requestedAccess: OutsideAgentAccess;
+  readonly disabled: boolean;
+  readonly onChange: (change: Partial<OutsideAgentGrantDraft>) => void;
+}) {
+  const fieldId = useId();
+  // What it may do as the dialog shows it: never more than it asked for.
+  const shownAccess = requestedAccess === "see" ? "see" : draft.access;
+  return (
+    <>
+      <div className="grid gap-1.5">
+        <span className={FIELD_LABEL_CLASS} id={`${fieldId}-access`}>
+          It can
+        </span>
+        <RadioGroup
+          value={shownAccess}
+          onValueChange={(value) => onChange({ access: value as OutsideAgentGrantDraft["access"] })}
+          aria-labelledby={`${fieldId}-access`}
+          disabled={disabled}
+          className="gap-1"
+        >
+          {(["see", "start"] as const).map((access) => {
+            const unavailable = access === "start" && requestedAccess === "see";
+            return (
+              <label
+                key={access}
+                className={cn(
+                  "flex items-start gap-2.5 rounded-lg px-1 py-1",
+                  unavailable ? "cursor-default" : "cursor-pointer",
+                )}
+              >
+                <Radio
+                  value={access}
+                  disabled={unavailable}
+                  className="mt-0.5"
+                  data-testid={`outside-agent-access-${access}`}
+                />
+                <span className="min-w-0">
+                  <span
+                    className={cn(
+                      "block text-[13.5px] leading-[19px] font-medium",
+                      unavailable ? "text-muted-foreground" : "text-foreground",
+                    )}
+                  >
+                    {OUTSIDE_AGENT_ACCESS_CHOICES[access]}
+                  </span>
+                  <span className={cn("block", HINT_CLASS)}>
+                    {unavailable ? "It only asked to see threads." : ACCESS_DETAILS[access]}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </RadioGroup>
+      </div>
+
+      <ProjectsField
+        labelId={`${fieldId}-projects`}
+        projects={projects}
+        draft={draft}
+        disabled={disabled}
+        onChange={onChange}
+      />
+
+      {shownAccess === "start" ? (
+        <div className="grid gap-1.5">
+          <span className={FIELD_LABEL_CLASS} id={`${fieldId}-ceiling`}>
+            Highest access
+          </span>
+          <Select
+            value={draft.maxRuntimeMode}
+            disabled={disabled}
+            onValueChange={(value) => onChange({ maxRuntimeMode: value as RuntimeMode })}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-48"
+              aria-labelledby={`${fieldId}-ceiling`}
+              data-testid="outside-agent-ceiling"
+            >
+              <SelectValue>{runtimeModeConfig[draft.maxRuntimeMode].label}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              {RUNTIME_MODES.map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  {runtimeModeConfig[mode].label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          <p className={HINT_CLASS}>
+            It can start threads, and send to or stop the ones it started. It can&apos;t answer
+            their approvals. You do that here.
+          </p>
+        </div>
+      ) : null}
+    </>
   );
 }
 

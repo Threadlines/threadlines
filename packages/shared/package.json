@@ -382,6 +382,10 @@
     "./relayHookSeal": {
       "types": "./src/relayHookSeal.ts",
       "import": "./src/relayHookSeal.ts"
+    },
+    "./assistantCredentials": {
+      "types": "./src/assistantCredentials.ts",
+      "import": "./src/assistantCredentials.ts"
     }
   },
   "scripts": {

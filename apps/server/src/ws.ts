@@ -3164,6 +3164,31 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),
+        // Assistants (docs/design/assistants.md): codes and keys, owner only too.
+        [WS_METHODS.outsideAgentsAssistantCode]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAssistantCode,
+            requireOwner(WS_METHODS.outsideAgentsAssistantCode).pipe(
+              Effect.andThen(outsideAgents.assistantCode),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAssistantCodeCancel]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAssistantCodeCancel,
+            requireOwner(WS_METHODS.outsideAgentsAssistantCodeCancel).pipe(
+              Effect.andThen(outsideAgents.assistantCodeCancel),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsCreateKey]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsCreateKey,
+            requireOwner(WS_METHODS.outsideAgentsCreateKey).pipe(
+              Effect.andThen(outsideAgents.createKey(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

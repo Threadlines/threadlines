@@ -25,6 +25,11 @@ const UNPLACED: ReadonlyArray<readonly [file: string, title: string, why: string
   ["components/settings/ConnectionsSettings.tsx", "Connect your phone again", "one-time notice"],
   ["components/settings/ConnectionsSettings.tsx", "Owner only", "status for non-owners"],
   ["components/fleet/FleetComputerView.tsx", "Not connected to this app", "Fleet status row"],
+  [
+    "components/outsideAgents/AssistantsSection.tsx",
+    "This code expired.",
+    "a sign-in code's state",
+  ],
 ];
 
 const sourceFiles = (readdirSync(SRC, { recursive: true }) as string[])

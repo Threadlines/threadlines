@@ -28,11 +28,13 @@ import {
 import { generateToken, sha256Base64Url } from "./crypto.ts";
 import { log, loggedPath } from "./log.ts";
 import { publicRelayOrigin, type RelayV2Env } from "./v2/env.ts";
+import { routeAssistants } from "./v2/assistants/route.ts";
 import { routeV2 } from "./v2/routing.ts";
 
 export { RelayHost } from "./v2/RelayHost.ts";
 export { RelayCodeShard } from "./v2/RelayCodeShard.ts";
 export { RelayLedger } from "./v2/RelayLedger.ts";
+export { RelayAssistantSignIn } from "./v2/assistants/RelayAssistantSignIn.ts";
 
 type ThreadlinesRelayEnv = RelayV2Env & {
   readonly THREADLINES_RELAY_SESSION_CREATION_ENABLED: string;
@@ -617,6 +619,11 @@ export default {
     const url = new URL(request.url);
 
     try {
+      // The assistants door owns a few paths on its own origin, before v1 and v2.
+      const assistantResponse = await routeAssistants(request, env);
+      if (assistantResponse) {
+        return assistantResponse;
+      }
       const v2Response = await routeV2(request, env, resolveAllowedOrigins(env));
       if (v2Response) {
         return v2Response;

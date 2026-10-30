@@ -2,6 +2,7 @@
 import { generateToken, sha256Base64Url } from "../crypto.ts";
 import { createJsonResponse } from "../protocol.ts";
 import { codeShardName } from "./codeShardCore.ts";
+import { assistantsInfo } from "./assistants/config.ts";
 import { isPushEnabled, isRelayV2Enabled, type RelayV2Env } from "./env.ts";
 import { routeHook } from "./hookRoute.ts";
 import { joinErrorStatus, parseJoinBody } from "./http.ts";
@@ -70,6 +71,12 @@ export async function routeV2(
 
   if (request.method === "GET" && url.pathname === "/v2/push/key") {
     return withCors(origin, await pushKey(url, env));
+  }
+
+  // The assistants door's address (docs/design/assistants.md): the same for
+  // every computer, so a computer can show it before it registers.
+  if (request.method === "GET" && url.pathname === "/v2/assistants") {
+    return json(await assistantsInfo(request, env));
   }
 
   const hostMatch = HOST_ROUTE.exec(url.pathname);

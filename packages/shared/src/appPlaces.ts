@@ -491,6 +491,27 @@ const SECTIONS = [
     widensAgents: true,
   },
   {
+    id: "connections.assistants",
+    kind: "section",
+    parent: "settings.connections",
+    title: "Assistants",
+    about:
+      "Always-on assistants (Grok Bot, dots, Muse, Claude Duet) using this computer from their own cloud, through the relay.",
+    route: { to: "/settings/connections", search: { section: "assistants" } },
+    keywords: ["grok bot", "dots", "muse", "claude duet", "connector", "always-on", "mcp"],
+    widensAgents: true,
+  },
+  {
+    id: "connections.assistantsUsingThis",
+    kind: "section",
+    parent: "settings.connections",
+    title: "Assistants that can use this computer",
+    about: "Each assistant you let in, how it signs in, and the most access its threads get.",
+    route: { to: "/settings/connections", search: { section: "assistants" } },
+    value: { kind: "state", state: "outsideAgents" },
+    widensAgents: true,
+  },
+  {
     id: "connections.computersFromHere",
     kind: "section",
     parent: "settings.connections",
@@ -1128,6 +1149,24 @@ const ROWS = [
     parent: "connections.agents",
     title: "Address for agents",
     about: "The address outside agents use to reach this computer.",
+    widensAgents: true,
+  },
+  {
+    id: "connections.assistantAddress",
+    kind: "row",
+    parent: "connections.assistants",
+    title: "Address for assistants",
+    about: "The address to paste into an assistant as a custom connector.",
+    widensAgents: true,
+  },
+  {
+    id: "connections.addAssistant",
+    kind: "row",
+    parent: "connections.assistants",
+    title: "Add an assistant",
+    about:
+      "Shows a code to type into an assistant's sign-in page, or makes a key for one that takes a key instead (Muse).",
+    keywords: ["code", "key", "sign in", "connector"],
     widensAgents: true,
   },
   {

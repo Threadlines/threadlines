@@ -34,6 +34,28 @@ export type RelayV2Env = Env & {
   readonly THREADLINES_RELAY_PUSH_ENABLED?: string;
   readonly THREADLINES_RELAY_DAILY_ALERT_BUDGET?: string;
   readonly THREADLINES_RELAY_HOST_DAILY_ALERTS?: string;
+  /**
+   * The assistants door (docs/design/assistants.md; assistants/config.ts).
+   * `ASSISTANTS_ORIGIN` is its public origin (`https://connect.threadlines.dev`,
+   * or loopback http for a local relay); `ASSISTANTS_ENABLED=false` is its kill
+   * switch. The two keys are secrets, base64url of at least 32 random bytes,
+   * and permanent: changing the route key breaks every connection, changing
+   * the client key every registered client.
+   */
+  readonly ASSISTANTS_ORIGIN?: string;
+  readonly ASSISTANTS_ENABLED?: string;
+  readonly ASSISTANT_ROUTE_KEY?: string;
+  readonly ASSISTANT_CLIENT_KEY?: string;
+  readonly THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS?: string;
+  /** Per client IP: registrations, sign-in pages and typed codes (10 a minute). */
+  readonly ASSISTANT_SIGN_IN_RATE_LIMITER: RateLimit;
+  /** Per client IP: sign-in pages polling for the computer's decision. */
+  readonly ASSISTANT_STATUS_RATE_LIMITER: RateLimit;
+  /** Per connection (`mcp:` and `token:` keys): 120 a minute, the computer's own rate. */
+  readonly ASSISTANT_CONNECTION_RATE_LIMITER: RateLimit;
+  readonly RELAY_ASSISTANT_SIGN_IN: DurableObjectNamespace<
+    import("./assistants/RelayAssistantSignIn.ts").RelayAssistantSignIn
+  >;
 };
 
 function positiveInt(value: string | undefined, fallback: number): number {

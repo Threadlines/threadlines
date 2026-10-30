@@ -145,6 +145,8 @@ export const SETTINGS_ROWS = {
   "connections.agentAddress": LINK,
   "connections.connectAgent": LINK,
   "connections.threadlinesCommand": LINK,
+  "connections.assistantAddress": LINK,
+  "connections.addAssistant": LINK,
   "connections.sameNetwork": LINK,
   "connections.tailscale": LINK,
   "connections.oneTimeLink": LINK,

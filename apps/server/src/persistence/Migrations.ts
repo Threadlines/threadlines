@@ -111,6 +111,7 @@ import Migration0089 from "./Migrations/089_OutsideAgents.ts";
 import Migration0090 from "./Migrations/090_AuthSessionClientName.ts";
 import Migration0091 from "./Migrations/091_ProjectionThreadSessionErrorState.ts";
 import Migration0092 from "./Migrations/092_UsageLimitContinueAtReset.ts";
+import Migration0093 from "./Migrations/093_OutsideAgentAssistants.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -215,6 +216,7 @@ export const migrationEntries = [
   [90, "AuthSessionClientName", Migration0090],
   [91, "ProjectionThreadSessionErrorState", Migration0091],
   [92, "UsageLimitContinueAtReset", Migration0092],
+  [93, "OutsideAgentAssistants", Migration0093],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",
-    "@threadlines/shared": "workspace:*"
+    "@threadlines/shared": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",

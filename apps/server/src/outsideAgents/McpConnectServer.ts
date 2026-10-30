@@ -17,12 +17,10 @@
  * `tools/list` shows what the connection's live grant allows, read again at
  * every listing; every handler checks the grant again anyway.
  */
-import type { ThreadId } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer } from "effect/ai";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -32,35 +30,17 @@ import {
   normalizeMcpHttpResponse,
   readBearerToken,
 } from "../mcp/McpHttpServer.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
-import { ThreadSearch } from "../orchestration/Services/ThreadSearch.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
-import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
-import { makeConnectLimits } from "./connectLimits.ts";
+import { makeConnectToolDeps } from "./connectToolDeps.ts";
 import { makeConnectToolHandlers } from "./connectToolHandlers.ts";
-import {
-  ConnectToolkit,
-  McpConnectInvocation,
-  SeeToolkit,
-  START_ONLY_TOOLS,
-} from "./connectTools.ts";
+import { ConnectToolkit, listedToolsFor, McpConnectInvocation } from "./connectTools.ts";
 import {
   OUTSIDE_AGENT_MCP_PATH,
   OutsideAgentConnections,
   outsideAgentRequestOrigin,
   outsideAgentResource,
 } from "./OutsideAgentConnections.ts";
-import { OutsideAgentRequests } from "./OutsideAgentRequests.ts";
 import { requestService } from "../mcp/requestService.ts";
-
-/** What a `see` connection lists, and what a `start` one does. */
-const SEE_TOOLS: ReadonlySet<string> = new Set(Object.keys(SeeToolkit.tools));
-const ALL_TOOLS: ReadonlySet<string> = new Set([...SEE_TOOLS, ...START_ONLY_TOOLS]);
 
 /** A request from off this computer: approval promised the agent runs on it. */
 const misdirectedResponse = (port: number | null) =>
@@ -114,8 +94,7 @@ const authenticate = Effect.gen(function* () {
     }
     const response = yield* handler.pipe(Effect.provideService(McpConnectInvocation, caller));
     const grant = yield* connections.grant(caller.connectionId);
-    const listed =
-      grant === null ? new Set<string>() : grant.access === "start" ? ALL_TOOLS : SEE_TOOLS;
+    const listed = listedToolsFor(grant?.access ?? null);
     return listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed);
   });
 });
@@ -161,71 +140,7 @@ const TOOL_CALLS_EVENT = "outside_agent.tool_calls";
 /** The handlers, bound to the running server's orchestration, settings and git. */
 const ConnectToolHandlersLive = ConnectToolkit.toLayer(
   Effect.gen(function* () {
-    const connections = yield* OutsideAgentConnections;
-    const engine = yield* OrchestrationEngineService;
-    const bootstrap = yield* ThreadBootstrap;
-    const snapshots = yield* ProjectionSnapshotQuery;
-    const providers = yield* ProviderRegistry;
-    const settings = yield* ServerSettingsService;
-    const git = yield* GitVcsDriver;
-    const requests = yield* OutsideAgentRequests;
-    const search = yield* Effect.serviceOption(ThreadSearch);
-    // Scheduled tasks, when this server has them: their cards waiting for
-    // the user count in a thread's status.
-    const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
-    const handlers = yield* makeConnectToolHandlers({
-      connections,
-      engine,
-      bootstrap,
-      projects: snapshots.getProjectCatalog().pipe(
-        Effect.map((catalog) => catalog.projects.filter((project) => project.deletedAt === null)),
-        Effect.orDie,
-      ),
-      listThreads: (input) => snapshots.listThreadShells(input).pipe(Effect.orDie),
-      threadProject: (threadId) =>
-        snapshots.listThreadShells({ threadIds: [threadId], includeArchived: true }).pipe(
-          Effect.map((shells) => shells[0]?.projectId),
-          Effect.orDie,
-        ),
-      readProject: (projectId) =>
-        snapshots
-          .getProjectShellById(projectId)
-          .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
-      readThread: (threadId) =>
-        snapshots
-          .getThreadDetailById(threadId)
-          .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
-      status: {
-        subscribeEvents: engine.subscribeDomainEvents,
-        readShell: (threadId) =>
-          snapshots
-            .getThreadShellById(threadId)
-            .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
-        scheduleAnswerWaiting: Option.isSome(scheduledTasks)
-          ? scheduledTasks.value.waitingThreadIds
-          : Effect.succeed(new Set<ThreadId>()),
-        scheduleAnswerChanges: Option.isSome(scheduledTasks)
-          ? scheduledTasks.value.changes.pipe(Stream.ignore)
-          : Stream.empty,
-      },
-      providers: providers.getProviders,
-      userDefaultModel: settings.getSettings.pipe(
-        Effect.map((current) => current.newThreadModelSelection),
-        Effect.orElseSucceed(() => null),
-      ),
-      git,
-      ...(Option.isSome(search)
-        ? {
-            searchThreads: (input) =>
-              search.value.search(input).pipe(
-                Effect.map((result) => result.matches.map((match) => match.threadId)),
-                Effect.orElseSucceed(() => []),
-              ),
-          }
-        : {}),
-      requests,
-      limits: makeConnectLimits(),
-    });
+    const handlers = yield* makeConnectToolHandlers(yield* makeConnectToolDeps);
     const counted = yield* makeToolCallCounts;
     const caller = requestService(McpConnectInvocation);
     return {

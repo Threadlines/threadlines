@@ -43,6 +43,7 @@ import { ConnectionStatusDot, formatAccessTimestamp } from "./connections/Connec
 import { openConnectComputerDialog } from "./connections/JoinComputerDialog";
 import { useRelayAccess } from "./connections/useRelayAccess";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
+import type { ConnectionsSettingsSearch } from "./settingsNavigation";
 import {
   SETTINGS_GROUP_ROW_CLASS,
   SettingsPageContainer,
@@ -105,6 +106,7 @@ import { useSavedEnvironmentRegistryStore } from "~/environments/runtime";
 import { useUiStateStore } from "~/uiStateStore";
 import { resolveServerConfigVersionMismatch } from "~/versionSkew";
 import { useServerConfig } from "~/rpc/serverState";
+import { AssistantsSection } from "../outsideAgents/AssistantsSection";
 import { OutsideAgentsSection } from "../outsideAgents/OutsideAgentsSection";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
@@ -947,6 +949,9 @@ function NetworkAccessDescription({
  * - Devices that can use this computer: "Connect a device" (code + QR
  *   through the relay) and every device with access, each with Remove access.
  *   Linked computers are joined to their links by session id.
+ * - Agents and Assistants (the owner only, never on a phone): agents run
+ *   outside Threadlines on this computer, and always-on assistants in their
+ *   makers' clouds, that may use it.
  * - Computers you use from here: how many, with Open Fleet and "Connect to a
  *   computer" (Fleet manages them, docs/design/fleet.md R4.4).
  * - Connection options: Same network, Tailscale, one-time network links.
@@ -957,8 +962,8 @@ export function ConnectionsSettings({
   focusSection,
 }: {
   surface?: "full" | "phone";
-  /** A group to bring into view on arrival (the command palette's "Connect an agent"). */
-  focusSection?: "agents" | undefined;
+  /** A group to bring into view on arrival (the command palette's "Connect an agent" or "Connect an assistant"). */
+  focusSection?: ConnectionsSettingsSearch["section"] | undefined;
 }) {
   const isPhoneSurface = surface === "phone";
   const navigate = useNavigate();
@@ -1753,6 +1758,10 @@ export function ConnectionsSettings({
 
       {showsOutsideAgents ? (
         <OutsideAgentsSection revealOnArrival={focusSection === "agents"} />
+      ) : null}
+
+      {showsOutsideAgents ? (
+        <AssistantsSection revealOnArrival={focusSection === "assistants"} />
       ) : null}
 
       {computersSection}

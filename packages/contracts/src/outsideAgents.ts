@@ -40,10 +40,39 @@ export const OutsideAgentGrant = Schema.Struct({
 });
 export type OutsideAgentGrant = typeof OutsideAgentGrant.Type;
 
+/**
+ * Where a connection comes in. `local`: an agent on this computer, through
+ * `/mcp/connect`. `assistant`: an always-on assistant in someone else's cloud,
+ * through the relay's public door (docs/design/assistants.md).
+ */
+export const OutsideAgentConnectionKind = Schema.Literals(["local", "assistant"]);
+export type OutsideAgentConnectionKind = typeof OutsideAgentConnectionKind.Type;
+
+/** How it signs in: OAuth with the approval dialog, or a key made in Settings (assistants only). */
+export const OutsideAgentSignInMethod = Schema.Literals(["oauth", "key"]);
+export type OutsideAgentSignInMethod = typeof OutsideAgentSignInMethod.Type;
+
+/**
+ * Who an assistant signed in as, as far as the relay could tell: `verified`
+ * when its client id is a metadata document the relay fetched from `host`;
+ * otherwise `host` is where its sign-in returns to and its name is its own
+ * claim. `known`: on the relay's short list of known assistants.
+ */
+export const OutsideAgentIdentity = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  verified: Schema.Boolean,
+  known: Schema.Boolean,
+});
+export type OutsideAgentIdentity = typeof OutsideAgentIdentity.Type;
+
 export const OutsideAgentConnection = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
-  /** The name the agent gave when it signed in ("Claude Code"): shown as given, never verified. */
+  /** The name the agent gave when it signed in ("Claude Code"), or the key's name: shown as given, never verified. */
   name: TrimmedNonEmptyString,
+  kind: OutsideAgentConnectionKind,
+  signIn: OutsideAgentSignInMethod,
+  /** Assistants signed in with OAuth; null for local agents and keys. */
+  identity: Schema.NullOr(OutsideAgentIdentity),
   ...OutsideAgentGrant.fields,
   createdAt: IsoDateTime,
   /** When it last called a tool; null: not yet. Updated at most once a minute. */
@@ -68,16 +97,58 @@ export const OutsideAgentPendingRequest = Schema.Struct({
 });
 export type OutsideAgentPendingRequest = typeof OutsideAgentPendingRequest.Type;
 
-/** Settings' Agents group, again on every change. */
+/**
+ * An assistant's sign-in waiting for the user: its page typed this computer's
+ * code. Approve and Deny take its `requestId` like a local sign-in's.
+ */
+export const OutsideAgentAssistantSignIn = Schema.Struct({
+  requestId: OutsideAgentRequestId,
+  /** The name the assistant gave ("Grok Bot"): its own claim unless `identity.verified`. */
+  name: TrimmedNonEmptyString,
+  identity: OutsideAgentIdentity,
+  /** Roughly where the sign-in page was opened ("Austin, US"), information only; null: unknown. */
+  place: Schema.NullOr(TrimmedNonEmptyString),
+  requestedAccess: OutsideAgentAccess,
+  /** The same assistant's earlier connection, which approving replaces; null: none. */
+  replaces: Schema.NullOr(OutsideAgentRef),
+  createdAt: IsoDateTime,
+  expiresAt: IsoDateTime,
+});
+export type OutsideAgentAssistantSignIn = typeof OutsideAgentAssistantSignIn.Type;
+
+/**
+ * The assistants door as this computer sees it.
+ * - `ready`: the relay's door is on, and this computer is registered with it.
+ * - `off`: the relay's door is turned off, or this computer's relay is turned off.
+ * - `unreachable`: the relay couldn't be asked; Settings says so and keeps trying.
+ */
+export const OutsideAgentAssistantsState = Schema.Struct({
+  status: Schema.Literals(["ready", "off", "unreachable"]),
+  /** What the user pastes into an assistant (`https://connect.threadlines.dev/mcp`); null until known. */
+  address: Schema.NullOr(TrimmedNonEmptyString),
+  /** This computer's sign-in code while one is showing, as typed (`K4D82PQX`); null: none. */
+  code: Schema.NullOr(
+    Schema.Struct({
+      code: TrimmedNonEmptyString,
+      expiresAt: IsoDateTime,
+    }),
+  ),
+  /** Assistant sign-ins waiting for the user, oldest first. */
+  signIns: Schema.Array(OutsideAgentAssistantSignIn),
+});
+export type OutsideAgentAssistantsState = typeof OutsideAgentAssistantsState.Type;
+
+/** Settings' Agents and Assistants groups, again on every change. */
 export const OutsideAgentsSnapshot = Schema.Struct({
   /** This computer's address for agents: `http://127.0.0.1:<port>/mcp/connect`. */
   address: TrimmedNonEmptyString,
-  /** Live connections, newest first. A removed one is gone at once. */
+  /** Live connections of both kinds, newest first. A removed one is gone at once. */
   connections: Schema.Array(OutsideAgentConnection),
-  /** Sign-ins waiting for the user, oldest first. */
+  /** Local agents' sign-ins waiting for the user, oldest first. */
   pending: Schema.Array(OutsideAgentPendingRequest),
-  /** After Deny all: new sign-ins are turned away until then. Null: taking them. */
+  /** After Deny all: new sign-ins of both kinds are turned away until then. Null: taking them. */
   quietUntil: Schema.NullOr(IsoDateTime),
+  assistants: OutsideAgentAssistantsState,
 });
 export type OutsideAgentsSnapshot = typeof OutsideAgentsSnapshot.Type;
 
@@ -100,6 +171,22 @@ export const OutsideAgentConnectionInput = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
 });
 export type OutsideAgentConnectionInput = typeof OutsideAgentConnectionInput.Type;
+
+/** A key for an assistant that can't sign in (Muse), with the same choices as the dialog. */
+export const OutsideAgentCreateKeyInput = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(60)),
+  ...OutsideAgentGrant.fields,
+});
+export type OutsideAgentCreateKeyInput = typeof OutsideAgentCreateKeyInput.Type;
+
+/** The key is in this result only: the computer keeps a hash. */
+export const OutsideAgentCreateKeyResult = Schema.Struct({
+  connection: OutsideAgentConnection,
+  key: TrimmedNonEmptyString,
+  /** The address to paste with it. */
+  address: TrimmedNonEmptyString,
+});
+export type OutsideAgentCreateKeyResult = typeof OutsideAgentCreateKeyResult.Type;
 
 export class OutsideAgentError extends Schema.TaggedError<OutsideAgentError>()(
   "OutsideAgentError",

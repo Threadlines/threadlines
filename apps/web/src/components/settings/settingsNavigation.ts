@@ -168,16 +168,18 @@ export function parseProviderSettingsSearch(
 
 /**
  * `?section=agents` on the connections page brings its Agents group into
- * view: the command palette's "Connect an agent" opens it there.
+ * view, `?section=assistants` its Assistants group: the command palette's
+ * "Connect an agent" and "Connect an assistant" open them there.
  */
 export interface ConnectionsSettingsSearch {
-  readonly section?: "agents";
+  readonly section?: "agents" | "assistants";
 }
 
 export function parseConnectionsSettingsSearch(
   search: Record<string, unknown>,
 ): ConnectionsSettingsSearch {
-  return search["section"] === "agents" ? { section: "agents" } : {};
+  const section = search["section"];
+  return section === "agents" || section === "assistants" ? { section } : {};
 }
 
 /**

@@ -9,6 +9,13 @@
  * Every command takes `--json` (the tool's result as it came, one line per
  * result), `--dev` (the Threadlines a dev build runs) and `--base-dir`.
  * Exit codes are connectExit.ts's.
+ *
+ * With `THREADLINES_URL` set (an assistants door's address,
+ * docs/design/assistants.md), the commands go there instead, signed with
+ * `THREADLINES_KEY` or the key `connect --url <address> --key <key>` kept:
+ * so the command runs on an assistant's own computer. There every start,
+ * send and stop carries a request id, made up when `--request-id` isn't
+ * given, as that door requires.
  */
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
@@ -25,6 +32,7 @@ import { FetchHttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { AgentThreadStatusWord, RuntimeMode } from "@threadlines/contracts";
+import { parseAssistantCredential } from "@threadlines/shared/assistantCredentials";
 import packageJson from "../../package.json" with { type: "json" };
 import {
   AgentsTool,
@@ -46,6 +54,7 @@ import {
   forgetConnectToken,
   rememberConnectSession,
   readConnectCredential,
+  writeConnectKey,
 } from "./connectCredentials.ts";
 import {
   CommandExit,
@@ -55,7 +64,15 @@ import {
   exitCodeForConnectError,
   SIGNED_OUT_MESSAGE,
 } from "./connectExit.ts";
-import { findThreadlines, resolveConnectLocation } from "./connectLocation.ts";
+import {
+  type ConnectLocation,
+  type ConnectTarget,
+  findThreadlines,
+  remoteAddressConfig,
+  remoteKeyConfig,
+  remoteTarget,
+  resolveConnectLocation,
+} from "./connectLocation.ts";
 import {
   describeRefusal,
   exitCodeForOutcome,
@@ -72,6 +89,13 @@ import { signIn } from "./connectSignIn.ts";
 
 const CLIENT_VERSION = packageJson.version;
 const SETTINGS_PLACE = "Threadlines > Settings > Connections > Agents";
+const KEYS_PLACE = "Threadlines > Settings > Connections > Assistants";
+
+/** How a remote door's failures read: it isn't this computer's Threadlines. */
+const remoteMessages = (target: ConnectTarget) => ({
+  notRunning: `Nothing answered at ${target.resource}. Check the address and this computer's connection.`,
+  signedOut: `Threadlines refused this key at ${target.resource}: it was removed, or it's for another address. Make a new one in ${KEYS_PLACE}, then run threadlines connect --url ${target.resource} --key <key>.`,
+});
 
 const sharedFlags = {
   baseDir: baseDirFlag,
@@ -133,42 +157,78 @@ const endOnConnectError = <A, E, R>(effect: Effect.Effect<A, E | ConnectError, R
   );
 
 /**
- * Runs a command against `/mcp/connect` with this computer's sign-in. A 401
- * forgets the token (keeping the registration) and asks for a new sign-in.
+ * Where the commands go: the assistants door at `url` (or `THREADLINES_URL`),
+ * else this computer's running Threadlines.
+ */
+const resolveTarget = (location: ConnectLocation, url: Option.Option<string>) =>
+  Effect.gen(function* () {
+    const address = Option.isSome(url) ? url : yield* remoteAddressConfig;
+    if (Option.isNone(address)) return yield* findThreadlines(location);
+    const target = remoteTarget(address.value);
+    if ("invalid" in target) {
+      return yield* new ConnectError({ reason: "failed", message: target.invalid });
+    }
+    return target;
+  });
+
+/**
+ * Runs a command against `/mcp/connect` with this computer's sign-in, or
+ * against an assistants door with a key. A 401 forgets the kept token (keeping
+ * the registration) and asks for a new sign-in.
  */
 const withClient = <A, E, R>(
   flags: SharedFlags,
-  use: (client: ConnectClient) => Effect.Effect<A, E | ConnectError, R>,
+  use: (client: ConnectClient, target: ConnectTarget) => Effect.Effect<A, E | ConnectError, R>,
 ) =>
   Effect.gen(function* () {
     const location = yield* resolveConnectLocation(flags);
-    const target = yield* findThreadlines(location);
+    const target = yield* resolveTarget(location, Option.none());
     const credential = yield* readConnectCredential(location.credentialsPath, target.resource);
-    const token = credential?.accessToken;
+    const given = target.remote ? yield* remoteKeyConfig : Option.none<string>();
+    const token = Option.getOrUndefined(given) ?? credential?.accessToken;
     if (token === undefined) {
-      return yield* new ConnectError({ reason: "signed_out", message: SIGNED_OUT_MESSAGE });
+      return yield* new ConnectError({
+        reason: "signed_out",
+        message: target.remote
+          ? `This command has no key for ${target.resource}. Run threadlines connect --url ${target.resource} --key <key>, or set THREADLINES_KEY.`
+          : SIGNED_OUT_MESSAGE,
+      });
     }
+    const kept = Option.isNone(given);
     // The session is kept from inside the client's own calls.
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const client = yield* makeConnectClient({
       resource: target.resource,
       token,
       clientVersion: CLIENT_VERSION,
-      sessionId: credential?.sessionId,
+      sessionId: kept ? credential?.sessionId : undefined,
       onSession: (sessionId) =>
-        rememberConnectSession(location.credentialsPath, target.resource, token, sessionId).pipe(
-          Effect.ignore,
-          Effect.provideContext(files),
-        ),
+        kept
+          ? rememberConnectSession(
+              location.credentialsPath,
+              target.resource,
+              token,
+              sessionId,
+            ).pipe(Effect.ignore, Effect.provideContext(files))
+          : Effect.void,
+      messages: target.remote ? remoteMessages(target) : undefined,
     });
-    return yield* use(client).pipe(
+    return yield* use(client, target).pipe(
       Effect.tapError((error) =>
-        error instanceof ConnectError && error.reason === "signed_out"
+        error instanceof ConnectError && error.reason === "signed_out" && kept
           ? forgetConnectToken(location.credentialsPath, target.resource, token).pipe(Effect.ignore)
           : Effect.void,
       ),
     );
   }).pipe(endOnConnectError);
+
+/** The request id a change goes with: the flag's, or (an assistants door requires one) a fresh one. */
+const requestIdFor = (requestId: Option.Option<string>, target: ConnectTarget) =>
+  Option.isSome(requestId)
+    ? { requestId: requestId.value }
+    : target.remote
+      ? { requestId: crypto.randomUUID() }
+      : {};
 
 /** Prints one tool result: as JSON, or as `text`. */
 const show = (flags: SharedFlags, result: unknown, text: string) =>
@@ -308,20 +368,83 @@ const resolveAgent = (client: ConnectClient, flags: SharedFlags, raw: string) =>
 
 // ----- commands --------------------------------------------------------------------
 
+/**
+ * `connect --url <address> --key <key>`: keeps a key for another computer's
+ * Threadlines, made in its Settings, and tries it once.
+ */
+const connectWithKey = (
+  flags: SharedFlags,
+  location: ConnectLocation,
+  target: ConnectTarget,
+  key: Option.Option<string>,
+) =>
+  Effect.gen(function* () {
+    const given = Option.isSome(key) ? key : yield* remoteKeyConfig;
+    if (Option.isNone(given)) {
+      return yield* exitWith(
+        EXIT.failed,
+        `Pass --key with the key Threadlines showed (${KEYS_PLACE} > Create a key).`,
+      );
+    }
+    const value = given.value.trim();
+    if (parseAssistantCredential(value)?.kind !== "key") {
+      return yield* exitWith(
+        EXIT.failed,
+        "That isn't a Threadlines key. Keys start with tlak1. and come from Create a key.",
+      );
+    }
+    yield* writeConnectKey(location.credentialsPath, target.resource, value);
+    const client = yield* makeConnectClient({
+      resource: target.resource,
+      token: value,
+      clientVersion: CLIENT_VERSION,
+      messages: remoteMessages(target),
+    });
+    const tried = yield* client.call(ProjectsTool, {}).pipe(Effect.result);
+    if (tried._tag === "Failure") {
+      if (tried.failure.reason === "signed_out") {
+        yield* forgetConnectToken(location.credentialsPath, target.resource, value);
+        return yield* exitWith(EXIT.refused, tried.failure.message);
+      }
+      return yield* exitWith(
+        exitCodeForConnectError(tried.failure),
+        `Kept the key for ${target.resource}, but trying it didn't work: ${tried.failure.message}`,
+      );
+    }
+    yield* show(
+      flags,
+      { connected: true, resource: target.resource, remote: true },
+      `Connected to ${target.resource}. Set THREADLINES_URL=${target.resource} to send commands there. To change what this key can do, open ${KEYS_PLACE} on that computer.`,
+    );
+  });
+
 export const connectCommand = Command.make("connect", {
   ...sharedFlags,
   noBrowser: Flag.Boolean("no-browser").pipe(
     Flag.withDescription("Print the sign-in link instead of opening a browser."),
     Flag.withDefault(false),
   ),
+  url: Flag.String("url").pipe(
+    Flag.withDescription(
+      "Another computer's Threadlines, at the address its Settings > Connections > Assistants shows. Needs --key.",
+    ),
+    Flag.optional,
+  ),
+  key: Flag.String("key").pipe(
+    Flag.withDescription(
+      "With --url: the key made there under Create a key. Kept on this computer.",
+    ),
+    Flag.optional,
+  ),
 }).pipe(
   Command.withDescription(
-    "Sign this command in to Threadlines. You allow it in the Threadlines app.",
+    "Sign this command in to Threadlines. You allow it in the Threadlines app, or pass --url and --key for another computer's.",
   ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const location = yield* resolveConnectLocation(flags);
-      const target = yield* findThreadlines(location);
+      const target = yield* resolveTarget(location, flags.url);
+      if (target.remote) return yield* connectWithKey(flags, location, target, flags.key);
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const result = yield* signIn({
         target,
@@ -465,7 +588,7 @@ const threadStartCommand = Command.make("start", {
 }).pipe(
   Command.withDescription("Start a thread in a project, as if the user started it in the app."),
   Command.withHandler((flags) =>
-    withClient(flags, (client) =>
+    withClient(flags, (client, target) =>
       Effect.gen(function* () {
         const prompt = yield* readText(flags.prompt, "prompt");
         const agent = Option.isSome(flags.agent)
@@ -478,10 +601,7 @@ const threadStartCommand = Command.make("start", {
           ...(agent === null ? {} : { agent }),
           ...(flags.local ? { workspace: "project_folder" as const } : {}),
           ...Option.match(flags.access, { onNone: () => ({}), onSome: (access) => ({ access }) }),
-          ...Option.match(flags.requestId, {
-            onNone: () => ({}),
-            onSome: (requestId) => ({ requestId }),
-          }),
+          ...requestIdFor(flags.requestId, target),
         } satisfies Tool.ParametersEncoded<typeof OutsideThreadStartTool>);
         yield* answer(flags, result, formatStart);
         if (flags.wait && result.thread !== undefined) {
@@ -509,16 +629,13 @@ const threadSendCommand = Command.make("send", {
     "Send a message to a thread this command started. It must not be working.",
   ),
   Command.withHandler((flags) =>
-    withClient(flags, (client) =>
+    withClient(flags, (client, target) =>
       Effect.gen(function* () {
         const message = yield* readText(flags.message, "message");
         const result = yield* client.call(OutsideThreadSendTool, {
           threadId: flags.thread,
           message,
-          ...Option.match(flags.requestId, {
-            onNone: () => ({}),
-            onSome: (requestId) => ({ requestId }),
-          }),
+          ...requestIdFor(flags.requestId, target),
         });
         yield* answer(flags, result, () => "Sent.");
         if (flags.wait) yield* waitForThread(client, flags, flags.thread, flags.timeout);
@@ -566,12 +683,19 @@ const threadWaitCommand = Command.make("wait", {
   ),
 );
 
-const threadStopCommand = Command.make("stop", { ...sharedFlags, thread: threadIdArgument }).pipe(
+const threadStopCommand = Command.make("stop", {
+  ...sharedFlags,
+  thread: threadIdArgument,
+  requestId: requestIdFlag,
+}).pipe(
   Command.withDescription("Stop the running turn in a thread this command started."),
   Command.withHandler((flags) =>
-    withClient(flags, (client) =>
+    withClient(flags, (client, target) =>
       client
-        .call(OutsideThreadStopTool, { threadId: flags.thread })
+        .call(OutsideThreadStopTool, {
+          threadId: flags.thread,
+          ...requestIdFor(flags.requestId, target),
+        })
         .pipe(Effect.flatMap((result) => answer(flags, result, formatStop))),
     ),
   ),

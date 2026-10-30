@@ -456,6 +456,12 @@ export interface WsRpcClient {
     readonly resumeRequests: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsResumeRequests>;
     readonly update: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsUpdate>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsRemove>;
+    /** Assistants (docs/design/assistants.md): a sign-in code to show, and a key-signed connection. */
+    readonly assistantCode: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsAssistantCode>;
+    readonly assistantCodeCancel: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.outsideAgentsAssistantCodeCancel
+    >;
+    readonly createKey: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsCreateKey>;
   };
   /**
    * Computer links (docs/design/fleet.md): owner and client sessions alike,
@@ -1272,6 +1278,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.outsideAgentsUpdate](input)),
       remove: (input) =>
         transport.request((client) => client[WS_METHODS.outsideAgentsRemove](input)),
+      assistantCode: () =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAssistantCode]({})),
+      assistantCodeCancel: () =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAssistantCodeCancel]({})),
+      createKey: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsCreateKey](input)),
     },
     // Never replayed on a new socket: a start that may have landed is told by
     // the thread's own `move`, and a second one would only be refused.

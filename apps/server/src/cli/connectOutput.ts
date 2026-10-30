@@ -129,10 +129,18 @@ export function formatAgents(result: AgentsResult): string {
 }
 
 export function formatThreadList(result: ThreadsListResult): string {
-  if (result.threads.length === 0) return "No threads.";
-  return columns(
-    result.threads.map((thread) => [thread.status, thread.project, thread.threadId, thread.title]),
-  );
+  // Through the assistants door: threads still being set up, or whose setup failed.
+  const starting = result.starting ?? [];
+  if (result.threads.length === 0 && starting.length === 0) return "No threads.";
+  return columns([
+    ...starting.map((thread) => [thread.status, thread.project, thread.threadId, thread.title]),
+    ...result.threads.map((thread) => [
+      thread.status,
+      thread.project,
+      thread.threadId,
+      thread.title,
+    ]),
+  ]);
 }
 
 const WAITING_ON_TEXT: Record<OutsideWaitingOn, string> = {
@@ -159,6 +167,7 @@ function threadStatusLines(
 }
 
 export function formatThreadRead(result: OutsideThreadReadResult): string {
+  if (result.outcome === "starting") return result.detail ?? "It's still being set up.";
   const lines =
     result.thread === undefined ? [] : threadStatusLines(result.thread, result.waitingOn);
   for (const message of result.messages) {
@@ -171,7 +180,7 @@ export function formatThreadRead(result: OutsideThreadReadResult): string {
 }
 
 export function formatWait(result: ThreadWaitResult): string {
-  if (result.thread === undefined) return result.outcome;
+  if (result.thread === undefined) return result.detail ?? result.outcome;
   const lines = threadStatusLines(result.thread, result.waitingOn);
   if (result.outcome === "still_working") lines.push("It's still working.");
   if (result.reply !== undefined && result.reply !== null && result.reply.length > 0) {
@@ -182,9 +191,13 @@ export function formatWait(result: ThreadWaitResult): string {
 
 export function formatStart(result: OutsideThreadStartResult): string {
   const thread = result.thread;
-  if (thread === undefined) return "Started.";
+  const setUp = result.outcome === "starting";
+  if (thread === undefined) return setUp ? "Setting it up." : "Started.";
   const where = thread.workspace === "worktree" ? "its own worktree" : "the project folder";
-  return `Started ${thread.title} (${thread.threadId}) in ${where}, on ${thread.model}, access ${thread.access}.`;
+  // Through the assistants door a start answers before its setup, and starts on its own after.
+  return setUp
+    ? `Setting up ${thread.title} (${thread.threadId}) in ${where}, on ${thread.model}, access ${thread.access}. It starts on its own once it's ready.`
+    : `Started ${thread.title} (${thread.threadId}) in ${where}, on ${thread.model}, access ${thread.access}.`;
 }
 
 export function formatStop(result: OutsideThreadStopResult): string {

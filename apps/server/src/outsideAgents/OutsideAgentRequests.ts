@@ -1,6 +1,7 @@
 /**
- * Outside agents' starts and sends, by the caller's request id (migration
- * 087, `outside_agent_requests`; docs/design/outside-agents.md, "Retries").
+ * Outside agents' starts, sends and stops, by the caller's request id
+ * (migration 089, `outside_agent_requests`; docs/design/outside-agents.md,
+ * "Retries").
  *
  * A start or send claims its (connection, requestId) once its checks pass and
  * before it dispatches anything: `starting`, with the input's hash and the
@@ -11,6 +12,11 @@
  * thread, its command's receipt), never running it again. Rows go 24 hours
  * after they were made; the starts among them are the connection's daily
  * count.
+ *
+ * An assistant's start answers before its setup runs
+ * (docs/design/assistants.md, "Tools"), so its row is the durable record of
+ * the start: it ends `done` with the answer, or `failed` with why
+ * (`fail`), and its thread id finds it (`findStart`).
  */
 import { CommandId, IsoDateTime, OutsideAgentConnectionId, ThreadId } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -28,7 +34,11 @@ export const OUTSIDE_REQUEST_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const OutsideAgentRequestState = Schema.Literals(["starting", "done", "failed"]);
 export type OutsideAgentRequestState = typeof OutsideAgentRequestState.Type;
 
-export const OutsideAgentRequestTool = Schema.Literals(["thread_start", "thread_send"]);
+export const OutsideAgentRequestTool = Schema.Literals([
+  "thread_start",
+  "thread_send",
+  "thread_stop",
+]);
 export type OutsideAgentRequestTool = typeof OutsideAgentRequestTool.Type;
 
 export const OutsideAgentRequestRow = Schema.Struct({
@@ -68,6 +78,20 @@ export interface OutsideAgentRequestsShape {
     readonly requestId: string;
     readonly resultJson: string;
   }) => Effect.Effect<void, OutsideAgentRequestsError>;
+  /**
+   * The request failed after its answer went out (an assistant's start whose
+   * setup failed): `failed`, with the answer a retry or a read gets.
+   */
+  readonly fail: (input: {
+    readonly connectionId: OutsideAgentConnectionId;
+    readonly requestId: string;
+    readonly resultJson: string;
+  }) => Effect.Effect<void, OutsideAgentRequestsError>;
+  /** The start that set `threadId` up for the connection, if its row is still kept. */
+  readonly findStart: (input: {
+    readonly connectionId: OutsideAgentConnectionId;
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<Option.Option<OutsideAgentRequestRow>, OutsideAgentRequestsError>;
   /** The request was refused before anything happened: forgotten, so it can be tried again. */
   readonly release: (input: {
     readonly connectionId: OutsideAgentConnectionId;
@@ -90,6 +114,21 @@ export class OutsideAgentRequests extends Context.Service<
 >()("threadlines/outsideAgents/OutsideAgentRequests") {}
 
 const RowKey = Schema.Struct({ connectionId: Schema.String, requestId: Schema.String });
+const ThreadKey = Schema.Struct({ connectionId: Schema.String, threadId: Schema.String });
+
+const SELECT_ROW = `
+  SELECT
+    connection_id AS "connectionId",
+    request_id AS "requestId",
+    tool,
+    input_hash AS "inputHash",
+    thread_id AS "threadId",
+    command_id AS "commandId",
+    state,
+    result_json AS "resultJson",
+    created_at AS "createdAt"
+  FROM outside_agent_requests
+`;
 
 /** Builds the store; rows a restart cut off (`starting`) turn `failed` first. */
 export const makeOutsideAgentRequests = Effect.gen(function* () {
@@ -106,20 +145,21 @@ export const makeOutsideAgentRequests = Effect.gen(function* () {
   const findOne = SqlSchema.findOneOption({
     Request: RowKey,
     Result: OutsideAgentRequestRow,
-    execute: ({ connectionId, requestId }) => sql`
-      SELECT
-        connection_id AS "connectionId",
-        request_id AS "requestId",
-        tool,
-        input_hash AS "inputHash",
-        thread_id AS "threadId",
-        command_id AS "commandId",
-        state,
-        result_json AS "resultJson",
-        created_at AS "createdAt"
-      FROM outside_agent_requests
-      WHERE connection_id = ${connectionId} AND request_id = ${requestId}
-    `,
+    execute: ({ connectionId, requestId }) =>
+      sql.unsafe(`${SELECT_ROW} WHERE connection_id = ? AND request_id = ?`, [
+        connectionId,
+        requestId,
+      ]),
+  });
+
+  const findByThread = SqlSchema.findOneOption({
+    Request: ThreadKey,
+    Result: OutsideAgentRequestRow,
+    execute: ({ connectionId, threadId }) =>
+      sql.unsafe(
+        `${SELECT_ROW} WHERE connection_id = ? AND thread_id = ? AND tool = 'thread_start' ORDER BY created_at DESC LIMIT 1`,
+        [connectionId, threadId],
+      ),
   });
 
   const get: OutsideAgentRequestsShape["get"] = (input) => findOne(input).pipe(wrap("get"));
@@ -145,6 +185,16 @@ export const makeOutsideAgentRequests = Effect.gen(function* () {
       SET state = 'done', result_json = ${input.resultJson}
       WHERE connection_id = ${input.connectionId} AND request_id = ${input.requestId}
     `.pipe(Effect.asVoid, wrap("finish"));
+
+  const fail: OutsideAgentRequestsShape["fail"] = (input) =>
+    sql`
+      UPDATE outside_agent_requests
+      SET state = 'failed', result_json = ${input.resultJson}
+      WHERE connection_id = ${input.connectionId} AND request_id = ${input.requestId}
+    `.pipe(Effect.asVoid, wrap("fail"));
+
+  const findStart: OutsideAgentRequestsShape["findStart"] = (input) =>
+    findByThread(input).pipe(wrap("findStart"));
 
   const release: OutsideAgentRequestsShape["release"] = (input) =>
     sql`
@@ -173,6 +223,8 @@ export const makeOutsideAgentRequests = Effect.gen(function* () {
     get,
     claim,
     finish,
+    fail,
+    findStart,
     release,
     countStartsSince,
     prune,

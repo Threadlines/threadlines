@@ -95,6 +95,10 @@ import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
+import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
+import { AssistantRelayLive } from "./assistants/AssistantRelayLive.ts";
+import { AssistantsLive } from "./assistants/AssistantsLive.ts";
+import { OutsideAgentConnectionRepositoryLive } from "./outsideAgents/OutsideAgentConnectionRepository.ts";
 import { OutsideAgentRequestsLive } from "./outsideAgents/OutsideAgentRequests.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
 import * as McpApps from "./mcpApps/McpApps.ts";
@@ -483,11 +487,25 @@ const RelayLayerLive = RelayHostLive.pipe(
   Layer.provide(ServerSecretStoreLive),
 );
 
+// Assistants (docs/design/assistants.md): the door always-on assistants
+// reach through the relay. It rides on the relay layer's registration
+// (RelayHostLink, the same RelayLayerLive, so built once) and the same
+// connection rows as local agents.
+const AssistantsLayerLive = AssistantsLive.pipe(
+  Layer.provide(AssistantRelayLive),
+  Layer.provide(RelayLayerLive),
+  Layer.provide(OutsideAgentConnectionRepositoryLive),
+  Layer.provide(ServerSecretStoreLive),
+);
+
 // Agents outside Threadlines (docs/design/outside-agents.md): their
 // connections, which `/mcp/connect` checks every call against, and their
 // sign-in, behind the OAuth routes and the owner's `outsideAgents.*` RPCs.
 // Needs the outside_agent_connections table below and the signing key.
+// Assistants' sign-ins, codes and keys come through it too; the door itself
+// stays visible for its MCP endpoint (AssistantMcpServerLive).
 const OutsideAgentsLayerLive = OutsideAgentConnectionsLive.pipe(
+  Layer.provideMerge(AssistantsLayerLive),
   Layer.provide(ServerSecretStoreLive),
 );
 
@@ -621,6 +639,8 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpCommandsServer.layer,
   // Outside agents' tools (docs/design/outside-agents.md).
   McpConnectServer.layer,
+  // The same tools for assistants, over the relay (docs/design/assistants.md).
+  AssistantMcpServerLive,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,

@@ -8,11 +8,14 @@ import {
   OutsideAgentApproveInput,
   OutsideAgentConnection,
   OutsideAgentConnectionInput,
+  OutsideAgentCreateKeyInput,
+  OutsideAgentCreateKeyResult,
   OutsideAgentError,
   OutsideAgentRequestInput,
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
 } from "./outsideAgents.ts";
+import { RelayAssistantCodeResult } from "./relayAssistants.ts";
 import {
   ComputerLinkError,
   ComputerLinkInvite,
@@ -705,6 +708,9 @@ export const WS_METHODS = {
   outsideAgentsResumeRequests: "outsideAgents.resumeRequests",
   outsideAgentsUpdate: "outsideAgents.update",
   outsideAgentsRemove: "outsideAgents.remove",
+  outsideAgentsAssistantCode: "outsideAgents.assistantCode",
+  outsideAgentsAssistantCodeCancel: "outsideAgents.assistantCodeCancel",
+  outsideAgentsCreateKey: "outsideAgents.createKey",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -2241,6 +2247,34 @@ export const WsOutsideAgentsRemoveRpc = Rpc.make(WS_METHODS.outsideAgentsRemove,
   error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
 });
 
+/**
+ * Shows a sign-in code for an assistant (docs/design/assistants.md): the user
+ * types it into the page the assistant opened. Replaces any code showing; the
+ * snapshot's `assistants.code` carries it too.
+ */
+export const WsOutsideAgentsAssistantCodeRpc = Rpc.make(WS_METHODS.outsideAgentsAssistantCode, {
+  payload: Schema.Struct({}),
+  success: RelayAssistantCodeResult,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Forgets the code showing, if any. */
+export const WsOutsideAgentsAssistantCodeCancelRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAssistantCodeCancel,
+  {
+    payload: Schema.Struct({}),
+    success: Schema.Void,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
+/** Makes a key-signed assistant connection. The key is shown once, from this result. */
+export const WsOutsideAgentsCreateKeyRpc = Rpc.make(WS_METHODS.outsideAgentsCreateKey, {
+  payload: OutsideAgentCreateKeyInput,
+  success: OutsideAgentCreateKeyResult,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -2462,6 +2496,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOutsideAgentsResumeRequestsRpc,
   WsOutsideAgentsUpdateRpc,
   WsOutsideAgentsRemoveRpc,
+  WsOutsideAgentsAssistantCodeRpc,
+  WsOutsideAgentsAssistantCodeCancelRpc,
+  WsOutsideAgentsCreateKeyRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

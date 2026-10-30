@@ -10,7 +10,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as NetService from "@threadlines/shared/Net";
 import { OutsideAgentConnectionId, OutsideAgentRequestId } from "@threadlines/contracts";
+import { randomAssistantSecret } from "@threadlines/shared/assistantCredentials";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -48,6 +50,7 @@ import {
 } from "../outsideAgents/connectTools.ts";
 import * as McpConnectServer from "../outsideAgents/McpConnectServer.ts";
 import { outsideAgentSignInRouteLayer } from "../outsideAgents/oauthHttp.ts";
+import { AssistantsWithoutRelayLive } from "../assistants/AssistantsLive.ts";
 import { OutsideAgentConnectionsLive } from "../outsideAgents/OutsideAgentConnectionsLive.ts";
 import { OutsideAgentRequests } from "../outsideAgents/OutsideAgentRequests.ts";
 import {
@@ -267,7 +270,7 @@ function dataFolder(port: number, token: string | null): string {
 
 const readCredentials = (base: string) =>
   JSON.parse(readFileSync(join(base, "userdata", "cli", "connections.json"), "utf8")) as {
-    resources: Record<string, { clientId: string; accessToken?: string; scope?: string }>;
+    resources: Record<string, { clientId?: string; accessToken?: string; scope?: string }>;
   };
 
 const CliLayer = Layer.mergeAll(NodeServices.layer, NetService.layer, TestConsole.layer);
@@ -354,6 +357,7 @@ const serveThreadlines = Effect.gen(function* () {
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-cli-" })));
   const services = yield* Layer.build(
     OutsideAgentConnectionsLive.pipe(
+      Layer.provide(AssistantsWithoutRelayLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provide(ServerSecretStoreLive),
       Layer.provide(
@@ -431,7 +435,7 @@ describe("threadlines connect", () => {
         const said: string[] = [];
         const connect = (answer: "allow" | "deny") =>
           signIn({
-            target: { origin: `http://127.0.0.1:${threadlines.port}`, resource },
+            target: { origin: `http://127.0.0.1:${threadlines.port}`, resource, remote: false },
             credentialsPath,
             clientVersion: "0.0.0",
             noBrowser: false,
@@ -499,7 +503,7 @@ describe("threadlines connect with a browser that keeps connections open", () =>
       const resource = `http://127.0.0.1:${threadlines.port}/mcp/connect`;
       const spare: Array<Socket> = [];
       const signedIn = yield* signIn({
-        target: { origin: `http://127.0.0.1:${threadlines.port}`, resource },
+        target: { origin: `http://127.0.0.1:${threadlines.port}`, resource, remote: false },
         credentialsPath: join(base, "userdata", "cli", "connections.json"),
         clientVersion: "0.0.0",
         noBrowser: false,
@@ -729,4 +733,76 @@ describe("threadlines thread", () => {
       assert.isTrue(CliError.isCliError(status) && status._tag === "ShowHelp");
     }),
   );
+});
+
+describe("threadlines with another computer's address", () => {
+  const key = () =>
+    `tlak1.8911ad8a-f546-45e5-a2e8-7a6a8adfc65c.connection-1.${randomAssistantSecret()}.${randomAssistantSecret()}`;
+  /** A data folder with no Threadlines running: the command lives on an assistant's computer. */
+  const emptyFolder = () => mkdtempSync(join(tmpdir(), "threadlines-cli-remote-"));
+  const withAddress = (url: string) =>
+    Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { THREADLINES_URL: url } })));
+
+  it.live("keeps a key for the address, then sends every command there with a request id", () => {
+    const script = { ...defaultScript(), token: key() };
+    const seen = newSeen();
+    return withStandIn(script, seen, (port) =>
+      Effect.gen(function* () {
+        const url = `http://127.0.0.1:${port}/mcp/connect`;
+        const base = emptyFolder();
+        const connected = yield* run([
+          "connect",
+          "--url",
+          url,
+          "--key",
+          script.token,
+          "--base-dir",
+          base,
+        ]);
+        assert.equal(connected.code, EXIT.done);
+        assert.include(connected.stdout, `Connected to ${url}`);
+        assert.deepEqual(readCredentials(base).resources[url], { accessToken: script.token });
+
+        const listed = yield* run(["projects", "--base-dir", base]).pipe(withAddress(url));
+        assert.equal(listed.code, EXIT.done);
+        yield* run(["thread", "start", "web", "Fix the login bug", "--base-dir", base]).pipe(
+          withAddress(url),
+        );
+        yield* run(["thread", "stop", "thread-1", "--base-dir", base]).pipe(withAddress(url));
+        const params = (name: string) =>
+          seen.toolCalls.find((call) => call.name === name)?.params as
+            | { readonly requestId?: unknown }
+            | undefined;
+        assert.isString(params("thread_start")?.requestId);
+        assert.isString(params("thread_stop")?.requestId);
+      }),
+    );
+  });
+
+  it.live("refuses a key the address doesn't take, and forgets it", () => {
+    const script = { ...defaultScript(), token: key() };
+    return withStandIn(script, newSeen(), (port) =>
+      Effect.gen(function* () {
+        const url = `http://127.0.0.1:${port}/mcp/connect`;
+        const base = emptyFolder();
+        const refused = yield* run(["connect", "--url", url, "--key", key(), "--base-dir", base]);
+        assert.equal(refused.code, EXIT.refused);
+        assert.include(refused.stderr, "refused this key");
+        assert.isUndefined(readCredentials(base).resources[url]);
+        const notAKey = yield* run(["connect", "--url", url, "--key", TOKEN, "--base-dir", base]);
+        assert.equal(notAKey.code, EXIT.failed);
+        const insecure = yield* run([
+          "connect",
+          "--url",
+          "http://example.com/mcp",
+          "--key",
+          script.token,
+          "--base-dir",
+          base,
+        ]);
+        assert.equal(insecure.code, EXIT.failed);
+        assert.include(insecure.stderr, "https://");
+      }),
+    );
+  });
 });

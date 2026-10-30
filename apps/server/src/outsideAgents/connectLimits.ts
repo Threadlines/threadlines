@@ -16,6 +16,7 @@
 import type { OrchestrationThreadShell, ThreadId } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 
 import { makeKeyedLock } from "../links/keyedLock.ts";
 
@@ -54,12 +55,17 @@ export interface ConnectLimits {
    * (answered as is) or null to go on, and whatever it claims meanwhile (the
    * request row) is in place before the lock is let go. `work` then runs with
    * the thread counted in flight until it answers.
+   *
+   * `after` is work that goes on once `work` answered (an assistant's start
+   * answers before its setup): forked into its scope, with the thread still
+   * counted in flight until it ends.
    */
   readonly admit: <A, Refusal, E1, R1, E2, R2>(input: {
     readonly connectionId: string;
     readonly threadId: ThreadId;
     readonly decide: (inFlight: ReadonlySet<ThreadId>) => Effect.Effect<Refusal | null, E1, R1>;
     readonly work: Effect.Effect<A, E2, R2>;
+    readonly after?: { readonly run: Effect.Effect<void>; readonly scope: Scope.Scope };
   }) => Effect.Effect<{ readonly refused: Refusal } | { readonly done: A }, E1 | E2, R1 | R2>;
 }
 
@@ -106,8 +112,17 @@ export function makeConnectLimits(): ConnectLimits {
           ),
         );
         if (refused !== null) return { refused };
-        const done = yield* restore(input.work).pipe(
-          Effect.ensuring(leave(input.connectionId, input.threadId)),
+        const left = leave(input.connectionId, input.threadId);
+        const after = input.after;
+        if (after === undefined) {
+          const done = yield* restore(input.work).pipe(Effect.ensuring(left));
+          return { done };
+        }
+        const done = yield* restore(input.work).pipe(Effect.onError(() => left));
+        yield* after.run.pipe(
+          Effect.interruptible,
+          Effect.ensuring(left),
+          Effect.forkIn(after.scope),
         );
         return { done };
       }),

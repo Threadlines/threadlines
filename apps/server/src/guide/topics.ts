@@ -39,7 +39,7 @@ When a thread is done it wraps up and moves to the Wrapped shelf at the bottom o
 - Auto: no routine prompts; a safety check reviews risky actions.
 - Full access: no prompts or sandbox. For trusted repos only.
 
-Some agents lack a level; they run at the next safer one they have, and the composer shows what actually applies. Threads started for you by other means never get more than they were allowed: a thread an agent starts gets at most its parent's level, one another computer starts gets at most what that link allows ({place:fleet.worksWith}), and an outside agent's threads at most what you approved for it ({place:connections.agentsUsingThis}).`,
+Some agents lack a level; they run at the next safer one they have, and the composer shows what actually applies. Threads started for you by other means never get more than they were allowed: a thread an agent starts gets at most its parent's level, one another computer starts gets at most what that link allows ({place:fleet.worksWith}), an outside agent's threads at most what you approved for it ({place:connections.agentsUsingThis}), and an assistant's the same ({place:connections.assistantsUsingThis}).`,
   },
   {
     id: "rooms",
@@ -108,6 +108,28 @@ Agents can list, create and change scheduled tasks when {place:threads.agentThre
 {place:connections.threadlinesCommand} (desktop app) puts the command on your PATH. Then, in a new terminal, \`threadlines connect\` signs the agent in: the browser shows a short code, and you approve the agent in the Threadlines window when the same code shows there, choosing the most access its threads get. After that: \`threadlines projects\`, \`threadlines thread start <project> "<prompt>" --wait\`, and \`threadlines thread list\`, \`read\`, \`send\`, \`wait\`, \`stop\`.
 
 {place:connections.agentsUsingThis} lists each agent you let in, to change its access or remove it. {place:connections.agents} also shows the address agents use.`,
+  },
+  {
+    id: "assistants",
+    title: "Assistants: Grok Bot, dots, Muse and Claude Duet",
+    keywords: [
+      "assistant",
+      "always-on",
+      "grok bot",
+      "dots",
+      "muse",
+      "claude duet",
+      "custom connector",
+      "connector",
+      "key",
+    ],
+    body: `Always-on assistants run in their makers' cloud. They can use Threadlines from there through the relay: see projects and threads, start threads, and message or stop the ones they started.
+
+To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant and type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and the most access its threads get. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
+
+{place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Assistants can't answer approvals, questions or plans; those wait for you in Threadlines.
+
+While this computer is asleep or Threadlines is closed, assistants are told it's offline. The relay passes their requests to this computer and can read them, unlike a phone's, which are end-to-end encrypted.`,
   },
   {
     id: "providers",

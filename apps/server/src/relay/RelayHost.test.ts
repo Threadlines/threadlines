@@ -23,6 +23,7 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { RelayDeviceRepository, RelayDeviceRepositoryLive } from "./RelayDeviceRepository.ts";
+import { RelayHostLink } from "./RelayHostLink.ts";
 import { RelayHooks } from "./RelayHooks.ts";
 import {
   RelayHookStateRepository,
@@ -300,6 +301,7 @@ const startHost = <E = never>(
       stored,
       relayHost: Context.get(host, RelayHost),
       hooks: Context.get(host, RelayHooks),
+      link: Context.get(host, RelayHostLink),
     };
   });
 
@@ -526,6 +528,28 @@ it.layer(NodeServices.layer)("RelayHost", (it) => {
       assert.deepEqual(fake.controls, fake.registered);
       const minted = yield* hooks.mint({ keptHeaders: [] });
       assert.equal(minted.hostId, fake.registered[0]);
+    }),
+  );
+
+  it.effect("registers and opens the control socket for a feature keeping the link online", () =>
+    Effect.gen(function* () {
+      // Not registered yet: an assistant connection made under another relay
+      // asks to stay online before anything registered this computer.
+      const { fake, relayHost, link, hooks } = yield* startHost([]);
+      yield* relayHost.start("http://127.0.0.1:1");
+      // Connected and done with its after-connect work (the hook sync), so
+      // nothing is still writing when the test's folder goes.
+      const reachable = yield* hooks.changes.pipe(
+        Stream.filter((entry) => entry.kind === "reachable"),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* link.keepOnline("assistants", true);
+      yield* Fiber.join(reachable).pipe(withinWallClock(5_000));
+      assert.equal(fake.registered.length, 1);
+      assert.deepEqual(fake.controls, [fake.registered[0]]);
     }),
   );
 

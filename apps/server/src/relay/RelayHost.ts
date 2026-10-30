@@ -79,6 +79,7 @@ import {
 } from "./RelayDeviceRepository.ts";
 import { computeDirectOrigins, computeDirectRoutes } from "./directRoutes.ts";
 import { RelayHooks } from "./RelayHooks.ts";
+import { RelayHostLink, RelayRegisterError } from "./RelayHostLink.ts";
 import { makeRelayHooks, RelayHookRegisterError, type RelayHooksClient } from "./RelayHooksLive.ts";
 import { RelayHookStateRepositoryLive } from "./RelayHookStateRepository.ts";
 import { openLoopbackSocket, openRelayPipeSocket } from "./relayPipe.ts";
@@ -432,11 +433,38 @@ const make = Effect.gen(function* () {
     },
   });
 
+  /** Features riding on the registration that need the relay link up now (RelayHostLink.keepOnline). */
+  const onlineReasons = new Set<string>();
+
+  const link = RelayHostLink.of({
+    relayOrigin,
+    credentials: Effect.suspend(() => loadCredentials).pipe(Effect.orElseSucceed(() => null)),
+    register: Effect.suspend(() => ensureRegistered).pipe(
+      Effect.mapError(
+        (error) =>
+          new RelayRegisterError({
+            detail: toAccessError(error, "Couldn't register this computer with the relay.").detail,
+            transient: error instanceof RelayApiError && isTransientRelayError(error),
+          }),
+      ),
+    ),
+    forgetHost: (hostId) => forgetHost(hostId),
+    keepOnline: (reason, on) =>
+      Effect.sync(() => {
+        const had = onlineReasons.has(reason);
+        if (on) onlineReasons.add(reason);
+        else onlineReasons.delete(reason);
+        if (on && !had) runFork(ensureControl);
+      }),
+  });
+
   // ----- control socket -----------------------------------------------------------
 
   const hasRelayWork = Effect.gen(function* () {
     if (invite || [...requests.values()].some((request) => request.state === "pending"))
       return true;
+    // Assistants (docs/design/assistants.md): the relay must know this computer is there.
+    if (onlineReasons.size > 0) return true;
     // Event tasks wait for deliveries, and a hook change waits to be sent.
     if (yield* hooks.wantsRelay) return true;
     // A computer-link invite is never the open code, but its claim still
@@ -486,8 +514,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Opens the control socket if there is anything for it to do. With event
-   * tasks it also registers this computer first when it isn't (pairing
-   * flows register on their own).
+   * tasks, or a feature keeping the link online (assistants), it also
+   * registers this computer first when it isn't (pairing flows register on
+   * their own).
    */
   const ensureControl: Effect.Effect<void> = Effect.gen(function* () {
     if (!localOrigin || !relayOrigin) return;
@@ -497,7 +526,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!(yield* loadCredentials)) {
-      if (!(yield* hooks.wantsRelay)) return;
+      if (onlineReasons.size === 0 && !(yield* hooks.wantsRelay)) return;
       yield* ensureRegistered;
     }
     yield* hooks.beforeConnect;
@@ -1587,12 +1616,13 @@ const make = Effect.gen(function* () {
       acceptDirect,
       directRoutes,
     }),
-  ).pipe(Context.add(RelayHooks, hooks.service));
+  ).pipe(Context.add(RelayHooks, hooks.service), Context.add(RelayHostLink, link));
 });
 
 /**
- * The server's end of the relay: "Connect a device" (RelayHost) and event
- * tasks' hooks (RelayHooks), which share its registration and control socket.
+ * The server's end of the relay: "Connect a device" (RelayHost), event
+ * tasks' hooks (RelayHooks) and the registration for other features riding
+ * on it (RelayHostLink: assistants), which share its control socket.
  */
 export const RelayHostLive = Layer.effectContext(make).pipe(
   Layer.provide(RelayHookStateRepositoryLive),
