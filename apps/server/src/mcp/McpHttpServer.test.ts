@@ -125,11 +125,38 @@ describe("McpSessionRegistry", () => {
     expect(answerer?.participantId).toBe(AGENT);
     expect(answerer?.side).toEqual({ sideTurnId: SIDE_TURN, kind: "ask" });
     expect(answerer?.browser).toBe(false);
-    expect([...(answerer?.roomTools ?? [])].toSorted()).toEqual(["room_diff", "room_history"]);
+    // An answerer can look things up in the app guide too; a reviewer reads only the checkout.
+    expect([...(answerer?.roomTools ?? [])].toSorted()).toEqual([
+      "app_guide",
+      "room_diff",
+      "room_history",
+    ]);
 
     const reviewer = await scopeOf("review");
     expect(reviewer?.browser).toBe(false);
     expect([...(reviewer?.roomTools ?? [])]).toEqual(["room_diff"]);
+  });
+
+  it("gives a thread with rooms and agent-started threads off the app guide alone, never to a side runtime", async () => {
+    const registry = makeMcpSessionRegistry();
+    const main = await Effect.runPromise(
+      registry.credentialFor({ sessionKey: THREAD, browser: true, room: true, guideOnly: true }),
+    );
+    expect([...((await Effect.runPromise(registry.resolve(main.token)))?.roomTools ?? [])]).toEqual(
+      ["app_guide"],
+    );
+    const side = await Effect.runPromise(
+      registry.credentialFor({
+        sessionKey: sideSessionKey(THREAD, SIDE_TURN, AGENT),
+        browser: true,
+        room: true,
+        sideKind: "review",
+        guideOnly: true,
+      }),
+    );
+    expect([...((await Effect.runPromise(registry.resolve(side.token)))?.roomTools ?? [])]).toEqual(
+      ["room_diff"],
+    );
   });
 });
 

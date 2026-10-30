@@ -78,6 +78,8 @@ import {
 } from "../../mcp/McpHttpServer.ts";
 import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
 import { buildCommandRequestInstructions } from "../../mcp/commandTools.ts";
+import { buildGuideInstructions } from "../../mcp/guideTools.ts";
+import { roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
@@ -243,8 +245,9 @@ interface SessionContext {
   readonly client: OpenCodeClient;
   readonly scope: Scope.Closeable;
   readonly toolKey: string;
-  readonly roomTools: boolean;
-  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  /** The room endpoint is attached: every room tool, or the app guide alone (roomEndpointGrant). */
+  readonly roomEndpoint: boolean;
+  /** With the room tools: agents may change scheduled tasks; its instructions say so. */
   readonly scheduleTools: boolean;
   /** The page tools' image folder, when the session has them. */
   readonly agentPageAssetsDir: string | undefined;
@@ -559,7 +562,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           runtimeMode: ctx.runtimeMode,
           agentRules: agents.find((agent) => agent.id === agentId)?.rules ?? [],
           toolKey: ctx.toolKey,
-          roomTools: ctx.roomTools,
+          roomTools: ctx.roomEndpoint,
           agentPages: ctx.agentPageAssetsDir !== undefined,
           commandRequests: ctx.commandRequests,
         });
@@ -1930,7 +1933,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         const headers = { Authorization: `Bearer ${credential.token}` };
         const servers = [
           { name: openCodeBrowserServerName(ctx.toolKey), url: mcpEndpointUrl(serverConfig.port) },
-          ...(ctx.roomTools
+          ...(ctx.roomEndpoint
             ? [
                 {
                   name: openCodeRoomServerName(ctx.toolKey),
@@ -2007,6 +2010,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           : []),
         ...(ctx.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
+          : []),
+        ...(ctx.roomEndpoint
+          ? [buildGuideInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
@@ -2139,6 +2145,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           yield* active.streamReady.pipe(Effect.timeout(Duration.seconds(15)), Effect.ignore);
           const client = active.server.client;
           const roomTools = input.roomTools === true;
+          const roomGrant = roomEndpointGrant(input, undefined);
           // The page tools, with their image folder (OpenCode refuses side runtimes).
           const agentPageAssetsDir =
             input.agentPages === true
@@ -2246,7 +2253,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             client,
             scope,
             toolKey: openCodeThreadToolKey(input.threadId),
-            roomTools,
+            roomEndpoint: roomGrant.attach,
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests: input.commandRequests === true,
@@ -2286,10 +2293,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           const credential = yield* mcpSessionRegistry.credentialFor({
             sessionKey: input.threadId,
             browser: true,
-            room: roomTools,
+            room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: input.commandRequests === true,
             scheduledRun: input.scheduledRunTools === true,
+            guideOnly: roomGrant.guideOnly,
           });
           yield* Scope.addFinalizer(
             scope,

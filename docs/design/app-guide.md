@@ -127,11 +127,14 @@ not (they read only the checkout).
 **Its grant does not hang on the other room tools.** Today a thread's agent
 gets the room server only while rooms, invites or agent-started threads are
 on (`ProviderCommandReactor`, `roomToolsWanted`), so the guide would vanish
-exactly when the user asks "why can't you start threads?". Every local
-thread's main runtime gets the room server; with those features off its
-grant is `app_guide` alone (`roomToolsFor`). Threads another computer's
-agent or an outside agent started keep getting no room server (their fence
-is unchanged).
+exactly when the user asks "why can't you start threads?". So every
+other local thread's main runtime starts with `guideTools`
+(ProviderSessionStartInput): the room endpoint with `app_guide` alone
+(`roomEndpointGrant`, `roomToolsFor`). The session doesn't count as having
+the room tools, so turning rooms, invites or agent-started threads on still
+restarts it with them, as before. Threads another computer's agent or an
+outside agent started keep getting no room endpoint (their fence is
+unchanged).
 
 ```
 app_guide({ query?: string, topic?: string })

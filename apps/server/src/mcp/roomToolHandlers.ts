@@ -34,6 +34,7 @@ import {
   ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
+import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
 import {
   activeParticipants,
   nextRoomAgentName,
@@ -871,7 +872,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
   // Invites (docs/design/rooms-agent-invites.md)
   // ---------------------------------------------------------------------------
 
-  const INVITES_OFF = "Bringing in other agents is turned off in Settings.";
+  const INVITES_OFF = `Bringing in other agents is turned off (${placeMarkdownLink("threads.agentInvites")}).`;
 
   interface InviteCandidate {
     readonly key: string;

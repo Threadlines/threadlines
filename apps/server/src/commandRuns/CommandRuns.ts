@@ -11,6 +11,7 @@
  * every send, so Stop, reverts, skips and rooms are respected in one place.
  */
 import { randomUUID } from "node:crypto";
+import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
 
 import {
   CommandId,
@@ -82,8 +83,7 @@ export class CommandRuns extends Context.Service<CommandRuns, CommandRunsShape>(
 ) {}
 
 const MAX_REASON_LENGTH = 300;
-const OFF_DETAIL =
-  "Command requests are turned off in this Threadlines. Tell the user the command in your reply instead, and don't try again.";
+const OFF_DETAIL = `Command requests are turned off (${placeMarkdownLink("threads.commandRequests")}). Tell the user the command in your reply instead, and don't try again.`;
 const SIDE_DETAIL = "A side answer cannot ask the user to run commands.";
 const GONE_DETAIL = "This thread is gone.";
 const NOT_YOUR_TURN_DETAIL =

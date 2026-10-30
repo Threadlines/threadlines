@@ -158,9 +158,11 @@ import {
 } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
+import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import {
   claudeRoomToolId,
   ROOM_MCP_SERVER_NAME,
+  roomEndpointGrant,
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
@@ -8970,7 +8972,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // credential only for the room's read tools. It dies with the runtime,
       // and is minted only once nothing is left to wait on before the query
       // starts, so a start that is cancelled cannot strand it.
-      const roomTools = input.roomTools === true;
+      // The room endpoint, with every room tool its kind allows or the app
+      // guide alone (roomEndpointGrant).
+      const roomGrant = roomEndpointGrant(input, sideKind);
       // Agent pages: `show_page` and `preview_page`, with a folder of its own
       // for the page's images that Claude may write to like its workspace.
       const agentPages = input.agentPages === true && !lockdown;
@@ -8986,15 +8990,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
       const credential =
-        !lockdown || roomTools
+        !lockdown || roomGrant.attach
           ? yield* mcpSessionRegistry.credentialFor({
               sessionKey: threadId,
               browser: !lockdown,
-              room: roomTools,
+              room: roomGrant.attach,
               pages: agentPages,
               commands: commandRequests,
               sideKind,
               scheduledRun: input.scheduledRunTools === true,
+              guideOnly: roomGrant.guideOnly,
             })
           : undefined;
       const revokeCredential =
@@ -9002,7 +9007,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? mcpSessionRegistry.revoke(threadId, credential.generation)
           : Effect.void;
       const roomServer =
-        credential !== undefined && roomTools
+        credential !== undefined && roomGrant.attach
           ? claudeRoomMcpServer({ port: serverConfig.port, credential: credential.token })
           : undefined;
       const normalQueryOptions: ClaudeQueryOptions = {
@@ -9078,6 +9083,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   }),
                 ]
               : []),
+            ...(roomServer !== undefined && !lockdown
+              ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+              : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -9098,9 +9106,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           MARK_LONG_RUNNING_TOOL_ID,
           // A scheduled run's thread also has scheduled_run_finish.
           ...(roomServer !== undefined
-            ? roomToolsFor(undefined, { scheduledRun: input.scheduledRunTools === true }).map(
-                claudeRoomToolId,
-              )
+            ? roomToolsFor(undefined, {
+                scheduledRun: input.scheduledRunTools === true,
+                guideOnly: roomGrant.guideOnly,
+              }).map(claudeRoomToolId)
             : []),
           // A page shows only in the caller's own thread; nothing to approve.
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
@@ -9245,7 +9254,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         provider: PROVIDER,
         providerInstanceId: boundInstanceId,
         // Requested, it is always attached: Claude takes HTTP MCP servers.
-        ...(roomTools ? { roomTools: true } : {}),
+        ...(input.roomTools === true ? { roomTools: true } : {}),
         status: "ready",
         runtimeMode: input.runtimeMode,
         ...(input.cwd ? { cwd: input.cwd } : {}),

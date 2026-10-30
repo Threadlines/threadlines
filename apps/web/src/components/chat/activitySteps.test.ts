@@ -472,6 +472,10 @@ describe("other steps", () => {
       routine: true,
       liveLabel: "Checking the changes",
     });
+    expect(room("threadlines_room.app_guide: query=link my pc")).toMatchObject({
+      routine: true,
+      label: "Looked it up in the Threadlines guide",
+    });
     expect(
       activityStepFromWorkLogEntry(
         entry({

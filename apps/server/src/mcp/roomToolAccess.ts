@@ -34,6 +34,9 @@ export const SCHEDULE_TOOL_NAMES = ["schedule_list", "schedule_create", "schedul
 /** A scheduled run's own tool: whether its run had anything to report. */
 export const SCHEDULED_RUN_TOOL_NAME = "scheduled_run_finish";
 
+/** Agents' guide to Threadlines itself (guideTools.ts). */
+export const GUIDE_TOOL_NAME = "app_guide";
+
 export const ROOM_TOOL_NAMES = [
   "room_agents",
   "room_ask",
@@ -45,6 +48,7 @@ export const ROOM_TOOL_NAMES = [
   "room_invite",
   ...THREAD_TOOL_NAMES,
   ...SCHEDULE_TOOL_NAMES,
+  GUIDE_TOOL_NAME,
 ] as const;
 export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number] | typeof SCHEDULED_RUN_TOOL_NAME;
 
@@ -54,24 +58,45 @@ export type RoomSideKind = "ask" | "review";
 /**
  * The room tools one runtime may use. A main runtime gets every tool (the
  * decider still decides who may make a request), and `scheduled_run_finish`
- * too when its thread is a scheduled run's; an answerer reads the room and
- * the checkout; an independent reviewer reads only the checkout, never the
- * conversation.
+ * too when its thread is a scheduled run's; with `guideOnly` (rooms, invites
+ * and agent-started threads all off) it gets only the app guide, so it can
+ * still explain why. An answerer reads the room, the checkout and the guide;
+ * an independent reviewer reads only the checkout, never the conversation.
  */
 export function roomToolsFor(
   side: RoomSideKind | undefined,
-  options?: { readonly scheduledRun?: boolean | undefined },
+  options?: {
+    readonly scheduledRun?: boolean | undefined;
+    readonly guideOnly?: boolean | undefined;
+  },
 ): ReadonlyArray<RoomToolName> {
   switch (side) {
     case undefined:
-      return options?.scheduledRun === true
-        ? [...ROOM_TOOL_NAMES, SCHEDULED_RUN_TOOL_NAME]
-        : ROOM_TOOL_NAMES;
+      return options?.guideOnly === true
+        ? [GUIDE_TOOL_NAME]
+        : options?.scheduledRun === true
+          ? [...ROOM_TOOL_NAMES, SCHEDULED_RUN_TOOL_NAME]
+          : ROOM_TOOL_NAMES;
     case "ask":
-      return ["room_history", "room_diff"];
+      return ["room_history", "room_diff", GUIDE_TOOL_NAME];
     case "review":
       return ["room_diff"];
   }
+}
+
+/**
+ * What a runtime's start input asks of the room endpoint: whether to attach
+ * it, and whether with the app guide alone (`guideTools` without
+ * `roomTools`, ProviderSessionStartInput). A side runtime only ever gets what
+ * `roomTools` gives it.
+ */
+export function roomEndpointGrant(
+  input: { readonly roomTools?: boolean | undefined; readonly guideTools?: boolean | undefined },
+  side: RoomSideKind | undefined,
+): { readonly attach: boolean; readonly guideOnly: boolean } {
+  const roomTools = input.roomTools === true;
+  const guideOnly = !roomTools && input.guideTools === true && side === undefined;
+  return { attach: roomTools || guideOnly, guideOnly };
 }
 
 /** A room tool as Claude names it (`mcp__<server>__<tool>`). */

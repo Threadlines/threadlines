@@ -13,7 +13,12 @@
  * not listed one by one: their section is the place, and its `about` says what
  * each row holds.
  */
-import type { AgentInvitesMode, AgentThreadsMode, ServerSettings } from "@threadlines/contracts";
+import type {
+  AgentInvitesMode,
+  AgentThreadsMode,
+  ComputerLinkAccess,
+  ServerSettings,
+} from "@threadlines/contracts";
 
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
 
@@ -93,6 +98,13 @@ export const AGENT_THREADS_LABELS: Readonly<Record<AgentThreadsMode, string>> = 
   off: "Off",
   ask: "Ask me first",
   auto: "Automatic",
+};
+
+/** What a computer link's access is called wherever the user sees or sets it (Fleet). */
+export const COMPUTER_LINK_ACCESS_LABELS: Readonly<Record<ComputerLinkAccess, string>> = {
+  allowed: "Allowed",
+  ask: "Ask first",
+  off: "Off",
 };
 
 // ----- pages ---------------------------------------------------------------------

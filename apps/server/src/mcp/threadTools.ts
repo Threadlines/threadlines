@@ -56,6 +56,8 @@ export const ThreadAgentsResult = Schema.Struct({
       }),
     ),
   ),
+  /** With no linked computers: where the user links one. */
+  computersNote: Schema.optional(Schema.String),
 });
 export type ThreadAgentsResult = typeof ThreadAgentsResult.Type;
 
