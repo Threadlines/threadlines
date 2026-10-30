@@ -9,11 +9,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
+import { SettingsSearchResults } from "../components/settings/SettingsSearch";
 import {
   SETTINGS_SEARCH_FIELD_ATTRIBUTE,
-  SettingsSearchResults,
   useSettingsSearchActive,
-} from "../components/settings/SettingsSearch";
+} from "../components/settings/SettingsSearchField";
 import {
   SettingsPlaceSignalsProvider,
   SettingsSurfaceContext,

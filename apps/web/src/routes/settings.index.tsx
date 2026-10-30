@@ -12,11 +12,11 @@ import {
   type SettingsNavItem,
   startsSettingsNavGroup,
 } from "../components/settings/settingsNavigation";
+import { SettingsSearchResultsBody } from "../components/settings/SettingsSearch";
 import {
   SettingsSearchField,
-  SettingsSearchResultsBody,
   useSettingsSearchActive,
-} from "../components/settings/SettingsSearch";
+} from "../components/settings/SettingsSearchField";
 import { cn } from "../lib/utils";
 
 /**

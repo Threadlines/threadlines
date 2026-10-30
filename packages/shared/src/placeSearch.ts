@@ -13,8 +13,17 @@ export function searchWords(text: string): ReadonlyArray<string> {
   return text
     .toLowerCase()
     .split(/[^\p{L}\p{N}.]+/u)
-    .map((word) => word.replace(/^\.+|\.+$/gu, ""))
+    .map(trimDots)
     .filter((word) => word.length > 0);
+}
+
+/** A word without its leading and trailing dots ("...md." → "md"), in one pass. */
+function trimDots(word: string): string {
+  let start = 0;
+  let end = word.length;
+  while (start < end && word[start] === ".") start += 1;
+  while (end > start && word[end - 1] === ".") end -= 1;
+  return word.slice(start, end);
 }
 
 /** Words a typed query can drop once they are finished: they name nothing on screen. */

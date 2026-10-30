@@ -23,7 +23,7 @@ import {
   SettingsSurfaceContext,
   type SettingsPagePlaceId,
 } from "./settingsPlaceAvailability";
-import { SettingsSearchField } from "./SettingsSearch";
+import { SettingsSearchField } from "./SettingsSearchField";
 import { useSettingsSearch } from "./settingsSearchIndex";
 import { selectSettingsSearchActive, useSettingsSearchStore } from "./settingsSearchStore";
 

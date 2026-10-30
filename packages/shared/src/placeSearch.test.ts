@@ -61,7 +61,7 @@ describe("settings search matching", () => {
   });
 
   it("keeps file names whole and drops finished filler words", () => {
-    expect(searchWords("CLAUDE.md, AGENTS.md")).toEqual(["claude.md", "agents.md"]);
+    expect(searchWords("CLAUDE.md, AGENTS.md.")).toEqual(["claude.md", "agents.md"]);
     expect(match("claude.md", { title: "Agent Instructions", keywords: ["CLAUDE.md"] })).not.toBe(
       null,
     );
