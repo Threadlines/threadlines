@@ -19,6 +19,8 @@ export interface AutoArchiveThreadFields {
     readonly orchestrationStatus?: string | undefined;
     readonly activeTurnId?: unknown;
     readonly pendingBackgroundTaskCount?: number | undefined;
+    /** Set while it waits to continue after a usage limit resets. */
+    readonly continueAtReset?: unknown;
   } | null;
 }
 
@@ -57,7 +59,9 @@ export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): b
     session.status === "running" ||
     session.orchestrationStatus === "running" ||
     session.activeTurnId != null ||
-    (session.pendingBackgroundTaskCount ?? 0) > 0
+    (session.pendingBackgroundTaskCount ?? 0) > 0 ||
+    // It continues by itself once its usage limit resets.
+    session.continueAtReset != null
   );
 }
 

@@ -1,6 +1,9 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
   MessageSentFrom,
+  MessageTrigger,
+  OrchestrationContinueAtReset,
+  OrchestrationSessionUsageLimit,
   OrchestrationAgentPage,
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
@@ -130,6 +133,10 @@ export interface ChatMessage {
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
   /** See OrchestrationMessage.sentFrom: the device the user sent it from. */
   sentFrom?: MessageSentFrom | undefined;
+  /** See OrchestrationMessage.trigger: why Threadlines sent it for the user. */
+  trigger?: MessageTrigger | undefined;
+  /** See OrchestrationMessage.notSent: the user wrote first, so it never went. */
+  notSent?: true | undefined;
   /**
    * See OrchestrationMessage.imported: brought over when the thread moved
    * here from another computer. Outside this computer's turns, so it never
@@ -537,5 +544,9 @@ export interface ThreadSession {
   lastErrorAt?: string;
   /** The user closed `lastError`'s notice; see OrchestrationSession.lastErrorDismissedAt. */
   lastErrorDismissedAt?: string;
+  /** `lastError` is a plan usage limit; see OrchestrationSession.lastErrorUsageLimit. */
+  lastErrorUsageLimit?: OrchestrationSessionUsageLimit;
+  /** Waiting to continue after it resets; see OrchestrationSession.continueAtReset. */
+  continueAtReset?: OrchestrationContinueAtReset;
   orchestrationStatus: OrchestrationSessionStatus;
 }

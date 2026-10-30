@@ -27,10 +27,12 @@ import {
   type ElicitationResult,
   type SDKUserMessage,
   type ModelUsage,
+  USAGE_LIMIT_ERROR_PREFIXES,
 } from "@anthropic-ai/claude-agent-sdk";
 import { CLAUDE_SYNTHETIC_MODEL } from "@threadlines/shared/claudeSubagentActivity";
 import { parseCliArgs } from "@threadlines/shared/cliArgs";
 import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { usageResetTimeMs } from "@threadlines/shared/usageLimits";
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import { humanizeWorkflowName, parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
@@ -47,6 +49,7 @@ import {
   type ProviderApprovalDecision,
   ProviderDriverKind,
   type ProviderFailureCategory,
+  type RuntimeUsageLimit,
   ProviderInstanceId,
   type ProviderInteractionMode,
   ProviderItemId,
@@ -415,6 +418,8 @@ interface ClaudeTurnState {
   apiErrorText?: string | undefined;
   /** What kind of API error that note reports, alongside `apiErrorText`. */
   apiErrorKind?: SDKAssistantMessageError | undefined;
+  /** The plan usage limit Claude refused this turn on, from its rate-limit report. */
+  usageLimitRejection?: SDKRateLimitInfo | undefined;
 }
 
 /** A thinking block as a reasoning item. With summaries on, Claude streams a
@@ -792,6 +797,11 @@ export interface ClaudeAdapterLiveOptions {
    * usage updates live instead of waiting for the next probe.
    */
   readonly onAccountRateLimitsUpdated?: (rateLimitInfo: SDKRateLimitInfo) => Effect.Effect<void>;
+  /**
+   * The usage limit this instance's account is stopped on, from the driver's
+   * usage reading, for a limit Claude reported without its reset time.
+   */
+  readonly readUsageLimit?: Effect.Effect<RuntimeUsageLimit | undefined>;
   /**
    * Reports authoritative chat-auth edges from live turns. Provider discovery
    * only proves that a credential is configured; an assistant response
@@ -1331,6 +1341,65 @@ function resultDisplayError(
     );
   }
   return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+}
+
+/**
+ * Whether a rate-limit report refuses the plan's ordinary usage for one of its
+ * windows (the 5-hour session, a weekly one): rejected, and not carried on by
+ * extra usage the account pays for. Spent extra usage has no window to reset.
+ */
+function isBlockingClaudeRateLimit(info: SDKRateLimitInfo): boolean {
+  return (
+    info.status === "rejected" &&
+    info.rateLimitType !== undefined &&
+    info.rateLimitType !== "overage" &&
+    info.overageStatus !== "allowed" &&
+    info.isUsingOverage !== true
+  );
+}
+
+/**
+ * The rate-limit report the CLI attaches to a refused request's error note.
+ * The SDK doesn't declare it, so it is read defensively.
+ */
+function apiErrorRateLimitInfo(message: SDKMessage): SDKRateLimitInfo | undefined {
+  const params = (message as { readonly api_error_params?: unknown }).api_error_params;
+  if (typeof params !== "object" || params === null) return undefined;
+  const info = (params as { readonly rate_limit_info?: unknown }).rate_limit_info;
+  if (typeof info !== "object" || info === null) return undefined;
+  const status = (info as { readonly status?: unknown }).status;
+  return status === "allowed" || status === "allowed_warning" || status === "rejected"
+    ? (info as SDKRateLimitInfo)
+    : undefined;
+}
+
+/**
+ * The CLI's usage-limit messages for a plan window that resets ("You've hit
+ * your session limit · resets 2:20pm"). Its other usage messages (an org out
+ * of funds, a seat without credits, a $0 group limit) don't reset by
+ * themselves, so they stay ordinary failures.
+ */
+const CLAUDE_PLAN_LIMIT_PREFIXES = USAGE_LIMIT_ERROR_PREFIXES.filter(
+  (prefix) => prefix === "You've hit your" || prefix === "You've reached your",
+);
+
+function isClaudeUsageLimitMessage(text: string | undefined): boolean {
+  if (text === undefined) return false;
+  const trimmed = text.trim();
+  return CLAUDE_PLAN_LIMIT_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/** The limit a report or message names: the 5-hour session or a weekly one. */
+function claudeUsageLimitWindow(
+  rateLimitType: SDKRateLimitInfo["rateLimitType"],
+  text: string | undefined,
+): RuntimeUsageLimit["window"] {
+  if (rateLimitType === "five_hour") return "session";
+  if (rateLimitType !== undefined && rateLimitType.startsWith("seven_day")) return "weekly";
+  const lower = text?.toLowerCase() ?? "";
+  if (lower.includes("session limit")) return "session";
+  if (lower.includes("weekly limit")) return "weekly";
+  return undefined;
 }
 
 /** The failure category of Claude's API error kinds; `unknown` names none. */
@@ -4588,6 +4657,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * The plan usage limit a failed turn stopped on, on Claude's own word: its
+   * rate-limit report refused the turn, or its error is one of the CLI's
+   * usage-limit messages. A brief rate limit or a spend cap says neither.
+   */
+  const claudeTurnUsageLimit = Effect.fn("claudeTurnUsageLimit")(function* (
+    rejection: SDKRateLimitInfo | undefined,
+    errorMessage: string | undefined,
+  ) {
+    if (rejection === undefined && !isClaudeUsageLimitMessage(errorMessage)) {
+      return undefined;
+    }
+    const window = claudeUsageLimitWindow(rejection?.rateLimitType, errorMessage);
+    const resetsAtMs = usageResetTimeMs(rejection?.resetsAt);
+    if (resetsAtMs !== undefined) {
+      return {
+        ...(window ? { window } : {}),
+        resetsAt: new Date(resetsAtMs).toISOString(),
+      } satisfies RuntimeUsageLimit;
+    }
+    const reading = options?.readUsageLimit ? yield* options.readUsageLimit : undefined;
+    const resolvedWindow = window ?? reading?.window;
+    return {
+      ...(resolvedWindow ? { window: resolvedWindow } : {}),
+      ...(reading?.resetsAt ? { resetsAt: reading.resetsAt } : {}),
+    } satisfies RuntimeUsageLimit;
+  });
+
   const completeTurn = Effect.fn("completeTurn")(function* (
     context: ClaudeSessionContext,
     status: ProviderRuntimeTurnStatus,
@@ -4607,6 +4704,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
+    const usageLimit =
+      status === "failed" && turnState
+        ? yield* claudeTurnUsageLimit(turnState.usageLimitRejection, errorMessage)
+        : undefined;
 
     // Claude result usage is accumulated processed-token metadata, not the
     // current context window size. The snapshot builder queries context usage
@@ -4724,6 +4825,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : {}),
         ...(providerErrorMessage ? { errorMessage: providerErrorMessage } : {}),
         ...withFailureCategory(failureCategory),
+        ...(usageLimit ? { usageLimit } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -6617,10 +6719,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           extractAssistantTextBlocks(message).join("\n"),
         );
         context.turnState.apiErrorKind = message.error;
+        const rejection = apiErrorRateLimitInfo(message);
+        if (rejection !== undefined && isBlockingClaudeRateLimit(rejection)) {
+          context.turnState.usageLimitRejection = rejection;
+        }
       } else {
-        // Claude carried on, so an earlier API error did not end the turn.
+        // Claude carried on, so an earlier API error (or usage limit) did not end the turn.
         context.turnState.apiErrorText = undefined;
         context.turnState.apiErrorKind = undefined;
+        context.turnState.usageLimitRejection = undefined;
         yield* backfillAssistantTextBlocksFromSnapshot(context, message);
       }
     }
@@ -7583,6 +7690,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (message.type === "rate_limit_event") {
+      if (context.turnState) {
+        // A later report that lets usage through means the limit passed.
+        context.turnState.usageLimitRejection = isBlockingClaudeRateLimit(message.rate_limit_info)
+          ? message.rate_limit_info
+          : message.rate_limit_info.status === "rejected"
+            ? context.turnState.usageLimitRejection
+            : undefined;
+      }
       yield* offerRuntimeEvent({
         ...base,
         type: "account.rate-limits.updated",

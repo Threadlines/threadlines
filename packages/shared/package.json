@@ -35,6 +35,10 @@
       "types": "./src/providerPlan.ts",
       "import": "./src/providerPlan.ts"
     },
+    "./usageLimits": {
+      "types": "./src/usageLimits.ts",
+      "import": "./src/usageLimits.ts"
+    },
     "./preview": {
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"

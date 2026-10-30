@@ -1461,6 +1461,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        // A continue the user's own message overtook never reached the agent.
+        case "thread.continue-at-reset-skipped": {
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isSome(message) && message.value.notSent !== true) {
+            yield* projectionThreadMessageRepository.upsert({ ...message.value, notSent: true });
+          }
+          return;
+        }
+
         // The user's answer to an invite stays on its request message.
         case "thread.agent-request-updated": {
           const inviteChoice = event.payload.inviteChoice;
@@ -1558,6 +1569,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
+            ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -2015,6 +2027,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         yield* projectionThreadSessionRepository.dismissError(event.payload);
         return;
       }
+      if (event.type === "thread.continue-at-reset-set") {
+        yield* projectionThreadSessionRepository.setContinueAtReset(event.payload);
+        return;
+      }
       if (event.type !== "thread.session-set") {
         return;
       }
@@ -2040,6 +2056,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         lastError: event.payload.session.lastError,
         lastErrorAt: event.payload.session.lastErrorAt ?? null,
         lastErrorDismissedAt: event.payload.session.lastErrorDismissedAt ?? null,
+        lastErrorUsageLimit: event.payload.session.lastErrorUsageLimit ?? null,
+        continueAtReset: event.payload.session.continueAtReset ?? null,
         updatedAt: event.payload.session.updatedAt,
       });
     });

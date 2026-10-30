@@ -723,6 +723,16 @@ export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 export const MessageComposer = Schema.Literals(["typed", "plain"]);
 export type MessageComposer = typeof MessageComposer.Type;
 
+/**
+ * Why Threadlines wrote a user message the user didn't type, after a usage
+ * limit stopped the thread's agent. `usageLimitReset`: the server sent it once
+ * the limit reset ("Continue at reset"). `accountSwitch`: the user moved the
+ * thread to another account of the same agent from the limit notice. Absent
+ * on every other message.
+ */
+export const MessageTrigger = Schema.Literals(["usageLimitReset", "accountSwitch"]);
+export type MessageTrigger = typeof MessageTrigger.Type;
+
 export const MessageDeviceKind = Schema.Literals(["computer", "phone", "tablet"]);
 export type MessageDeviceKind = typeof MessageDeviceKind.Type;
 
@@ -793,6 +803,13 @@ export const OrchestrationMessage = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom. Written with the message and kept. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See MessageTrigger. Written with the message and kept. */
+  trigger: Schema.optional(MessageTrigger),
+  /**
+   * A message Threadlines wrote for the user (`trigger`) that never reached
+   * the agent: the user wrote before it went, and theirs went instead.
+   */
+  notSent: Schema.optional(Schema.Literal(true)),
   /**
    * The agents the message names, as they were when it was written, keyed by
    * agent (`primary` or a participant id): an assistant message's author, the
@@ -1262,6 +1279,37 @@ export const OrchestrationSessionStartup = Schema.Struct({
 });
 export type OrchestrationSessionStartup = typeof OrchestrationSessionStartup.Type;
 
+/**
+ * Which plan limit stopped the turn: the short window (Claude's 5-hour
+ * session, Codex's primary window) or the weekly one. `other` when the agent
+ * didn't say.
+ */
+export const OrchestrationUsageLimitWindow = Schema.Literals(["session", "weekly", "other"]);
+export type OrchestrationUsageLimitWindow = typeof OrchestrationUsageLimitWindow.Type;
+
+/**
+ * A failure that is the user's plan usage limit, as opposed to a brief rate
+ * limit. `resetsAt` is when the agent said the limit resets, null when it
+ * didn't say or named a time already past.
+ */
+export const OrchestrationSessionUsageLimit = Schema.Struct({
+  window: OrchestrationUsageLimitWindow,
+  resetsAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationSessionUsageLimit = typeof OrchestrationSessionUsageLimit.Type;
+
+/**
+ * "Continue at reset": the server sends "Continue where you left off." to the
+ * agent that hit the limit at `at` (a minute after `resetsAt`), on the
+ * computer the thread runs on. `resetsAt` moves later when the limit turns out
+ * not to have reset yet.
+ */
+export const OrchestrationContinueAtReset = Schema.Struct({
+  resetsAt: IsoDateTime,
+  at: IsoDateTime,
+});
+export type OrchestrationContinueAtReset = typeof OrchestrationContinueAtReset.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -1322,6 +1370,18 @@ export const OrchestrationSession = Schema.Struct({
    * keeps its Retry either way.
    */
   lastErrorDismissedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /**
+   * Set when `lastError` is the user's plan usage limit. The decider owns it:
+   * a writer names it with `thread.session.set`'s `usageLimit`, and it goes
+   * when `lastErrorAt` moves or the error clears.
+   */
+  lastErrorUsageLimit: Schema.optional(Schema.NullOr(OrchestrationSessionUsageLimit)),
+  /**
+   * Set while the thread waits to continue after that usage limit resets. The
+   * decider owns it: it goes with the failure, when a turn starts, and when
+   * the thread is archived. See OrchestrationContinueAtReset.
+   */
+  continueAtReset: Schema.optional(Schema.NullOr(OrchestrationContinueAtReset)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -1619,6 +1679,13 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * it runs in the thread's own interaction mode.
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * The user's message sent while the "Continue where you left off." message
+   * named here was still starting its turn. The user wins: if that message
+   * hasn't reached the agent yet it is not sent and this one goes instead;
+   * if it has, this one is steered into its turn.
+   */
+  overtakes: Schema.optional(MessageId),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -2954,6 +3021,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom (server only: set from the connection's sign-in). */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See MessageTrigger. A client can only name `accountSwitch`. */
+  trigger: Schema.optional(MessageTrigger),
   createdAt: IsoDateTime,
 });
 
@@ -3024,6 +3093,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   /** Whether the user wrote these words. See MessageComposer. */
   composer: Schema.optional(MessageComposer),
+  /** Sent from the usage limit notice's account button. See MessageTrigger. */
+  trigger: Schema.optional(Schema.Literal("accountSwitch")),
   createdAt: IsoDateTime,
 });
 
@@ -3332,6 +3403,20 @@ const ThreadErrorDismissCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The "Continue at reset" switch on a usage limit's notice. `lastErrorAt` names
+ * the failure the user saw; the decider refuses a newer one, and turning it on
+ * needs a known reset time. See OrchestrationSession.continueAtReset.
+ */
+const ThreadContinueAtResetSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.continue-at-reset.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  enabled: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 /** Skip a command an agent asked the user to run, or bring it back. */
 const ThreadCommandRequestDismissCommand = Schema.Struct({
   type: Schema.Literal("thread.command-request.dismiss"),
@@ -3389,6 +3474,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadProposedPlanDismissCommand,
   ThreadCommandRequestDismissCommand,
   ThreadErrorDismissCommand,
+  ThreadContinueAtResetSetCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -3440,6 +3526,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadProposedPlanDismissCommand,
   ThreadCommandRequestDismissCommand,
   ThreadErrorDismissCommand,
+  ThreadContinueAtResetSetCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -3448,6 +3535,54 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  /** The failure in `session.lastError` is a plan usage limit. See lastErrorUsageLimit. */
+  usageLimit: Schema.optional(OrchestrationSessionUsageLimit),
+  /**
+   * The server setting of the same name when the failure was recorded: a new
+   * usage limit with a known reset arms "Continue at reset" when it is on.
+   */
+  continueAfterUsageLimits: Schema.optional(Schema.Boolean),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server-internal: send "Continue where you left off." (or resume a goal the
+ * limit paused) for the failure `lastErrorAt` names, if the thread still waits
+ * for it. One decision checks the wait and starts the turn, so a message the
+ * user sends meanwhile always wins.
+ */
+const ThreadContinueAtResetFireCommand = Schema.Struct({
+  type: Schema.Literal("thread.continue-at-reset.fire"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server-internal: the limit hasn't reset yet. Continue at `at` instead, and
+ * record `resetsAt` when the account's usage named a later reset.
+ */
+/**
+ * Server-internal: the user wrote before this "Continue where you left off."
+ * message reached the agent, so it is not sent (OrchestrationMessage.notSent).
+ */
+const ThreadContinueAtResetSkipCommand = Schema.Struct({
+  type: Schema.Literal("thread.continue-at-reset.skip"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadContinueAtResetPostponeCommand = Schema.Struct({
+  type: Schema.Literal("thread.continue-at-reset.postpone"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  resetsAt: Schema.optional(IsoDateTime),
+  at: IsoDateTime,
   createdAt: IsoDateTime,
 });
 
@@ -3729,6 +3864,17 @@ const ThreadFollowUpSendQueuedCommand = Schema.Struct({
    * and recorded in that turn instead of starting one.
    */
   steeredTurnId: Schema.optional(TurnId),
+  /**
+   * The user's message that overtook a "Continue where you left off." message
+   * (OrchestrationQueuedFollowUp.overtakes) after that one reached the agent:
+   * it is steered into this running turn, like a message typed while it ran.
+   */
+  steerIntoTurnId: Schema.optional(TurnId),
+  /**
+   * Sent in place of a turn asked for under this chain epoch: refused once
+   * Stop has raised it since, so a send prepared before Stop never runs after.
+   */
+  ifChainEpoch: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 
@@ -4089,6 +4235,10 @@ export const ThreadImportMessage = Schema.Struct({
   fromOutside: Schema.optional(OutsideAgentRef),
   /** The device it was sent from, as stamped where it was written (OrchestrationMessage.sentFrom). */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** Why Threadlines wrote it there (OrchestrationMessage.trigger). */
+  trigger: Schema.optional(MessageTrigger),
+  /** It never reached the agent there (OrchestrationMessage.notSent). */
+  notSent: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;
@@ -4175,6 +4325,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadRemoteCancelsDeliveredCommand,
   ThreadRemoteRequestQueueCommand,
   ThreadSessionSetCommand,
+  ThreadContinueAtResetFireCommand,
+  ThreadContinueAtResetPostponeCommand,
+  ThreadContinueAtResetSkipCommand,
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
   ThreadCheckBacksSetCommand,
@@ -4286,6 +4439,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.check-back-cancel-requested",
   "thread.session-set",
   "thread.error-dismissed",
+  "thread.continue-at-reset-set",
+  "thread.continue-at-reset-skipped",
   "thread.effective-cwd-set",
   "thread.check-backs-set",
   "thread.goal-set-requested",
@@ -4728,6 +4883,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See OrchestrationMessage.trigger. */
+  trigger: Schema.optional(MessageTrigger),
   /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
@@ -4799,6 +4956,12 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /**
+   * The user's message that overtook a continue (OrchestrationQueuedFollowUp
+   * .overtakes), steered into that continue's turn: a steer that fails puts
+   * it back in the queue rather than lose it.
+   */
+  overtakes: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 
@@ -4901,6 +5064,21 @@ export const ThreadErrorDismissedPayload = Schema.Struct({
   lastError: TrimmedNonEmptyString,
   lastErrorAt: Schema.NullOr(IsoDateTime),
   dismissedAt: IsoDateTime,
+});
+
+/** "Continue at reset" turned on, moved later, or off (null) for the failure `lastErrorAt` names. */
+/** A "Continue where you left off." message the user's own message overtook; see OrchestrationMessage.notSent. */
+export const ThreadContinueAtResetSkippedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  skippedAt: IsoDateTime,
+});
+
+export const ThreadContinueAtResetSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  lastErrorAt: IsoDateTime,
+  continueAtReset: Schema.NullOr(OrchestrationContinueAtReset),
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadEffectiveCwdSetPayload = Schema.Struct({
@@ -5385,6 +5563,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.error-dismissed"),
     payload: ThreadErrorDismissedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.continue-at-reset-set"),
+    payload: ThreadContinueAtResetSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.continue-at-reset-skipped"),
+    payload: ThreadContinueAtResetSkippedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

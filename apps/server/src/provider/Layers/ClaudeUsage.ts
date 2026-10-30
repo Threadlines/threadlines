@@ -47,6 +47,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { usageResetTimeMs } from "@threadlines/shared/usageLimits";
 
 import {
   type ClaudeFolderConfig,
@@ -271,12 +272,6 @@ function isReadingDueForConfirmation(readAt: string | undefined, checkedAt: stri
     Number.isFinite(checkedAtMs) &&
     checkedAtMs - readAtMs >= CLAUDE_USAGE_READING_CONFIRM_INTERVAL_MS
   );
-}
-
-/** Endpoint readings carry reset times in epoch milliseconds, events in seconds. */
-function usageResetTimeMs(resetsAt: number | undefined): number | undefined {
-  if (resetsAt === undefined || !Number.isFinite(resetsAt) || resetsAt <= 0) return undefined;
-  return resetsAt < 10_000_000_000 ? resetsAt * 1000 : resetsAt;
 }
 
 function hasUsageWindowReset(

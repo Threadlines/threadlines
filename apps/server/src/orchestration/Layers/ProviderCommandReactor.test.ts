@@ -1036,6 +1036,141 @@ describe("ProviderCommandReactor", () => {
     expect((await projectedSession(harness))?.startup ?? null).toBeNull();
   });
 
+  it("sends the user's message instead of a continue it overtook on the way", async () => {
+    const harness = await createHarness();
+    const release = holdNextStart(harness);
+    const send = (
+      id: string,
+      extra: { readonly trigger?: "usageLimitReset"; readonly composer?: "typed" },
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: { messageId: asMessageId(id), role: "user", text: id, attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          ...extra,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    // The continue's turn is still starting when the user writes.
+    await send("continue-at-reset", { trigger: "usageLimitReset" });
+    await waitFor(async () => (await projectedSession(harness))?.status === "starting");
+    await send("user-wrote-first", { composer: "typed" });
+    release();
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain("user-wrote-first");
+    expect(sent?.input).not.toContain("continue-at-reset");
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return (
+        thread?.messages.find((message) => message.id === asMessageId("continue-at-reset"))
+          ?.notSent === true
+      );
+    });
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+  });
+
+  it("steers the user's message into a continue that already reached the agent", async () => {
+    const harness = await createHarness();
+    const send = (
+      id: string,
+      extra: { readonly trigger?: "usageLimitReset"; readonly composer?: "typed" },
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: { messageId: asMessageId(id), role: "user", text: id, attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          ...extra,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    // The continue is on its way to the agent when the user writes.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const defaultSendTurn = harness.sendTurn.getMockImplementation();
+    if (!defaultSendTurn) throw new Error("sendTurn mock has no implementation");
+    harness.sendTurn.mockImplementationOnce((input: unknown) =>
+      Effect.promise(() => gate).pipe(Effect.flatMap(() => defaultSendTurn(input))),
+    );
+    await send("continue-at-reset", { trigger: "usageLimitReset" });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await send("user-wrote-during-start", { composer: "typed" });
+    release();
+
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+    const steered = harness.steerTurn.mock.calls[0]?.[0] as {
+      readonly expectedTurnId: string;
+      readonly messageId: string;
+      readonly input?: string;
+    };
+    expect(steered).toMatchObject({
+      expectedTurnId: "turn-1",
+      messageId: asMessageId("user-wrote-during-start"),
+    });
+    expect(steered.input).toContain("user-wrote-during-start");
+    await harness.drain();
+    // One turn: the user's message is part of the continue's turn, not a second start.
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.queuedFollowUps ?? []).toEqual([]);
+    expect(
+      thread?.messages.find((message) => message.id === asMessageId("user-wrote-during-start")),
+    ).toMatchObject({ turnId: asTurnId("turn-1") });
+  });
+
+  it("sends the user's message when the continue it overtook fails to start", async () => {
+    const harness = await createHarness();
+    const send = (
+      id: string,
+      extra: { readonly trigger?: "usageLimitReset"; readonly composer?: "typed" },
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: { messageId: asMessageId(id), role: "user", text: id, attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          ...extra,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The mock's type has no error channel; a defect takes the same recovery.
+    harness.sendTurn.mockImplementationOnce(() =>
+      Effect.promise(() => gate).pipe(
+        Effect.flatMap(() => Effect.die(new Error("the continue failed in test harness"))),
+      ),
+    );
+    await send("continue-at-reset", { trigger: "usageLimitReset" });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await send("user-wrote-during-start", { composer: "typed" });
+    release();
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const sent = harness.sendTurn.mock.calls[1]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain("user-wrote-during-start");
+  });
+
   it("clears the launching mark when the agent's program fails to start", async () => {
     const harness = await createHarness();
     harness.startSession.mockImplementationOnce(() =>

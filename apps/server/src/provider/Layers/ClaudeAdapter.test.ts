@@ -3167,6 +3167,74 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("names a plan usage limit and its reset, and not a brief rate limit", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const nextCompletion = () =>
+        Stream.filter(adapter.streamEvents, (event) => event.type === "turn.completed").pipe(
+          Stream.runHead,
+          Effect.forkChild,
+        );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const limitedFiber = yield* nextCompletion();
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+      const limitText = "You've hit your session limit · resets 2:20pm (America/New_York)";
+      harness.query.emit({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "rejected",
+          resetsAt: 1_767_268_800,
+          rateLimitType: "five_hour",
+        },
+        session_id: "sdk-session-api-error",
+        uuid: "rate-limit-1",
+      } as unknown as SDKMessage);
+      harness.query.emit(apiErrorNote({ error: "rate_limit", text: limitText }));
+      harness.query.emit(apiErrorResult({ result: limitText, status: 429 }));
+      const limited = yield* Fiber.join(limitedFiber);
+
+      const briefFiber = yield* nextCompletion();
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "again", attachments: [] });
+      const briefText = "API Error: 429 Too many requests. Try again shortly.";
+      harness.query.emit(apiErrorNote({ error: "rate_limit", text: briefText }));
+      harness.query.emit(apiErrorResult({ result: briefText, status: 429, uuid: "result-brief" }));
+      const brief = yield* Fiber.join(briefFiber);
+
+      // An org out of funds doesn't reset by itself.
+      const fundsFiber = yield* nextCompletion();
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "once more", attachments: [] });
+      const fundsText = "Your org is out of usage · add funds to continue";
+      harness.query.emit(apiErrorNote({ error: "billing_error", text: fundsText }));
+      harness.query.emit(apiErrorResult({ result: fundsText, uuid: "result-funds" }));
+      const funds = yield* Fiber.join(fundsFiber);
+
+      assert.equal(limited._tag, "Some");
+      if (limited._tag === "Some" && limited.value.type === "turn.completed") {
+        assert.equal(limited.value.payload.failureCategory, "rate_limit");
+        assert.deepEqual(limited.value.payload.usageLimit, {
+          window: "session",
+          resetsAt: "2026-01-01T12:00:00.000Z",
+        });
+      }
+      for (const ordinary of [brief, funds]) {
+        assert.equal(ordinary._tag, "Some");
+        if (ordinary._tag === "Some" && ordinary.value.type === "turn.completed") {
+          assert.equal(ordinary.value.payload.state, "failed");
+          assert.equal(ordinary.value.payload.usageLimit, undefined);
+        }
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   // Claude got past the API error, shown by a full reply or by streaming again,
   // then ran out of turns.
   for (const [carriedOn, message] of [
