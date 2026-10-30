@@ -164,6 +164,9 @@ export const clientFamily = (name: string, softwareId: string | null): string =>
 const toConnection = (row: OutsideAgentConnectionRow): OutsideAgentConnection => ({
   connectionId: row.connectionId,
   name: row.clientName,
+  kind: "local",
+  signIn: "oauth",
+  identity: null,
   access: row.access,
   maxRuntimeMode: row.maxRuntimeMode,
   projectIds: row.projectIds,
@@ -274,6 +277,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         connections: rows.map(toConnection),
         pending: waiting,
         quietUntil: quietUntil !== null && quietUntil > now ? isoAt(quietUntil) : null,
+        assistants: { status: "off", address: null, code: null, signIns: [] },
       };
     },
   );
@@ -348,6 +352,9 @@ const makeOutsideAgents = Effect.gen(function* () {
       return {
         connectionId,
         name: entry.request.client.name,
+        kind: "local",
+        signIn: "oauth",
+        identity: null,
         ...grant,
         createdAt: isoAt(now),
         lastUsedAt: null,

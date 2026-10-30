@@ -118,6 +118,7 @@ describe("ChatView (full app): command palette and search", () => {
         },
       ],
       quietUntil: null,
+      assistants: { status: "off", address: null, code: null, signIns: [] },
     });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

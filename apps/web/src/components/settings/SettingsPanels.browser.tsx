@@ -5223,6 +5223,9 @@ describe("Agents outside Threadlines", () => {
     return {
       connectionId: OutsideAgentConnectionId.make("connection-claude"),
       name: "Claude Code",
+      kind: "local",
+      signIn: "oauth",
+      identity: null,
       access: "start",
       maxRuntimeMode: "approval-required",
       projectIds: [WEB],
@@ -5233,7 +5236,14 @@ describe("Agents outside Threadlines", () => {
   }
 
   function snapshot(parts: Partial<OutsideAgentsSnapshot> = {}): OutsideAgentsSnapshot {
-    return { address: ADDRESS, connections: [], pending: [], quietUntil: null, ...parts };
+    return {
+      address: ADDRESS,
+      connections: [],
+      pending: [],
+      quietUntil: null,
+      assistants: { status: "off", address: null, code: null, signIns: [] },
+      ...parts,
+    };
   }
 
   async function mountConnectionsWithHost() {
