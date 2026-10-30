@@ -4627,7 +4627,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
     await expect.element(page.getByText("Not authenticated")).toBeInTheDocument();
   });
 
-  it("shows Git fetch interval settings inside the Git details dropdown", async () => {
+  it("shows the Git fetch interval as a row of its own under Git", async () => {
     setSourceControlDiscoveryStub(async () => ({
       versionControlSystems: [
         {
@@ -4650,15 +4650,11 @@ describe("SourceControlSettingsPanel discovery states", () => {
       </TestAppProviders>,
     );
 
-    const toggle = page.getByRole("button", { name: "Toggle Git details" });
-    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
-
-    await toggle.click();
-
-    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    // A place of its own, so search and place links can reach it.
     await expect
       .element(page.getByLabelText("Automatic Git fetch interval in seconds"))
       .toBeVisible();
+    expect(document.querySelector('[data-place="sourceControl.fetchInterval"]')).not.toBeNull();
     await expect
       .element(page.getByText("Automatic Git fetches run every 30 seconds"))
       .not.toBeInTheDocument();

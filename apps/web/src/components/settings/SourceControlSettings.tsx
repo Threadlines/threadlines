@@ -1,7 +1,7 @@
-import { ChevronDownIcon, GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
+import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import type {
   EnvironmentId,
@@ -32,7 +32,6 @@ import {
 import { useStore } from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import {
   Empty,
   EmptyContent,
@@ -248,20 +247,15 @@ function itemSummary({
 function DiscoveryItemRow({
   item,
   environmentId,
-  children,
 }: {
   readonly item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem;
   readonly environmentId?: EnvironmentId | null;
-  readonly children?: ReactNode;
 }) {
   const version = optionLabel(item.version);
   const isReady = itemReady(item);
   const auth = isProviderDiscoveryItem(item) ? item.auth : null;
   const authStatus = auth ? authPresentation(auth) : null;
   const authAccount = auth ? optionLabel(auth.account) : null;
-  const [isExpanded, setIsExpanded] = useState(false);
-  const hasDetails = children !== undefined;
-
   return (
     <div className={cn(SETTINGS_GROUP_ROW_CLASS, isVcsNotReady(item) && "opacity-80")}>
       <div className="px-3.5 py-2.5">
@@ -312,80 +306,45 @@ function DiscoveryItemRow({
             item.auth.status !== "authenticated" ? (
               <GitHubSignInAction key={environmentId ?? "primary"} environmentId={environmentId} />
             ) : null}
-            {hasDetails ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setIsExpanded((open) => !open)}
-                aria-expanded={isExpanded}
-                aria-label={`Toggle ${item.label} details`}
-              >
-                <ChevronDownIcon
-                  className={cn("size-3.5 transition-transform", isExpanded && "rotate-180")}
-                />
-              </Button>
-            ) : null}
             {!isVcsNotReady(item) ? (
               <Switch checked={isReady} disabled aria-label={`${item.label} availability`} />
             ) : null}
           </div>
         </div>
       </div>
-
-      {hasDetails ? (
-        <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-          <CollapsibleContent>
-            <div className="border-t border-group-divider px-3.5 py-3">{children}</div>
-          </CollapsibleContent>
-        </Collapsible>
-      ) : null}
     </div>
   );
 }
 
-function GitFetchIntervalSettings() {
+/**
+ * How often Git checks remote branches in the background (Settings › Source
+ * Control › Version control), a row of its own under the Git it applies to.
+ */
+export function FetchIntervalRow() {
   const automaticGitFetchInterval = useSettings((settings) => settings.automaticGitFetchInterval);
   const { updateSettings } = useUpdateSettings();
   const automaticGitFetchIntervalSeconds = durationToSeconds(automaticGitFetchInterval);
   const defaultAutomaticGitFetchIntervalSeconds = durationToSeconds(
     DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
   );
-  const canResetFetchInterval =
-    automaticGitFetchIntervalSeconds !== defaultAutomaticGitFetchIntervalSeconds;
 
   return (
-    <div className="grid gap-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-1">
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="text-xs font-medium text-foreground">Fetch interval</span>
-            <span
-              className={cn(
-                "inline-flex size-5 shrink-0 items-center justify-center transition-opacity",
-                canResetFetchInterval ? "opacity-100" : "pointer-events-none opacity-0",
-              )}
-              aria-hidden={!canResetFetchInterval}
-            >
-              {canResetFetchInterval ? (
-                <SettingResetButton
-                  label="fetch interval"
-                  onClick={() =>
-                    updateSettings({
-                      automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
-                    })
-                  }
-                />
-              ) : null}
-            </span>
-          </div>
-          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            Refresh remote branch status in the background. Higher values reduce background Git and
-            network work; set this to 0 seconds if credentials or security keys should only be
-            prompted by explicit Git actions.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+    <SettingsRow
+      place="sourceControl.fetchInterval"
+      resetAction={
+        automaticGitFetchIntervalSeconds !== defaultAutomaticGitFetchIntervalSeconds ? (
+          <SettingResetButton
+            label="fetch interval"
+            onClick={() =>
+              updateSettings({
+                automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <>
           <NumberField
             value={automaticGitFetchIntervalSeconds}
             min={0}
@@ -405,47 +364,52 @@ function GitFetchIntervalSettings() {
             </NumberFieldGroup>
           </NumberField>
           <span className="text-xs text-muted-foreground">seconds</span>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    />
   );
 }
 
 function SourceControlPanelSection() {
+  return (
+    <SettingsSection place="sourceControl.panel">
+      <OpenPanelByDefaultRow />
+    </SettingsSection>
+  );
+}
+
+export function OpenPanelByDefaultRow() {
   const sourceControlPanelDefaultOpen = useSettings(
     (settings) => settings.sourceControlPanelDefaultOpen,
   );
   const { updateSettings } = useUpdateSettings();
 
   return (
-    <SettingsSection place="sourceControl.panel">
-      <SettingsRow
-        place="sourceControl.openPanelByDefault"
-        resetAction={
-          sourceControlPanelDefaultOpen !==
-          DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen ? (
-            <SettingResetButton
-              label="open panel by default"
-              onClick={() =>
-                updateSettings({
-                  sourceControlPanelDefaultOpen:
-                    DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <Switch
-            checked={sourceControlPanelDefaultOpen}
-            onCheckedChange={(checked) =>
-              updateSettings({ sourceControlPanelDefaultOpen: Boolean(checked) })
+    <SettingsRow
+      place="sourceControl.openPanelByDefault"
+      resetAction={
+        sourceControlPanelDefaultOpen !== DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen ? (
+          <SettingResetButton
+            label="open panel by default"
+            onClick={() =>
+              updateSettings({
+                sourceControlPanelDefaultOpen:
+                  DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
+              })
             }
-            aria-label="Open source control panel by default"
           />
-        }
-      />
-    </SettingsSection>
+        ) : null
+      }
+      control={
+        <Switch
+          checked={sourceControlPanelDefaultOpen}
+          onCheckedChange={(checked) =>
+            updateSettings({ sourceControlPanelDefaultOpen: Boolean(checked) })
+          }
+          aria-label="Open source control panel by default"
+        />
+      }
+    />
   );
 }
 
@@ -479,149 +443,172 @@ function isWritingStyleMode(value: string): value is SourceControlWritingStyleMo
 }
 
 function TextGenerationSection() {
-  const settings = useSettings();
-  const { updateSettings } = useUpdateSettings();
-  const serverProviders = useServerProviders();
+  return (
+    <SettingsSection place="sourceControl.textGeneration">
+      <WritingStyleRow />
+      <FollowPrTemplatesRow />
+      <WriterModelRow />
+    </SettingsSection>
+  );
+}
 
-  const writingStyle = settings.sourceControlWritingStyle;
-  const defaultWritingStyle = DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle;
+function useWritingStyle() {
+  const writingStyle = useSettings((settings) => settings.sourceControlWritingStyle);
+  const { updateSettings } = useUpdateSettings();
+  return {
+    writingStyle,
+    defaultWritingStyle: DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle,
+    updateSettings,
+  };
+}
+
+export function WritingStyleRow() {
+  const { writingStyle, defaultWritingStyle, updateSettings } = useWritingStyle();
   const selectedStyleOption =
     WRITING_STYLE_OPTIONS.find((option) => option.value === writingStyle.mode) ??
     WRITING_STYLE_OPTIONS[0];
   const isStyleDirty =
     writingStyle.mode !== defaultWritingStyle.mode ||
     writingStyle.customInstructions !== defaultWritingStyle.customInstructions;
-
-  const primarySelection = resolveAppModelSelectionState(settings, serverProviders);
-  const writerSelection = resolveSourceControlWriterModelSelectionState(settings, serverProviders);
-  const instanceEntries = textGenerationInstanceEntries(serverProviders);
-
   return (
-    <SettingsSection place="sourceControl.textGeneration">
-      <SettingsRow
-        place="sourceControl.writingStyle"
-        description={selectedStyleOption?.description ?? ""}
-        resetAction={
-          isStyleDirty ? (
-            <SettingResetButton
-              label="source control writing style"
-              onClick={() =>
-                updateSettings({
-                  sourceControlWritingStyle: {
-                    ...writingStyle,
-                    mode: defaultWritingStyle.mode,
-                    customInstructions: defaultWritingStyle.customInstructions,
-                  },
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <Select
-            value={writingStyle.mode}
-            onValueChange={(value) => {
-              if (typeof value === "string" && isWritingStyleMode(value)) {
-                updateSettings({ sourceControlWritingStyle: { ...writingStyle, mode: value } });
-              }
-            }}
-          >
-            <SelectTrigger className="w-full sm:w-56" aria-label="Source control writing style">
-              <SelectValue>{selectedStyleOption?.label ?? ""}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {WRITING_STYLE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        }
-      >
-        {writingStyle.mode === "custom" ? (
-          <div className="pb-3.5 pt-3">
-            <DraftTextarea
-              rows={4}
-              value={writingStyle.customInstructions}
-              placeholder="Keep titles concise. Use short bullet points in descriptions."
-              aria-label="Custom source control writing instructions"
-              onCommit={(next) =>
-                updateSettings({
-                  sourceControlWritingStyle: { ...writingStyle, customInstructions: next },
-                })
-              }
-            />
-          </div>
-        ) : null}
-      </SettingsRow>
-
-      <SettingsRow
-        place="sourceControl.followPrTemplates"
-        resetAction={
-          writingStyle.followPrTemplates !== defaultWritingStyle.followPrTemplates ? (
-            <SettingResetButton
-              label="follow PR templates"
-              onClick={() =>
-                updateSettings({
-                  sourceControlWritingStyle: {
-                    ...writingStyle,
-                    followPrTemplates: defaultWritingStyle.followPrTemplates,
-                  },
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <Switch
-            checked={writingStyle.followPrTemplates}
-            onCheckedChange={(checked) =>
+    <SettingsRow
+      place="sourceControl.writingStyle"
+      description={selectedStyleOption?.description ?? ""}
+      resetAction={
+        isStyleDirty ? (
+          <SettingResetButton
+            label="source control writing style"
+            onClick={() =>
               updateSettings({
                 sourceControlWritingStyle: {
                   ...writingStyle,
-                  followPrTemplates: Boolean(checked),
+                  mode: defaultWritingStyle.mode,
+                  customInstructions: defaultWritingStyle.customInstructions,
                 },
               })
             }
-            aria-label="Follow repository pull request templates"
           />
-        }
-      />
+        ) : null
+      }
+      control={
+        <Select
+          value={writingStyle.mode}
+          onValueChange={(value) => {
+            if (typeof value === "string" && isWritingStyleMode(value)) {
+              updateSettings({ sourceControlWritingStyle: { ...writingStyle, mode: value } });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-56" aria-label="Source control writing style">
+            <SelectValue>{selectedStyleOption?.label ?? ""}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {WRITING_STYLE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    >
+      {writingStyle.mode === "custom" ? (
+        <div className="pb-3.5 pt-3">
+          <DraftTextarea
+            rows={4}
+            value={writingStyle.customInstructions}
+            placeholder="Keep titles concise. Use short bullet points in descriptions."
+            aria-label="Custom source control writing instructions"
+            onCommit={(next) =>
+              updateSettings({
+                sourceControlWritingStyle: { ...writingStyle, customInstructions: next },
+              })
+            }
+          />
+        </div>
+      ) : null}
+    </SettingsRow>
+  );
+}
 
-      <SettingsRow
-        place="sourceControl.writerModel"
-        control={
-          <>
-            {writerSelection ? (
-              <TextGenerationModelControl
-                selection={writerSelection}
-                settings={settings}
-                serverProviders={serverProviders}
-                instanceEntries={instanceEntries}
-                onSelectionChange={(nextSelection) => {
-                  updateSettings({
-                    sourceControlWriterModelSelection: resolveAppModelSelectionState(
-                      { ...settings, textGenerationModelSelection: nextSelection },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-            ) : null}
-            <Switch
-              checked={writerSelection !== null}
-              onCheckedChange={(checked) =>
+export function FollowPrTemplatesRow() {
+  const { writingStyle, defaultWritingStyle, updateSettings } = useWritingStyle();
+  return (
+    <SettingsRow
+      place="sourceControl.followPrTemplates"
+      resetAction={
+        writingStyle.followPrTemplates !== defaultWritingStyle.followPrTemplates ? (
+          <SettingResetButton
+            label="follow PR templates"
+            onClick={() =>
+              updateSettings({
+                sourceControlWritingStyle: {
+                  ...writingStyle,
+                  followPrTemplates: defaultWritingStyle.followPrTemplates,
+                },
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={writingStyle.followPrTemplates}
+          onCheckedChange={(checked) =>
+            updateSettings({
+              sourceControlWritingStyle: {
+                ...writingStyle,
+                followPrTemplates: Boolean(checked),
+              },
+            })
+          }
+          aria-label="Follow repository pull request templates"
+        />
+      }
+    />
+  );
+}
+
+export function WriterModelRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const serverProviders = useServerProviders();
+  const primarySelection = resolveAppModelSelectionState(settings, serverProviders);
+  const writerSelection = resolveSourceControlWriterModelSelectionState(settings, serverProviders);
+  const instanceEntries = textGenerationInstanceEntries(serverProviders);
+  return (
+    <SettingsRow
+      place="sourceControl.writerModel"
+      control={
+        <>
+          {writerSelection ? (
+            <TextGenerationModelControl
+              selection={writerSelection}
+              settings={settings}
+              serverProviders={serverProviders}
+              instanceEntries={instanceEntries}
+              onSelectionChange={(nextSelection) => {
                 updateSettings({
-                  sourceControlWriterModelSelection: checked ? primarySelection : null,
-                })
-              }
-              aria-label="Use a dedicated source control writer model"
+                  sourceControlWriterModelSelection: resolveAppModelSelectionState(
+                    { ...settings, textGenerationModelSelection: nextSelection },
+                    serverProviders,
+                  ),
+                });
+              }}
             />
-          </>
-        }
-      />
-    </SettingsSection>
+          ) : null}
+          <Switch
+            checked={writerSelection !== null}
+            onCheckedChange={(checked) =>
+              updateSettings({
+                sourceControlWriterModelSelection: checked ? primarySelection : null,
+              })
+            }
+            aria-label="Use a dedicated source control writer model"
+          />
+        </>
+      }
+    />
   );
 }
 
@@ -758,10 +745,11 @@ export function SourceControlSettingsPanel() {
                   key={`vcs:${item.kind}`}
                   item={item}
                   environmentId={activeEnvironmentId}
-                >
-                  {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
-                </DiscoveryItemRow>
+                />
               ))}
+              {result.versionControlSystems.some((item) => item.kind === "git") ? (
+                <FetchIntervalRow />
+              ) : null}
             </SettingsSection>
           ) : null}
 

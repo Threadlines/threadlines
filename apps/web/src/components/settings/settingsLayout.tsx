@@ -1,6 +1,7 @@
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
+import { type SearchQuery, searchMatchRanges } from "@threadlines/shared/placeSearch";
 import { Undo2Icon } from "lucide-react";
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import { type ComponentPropsWithoutRef, createContext, type ReactNode, useContext } from "react";
 
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
@@ -139,6 +140,39 @@ export function SettingsSection({
 }
 
 /**
+ * Set around one row in the settings search results: the row marks the
+ * query in its catalog words and shows where it lives under its description
+ * (`path`). `place` names the row it is for, so rows a result happens to
+ * contain draw as usual; rows built from data leave it unset.
+ */
+export interface SettingsSearchRowInfo {
+  readonly place: SettingsPlaceId | undefined;
+  readonly query: SearchQuery;
+  /** Whether the title holds the whole query; the description is marked only when it doesn't. */
+  readonly inTitle: boolean;
+  readonly path: ReactNode;
+}
+
+export const SettingsSearchRowContext = createContext<SettingsSearchRowInfo | null>(null);
+
+/** `text` with the query's words marked, the way the command palette marks them. */
+export function SearchHighlight({ text, query }: { text: string; query: SearchQuery }) {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const { start, end } of searchMatchRanges(text, query)) {
+    if (start > cursor) parts.push(text.slice(cursor, start));
+    parts.push(
+      <mark key={start} className="thread-search-palette-match">
+        {text.slice(start, end)}
+      </mark>,
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
+/**
  * What a row says: a place's words, or its own for rows built from data (one
  * per provider, device or computer), whose section is the place.
  */
@@ -175,6 +209,18 @@ export function SettingsRow({
     children?: ReactNode;
   }) {
   const words = place === undefined ? null : placeById(place);
+  const searchInfo = useContext(SettingsSearchRowContext);
+  const search = searchInfo?.place === place ? searchInfo : null;
+  const shownTitle =
+    title ??
+    (search && words ? <SearchHighlight text={words.title} query={search.query} /> : words?.title);
+  const shownDescription =
+    description ??
+    (search && words && !search.inTitle ? (
+      <SearchHighlight text={words.about} query={search.query} />
+    ) : (
+      words?.about
+    ));
   return (
     <div
       {...rowProps}
@@ -190,16 +236,15 @@ export function SettingsRow({
         <div className="min-w-0 flex-1 space-y-0.5">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">
-              {title ?? words?.title}
+              {shownTitle}
             </h3>
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               {resetAction}
             </span>
           </div>
-          <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-            {description ?? words?.about}
-          </p>
+          <p className="text-[12.5px] leading-[18px] text-muted-foreground">{shownDescription}</p>
           {status ? <div className="pt-0.5 text-[11px] text-muted-foreground">{status}</div> : null}
+          {search ? search.path : null}
         </div>
         {control ? (
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">

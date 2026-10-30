@@ -4,4 +4,7 @@ import { KeybindingsSettingsPanel } from "../components/settings/KeybindingsSett
 
 export const Route = createFileRoute("/settings/keybindings")({
   component: KeybindingsSettingsPanel,
+  // `q`: a settings search result opening the table filtered to its shortcut.
+  validateSearch: (search: Record<string, unknown>): { q?: string } =>
+    typeof search["q"] === "string" && search["q"].length > 0 ? { q: search["q"] } : {},
 });

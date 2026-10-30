@@ -196,6 +196,8 @@ export function buildKeybindingRows(
 
   return rowsWithConflicts.filter((row) => {
     return (
+      // The label is what the table shows ("Terminal: Toggle"); the id is what keybindings.json says.
+      commandLabel(row.command).toLowerCase().includes(normalizedQuery) ||
       row.command.toLowerCase().includes(normalizedQuery) ||
       row.key.toLowerCase().includes(normalizedQuery) ||
       row.when.toLowerCase().includes(normalizedQuery) ||
