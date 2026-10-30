@@ -1,5 +1,6 @@
 import {
   OutsideAgentRequestId,
+  type OutsideAgentAssistantSignIn,
   type OutsideAgentPendingRequest,
   ProjectId,
 } from "@threadlines/contracts";
@@ -8,11 +9,14 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   describeOutsideAgentAccess,
   describeOutsideAgentProjects,
+  describeOutsideAgentSignIn,
   initialOutsideAgentDraft,
   nextOutsideAgentNotification,
+  nextShownAssistantCode,
   OUTSIDE_AGENT_NOTIFY_INTERVAL_MS,
   outsideAgentGrantFromDraft,
   outsideAgentQuietMinutesLeft,
+  waitingOutsideAgentSignIns,
 } from "./outsideAgents.logic";
 
 const WEB = ProjectId.make("project-web");
@@ -53,6 +57,26 @@ describe("outside agent wording", () => {
     expect(describeOutsideAgentProjects([WEB, GONE], names)).toBe("web");
     expect(describeOutsideAgentProjects([GONE], names)).toBe("No projects");
     expect(describeOutsideAgentProjects([WEB, API, DOCS, GONE], names)).toBe("web, api and 1 more");
+  });
+
+  it("says how an assistant signs in, checked or only claimed, and nothing for a local agent", () => {
+    const identity = { host: "cursor.sh", verified: true, known: true };
+    expect(describeOutsideAgentSignIn({ kind: "assistant", signIn: "oauth", identity })).toBe(
+      "Signs in from cursor.sh",
+    );
+    expect(
+      describeOutsideAgentSignIn({
+        kind: "assistant",
+        signIn: "oauth",
+        identity: { ...identity, verified: false },
+      }),
+    ).toBe("Sign-in returns to cursor.sh");
+    expect(describeOutsideAgentSignIn({ kind: "assistant", signIn: "key", identity: null })).toBe(
+      "Key",
+    );
+    expect(describeOutsideAgentSignIn({ kind: "local", signIn: "oauth", identity: null })).toBe(
+      null,
+    );
   });
 
   it("counts the quiet period down in whole minutes and drops it once over", () => {
@@ -101,6 +125,51 @@ describe("outsideAgentGrantFromDraft", () => {
     expect(
       outsideAgentGrantFromDraft(draft, { requestedAccess: "start", availableProjectIds: [WEB] }),
     ).toEqual({ access: "start", maxRuntimeMode: "auto", projectIds: null });
+  });
+});
+
+describe("nextShownAssistantCode", () => {
+  it("keeps a code that left the snapshot only if it had run out, so Settings can say so", () => {
+    const code = { code: "K4D82PQX", expiresAt: "2026-10-23T12:05:00.000Z" };
+    const fresh = { code: "M7Q2R9TX", expiresAt: "2026-10-23T12:10:00.000Z" };
+    expect(nextShownAssistantCode(code, fresh, NOW_MS)).toBe(fresh);
+    // Gone before it ran out: a sign-in used it, or it was cancelled.
+    expect(nextShownAssistantCode(code, null, NOW_MS)).toBeNull();
+    // Gone once it ran out: it stays, to say it expired.
+    expect(nextShownAssistantCode(code, null, Date.parse(code.expiresAt))).toBe(code);
+    expect(nextShownAssistantCode(null, null, NOW_MS)).toBeNull();
+  });
+});
+
+describe("waitingOutsideAgentSignIns", () => {
+  it("puts local agents' and assistants' sign-ins in one line, oldest first", () => {
+    const assistant = (id: string, createdAt: string): OutsideAgentAssistantSignIn => ({
+      requestId: OutsideAgentRequestId.make(id),
+      name: "Grok Bot",
+      identity: { host: "cursor.sh", verified: false, known: true },
+      place: null,
+      requestedAccess: "see",
+      replaces: null,
+      createdAt,
+      expiresAt: "2026-10-23T12:04:00.000Z",
+    });
+    const waiting = waitingOutsideAgentSignIns({
+      pending: [
+        { ...request("local-1"), createdAt: "2026-10-23T11:58:00.000Z" },
+        { ...request("local-2"), createdAt: "2026-10-23T11:59:30.000Z" },
+      ],
+      assistants: {
+        status: "ready",
+        address: "https://connect.threadlines.dev/mcp",
+        code: null,
+        signIns: [assistant("grok", "2026-10-23T11:59:00.000Z")],
+      },
+    });
+    expect(waiting.map((signIn) => [signIn.kind, signIn.requestId])).toEqual([
+      ["local", "local-1"],
+      ["assistant", "grok"],
+      ["local", "local-2"],
+    ]);
   });
 });
 

@@ -17,6 +17,8 @@ import {
   type LocalApi,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
+  type OutsideAgentAssistantSignIn,
+  type OutsideAgentAssistantsState,
   type OutsideAgentConnection,
   type OutsideAgentPendingRequest,
   type OutsideAgentsSnapshot,
@@ -466,6 +468,9 @@ const outsideAgentsHarness = vi.hoisted(() => {
     resumeRequests: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    assistantCode: vi.fn(),
+    assistantCodeCancel: vi.fn(),
+    createKey: vi.fn(),
   };
   return {
     client,
@@ -481,6 +486,9 @@ const outsideAgentsHarness = vi.hoisted(() => {
         client.resumeRequests,
         client.update,
         client.remove,
+        client.assistantCode,
+        client.assistantCodeCancel,
+        client.createKey,
       ]) {
         call.mockReset().mockResolvedValue(undefined);
       }
@@ -5200,6 +5208,7 @@ describe("Agents outside Threadlines", () => {
   const WEB = ProjectId.make("project-web");
   const API = ProjectId.make("project-api");
   const ADDRESS = "http://127.0.0.1:3773/mcp/connect";
+  const ASSISTANT_ADDRESS = "https://connect.threadlines.dev/mcp";
   let mounted: Awaited<ReturnType<typeof render>> | null = null;
 
   function pendingRequest(
@@ -5233,6 +5242,46 @@ describe("Agents outside Threadlines", () => {
       lastUsedAt: new Date(Date.now() - 2 * 60_000 - 5_000).toISOString(),
       ...overrides,
     };
+  }
+
+  /** The assistants door open, with nothing showing or waiting. */
+  function assistantsState(
+    parts: Partial<OutsideAgentAssistantsState> = {},
+  ): OutsideAgentAssistantsState {
+    return { status: "ready", address: ASSISTANT_ADDRESS, code: null, signIns: [], ...parts };
+  }
+
+  function assistantSignIn(
+    id: string,
+    overrides: Partial<OutsideAgentAssistantSignIn> = {},
+  ): OutsideAgentAssistantSignIn {
+    return {
+      requestId: OutsideAgentRequestId.make(id),
+      name: "Grok Bot",
+      identity: { host: "cursor.sh", verified: false, known: false },
+      place: "Austin, US",
+      requestedAccess: "start",
+      replaces: null,
+      createdAt: new Date(Date.now() - 5_000).toISOString(),
+      expiresAt: new Date(Date.now() + 295_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function assistantConnection(
+    id: string,
+    overrides: Partial<OutsideAgentConnection> = {},
+  ): OutsideAgentConnection {
+    return connection({
+      connectionId: OutsideAgentConnectionId.make(id),
+      name: "Grok Bot",
+      kind: "assistant",
+      identity: { host: "cursor.sh", verified: true, known: true },
+      access: "see",
+      projectIds: null,
+      lastUsedAt: null,
+      ...overrides,
+    });
   }
 
   function snapshot(parts: Partial<OutsideAgentsSnapshot> = {}): OutsideAgentsSnapshot {
@@ -5509,12 +5558,236 @@ describe("Agents outside Threadlines", () => {
         throw new Error(`Unhandled fetch GET ${String(input)}`);
       }),
     );
-    outsideAgentsHarness.emit(snapshot({ pending: [pendingRequest("request-1")] }));
+    outsideAgentsHarness.emit(
+      snapshot({
+        pending: [pendingRequest("request-1")],
+        assistants: assistantsState({ signIns: [assistantSignIn("request-grok")] }),
+      }),
+    );
     await mountConnectionsWithHost();
 
     await expect.element(page.getByText("Owner only")).toBeVisible();
     await expect.element(page.getByTestId("outside-agents-section")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("assistants-section")).not.toBeInTheDocument();
     await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
     expect(outsideAgentsHarness.listenerCount()).toBe(0);
+  });
+
+  it("gives assistants their own group: the address to paste, and each connection with how it signs in", async () => {
+    const claude = connection();
+    const grok = assistantConnection("connection-grok", {
+      lastUsedAt: new Date(Date.now() - 5 * 60_000 - 5_000).toISOString(),
+    });
+    const muse = assistantConnection("connection-muse", {
+      name: "Muse",
+      signIn: "key",
+      identity: null,
+    });
+    outsideAgentsHarness.emit(
+      snapshot({ connections: [grok, muse, claude], assistants: assistantsState() }),
+    );
+    await mountConnectionsWithHost();
+
+    const assistants = page.getByTestId("assistants-section");
+    await expect
+      .element(assistants.getByTestId("assistants-address"))
+      .toHaveTextContent(ASSISTANT_ADDRESS);
+    await expect
+      .element(assistants.getByText("Paste this into your assistant as a custom connector."))
+      .toBeVisible();
+    await expect
+      .element(assistants.getByRole("button", { name: "Copy the address for assistants" }))
+      .toBeVisible();
+    // Local agents stay in the Agents group; assistants list here, with how each signs in.
+    const agents = page.getByTestId("outside-agents-section");
+    await expect
+      .element(agents.getByTestId(`outside-agent-row-${claude.connectionId}`))
+      .toBeVisible();
+    await expect
+      .element(agents.getByTestId(`outside-agent-row-${grok.connectionId}`))
+      .not.toBeInTheDocument();
+    await expect
+      .element(assistants.getByTestId(`outside-agent-row-${claude.connectionId}`))
+      .not.toBeInTheDocument();
+    await expect
+      .element(assistants.getByTestId(`outside-agent-row-${grok.connectionId}`))
+      .toMatchTextContent("Signs in from cursor.sh · Sees threads · All projects · Used 5m ago");
+    await expect
+      .element(assistants.getByTestId(`outside-agent-row-${muse.connectionId}`))
+      .toMatchTextContent("Key · Sees threads · All projects · Not used yet");
+
+    // The door shut, or the relay out of reach: why, and nothing to press.
+    outsideAgentsHarness.emit(
+      snapshot({
+        connections: [grok],
+        assistants: assistantsState({ status: "off", address: null }),
+      }),
+    );
+    await expect
+      .element(assistants.getByText("Assistants are turned off on this computer's relay."))
+      .toBeVisible();
+    await expect.element(assistants.getByTestId("assistants-address")).not.toBeInTheDocument();
+    await expect.element(assistants.getByTestId("assistants-connect")).toBeDisabled();
+    await expect.element(assistants.getByTestId("assistants-create-key")).toBeDisabled();
+    outsideAgentsHarness.emit(
+      snapshot({ assistants: assistantsState({ status: "unreachable", address: null }) }),
+    );
+    await expect
+      .element(assistants.getByText("Can't reach the relay right now. Threadlines keeps trying."))
+      .toBeVisible();
+    await expect.element(assistants.getByTestId("assistants-connect")).toBeDisabled();
+  });
+
+  it("shows an assistant's sign-in code with its warning, cancels it, and offers a new one once it runs out", async () => {
+    outsideAgentsHarness.emit(snapshot({ assistants: assistantsState() }));
+    outsideAgentsHarness.client.assistantCode.mockImplementation(async () => ({
+      code: "K4D82PQX",
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    }));
+    await mountConnectionsWithHost();
+
+    const assistants = page.getByTestId("assistants-section");
+    await assistants.getByRole("button", { name: "Connect an assistant" }).click();
+    const row = assistants.getByTestId("assistant-code-row");
+    await expect.element(row.getByTestId("assistant-code")).toHaveTextContent("K4D8-2PQX");
+    await expect
+      .element(row)
+      .toMatchTextContent(
+        "Type this only into the Threadlines page your assistant just opened. Never give it to anyone.",
+      );
+    await expect
+      .element(row.getByTestId("assistant-code-countdown"))
+      .toMatchTextContent(/Expires in (10:00|9:5\d)/);
+    await row.getByRole("button", { name: "Cancel" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.assistantCodeCancel).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(assistants.getByTestId("assistant-code-row")).not.toBeInTheDocument();
+    await expect
+      .element(assistants.getByRole("button", { name: "Connect an assistant" }))
+      .toBeEnabled();
+
+    outsideAgentsHarness.emit(
+      snapshot({
+        assistants: assistantsState({
+          code: { code: "M7Q2R9TX", expiresAt: new Date(Date.now() - 1_000).toISOString() },
+        }),
+      }),
+    );
+    const expired = assistants.getByTestId("assistant-code-expired");
+    await expect.element(expired).toMatchTextContent("This code expired.");
+    await expired.getByRole("button", { name: "Show a new code" }).click();
+    await expect.element(assistants.getByTestId("assistant-code")).toHaveTextContent("K4D8-2PQX");
+    expect(outsideAgentsHarness.client.assistantCode).toHaveBeenCalledTimes(2);
+  });
+
+  it("turns the code into an assistant's sign-in, says who it is and where its page was opened, and allows it", async () => {
+    outsideAgentsHarness.emit(
+      snapshot({
+        assistants: assistantsState({
+          code: { code: "K4D82PQX", expiresAt: new Date(Date.now() + 9 * 60_000).toISOString() },
+        }),
+      }),
+    );
+    outsideAgentsHarness.client.approve.mockResolvedValue(assistantConnection("connection-grok"));
+    await mountConnectionsWithHost();
+    await expect.element(page.getByTestId("assistant-code")).toHaveTextContent("K4D8-2PQX");
+
+    // Its page typed the code: the server drops the code, and the sign-in
+    // waits ahead of a local agent's that came after it.
+    outsideAgentsHarness.emit(
+      snapshot({
+        pending: [
+          pendingRequest("request-local", {
+            createdAt: new Date(Date.now() - 1_000).toISOString(),
+          }),
+        ],
+        assistants: assistantsState({ signIns: [assistantSignIn("request-grok")] }),
+      }),
+    );
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByRole("heading", { name: "Grok Bot wants to use Threadlines" }))
+      .toBeVisible();
+    await expect
+      .element(dialog.getByTestId("outside-agent-identity"))
+      .toHaveTextContent("Name given by the assistant. Sign-in returns to cursor.sh.");
+    await expect
+      .element(dialog.getByTestId("outside-agent-unknown"))
+      .toHaveTextContent(
+        "Threadlines doesn't know this assistant. Only allow it if you added it yourself.",
+      );
+    await expect
+      .element(dialog.getByTestId("outside-agent-place"))
+      .toHaveTextContent("The sign-in page was opened near Austin, US.");
+    await expect.element(dialog.getByTestId("outside-agent-code")).not.toBeInTheDocument();
+    await expect.element(dialog.getByText("1 more waiting")).toBeVisible();
+    // The code was used, not run out.
+    await expect.element(page.getByTestId("assistant-code-row")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("assistant-code-expired")).not.toBeInTheDocument();
+
+    await dialog.getByTestId("outside-agent-access-start").click();
+    await dialog.getByTestId("outside-agent-allow").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.approve).toHaveBeenCalledWith({
+        requestId: "request-grok",
+        access: "start",
+        maxRuntimeMode: "approval-required",
+        projectIds: null,
+      });
+    });
+    await expect
+      .element(dialog.getByRole("heading", { name: "Claude Code wants to use Threadlines" }))
+      .toBeVisible();
+  });
+
+  it("creates a key, shows it once with the address, and lets it go after Done", async () => {
+    const KEY = "tlak1.host-1.connection-muse.tag.secret-value";
+    const muse = assistantConnection("connection-muse", {
+      name: "Muse",
+      signIn: "key",
+      identity: null,
+    });
+    outsideAgentsHarness.emit(snapshot({ assistants: assistantsState() }));
+    outsideAgentsHarness.client.createKey.mockResolvedValue({
+      connection: muse,
+      key: KEY,
+      address: ASSISTANT_ADDRESS,
+    });
+    await mountConnectionsWithHost();
+
+    await page.getByTestId("assistants-create-key").click();
+    const form = page.getByTestId("assistant-key-dialog");
+    await expect.element(form.getByTestId("assistant-key-create")).toBeDisabled();
+    await form.getByTestId("assistant-key-name").fill("  Muse ");
+    await form.getByTestId("assistant-key-create").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.createKey).toHaveBeenCalledWith({
+        name: "Muse",
+        access: "see",
+        maxRuntimeMode: "approval-required",
+        projectIds: null,
+      });
+    });
+
+    const made = page.getByTestId("assistant-key-made");
+    await expect.element(made.getByTestId("assistant-key-value")).toHaveTextContent(KEY);
+    await expect
+      .element(made.getByTestId("assistant-key-address"))
+      .toHaveTextContent(ASSISTANT_ADDRESS);
+    await expect
+      .element(made.getByText("You won't see this key again. Paste both into your assistant."))
+      .toBeVisible();
+    await made.getByRole("button", { name: "Done" }).click();
+    await expect.element(page.getByTestId("assistant-key-made")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(KEY);
+    await expect
+      .element(page.getByTestId(`outside-agent-row-${muse.connectionId}`))
+      .toMatchTextContent("Key · Sees threads · All projects · Not used yet");
+
+    // Opening it again starts a new key; the last one is gone.
+    await page.getByTestId("assistants-create-key").click();
+    await expect.element(page.getByTestId("assistant-key-name")).toHaveValue("");
+    expect(document.body.textContent).not.toContain(KEY);
   });
 });

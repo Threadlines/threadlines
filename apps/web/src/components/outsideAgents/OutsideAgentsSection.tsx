@@ -5,50 +5,29 @@
  * `threadlines` command the desktop app puts on PATH (ThreadlinesCommandRow),
  * and after Deny all how long new sign-ins stay turned away, with the way
  * back. Below it, in a group of their own like the devices above, the agents
- * signed in, each with what it may do and when it last called (Change,
- * Remove access): the command signs in under its own name, and its sign-in
- * must not read as a second copy of the row that installs it. Owner only:
- * ConnectionsSettings shows it to the computer's owner.
+ * signed in (OutsideAgentConnectionList): the command signs in under its own
+ * name, and its sign-in must not read as a second copy of the row that
+ * installs it. Assistants have their own group (AssistantsSection). Owner
+ * only: ConnectionsSettings shows it to the computer's owner.
  */
-import type { OutsideAgentConnection, OutsideAgentConnectionId } from "@threadlines/contracts";
 import { placeById } from "@threadlines/shared/appPlaces";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  describeOutsideAgentFailure,
-  removeOutsideAgent,
-  resumeOutsideAgentRequests,
   useOutsideAgentsSnapshot,
   useOutsideAgentsSync,
-  useThisComputerProjects,
 } from "../../environments/outsideAgents/outsideAgents";
 import {
-  describeOutsideAgentAccess,
-  describeOutsideAgentLastUse,
-  describeOutsideAgentProjects,
   type OutsideAgentClientId,
   outsideAgentConnectGuides,
-  outsideAgentQuietMinutesLeft,
 } from "../../environments/outsideAgents/outsideAgents.logic";
-import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
 import { CopyButton } from "../CopyButton";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsRow, SettingsSection } from "../settings/settingsLayout";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../ui/alert-dialog";
-import { Button } from "../ui/button";
-import { Dialog } from "../ui/dialog";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Skeleton } from "../ui/skeleton";
-import { failureNotice, toastManager } from "../ui/toast";
-import { OutsideAgentDialog } from "./outsideAgentDialog";
+import { OutsideAgentConnectionList } from "./OutsideAgentConnectionList";
+import { OutsideAgentsQuietRow } from "./OutsideAgentsQuietRow";
 import { ThreadlinesCommandRow } from "./ThreadlinesCommandRow";
 
 const ROW_CLASS = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
@@ -61,15 +40,6 @@ const ROW_CLASS = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
 export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArrival: boolean }) {
   useOutsideAgentsSync(true);
   const snapshot = useOutsideAgentsSnapshot();
-  const projects = useThisComputerProjects();
-  const projectNames = useMemo(
-    () => new Map(projects.map((project) => [project.id, project.name] as const)),
-    [projects],
-  );
-  const nowMs = useRelativeTimeTick(30_000);
-  const [changingId, setChangingId] = useState<OutsideAgentConnectionId | null>(null);
-  const [removing, setRemoving] = useState<OutsideAgentConnection | null>(null);
-  const [resuming, setResuming] = useState(false);
   const sectionRef = useRef<HTMLDivElement>(null);
 
   // Once as the page opens, and once more when the group has its rows.
@@ -78,43 +48,10 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
     if (revealStep !== null) sectionRef.current?.scrollIntoView({ block: "start" });
   }, [revealStep]);
 
-  // A connection removed or replaced while its Change is open closes it.
-  const changing =
-    changingId === null
-      ? null
-      : (snapshot?.connections.find((connection) => connection.connectionId === changingId) ??
-        null);
-  const quietMinutes = outsideAgentQuietMinutesLeft(snapshot?.quietUntil ?? null, nowMs);
-
-  const resume = async () => {
-    setResuming(true);
-    try {
-      await resumeOutsideAgentRequests();
-    } catch (error) {
-      toastManager.add(
-        failureNotice({
-          title: "Couldn't take agent sign-ins again",
-          reason: describeOutsideAgentFailure(error, "Try again."),
-        }),
-      );
-    } finally {
-      setResuming(false);
-    }
-  };
-
-  const remove = async (connection: OutsideAgentConnection) => {
-    setRemoving(null);
-    try {
-      await removeOutsideAgent(connection.connectionId);
-    } catch (error) {
-      toastManager.add(
-        failureNotice({
-          title: `Couldn't remove access for ${connection.name}`,
-          reason: describeOutsideAgentFailure(error, "Try again."),
-        }),
-      );
-    }
-  };
+  const localConnections = useMemo(
+    () => snapshot?.connections.filter((connection) => connection.kind === "local") ?? [],
+    [snapshot],
+  );
 
   return (
     <div
@@ -136,23 +73,11 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
           </div>
         ) : (
           <>
-            {quietMinutes !== null ? (
-              <SettingsRow
-                data-testid="outside-agents-quiet"
-                title={`Not taking new agent sign-ins (${quietMinutes} min left)`}
-                description="You denied them all. Agents already connected keep working."
-                control={
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={resuming}
-                    onClick={() => void resume()}
-                  >
-                    {resuming ? "Taking requests…" : "Take requests again"}
-                  </Button>
-                }
-              />
-            ) : null}
+            <OutsideAgentsQuietRow
+              quietUntil={snapshot.quietUntil}
+              who="agent"
+              testId="outside-agents-quiet"
+            />
             <SettingsRow
               place="connections.agentAddress"
               description={
@@ -171,96 +96,10 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
         )}
       </SettingsSection>
 
-      {snapshot !== null && snapshot.connections.length > 0 ? (
-        <SettingsSection place="connections.agentsUsingThis">
-          {snapshot.connections.map((connection) => (
-            <div
-              key={connection.connectionId}
-              className={ROW_CLASS}
-              data-testid={`outside-agent-row-${connection.connectionId}`}
-            >
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-                <div className="min-w-0 flex-1 space-y-0.5">
-                  <h3 className="truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-                    {connection.name}
-                  </h3>
-                  <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-                    {[
-                      describeOutsideAgentAccess(connection),
-                      describeOutsideAgentProjects(connection.projectIds, projectNames),
-                      describeOutsideAgentLastUse(connection.lastUsedAt, nowMs),
-                    ].join(" · ")}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => setChangingId(connection.connectionId)}
-                    data-testid={`outside-agent-change-${connection.connectionId}`}
-                  >
-                    Change
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="destructive-outline"
-                    onClick={() => setRemoving(connection)}
-                    data-testid={`outside-agent-remove-${connection.connectionId}`}
-                  >
-                    Remove access
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </SettingsSection>
-      ) : null}
-
-      <Dialog
-        open={changing !== null}
-        onOpenChange={(open) => {
-          if (!open) setChangingId(null);
-        }}
-      >
-        {changing !== null ? (
-          <Suspense fallback={null}>
-            <OutsideAgentDialog.Component
-              key={changing.connectionId}
-              subject={{ kind: "change", connection: changing }}
-              onClose={() => setChangingId(null)}
-            />
-          </Suspense>
-        ) : null}
-      </Dialog>
-
-      <AlertDialog
-        open={removing !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoving(null);
-        }}
-      >
-        <AlertDialogPopup className="max-w-md">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove access for {removing?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              It can&apos;t use Threadlines from its next call on, and has to sign in again to come
-              back. Threads it started keep its name.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (removing !== null) void remove(removing);
-              }}
-              data-testid="outside-agent-remove-confirm"
-            >
-              Remove access
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      <OutsideAgentConnectionList
+        connections={localConnections}
+        heading={{ place: "connections.agentsUsingThis" }}
+      />
     </div>
   );
 }

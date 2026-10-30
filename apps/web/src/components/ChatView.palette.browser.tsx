@@ -4,6 +4,7 @@ import {
   type OrchestrationReadModel,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
+  type OutsideAgentsSnapshot,
   ProviderInstanceId,
   type ThreadId,
   WS_METHODS,
@@ -99,10 +100,10 @@ describe("ChatView (full app): command palette and search", () => {
     }
   });
 
-  it("shows an agent's sign-in over the thread to this computer's owner, and opens its group from the palette", async () => {
+  it("shows an agent's sign-in over the thread to this computer's owner, and opens the Agents and Assistants groups from the palette", async () => {
     const requestId = OutsideAgentRequestId.make("request-claude");
     setPrimarySessionRole("owner");
-    setPrimaryOutsideAgentsSnapshot({
+    const outsideAgents: OutsideAgentsSnapshot = {
       address: "http://127.0.0.1:3773/mcp/connect",
       connections: [],
       pending: [
@@ -118,8 +119,14 @@ describe("ChatView (full app): command palette and search", () => {
         },
       ],
       quietUntil: null,
-      assistants: { status: "off", address: null, code: null, signIns: [] },
-    });
+      assistants: {
+        status: "ready",
+        address: "https://connect.threadlines.dev/mcp",
+        code: null,
+        signIns: [],
+      },
+    };
+    setPrimaryOutsideAgentsSnapshot(outsideAgents);
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -132,13 +139,18 @@ describe("ChatView (full app): command palette and search", () => {
           ? {
               connectionId: OutsideAgentConnectionId.make("connection-claude"),
               name: "Claude Code",
+              kind: "local",
+              signIn: "oauth",
+              identity: null,
               access: "see",
               maxRuntimeMode: "approval-required",
               projectIds: null,
               createdAt: new Date().toISOString(),
               lastUsedAt: null,
             }
-          : undefined,
+          : body._tag === WS_METHODS.outsideAgentsAssistantCode
+            ? { code: "K4D82PQX", expiresAt: new Date(Date.now() + 600_000).toISOString() }
+            : undefined,
     });
 
     try {
@@ -158,6 +170,8 @@ describe("ChatView (full app): command palette and search", () => {
         });
       });
       await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+      // What the server says from now on, should the stream open again.
+      setPrimaryOutsideAgentsSnapshot({ ...outsideAgents, pending: [] });
 
       await openCommandPaletteFromTrigger();
       await page
@@ -171,6 +185,22 @@ describe("ChatView (full app): command palette and search", () => {
       );
       expect(mounted.router.state.location.search).toEqual({ section: "agents" });
       await expect.element(page.getByTestId("outside-agents-section")).toBeInTheDocument();
+
+      // "Connect an assistant" opens the Assistants group and shows a code.
+      // Settings has no palette button of its own: open it as its shortcut does.
+      useCommandPaletteStore.getState().setOpen(true);
+      await page
+        .getByTestId("command-palette")
+        .getByText("Connect an assistant", { exact: true })
+        .click();
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.search).toEqual({ section: "assistants" });
+      });
+      const assistants = page.getByTestId("assistants-section");
+      await expect.element(assistants.getByTestId("assistant-code")).toHaveTextContent("K4D8-2PQX");
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.outsideAgentsAssistantCode),
+      ).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }

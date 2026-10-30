@@ -31,6 +31,7 @@ import {
   ArrowUpIcon,
   BotIcon,
   ChartColumnIcon,
+  CloudIcon,
   CircleArrowUpIcon,
   CornerLeftUpIcon,
   EraserIcon,
@@ -174,7 +175,10 @@ import { openWhatsNewDialog } from "./WhatsNewDialog";
 import { APP_VERSION } from "../branding";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useThreadMoveOffered } from "../environments/links/threadMoves";
-import { useOutsideAgentsSnapshot } from "../environments/outsideAgents/outsideAgents";
+import {
+  startAssistantCode,
+  useOutsideAgentsSnapshot,
+} from "../environments/outsideAgents/outsideAgents";
 import { threadMoveStatus } from "../threadMove";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -1806,6 +1810,30 @@ export function OpenCommandPaletteDialog() {
       icon: <PlugIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/settings/connections", search: { section: "agents" } });
+      },
+    });
+    actionItems.push({
+      kind: "action",
+      value: "action:connect-assistant",
+      searchTerms: [
+        "connect an assistant",
+        "assistant",
+        "always-on",
+        "grok bot",
+        "dots",
+        "muse",
+        "claude duet",
+        "connector",
+        "sign-in code",
+        "key",
+      ],
+      title: "Connect an assistant",
+      description: "Show a code for an always-on assistant to sign in with",
+      icon: <CloudIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        // The Assistants group shows the code, or why there isn't one.
+        void startAssistantCode();
+        await navigate({ to: "/settings/connections", search: { section: "assistants" } });
       },
     });
   }
