@@ -5482,7 +5482,7 @@ export function ExtensionsSettingsPanel() {
           <>
             <SettingsSection
               bare
-              title="Installed plugins"
+              place="plugins.installed"
               description="Plugin packages installed on this machine for Codex and Claude. They can bundle skills, commands, and connections."
               headerAction={
                 <Button
@@ -5517,7 +5517,7 @@ export function ExtensionsSettingsPanel() {
             {codexProviders.length > 0 ? (
               <SettingsSection
                 bare
-                title="Apps"
+                place="plugins.apps"
                 description="Apps connected to your ChatGPT account. They run on OpenAI's servers and only work with Codex."
               >
                 <div>
@@ -5545,7 +5545,7 @@ export function ExtensionsSettingsPanel() {
           </>
         ) : (
           <SettingsSection
-            title="Skills"
+            place="plugins.skills"
             description="Instruction files that teach an agent one kind of task. Stored as folders on this machine."
             headerAction={
               <div className="flex items-center gap-2">
@@ -5672,7 +5672,7 @@ export function ExtensionsSettingsPanel() {
         {tab === "plugins" ? (
           <>
             <SettingsSection
-              title="Connections"
+              place="plugins.connections"
               headerAction={
                 mcpAuthCheckProvider ? (
                   <Button
@@ -5719,7 +5719,7 @@ export function ExtensionsSettingsPanel() {
                 section for config Threadlines cannot edit would be noise. */}
             {allHookRows.length > 0 || hookMessages.length > 0 ? (
               <SettingsSection
-                title="Hooks"
+                place="plugins.hooks"
                 description="Commands Codex and Claude run on their own at set points, like before a tool runs. They live in each provider's config files."
               >
                 <div className="px-3.5 py-2.5">
@@ -5733,10 +5733,10 @@ export function ExtensionsSettingsPanel() {
               </SettingsSection>
             ) : null}
 
-            <SettingsSection title="Advanced">
+            <SettingsSection place="plugins.advanced">
               {marketplaceSummary ? (
                 <SettingsRow
-                  title="Marketplace sources"
+                  place="plugins.marketplaceSources"
                   description={
                     <span className="block truncate" title={marketplaceSummary}>
                       {marketplaceSummary}
@@ -5771,7 +5771,7 @@ export function ExtensionsSettingsPanel() {
                 </SettingsRow>
               ) : null}
               <SettingsRow
-                title="MCP context"
+                place="plugins.mcpContext"
                 description={providerThreadContextDescription}
                 control={
                   <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">

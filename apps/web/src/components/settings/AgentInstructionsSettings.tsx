@@ -456,9 +456,10 @@ export function AgentInstructionsSettingsPanel() {
           </Tooltip>
         }
       />
+      {/* An untitled group: its one row, the project picker, is the place. */}
       <SettingsSection>
         <SettingsRow
-          title="Project"
+          place="instructions.project"
           description={
             instructions?.generatedAt
               ? `Files loaded ${new Date(instructions.generatedAt).toLocaleString()}.`
@@ -522,7 +523,7 @@ export function AgentInstructionsSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection
-        title="Instruction files"
+        place="instructions.files"
         headerAction={
           instructionFiles.length > 0 ? (
             <span className="text-[11px] text-muted-foreground">

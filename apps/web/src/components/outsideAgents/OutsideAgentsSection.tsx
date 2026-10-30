@@ -11,6 +11,7 @@
  * ConnectionsSettings shows it to the computer's owner.
  */
 import type { OutsideAgentConnection, OutsideAgentConnectionId } from "@threadlines/contracts";
+import { placeById } from "@threadlines/shared/appPlaces";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -123,7 +124,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
       data-testid="outside-agents-section"
     >
       <SettingsSection
-        title="Agents"
+        place="connections.agents"
         description="Agents you run outside Threadlines, like Claude Code in a terminal, can start and follow threads here once you allow them."
       >
         {snapshot === null ? (
@@ -153,7 +154,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
               />
             ) : null}
             <SettingsRow
-              title="Address for agents"
+              place="connections.agentAddress"
               description={
                 <span
                   className="font-mono text-[11.5px] leading-[17px] break-all text-foreground select-text"
@@ -171,7 +172,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
       </SettingsSection>
 
       {snapshot !== null && snapshot.connections.length > 0 ? (
-        <SettingsSection title="Agents that can use this computer">
+        <SettingsSection place="connections.agentsUsingThis">
           {snapshot.connections.map((connection) => (
             <div
               key={connection.connectionId}
@@ -270,10 +271,14 @@ function ConnectGuideRow({ address }: { readonly address: string }) {
   const [clientId, setClientId] = useState<OutsideAgentClientId>("claude");
   const guide = guides.find((candidate) => candidate.id === clientId) ?? guides[0]!;
   return (
-    <div className={ROW_CLASS} data-testid="outside-agents-connect">
+    <div
+      className={ROW_CLASS}
+      data-testid="outside-agents-connect"
+      data-place="connections.connectAgent"
+    >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">
-          Connect an agent
+          {placeById("connections.connectAgent").title}
         </h3>
         <SegmentedControl
           size="sm"

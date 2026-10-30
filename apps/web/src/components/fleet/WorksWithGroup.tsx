@@ -5,6 +5,7 @@ import {
   type RuntimeMode,
 } from "@threadlines/contracts";
 import { TriangleAlertIcon } from "lucide-react";
+import { placeById } from "@threadlines/shared/appPlaces";
 import { type ReactNode, useState } from "react";
 
 import {
@@ -398,10 +399,14 @@ export function WorksWithGroup({
   readonly children?: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-2" data-testid="fleet-works-with">
+    <section
+      className="flex flex-col gap-2"
+      data-testid="fleet-works-with"
+      data-place="fleet.worksWith"
+    >
       <div className="space-y-0.5 px-1">
         <h2 className="text-[15px] leading-5 font-semibold text-foreground">
-          Works with other computers
+          {placeById("fleet.worksWith").title}
         </h2>
         <p className="text-[12.5px] leading-[18px] text-muted-foreground">
           Whether agents on one computer may start threads on another.

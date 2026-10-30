@@ -2,6 +2,7 @@ import { ChevronDownIcon, GitPullRequestIcon, RefreshCwIcon } from "lucide-react
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
+import type { SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import type {
   EnvironmentId,
   SourceControlProviderKind,
@@ -417,10 +418,9 @@ function SourceControlPanelSection() {
   const { updateSettings } = useUpdateSettings();
 
   return (
-    <SettingsSection title="Panel">
+    <SettingsSection place="sourceControl.panel">
       <SettingsRow
-        title="Open panel by default"
-        description="Show the source control panel when you enter a thread. Narrow windows always start with it closed, since the panel covers the conversation there."
+        place="sourceControl.openPanelByDefault"
         resetAction={
           sourceControlPanelDefaultOpen !==
           DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen ? (
@@ -497,9 +497,9 @@ function TextGenerationSection() {
   const instanceEntries = textGenerationInstanceEntries(serverProviders);
 
   return (
-    <SettingsSection title="Text generation">
+    <SettingsSection place="sourceControl.textGeneration">
       <SettingsRow
-        title="Source control writing style"
+        place="sourceControl.writingStyle"
         description={selectedStyleOption?.description ?? ""}
         resetAction={
           isStyleDirty ? (
@@ -557,8 +557,7 @@ function TextGenerationSection() {
       </SettingsRow>
 
       <SettingsRow
-        title="Follow PR templates"
-        description="Structures PR descriptions using the repository's pull request template when one is available."
+        place="sourceControl.followPrTemplates"
         resetAction={
           writingStyle.followPrTemplates !== defaultWritingStyle.followPrTemplates ? (
             <SettingResetButton
@@ -591,8 +590,7 @@ function TextGenerationSection() {
       />
 
       <SettingsRow
-        title="Source control writer model"
-        description="Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the writing model from Settings › Threads."
+        place="sourceControl.writerModel"
         control={
           <>
             {writerSelection ? (
@@ -628,14 +626,14 @@ function TextGenerationSection() {
 }
 
 function SourceControlSectionSkeleton({
-  title,
+  place,
   headerAction,
 }: {
-  readonly title: string;
+  readonly place: SettingsPlaceId;
   readonly headerAction?: ReactNode;
 }) {
   return (
-    <SettingsSection title={title} headerAction={headerAction}>
+    <SettingsSection place={place} headerAction={headerAction}>
       {SOURCE_CONTROL_SKELETON_ROWS.map((row) => (
         <div key={row} className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3")}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -745,13 +743,16 @@ export function SourceControlSettingsPanel() {
       <SourceControlPanelSection />
       {isInitialScanPending ? (
         <>
-          <SourceControlSectionSkeleton title="Version control" headerAction={scanButton} />
-          <SourceControlSectionSkeleton title="Source control providers" />
+          <SourceControlSectionSkeleton
+            place="sourceControl.versionControl"
+            headerAction={scanButton}
+          />
+          <SourceControlSectionSkeleton place="sourceControl.providers" />
         </>
       ) : hasDiscoveryItems ? (
         <>
           {result.versionControlSystems.length > 0 ? (
-            <SettingsSection title="Version control" headerAction={scanButton}>
+            <SettingsSection place="sourceControl.versionControl" headerAction={scanButton}>
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow
                   key={`vcs:${item.kind}`}
@@ -766,7 +767,7 @@ export function SourceControlSettingsPanel() {
 
           {result.sourceControlProviders.length > 0 ? (
             <SettingsSection
-              title="Source control providers"
+              place="sourceControl.providers"
               headerAction={result.versionControlSystems.length === 0 ? scanButton : null}
             >
               {result.sourceControlProviders.map((item) => (

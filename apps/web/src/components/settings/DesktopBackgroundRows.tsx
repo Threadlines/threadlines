@@ -48,7 +48,7 @@ export function DesktopBackgroundRows() {
   return (
     <>
       <SettingsRow
-        title="Keep this computer awake for scheduled tasks"
+        place="general.keepAwakeForScheduledTasks"
         description="Stops it sleeping while it has an active scheduled task. The screen still turns off, and closing a laptop's lid still sleeps it."
         resetAction={
           options.keepAwakeForScheduledTasks ? (
@@ -69,7 +69,7 @@ export function DesktopBackgroundRows() {
       />
       {options.runInBackgroundSupported ? (
         <SettingsRow
-          title="Keep running in the background when the window closes"
+          place="general.runInBackground"
           description="Closing the window leaves Threadlines in the tray, so scheduled tasks and linked computers keep working. Quit from the tray."
           resetAction={
             options.runInBackground ? (

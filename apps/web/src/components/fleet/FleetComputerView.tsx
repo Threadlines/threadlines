@@ -1,6 +1,7 @@
 import type { EnvironmentId, InboundComputerLink } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { PencilIcon } from "lucide-react";
+import { placeById } from "@threadlines/shared/appPlaces";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
@@ -104,9 +105,9 @@ function RemoveFromAppSection({
   };
   if (pairing) return null;
   return (
-    <SettingsSection title="This app">
+    <SettingsSection place="fleet.thisApp">
       <SettingsRow
-        title="Remove from this app"
+        place="fleet.removeFromApp"
         description={`This app forgets its connection to ${entry.displayLabel}. You can connect again with a new code.`}
         control={
           <Button
@@ -476,7 +477,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           {entry.kind === "saved" && entry.environmentId !== null ? (
             <ComputerConnectionGroup environmentId={entry.environmentId} />
           ) : entry.kind === "linked" ? (
-            <SettingsSection title="Connection">
+            <SettingsSection place="fleet.connection">
               <SettingsRow
                 title="Not connected to this app"
                 description={`This app doesn't connect to ${entry.displayLabel}. ${
@@ -492,7 +493,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
               />
             </SettingsSection>
           ) : isFleetDeviceEntry(entry) && holder !== null ? (
-            <SettingsSection title="Connection">
+            <SettingsSection place="fleet.connection">
               <SettingsRow
                 title={FLEET_DEVICE_ENTRY_STATUS[entry.kind]}
                 description={
@@ -506,9 +507,9 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
 
           {isFleetDeviceEntry(entry) ? (
             holder !== null && waitingInbound !== null ? (
-              <section className="flex flex-col gap-2">
+              <section className="flex flex-col gap-2" data-place="fleet.worksWith">
                 <h2 className="px-1 text-[15px] leading-5 font-semibold text-foreground">
-                  Works with other computers
+                  {placeById("fleet.worksWith").title}
                 </h2>
                 <WaitingLinkGroup entry={entry} holder={holder} inbound={waitingInbound} />
               </section>
@@ -540,7 +541,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           ) : null}
 
           {entry.kind === "this" ? (
-            <SettingsSection title="Devices">
+            <SettingsSection place="fleet.devices">
               <SettingsRow
                 title={
                   isOwner
