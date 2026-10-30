@@ -4,13 +4,16 @@ import {
   EventId,
   MessageId,
   type OrchestrationCommand,
+  type OrchestrationContinueAtReset,
   type OrchestrationEvent,
+  type OrchestrationMessage,
   type OrchestrationReadModel,
   type OrchestrationSession,
+  type OrchestrationSessionUsageLimit,
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
-  type TurnId,
+  TurnId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
 import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
@@ -37,6 +40,7 @@ import {
   commandRunIdOfOutputMessage,
 } from "@threadlines/shared/commandRuns";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
+import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
 import { isAttachedChild } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
@@ -407,13 +411,25 @@ function refuseSkippedSetup(
  * `ready`). Anything else carries both, so a closed notice stays closed while
  * the session stops, restarts or starts the next attempt. The writer's
  * `lastErrorDismissedAt` is ignored: only `thread.error.dismiss` closes.
+ *
+ * The failure's usage limit (`usageLimit`, named by the writer that records
+ * it) is carried the same way. The wait to continue after it goes as soon as
+ * a turn starts; only the decider arms it (`withArmedContinueAtReset`,
+ * `thread.continue-at-reset.*`), so a writer's copy is ignored too.
  */
 function withLastErrorState(
   next: OrchestrationSession,
   prior: OrchestrationSession | null | undefined,
   at: string,
+  usageLimit?: OrchestrationSessionUsageLimit,
 ): OrchestrationSession {
-  const { lastErrorAt: sentAt, lastErrorDismissedAt: _sentDismissedAt, ...session } = next;
+  const {
+    lastErrorAt: sentAt,
+    lastErrorDismissedAt: _sentDismissedAt,
+    lastErrorUsageLimit: _sentUsageLimit,
+    continueAtReset: _sentContinueAtReset,
+    ...session
+  } = next;
   if (next.lastError === null) {
     return session;
   }
@@ -425,15 +441,156 @@ function withLastErrorState(
     (next.status === "error" && prior.status !== "error") ||
     restamped
   ) {
-    return { ...session, lastErrorAt: restamped ? sentAt : at };
+    return {
+      ...session,
+      lastErrorAt: restamped ? sentAt : at,
+      ...(usageLimit !== undefined ? { lastErrorUsageLimit: usageLimit } : {}),
+    };
   }
+  const carriedUsageLimit = usageLimit ?? prior.lastErrorUsageLimit ?? null;
+  const carriedContinue =
+    next.status === "starting" || next.status === "running"
+      ? null
+      : (prior.continueAtReset ?? null);
   return {
     ...session,
     ...(priorAt !== null ? { lastErrorAt: priorAt } : {}),
     ...(prior.lastErrorDismissedAt != null
       ? { lastErrorDismissedAt: prior.lastErrorDismissedAt }
       : {}),
+    ...(carriedUsageLimit !== null ? { lastErrorUsageLimit: carriedUsageLimit } : {}),
+    ...(carriedContinue !== null ? { continueAtReset: carriedContinue } : {}),
   };
+}
+
+/** The wait for a limit that resets at `resetsAt`, never due before `notBefore`. */
+function continueAtResetFor(resetsAt: string, notBefore?: string): OrchestrationContinueAtReset {
+  const dueMs = continueAtResetTimeMs(Date.parse(resetsAt));
+  const floorMs = notBefore === undefined ? dueMs : Math.max(dueMs, Date.parse(notBefore));
+  return { resetsAt, at: new Date(floorMs).toISOString() };
+}
+
+/** A writer's usage limit, with a reset time that is already past dropped. */
+function usageLimitAsOf(
+  usageLimit: OrchestrationSessionUsageLimit,
+  at: string,
+): OrchestrationSessionUsageLimit {
+  return usageLimit.resetsAt !== null && Date.parse(usageLimit.resetsAt) > Date.parse(at)
+    ? usageLimit
+    : { ...usageLimit, resetsAt: null };
+}
+
+/**
+ * A turn start the user sent from the composer, as opposed to one Threadlines
+ * or another agent sent, or one a queued message is sending now.
+ */
+function isUserTurnStart(
+  command: Extract<OrchestrationCommand, { readonly type: "thread.turn.start" }>,
+  thread: OrchestrationThread,
+): boolean {
+  return (
+    command.trigger === undefined &&
+    command.fromThread === undefined &&
+    command.fromOutside === undefined &&
+    command.bootstrap === undefined &&
+    command.sourceProposedPlan === undefined &&
+    !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === command.message.messageId)
+  );
+}
+
+/**
+ * The "Continue where you left off." message still on its way to `agentId`:
+ * the session's latest start, while its turn starts or has just begun. Null
+ * when there is none, or the message is addressed to another agent.
+ */
+function continueStillStarting(
+  thread: OrchestrationThread,
+  agentId: ThreadParticipantId | null,
+): MessageId | null {
+  const session = thread.session;
+  if (
+    session === null ||
+    (session.status !== "starting" && session.status !== "running") ||
+    sessionSlotParticipantId(session) !== agentId
+  ) {
+    return null;
+  }
+  const started = turnStartingMessage(thread, session);
+  return started?.trigger === "usageLimitReset" && started.notSent !== true ? started.id : null;
+}
+
+/** The wait for the failure `lastErrorAt` names, while the thread's agent is idle. */
+function continueAtResetWaiting(
+  thread: OrchestrationThread,
+  lastErrorAt: string,
+): OrchestrationContinueAtReset | null {
+  const session = thread.session;
+  if (
+    session === null ||
+    (session.lastErrorAt ?? null) !== lastErrorAt ||
+    session.status === "starting" ||
+    session.status === "running"
+  ) {
+    return null;
+  }
+  return session.continueAtReset ?? null;
+}
+
+/**
+ * The user message the session's latest turn started with: the newest one
+ * addressed to the agent holding the slot. A request that agent sent another
+ * agent meanwhile is addressed to that one.
+ */
+function turnStartingMessage(
+  thread: OrchestrationThread,
+  session: OrchestrationSession,
+): OrchestrationMessage | undefined {
+  const slotHolder = sessionSlotParticipantId(session);
+  return thread.messages.findLast(
+    (message) =>
+      message.role === "user" &&
+      !isTurnAside(message) &&
+      (message.participantId ?? null) === slotHolder,
+  );
+}
+
+/**
+ * Arms "Continue at reset" when a usage limit with a known reset first lands
+ * on a failure: always when the stopped turn was itself a continue (the user
+ * asked this thread to keep going), and with the setting on when the user
+ * started it (typed it, or moved it to another account). A turn a scheduled
+ * run, another thread or a room agent started waits for the user: continuing
+ * it would not finish the run or answer the request.
+ */
+function withArmedContinueAtReset(
+  thread: OrchestrationThread,
+  session: OrchestrationSession,
+  prior: OrchestrationSession | null,
+  settingOn: boolean,
+): OrchestrationSession {
+  const resetsAt = session.lastErrorUsageLimit?.resetsAt ?? null;
+  if (
+    resetsAt === null ||
+    session.continueAtReset != null ||
+    session.status === "starting" ||
+    session.status === "running"
+  ) {
+    return session;
+  }
+  // Decided once per failure: a limit this failure already had was decided then.
+  if (
+    prior != null &&
+    prior.lastErrorUsageLimit != null &&
+    (prior.lastErrorAt ?? null) === (session.lastErrorAt ?? null)
+  ) {
+    return session;
+  }
+  const startedBy = turnStartingMessage(thread, session);
+  if (startedBy === undefined) return session;
+  const continuing = startedBy.trigger === "usageLimitReset";
+  const fromUser = startedBy.composer !== undefined || startedBy.trigger === "accountSwitch";
+  if (!continuing && !(settingOn && fromUser)) return session;
+  return { ...session, continueAtReset: continueAtResetFor(resetsAt) };
 }
 
 /**
@@ -459,6 +616,7 @@ function hasThreadStarted(thread: OrchestrationThread): boolean {
 function decideFollowUpSubmit(
   targetThread: OrchestrationThread,
   command: Extract<OrchestrationCommand, { readonly type: "thread.follow-up.submit" }>,
+  options?: { readonly overtakes?: MessageId },
 ): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   return Effect.gen(function* () {
     // In a room only the agent at work can be steered; a message for any
@@ -519,6 +677,7 @@ function decideFollowUpSubmit(
               ...(command.scheduledTaskId !== undefined
                 ? { scheduledTaskId: command.scheduledTaskId }
                 : {}),
+              ...(options?.overtakes !== undefined ? { overtakes: options.overtakes } : {}),
               runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
               interactionMode: command.interactionMode ?? targetThread.interactionMode,
               createdAt: command.createdAt,
@@ -1164,6 +1323,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         })),
         ...childDeletionEvents(readModel, thread, baseFor, occurredAt, true, "archived"),
+        // An archived thread doesn't continue by itself, now or after it comes back.
+        ...[thread, ...plan.archive].flatMap((archived): PlannedOrchestrationEvent[] => {
+          const waiting = archived.session?.continueAtReset ?? null;
+          const lastErrorAt = archived.session?.lastErrorAt ?? null;
+          return waiting === null || lastErrorAt === null
+            ? []
+            : [
+                {
+                  ...baseFor(archived.id),
+                  type: "thread.continue-at-reset-set",
+                  payload: {
+                    threadId: archived.id,
+                    lastErrorAt,
+                    continueAtReset: null,
+                    updatedAt: occurredAt,
+                  },
+                },
+              ];
+        }),
       ];
       return familyEvents.length === 0 ? archivedEvent : [...familyEvents, archivedEvent];
     }
@@ -2456,6 +2634,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
       }
+      // The user writing while "Continue where you left off." is still on its
+      // way to the agent: theirs wins, as a message for the agent at work.
+      const overtaken = isUserTurnStart(command, targetThread)
+        ? continueStillStarting(targetThread, command.participantId ?? null)
+        : null;
+      if (overtaken !== null && targetThread.session !== null) {
+        return yield* decideFollowUpSubmit(
+          targetThread,
+          {
+            type: "thread.follow-up.submit",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            // Its turn running: steered into it. Still starting: nothing to
+            // steer yet, so it waits in the queue, marked to overtake it.
+            turnId: targetThread.session.activeTurnId ?? TurnId.make(`starting:${overtaken}`),
+            message: command.message,
+            delivery: "steer",
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
+            ...(command.participantId !== undefined
+              ? { participantId: command.participantId }
+              : {}),
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            ...(command.composer !== undefined ? { composer: command.composer } : {}),
+            ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+            createdAt: command.createdAt,
+          },
+          { overtakes: overtaken },
+        );
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -2567,6 +2777,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+          ...(command.trigger !== undefined ? { trigger: command.trigger } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
           // must not restamp it.
@@ -2940,6 +3151,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Message '${command.messageId}' is not queued on thread '${command.threadId}'.`,
         });
       }
+      if (
+        command.ifChainEpoch !== undefined &&
+        targetThread.agentRequests.chainEpoch !== command.ifChainEpoch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Stopped before it was sent.",
+        });
+      }
       const sendBase = () =>
         withEventBase({
           aggregateKind: "thread",
@@ -2964,6 +3184,40 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const fromAgent = queued.fromAgent;
       const fromThread = queued.fromThread;
       const agentQueued = isAgentOrigin(queued);
+      // The user's message that overtook "Continue where you left off." after
+      // that reached the agent: steered into the turn it started, like a
+      // message typed while it ran. A steer that misses the turn queues it again.
+      if (command.steerIntoTurnId !== undefined) {
+        if (agentQueued || queued.overtakes === undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only the user's message that overtook a continue is steered from the queue.",
+          });
+        }
+        return [
+          unqueuedEvent,
+          {
+            ...sendBase(),
+            type: "thread.follow-up-submitted",
+            payload: {
+              threadId: command.threadId,
+              turnId: command.steerIntoTurnId,
+              messageId: queued.messageId,
+              role: "user",
+              text: queued.text,
+              attachments: queued.attachments,
+              ...(queued.skills !== undefined ? { skills: queued.skills } : {}),
+              ...(queued.participantId !== undefined && queued.participantId !== null
+                ? { participantId: queued.participantId }
+                : {}),
+              ...(queued.composer !== undefined ? { composer: queued.composer } : {}),
+              ...(queued.sentFrom !== undefined ? { sentFrom: queued.sentFrom } : {}),
+              overtakes: queued.overtakes,
+              createdAt: queued.createdAt,
+            },
+          },
+        ];
+      }
       // A reply or a report the server already steered into the running turn
       // of the agent it was for (it checked first what a send checks): it is
       // part of that turn now, recorded there like a steer, with who wrote it
@@ -3554,7 +3808,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: withLastErrorState(command.session, thread.session, command.createdAt),
+          session: withArmedContinueAtReset(
+            thread,
+            withLastErrorState(
+              command.session,
+              thread.session,
+              command.createdAt,
+              command.usageLimit !== undefined
+                ? usageLimitAsOf(command.usageLimit, command.createdAt)
+                : undefined,
+            ),
+            thread.session,
+            command.continueAfterUsageLimits === true,
+          ),
         },
       } as const;
 
@@ -3634,6 +3900,192 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           dismissedAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.continue-at-reset.set": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const session = thread.session;
+      if (session === null || (session.lastErrorAt ?? null) !== command.lastErrorAt) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "That usage limit is no longer the thread's latest error.",
+        });
+      }
+      let continueAtReset: OrchestrationContinueAtReset | null = null;
+      if (command.enabled) {
+        const resetsAt = session.lastErrorUsageLimit?.resetsAt ?? null;
+        if (resetsAt === null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "This usage limit didn't say when it resets.",
+          });
+        }
+        if (session.status === "starting" || session.status === "running") {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "The thread is already working again.",
+          });
+        }
+        // Turned on after the reset passed: continue at the next check.
+        continueAtReset =
+          session.continueAtReset ?? continueAtResetFor(resetsAt, command.createdAt);
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.continue-at-reset-set",
+        payload: {
+          threadId: command.threadId,
+          lastErrorAt: command.lastErrorAt,
+          continueAtReset,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.continue-at-reset.postpone": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const waiting = continueAtResetWaiting(thread, command.lastErrorAt);
+      if (waiting === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread is no longer waiting to continue.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.continue-at-reset-set",
+        payload: {
+          threadId: command.threadId,
+          lastErrorAt: command.lastErrorAt,
+          continueAtReset: { resetsAt: command.resetsAt ?? waiting.resetsAt, at: command.at },
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.continue-at-reset.skip": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = thread.messages.find((entry) => entry.id === command.messageId);
+      if (message?.trigger !== "usageLimitReset" || message.notSent === true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a waiting continue message is left unsent.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.continue-at-reset-skipped",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          skippedAt: command.createdAt,
+        },
+      };
+    }
+
+    // One decision checks the wait and starts the turn, so a message the user
+    // sent, a Retry, or the switch turned off meanwhile always wins.
+    case "thread.continue-at-reset.fire": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const waiting = continueAtResetWaiting(thread, command.lastErrorAt);
+      const session = thread.session;
+      if (
+        waiting === null ||
+        session === null ||
+        Date.parse(waiting.at) > Date.parse(command.createdAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread is no longer waiting to continue.",
+        });
+      }
+      const participantId = sessionSlotParticipantId(session);
+      const cleared: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.continue-at-reset-set",
+        payload: {
+          threadId: command.threadId,
+          lastErrorAt: command.lastErrorAt,
+          continueAtReset: null,
+          updatedAt: command.createdAt,
+        },
+      };
+      // Nothing to continue: the wait just ends.
+      if (
+        thread.archivedAt !== null ||
+        (participantId !== null &&
+          !activeParticipants(thread).some((entry) => entry.id === participantId))
+      ) {
+        return cleared;
+      }
+      // A Codex goal the limit paused picks up by itself once it is active; in
+      // a room it belongs to the agent holding the slot.
+      const continueCommand: OrchestrationCommand =
+        thread.goal?.status === "usageLimited"
+          ? {
+              type: "thread.goal.set",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              status: "active",
+              createdAt: command.createdAt,
+            }
+          : {
+              type: "thread.turn.start",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              message: {
+                messageId: command.messageId,
+                role: "user",
+                text: CONTINUE_AT_RESET_MESSAGE,
+                attachments: [],
+              },
+              ...(participantId !== null ? { participantId } : {}),
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              trigger: "usageLimitReset",
+              createdAt: command.createdAt,
+            };
+      const continued = yield* decideCommandSequence({
+        commands: [continueCommand],
+        readModel,
+      });
+      return [cleared, ...continued];
     }
 
     case "thread.realtime.state.set": {

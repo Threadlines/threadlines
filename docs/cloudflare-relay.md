@@ -169,9 +169,11 @@ HTTPS, with OAuth sign-in (docs/design/assistants.md). The relay routes,
 refuses and answers for an offline computer; the computer approves every
 connection and mints and checks every credential.
 
-The door answers only on its own origin, `ASSISTANTS_ORIGIN` (for example
-`https://connect.threadlines.dev`, or the worker's own `workers.dev` origin on
-a staging deploy). A request there on one of these paths goes to
+The door answers only on its own origin, `ASSISTANTS_ORIGIN`. Production uses
+the worker's own, `https://threadlines-relay.threadlines.workers.dev` (Oct 30:
+threadlines.dev's DNS is on Vercel, so a threadlines.dev name can't route
+here); a staging deploy passes its own `workers.dev` origin with `--var`.
+Credentials are bound to it, so changing it disconnects every assistant. A request there on one of these paths goes to
 `src/v2/assistants/route.ts` before v1 and v2 routing; anything else falls
 through as usual.
 

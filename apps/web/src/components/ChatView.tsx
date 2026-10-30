@@ -35,6 +35,8 @@ import {
   RuntimeTaskId,
 } from "@threadlines/contracts";
 import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
+import { providerNotReady } from "@threadlines/shared/providerAuth";
+import { CONTINUE_AT_RESET_MESSAGE, readProviderUsageBlock } from "@threadlines/shared/usageLimits";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -320,7 +322,11 @@ import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
 import { useNoAgentReady } from "./setup/firstRunGateState";
 import { useThreadProviderSignIn } from "./chat/useThreadProviderSignIn";
-import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
+import {
+  buildThreadErrorNotice,
+  type UsageLimitAccountSwitch,
+  type UsageLimitNoticeState,
+} from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import { useThreadMoveNotice } from "./chat/threadMoveNotice";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
@@ -2893,12 +2899,11 @@ export default function ChatView(props: ChatViewProps) {
     canResetActiveProviderUsage,
     requestThreadErrorRateLimitResetCredit,
   ]);
+  const threadErrorIsUsageLimit =
+    activeThread?.session?.lastErrorUsageLimit != null ||
+    isProviderUsageLimitErrorMessage(activeThread?.error);
   const threadErrorUsageResetAction = useMemo(() => {
-    if (
-      !canResetActiveProviderUsage ||
-      !activeProviderResetCredits ||
-      !isProviderUsageLimitErrorMessage(activeThread?.error)
-    ) {
+    if (!canResetActiveProviderUsage || !activeProviderResetCredits || !threadErrorIsUsageLimit) {
       return null;
     }
     return {
@@ -2908,17 +2913,17 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [
     activeProviderResetCredits,
-    activeThread?.error,
+    threadErrorIsUsageLimit,
     canResetActiveProviderUsage,
     isConsumingThreadErrorRateLimitResetCredit,
     requestActiveProviderUsageReset,
   ]);
   const threadErrorUsageResetLink = useMemo(
     () =>
-      isProviderUsageLimitErrorMessage(activeThread?.error)
+      threadErrorIsUsageLimit
         ? (providerExternalResetsLink(activeProviderStatus?.accountUsage) ?? null)
         : null,
-    [activeProviderStatus?.accountUsage, activeThread?.error],
+    [activeProviderStatus?.accountUsage, threadErrorIsUsageLimit],
   );
   const activeProviderSupportsManualContextCompaction = providerSupportsManualContextCompaction(
     activeProviderStatus,
@@ -6839,6 +6844,169 @@ export default function ChatView(props: ChatViewProps) {
     isServerThread,
     setThreadError,
   ]);
+  // A usage limit stopped the thread's agent: the switch that continues the
+  // thread once the limit resets, and the user's other accounts of the same
+  // agent that can pick the conversation up as it is.
+  const activeSessionUsageLimit = activeThread?.session?.lastErrorUsageLimit ?? null;
+  const activeSessionContinueAt = activeThread?.session?.continueAtReset?.at ?? null;
+  const [continueAtResetSavingThreadId, setContinueAtResetSavingThreadId] =
+    useState<ThreadId | null>(null);
+  const onContinueAtResetChange = useCallback(
+    async (enabled: boolean) => {
+      if (!activeThreadIdForError || !activeSessionLastErrorAt) return;
+      const api = readEnvironmentApi(environmentId);
+      if (!api) {
+        addComputerNotConnectedNotice({
+          environmentId,
+          failure: "Couldn't change Continue at reset",
+        });
+        return;
+      }
+      const threadId = activeThreadIdForError;
+      setContinueAtResetSavingThreadId(threadId);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.continue-at-reset.set",
+          commandId: newCommandId(),
+          threadId,
+          lastErrorAt: activeSessionLastErrorAt,
+          enabled,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        toastManager.add(
+          failureNotice({
+            title: enabled
+              ? "Couldn't turn on Continue at reset"
+              : "Couldn't turn off Continue at reset",
+            error: err,
+          }),
+        );
+      } finally {
+        setContinueAtResetSavingThreadId((current) => (current === threadId ? null : current));
+      }
+    },
+    [activeSessionLastErrorAt, activeThreadIdForError, environmentId],
+  );
+  const threadUsageLimitNotice = useMemo<UsageLimitNoticeState | null>(
+    () =>
+      activeSessionUsageLimit === null || activeSessionLastErrorAt === null
+        ? null
+        : {
+            window: activeSessionUsageLimit.window,
+            resetsAt: activeSessionUsageLimit.resetsAt,
+            continueAt: activeSessionContinueAt,
+            canContinue: activeSessionUsageLimit.resetsAt !== null,
+            isSaving:
+              continueAtResetSavingThreadId !== null &&
+              continueAtResetSavingThreadId === activeThreadIdForError,
+            onContinueChange: (enabled) => void onContinueAtResetChange(enabled),
+          },
+    [
+      activeSessionContinueAt,
+      activeSessionLastErrorAt,
+      activeSessionUsageLimit,
+      activeThreadIdForError,
+      continueAtResetSavingThreadId,
+      onContinueAtResetChange,
+    ],
+  );
+  // Only accounts that keep this conversation's history: they continue it as
+  // it is. One with its own history is a recap handoff, picked from the model
+  // picker with its confirmation. A room agent stays on its own account.
+  const usageLimitAccounts = useMemo(() => {
+    if (!activeThread || activeSessionUsageLimit === null) return [];
+    if (activeThread.session?.participantId) return [];
+    const boundInstanceId =
+      ownAgentSession(activeThread)?.providerInstanceId ?? activeThread.modelSelection.instanceId;
+    const bound = providerStatuses.find((snapshot) => snapshot.instanceId === boundInstanceId);
+    const groupKey = bound?.continuation?.groupKey ?? null;
+    if (bound === undefined || groupKey === null) return [];
+    return providerStatuses.flatMap((candidate) => {
+      if (
+        candidate.instanceId === boundInstanceId ||
+        candidate.driver !== bound.driver ||
+        candidate.continuation?.groupKey !== groupKey ||
+        providerNotReady(candidate) !== null ||
+        // Out of room as of its last reading; a newer one shows it again.
+        readProviderUsageBlock(candidate, Date.parse(candidate.accountUsage?.checkedAt ?? "") || 0)
+          .state === "blocked"
+      ) {
+        return [];
+      }
+      const label =
+        providerInstanceEntries.find((entry) => entry.instanceId === candidate.instanceId)
+          ?.displayName ??
+        candidate.displayName ??
+        formatProviderDriverKindLabel(candidate.driver);
+      return [{ instanceId: String(candidate.instanceId), label }];
+    });
+  }, [activeSessionUsageLimit, activeThread, providerInstanceEntries, providerStatuses]);
+  const [usageLimitSwitchingThreadId, setUsageLimitSwitchingThreadId] = useState<ThreadId | null>(
+    null,
+  );
+  const onUsageLimitAccountSwitch = useCallback(
+    async (instanceId: string) => {
+      if (!activeThread) return;
+      const api = readEnvironmentApi(environmentId);
+      if (!api) {
+        addComputerNotConnectedNotice({ environmentId, failure: "Couldn't switch accounts" });
+        return;
+      }
+      const threadId = activeThread.id;
+      const modelSelection: ModelSelection = {
+        ...activeThread.modelSelection,
+        instanceId: ProviderInstanceId.make(instanceId),
+      };
+      setUsageLimitSwitchingThreadId(threadId);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.turn.start",
+          commandId: newCommandId(),
+          threadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: CONTINUE_AT_RESET_MESSAGE,
+            attachments: [],
+          },
+          modelSelection,
+          runtimeMode: activeThread.runtimeMode,
+          interactionMode: activeThread.interactionMode,
+          trigger: "accountSwitch",
+          createdAt: new Date().toISOString(),
+        });
+        // The composer stays on the new account, so the next message doesn't move back.
+        setComposerDraftModelSelection(
+          scopeThreadRef(activeThread.environmentId, threadId),
+          modelSelection,
+        );
+      } catch (err) {
+        toastManager.add(failureNotice({ title: "Couldn't switch accounts", error: err }));
+      } finally {
+        setUsageLimitSwitchingThreadId((current) => (current === threadId ? null : current));
+      }
+    },
+    [activeThread, environmentId, setComposerDraftModelSelection],
+  );
+  const usageLimitAccountSwitch = useMemo<UsageLimitAccountSwitch | null>(
+    () =>
+      usageLimitAccounts.length === 0
+        ? null
+        : {
+            accounts: usageLimitAccounts,
+            isSwitching:
+              usageLimitSwitchingThreadId !== null &&
+              usageLimitSwitchingThreadId === activeThreadIdForError,
+            onSwitch: (instanceId) => void onUsageLimitAccountSwitch(instanceId),
+          },
+    [
+      activeThreadIdForError,
+      onUsageLimitAccountSwitch,
+      usageLimitAccounts,
+      usageLimitSwitchingThreadId,
+    ],
+  );
   const threadErrorNotice = useMemo(
     () =>
       buildThreadErrorNotice({
@@ -6854,11 +7022,15 @@ export default function ChatView(props: ChatViewProps) {
         usageResetLink: threadErrorUsageResetLink,
         retry: threadErrorRetryAction,
         providerLabel: activeProviderLabel,
+        agentLabel: formatProviderDriverKindLabel(activeProviderDriver),
+        usageLimit: threadUsageLimitNotice,
+        accountSwitch: usageLimitAccountSwitch,
         planUpgradeUrl: activeProviderStatus?.planUpgradeUrl ?? null,
         signIn: composerSignInView,
         onDismiss: () => void onDismissThreadError(),
       }),
     [
+      activeProviderDriver,
       activeProviderLabel,
       activeProviderStatus?.planUpgradeUrl,
       activeThread?.error,
@@ -6870,6 +7042,8 @@ export default function ChatView(props: ChatViewProps) {
       threadErrorRetryAction,
       threadErrorUsageResetAction,
       threadErrorUsageResetLink,
+      threadUsageLimitNotice,
+      usageLimitAccountSwitch,
     ],
   );
   const noAgentReady = useNoAgentReady();

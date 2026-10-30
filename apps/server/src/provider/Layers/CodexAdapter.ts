@@ -17,6 +17,7 @@ import {
   ProviderDriverKind,
   type ProviderEvent,
   type ProviderFailureCategory,
+  type RuntimeUsageLimit,
   type ProviderExternalThreadCandidate,
   type ProviderExternalThreadSnapshot,
   type ProviderExternalThreadTranscriptMessage,
@@ -659,6 +660,11 @@ export interface CodexAdapterLiveOptions {
   readonly onAccountRateLimitsUpdated?: (
     rateLimits: EffectCodexSchema.V2AccountRateLimitsUpdatedNotification["rateLimits"],
   ) => Effect.Effect<void>;
+  /**
+   * The usage limit this instance's account is stopped on, from the driver's
+   * merged usage reading: Codex's usage-limit error doesn't carry its reset.
+   */
+  readonly readUsageLimit?: Effect.Effect<RuntimeUsageLimit | undefined>;
 }
 
 interface CodexAdapterSessionContext {
@@ -2050,6 +2056,10 @@ export function mapToRuntimeEvents(
     // An interrupted turn can carry an error too; only a failed one is named.
     const failureCategory =
       state === "failed" ? codexFailureCategory(payload.turn.error?.codexErrorInfo) : undefined;
+    // The plan's usage limit, as opposed to a brief rate limit. Its reset time
+    // isn't in the error; the adapter fills it in from the account's usage.
+    const usageLimit =
+      state === "failed" && payload.turn.error?.codexErrorInfo === "usageLimitExceeded";
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -2058,6 +2068,7 @@ export function mapToRuntimeEvents(
           state,
           ...(hintedErrorMessage ? { errorMessage: hintedErrorMessage } : {}),
           ...withFailureCategory(failureCategory),
+          ...(usageLimit ? { usageLimit: {} } : {}),
         },
       },
     ];
@@ -3387,7 +3398,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               yield* options.releaseRealtimeAudio(event.threadId);
             }
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const runtimeEvents = yield* withUsageLimitReset(
+              mapToRuntimeEvents(event, event.threadId),
+            );
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -4180,6 +4193,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : mapCodexRuntimeError(threadId, "item/tool/requestUserInput", cause),
       ),
     );
+
+  /** A usage-limit failure gets the reset time the account's usage reading names. */
+  const withUsageLimitReset = Effect.fnUntraced(function* (
+    events: ReadonlyArray<ProviderRuntimeEvent>,
+  ) {
+    if (!options?.readUsageLimit) return events;
+    const needsReset = events.some(
+      (event) =>
+        event.type === "turn.completed" &&
+        event.payload.usageLimit !== undefined &&
+        event.payload.usageLimit.resetsAt === undefined,
+    );
+    if (!needsReset) return events;
+    const reading = yield* options.readUsageLimit.pipe(Effect.orElseSucceed(() => undefined));
+    if (reading === undefined) return events;
+    return events.map((event) =>
+      event.type === "turn.completed" && event.payload.usageLimit !== undefined
+        ? { ...event, payload: { ...event.payload, usageLimit: reading } }
+        : event,
+    );
+  });
 
   const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {
     if (!nativeEventLogger) {

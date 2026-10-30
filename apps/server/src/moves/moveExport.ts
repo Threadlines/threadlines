@@ -291,6 +291,8 @@ export function exportThreadHistory(thread: OrchestrationThread): {
       // Who wrote it only; the thread's own outsideOrigin stays here.
       ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
+      ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
+      ...(message.notSent === true ? { notSent: true as const } : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities

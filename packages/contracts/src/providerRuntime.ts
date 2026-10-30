@@ -606,6 +606,18 @@ const TurnStartedPayload = Schema.Struct({
 });
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
+/**
+ * A failed turn's error is the user's plan usage limit, not a brief rate limit:
+ * the driver only says so on the agent's own word (its limit event or its
+ * usage-limit message). `resetsAt` when the agent or its usage reading named
+ * one; `window` as in OrchestrationUsageLimitWindow.
+ */
+export const RuntimeUsageLimit = Schema.Struct({
+  window: Schema.optional(Schema.Literals(["session", "weekly"])),
+  resetsAt: Schema.optional(IsoDateTime),
+});
+export type RuntimeUsageLimit = typeof RuntimeUsageLimit.Type;
+
 const TurnCompletedPayload = Schema.Struct({
   state: RuntimeTurnState,
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
@@ -614,6 +626,7 @@ const TurnCompletedPayload = Schema.Struct({
   totalCostUsd: Schema.optional(Schema.Number),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
   failureCategory: Schema.optional(ProviderFailureCategory),
+  usageLimit: Schema.optional(RuntimeUsageLimit),
 });
 export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;
 

@@ -63,8 +63,11 @@ describe("settings places", () => {
   it("puts every catalogued settings row and section on screen", () => {
     const used = new Set<string>();
     for (const { source } of sources) {
-      for (const match of source.matchAll(/[\s-]place=(?:"([\w.]+)"|\{"([\w.]+)"\})/g)) {
-        used.add(match[1] ?? match[2]!);
+      // `place="id"` on a row, or `place: "id"` in a list of rows the screen maps over.
+      for (const match of source.matchAll(
+        /[\s-]place(?:=(?:"([\w.]+)"|\{"([\w.]+)"\})|: "([\w.]+)")/g,
+      )) {
+        used.add(match[1] ?? match[2] ?? match[3]!);
       }
     }
     expect([...used].filter((id) => !isPlaceId(id))).toEqual([]);

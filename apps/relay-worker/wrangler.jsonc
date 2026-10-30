@@ -30,11 +30,14 @@
     // mac key is a secret: `wrangler secret put HOOK_PATH_KEY`.
     "THREADLINES_RELAY_HOST_DAILY_HOOKS": "1000",
     // Assistants (docs/design/assistants.md): the door's public origin, its
-    // kill switch, and the requests each computer forwards per UTC day. Off
-    // until it is verified live. Its two keys are secrets:
-    // `wrangler secret put ASSISTANT_ROUTE_KEY` and `ASSISTANT_CLIENT_KEY`.
-    "ASSISTANTS_ORIGIN": "",
-    "ASSISTANTS_ENABLED": "false",
+    // kill switch, and the requests each computer forwards per UTC day. Its
+    // two keys are secrets: `wrangler secret put ASSISTANT_ROUTE_KEY` and
+    // `ASSISTANT_CLIENT_KEY`. The origin is the worker's own for now:
+    // threadlines.dev's DNS is on Vercel, so a threadlines.dev name can't
+    // route here. Every credential is bound to it, so changing it disconnects
+    // every assistant: move it (if at all) before Threadlines is listed.
+    "ASSISTANTS_ORIGIN": "https://threadlines-relay.threadlines.workers.dev",
+    "ASSISTANTS_ENABLED": "true",
     "THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS": "20000",
   },
   "ratelimits": [

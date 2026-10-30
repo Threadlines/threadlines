@@ -57,6 +57,8 @@ import {
   ThreadCommandRunOutputRecordedPayload as ContractsThreadCommandRunOutputRecordedPayloadSchema,
   ThreadSessionSetPayload as ContractsThreadSessionSetPayloadSchema,
   ThreadErrorDismissedPayload as ContractsThreadErrorDismissedPayloadSchema,
+  ThreadContinueAtResetSetPayload as ContractsThreadContinueAtResetSetPayloadSchema,
+  ThreadContinueAtResetSkippedPayload as ContractsThreadContinueAtResetSkippedPayloadSchema,
   ThreadRealtimeStateSetPayload as ContractsThreadRealtimeStateSetPayloadSchema,
   ThreadEffectiveCwdSetPayload as ContractsThreadEffectiveCwdSetPayloadSchema,
   ThreadGoalStateSetPayload as ContractsThreadGoalStateSetPayloadSchema,
@@ -147,6 +149,9 @@ export const ThreadCommandRunOutputRecordedPayload =
   ContractsThreadCommandRunOutputRecordedPayloadSchema;
 export const ThreadSessionSetPayload = ContractsThreadSessionSetPayloadSchema;
 export const ThreadErrorDismissedPayload = ContractsThreadErrorDismissedPayloadSchema;
+export const ThreadContinueAtResetSetPayload = ContractsThreadContinueAtResetSetPayloadSchema;
+export const ThreadContinueAtResetSkippedPayload =
+  ContractsThreadContinueAtResetSkippedPayloadSchema;
 export const ThreadRealtimeStateSetPayload = ContractsThreadRealtimeStateSetPayloadSchema;
 export const ThreadEffectiveCwdSetPayload = ContractsThreadEffectiveCwdSetPayloadSchema;
 export const ThreadGoalStateSetPayload = ContractsThreadGoalStateSetPayloadSchema;

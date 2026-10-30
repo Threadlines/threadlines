@@ -70,6 +70,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
         <ClaudeSuggestionsRow />
+        <ContinueAfterUsageLimitsRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
       </SettingsSection>
@@ -80,7 +81,8 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
       </SettingsSection>
 
       <SettingsSection place="threads.titlesAndWriting" description={computerNote}>
-        <WritingModelRows />
+        <WritingModelRow />
+        <BackupWritingModelRow />
       </SettingsSection>
 
       <SettingsSection place="threads.whenDone">
@@ -123,7 +125,7 @@ function unusableDefaultNote(
 }
 
 /** The model and reasoning a new thread starts with, or the device's last used. */
-function NewThreadAgentRow() {
+export function NewThreadAgentRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
@@ -182,7 +184,7 @@ function NewThreadAgentRow() {
 }
 
 /** The agents every new thread starts with, beside its own. */
-function NewThreadRoomRow() {
+export function NewThreadRoomRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
@@ -308,7 +310,7 @@ function NewThreadRoomRow() {
   );
 }
 
-function DefaultThreadEnvModeRow() {
+export function DefaultThreadEnvModeRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -374,7 +376,7 @@ const NEW_WORKTREE_BASE_OPTIONS = [
 }>;
 
 /** Where a new worktree starts when the thread's branch picker is left alone. */
-function NewWorktreeBaseRow() {
+export function NewWorktreeBaseRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const [branchPickerOpen, setBranchPickerOpen] = useState(false);
@@ -440,7 +442,7 @@ function NewWorktreeBaseRow() {
   );
 }
 
-function RoomsRow() {
+export function RoomsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const roomsOn = roomsEnabledFor(settings);
@@ -464,7 +466,7 @@ function RoomsRow() {
   );
 }
 
-function AgentPagesRow() {
+export function AgentPagesRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const pagesOn = settings.enableAgentPages !== false;
@@ -491,7 +493,7 @@ function AgentPagesRow() {
 }
 
 /** `ask_user_to_run` (docs/terminal-command-runs.md): on unless turned off. */
-function CommandRequestsRow() {
+export function CommandRequestsRow() {
   const settings = useSettings();
   const requestsOn = settings.enableCommandRequests !== false;
   const { updateSettings } = useUpdateSettings();
@@ -518,7 +520,7 @@ function CommandRequestsRow() {
 }
 
 /** Early agent starts (docs/early-agent-start.md): on unless turned off. */
-function StartAgentsWhileTypingRow() {
+export function StartAgentsWhileTypingRow() {
   const settings = useSettings();
   const startOn = settings.startAgentsWhileTyping !== false;
   const { updateSettings } = useUpdateSettings();
@@ -550,7 +552,7 @@ function StartAgentsWhileTypingRow() {
  * Claude's own publishing, beside agent pages: off unless chosen, because it
  * uploads the page. It rides on agent pages, so it is off while they are.
  */
-function ClaudeArtifactsRow() {
+export function ClaudeArtifactsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const pagesOn = settings.enableAgentPages !== false;
@@ -611,7 +613,7 @@ function isClaudeWorkflowSize(value: unknown): value is ClaudeWorkflowSize {
  * server, read before each message, so running threads follow it from their
  * next message.
  */
-function ClaudeWorkflowSizeRow() {
+export function ClaudeWorkflowSizeRow() {
   const size = useSettings((settings) => settings.claudeWorkflowSize);
   const { updateSettings } = useUpdateSettings();
   return (
@@ -657,7 +659,7 @@ function ClaudeWorkflowSizeRow() {
  * account, read before each message, so running threads follow it from their
  * next message.
  */
-function ClaudeSuggestionsRow() {
+export function ClaudeSuggestionsRow() {
   const on = useSettings((settings) => settings.claudeSuggestionsWhenUsageRunsFast);
   const { updateSettings } = useUpdateSettings();
   return (
@@ -686,11 +688,44 @@ function ClaudeSuggestionsRow() {
 }
 
 /**
+ * Turns on "Continue at reset" for every thread a Claude or Codex usage limit
+ * stops, the switch on the limit's notice above the composer. Read by the
+ * thread's computer as each limit lands.
+ */
+export function ContinueAfterUsageLimitsRow() {
+  const on = useSettings((settings) => settings.continueAfterUsageLimits);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="threads.continueAfterUsageLimits"
+      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer."
+      resetAction={
+        on ? (
+          <SettingResetButton
+            label="Continue after usage limits"
+            onClick={() => updateSettings({ continueAfterUsageLimits: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) =>
+            updateSettings({ continueAfterUsageLimits: Boolean(checked) })
+          }
+          aria-label="Continue after usage limits"
+        />
+      }
+    />
+  );
+}
+
+/**
  * Whether the thread's agent may bring in another agent for a review
  * (docs/design/rooms-agent-invites.md). A setting of this computer's server:
  * the agents ask through it.
  */
-function AgentInvitesRow() {
+export function AgentInvitesRow() {
   const mode = useSettings((settings) => agentInvitesChoice(settings));
   const roomsOn = useSettings((settings) => roomsEnabledFor(settings));
   const { updateSettings } = useUpdateSettings();
@@ -743,7 +778,7 @@ function AgentInvitesRow() {
  * (docs/design/child-threads.md). A setting of this computer's server, like
  * invites, but independent of Rooms: a thread with one agent can start them.
  */
-function AgentThreadsRow() {
+export function AgentThreadsRow() {
   const mode = useSettings((settings) => agentThreadsMode(settings));
   const { updateSettings } = useUpdateSettings();
   return (
@@ -787,8 +822,8 @@ function AgentThreadsRow() {
   );
 }
 
-/** The model that writes thread titles (and source control text by default), and its backup. */
-function WritingModelRows() {
+/** What both writing-model rows read: the writing model, its backup, and who can serve them. */
+function useWritingModels() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
@@ -820,110 +855,146 @@ function WritingModelRows() {
     DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection ?? null,
   );
 
+  return {
+    settings,
+    updateSettings,
+    serverProviders,
+    textGenerationModelSelection,
+    instanceEntries,
+    backupSelection,
+    defaultBackupSelection,
+    backupInstanceEntries,
+    isWritingModelDirty,
+    isBackupDirty,
+  };
+}
+
+/** The model that writes thread titles (and source control text by default). */
+export function WritingModelRow() {
+  const {
+    settings,
+    updateSettings,
+    serverProviders,
+    textGenerationModelSelection,
+    instanceEntries,
+    isWritingModelDirty,
+  } = useWritingModels();
   return (
-    <>
-      <SettingsRow
-        place="threads.writingModel"
-        resetAction={
-          isWritingModelDirty ? (
-            <SettingResetButton
-              label="writing model"
-              onClick={() =>
-                updateSettings({
-                  textGenerationModelSelection:
-                    DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <TextGenerationModelControl
-            selection={textGenerationModelSelection}
-            settings={settings}
-            serverProviders={serverProviders}
-            instanceEntries={instanceEntries}
-            onSelectionChange={(nextSelection, change) => {
-              const nextPrimarySelection = resolveAppModelSelectionState(
-                { ...settings, textGenerationModelSelection: nextSelection },
-                serverProviders,
-              );
+    <SettingsRow
+      place="threads.writingModel"
+      resetAction={
+        isWritingModelDirty ? (
+          <SettingResetButton
+            label="writing model"
+            onClick={() =>
               updateSettings({
-                textGenerationModelSelection: nextPrimarySelection,
-                // Switching providers can invalidate the backup (it must sit
-                // on a different driver), so re-resolve it alongside.
-                ...(change === "instanceModel" &&
-                settings.textGenerationBackupModelSelection !== null
-                  ? {
-                      textGenerationBackupModelSelection:
-                        resolveTextGenerationBackupModelSelectionState(
-                          { ...settings, textGenerationModelSelection: nextPrimarySelection },
-                          serverProviders,
-                          nextPrimarySelection,
-                        ),
-                    }
-                  : {}),
-              });
-            }}
+                textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+              })
+            }
           />
-        }
-      />
-      <SettingsRow
-        place="threads.backupWritingModel"
-        resetAction={
-          isBackupDirty ? (
-            <SettingResetButton
-              label="backup writing model"
-              onClick={() =>
-                updateSettings({
-                  textGenerationBackupModelSelection:
-                    DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <div className="flex flex-wrap items-center justify-end gap-1.5">
-            {backupSelection ? (
-              <TextGenerationModelControl
-                selection={backupSelection}
-                settings={settings}
-                serverProviders={serverProviders}
-                instanceEntries={backupInstanceEntries}
-                onSelectionChange={(nextSelection) => {
-                  const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
-                    { ...settings, textGenerationBackupModelSelection: nextSelection },
-                    serverProviders,
-                    textGenerationModelSelection,
-                  );
-                  if (!nextBackupSelection) return;
-                  updateSettings({ textGenerationBackupModelSelection: nextBackupSelection });
-                }}
-              />
-            ) : defaultBackupSelection ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={() =>
-                  updateSettings({ textGenerationBackupModelSelection: defaultBackupSelection })
-                }
-              >
-                <PlusIcon className="size-3.5" />
-                <span>Add backup</span>
-              </Button>
-            ) : (
-              <span className="text-xs text-muted-foreground">No different provider ready</span>
-            )}
-          </div>
-        }
-      />
-    </>
+        ) : null
+      }
+      control={
+        <TextGenerationModelControl
+          selection={textGenerationModelSelection}
+          settings={settings}
+          serverProviders={serverProviders}
+          instanceEntries={instanceEntries}
+          onSelectionChange={(nextSelection, change) => {
+            const nextPrimarySelection = resolveAppModelSelectionState(
+              { ...settings, textGenerationModelSelection: nextSelection },
+              serverProviders,
+            );
+            updateSettings({
+              textGenerationModelSelection: nextPrimarySelection,
+              // Switching providers can invalidate the backup (it must sit
+              // on a different driver), so re-resolve it alongside.
+              ...(change === "instanceModel" && settings.textGenerationBackupModelSelection !== null
+                ? {
+                    textGenerationBackupModelSelection:
+                      resolveTextGenerationBackupModelSelectionState(
+                        { ...settings, textGenerationModelSelection: nextPrimarySelection },
+                        serverProviders,
+                        nextPrimarySelection,
+                      ),
+                  }
+                : {}),
+            });
+          }}
+        />
+      }
+    />
   );
 }
 
-function WrapUpIdleThreadsRow() {
+/** The writing model's backup, on a different provider. */
+export function BackupWritingModelRow() {
+  const {
+    settings,
+    updateSettings,
+    serverProviders,
+    textGenerationModelSelection,
+    backupSelection,
+    defaultBackupSelection,
+    backupInstanceEntries,
+    isBackupDirty,
+  } = useWritingModels();
+  return (
+    <SettingsRow
+      place="threads.backupWritingModel"
+      resetAction={
+        isBackupDirty ? (
+          <SettingResetButton
+            label="backup writing model"
+            onClick={() =>
+              updateSettings({
+                textGenerationBackupModelSelection:
+                  DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {backupSelection ? (
+            <TextGenerationModelControl
+              selection={backupSelection}
+              settings={settings}
+              serverProviders={serverProviders}
+              instanceEntries={backupInstanceEntries}
+              onSelectionChange={(nextSelection) => {
+                const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
+                  { ...settings, textGenerationBackupModelSelection: nextSelection },
+                  serverProviders,
+                  textGenerationModelSelection,
+                );
+                if (!nextBackupSelection) return;
+                updateSettings({ textGenerationBackupModelSelection: nextBackupSelection });
+              }}
+            />
+          ) : defaultBackupSelection ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() =>
+                updateSettings({ textGenerationBackupModelSelection: defaultBackupSelection })
+              }
+            >
+              <PlusIcon className="size-3.5" />
+              <span>Add backup</span>
+            </Button>
+          ) : (
+            <span className="text-xs text-muted-foreground">No different provider ready</span>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+export function WrapUpIdleThreadsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -951,7 +1022,7 @@ function WrapUpIdleThreadsRow() {
   );
 }
 
-function WrapUpMergedThreadsRow() {
+export function WrapUpMergedThreadsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -986,7 +1057,7 @@ function WrapUpMergedThreadsRow() {
   );
 }
 
-function WrapUpChildThreadsRow() {
+export function WrapUpChildThreadsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -1019,7 +1090,7 @@ function WrapUpChildThreadsRow() {
   );
 }
 
-function ConfirmArchiveRow() {
+export function ConfirmArchiveRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (
@@ -1048,7 +1119,7 @@ function ConfirmArchiveRow() {
   );
 }
 
-function ConfirmDeleteRow() {
+export function ConfirmDeleteRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   return (

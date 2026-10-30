@@ -47,6 +47,7 @@ export interface ThreadStatusPill {
     | "Waiting"
     | "Answering"
     | "Checking back"
+    | "Continues at reset"
     | "Failed";
   colorClass: string;
   dotClass: string;
@@ -56,7 +57,7 @@ export interface ThreadStatusPill {
    * background work: how many still owe it an answer.
    */
   childThreadCount?: number;
-  /** "Checking back": when the soonest check-back fires. */
+  /** "Checking back": when the soonest check-back fires. "Continues at reset": when it continues. */
   checkBackAt?: string;
 }
 
@@ -351,6 +352,19 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-primary-readable",
       dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,
+    };
+  }
+
+  // A usage limit stopped it and it continues once the limit resets: the row
+  // says when, like an agent checking back, not that it failed.
+  const continueAt = thread.session?.continueAtReset?.at ?? null;
+  if (continueAt !== null) {
+    return {
+      label: "Continues at reset",
+      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+      pulse: false,
+      checkBackAt: continueAt,
     };
   }
 

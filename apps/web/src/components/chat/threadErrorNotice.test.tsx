@@ -193,3 +193,75 @@ describe("buildThreadErrorNotice", () => {
     expect(markup).not.toContain("Retry last message");
   });
 });
+
+describe("buildThreadErrorNotice for a usage limit", () => {
+  const limitText = "You've hit your session limit · resets 2:20pm (America/New_York)";
+  const usageLimit = (continueAt: string | null) => ({
+    window: "session" as const,
+    resetsAt: "2026-01-01T19:20:00.000Z",
+    continueAt,
+    canContinue: true,
+    isSaving: false,
+    onContinueChange: () => {},
+  });
+
+  it("names the limit and offers the switch and the user's other account by name", () => {
+    const notice = buildThreadErrorNotice({
+      error: limitText,
+      agentLabel: "Claude",
+      usageLimit: usageLimit(null),
+      accountSwitch: {
+        accounts: [{ instanceId: "claudeAgent_personal", label: "Personal" }],
+        isSwitching: false,
+        onSwitch: () => {},
+      },
+      retry: { isRetrying: false, onRetry: () => {} },
+      onDismiss: () => {},
+    });
+    expect(notice?.severity).toBe("warning");
+    expect(notice?.lead).toBe("Claude session limit.");
+    const markup = renderNotice(notice);
+    expect(markup).toContain("Continue at reset");
+    expect(markup).toContain("Use Personal");
+    // A retry now would hit the same limit; the switch and the account replace it.
+    expect(markup).not.toContain("Retry last message");
+    expect(notice?.onDismiss).toBeDefined();
+  });
+
+  it("says when a waiting thread continues, and can't be closed while it waits", () => {
+    const notice = buildThreadErrorNotice({
+      error: limitText,
+      agentLabel: "Claude",
+      usageLimit: usageLimit("2026-01-01T19:21:00.000Z"),
+      onDismiss: () => {},
+    });
+    expect(notice?.severity).toBe("info");
+    // React marks where text pieces join; the reader sees one sentence.
+    const markup = renderNotice(notice).replaceAll("<!-- -->", "");
+    expect(markup).toMatch(/Continues [^<]*at [^<]+\./u);
+    expect(markup).toMatch(/Claude&#x27;s session limit resets [^<]*at /u);
+    expect(notice?.onDismiss).toBeUndefined();
+  });
+
+  it("lists two or more other accounts in a menu", () => {
+    const markup = renderNotice(
+      buildThreadErrorNotice({
+        error: limitText,
+        agentLabel: "Claude",
+        usageLimit: { ...usageLimit(null), resetsAt: null, canContinue: false },
+        accountSwitch: {
+          accounts: [
+            { instanceId: "claudeAgent_personal", label: "Personal" },
+            { instanceId: "claudeAgent_work", label: "Work" },
+          ],
+          isSwitching: false,
+          onSwitch: () => {},
+        },
+      }),
+    );
+    expect(markup).toContain("Use another account");
+    expect(markup).not.toContain("Continue at reset");
+    // Without a reset time, the agent's own words say what happened.
+    expect(markup).toContain("You&#x27;ve hit your session limit");
+  });
+});

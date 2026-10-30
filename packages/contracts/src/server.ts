@@ -245,6 +245,12 @@ export const ServerProviderAccountUsage = Schema.Struct({
   ]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Codex: whether the account may use its plan's included usage right now,
+   * as the backend said on the last full read. Absent when it didn't say;
+   * then percentages and reset times are only a guess.
+   */
+  ordinaryUsageAllowed: Schema.optional(Schema.Boolean),
   rateLimitResetCredits: Schema.optional(ServerProviderRateLimitResetCredits),
   limits: Schema.Array(ServerProviderUsageLimit),
   tokenUsage: Schema.optional(ServerProviderAccountTokenUsage),

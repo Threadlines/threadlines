@@ -381,10 +381,12 @@ function normalizeCodexAccountUsage(
   const primaryLimitId =
     optionalString(rateLimits?.rateLimits.limitId) ??
     limits.find((limit) => limit.limitId)?.limitId;
+  const ordinaryUsageAllowed = rateLimits?.ordinaryUsageAllowed;
   return {
     source: "codex-rate-limits",
     checkedAt,
     ...(primaryLimitId ? { primaryLimitId } : {}),
+    ...(typeof ordinaryUsageAllowed === "boolean" ? { ordinaryUsageAllowed } : {}),
     ...(rateLimitResetCredits ? { rateLimitResetCredits } : {}),
     limits,
     ...(normalizedTokenUsage ? { tokenUsage: normalizedTokenUsage } : {}),

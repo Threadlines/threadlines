@@ -981,6 +981,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   /**
+   * "Continue at reset" for every thread a Claude or Codex usage limit stops,
+   * when the limit names its reset time: the thread continues by itself once
+   * it resets. Only messages the user typed (and the continue messages that
+   * follow them) count; a scheduled run's, another thread's or a room agent's
+   * request waits for the user. Read as each limit lands. Never chosen: off.
+   */
+  continueAfterUsageLimits: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
    * Command requests: agents may ask the user to run a shell command with
    * `ask_user_to_run`, shown as a card with Run, Put in terminal and Skip
    * (docs/terminal-command-runs.md). Read when a provider session starts and
@@ -1179,6 +1187,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
+  continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's

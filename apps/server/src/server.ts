@@ -61,6 +61,7 @@ import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
+import { ContinueAtResetSweeperLive } from "./orchestration/Layers/ContinueAtResetSweeper.ts";
 import { PullRequestAutomationWatcherLive } from "./orchestration/Layers/PullRequestAutomationWatcher.ts";
 import { ThreadPullRequestLinkerLive } from "./orchestration/Layers/ThreadPullRequestLinker.ts";
 import { ThreadBootstrapLive } from "./orchestration/Layers/ThreadBootstrap.ts";
@@ -511,6 +512,7 @@ const OutsideAgentsLayerLive = OutsideAgentConnectionsLive.pipe(
 const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   ThreadAutoArchiveSweeperLive,
+  ContinueAtResetSweeperLive,
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(

@@ -535,12 +535,19 @@ it.layer(NodeServices.layer)("RelayHost", (it) => {
     Effect.gen(function* () {
       // Not registered yet: an assistant connection made under another relay
       // asks to stay online before anything registered this computer.
-      const { fake, relayHost, link } = yield* startHost([]);
+      const { fake, relayHost, link, hooks } = yield* startHost([]);
       yield* relayHost.start("http://127.0.0.1:1");
+      // Connected and done with its after-connect work (the hook sync), so
+      // nothing is still writing when the test's folder goes.
+      const reachable = yield* hooks.changes.pipe(
+        Stream.filter((entry) => entry.kind === "reachable"),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
       yield* link.keepOnline("assistants", true);
-      yield* Effect.gen(function* () {
-        while (fake.controls.length === 0) yield* wallClockSleep(10);
-      }).pipe(withinWallClock(5_000));
+      yield* Fiber.join(reachable).pipe(withinWallClock(5_000));
       assert.equal(fake.registered.length, 1);
       assert.deepEqual(fake.controls, [fake.registered[0]]);
     }),

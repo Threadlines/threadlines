@@ -35,6 +35,10 @@
       "types": "./src/providerPlan.ts",
       "import": "./src/providerPlan.ts"
     },
+    "./usageLimits": {
+      "types": "./src/usageLimits.ts",
+      "import": "./src/usageLimits.ts"
+    },
     "./preview": {
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"
@@ -326,6 +330,10 @@
     "./appPlaces": {
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"
+    },
+    "./placeSearch": {
+      "types": "./src/placeSearch.ts",
+      "import": "./src/placeSearch.ts"
     },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",

@@ -4,6 +4,7 @@
  * says whether it sends them, with a test alert to prove it.
  */
 import type { EnvironmentId, PushAlertKinds } from "@threadlines/contracts";
+import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import { useMemo, useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
@@ -21,23 +22,15 @@ import {
   usePushAlertsStore,
 } from "./pushAlerts";
 
-const KIND_ROWS: ReadonlyArray<{
+/** The kinds of alert, in the order the section lists them, each one a place. */
+const KIND_ROWS = [
+  { kind: "needs_you", place: "general.alertNeedsYou" },
+  { kind: "finished", place: "general.alertFinished" },
+  { kind: "failed", place: "general.alertFailed" },
+] as const satisfies ReadonlyArray<{
   readonly kind: keyof PushAlertKinds;
-  readonly title: string;
-  readonly description: string;
-}> = [
-  {
-    kind: "needs_you",
-    title: "Needs you",
-    description: "An approval, a question or a plan to review.",
-  },
-  { kind: "finished", title: "Finished", description: "An agent finished its work." },
-  {
-    kind: "failed",
-    title: "Failed",
-    description: "A turn stopped with an error, or couldn't start.",
-  },
-];
+  readonly place: SettingsPlaceId;
+}>;
 
 function describeStatus(status: ComputerAlertStatus | undefined): string {
   switch (status?.state) {
@@ -90,72 +83,27 @@ function ComputerRow({
   );
 }
 
-export function PushAlertsSettingsSection() {
-  const support = pushAlertsSupport();
-  const enabled = usePushAlertsStore((state) => state.enabled);
-  const kinds = usePushAlertsStore((state) => state.kinds);
-  const permission = usePushAlertsStore((state) => state.permission);
-  const busy = usePushAlertsStore((state) => state.busy);
-  const error = usePushAlertsStore((state) => state.error);
+/** Whether alerts can show on this device at all: support, and a computer to hear from. */
+function useAlertComputers() {
   const savedById = useSavedEnvironmentRegistryStore((state) => state.byId);
-  const computers = useMemo(
+  return useMemo(
     () => Object.values(savedById).filter((record) => relayLinkOf(record) !== null),
     [savedById],
   );
+}
+
+export function PushAlertsSettingsSection() {
+  const support = pushAlertsSupport();
+  const enabled = usePushAlertsStore((state) => state.enabled);
+  const permission = usePushAlertsStore((state) => state.permission);
+  const computers = useAlertComputers();
 
   if (support === "unsupported" || computers.length === 0) return null;
-  if (support === "needs-home-screen") {
-    return (
-      <SettingsSection place="general.alerts">
-        <SettingsRow
-          place="general.alertsOnThisDevice"
-          description="Add Threadlines to your Home Screen from the Share menu, then turn alerts on in the app there."
-        />
-      </SettingsSection>
-    );
-  }
-
-  const on = enabled && permission === "granted";
+  const on = support === "supported" && enabled && permission === "granted";
   return (
     <SettingsSection place="general.alerts">
-      <SettingsRow
-        place="general.alertsOnThisDevice"
-        description={
-          permission === "denied"
-            ? "Alerts are blocked for this app. Allow them in this device's settings."
-            : "An alert when an agent needs you or finishes, even with Threadlines closed. A thread you have open stays quiet."
-        }
-        status={error}
-        control={
-          <Switch
-            checked={on}
-            disabled={busy || permission === "denied"}
-            onCheckedChange={(checked) => {
-              void (checked ? enablePushAlerts() : disablePushAlerts());
-            }}
-            aria-label="Alerts on this device"
-          />
-        }
-      />
-      {on
-        ? KIND_ROWS.map((row) => (
-            <SettingsRow
-              key={row.kind}
-              title={row.title}
-              description={row.description}
-              control={
-                <Switch
-                  checked={kinds[row.kind]}
-                  disabled={busy}
-                  onCheckedChange={(checked) => {
-                    void setPushAlertKind(row.kind, Boolean(checked));
-                  }}
-                  aria-label={`${row.title} alerts`}
-                />
-              }
-            />
-          ))
-        : null}
+      <AlertsOnThisDeviceRow />
+      {on ? KIND_ROWS.map((row) => <AlertKindRow key={row.kind} kind={row.kind} />) : null}
       {on
         ? computers.map((record) => (
             <ComputerRow
@@ -166,5 +114,67 @@ export function PushAlertsSettingsSection() {
           ))
         : null}
     </SettingsSection>
+  );
+}
+
+/** The switch for alerts on this device (or how to get them, on an iPhone's Safari). */
+export function AlertsOnThisDeviceRow() {
+  const support = pushAlertsSupport();
+  const enabled = usePushAlertsStore((state) => state.enabled);
+  const permission = usePushAlertsStore((state) => state.permission);
+  const busy = usePushAlertsStore((state) => state.busy);
+  const error = usePushAlertsStore((state) => state.error);
+
+  if (support === "needs-home-screen") {
+    return (
+      <SettingsRow
+        place="general.alertsOnThisDevice"
+        description="Add Threadlines to your Home Screen from the Share menu, then turn alerts on in the app there."
+      />
+    );
+  }
+  const on = enabled && permission === "granted";
+  return (
+    <SettingsRow
+      place="general.alertsOnThisDevice"
+      description={
+        permission === "denied"
+          ? "Alerts are blocked for this app. Allow them in this device's settings."
+          : "An alert when an agent needs you or finishes, even with Threadlines closed. A thread you have open stays quiet."
+      }
+      status={error}
+      control={
+        <Switch
+          checked={on}
+          disabled={busy || permission === "denied"}
+          onCheckedChange={(checked) => {
+            void (checked ? enablePushAlerts() : disablePushAlerts());
+          }}
+          aria-label="Alerts on this device"
+        />
+      }
+    />
+  );
+}
+
+/** One kind of alert (needs you, finished, failed), shown while alerts are on. */
+export function AlertKindRow({ kind }: { readonly kind: keyof PushAlertKinds }) {
+  const enabled = usePushAlertsStore((state) => state.kinds[kind]);
+  const busy = usePushAlertsStore((state) => state.busy);
+  const place = KIND_ROWS.find((row) => row.kind === kind)!.place;
+  return (
+    <SettingsRow
+      place={place}
+      control={
+        <Switch
+          checked={enabled}
+          disabled={busy}
+          onCheckedChange={(checked) => {
+            void setPushAlertKind(kind, Boolean(checked));
+          }}
+          aria-label={`${placeById(place).title} alerts`}
+        />
+      }
+    />
   );
 }

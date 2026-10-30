@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { type PlaceId, placeById } from "@threadlines/shared/appPlaces";
+import { placeById } from "@threadlines/shared/appPlaces";
 import {
   ArchiveIcon,
   BotIcon,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { SourceControlIcon } from "../Icons";
+import type { SettingsPagePlaceId } from "./settingsPlaceAvailability";
 
 export const DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" as const;
 /** Where pairing lives, for surfaces that need to route a user to it. */
@@ -46,7 +47,9 @@ export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
 export type HostedStaticSettingsSectionPath = (typeof HOSTED_STATIC_SETTINGS_SECTION_PATHS)[number];
 
 export interface SettingsNavItem {
-  /** The page place's title (`@threadlines/shared/appPlaces`). */
+  /** The page's place (`@threadlines/shared/appPlaces`). */
+  readonly place: SettingsPagePlaceId;
+  /** The page place's title. */
   readonly label: string;
   readonly to: SettingsSectionPath;
   readonly icon: ComponentType<{ className?: string }>;
@@ -64,11 +67,11 @@ export interface SettingsNavItem {
 
 /** A menu entry for a page place: its label and description are the catalog's. */
 function settingsNavItem(
-  place: PlaceId,
-  item: Omit<SettingsNavItem, "label" | "description">,
+  place: SettingsPagePlaceId,
+  item: Omit<SettingsNavItem, "place" | "label" | "description">,
 ): SettingsNavItem {
   const page = placeById(place);
-  return { ...item, label: page.title, description: page.about };
+  return { ...item, place, label: page.title, description: page.about };
 }
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [

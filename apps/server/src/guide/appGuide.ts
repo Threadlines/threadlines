@@ -21,6 +21,7 @@ import {
   placeChain,
   placeMarkdownLink,
 } from "@threadlines/shared/appPlaces";
+import { searchWords } from "@threadlines/shared/placeSearch";
 import { RUNTIME_MODE_LABELS } from "@threadlines/shared/runtimeMode";
 
 import { GUIDE_TOPICS, type GuideTopic } from "./topics.ts";
@@ -89,12 +90,9 @@ const STOP_WORDS = new Set(
   ),
 );
 
+/** Settings search's words, less the ones a question carries that name nothing. */
 const tokens = (text: string): ReadonlyArray<string> =>
-  text
-    .toLowerCase()
-    .split(/[^a-z0-9.]+/u)
-    .map((word) => word.replace(/^\.+|\.+$/gu, ""))
-    .filter((word) => word.length > 1 && !STOP_WORDS.has(word));
+  searchWords(text).filter((word) => word.length > 1 && !STOP_WORDS.has(word));
 
 /** Whether a query word names a word of the text (prefixes count both ways, from 4 letters). */
 const mentions = (words: ReadonlyArray<string>, word: string) =>

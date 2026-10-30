@@ -38,6 +38,8 @@ const STATUS_PRESENTATION: Readonly<
   Completed: { tone: "emerald", group: "finished", rank: 3 },
   // Settled, and an agent will come back by itself: a wait, after a result.
   "Checking back": { tone: "cyan", group: "working", rank: 3 },
+  // Stopped by a usage limit, and continues by itself once it resets.
+  "Continues at reset": { tone: "cyan", group: "working", rank: 3 },
 };
 
 /** More lanes than this and the drawing stops reading as a glance. */

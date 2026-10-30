@@ -435,7 +435,10 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
         : null;
   const isLive = isInFlight || isWaiting || isAnswering;
   // An agent will come back: a countdown to when.
-  const checkBackAt = status?.label === "Checking back" ? (status.checkBackAt ?? null) : null;
+  const checkBackAt =
+    status?.label === "Checking back" || status?.label === "Continues at reset"
+      ? (status.checkBackAt ?? null)
+      : null;
   return {
     statusWord,
     /** The status slot's colour while it says something; null leaves the resting tone. */

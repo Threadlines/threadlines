@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type MessageAgentModel,
   type MessageSentFrom,
+  type MessageTrigger,
   type MessageId,
   type OrchestrationAgentRequest,
   type OrchestrationAwaitedBackgroundTask,
@@ -2597,6 +2598,23 @@ function MessageSentFromGlyph({ sentFrom }: { sentFrom: MessageSentFrom | undefi
   );
 }
 
+/** Why Threadlines sent a message the user didn't type (OrchestrationMessage.trigger). */
+const MESSAGE_TRIGGER_LABELS: Record<MessageTrigger, string> = {
+  usageLimitReset: "Sent at reset",
+  accountSwitch: "Sent on switching accounts",
+};
+
+function MessageTriggerLabel({
+  trigger,
+  notSent,
+}: {
+  trigger: MessageTrigger | undefined;
+  notSent: true | undefined;
+}) {
+  if (trigger === undefined) return null;
+  return <span>{notSent ? "Not sent: you wrote first" : MESSAGE_TRIGGER_LABELS[trigger]} ·</span>;
+}
+
 function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
@@ -2721,6 +2739,10 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
                   </div>
                 </div>
                 <p className={USER_MESSAGE_TIME_CLASS}>
+                  <MessageTriggerLabel
+                    trigger={row.message.trigger}
+                    notSent={row.message.notSent}
+                  />
                   <MessageSentFromGlyph sentFrom={row.message.sentFrom} />
                   {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
                 </p>

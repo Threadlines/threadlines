@@ -73,8 +73,8 @@ On an assistant's own computer (or any machine without your Threadlines), make
 a key in Settings → Connections → Assistants → Create a key, then:
 
 ```sh
-threadlines connect --url https://connect.threadlines.dev/mcp --key tlak1.…
-export THREADLINES_URL=https://connect.threadlines.dev/mcp
+threadlines connect --url https://threadlines-relay.threadlines.workers.dev/mcp --key tlak1.…
+export THREADLINES_URL=https://threadlines-relay.threadlines.workers.dev/mcp
 threadlines thread list
 ```
 

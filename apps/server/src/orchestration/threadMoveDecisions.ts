@@ -397,6 +397,8 @@ export function decideThreadImport(
       // An outside agent there: its name, for history; its connection was that computer's.
       ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
+      ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
+      ...(message.notSent === true ? { notSent: true as const } : {}),
       createdAt: message.createdAt,
       updatedAt: message.createdAt,
     },

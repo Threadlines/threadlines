@@ -48,6 +48,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { render } from "vitest-browser-react";
 import { useState, type ReactNode } from "react";
 import {
+  Outlet,
   RouterProvider,
   createMemoryHistory,
   createRootRoute,
@@ -94,6 +95,21 @@ import {
 } from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
+import { usePlaceArrival } from "../../hooks/usePlaceArrival";
+import { SidebarProvider } from "../ui/sidebar";
+import { SettingsSearchResultsBody } from "./SettingsSearch";
+import { useSettingsSearchActive } from "./SettingsSearchField";
+import { SettingsSidebarNav } from "./SettingsSidebarNav";
+import { useSettingsSearchStore } from "./settingsSearchStore";
+import { placePage } from "@threadlines/shared/appPlaces";
+import { SettingsGroup } from "./settingsLayout";
+import {
+  SettingsPlaceSignalsProvider,
+  type SettingsPlaceSearchId,
+  type SettingsRowPlaceId,
+  useSettingsPlaceShown,
+} from "./settingsPlaceAvailability";
+import { SETTINGS_ROWS } from "./settingsRowRegistry";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
 import { ThreadsSettingsPanel } from "./ThreadsSettings";
 import {
@@ -4635,7 +4651,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
     await expect.element(page.getByText("Not authenticated")).toBeInTheDocument();
   });
 
-  it("shows Git fetch interval settings inside the Git details dropdown", async () => {
+  it("shows the Git fetch interval as a row of its own under Git", async () => {
     setSourceControlDiscoveryStub(async () => ({
       versionControlSystems: [
         {
@@ -4658,15 +4674,11 @@ describe("SourceControlSettingsPanel discovery states", () => {
       </TestAppProviders>,
     );
 
-    const toggle = page.getByRole("button", { name: "Toggle Git details" });
-    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
-
-    await toggle.click();
-
-    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    // A place of its own, so search and place links can reach it.
     await expect
       .element(page.getByLabelText("Automatic Git fetch interval in seconds"))
       .toBeVisible();
+    expect(document.querySelector('[data-place="sourceControl.fetchInterval"]')).not.toBeNull();
     await expect
       .element(page.getByText("Automatic Git fetches run every 30 seconds"))
       .not.toBeInTheDocument();
@@ -5789,5 +5801,254 @@ describe("Agents outside Threadlines", () => {
     await page.getByTestId("assistants-create-key").click();
     await expect.element(page.getByTestId("assistant-key-name")).toHaveValue("");
     expect(document.body.textContent).not.toContain(KEY);
+  });
+});
+
+describe("Settings search", () => {
+  let mounted: Awaited<ReturnType<typeof render>> | null = null;
+
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    localStorage.clear();
+    useSettingsSearchStore.getState().clear();
+  });
+
+  afterEach(async () => {
+    await mounted?.unmount().catch(() => {});
+    mounted = null;
+    useSettingsSearchStore.getState().clear();
+    Reflect.deleteProperty(window, "nativeApi");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("finds settings, changes one where it stands, narrows from the menu and opens the page at a setting", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS) },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    // Stands in for the settings layout: the menu, the results while there is
+    // a query, and the page with its place arrival.
+    function ResultsWhileSearching() {
+      return useSettingsSearchActive() ? <SettingsSearchResultsBody /> : null;
+    }
+    function SettingsPage({ children }: { children: ReactNode }) {
+      usePlaceArrival();
+      return children;
+    }
+    const rootRoute = createRootRoute({
+      component: () => (
+        <TestAppProviders>
+          <SidebarProvider>
+            <SettingsSidebarNav pathname="/settings/general" />
+            <ResultsWhileSearching />
+            <Outlet />
+          </SidebarProvider>
+        </TestAppProviders>
+      ),
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: "/settings/general",
+          component: () => (
+            <SettingsPage>
+              <GeneralSettingsPanel />
+            </SettingsPage>
+          ),
+        }),
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: "/settings/archived",
+          component: () => <div>Archives page</div>,
+        }),
+      ]),
+      history: createMemoryHistory({ initialEntries: ["/settings/general"] }),
+    });
+    mounted = await render(<RouterProvider router={router} />);
+
+    const field = page.getByRole("textbox", { name: "Search settings" });
+    await field.fill("wrap");
+    const results = page.getByTestId("settings-search-results");
+    await expect.element(results).toBeInTheDocument();
+    await expect
+      .element(page.getByText("4 matches for “wrap”.", { exact: false }))
+      .toBeInTheDocument();
+
+    // A result is the setting's own switch: it changes the setting the page shows too.
+    const resultSwitch = results.getByRole("switch", { name: "Wrap diff lines by default" });
+    const pageSwitch = () =>
+      document.querySelector<HTMLElement>(
+        '[data-place="general.wrapDiffLines"]:not([data-testid="settings-search-results"] *) [role="switch"]',
+      );
+    const before = resultSwitch.element().getAttribute("aria-checked");
+    await resultSwitch.click();
+    await vi.waitFor(() => {
+      expect(resultSwitch.element().getAttribute("aria-checked")).not.toBe(before);
+      expect(pageSwitch()?.getAttribute("aria-checked")).not.toBe(before);
+    });
+
+    // The menu keeps every section; one with matches narrows the results to itself.
+    const menuButton = (label: string) =>
+      page.elementLocator(
+        [...document.querySelectorAll<HTMLElement>('[data-sidebar="menu-button"]')].find((button) =>
+          button.textContent?.startsWith(label),
+        )!,
+      );
+    expect(menuButton("Threads").element().textContent).toBe("Threads3");
+    await menuButton("Threads").click();
+    await expect
+      .element(page.getByText("3 of 4 matches for “wrap”, in Threads.", { exact: false }))
+      .toBeInTheDocument();
+
+    // One without matches leaves the search for its page.
+    await menuButton("Archives").click();
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/settings/archived"));
+    expect(useSettingsSearchStore.getState().query).toBe("");
+
+    // The line under a result opens its page at the setting, highlighted there.
+    await router.navigate({ to: "/settings/general" });
+    await field.fill("font size");
+    await page.getByRole("button", { name: "Open General › Terminal" }).click();
+    await vi.waitFor(() => {
+      expect(router.state.location.hash).toContain("place=general.terminalTextSize");
+      expect(
+        document.querySelector('[data-place="general.terminalTextSize"] > .place-arrival-overlay'),
+      ).not.toBeNull();
+    });
+    expect(document.querySelector('[data-testid="settings-search-results"]')).toBeNull();
+  });
+});
+
+describe("Settings search rows", () => {
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    resetSourceControlDiscoveryStateForTests();
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    Reflect.deleteProperty(window, "nativeApi");
+    Reflect.deleteProperty(window, "desktopBridge");
+    document.body.innerHTML = "";
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  // The drift check's rendered half (docs/design/settings-search.md): every
+  // live row draws its own place, alone as a result does, and a page draws
+  // exactly the live rows the search says are shown here.
+  it("draws every live row as its own place, alone and on its page", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),
+        discoverSourceControl: async (): Promise<SourceControlDiscoveryResult> => ({
+          versionControlSystems: [
+            {
+              kind: "git",
+              label: "Git",
+              executable: "git",
+              implemented: true,
+              status: "available",
+              version: Option.some("2.55.0"),
+              installHint: "Install Git.",
+              detail: Option.none(),
+            },
+          ],
+          sourceControlProviders: [],
+        }),
+        getSourceControlSetup: async () => ({
+          tools: [],
+          githubAuth: { status: "idle", verificationUrl: null, userCode: null, message: null },
+        }),
+      },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    let shown: ((id: SettingsPlaceSearchId) => boolean) | null = null;
+    function ReadShown() {
+      shown = useSettingsPlaceShown();
+      return null;
+    }
+    const liveRows = Object.entries(SETTINGS_ROWS).flatMap(([id, entry]) =>
+      entry.kind === "live" ? [{ id: id as SettingsRowPlaceId, Row: entry.Row }] : [],
+    );
+    const drawn = (id: string) => document.querySelector(`[data-place="${id}"]`) !== null;
+
+    for (const [page, Panel] of [
+      ["settings.general", GeneralSettingsPanel],
+      ["settings.threads", ThreadsSettingsPanel],
+      ["settings.sourceControl", SourceControlSettingsPanel],
+    ] as const) {
+      const screen = await renderWithTestRouter(
+        <TestAppProviders>
+          <SettingsPlaceSignalsProvider>
+            <ReadShown />
+            <Panel />
+          </SettingsPlaceSignalsProvider>
+        </TestAppProviders>,
+      );
+      const onPage = liveRows.filter(({ id }) => placePage(id).id === page);
+      await vi.waitFor(() => {
+        for (const { id } of onPage) expect(drawn(id), id).toBe(shown!(id));
+      });
+      await screen.unmount();
+    }
+
+    // Alone, as a result draws it: every live row, whatever this fixture's
+    // pages show, so a registry entry naming the wrong component can't hide.
+    // The background rows read the desktop app's options, so they get one.
+    const desktopBackground = new Set<string>([
+      "general.keepAwakeForScheduledTasks",
+      "general.runInBackground",
+    ]);
+    const backgroundOptions = {
+      keepAwakeForScheduledTasks: false,
+      runInBackground: false,
+      runInBackgroundSupported: true,
+    };
+    // Drawn only while a speech model is downloaded, which only the dictation
+    // server's stream reports; the pages above cover its rule.
+    const cannotDrawAlone = new Set<string>(["general.downloadedModels"]);
+    let drawnAlone = 0;
+    for (const { id, Row } of liveRows) {
+      if (cannotDrawAlone.has(id)) continue;
+      if (desktopBackground.has(id)) {
+        window.desktopBridge = {
+          getBackgroundOptions: async () => backgroundOptions,
+          setBackgroundOptions: async () => backgroundOptions,
+        } as unknown as DesktopBridge;
+      }
+      const alone = await renderWithTestRouter(
+        <TestAppProviders>
+          <SettingsGroup data-testid="alone">
+            <Row />
+          </SettingsGroup>
+        </TestAppProviders>,
+      );
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(`[data-testid="alone"] [data-place="${id}"]`),
+          id,
+        ).not.toBeNull(),
+      );
+      drawnAlone += 1;
+      await alone.unmount();
+      Reflect.deleteProperty(window, "desktopBridge");
+    }
+    expect(drawnAlone).toBe(liveRows.length - cannotDrawAlone.size);
   });
 });

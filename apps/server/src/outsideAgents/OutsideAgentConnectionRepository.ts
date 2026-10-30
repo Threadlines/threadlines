@@ -21,7 +21,7 @@ import * as SqlSchema from "effect/sql/SqlSchema";
 
 /**
  * Outside agents' and assistants' approved connections
- * (`outside_agent_connections`, migrations 089 and 092;
+ * (`outside_agent_connections`, migrations 089 and 093;
  * docs/design/outside-agents.md, docs/design/assistants.md). A row is the one
  * authority every call is checked against: its grant is read again on each
  * call, and a removed row refuses every credential.

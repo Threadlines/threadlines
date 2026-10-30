@@ -138,7 +138,12 @@ assistant's webhook ◀──────────── https, signed alerts
 
 ## The public address
 
-- **Hostname:** a custom domain on the relay worker, e.g.
+- **Decided Oct 30 (Will):** for now the door is the relay's own origin,
+  `https://threadlines-relay.threadlines.workers.dev`. threadlines.dev's DNS
+  is on Vercel, so `connect.threadlines.dev` can't route to the worker without
+  moving the zone to Cloudflare. Credentials are bound to the origin, so a
+  move disconnects every assistant: make it, if at all, before listing.
+- **Hostname (the plan):** a custom domain on the relay worker, e.g.
   `connect.threadlines.dev`. Today the relay answers only on
   `threadlines-relay.threadlines.workers.dev` (`relayApi.ts` 27;
   `relay.threadlines.dev` appears only in tests). A separate hostname:
@@ -783,7 +788,7 @@ The shared payload (`data`), all written by Threadlines or named by the user:
 
 ## Storage
 
-**The computer** (step 1 built it as migration 092; the record's tables come
+**The computer** (step 1 built it as migration 093; the record's tables come
 with step 2):
 
 - `outside_agent_connections` gains:
@@ -1178,7 +1183,8 @@ Choices the build made inside the plan, for the relay and web builds to match:
 ## Build notes: step 1 put together (Oct 30)
 
 Will's answers to the open questions: Workers Paid and the demo server when
-listing comes (not before); `connect.threadlines.dev`; assistants never answer
+listing comes (not before); the relay's own origin for the address (see The
+public address); assistants never answer
 approvals; phones and keep-awake stay as in this plan for v1.
 
 What changed while the three parts were joined and tested live:
@@ -1222,5 +1228,5 @@ Live checks (Oct 30), all with a stand-in agent and a throwaway home:
   (projects, `thread start --wait`).
 
 Not yet: a real hosted assistant (Grok Bot, Claude, dots, Muse) against the
-staging relay; production DNS for `connect.threadlines.dev`; the relay's
+staging relay; a nicer address than the relay's own; the relay's
 production deploy and its secrets.

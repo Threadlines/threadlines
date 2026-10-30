@@ -67,6 +67,8 @@ import {
   ThreadCommandRequestedPayload,
   ThreadCommandRequestDismissedPayload,
   ThreadErrorDismissedPayload,
+  ThreadContinueAtResetSetPayload,
+  ThreadContinueAtResetSkippedPayload,
   ThreadCommandRunStartedPayload,
   ThreadCommandRunUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
@@ -1263,6 +1265,7 @@ export function projectEvent(
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
+            ...(payload.trigger !== undefined ? { trigger: payload.trigger } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1298,6 +1301,10 @@ export function projectEvent(
                     ...(entry.sentFrom === undefined && message.sentFrom !== undefined
                       ? { sentFrom: message.sentFrom }
                       : {}),
+                    ...(entry.trigger === undefined && message.trigger !== undefined
+                      ? { trigger: message.trigger }
+                      : {}),
+                    ...(entry.notSent === true ? { notSent: true as const } : {}),
                   }
                 : entry,
             )
@@ -1452,6 +1459,54 @@ export function projectEvent(
                   session: { ...session, lastErrorDismissedAt: payload.dismissedAt },
                 }),
               };
+        }),
+      );
+
+    // A continue the user's own message overtook never reached the agent.
+    case "thread.continue-at-reset-skipped":
+      return decodeForEvent(
+        ThreadContinueAtResetSkippedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: thread.messages.map((message) =>
+                message.id === payload.messageId ? { ...message, notSent: true as const } : message,
+              ),
+            }),
+          };
+        }),
+      );
+
+    // Waiting to continue is not work on the thread either.
+    case "thread.continue-at-reset-set":
+      return decodeForEvent(
+        ThreadContinueAtResetSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const session = nextBase.threads.find((entry) => entry.id === payload.threadId)?.session;
+          if (session == null || (session.lastErrorAt ?? null) !== payload.lastErrorAt) {
+            return nextBase;
+          }
+          const { continueAtReset: _previous, ...rest } = session;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              session:
+                payload.continueAtReset === null
+                  ? rest
+                  : { ...rest, continueAtReset: payload.continueAtReset },
+            }),
+          };
         }),
       );
 

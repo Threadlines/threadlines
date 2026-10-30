@@ -33,6 +33,7 @@ import {
   MessageAgentModel,
   MessageComposer,
   MessageSentFrom,
+  MessageTrigger,
   ModelSelection,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
@@ -52,6 +53,8 @@ import {
   OrchestrationChildRequestState,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationSessionStartup,
+  OrchestrationSessionUsageLimit,
+  OrchestrationContinueAtReset,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
@@ -244,6 +247,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     ),
     composer: Schema.NullOr(MessageComposer),
     sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
+    trigger: Schema.NullOr(MessageTrigger),
+    notSent: Schema.NullOr(Schema.Number),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -295,6 +300,12 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     awaitedBackgroundTasks: Schema.fromJsonString(Schema.Array(OrchestrationAwaitedBackgroundTask)),
     startup: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionStartup))),
+    lastErrorUsageLimit: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationSessionUsageLimit)),
+    ),
+    continueAtReset: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(OrchestrationContinueAtReset)),
+    ),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -521,6 +532,8 @@ function mapSessionRow(
     lastError: row.lastError,
     ...(row.lastErrorAt ? { lastErrorAt: row.lastErrorAt } : {}),
     ...(row.lastErrorDismissedAt ? { lastErrorDismissedAt: row.lastErrorDismissedAt } : {}),
+    ...(row.lastErrorUsageLimit ? { lastErrorUsageLimit: row.lastErrorUsageLimit } : {}),
+    ...(row.continueAtReset ? { continueAtReset: row.continueAtReset } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -604,6 +617,8 @@ function mapThreadMessageRow(
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
     ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
+    ...(row.trigger !== null ? { trigger: row.trigger } : {}),
+    ...(row.notSent === 1 ? { notSent: true as const } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -1084,6 +1099,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           agent_models AS "agentModels",
           composer,
           sent_from AS "sentFrom",
+          message_trigger AS "trigger",
+          not_sent AS "notSent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1143,6 +1160,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           agent_models AS "agentModels",
           composer,
           sent_from AS "sentFrom",
+          message_trigger AS "trigger",
+          not_sent AS "notSent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1299,6 +1318,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_at AS "lastErrorAt",
           last_error_dismissed_at AS "lastErrorDismissedAt",
+          last_error_usage_limit AS "lastErrorUsageLimit",
+          continue_at_reset AS "continueAtReset",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -1352,6 +1373,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error AS "lastError",
           sessions.last_error_at AS "lastErrorAt",
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
+          sessions.last_error_usage_limit AS "lastErrorUsageLimit",
+          sessions.continue_at_reset AS "continueAtReset",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1385,6 +1408,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error AS "lastError",
           sessions.last_error_at AS "lastErrorAt",
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
+          sessions.last_error_usage_limit AS "lastErrorUsageLimit",
+          sessions.continue_at_reset AS "continueAtReset",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1884,6 +1909,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           agent_models AS "agentModels",
           composer,
           sent_from AS "sentFrom",
+          message_trigger AS "trigger",
+          not_sent AS "notSent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -2237,6 +2264,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_at AS "lastErrorAt",
           last_error_dismissed_at AS "lastErrorDismissedAt",
+          last_error_usage_limit AS "lastErrorUsageLimit",
+          continue_at_reset AS "continueAtReset",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -3657,6 +3686,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               last_error AS "lastError",
               last_error_at AS "lastErrorAt",
               last_error_dismissed_at AS "lastErrorDismissedAt",
+              last_error_usage_limit AS "lastErrorUsageLimit",
+              continue_at_reset AS "continueAtReset",
               updated_at AS "updatedAt"
             FROM projection_thread_sessions
             WHERE ${sql.in("thread_id", threadIds)}
