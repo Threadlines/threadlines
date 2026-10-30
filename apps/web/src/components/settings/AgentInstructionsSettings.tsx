@@ -266,12 +266,16 @@ export function AgentInstructionsSettingsPanel() {
 
   // A place link from a thread opens on that thread's project once it's
   // listed. After the default pick above, so it wins when projects arrive
-  // late; and only on the computer the link names, so a project at the same
-  // path on another computer is never opened (or saved) in its place.
+  // late. Only when that path is the linked computer's alone: this page picks
+  // a project by its path, so a path two computers share is left to the user
+  // rather than opened (and saved) on the wrong one.
   usePlaceScopeArrival((scope) => {
     if (scope.project === null) return true;
-    if (!projectOptions.some((option) => option.value === scope.project)) return false;
-    if (environmentIdByCwd.get(scope.project) === scope.environmentId) setCwd(scope.project);
+    const owners = projects.filter((project) => project.cwd === scope.project);
+    if (owners.length === 0) return false;
+    if (owners.length === 1 && owners[0]?.environmentId === scope.environmentId) {
+      setCwd(scope.project);
+    }
     return true;
   });
 

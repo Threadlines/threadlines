@@ -4454,17 +4454,20 @@ export function ExtensionsSettingsPanel() {
     [machineOptions, projects, sidebarThreads],
   );
   // A place link from a thread opens on that thread's computer and project,
-  // once the page lists them. A computer it doesn't list is left alone rather
-  // than shown as this one (resolveExtensionScope would fall back to it).
+  // once the page lists them (waiting, bounded, while they load). A computer
+  // it never lists is left alone rather than shown as this one
+  // (resolveExtensionScope would fall back to it).
   usePlaceScopeArrival((scope) => {
-    if (scopeGroups.length === 0) return false;
     const group = scopeGroups.find((entry) => entry.environmentId === scope.environmentId);
-    if (group === undefined) return true;
+    if (group === undefined) return false;
     const selection = { environmentId: scope.environmentId, cwd: scope.project };
-    const listed =
-      scope.project === null ||
-      group.projects.some((entry) => entry.key === extensionScopeKey(selection));
-    setRememberedScope(listed ? selection : { environmentId: scope.environmentId, cwd: null });
+    if (
+      scope.project !== null &&
+      !group.projects.some((entry) => entry.key === extensionScopeKey(selection))
+    ) {
+      return false;
+    }
+    setRememberedScope(selection);
     return true;
   });
   const [rememberedScope, setRememberedScope] = useState<ExtensionScopeSelection | null>(

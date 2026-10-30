@@ -7,6 +7,8 @@ import { placeIdFromArrivalHash, placeScopeFromSearch } from "../appPlaceLinks";
 
 /** How long a page may take to draw the place before the arrival gives up. */
 const PLACE_ARRIVAL_WAIT_MS = 3_000;
+/** How long a page may take to list a link's computer and project before it gives up on them. */
+const PLACE_SCOPE_WAIT_MS = 5_000;
 /** The overlay's fade (`place-arrival-fade` in index.css), and a little to spare. */
 const PLACE_ARRIVAL_HIGHLIGHT_MS = 1_600;
 /** What can draw a place that is already in the page: a tab or section opening. */
@@ -120,7 +122,9 @@ export function usePlaceArrival(): void {
  * (Plugins & Skills, Agent Instructions). Each click carries a new `#place=`
  * counter, so following a link again applies it again, while a pick made on
  * the page in between stands. `apply` returns false when the page can't take
- * it yet (its projects still loading), and is asked again on the next render.
+ * it yet (its projects still loading) and is asked again on later renders, for
+ * at most PLACE_SCOPE_WAIT_MS: data that arrives later never overrides what
+ * the user has done since.
  */
 export function usePlaceScopeArrival(
   apply: (scope: {
@@ -144,10 +148,16 @@ export function usePlaceScopeArrival(
         : new URLSearchParams(location.hash).get("n"),
   });
   const applied = useRef<string | null>(null);
+  const waiting = useRef<{ readonly arrival: string; readonly since: number } | null>(null);
   useEffect(() => {
     if (scopeKey === null || click === null) return;
     const arrival = `${scopeKey}\n${click}`;
     if (applied.current === arrival) return;
+    if (waiting.current?.arrival !== arrival) waiting.current = { arrival, since: Date.now() };
+    if (Date.now() - waiting.current.since > PLACE_SCOPE_WAIT_MS) {
+      applied.current = arrival;
+      return;
+    }
     const [environmentId = "", project = ""] = scopeKey.split("\n");
     if (
       apply({

@@ -947,7 +947,10 @@ describe("ChatMarkdown", () => {
       const chip = page.getByRole("link", {
         name: "Settings › Threads › New threads › Agents can start threads",
       });
-      await expect.element(chip).toHaveAttribute("href", "/settings/threads");
+      // Opened another way (a new tab), it still names the place to highlight.
+      await expect
+        .element(chip)
+        .toHaveAttribute("href", "/settings/threads#place=threads.agentThreads&n=0");
       // A place this build doesn't know keeps its words and loses its link.
       await expect.element(page.getByText("old switch")).toBeVisible();
       expect(document.querySelectorAll("a")).toHaveLength(1);

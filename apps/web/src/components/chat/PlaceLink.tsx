@@ -143,7 +143,11 @@ export function PlaceLink({
 
   return (
     <a
-      href={router ? router.history.createHref(target.href) : target.href}
+      // Opened another way (a new tab), the page still gets the place: click 0.
+      href={(() => {
+        const href = `${target.href}#${placeArrivalHash(placeId, 0)}`;
+        return router ? router.history.createHref(href) : href;
+      })()}
       className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, "chat-markdown-place-link", className)}
       data-place-link={placeId}
       onClick={(event) => {
