@@ -17,6 +17,7 @@ import {
   buildMacAdaptiveIconSync,
 } from "./lib/mac-adaptive-icon.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { parseUpdateManifest, serializeUpdateManifest } from "./lib/update-manifest.ts";
 import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
@@ -557,6 +558,40 @@ export function retryTransientElectronPackaging<A, E, R>(
       times: 2,
       while: isTransientNetworkFailure,
     }),
+  );
+}
+
+/**
+ * The oldest macOS the packaged Electron runs on (its Info.plist's
+ * LSMinimumSystemVersion; Electron 44 raised it to 13), and the Darwin release
+ * that version of macOS reports. electron-updater compares a manifest's
+ * `minimumSystemVersion` against `os.release()`, which on a Mac is the Darwin
+ * version, so the manifest carries that one (withMacMinimumSystemVersion;
+ * electron-builder has no option for it): a Mac on an older macOS is then not
+ * offered a build that won't open. The build fails if Electron's own minimum
+ * stops matching (checkMacMinimumSystemVersion).
+ */
+const MAC_MINIMUM_SYSTEM_VERSION = { macOS: "13.0", darwin: "22.0.0" } as const;
+
+/** Why the packaged app's minimum macOS differs from ours, or null when it matches. */
+export function checkMacMinimumSystemVersion(infoPlist: string): string | null {
+  const found = /<key>LSMinimumSystemVersion<\/key>\s*<string>([^<]*)<\/string>/.exec(
+    infoPlist,
+  )?.[1];
+  return found === MAC_MINIMUM_SYSTEM_VERSION.macOS
+    ? null
+    : `The packaged app needs macOS ${found ?? "(unknown)"}, but update manifests say ${MAC_MINIMUM_SYSTEM_VERSION.macOS}. Update MAC_MINIMUM_SYSTEM_VERSION (both versions) in scripts/build-desktop-artifact.ts.`;
+}
+
+/** A macOS update manifest that names the oldest macOS (as Darwin) the build runs on. */
+export function withMacMinimumSystemVersion(manifest: string, sourcePath: string): string {
+  const parsed = parseUpdateManifest(manifest, sourcePath, "macOS");
+  return serializeUpdateManifest(
+    {
+      ...parsed,
+      extras: { ...parsed.extras, minimumSystemVersion: MAC_MINIMUM_SYSTEM_VERSION.darwin },
+    },
+    { platformLabel: "macOS" },
   );
 }
 
@@ -1269,6 +1304,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
+  if (options.platform === "mac") {
+    yield* applyMacMinimumSystemVersion(stageDistDir, stageEntries);
+  }
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
 
   const copiedArtifacts: string[] = [];
@@ -1291,6 +1329,37 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),
   );
+});
+
+/**
+ * Names the oldest macOS in the update manifests, failing the build when the
+ * packaged .app needs a different one than they would say.
+ */
+const applyMacMinimumSystemVersion = Effect.fn("applyMacMinimumSystemVersion")(function* (
+  stageDistDir: string,
+  stageEntries: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const entry of stageEntries.filter((name) => name.endsWith("-mac.yml"))) {
+    const manifestPath = path.join(stageDistDir, entry);
+    const manifest = yield* fs.readFileString(manifestPath);
+    yield* fs.writeFileString(manifestPath, withMacMinimumSystemVersion(manifest, manifestPath));
+  }
+  for (const entry of stageEntries.filter((name) => name.startsWith("mac"))) {
+    const appNames = yield* fs
+      .readDirectory(path.join(stageDistDir, entry))
+      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    for (const appName of appNames.filter((name) => name.endsWith(".app"))) {
+      const infoPlist = yield* fs.readFileString(
+        path.join(stageDistDir, entry, appName, "Contents", "Info.plist"),
+      );
+      const mismatch = checkMacMinimumSystemVersion(infoPlist);
+      if (mismatch !== null) {
+        return yield* new BuildScriptError({ message: mismatch });
+      }
+    }
+  }
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
