@@ -1,7 +1,9 @@
 import { importAssistantRouteKey } from "@threadlines/shared/assistantCredentials";
 import { fromBase64Url } from "@threadlines/shared/relaySecure";
 
-import type { RelayV2Env } from "../env.ts";
+import { ASSISTANT_MCP_PATH } from "@threadlines/contracts/relayAssistants";
+
+import { publicRelayOrigin, type RelayV2Env } from "../env.ts";
 
 /**
  * The assistants door (docs/design/assistants.md) as this deployment has it
@@ -125,4 +127,18 @@ function isOn(value: string | undefined): boolean {
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+/**
+ * The address to paste and whether the door is on. The same for every
+ * computer, so it's also public (`GET /v2/assistants`): a computer shows it
+ * in Settings before it has registered with the relay.
+ */
+export async function assistantsInfo(
+  request: Request,
+  env: RelayV2Env,
+): Promise<{ readonly address: string; readonly enabled: boolean }> {
+  const config = await assistantsConfig(env);
+  const origin = config.origin ?? publicRelayOrigin(request, env);
+  return { address: `${origin}${ASSISTANT_MCP_PATH}`, enabled: config.enabled };
 }

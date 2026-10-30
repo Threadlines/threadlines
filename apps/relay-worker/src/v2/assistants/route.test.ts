@@ -332,7 +332,7 @@ describe("clients and the sign-in page", () => {
       { ...base, state: "" },
       { ...base, code_challenge_method: "plain" },
       { ...base, resource: "https://elsewhere.test/mcp" },
-      { ...base, scope: "threads:read admin" },
+      { ...base, scope: "x".repeat(600) },
       { ...base, response_type: "token" },
     ]) {
       const response = await route(new Request(authorizeUrl(params)), env);
@@ -342,7 +342,28 @@ describe("clients and the sign-in page", () => {
     }
     expect(created).toEqual([]);
     expect(woken).toEqual([]);
-    expect((await register(env, { redirect_uris: ["http://localhost:3000/cb"] })).status).toBe(400);
+    expect((await register(env, { redirect_uris: ["http://example.test/cb"] })).status).toBe(400);
+  });
+
+  it("takes loopback return addresses on any port, and ignores scopes it doesn't define", async () => {
+    const { env } = edgeEnv();
+    const registered = (await (
+      await register(env, { redirect_uris: ["http://127.0.0.1:3000/callback"] })
+    ).json()) as { client_id: string };
+    const base = {
+      client_id: registered.client_id,
+      redirect_uri: "http://127.0.0.1:51234/callback",
+      scope: "threads:read offline_access",
+    };
+    const page = await route(new Request(authorizeUrl(base)), env);
+    expect(page.status).toBe(200);
+    for (const redirect_uri of [
+      "http://127.0.0.1:51234/other",
+      "http://localhost:51234/callback",
+    ]) {
+      const refused = await route(new Request(authorizeUrl({ ...base, redirect_uri })), env);
+      expect(refused.status).toBe(400);
+    }
   });
 
   it("signs in a CIMD client from its fetched metadata, refusing redirects and IP literals", async () => {

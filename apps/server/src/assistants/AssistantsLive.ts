@@ -8,8 +8,8 @@
  *   is made (which register this computer first if it isn't), and when the
  *   snapshot is read and the answer is older than 10 minutes (30 seconds
  *   while the relay couldn't be reached). Reading the snapshot never
- *   registers this computer: until a code or a key does, the address is
- *   unknown.
+ *   registers this computer: until a code or a key does, the relay's public
+ *   answer gives the address, which is the same for every computer.
  * - **The socket** is wanted while there is a live assistant connection, a
  *   code showing, or a sign-in waiting; the relay link keeps the computer's
  *   lease up for as long.

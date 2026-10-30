@@ -52,7 +52,11 @@ export interface AssistantRelayShape {
   readonly available: boolean;
   /** This computer's relay host id; null while it isn't registered. */
   readonly hostId: Effect.Effect<string | null>;
-  /** The door's address and whether it is on; null when not registered and `register` is false. */
+  /**
+   * The door's address and whether it is on. Not registered and `register`
+   * false: the relay's public answer (`GET /v2/assistants`), which registers
+   * nothing; null only when a fake relay has no answer.
+   */
   readonly info: (options: {
     readonly register: boolean;
   }) => Effect.Effect<RelayAssistantInfo | null, AssistantRelayError>;

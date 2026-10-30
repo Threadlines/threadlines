@@ -27,7 +27,6 @@ import {
   RELAY_RAW_CONTROL_PREFIX,
 } from "@threadlines/contracts/relay";
 import {
-  ASSISTANT_MCP_PATH,
   ASSISTANT_SIGN_IN_TTL_MS,
   type RelayAssistantCodeResult,
   type RelayAssistantDecisionFrame,
@@ -56,7 +55,7 @@ import {
   mcpUnauthorized,
 } from "./assistants/answers.ts";
 import { assistantCodeShardName } from "./assistants/codes.ts";
-import { ASSISTANTS_OFF_CODE, assistantsConfig } from "./assistants/config.ts";
+import { ASSISTANTS_OFF_CODE, assistantsConfig, assistantsInfo } from "./assistants/config.ts";
 import { AssistantDoor, type AssistantDoorRequest, parseHostFrame } from "./assistants/door.ts";
 import {
   AssistantHostCore,
@@ -544,12 +543,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   /** `GET .../assistants`: the address to paste, and whether the door is on. */
   private async handleAssistantInfo(request: Request): Promise<Response> {
     if (!(await this.requireHostSecret(request))) return badHostSecret();
-    const config = await assistantsConfig(this.env);
-    const origin = config.origin ?? publicRelayOrigin(request, this.env);
-    return json({
-      address: `${origin}${ASSISTANT_MCP_PATH}`,
-      enabled: config.enabled,
-    } satisfies RelayAssistantInfo);
+    return json((await assistantsInfo(request, this.env)) satisfies RelayAssistantInfo);
   }
 
   /** `POST .../assistants/code`: a new sign-in code; the host's earlier one stops working. */

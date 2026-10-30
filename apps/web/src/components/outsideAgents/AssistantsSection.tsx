@@ -129,6 +129,8 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
                   </>
                 ) : assistants.status === "unreachable" ? (
                   "Can't reach the relay right now. Threadlines keeps trying."
+                ) : assistants.status === "ready" ? (
+                  "Asking the relay for the address."
                 ) : (
                   "Assistants are turned off on this computer's relay."
                 )

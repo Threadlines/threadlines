@@ -280,6 +280,15 @@ export const relayApi = {
     }),
 
   /** The assistants door (docs/design/assistants.md): its public address, and whether it is on. */
+  /** The same answer without a host: the door's address is the same for every computer. */
+  publicAssistantInfo: (origin: string) =>
+    request({
+      origin,
+      method: "GET",
+      path: "/v2/assistants",
+      decode: (value) => decodeRelayAssistantInfo(value),
+    }),
+
   assistantInfo: (origin: string, hostId: string, hostSecret: string) =>
     request({
       origin,

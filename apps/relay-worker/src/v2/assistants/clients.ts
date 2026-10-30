@@ -89,7 +89,8 @@ export function clientIdentity(
 /**
  * A return address as registered, or null. https only, exact (kept as sent,
  * compared as sent), no userinfo or fragment, printable ASCII, at most 512
- * characters. Loopback http only while the door itself is on loopback.
+ * characters. Loopback http (127.0.0.1, [::1], localhost) when allowed: the
+ * door allows it, as the MCP spec says, for native clients.
  */
 export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
@@ -419,4 +420,27 @@ function isSubsetOf(value: unknown, allowed: ReadonlyArray<string>): boolean {
 
 function metadataError(description: string): RegistrationParse {
   return { ok: false, error: "invalid_client_metadata", description };
+}
+
+/**
+ * Whether a redirect URI an authorize request names is one the client
+ * registered. Exact, except that a loopback http address matches on any port
+ * (RFC 8252, section 7.3): native clients listen on whatever port is free.
+ */
+export function redirectMatches(registered: string, requested: string): boolean {
+  if (registered === requested) return true;
+  if (!registered.startsWith("http:") || !requested.startsWith("http:")) return false;
+  let left: URL;
+  let right: URL;
+  try {
+    left = new URL(registered);
+    right = new URL(requested);
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHost(left.hostname) || left.hostname !== right.hostname) return false;
+  if (checkRedirectUri(requested, true) === null) return false;
+  left.port = "";
+  right.port = "";
+  return left.href === right.href;
 }

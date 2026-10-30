@@ -25,6 +25,7 @@ import {
 import {
   clientIdentity,
   parseRegistration,
+  redirectMatches,
   resolveClient,
   signRegisteredClientId,
 } from "./clients.ts";
@@ -158,7 +159,9 @@ async function register(
   if (byIp !== "allowed") return answerResponse(limited("page", byIp));
   const read = await readBody(request, REGISTER_BODY_MAX_BYTES);
   if (!read.ok) return answerResponse(read.answer);
-  const parsed = parseRegistration(parseJsonObject(read.text), config.loopback);
+  // Return addresses are https or loopback http: the MCP spec's rule, so
+  // native clients (Claude Code, Codex) on any computer can sign in too.
+  const parsed = parseRegistration(parseJsonObject(read.text), true);
   if (!parsed.ok) {
     return answerResponse(
       jsonAnswer(400, { error: parsed.error, error_description: parsed.description }),
@@ -216,13 +219,13 @@ async function authorize(
     return errorPageResponse(400, "This sign-in link doesn't say which assistant it's for.");
   const resolved = await resolveClient(clientId, {
     clientKey: config.clientKey,
-    allowLoopbackHttp: config.loopback,
+    allowLoopbackHttp: true,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
   if (!resolved.ok) return errorPageResponse(400, resolved.reason);
   const { client } = resolved;
   const redirectUri = params.get("redirect_uri") ?? "";
-  if (!client.redirectUris.includes(redirectUri)) {
+  if (!client.redirectUris.some((registered) => redirectMatches(registered, redirectUri))) {
     return errorPageResponse(
       400,
       "This sign-in link returns somewhere the assistant didn't register.",
@@ -295,13 +298,16 @@ async function authorize(
 }
 
 /** The scopes asked for, in a fixed order; none asked means both. Null for anything else. */
+/**
+ * The scopes a sign-in asks for. Ones this door doesn't define (clients add
+ * `offline_access` or `openid` out of habit) are ignored; asking for none of
+ * ours asks for both. Null for a malformed list only.
+ */
 export function requestedScopes(scope: string | null): AssistantScope[] | null {
+  if (scope !== null && scope.length > 512) return null;
   const asked = (scope ?? "").split(" ").filter(Boolean);
-  if (asked.length === 0) return [...ASSISTANT_SCOPES];
-  if (!asked.every((item) => (ASSISTANT_SCOPES as ReadonlyArray<string>).includes(item))) {
-    return null;
-  }
-  return ASSISTANT_SCOPES.filter((item) => asked.includes(item));
+  const ours = ASSISTANT_SCOPES.filter((item) => asked.includes(item));
+  return ours.length === 0 ? [...ASSISTANT_SCOPES] : ours;
 }
 
 /** Roughly where the page was opened, from Cloudflare's request data. Information only. */

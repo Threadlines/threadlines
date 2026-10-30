@@ -281,6 +281,14 @@ export const makeAssistantRelay = Effect.gen(function* () {
     info: ({ register }) =>
       withHost(register, (relay, creds) =>
         relayApi.assistantInfo(relay, creds.hostId, creds.hostSecret),
+      ).pipe(
+        // Not registered yet: the public answer is the same, and asking it
+        // registers nothing.
+        Effect.flatMap((info) =>
+          info !== null || origin === null
+            ? Effect.succeed(info)
+            : relayApi.publicAssistantInfo(origin).pipe(Effect.mapError(fromApiError)),
+        ),
       ),
     createCode: registered((relay, creds) =>
       relayApi.createAssistantCode(relay, creds.hostId, creds.hostSecret),
