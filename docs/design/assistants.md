@@ -1174,3 +1174,53 @@ Choices the build made inside the plan, for the relay and web builds to match:
   stops only when it talks to an assistants door; locally it still leaves it
   out unless `--request-id` is given.
 - **No telemetry** for assistants yet; it needs a line in `docs/telemetry.md`.
+
+## Build notes: step 1 put together (Oct 30)
+
+Will's answers to the open questions: Workers Paid and the demo server when
+listing comes (not before); `connect.threadlines.dev`; assistants never answer
+approvals; phones and keep-awake stay as in this plan for v1.
+
+What changed while the three parts were joined and tested live:
+
+- **The door's address is public** (`GET /v2/assistants`), the same for every
+  computer. Settings shows it before the computer has registered with the
+  relay; until then it said the door was off and its buttons were grey.
+- **Loopback return addresses on any port** (RFC 8252, and the MCP spec's
+  "localhost or https"), so native clients (Claude Code, Codex, the
+  `threadlines` command) can sign in through the door too.
+- **Scopes the door doesn't define** (`offline_access`, `openid`) are ignored
+  instead of refusing the sign-in.
+- **The computer stays on the relay while an approved code waits to be
+  traded** (60 s): right after Allow, nothing else was waiting, so it dropped
+  the socket and the assistant's token request got "temporarily unavailable".
+- **A feature keeping the relay link online registers the computer.** An
+  assistant connection made under another relay asked to stay online before
+  anything registered with the new one, so the control socket never opened.
+- **Sol's review of the branch** (6 findings, all taken): `/token` counts
+  against the daily allowance; a cancelled or replaced code starts nothing even
+  before its shard hears; the revocation list can't fill (retries count once,
+  route tags stop first); a decision that can't reach its shard is retried and
+  the shard takes the same decision again; the assistant socket's silence
+  timer starts when it opens; an assistant's `thread_start` bounds its git
+  checks to 10 s.
+- **App guide:** the Assistants section and its rows are catalog places, with
+  an Assistants topic.
+
+Live checks (Oct 30), all with a stand-in agent and a throwaway home:
+
+- Local `wrangler dev` relay: sign-in through the real page (code from
+  Settings, Allow, redirect), token, both MCP generations, `thread_start`
+  with and without `requestId`, `thread_wait`, refresh with a replayed
+  previous token, a key at See access refused a start, Remove (401 and relay
+  told, refresh refused), the computer stopped (removed: 401; key: the
+  generic offline answer; other methods: 503), the key working again after a
+  restart.
+- A staging relay on workers.dev (`threadlines-relay-staging`, its own keys):
+  the same sign-in and tools over the public internet, and the `threadlines`
+  command from another home with `connect --url --key` and `THREADLINES_URL`
+  (projects, `thread start --wait`).
+
+Not yet: a real hosted assistant (Grok Bot, Claude, dots, Muse) against the
+staging relay; production DNS for `connect.threadlines.dev`; the relay's
+production deploy and its secrets.
