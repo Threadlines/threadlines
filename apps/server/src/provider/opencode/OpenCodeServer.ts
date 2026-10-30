@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { isWindowsCommandNotFound } from "../../processRunner.ts";

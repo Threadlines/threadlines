@@ -36,7 +36,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import {
   type Bytes,
   claimSecrets,
@@ -227,7 +227,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment;
   const config = yield* ServerConfig;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const relayUrl = yield* Config.string("THREADLINES_RELAY_URL").pipe(
+  const relayUrl = yield* Config.String("THREADLINES_RELAY_URL").pipe(
     Config.withDefault(DEFAULT_RELAY_URL),
   );
   const context = yield* Effect.context<never>();

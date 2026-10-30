@@ -34,8 +34,8 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { ChildProcess, type ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { ChildProcess, type ChildProcessSpawner } from "effect/process";
 
 import { undetectableProvider } from "../providerDetection.ts";
 import {

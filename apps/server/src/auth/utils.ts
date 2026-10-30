@@ -3,7 +3,7 @@ import type {
   AuthClientMetadataDeviceType,
   ServerAuthSessionMethod,
 } from "@threadlines/contracts";
-import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Crypto from "node:crypto";
 import { networkInterfaces } from "node:os";
 

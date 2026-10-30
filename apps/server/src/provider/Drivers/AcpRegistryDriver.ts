@@ -24,7 +24,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
 import type { TextGenerationShape } from "../../textGeneration/TextGeneration.ts";

@@ -7,7 +7,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ref from "effect/Ref";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { it, assert } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -201,6 +201,8 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         .request("x/test", { hello: "world" })
         .pipe(Effect.forkScoped);
       const outbound = yield* Queue.take(output);
+      // Plain JSON-RPC: no RPC headers for the agent to trip over.
+      assert.notInclude(outbound, '"headers"');
       assert.deepEqual(yield* decodeExtRequest(outbound), {
         jsonrpc: "2.0",
         id: 1,
@@ -208,7 +210,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         params: {
           hello: "world",
         },
-        headers: [],
       });
 
       yield* Queue.offer(
@@ -245,7 +246,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
           id: 7,
           method: "x/test",
           params: { hello: "world" },
-          headers: [],
         }),
       );
       yield* Queue.offer(
@@ -297,7 +297,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
             },
             options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
           },
-          headers: [],
         }),
       );
 
@@ -369,7 +368,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         params: {
           hello: "world",
         },
-        headers: [],
       });
 
       yield* Fiber.interrupt(response);

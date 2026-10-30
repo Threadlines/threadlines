@@ -10,13 +10,13 @@
  */
 import { RELAY_HOOK_MAX_BODY_BYTES } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
+import * as ByteSize from "effect/ByteSize";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { ScheduledTasks } from "./ScheduledTasks.ts";
 
@@ -44,7 +44,7 @@ const handler = Effect.gen(function* () {
       Effect.map((buffer) => new Uint8Array(buffer)),
       Effect.provideService(
         HttpIncomingMessage.MaxBodySize,
-        FileSystem.Size(RELAY_HOOK_MAX_BODY_BYTES),
+        ByteSize.bytes(RELAY_HOOK_MAX_BODY_BYTES),
       ),
       Effect.mapError(() => "too_large" as const),
     ),

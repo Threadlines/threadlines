@@ -10,7 +10,7 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { planCliSpawn } from "../cliSpawn.ts";
 import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";

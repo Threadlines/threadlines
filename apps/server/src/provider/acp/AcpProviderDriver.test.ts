@@ -5,8 +5,8 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import { describe, expect, it } from "vite-plus/test";
 
 import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";

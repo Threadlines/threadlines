@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { projectSubagentActivity } from "@threadlines/shared/subagentProjection";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 const decodeActivity = Schema.decodeUnknownOption(
   Schema.fromJsonString(ThreadActivityAppendedPayload),

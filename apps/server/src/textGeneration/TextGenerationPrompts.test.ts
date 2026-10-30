@@ -6,7 +6,11 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
-import { normalizeCliError, sanitizeThreadTitle } from "./TextGenerationUtils.ts";
+import {
+  normalizeCliError,
+  sanitizeThreadTitle,
+  toJsonSchemaObject,
+} from "./TextGenerationUtils.ts";
 import { TextGenerationError } from "@threadlines/contracts";
 
 describe("buildCommitMessagePrompt", () => {
@@ -240,5 +244,40 @@ describe("normalizeCliError", () => {
 
     expect(result).toBeInstanceOf(TextGenerationError);
     expect(result.detail).toBe("fallback");
+  });
+});
+
+describe("output schemas", () => {
+  // Strict structured output (Codex's --output-schema) refuses an object that
+  // allows extra keys, and Effect leaves objects open unless told otherwise.
+  it("close every object they send", () => {
+    const openObjects = (value: unknown): number => {
+      if (Array.isArray(value)) return value.reduce((sum, item) => sum + openObjects(item), 0);
+      if (typeof value !== "object" || value === null) return 0;
+      const record = value as Record<string, unknown>;
+      const open = record.type === "object" && record.additionalProperties !== false ? 1 : 0;
+      return open + Object.values(record).reduce<number>((sum, item) => sum + openObjects(item), 0);
+    };
+    const schemas = [
+      buildCommitMessagePrompt({
+        branch: "main",
+        stagedSummary: "",
+        stagedPatch: "",
+        includeBranch: true,
+      }).outputSchema,
+      buildPrContentPrompt({
+        baseBranch: "main",
+        headBranch: "feature",
+        commitSummary: "",
+        diffSummary: "",
+        diffPatch: "",
+      }).outputSchema,
+      buildBranchNamePrompt({ message: "Fix the login form" }).outputSchema,
+      buildThreadTitlePrompt({ message: "Fix the login form" }).outputSchema,
+    ];
+
+    for (const schema of schemas) {
+      expect(openObjects(toJsonSchemaObject(schema))).toBe(0);
+    }
   });
 });

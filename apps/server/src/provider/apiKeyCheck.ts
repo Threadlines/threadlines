@@ -7,7 +7,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 const KEY_CHECK_TIMEOUT_MS = 15_000;
 

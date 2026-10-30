@@ -1,4 +1,4 @@
-// The spellings effect's `Config.boolean` accepts, so a flag read straight
+// The spellings effect's `Config.Boolean` accepts, so a flag read straight
 // from `process.env` means the same thing as one read through `Config`.
 export const ENV_FLAG_TRUE_VALUES: ReadonlySet<string> = new Set(["true", "yes", "on", "1", "y"]);
 export const ENV_FLAG_FALSE_VALUES: ReadonlySet<string> = new Set(["false", "no", "off", "0", "n"]);

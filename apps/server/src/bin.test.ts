@@ -13,11 +13,11 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as CliError from "effect/unstable/cli/CliError";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+import * as CliError from "effect/cli/CliError";
 import * as TestConsole from "effect/testing/TestConsole";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 
 import { cli } from "./bin.ts";
 import { CommandExit } from "./cli/connectExit.ts";
@@ -173,11 +173,16 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
       if (!CliError.isCliError(error)) {
         assert.fail(`Expected CliError, got ${String(error)}`);
       }
-      if (error._tag !== "InvalidValue") {
-        assert.fail(`Expected InvalidValue, got ${error._tag}`);
+      // A parse failure comes back with the help it is shown beside.
+      if (error._tag !== "ShowHelp") {
+        assert.fail(`Expected ShowHelp, got ${error._tag}`);
       }
-      assert.equal(error.option, "log-level");
-      assert.equal(error.value, "Debug");
+      const [invalid] = error.errors;
+      if (error.errors.length !== 1 || invalid?._tag !== "InvalidValue") {
+        assert.fail(`Expected one InvalidValue, got ${error.errors.map((e) => e._tag).join(", ")}`);
+      }
+      assert.equal(invalid.option, "log-level");
+      assert.equal(invalid.value, "Debug");
     }),
   );
 

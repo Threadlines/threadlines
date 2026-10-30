@@ -9,8 +9,8 @@ import {
 } from "@threadlines/tailscale";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
 import type { DesktopNetworkInterfaces } from "./DesktopServerExposure.ts";
 

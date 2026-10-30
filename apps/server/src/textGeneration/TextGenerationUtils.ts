@@ -3,9 +3,13 @@ import * as Schema from "effect/Schema";
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
-/** Convert an Effect Schema to a flat JSON Schema object, inlining `$defs` when present. */
+/**
+ * Convert an Effect Schema to a flat JSON Schema object, inlining `$defs` when
+ * present. Objects are closed (`additionalProperties: false`), which strict
+ * structured output requires; Effect leaves them open by default.
+ */
 export function toJsonSchemaObject(schema: Schema.Top): unknown {
-  const document = Schema.toJsonSchemaDocument(schema);
+  const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" });
   if (document.definitions && Object.keys(document.definitions).length > 0) {
     return { ...document.schema, $defs: document.definitions };
   }

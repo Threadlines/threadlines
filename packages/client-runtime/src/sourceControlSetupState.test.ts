@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import type { SourceControlSetupState } from "@threadlines/contracts";
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import {
   createSourceControlSetupManager,
   EMPTY_SOURCE_CONTROL_SETUP,

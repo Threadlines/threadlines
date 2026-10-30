@@ -42,7 +42,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { receivedPathRefusal, writeReceivedFile } from "../fs/receivedFiles.ts";

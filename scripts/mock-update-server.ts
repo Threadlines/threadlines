@@ -10,7 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 interface MockUpdateServerConfig {
   readonly port: number;
@@ -24,14 +24,14 @@ const resolveMockUpdateServerConfig = Effect.gen(function* () {
     Option.getOrUndefined(values.find(Option.isSome) ?? Option.none<A>());
   const config = yield* Config.all({
     port: Config.all([
-      Config.port("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
-      Config.port("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
-      Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+      Config.Port("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+      Config.Port("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+      Config.Port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
     ]).pipe(Config.map((values) => firstSome(values) ?? 3000)),
     root: Config.all([
-      Config.string("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
-      Config.string("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
-      Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+      Config.String("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+      Config.String("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+      Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
     ]).pipe(Config.map((values) => firstSome(values) ?? "../release-mock")),
   });
 

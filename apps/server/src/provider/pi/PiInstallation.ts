@@ -12,7 +12,7 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { ChildProcess, type ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, type ChildProcessSpawner } from "effect/process";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { isCommandMissingCause, spawnAndCollect } from "../providerSnapshot.ts";

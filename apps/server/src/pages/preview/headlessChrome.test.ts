@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   capturePage,
@@ -102,12 +102,13 @@ describe.skipIf(process.platform === "win32")("when the browser exits before ren
   );
 });
 
-// Covers patches/@effect__platform-node-shared@4.0.0-beta.107.patch, which the
-// browser's debugging pipe depends on. A stopped child never reads its input,
-// so a chunk larger than the socket buffer leaves a write queued. Closing the
-// scope interrupts the writer and kills the child, and the pipe then fails
-// with EPIPE (stdin) or ECONNRESET (extra fds, which Node also reads).
-// Unpatched, nothing listens by then and the uncaught error kills the server.
+// Covers the child process input error handling the browser's debugging pipe
+// depends on (we patched it in before Effect 4.0 shipped it). A stopped child
+// never reads its input, so a chunk larger than the socket buffer leaves a
+// write queued. Closing the scope interrupts the writer and kills the child,
+// and the pipe then fails with EPIPE (stdin) or ECONNRESET (extra fds, which
+// Node also reads). Without that handling, nothing listens by then and the
+// uncaught error kills the server.
 const killChildWithQueuedInput = (target: "stdin" | "fd3") =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

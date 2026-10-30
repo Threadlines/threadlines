@@ -16,11 +16,7 @@ import {
   AgentThreadSummary,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
-
-import { McpRoomInvocation } from "./roomTools.ts";
-
-const dependencies = [McpRoomInvocation];
+import { Tool, Toolkit } from "effect/ai";
 
 /** How a thread is doing, in one word an agent can act on (shared with linked computers). */
 export const ThreadStatusWord = AgentThreadStatusWord;
@@ -181,7 +177,6 @@ export const ThreadAgentsTool = readsThreads(
       ),
     }),
     success: ThreadAgentsResult,
-    dependencies,
   }).annotate(Tool.Title, "List agents threads can run on"),
 );
 
@@ -209,7 +204,6 @@ export const ThreadStartTool = drivesThreads(
       ),
     }),
     success: ThreadStartResult,
-    dependencies,
   }).annotate(Tool.Title, "Start threads"),
 );
 
@@ -221,7 +215,6 @@ export const ThreadListTool = readsThreads(
       scope: Schema.optional(Schema.Literals(["mine", "project"])),
     }),
     success: ThreadListResult,
-    dependencies,
   }).annotate(Tool.Title, "List threads"),
 );
 
@@ -235,7 +228,6 @@ export const ThreadReadTool = readsThreads(
       limit: Schema.optional(Schema.Number),
     }),
     success: ThreadReadResult,
-    dependencies,
   }).annotate(Tool.Title, "Read a thread"),
 );
 
@@ -248,7 +240,6 @@ export const ThreadSendTool = drivesThreads(
       message: Schema.String.annotate({ description: "What you want it to do or answer." }),
     }),
     success: ThreadSendResult,
-    dependencies,
   }).annotate(Tool.Title, "Message a thread"),
 );
 
@@ -258,7 +249,6 @@ export const ThreadStopTool = drivesThreads(
       "Stop one of your threads: its turn, its background work and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
     parameters: Schema.Struct({ threadId: ThreadIdParameter }),
     success: ThreadStopResult,
-    dependencies,
   }).annotate(Tool.Title, "Stop a thread"),
 );
 

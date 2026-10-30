@@ -11,8 +11,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as String from "effect/String";
-import { Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 interface NightlyReleaseMetadata {
   readonly baseVersion: string;
@@ -166,7 +166,7 @@ const writeOutput = Effect.fn("writeOutput")(function* (
   ] as const;
 
   if (writeGithubOutput) {
-    const githubOutputPath = yield* Config.nonEmptyString("GITHUB_OUTPUT");
+    const githubOutputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT");
     const serialized = entries.map(([key, value]) => `${key}=${value}\n`).join("");
     yield* fs.writeFileString(githubOutputPath, serialized, { flag: "a" });
   } else {
@@ -179,26 +179,26 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 const command = Command.make(
   "resolve-nightly-release",
   {
-    date: Flag.string("date").pipe(
+    date: Flag.String("date").pipe(
       Flag.withSchema(DateSchema),
       Flag.withDescription("Nightly build date in YYYYMMDD."),
     ),
-    runNumber: Flag.string("run-number").pipe(
+    runNumber: Flag.String("run-number").pipe(
       Flag.withSchema(RunNumberSchema),
       Flag.withDescription("GitHub Actions run number."),
     ),
-    sha: Flag.string("sha").pipe(
+    sha: Flag.String("sha").pipe(
       Flag.withSchema(ShaSchema),
       Flag.withDescription("Commit sha for the nightly build."),
     ),
-    targetVersion: Flag.string("target-version").pipe(
+    targetVersion: Flag.String("target-version").pipe(
       Flag.withSchema(TargetVersionSchema),
       Flag.withDescription(
         "Optional stable target version for the nightly, for example 0.0.18. Defaults to the next patch after the latest stable tag.",
       ),
       Flag.optional,
     ),
-    githubOutput: Flag.boolean("github-output").pipe(
+    githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),

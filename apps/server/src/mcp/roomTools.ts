@@ -13,7 +13,7 @@
  */
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { ROOM_DIFF_VIEWS } from "./roomGit.ts";
@@ -26,8 +26,6 @@ import { ROOM_HISTORY_MAX_LIMIT } from "./roomHistory.ts";
 export class McpRoomInvocation extends Context.Service<McpRoomInvocation, McpInvocationScope>()(
   "@threadlines/server/mcp/McpRoomInvocation",
 ) {}
-
-const dependencies = [McpRoomInvocation];
 
 const AgentName = Schema.String.annotate({
   description:
@@ -211,7 +209,6 @@ export const RoomAgentsTool = readsRoom(
     description:
       "Who is in this room: each agent's key, name, model, whether it is working, answering on the side or idle, whether it can answer on the side, and which one is you.",
     success: RoomAgentsResult,
-    dependencies,
   }).annotate(Tool.Title, "List the room's agents"),
 );
 
@@ -224,7 +221,6 @@ export const RoomAskTool = asksAgent(
       question: Schema.String.annotate({ description: "The question, as you would ask it." }),
     }),
     success: RoomAnswerResult,
-    dependencies,
   }).annotate(Tool.Title, "Ask another agent"),
 );
 
@@ -240,7 +236,6 @@ export const RoomReviewTool = asksAgent(
       basis: Schema.optional(RoomReviewBasisParameter),
     }),
     success: RoomAnswerResult,
-    dependencies,
   }).annotate(Tool.Title, "Get an independent review"),
 );
 
@@ -253,7 +248,6 @@ export const RoomHandOffTool = asksAgent(
       message: Schema.String.annotate({ description: "What you want it to do." }),
     }),
     success: RoomHandOffResult,
-    dependencies,
   }).annotate(Tool.Title, "Hand off to another agent"),
 );
 
@@ -266,7 +260,6 @@ export const RoomHistoryTool = readsRoom(
       query: Schema.optional(Schema.String),
     }),
     success: RoomHistoryResult,
-    dependencies,
   }).annotate(Tool.Title, "Read earlier room messages"),
 );
 
@@ -280,7 +273,6 @@ export const RoomDiffTool = readsRoom(
       path: Schema.optional(Schema.String),
     }),
     success: RoomDiffResult,
-    dependencies,
   }).annotate(Tool.Title, "Read the checkout's changes"),
 );
 
@@ -289,7 +281,6 @@ export const RoomAvailableAgentsTool = readsRoom(
     description:
       "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, each with the reasoning levels it offers, with the ones already in this thread marked.",
     success: RoomAvailableAgentsResult,
-    dependencies,
   }).annotate(Tool.Title, "List agents that could be brought in"),
 );
 
@@ -318,7 +309,6 @@ export const RoomInviteTool = asksAgent(
       basis: Schema.optional(RoomReviewBasisParameter),
     }),
     success: RoomInviteResult,
-    dependencies,
   }).annotate(Tool.Title, "Ask the user to bring in another agent"),
 );
 

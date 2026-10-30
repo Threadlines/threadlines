@@ -30,11 +30,11 @@ updates:
       # regenerate the checked-in artifacts with vendor:playwright.
       - dependency-name: "playwright"
       - dependency-name: "playwright-core"
-      # effect core is patched (patches/effect@4.0.0-beta.97.patch and
-      # patches/@effect__platform-node-shared@4.0.0-beta.97.patch), and the
-      # effect beta packages must move in lockstep — bumping satellites alone
-      # (PRs #78/#79) splits the ecosystem across two betas. Bumped manually
-      # as one coordinated upgrade, followed by scripts/sync-effect-source.ts.
+      # effect and its @effect/* packages must move in lockstep: bumping
+      # satellites alone (PRs #78/#79) split the ecosystem across two
+      # versions. CI also checks the vendored source in .repos/effect, so
+      # bump manually as one coordinated upgrade, followed by
+      # scripts/sync-effect-source.ts.
       - dependency-name: "effect"
       - dependency-name: "@effect/*"
       # lexical is patched for spellcheck (patches/lexical@0.47.0.patch);

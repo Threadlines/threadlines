@@ -7,7 +7,7 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { type GitLaunch, resolveGitLaunch, spawnGitWithFallback } from "./vcs/gitLaunch.ts";
 import {

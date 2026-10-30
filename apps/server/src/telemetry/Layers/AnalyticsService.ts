@@ -17,7 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { DEFAULT_SERVER_SETTINGS, ServerSettings } from "@threadlines/contracts";
 import { fromLenientJson } from "@threadlines/shared/schemaJson";
@@ -55,19 +55,19 @@ const optionalTelemetryConfig = <A>(config: Config.Config<A>, defaultValue: A) =
   );
 
 const TelemetryEnvConfig = Config.all({
-  posthogKey: optionalTelemetryConfig(Config.string("THREADLINES_POSTHOG_KEY"), bundledPosthogKey),
+  posthogKey: optionalTelemetryConfig(Config.String("THREADLINES_POSTHOG_KEY"), bundledPosthogKey),
   posthogHost: optionalTelemetryConfig(
-    Config.string("THREADLINES_POSTHOG_HOST"),
+    Config.String("THREADLINES_POSTHOG_HOST"),
     bundledPosthogHost,
   ),
-  enabledOverride: Config.boolean("THREADLINES_TELEMETRY_ENABLED").pipe(Config.option),
-  ci: Config.string("CI").pipe(Config.option),
+  enabledOverride: Config.Boolean("THREADLINES_TELEMETRY_ENABLED").pipe(Config.option),
+  ci: Config.String("CI").pipe(Config.option),
   flushBatchSize: optionalTelemetryConfig(
-    Config.number("THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE"),
+    Config.Number("THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE"),
     20,
   ),
   maxBufferedEvents: optionalTelemetryConfig(
-    Config.number("THREADLINES_TELEMETRY_MAX_BUFFERED_EVENTS"),
+    Config.Number("THREADLINES_TELEMETRY_MAX_BUFFERED_EVENTS"),
     1_000,
   ),
 });

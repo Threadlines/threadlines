@@ -43,10 +43,10 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type { RpcClientError } from "effect/unstable/rpc";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import * as Socket from "effect/unstable/socket/Socket";
+import type { RpcClientError } from "effect/rpc";
+import { RpcClient, RpcSerialization } from "effect/rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import * as Socket from "effect/socket/Socket";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";

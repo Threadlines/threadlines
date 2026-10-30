@@ -10,7 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { type ModelSelection, TextGenerationError } from "@threadlines/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";

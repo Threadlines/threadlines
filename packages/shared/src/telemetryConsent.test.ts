@@ -42,7 +42,7 @@ describe("isThrowawayTelemetryRun", () => {
 });
 
 describe("parseTelemetryEnabledOverride", () => {
-  it("reads the same spellings as the server's Config.boolean", () => {
+  it("reads the same spellings as the server's Config.Boolean", () => {
     expect(parseTelemetryEnabledOverride("1")).toBe(true);
     expect(parseTelemetryEnabledOverride("yes")).toBe(true);
     expect(parseTelemetryEnabledOverride("off")).toBe(false);

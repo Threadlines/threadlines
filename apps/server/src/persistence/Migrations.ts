@@ -12,9 +12,9 @@ import {
   MIGRATION_FINISHED_LOG_PREFIX,
   MIGRATION_RUNNING_LOG_PREFIX,
 } from "@threadlines/contracts";
-import * as Migrator from "effect/unstable/sql/Migrator";
+import * as Migrator from "effect/sql/Migrator";
 import * as Duration from "effect/Duration";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 

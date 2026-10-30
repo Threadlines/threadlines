@@ -73,7 +73,7 @@ import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SchemaIssue from "effect/SchemaIssue";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
@@ -1916,6 +1916,10 @@ function threadSnapshot(
   };
 }
 
+/**
+ * Starts a session in its own child of the caller's scope, so `close` can end
+ * it on its own; closing the caller's scope still ends it too.
+ */
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
 ): Effect.Effect<
@@ -1924,8 +1928,22 @@ export const makeCodexSessionRuntime = (
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Scope.Scope
 > =>
   Effect.gen(function* () {
+    const runtimeScope = yield* Scope.fork(yield* Scope.Scope, "sequential");
+    return yield* makeCodexSessionRuntimeIn(options, runtimeScope).pipe(
+      Scope.provide(runtimeScope),
+    );
+  });
+
+const makeCodexSessionRuntimeIn = (
+  options: CodexSessionRuntimeOptions,
+  runtimeScope: Scope.Closeable,
+): Effect.Effect<
+  CodexSessionRuntimeShape,
+  CodexErrors.CodexAppServerError,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Scope.Scope
+> =>
+  Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const runtimeScope = yield* Scope.Scope;
     const fileSystem = yield* FileSystem.FileSystem;
     // Resolved once per session: the checkout cannot change kind underneath a
     // running runtime, and every turn asks the same question.

@@ -34,7 +34,7 @@ import {
   HttpClientResponse,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { OUTSIDE_AGENT_SCOPES } from "../outsideAgents/OutsideAgentConnections.ts";
 import {
@@ -219,7 +219,7 @@ const listenForCallback = Effect.fn("cli.connect.listenForCallback")(function* (
       Effect.andThen(Effect.sync(() => nodeServer.closeAllConnections())),
     ),
   );
-  if (server.address._tag !== "TcpAddress") {
+  if (server.address._tag === "UnixPathAddress") {
     return yield* failed("Couldn't listen on this computer for the sign-in.");
   }
   return {

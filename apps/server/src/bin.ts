@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Runtime from "effect/Runtime";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 
 import { FOREIGN_DATABASE_EXIT_CODE } from "@threadlines/contracts";
 import * as NetService from "@threadlines/shared/Net";

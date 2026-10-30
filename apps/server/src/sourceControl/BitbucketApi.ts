@@ -11,7 +11,7 @@ import {
   type SourceControlRepositoryCloneUrls,
   type SourceControlRepositoryVisibility,
 } from "@threadlines/contracts";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { sanitizeBranchFragment } from "@threadlines/shared/git";
 import { detectSourceControlProviderFromRemoteUrl } from "@threadlines/shared/sourceControl";
 
@@ -39,24 +39,24 @@ const aliasedConfigOption = <A>(
 
 const BitbucketApiEnvConfig = Config.all({
   baseUrl: aliasedConfigOption(
-    Config.string("THREADLINES_BITBUCKET_API_BASE_URL"),
-    Config.string("BADCODE_BITBUCKET_API_BASE_URL"),
-    Config.string("T3CODE_BITBUCKET_API_BASE_URL"),
+    Config.String("THREADLINES_BITBUCKET_API_BASE_URL"),
+    Config.String("BADCODE_BITBUCKET_API_BASE_URL"),
+    Config.String("T3CODE_BITBUCKET_API_BASE_URL"),
   ).pipe(Config.map((value) => Option.getOrElse(value, () => DEFAULT_API_BASE_URL))),
   accessToken: aliasedConfigOption(
-    Config.string("THREADLINES_BITBUCKET_ACCESS_TOKEN"),
-    Config.string("BADCODE_BITBUCKET_ACCESS_TOKEN"),
-    Config.string("T3CODE_BITBUCKET_ACCESS_TOKEN"),
+    Config.String("THREADLINES_BITBUCKET_ACCESS_TOKEN"),
+    Config.String("BADCODE_BITBUCKET_ACCESS_TOKEN"),
+    Config.String("T3CODE_BITBUCKET_ACCESS_TOKEN"),
   ),
   email: aliasedConfigOption(
-    Config.string("THREADLINES_BITBUCKET_EMAIL"),
-    Config.string("BADCODE_BITBUCKET_EMAIL"),
-    Config.string("T3CODE_BITBUCKET_EMAIL"),
+    Config.String("THREADLINES_BITBUCKET_EMAIL"),
+    Config.String("BADCODE_BITBUCKET_EMAIL"),
+    Config.String("T3CODE_BITBUCKET_EMAIL"),
   ),
   apiToken: aliasedConfigOption(
-    Config.string("THREADLINES_BITBUCKET_API_TOKEN"),
-    Config.string("BADCODE_BITBUCKET_API_TOKEN"),
-    Config.string("T3CODE_BITBUCKET_API_TOKEN"),
+    Config.String("THREADLINES_BITBUCKET_API_TOKEN"),
+    Config.String("BADCODE_BITBUCKET_API_TOKEN"),
+    Config.String("T3CODE_BITBUCKET_API_TOKEN"),
   ),
 });
 

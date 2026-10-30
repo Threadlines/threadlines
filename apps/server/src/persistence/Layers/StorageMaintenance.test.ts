@@ -4,7 +4,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { StorageMaintenance } from "../Services/StorageMaintenance.ts";
 import { StorageMaintenanceLive } from "./StorageMaintenance.ts";

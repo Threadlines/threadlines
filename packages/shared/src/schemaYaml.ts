@@ -28,7 +28,7 @@ function formatYamlError(error: unknown): string {
 export function parseYaml<E extends string>(
   options?: YamlParseOptions,
 ): SchemaGetter.Getter<unknown, E> {
-  return SchemaGetter.transformOrFail((input: E) =>
+  return SchemaGetter.transformEffect((input: E) =>
     Effect.try({
       try: () => parseYamlString(input, options) as unknown,
       catch: (error) => new SchemaIssue.InvalidValue({ message: formatYamlError(error) }),
@@ -39,7 +39,7 @@ export function parseYaml<E extends string>(
 export function stringifyYaml(
   options?: YamlStringifyOptions,
 ): SchemaGetter.Getter<string, unknown> {
-  return SchemaGetter.transformOrFail((input: unknown) =>
+  return SchemaGetter.transformEffect((input: unknown) =>
     Effect.try({
       try: () => stringifyYamlValue(input, options),
       catch: (error) => new SchemaIssue.InvalidValue({ message: formatYamlError(error) }),
