@@ -13,6 +13,8 @@ import type * as Effect from "effect/Effect";
 import type {
   ProjectReadFileInput,
   ProjectReadFileResult,
+  ProjectRestoreOriginalInput,
+  ProjectRestoreOriginalResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "@threadlines/contracts";
@@ -34,10 +36,14 @@ export class WorkspaceFileSystemError extends Schema.TaggedError<WorkspaceFileSy
  */
 export interface WorkspaceFileSystemShape {
   /**
-   * Write a file relative to the workspace root.
+   * Write a file relative to the workspace root, or an existing file outside
+   * it named by an absolute path.
    *
-   * Creates parent directories as needed and rejects paths that escape the
-   * workspace root.
+   * Saves take turns. Inside the project, parent directories are created as
+   * needed. Outside it, the file must already exist, the save must carry the
+   * hash it was edited from, and the bytes it replaces are kept first so
+   * `restoreOriginal` can put them back. Either way a save never replaces a
+   * file the editor could not have held whole as UTF-8 text.
    */
   readonly writeFile: (
     input: ProjectWriteFileInput,
@@ -47,12 +53,25 @@ export interface WorkspaceFileSystemShape {
   >;
 
   /**
-   * Read a file relative to the workspace root.
+   * Put back the original kept before the first save over a file outside the
+   * project, if the file is still the version the caller last saw.
+   */
+  readonly restoreOriginal: (
+    input: ProjectRestoreOriginalInput,
+  ) => Effect.Effect<
+    ProjectRestoreOriginalResult,
+    WorkspaceFileSystemError | WorkspacePathOutsideRootError
+  >;
+
+  /**
+   * Read a file relative to the workspace root, or outside it by an absolute
+   * path. A client authenticated to this server already drives agents and
+   * terminals with this computer's user, so reading outside the project
+   * grants nothing it lacked.
    *
-   * Rejects paths that escape the workspace root (including through
-   * symlinks), rejects directories, detects binary content, serves known
-   * image types as base64, and truncates oversized text files instead of
-   * reading them unbounded.
+   * Rejects directories, detects binary content, serves pictures and (when
+   * asked) PDFs as base64, says why a text file can't be edited here, and
+   * truncates oversized text files instead of reading them unbounded.
    */
   readonly readFile: (
     input: ProjectReadFileInput,

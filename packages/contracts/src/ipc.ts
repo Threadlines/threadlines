@@ -91,6 +91,8 @@ import type {
   ProjectReadFileResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
+  ProjectRestoreOriginalInput,
+  ProjectRestoreOriginalResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project.ts";
@@ -1790,6 +1792,8 @@ export interface EnvironmentApi {
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
+    /** Optional so newer clients can still connect to older Threadlines servers. */
+    restoreOriginal?: (input: ProjectRestoreOriginalInput) => Promise<ProjectRestoreOriginalResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     favicon: (input: ProjectFaviconInput) => Promise<ProjectFaviconResult>;

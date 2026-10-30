@@ -3451,9 +3451,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectWriteFileError");
+      // Outside the project, only an existing file can be saved over.
       assert.equal(
         result.failure.message,
-        "Workspace file path must stay within the project root.",
+        "Files outside the project can be saved only if they already exist.",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

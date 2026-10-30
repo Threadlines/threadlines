@@ -12,11 +12,16 @@ export const projectQueryKeys = {
   ) => ["projects", "search-entries", environmentId ?? null, cwd, query, limit] as const,
   listEntries: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["projects", "list-entries", environmentId ?? null, cwd] as const,
+  /** `as: "text"` is the source of a picture that is text underneath (SVG). */
   readFile: (
     environmentId: EnvironmentId | null,
     cwd: string | null,
     relativePath: string | null,
-  ) => ["projects", "read-file", environmentId ?? null, cwd, relativePath] as const,
+    as?: "text",
+  ) =>
+    as === undefined
+      ? (["projects", "read-file", environmentId ?? null, cwd, relativePath] as const)
+      : (["projects", "read-file", environmentId ?? null, cwd, relativePath, as] as const),
   favicon: (environmentId: EnvironmentId, cwd: string) =>
     ["projects", "favicon", environmentId, cwd] as const,
 };
@@ -88,12 +93,19 @@ export function projectListEntriesQueryOptions(input: {
 export function projectReadFileQueryOptions(input: {
   environmentId: EnvironmentId | null;
   cwd: string | null;
+  /** Relative to `cwd`, or absolute for a file outside the project. */
   relativePath: string | null;
+  as?: "text" | undefined;
   enabled?: boolean;
   staleTime?: number;
 }) {
   return queryOptions({
-    queryKey: projectQueryKeys.readFile(input.environmentId, input.cwd, input.relativePath),
+    queryKey: projectQueryKeys.readFile(
+      input.environmentId,
+      input.cwd,
+      input.relativePath,
+      input.as,
+    ),
     queryFn: async () => {
       if (!input.cwd || !input.environmentId || !input.relativePath) {
         throw new Error("Workspace file read is unavailable.");
@@ -102,6 +114,10 @@ export function projectReadFileQueryOptions(input: {
       return api.projects.readFile({
         cwd: input.cwd,
         relativePath: input.relativePath,
+        ...(input.as !== undefined ? { as: input.as } : {}),
+        // Every reader here can show a PDF (the file viewer renders it; the
+        // chat only asks for pictures).
+        documents: true,
       });
     },
     enabled:

@@ -4,11 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const harness = vi.hoisted(() => ({
   writeFile: vi.fn<(input: unknown) => Promise<unknown>>(),
+  restoreOriginal: vi.fn<(input: unknown) => Promise<unknown>>(),
   toastAdd: vi.fn(),
 }));
 
 vi.mock("../../environmentApi", () => ({
-  ensureEnvironmentApi: () => ({ projects: { writeFile: harness.writeFile } }),
+  ensureEnvironmentApi: () => ({
+    projects: { writeFile: harness.writeFile, restoreOriginal: harness.restoreOriginal },
+  }),
 }));
 
 vi.mock("../ui/toast", async () => ({
@@ -24,6 +27,7 @@ import {
   hasPendingFileEdits,
   queueFileEdit,
   resolveFileConflict,
+  restoreFileOriginal,
 } from "./fileEditorSaveCoordinator";
 
 const environmentId = "env-1" as EnvironmentId;
@@ -61,6 +65,7 @@ describe("fileEditorSaveCoordinator", () => {
     vi.useFakeTimers();
     queryClient = new QueryClient();
     harness.writeFile.mockReset();
+    harness.restoreOriginal.mockReset();
     harness.toastAdd.mockReset();
     harness.writeFile.mockResolvedValue(written("hash-1"));
     useFileViewerStore.setState({ editSaveState: {}, editReloadNonce: 0 });
@@ -245,5 +250,48 @@ describe("fileEditorSaveCoordinator", () => {
       content: "external contents",
       contentHash: "disk-hash",
     });
+  });
+
+  it("never saves edits typed while a restore runs, and lands on the restored text", async () => {
+    let finishRestore: (result: unknown) => void = () => undefined;
+    harness.restoreOriginal.mockReturnValue(
+      new Promise((resolve) => {
+        finishRestore = resolve;
+      }),
+    );
+    queue("edited", queryClient);
+    const restore = restoreFileOriginal({ ...target, queryClient });
+    await drainMicrotasks();
+    expect(harness.restoreOriginal).toHaveBeenCalledWith({
+      cwd: target.cwd,
+      relativePath: target.path,
+      expectedContentHash: "base-0",
+    });
+
+    queue("typed meanwhile", queryClient);
+    await flushFileEdits(target);
+    vi.advanceTimersByTime(FILE_SAVE_DEBOUNCE_MS);
+    await drainMicrotasks();
+    expect(harness.writeFile).not.toHaveBeenCalled();
+
+    finishRestore({
+      kind: "restored",
+      relativePath: target.path,
+      content: "original",
+      contentHash: "hash-original",
+      size: 8,
+    });
+    await restore;
+
+    expect(hasPendingFileEdits(target)).toBe(false);
+    expect(
+      queryClient.getQueryData<ProjectReadFileResult>(
+        projectQueryKeys.readFile(environmentId, target.cwd, target.path),
+      ),
+    ).toMatchObject({ content: "original", contentHash: "hash-original" });
+    expect(useFileViewerStore.getState().editReloadNonce).toBe(1);
+    vi.advanceTimersByTime(FILE_SAVE_DEBOUNCE_MS);
+    await drainMicrotasks();
+    expect(harness.writeFile).not.toHaveBeenCalled();
   });
 });

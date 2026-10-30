@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
+  IsoDateTime,
   NonNegativeInt,
   PositiveInt,
   TrimmedNonEmptyString,
@@ -43,8 +44,29 @@ export class ProjectSearchEntriesError extends Schema.TaggedError<ProjectSearchE
   },
 ) {}
 
+/**
+ * The most a save may write, in UTF-8 bytes: the same 1 MiB a text read
+ * serves, so a file saved here can always be read back whole and saved again.
+ */
+export const PROJECT_WRITE_FILE_MAX_BYTES = 1_048_576;
+
+/**
+ * A file Threadlines saved over outside the project, which has no git history
+ * there: the copy of it kept before the first save, which "Restore original"
+ * puts back.
+ */
+export const ProjectFileOriginal = Schema.Struct({
+  savedAt: IsoDateTime,
+});
+export type ProjectFileOriginal = typeof ProjectFileOriginal.Type;
+
 export const ProjectWriteFileInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  /**
+   * Relative to `cwd`, or an absolute path for a file outside the project. A
+   * file outside the project must already exist, and its save must carry
+   * `expectedContentHash`.
+   */
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
   /**
@@ -69,6 +91,8 @@ export const ProjectFileWritten = Schema.Struct({
    * Empty on responses from servers that predate the field.
    */
   contentHash: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** Outside the project: the original kept before the first save. */
+  original: Schema.optionalKey(ProjectFileOriginal),
 });
 export type ProjectFileWritten = typeof ProjectFileWritten.Type;
 
@@ -89,6 +113,38 @@ export type ProjectWriteFileConflict = typeof ProjectWriteFileConflict.Type;
 
 export const ProjectWriteFileResult = Schema.Union([ProjectFileWritten, ProjectWriteFileConflict]);
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
+
+/** Puts back the original of a file outside the project that Threadlines saved over. */
+export const ProjectRestoreOriginalInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  /** The file as the caller last saw it; anything newer is a conflict. */
+  expectedContentHash: TrimmedNonEmptyString,
+});
+export type ProjectRestoreOriginalInput = typeof ProjectRestoreOriginalInput.Type;
+
+export const ProjectOriginalRestored = Schema.Struct({
+  kind: Schema.Literal("restored"),
+  relativePath: TrimmedNonEmptyString,
+  content: Schema.String,
+  contentHash: TrimmedNonEmptyString,
+  size: NonNegativeInt,
+});
+export type ProjectOriginalRestored = typeof ProjectOriginalRestored.Type;
+
+/** No original to put back: never saved here, already restored, or expired. */
+export const ProjectOriginalUnavailable = Schema.Struct({
+  kind: Schema.Literal("unavailable"),
+  relativePath: TrimmedNonEmptyString,
+});
+export type ProjectOriginalUnavailable = typeof ProjectOriginalUnavailable.Type;
+
+export const ProjectRestoreOriginalResult = Schema.Union([
+  ProjectOriginalRestored,
+  ProjectWriteFileConflict,
+  ProjectOriginalUnavailable,
+]);
+export type ProjectRestoreOriginalResult = typeof ProjectRestoreOriginalResult.Type;
 
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
@@ -119,7 +175,15 @@ export class ProjectListEntriesError extends Schema.TaggedError<ProjectListEntri
 
 export const ProjectReadFileInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  /** Relative to `cwd`, or an absolute path for a file outside the project. */
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  /** Read a picture that is text underneath (SVG) as its source. */
+  as: Schema.optionalKey(Schema.Literal("text")),
+  /**
+   * The caller can show documents (PDF). Older clients leave it out and get
+   * `binary`, a kind they already know.
+   */
+  documents: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
 
@@ -137,6 +201,14 @@ export const ProjectTextFileContent = Schema.Struct({
    * (hosted-app version skew) — writers then skip the conflict guard.
    */
   contentHash: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /**
+   * Why the file can be read here but not edited: `read-only` when the system
+   * won't let this computer's user change it, `encoding` when its bytes are
+   * not text that UTF-8 carries exactly, so a save would garble them.
+   */
+  editBlock: Schema.optionalKey(Schema.Literals(["read-only", "encoding"])),
+  /** Outside the project: the original kept before Threadlines first saved over it. */
+  original: Schema.optionalKey(ProjectFileOriginal),
 });
 export type ProjectTextFileContent = typeof ProjectTextFileContent.Type;
 
@@ -148,6 +220,16 @@ export const ProjectImageFileContent = Schema.Struct({
   size: NonNegativeInt,
 });
 export type ProjectImageFileContent = typeof ProjectImageFileContent.Type;
+
+/** A document the client shows with its own renderer (PDF), as base64. */
+export const ProjectDocumentFileContent = Schema.Struct({
+  kind: Schema.Literal("document"),
+  relativePath: TrimmedNonEmptyString,
+  mimeType: TrimmedNonEmptyString,
+  base64: Schema.String,
+  size: NonNegativeInt,
+});
+export type ProjectDocumentFileContent = typeof ProjectDocumentFileContent.Type;
 
 export const ProjectBinaryFileContent = Schema.Struct({
   kind: Schema.Literal("binary"),
@@ -171,10 +253,19 @@ export type ProjectMissingFileContent = typeof ProjectMissingFileContent.Type;
 export const ProjectReadFileResult = Schema.Union([
   ProjectTextFileContent,
   ProjectImageFileContent,
+  ProjectDocumentFileContent,
   ProjectBinaryFileContent,
   ProjectMissingFileContent,
 ]);
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
+
+export class ProjectRestoreOriginalError extends Schema.TaggedError<ProjectRestoreOriginalError>()(
+  "ProjectRestoreOriginalError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
 
 export class ProjectReadFileError extends Schema.TaggedError<ProjectReadFileError>()(
   "ProjectReadFileError",

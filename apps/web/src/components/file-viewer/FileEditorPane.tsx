@@ -43,11 +43,17 @@ export function FileEditorPane({
   path,
   initialContents,
   initialContentHash,
+  as,
   wordWrap,
 }: {
   context: FileViewerContext;
-  /** Workspace-relative path; the parent keys this pane per (cwd, path). */
+  /**
+   * Workspace-relative path, or absolute outside the project; the parent keys
+   * this pane per (cwd, path).
+   */
   path: string;
+  /** Editing the source of a picture that is text underneath (SVG). */
+  as?: "text" | undefined;
   initialContents: string;
   /** sha256 baseline from the read; writes assert against it. */
   initialContentHash: string;
@@ -83,6 +89,7 @@ export function FileEditorPane({
       environmentId: context.environmentId,
       cwd: context.cwd,
       path,
+      as,
       contents,
       baselineHash: initialContentHash,
       queryClient,
@@ -97,7 +104,7 @@ export function FileEditorPane({
   // exit, overlay close all unmount it) and when the window loses focus —
   // finished thoughts publish immediately when the user switches apps.
   useEffect(() => {
-    const target = { environmentId: context.environmentId, cwd: context.cwd, path };
+    const target = { environmentId: context.environmentId, cwd: context.cwd, path, as };
     const onWindowBlur = () => {
       void flushFileEdits(target);
     };
@@ -106,7 +113,7 @@ export function FileEditorPane({
       window.removeEventListener("blur", onWindowBlur);
       void flushFileEdits(target);
     };
-  }, [context.cwd, context.environmentId, path]);
+  }, [as, context.cwd, context.environmentId, path]);
 
   // Cmd+S / Ctrl+S writes the buffer immediately instead of the browser's
   // save-page dialog. Captured on window so it wins inside the shadow DOM.
@@ -118,12 +125,13 @@ export function FileEditorPane({
           environmentId: context.environmentId,
           cwd: context.cwd,
           path,
+          as,
         });
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [context.cwd, context.environmentId, path]);
+  }, [as, context.cwd, context.environmentId, path]);
 
   const pierreOptions = useMemo(
     () => ({

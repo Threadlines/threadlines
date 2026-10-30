@@ -332,6 +332,9 @@ import {
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
+  ProjectRestoreOriginalError,
+  ProjectRestoreOriginalInput,
+  ProjectRestoreOriginalResult,
   ProjectWriteFileError,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
@@ -441,6 +444,7 @@ export const WS_METHODS = {
   projectsRemove: "projects.remove",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsRestoreOriginal: "projects.restoreOriginal",
   projectsListEntries: "projects.listEntries",
   projectsReadFile: "projects.readFile",
   projectsFavicon: "projects.favicon",
@@ -1182,6 +1186,12 @@ export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
   error: ProjectWriteFileError,
+});
+
+export const WsProjectsRestoreOriginalRpc = Rpc.make(WS_METHODS.projectsRestoreOriginal, {
+  payload: ProjectRestoreOriginalInput,
+  success: ProjectRestoreOriginalResult,
+  error: ProjectRestoreOriginalError,
 });
 
 export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
@@ -2304,6 +2314,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlPublishRepositoryRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
+  WsProjectsRestoreOriginalRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsFaviconRpc,

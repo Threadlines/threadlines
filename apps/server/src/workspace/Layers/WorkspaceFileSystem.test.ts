@@ -14,6 +14,7 @@ import { WorkspaceEntries } from "../Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "../Services/WorkspaceFileSystem.ts";
 import { WorkspaceEntriesLive } from "./WorkspaceEntries.ts";
 import { WorkspaceFileSystemLive, WORKSPACE_TEXT_READ_MAX_BYTES } from "./WorkspaceFileSystem.ts";
+import { PROJECT_WRITE_FILE_MAX_BYTES } from "@threadlines/contracts";
 import { WorkspacePathsLive } from "./WorkspacePaths.ts";
 
 const ProjectLayer = WorkspaceFileSystemLive.pipe(
@@ -26,7 +27,7 @@ const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive))),
   Layer.provideMerge(WorkspacePathsLive),
   Layer.provideMerge(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
-  Layer.provide(
+  Layer.provideMerge(
     ServerConfig.layerTest(process.cwd(), {
       prefix: "t3-workspace-files-test-",
     }),
@@ -353,19 +354,17 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
-    it.effect("rejects reads outside the workspace root", () =>
+    it.effect("reports an outside path with nothing there as missing", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
         const cwd = yield* makeTempDir;
 
-        const error = yield* workspaceFileSystem
-          .readFile({
-            cwd,
-            relativePath: "../etc/passwd",
-          })
-          .pipe(Effect.flip);
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "../no-such-file.md",
+        });
 
-        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+        expect(result).toEqual({ kind: "missing", relativePath: "../no-such-file.md" });
       }),
     );
 
@@ -394,66 +393,57 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
-    it.effect("still rejects text files outside the workspace root", () =>
+    it.effect("reads a text file outside the project by its absolute path", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const outside = yield* makeTempDir;
         const cwd = yield* makeTempDir;
-        yield* fileSystem
-          .writeFileString(path.join(outside, "secret.txt"), "secret")
-          .pipe(Effect.orDie);
+        const filePath = path.join(outside, "notes.md");
+        yield* fileSystem.writeFileString(filePath, "# Notes\n").pipe(Effect.orDie);
 
-        const error = yield* workspaceFileSystem
-          .readFile({
-            cwd,
-            relativePath: path
-              .relative(cwd, path.join(outside, "secret.txt"))
-              .replaceAll("\\", "/"),
-          })
-          .pipe(Effect.flip);
+        const result = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
 
-        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+        expect(result).toEqual({
+          kind: "text",
+          relativePath: filePath,
+          content: "# Notes\n",
+          size: 8,
+          truncated: false,
+          contentHash: sha256HexOf("# Notes\n"),
+        });
       }),
     );
 
-    it.effect("rejects an outside-root .png whose bytes are not an image", () =>
+    it.effect("never serves an outside .png that isn't one as a picture", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const outside = yield* makeTempDir;
         const cwd = yield* makeTempDir;
-        yield* fileSystem
-          .writeFileString(path.join(outside, "not-really.png"), "#!/bin/sh\nrm -rf /\n")
-          .pipe(Effect.orDie);
+        const filePath = path.join(outside, "not-really.png");
+        yield* fileSystem.writeFileString(filePath, "#!/bin/sh\nrm -rf /\n").pipe(Effect.orDie);
 
-        const error = yield* workspaceFileSystem
-          .readFile({
-            cwd,
-            relativePath: path
-              .relative(cwd, path.join(outside, "not-really.png"))
-              .replaceAll("\\", "/"),
-          })
-          .pipe(Effect.flip);
+        const result = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
 
-        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+        // It reads as the text it is.
+        expect(result.kind).toBe("text");
       }),
     );
 
-    it.effect("rejects symlinks that escape the workspace root", () =>
+    it.effect("treats a symlink that leaves the project as outside it", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const outside = yield* makeTempDir;
         const cwd = yield* makeTempDir;
-        yield* fileSystem
-          .writeFileString(path.join(outside, "secret.txt"), "secret")
-          .pipe(Effect.orDie);
+        const realFile = path.join(outside, "settings.json");
+        yield* fileSystem.writeFileString(realFile, "{}\n").pipe(Effect.orDie);
         const symlinkCreated = yield* fileSystem
-          .symlink(path.join(outside, "secret.txt"), path.join(cwd, "link.txt"))
+          .symlink(realFile, path.join(cwd, "link.json"))
           .pipe(
             Effect.as(true),
             Effect.catch((error) =>
@@ -462,14 +452,18 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
           );
         if (!symlinkCreated) return;
 
-        const error = yield* workspaceFileSystem
-          .readFile({
-            cwd,
-            relativePath: "link.txt",
-          })
-          .pipe(Effect.flip);
+        const written = yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "link.json",
+          contents: '{"a":1}\n',
+          expectedContentHash: sha256HexOf("{}\n"),
+        });
 
-        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+        // Saved like any file outside the project: the original was kept, the
+        // file behind the link changed, and the link is still a link.
+        expect(written).toMatchObject({ kind: "written", original: expect.any(Object) });
+        expect(yield* fileSystem.readFileString(realFile)).toBe('{"a":1}\n');
+        expect(yield* fileSystem.readLink(path.join(cwd, "link.json"))).toBe(realFile);
       }),
     );
 
@@ -487,6 +481,383 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
           .pipe(Effect.flip);
 
         expect(error._tag).toBe("WorkspaceFileSystemError");
+      }),
+    );
+  });
+
+  describe("files outside the project", () => {
+    const makeOutsideFile = (contents: string | Uint8Array, name = "settings.conf") =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        const filePath = path.join(outside, name);
+        if (typeof contents === "string") {
+          yield* fileSystem.writeFileString(filePath, contents).pipe(Effect.orDie);
+        } else {
+          yield* fileSystem.writeFile(filePath, contents).pipe(Effect.orDie);
+        }
+        return { cwd, filePath };
+      });
+
+    it.effect("keeps the original before the first save, and puts it back", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const { cwd, filePath } = yield* makeOutsideFile("a=1\n");
+
+        const first = yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: filePath,
+          contents: "a=2\n",
+          expectedContentHash: sha256HexOf("a=1\n"),
+        });
+        expect(first).toMatchObject({ kind: "written", original: { savedAt: expect.any(String) } });
+        // A second save keeps the first original, not the in-between version.
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: filePath,
+          contents: "a=3\n",
+          expectedContentHash: sha256HexOf("a=2\n"),
+        });
+        const reread = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
+        expect(reread).toMatchObject({
+          kind: "text",
+          content: "a=3\n",
+          original: expect.any(Object),
+        });
+
+        // Originals can hold secrets, so only this user can read them.
+        if (process.platform !== "win32") {
+          const folder = yield* fileSystem.stat(path.join(config.stateDir, "file-originals"));
+          expect(folder.mode & 0o077).toBe(0);
+          for (const name of yield* fileSystem.readDirectory(
+            path.join(config.stateDir, "file-originals"),
+          )) {
+            const stat = yield* fileSystem.stat(path.join(config.stateDir, "file-originals", name));
+            expect(stat.mode & 0o077).toBe(0);
+          }
+        }
+
+        const restored = yield* workspaceFileSystem.restoreOriginal({
+          cwd,
+          relativePath: filePath,
+          expectedContentHash: sha256HexOf("a=3\n"),
+        });
+        expect(restored).toEqual({
+          kind: "restored",
+          relativePath: filePath,
+          content: "a=1\n",
+          contentHash: sha256HexOf("a=1\n"),
+          size: 4,
+        });
+        expect(yield* fileSystem.readFileString(filePath)).toBe("a=1\n");
+        // Restored, it is back to having no original until the next save.
+        const afterRestore = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
+        expect(afterRestore).not.toHaveProperty("original");
+        expect(
+          yield* workspaceFileSystem.restoreOriginal({
+            cwd,
+            relativePath: filePath,
+            expectedContentHash: sha256HexOf("a=1\n"),
+          }),
+        ).toEqual({ kind: "unavailable", relativePath: filePath });
+      }),
+    );
+
+    it.effect("empties a file, and puts back one that started empty", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const filled = yield* makeOutsideFile("a=1\n");
+        const emptied = yield* workspaceFileSystem.writeFile({
+          cwd: filled.cwd,
+          relativePath: filled.filePath,
+          contents: "",
+          expectedContentHash: sha256HexOf("a=1\n"),
+        });
+        expect(emptied).toMatchObject({ kind: "written", contentHash: sha256HexOf("") });
+        expect(yield* fileSystem.readFileString(filled.filePath)).toBe("");
+
+        const blank = yield* makeOutsideFile("", "blank.conf");
+        yield* workspaceFileSystem.writeFile({
+          cwd: blank.cwd,
+          relativePath: blank.filePath,
+          contents: "x\n",
+          expectedContentHash: sha256HexOf(""),
+        });
+        const restored = yield* workspaceFileSystem.restoreOriginal({
+          cwd: blank.cwd,
+          relativePath: blank.filePath,
+          expectedContentHash: sha256HexOf("x\n"),
+        });
+        expect(restored).toMatchObject({ kind: "restored", content: "" });
+        expect(yield* fileSystem.readFileString(blank.filePath)).toBe("");
+      }),
+    );
+
+    it.effect("won't restore over a version the caller hasn't seen", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const { cwd, filePath } = yield* makeOutsideFile("a=1\n");
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: filePath,
+          contents: "a=2\n",
+          expectedContentHash: sha256HexOf("a=1\n"),
+        });
+        // An agent changes it after the editor's last look.
+        yield* fileSystem.writeFileString(filePath, "a=agent\n");
+
+        const result = yield* workspaceFileSystem.restoreOriginal({
+          cwd,
+          relativePath: filePath,
+          expectedContentHash: sha256HexOf("a=2\n"),
+        });
+
+        expect(result).toMatchObject({ kind: "conflict", content: "a=agent\n" });
+        expect(yield* fileSystem.readFileString(filePath)).toBe("a=agent\n");
+      }),
+    );
+
+    it.effect("only saves over a file that exists, from the version it was edited from", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const path = yield* Path.Path;
+        const { cwd, filePath } = yield* makeOutsideFile("a=1\n");
+
+        const created = yield* workspaceFileSystem
+          .writeFile({
+            cwd,
+            relativePath: path.join(path.dirname(filePath), "new.conf"),
+            contents: "x\n",
+            expectedContentHash: sha256HexOf(""),
+          })
+          .pipe(Effect.flip);
+        expect(created._tag).toBe("WorkspacePathOutsideRootError");
+
+        const unguarded = yield* workspaceFileSystem
+          .writeFile({ cwd, relativePath: filePath, contents: "a=2\n" })
+          .pipe(Effect.flip);
+        expect(unguarded._tag).toBe("WorkspaceFileSystemError");
+      }),
+    );
+
+    it.effect("counts a new file behind a link that leaves the project as outside", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        const linked = yield* fileSystem.symlink(outside, path.join(cwd, "docs")).pipe(
+          Effect.andThen(
+            fileSystem.symlink(path.join(outside, "gone.md"), path.join(cwd, "dead.md")),
+          ),
+          Effect.as(true),
+          Effect.catch((error) =>
+            isUnavailableWindowsSymlink(error) ? Effect.succeed(false) : Effect.fail(error),
+          ),
+        );
+        if (!linked) return;
+
+        // Neither a folder link nor a link to nothing may create a file
+        // outside the project.
+        for (const relativePath of ["docs/new.md", "dead.md"]) {
+          const error = yield* workspaceFileSystem
+            .writeFile({ cwd, relativePath, contents: "x\n" })
+            .pipe(Effect.flip);
+          expect(error._tag).toBe("WorkspacePathOutsideRootError");
+        }
+        expect(yield* fileSystem.readDirectory(outside)).toEqual([]);
+      }),
+    );
+
+    it.effect("clears what a cut-short save left behind", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const folder = path.join(config.stateDir, "file-originals");
+        yield* fileSystem.makeDirectory(folder, { recursive: true });
+        // A copy whose record never landed, and a temp file never renamed.
+        const stale = ["cut-short.orig", "cut-short.orig.1234.tmp"];
+        for (const name of [...stale, "in-progress.orig.5678.tmp"]) {
+          yield* fileSystem.writeFileString(path.join(folder, name), "secret");
+        }
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+        for (const name of stale) {
+          yield* fileSystem.utimes(path.join(folder, name), twoHoursAgo, twoHoursAgo);
+        }
+        const { cwd, filePath } = yield* makeOutsideFile("a=1\n");
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: filePath,
+          contents: "a=2\n",
+          expectedContentHash: sha256HexOf("a=1\n"),
+        });
+
+        const left = yield* fileSystem.readDirectory(folder);
+        expect(left).toContain("in-progress.orig.5678.tmp");
+        for (const name of stale) expect(left).not.toContain(name);
+      }),
+    );
+
+    it.effect("blocks editing text a UTF-8 save would garble, and keeps a BOM", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        // "café" in Windows-1252.
+        const latin = yield* makeOutsideFile(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]));
+        const latinRead = yield* workspaceFileSystem.readFile({
+          cwd: latin.cwd,
+          relativePath: latin.filePath,
+        });
+        expect(latinRead).toMatchObject({ kind: "text", editBlock: "encoding" });
+        const latinSave = yield* workspaceFileSystem
+          .writeFile({
+            cwd: latin.cwd,
+            relativePath: latin.filePath,
+            contents: "cafe\n",
+            expectedContentHash: latinRead.kind === "text" ? latinRead.contentHash : "",
+          })
+          .pipe(Effect.flip);
+        expect(latinSave._tag).toBe("WorkspaceFileSystemError");
+
+        const bomBytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69, 0x0a]);
+        const bom = yield* makeOutsideFile(bomBytes);
+        const bomRead = yield* workspaceFileSystem.readFile({
+          cwd: bom.cwd,
+          relativePath: bom.filePath,
+        });
+        expect(bomRead).toMatchObject({ kind: "text", content: "﻿hi\n" });
+        expect(bomRead).not.toHaveProperty("editBlock");
+        if (bomRead.kind !== "text") return;
+        yield* workspaceFileSystem.writeFile({
+          cwd: bom.cwd,
+          relativePath: bom.filePath,
+          contents: bomRead.content,
+          expectedContentHash: bomRead.contentHash,
+        });
+        expect(Buffer.from(yield* fileSystem.readFile(bom.filePath))).toEqual(
+          Buffer.from(bomBytes),
+        );
+      }),
+    );
+
+    it.effect("says when the system won't let a file be changed", () =>
+      Effect.gen(function* () {
+        // Root can write anything, and Windows has no mode bits to set.
+        if (process.platform === "win32" || process.getuid?.() === 0) return;
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const { cwd, filePath } = yield* makeOutsideFile("locked\n");
+        yield* fileSystem.chmod(filePath, 0o444);
+
+        const result = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
+
+        expect(result).toMatchObject({ kind: "text", editBlock: "read-only" });
+      }),
+    );
+
+    it.effect("serves an outside SVG as a picture, and its source when asked", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>\n';
+        const { cwd, filePath } = yield* makeOutsideFile(svg, "logo.svg");
+
+        const picture = yield* workspaceFileSystem.readFile({ cwd, relativePath: filePath });
+        const source = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: filePath,
+          as: "text",
+        });
+
+        expect(picture).toMatchObject({ kind: "image", mimeType: "image/svg+xml" });
+        expect(source).toMatchObject({ kind: "text", content: svg });
+      }),
+    );
+  });
+
+  describe("saves", () => {
+    it.effect("take turns, so two saves from one version can't both land", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "shared.md", "base\n");
+
+        const results = yield* Effect.all(
+          ["first\n", "second\n"].map((contents) =>
+            workspaceFileSystem.writeFile({
+              cwd,
+              relativePath: "shared.md",
+              contents,
+              expectedContentHash: sha256HexOf("base\n"),
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
+
+        expect(results.map((result) => result.kind).toSorted()).toEqual(["conflict", "written"]);
+      }),
+    );
+
+    it.effect("refuse more than 1 MB", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const error = yield* workspaceFileSystem
+          .writeFile({
+            cwd,
+            relativePath: "huge.txt",
+            contents: "x".repeat(PROJECT_WRITE_FILE_MAX_BYTES + 1),
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspaceFileSystemError");
+      }),
+    );
+  });
+
+  describe("documents", () => {
+    it.effect("serves a PDF only to clients that can show one", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const bytes = new Uint8Array([...Buffer.from("%PDF-1.7\n%", "latin1"), 0xe2, 0, 0x01]);
+        yield* fileSystem.writeFile(path.join(cwd, "spec.pdf"), bytes).pipe(Effect.orDie);
+        yield* writeTextFile(cwd, "fake.pdf", "not a pdf\n");
+
+        const shown = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "spec.pdf",
+          documents: true,
+        });
+        const older = yield* workspaceFileSystem.readFile({ cwd, relativePath: "spec.pdf" });
+        const fake = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "fake.pdf",
+          documents: true,
+        });
+
+        expect(shown).toEqual({
+          kind: "document",
+          relativePath: "spec.pdf",
+          mimeType: "application/pdf",
+          base64: Buffer.from(bytes).toString("base64"),
+          size: bytes.length,
+        });
+        expect(older.kind).toBe("binary");
+        expect(fake.kind).toBe("binary");
       }),
     );
   });

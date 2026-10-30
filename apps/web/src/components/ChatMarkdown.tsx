@@ -1246,8 +1246,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (openInInternalViewer()) {
       return;
     }
-    // Outside the project only this computer's apps can open it, and a thread
-    // on another computer names a file over there.
+    // What the viewer can't take (a folder outside the project, or any file
+    // on a screen with no viewer) goes to this computer's apps, which a thread
+    // on another computer can't use: its paths name files over there.
     if (!canLaunchFilesFor(environmentId)) {
       toastManager.add(
         failureNotice({

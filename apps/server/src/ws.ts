@@ -45,6 +45,7 @@ import {
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchEntriesError,
+  ProjectRestoreOriginalError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
@@ -2002,13 +2003,29 @@ const makeWsRpcLayer = (
             workspaceFileSystem.writeFile(input).pipe(
               Effect.mapError((cause) => {
                 const message = isWorkspacePathOutsideRootError(cause)
-                  ? "Workspace file path must stay within the project root."
-                  : "Failed to write workspace file";
+                  ? "Files outside the project can be saved only if they already exist."
+                  : `Failed to write workspace file: ${cause.detail}`;
                 return new ProjectWriteFileError({
                   message,
                   cause,
                 });
               }),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsRestoreOriginal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsRestoreOriginal,
+            workspaceFileSystem.restoreOriginal(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectRestoreOriginalError({
+                    message: isWorkspacePathOutsideRootError(cause)
+                      ? "There is no original to restore for this file."
+                      : `Failed to restore the original: ${cause.detail}`,
+                    cause,
+                  }),
+              ),
             ),
             { "rpc.aggregate": "workspace" },
           ),
