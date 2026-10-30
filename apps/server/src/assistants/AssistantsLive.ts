@@ -4,9 +4,12 @@
  *
  * - **The relay's door.** What the relay said last (`info`: the address to
  *   paste and whether the door is on) is the snapshot's `status` and
- *   `address`. It is asked again when the socket opens, when a code is made,
- *   and when the snapshot is read and the answer is older than 10 minutes
- *   (30 seconds while the relay couldn't be reached).
+ *   `address`. It is asked again when the socket opens, when a code or a key
+ *   is made (which register this computer first if it isn't), and when the
+ *   snapshot is read and the answer is older than 10 minutes (30 seconds
+ *   while the relay couldn't be reached). Reading the snapshot never
+ *   registers this computer: until a code or a key does, the address is
+ *   unknown.
  * - **The socket** is wanted while there is a live assistant connection, a
  *   code showing, or a sign-in waiting; the relay link keeps the computer's
  *   lease up for as long.
@@ -291,7 +294,15 @@ export const makeAssistants = Effect.gen(function* () {
       refreshingInfo = true;
       return relay.info({ register }).pipe(
         Effect.matchEffect({
-          onSuccess: (next) => (next === null ? Effect.void : applyInfo(next)),
+          onSuccess: (next) =>
+            next === null
+              ? Clock.currentTimeMillis.pipe(
+                  Effect.map((now) => {
+                    // Not registered yet: nothing to ask until a code or a key registers it.
+                    infoAt = now;
+                  }),
+                )
+              : applyInfo(next),
           onFailure: (error) =>
             Effect.gen(function* () {
               infoAt = yield* Clock.currentTimeMillis;
@@ -410,7 +421,8 @@ export const makeAssistants = Effect.gen(function* () {
     lastStateReadAt = now;
     const stale =
       infoAt === 0 || now - infoAt > (status === "unreachable" ? INFO_RETRY_MS : INFO_STALE_MS);
-    if (relay.available && stale) yield* forkInScope(refreshInfo(true));
+    // Only once registered: looking at Settings never registers this computer.
+    if (relay.available && stale) yield* forkInScope(refreshInfo(false));
     const rows =
       signIns.size === 0 ? [] : yield* repository.listLive.pipe(Effect.orElseSucceed(() => []));
     const waiting: Array<OutsideAgentAssistantSignIn> = [];
@@ -660,8 +672,9 @@ export const makeAssistants = Effect.gen(function* () {
       quietUntil = until;
       if (until === null || signIns.size === 0) return;
       const now = yield* Clock.currentTimeMillis;
-      for (const entry of [...signIns.values()]) {
-        signIns.delete(entry.requestId);
+      const waiting = Array.from(signIns.values());
+      signIns.clear();
+      for (const entry of waiting) {
         yield* sendDecision(
           { type: "signin.decision", signInId: entry.signIn.signInId, decision: "deny" },
           now,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   EventId,
+  OrchestrationDispatchCommandError,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationProjectShell,
@@ -21,11 +22,12 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import type { ThreadTurnStartCommand } from "../orchestration/Services/ThreadBootstrap.ts";
 import { makeConnectLimits } from "./connectLimits.ts";
-import { makeConnectToolHandlers } from "./connectToolHandlers.ts";
+import { type ConnectToolDoor, makeConnectToolHandlers } from "./connectToolHandlers.ts";
 import type { OutsideAgentCaller, OutsideAgentLiveGrant } from "./OutsideAgentConnections.ts";
 import type { OutsideAgentRequestRow, OutsideAgentRequestsShape } from "./OutsideAgentRequests.ts";
 
@@ -211,6 +213,10 @@ const makeWorld = (
       readonly type: OrchestrationCommand["type"];
       readonly refusal: "thread_busy" | "above_ceiling";
     };
+    /** The door the calls come through (assistants: docs/design/assistants.md). */
+    readonly door?: ConnectToolDoor;
+    /** The bootstrap fails before it makes the thread (a worktree that couldn't be cut). */
+    readonly failSetup?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -230,6 +236,8 @@ const makeWorld = (
     const bootstrapped: ThreadTurnStartCommand[] = [];
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     let gate: Deferred.Deferred<void> | null = null;
+    /** Whether `gate` holds the bootstrap before the thread exists, or after. */
+    let gateBeforeThread = false;
     const requests = makeRequests();
     const searched: OrchestrationThreadSearchInput[] = [];
 
@@ -241,104 +249,115 @@ const makeWorld = (
         type: "thread.session-set",
       } as unknown as OrchestrationEvent);
 
-    const handlers = yield* makeConnectToolHandlers({
-      connections: { grant: () => Effect.sync(() => grant) },
-      engine: {
-        dispatch: (command) =>
-          Effect.gen(function* () {
-            if (options.refuse !== undefined && command.type === options.refuse.type) {
-              return yield* new OrchestrationCommandInvariantError({
-                commandType: command.type,
-                detail: "Refused by the decider.",
-                refusal: options.refuse.refusal,
-              });
-            }
-            dispatched.push(command);
-            return { sequence: dispatched.length };
-          }),
-        getCommandReceipt: () => Effect.succeed(Option.none()),
-      },
-      bootstrap: {
-        runTurnStart: (command) =>
-          Effect.gen(function* () {
-            bootstrapped.push(command);
-            const create = command.bootstrap!.createThread!;
-            threads.set(
-              command.threadId,
-              makeThread({
-                id: command.threadId,
-                projectId: create.projectId,
-                title: create.title,
-                runtimeMode: create.runtimeMode,
-                ...(create.outsideOrigin !== undefined
-                  ? { outsideOrigin: create.outsideOrigin }
-                  : {}),
-                session: { ...running!, threadId: command.threadId, status: "starting" },
-              }),
-            );
-            if (gate !== null) yield* Deferred.await(gate);
-            return { sequence: 1 };
-          }),
-      },
-      projects: Effect.succeed(projects),
-      // As ProjectionSnapshotQuery.listThreadShells picks them.
-      listThreads: (input) =>
-        Effect.sync(() =>
-          [...threads.values()]
-            .filter((thread) => input.includeArchived === true || thread.archivedAt == null)
-            .filter(
-              (thread) =>
-                input.projectIds === undefined || input.projectIds.includes(thread.projectId),
-            )
-            .filter(
-              (thread) =>
-                input.outsideConnectionId === undefined ||
-                thread.outsideOrigin?.connectionId === input.outsideConnectionId,
-            )
-            .map(shellOf),
-        ),
-      threadProject: (threadId) => Effect.sync(() => threads.get(threadId)?.projectId),
-      readProject: (projectId) =>
-        Effect.sync(() => projects.find((entry) => entry.id === projectId)),
-      readThread: (threadId) =>
-        Effect.sync(() => {
-          const thread = threads.get(threadId);
-          return thread?.archivedAt != null ? undefined : thread;
-        }),
-      status: {
-        subscribeEvents: Effect.map(PubSub.subscribe(events), Stream.fromSubscription),
-        readShell: (threadId) =>
+    const handlers = yield* makeConnectToolHandlers(
+      {
+        connections: { grant: () => Effect.sync(() => grant) },
+        engine: {
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              if (options.refuse !== undefined && command.type === options.refuse.type) {
+                return yield* new OrchestrationCommandInvariantError({
+                  commandType: command.type,
+                  detail: "Refused by the decider.",
+                  refusal: options.refuse.refusal,
+                });
+              }
+              dispatched.push(command);
+              return { sequence: dispatched.length };
+            }),
+          getCommandReceipt: () => Effect.succeed(Option.none()),
+        },
+        bootstrap: {
+          runTurnStart: (command) =>
+            Effect.gen(function* () {
+              bootstrapped.push(command);
+              if (gate !== null && gateBeforeThread) yield* Deferred.await(gate);
+              if (options.failSetup === true) {
+                return yield* new OrchestrationDispatchCommandError({
+                  message: "The worktree couldn't be made.",
+                });
+              }
+              const create = command.bootstrap!.createThread!;
+              threads.set(
+                command.threadId,
+                makeThread({
+                  id: command.threadId,
+                  projectId: create.projectId,
+                  title: create.title,
+                  runtimeMode: create.runtimeMode,
+                  ...(create.outsideOrigin !== undefined
+                    ? { outsideOrigin: create.outsideOrigin }
+                    : {}),
+                  session: { ...running!, threadId: command.threadId, status: "starting" },
+                }),
+              );
+              if (gate !== null && !gateBeforeThread) yield* Deferred.await(gate);
+              return { sequence: 1 };
+            }),
+        },
+        projects: Effect.succeed(projects),
+        // As ProjectionSnapshotQuery.listThreadShells picks them.
+        listThreads: (input) =>
+          Effect.sync(() =>
+            [...threads.values()]
+              .filter((thread) => input.includeArchived === true || thread.archivedAt == null)
+              .filter(
+                (thread) =>
+                  input.projectIds === undefined || input.projectIds.includes(thread.projectId),
+              )
+              .filter(
+                (thread) =>
+                  input.outsideConnectionId === undefined ||
+                  thread.outsideOrigin?.connectionId === input.outsideConnectionId,
+              )
+              .map(shellOf),
+          ),
+        threadProject: (threadId) => Effect.sync(() => threads.get(threadId)?.projectId),
+        readProject: (projectId) =>
+          Effect.sync(() => projects.find((entry) => entry.id === projectId)),
+        readThread: (threadId) =>
           Effect.sync(() => {
             const thread = threads.get(threadId);
-            return thread === undefined || thread.archivedAt != null ? undefined : shellOf(thread);
+            return thread?.archivedAt != null ? undefined : thread;
           }),
-        scheduleAnswerWaiting: Effect.succeed(new Set()),
-        scheduleAnswerChanges: Stream.empty,
-      },
-      providers: Effect.succeed(PROVIDERS),
-      userDefaultModel: Effect.succeed(null),
-      searchThreads: (input) =>
-        Effect.sync(() => {
-          searched.push(input);
-          return [];
-        }),
-      git: {
-        execute: (input) =>
-          Effect.succeed({
-            exitCode: 0 as never,
-            stdout: input.args.includes("--is-inside-work-tree")
-              ? "true\n"
-              : input.args.includes("symbolic-ref")
-                ? "main\n"
-                : `${HEAD}\n`,
-            stderr: "",
-            stdoutTruncated: false,
-            stderrTruncated: false,
+        status: {
+          subscribeEvents: Effect.map(PubSub.subscribe(events), Stream.fromSubscription),
+          readShell: (threadId) =>
+            Effect.sync(() => {
+              const thread = threads.get(threadId);
+              return thread === undefined || thread.archivedAt != null
+                ? undefined
+                : shellOf(thread);
+            }),
+          scheduleAnswerWaiting: Effect.succeed(new Set()),
+          scheduleAnswerChanges: Stream.empty,
+        },
+        providers: Effect.succeed(PROVIDERS),
+        userDefaultModel: Effect.succeed(null),
+        searchThreads: (input) =>
+          Effect.sync(() => {
+            searched.push(input);
+            return [];
           }),
+        git: {
+          execute: (input) =>
+            Effect.succeed({
+              exitCode: 0 as never,
+              stdout: input.args.includes("--is-inside-work-tree")
+                ? "true\n"
+                : input.args.includes("symbolic-ref")
+                  ? "main\n"
+                  : `${HEAD}\n`,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            }),
+        },
+        requests: requests.store,
+        limits: makeConnectLimits(),
       },
-      requests: requests.store,
-      limits: makeConnectLimits(),
-    });
+      { door: options.door ?? "local" },
+    );
     return {
       handlers,
       dispatched,
@@ -349,9 +368,10 @@ const makeWorld = (
       setGrant: (next: OutsideAgentLiveGrant | null) => {
         grant = next;
       },
-      hold: () =>
+      hold: (where: "after_thread" | "before_thread" = "after_thread") =>
         Effect.map(Deferred.make<void>(), (deferred) => {
           gate = deferred;
+          gateBeforeThread = where === "before_thread";
           return deferred;
         }),
       update: (thread: OrchestrationThread) =>
@@ -782,6 +802,118 @@ describe("thread_wait", () => {
         thread: { status: "idle" },
         reply: "Fixed: the test waited on a timer.",
       });
+    }),
+  );
+});
+
+describe("connect tools: the assistants door", () => {
+  /** Runs `read` until `done` holds of it, letting the setup fiber run in between. */
+  const until = <A>(read: Effect.Effect<A>, done: (value: A) => boolean) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const value = yield* read;
+        if (done(value)) return value;
+        yield* Effect.yieldNow;
+      }
+      return yield* Effect.die(new Error("never happened"));
+    });
+
+  it.effect(
+    "answers a start before its setup, with the thread id a retry and a read agree on",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* makeWorld({ door: "assistant" });
+        const gate = yield* world.hold("before_thread");
+        const first = yield* world.handlers.thread_start(CALLER, start({ requestId: "start-1" }));
+        expect(first).toMatchObject({ outcome: "starting", thread: { workspace: "worktree" } });
+        const threadId = first.thread!.threadId;
+        // The setup hasn't made the thread, and the answer is already back.
+        expect(world.threads.has(threadId)).toBe(false);
+        expect(world.requests.rows.get(`${CONNECTION}\u0000start-1`)).toMatchObject({
+          state: "starting",
+          threadId,
+        });
+        expect(yield* world.handlers.thread_read(CALLER, { threadId })).toMatchObject({
+          outcome: "starting",
+        });
+        expect(
+          (yield* world.handlers.threads_list(CALLER, {})).starting?.map((entry) => entry.threadId),
+        ).toEqual([threadId]);
+        const retried = yield* world.handlers.thread_start(CALLER, start({ requestId: "start-1" }));
+        expect(retried).toMatchObject({ outcome: "starting", thread: { threadId } });
+        expect(
+          yield* world.handlers.thread_send(CALLER, {
+            threadId,
+            message: "more",
+            requestId: "send-1",
+          }),
+        ).toMatchObject({ outcome: "busy" });
+
+        yield* Deferred.succeed(gate, undefined);
+        yield* until(
+          world.handlers.thread_read(CALLER, { threadId }),
+          (read) => read.outcome === "ok",
+        );
+        yield* until(
+          Effect.sync(() => world.requests.rows.get(`${CONNECTION}\u0000start-1`)?.state),
+          (state) => state === "done",
+        );
+        const afterSetup = yield* world.handlers.thread_start(
+          CALLER,
+          start({ requestId: "start-1" }),
+        );
+        expect(afterSetup).toMatchObject({ outcome: "started", thread: { threadId } });
+        expect(world.bootstrapped).toHaveLength(1);
+      }),
+  );
+
+  it.effect("records a setup that failed before its thread, for reads and waits", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({ door: "assistant", failSetup: true });
+      const started = yield* world.handlers.thread_start(CALLER, start({ requestId: "start-1" }));
+      const threadId = started.thread!.threadId;
+      const read = yield* until(
+        world.handlers.thread_read(CALLER, { threadId }),
+        (answer) => answer.outcome === "failed",
+      );
+      expect(read.detail).toContain("The worktree couldn't be made.");
+      expect(yield* world.handlers.thread_wait(CALLER, { threadId })).toMatchObject({
+        outcome: "failed",
+      });
+      expect(world.requests.rows.get(`${CONNECTION}\u0000start-1`)).toMatchObject({
+        state: "failed",
+      });
+    }),
+  );
+
+  it.effect("refuses a start, send or stop without a requestId", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({ door: "assistant", threads: [ownThread("mine")] });
+      const answers = [
+        yield* world.handlers.thread_start(CALLER, start()),
+        yield* world.handlers.thread_send(CALLER, { threadId: "mine", message: "more" }),
+        yield* world.handlers.thread_stop(CALLER, { threadId: "mine" }),
+      ];
+      for (const answer of answers) {
+        expect(answer).toMatchObject({ outcome: "failed" });
+        expect(answer.detail).toContain("requestId");
+      }
+      expect(world.bootstrapped).toHaveLength(0);
+      expect(world.dispatched).toHaveLength(0);
+    }),
+  );
+
+  it.effect("holds a wait at most 25 seconds", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({
+        door: "assistant",
+        threads: [ownThread("mine", { session: { ...running!, threadId: ThreadId.make("mine") } })],
+      });
+      const waiting = yield* world.handlers
+        .thread_wait(CALLER, { threadId: "mine", seconds: 60 })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("25 seconds");
+      expect(yield* Fiber.join(waiting)).toMatchObject({ outcome: "still_working" });
     }),
   );
 });
