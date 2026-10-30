@@ -234,11 +234,17 @@ export const makeAssistants = Effect.gen(function* () {
   // ---------------------------------------------------------------------------
 
   const codeShowing = (now: number) => code !== null && code.expiresAt > now;
+  /** An approved sign-in whose assistant hasn't traded its code yet: its token request comes through the relay. */
+  const codeOutstanding = (now: number) => {
+    for (const issued of codes.values()) if (issued.expiresAt > now) return true;
+    return false;
+  };
 
   const reconsiderSocket = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     yield* relay.setWanted(
-      relay.available && (liveConnections > 0 || codeShowing(now) || signIns.size > 0),
+      relay.available &&
+        (liveConnections > 0 || codeShowing(now) || signIns.size > 0 || codeOutstanding(now)),
     );
   });
 
@@ -641,6 +647,11 @@ export const makeAssistants = Effect.gen(function* () {
       signIns.delete(input.requestId);
       yield* notify;
       yield* reconsiderSocket;
+      // Once the code can't be traded any more, the socket may not be wanted.
+      yield* Effect.sleep(ASSISTANT_AUTHORIZATION_CODE_TTL_MS).pipe(
+        Effect.andThen(reconsiderSocket),
+        forkInScope,
+      );
       return {
         connectionId,
         name: entry.name,

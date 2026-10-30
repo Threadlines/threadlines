@@ -337,6 +337,36 @@ describe("assistants: sign-in", () => {
     ),
   );
 
+  it.effect("stays on the relay until an approved code is traded or can't be", () =>
+    withDoor((door) =>
+      Effect.gen(function* () {
+        const first = pkce();
+        const firstCode = yield* allowSignIn(door, "sign-in-1", first.challenge);
+        // Nothing waits and nothing is connected yet, but the assistant's
+        // token request is still to come through the relay.
+        expect(door.fake.state.wanted).toBe(true);
+        const issued = yield* exchange(door.fake, firstCode, { code_verifier: first.verifier });
+        expect(issued.status).toBe(200);
+        expect(door.fake.state.wanted).toBe(true);
+
+        yield* door.signIn.remove({
+          connectionId: (yield* until(
+            Stream.runHead(door.signIn.changes).pipe(Effect.map(Option.getOrThrow)),
+            (value) => value.connections.length === 1,
+          )).connections[0]!.connectionId,
+        });
+        const second = pkce();
+        yield* allowSignIn(door, "sign-in-2", second.challenge);
+        expect(door.fake.state.wanted).toBe(true);
+        yield* TestClock.adjust("61 seconds");
+        yield* until(
+          Effect.sync(() => door.fake.state.wanted),
+          (wanted) => !wanted,
+        );
+      }),
+    ),
+  );
+
   it.effect("Deny answers deny; Deny all denies the waiting and, for a while, new ones", () =>
     withDoor((door) =>
       Effect.gen(function* () {
