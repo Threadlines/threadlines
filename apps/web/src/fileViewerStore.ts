@@ -12,8 +12,6 @@ import { create } from "zustand";
 import type { EnvironmentId, ProjectEntry, ScopedThreadRef } from "@threadlines/contracts";
 import { isWindowsAbsolutePath } from "@threadlines/shared/path";
 
-import { isImageFilePath } from "./lib/imageFilePaths";
-
 export interface FileViewerContext {
   environmentId: EnvironmentId;
   /** Workspace root (or worktree path) that relative file paths resolve against. */
@@ -65,7 +63,10 @@ export interface OpenFileOptions {
 interface FileViewerState {
   isOpen: boolean;
   context: FileViewerContext | null;
-  /** Open files, in tab order. Paths are workspace-relative. */
+  /**
+   * Open files, in tab order. Project files by their workspace-relative path,
+   * files outside the project by their absolute path.
+   */
   tabs: string[];
   activePath: string | null;
   /**
@@ -381,62 +382,12 @@ export function isPathWithinCwd(targetPath: string, cwd: string): boolean {
 }
 
 /**
- * The `relativePath` the `projects.readFile` RPC takes for a target, which may
- * sit outside the workspace root — agents save screenshots to temp directories,
- * and the server serves those when the bytes are a verified image.
- *
- * Inside the root this is the plain workspace-relative path; outside it walks
- * up with `../`. Null when no relative path exists at all (a different Windows
- * drive), since there is nothing the server could resolve.
- */
-export function workspaceReadRelativePath(targetPath: string, cwd: string): string | null {
-  const inside = relativePathWithinCwdOrRoot(targetPath, cwd);
-  if (inside) {
-    return inside;
-  }
-
-  const target = normalizeFileViewerPath(targetPath).replace(/\/+$/u, "");
-  const root = normalizeFileViewerPath(cwd).replace(/\/+$/u, "");
-  if (target.length === 0 || root.length === 0) {
-    return null;
-  }
-  if (!target.startsWith("/") && !isWindowsAbsolutePath(target)) {
-    // Already relative to the workspace root; the server resolves it as-is.
-    return target;
-  }
-
-  const targetSegments = target.split("/");
-  const rootSegments = root.split("/");
-  const comparableTarget = normalizePathForComparison(target).split("/");
-  const comparableRoot = normalizePathForComparison(root).split("/");
-  let shared = 0;
-  while (
-    shared < comparableTarget.length &&
-    shared < comparableRoot.length &&
-    comparableTarget[shared] === comparableRoot[shared]
-  ) {
-    shared += 1;
-  }
-  // Nothing in common means separate roots (`D:/` against `C:/`), where no
-  // number of `..` segments ever reaches the target.
-  if (shared === 0) {
-    return null;
-  }
-
-  const upwards = Array.from({ length: rootSegments.length - shared }, () => "..");
-  const downwards = targetSegments.slice(shared);
-  const relativePath = [...upwards, ...downwards].join("/");
-  return relativePath.length > 0 ? relativePath : null;
-}
-
-/**
  * The path the file viewer shows `targetPath` (no `:line` suffix) by, or null
  * when it cannot show it and a click goes to another app instead. Anything in
- * the project qualifies; so does an image outside it, because the server
- * serves verified image bytes for an escaping path and the viewer can show
- * the picture instead of bouncing the click to an external editor. The
- * project root itself comes back as "", which opens as a folder but not as a
- * file.
+ * the project qualifies, and so does any file outside it named by an absolute
+ * path; a folder outside the project does not (the viewer's tree is the
+ * project's). The project root itself comes back as "", which opens as a
+ * folder but not as a file.
  */
 export function viewerPathFor(
   targetPath: string,
@@ -447,7 +398,19 @@ export function viewerPathFor(
   if (inside !== null || kind === "directory") {
     return inside;
   }
-  return isImageFilePath(targetPath) ? workspaceReadRelativePath(targetPath, cwd) : null;
+  // A file outside the project opens by its absolute path: the server reads
+  // it from anywhere, across drives too.
+  return isOutsideViewerPath(targetPath) ? normalizeFileViewerPath(targetPath) : null;
+}
+
+/**
+ * Whether a viewer path names a file outside the project: tabs hold project
+ * files by their project-relative path and everything else by its absolute
+ * path.
+ */
+export function isOutsideViewerPath(path: string): boolean {
+  const normalized = normalizeFileViewerPath(path);
+  return normalized.startsWith("/") || isWindowsAbsolutePath(normalized);
 }
 
 function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | null {

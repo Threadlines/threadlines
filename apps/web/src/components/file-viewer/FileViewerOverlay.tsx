@@ -1,15 +1,22 @@
 import type { SelectedLineRange } from "@pierre/diffs";
 import { getFiletypeFromFileName, preloadHighlighter } from "@pierre/diffs";
 import { File as PierreFile } from "@pierre/diffs/react";
-import { useQuery } from "@tanstack/react-query";
-import type { ProjectEntry, ScopedThreadRef, ProjectTextFileContent } from "@threadlines/contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type {
+  ProjectEntry,
+  ProjectFileOriginal,
+  ScopedThreadRef,
+  ProjectTextFileContent,
+} from "@threadlines/contracts";
 import {
   ChevronDown,
   ChevronDownIcon,
   ChevronRight,
+  CodeIcon,
   FileImage,
   FileWarning,
   FileX,
+  ImageIcon,
   FolderClosedIcon,
   FolderTree,
   MessageSquarePlus,
@@ -27,12 +34,18 @@ import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import { usePreferredEditor } from "../../editorPreferences";
 import { useServerAvailableEditors } from "../../rpc/serverState";
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
+import {
+  isOutsideViewerPath,
+  useFileViewerStore,
+  type FileViewerContext,
+} from "../../fileViewerStore";
+import { inferHomeFromCwd } from "../../terminal-links";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { FileEditorPane } from "./FileEditorPane";
-import { resolveFileConflict } from "./fileEditorSaveCoordinator";
+import { FileViewerPdf } from "./FileViewerPdf";
+import { resolveFileConflict, restoreFileOriginal } from "./fileEditorSaveCoordinator";
 import type { RevealLineNotice } from "./FileViewerOverlay.logic";
 import {
   countRenderableTextLines,
@@ -88,6 +101,7 @@ import { VscodeEntryIcon } from "../chat/VscodeEntryIcon";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import {
   EditorOpenRadioGroup,
+  editorLabel,
   editorOpenActionLabel,
   useEditorOpenOptions,
 } from "../EditorOpenOptions";
@@ -147,7 +161,28 @@ function basenameOf(path: string): string {
 }
 
 function workspaceAbsolutePath(cwd: string, path: string): string {
-  return `${cwd.replace(/[/\\]+$/, "")}/${path}`;
+  return isOutsideViewerPath(path) ? path : `${cwd.replace(/[/\\]+$/, "")}/${path}`;
+}
+
+/** A viewer path for people: outside the project, the home folder reads as `~`. */
+function displayViewerPath(path: string, cwd: string): string {
+  if (!isOutsideViewerPath(path)) return path;
+  const home = inferHomeFromCwd(cwd)?.replaceAll("\\", "/");
+  return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+const SVG_FILE_PATTERN = /\.svg$/i;
+
+/** Why the Edit button is off for a file, in the words its tooltip uses. */
+function editBlockReason(editBlock: ProjectTextFileContent["editBlock"]): string | null {
+  switch (editBlock) {
+    case "read-only":
+      return "This file is read-only on disk";
+    case "encoding":
+      return "This file isn't UTF-8 text, so saving it here could garble it";
+    default:
+      return null;
+  }
 }
 
 /** A project file as the shared file actions see it. */
@@ -155,7 +190,7 @@ function viewerFileTarget(cwd: string, path: string): FileActionTarget {
   return {
     path: workspaceAbsolutePath(cwd, path),
     kind: "file",
-    relativePath: path,
+    relativePath: isOutsideViewerPath(path) ? null : path,
     workspaceRoot: cwd,
   };
 }
@@ -339,6 +374,58 @@ function FileCodeSkeleton({ label }: { label: string }) {
   );
 }
 
+/**
+ * Files outside the project that are open in tabs, listed above the project's
+ * own tree so you can flip back to them.
+ */
+function OutsideFilesGroup({
+  cwd,
+  paths,
+  activePath,
+  theme,
+  onOpen,
+  onContextMenu,
+}: {
+  cwd: string;
+  paths: ReadonlyArray<string>;
+  activePath: string | null;
+  theme: "light" | "dark";
+  onOpen: (path: string) => void;
+  onContextMenu: (event: React.MouseEvent, path: string) => void;
+}) {
+  return (
+    <div className="mb-1 border-b border-border/60 pb-1">
+      <p className="px-3 pb-0.5 pt-1 text-[11px] text-muted-foreground">Outside this project</p>
+      {paths.map((path) => {
+        const shown = displayViewerPath(path, cwd);
+        const folder = shown.slice(0, Math.max(0, shown.lastIndexOf("/")));
+        return (
+          <button
+            key={path}
+            type="button"
+            title={shown}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2 py-1 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8 pointer-coarse:py-2 pointer-coarse:text-sm",
+              path === activePath && "bg-foreground/8 text-foreground",
+            )}
+            onClick={() => onOpen(path)}
+            onContextMenu={(event) => onContextMenu(event, path)}
+          >
+            <VscodeEntryIcon
+              pathValue={path}
+              kind="file"
+              theme={theme}
+              className="size-3.5 shrink-0"
+            />
+            <span className="shrink-0">{basenameOf(path)}</span>
+            <span className="truncate text-muted-foreground">{folder}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function FileViewerTree({
   context,
   onFileOpened,
@@ -348,9 +435,12 @@ function FileViewerTree({
   onFileOpened?: () => void;
 }) {
   const activePath = useFileViewerStore((state) => state.activePath);
+  const tabs = useFileViewerStore((state) => state.tabs);
   const treeRevealPath = useFileViewerStore((state) => state.treeRevealPath);
   const treeRevealRequestId = useFileViewerStore((state) => state.treeRevealRequestId);
   const storeOpenFile = useFileViewerStore((state) => state.openFile);
+  const setActivePath = useFileViewerStore((state) => state.setActivePath);
+  const outsideTabs = useMemo(() => tabs.filter(isOutsideViewerPath), [tabs]);
   const pinTab = useFileViewerStore((state) => state.pinTab);
   const { resolvedTheme } = useTheme();
   const treeViewportRef = useRef<HTMLDivElement>(null);
@@ -435,7 +525,8 @@ function FileViewerTree({
       }
       return;
     }
-    if (!activePath) return;
+    // A file outside the project has no place in the project's tree.
+    if (!activePath || isOutsideViewerPath(activePath)) return;
 
     setExpandedPaths((previous) => {
       const ancestors = ancestorsOf(activePath);
@@ -552,27 +643,44 @@ function FileViewerTree({
               </button>
             ))
           )
-        ) : entriesQuery.isPending ? (
-          <FileTreeSkeleton />
-        ) : entriesQuery.isError ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground/75">
-            Unable to list project files.
-          </p>
         ) : (
-          tree.map((node) => (
-            <TreeRow
-              key={node.entry.path}
-              node={node}
-              depth={0}
-              expandedPaths={expandedPaths}
-              activePath={treeRevealPath !== null ? treeRevealPath : activePath}
-              theme={resolvedTheme}
-              onToggleDirectory={handleToggleDirectory}
-              onOpenFile={openFile}
-              onPinFile={handlePinFile}
-              onFileContextMenu={handleFileContextMenu}
-            />
-          ))
+          <>
+            {outsideTabs.length > 0 ? (
+              <OutsideFilesGroup
+                cwd={context.cwd}
+                paths={outsideTabs}
+                activePath={treeRevealPath !== null ? null : activePath}
+                theme={resolvedTheme}
+                onOpen={(path) => {
+                  setActivePath(path);
+                  onFileOpened?.();
+                }}
+                onContextMenu={handleFileContextMenu}
+              />
+            ) : null}
+            {entriesQuery.isPending ? (
+              <FileTreeSkeleton />
+            ) : entriesQuery.isError ? (
+              <p className="px-3 py-2 text-xs text-muted-foreground/75">
+                Unable to list project files.
+              </p>
+            ) : (
+              tree.map((node) => (
+                <TreeRow
+                  key={node.entry.path}
+                  node={node}
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  activePath={treeRevealPath !== null ? treeRevealPath : activePath}
+                  theme={resolvedTheme}
+                  onToggleDirectory={handleToggleDirectory}
+                  onOpenFile={openFile}
+                  onPinFile={handlePinFile}
+                  onFileContextMenu={handleFileContextMenu}
+                />
+              ))
+            )}
+          </>
         )}
       </div>
       {entriesQuery.data?.truncated ? (
@@ -703,13 +811,19 @@ function usePierreHighlighterReady(path: string | null, themeName: string): bool
 }
 
 /** An image file, fitted; clicking or pinching it opens the image viewer to zoom. */
-function FileViewerImage(props: { readonly src: string; readonly name: string }) {
+function FileViewerImage(props: {
+  readonly src: string;
+  readonly name: string;
+  /** A control in the corner (an SVG's "Show source"). */
+  readonly action?: React.ReactNode;
+}) {
   const expand = () => {
     openExpandedImagePreview({ images: [{ src: props.src, name: props.name }], index: 0 });
   };
   const pinchRef = usePinchToExpand(expand);
   return (
-    <div className="flex h-full items-center justify-center overflow-auto p-6">
+    <div className="relative flex h-full items-center justify-center overflow-auto p-6">
+      {props.action ? <div className="absolute right-3 top-3">{props.action}</div> : null}
       <img
         ref={pinchRef}
         src={props.src}
@@ -748,12 +862,19 @@ function FileViewerPreview({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [selectedLines, setSelectedLines] = useState<SelectedLineRange | null>(null);
   const [revealLineNotice, setRevealLineNotice] = useState<RevealLineNotice | null>(null);
+  // An SVG shows as a picture; its source is a click away, and editing works
+  // on the source.
+  const [svgSourcePath, setSvgSourcePath] = useState<string | null>(null);
+  const isSvg = activePath !== null && SVG_FILE_PATTERN.test(activePath);
+  const readAs =
+    isSvg && (editMode || svgSourcePath === activePath) ? ("text" as const) : undefined;
 
   const fileQuery = useQuery(
     projectReadFileQueryOptions({
       environmentId: context.environmentId,
       cwd: context.cwd,
       relativePath: activePath,
+      as: readAs,
     }),
   );
   const file = fileQuery.data;
@@ -833,7 +954,11 @@ function FileViewerPreview({
   }, [file, revealEndLine, revealLine, revealRequestId]);
 
   const canEnterEdit =
-    !isCoarsePointer && activePath !== null && file?.kind === "text" && !file.truncated;
+    !isCoarsePointer &&
+    activePath !== null &&
+    file?.kind === "text" &&
+    !file.truncated &&
+    file.editBlock === undefined;
 
   // Scroll a line into view before the editor pane replaces the preview (the
   // shared scroll container keeps its position across the swap): center the
@@ -988,11 +1113,17 @@ function FileViewerPreview({
     );
   }
 
+  const outside = isOutsideViewerPath(activePath);
+
   if (file.kind === "missing") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-sm text-muted-foreground/75">
         <FileX className="mb-0.5 size-5" />
-        <p>{`${basenameOf(activePath)} doesn't exist in this project.`}</p>
+        <p>
+          {outside
+            ? `${basenameOf(activePath)} doesn't exist.`
+            : `${basenameOf(activePath)} doesn't exist in this project.`}
+        </p>
         <p className="text-xs text-muted-foreground/55">
           It may have been deleted or renamed since it was referenced.
         </p>
@@ -1005,25 +1136,39 @@ function FileViewerPreview({
       <FileViewerImage
         src={`data:${file.mimeType};base64,${file.base64}`}
         name={basenameOf(activePath)}
+        action={
+          isSvg ? (
+            <Button size="xs" variant="outline" onClick={() => setSvgSourcePath(activePath)}>
+              <CodeIcon aria-hidden className="size-3" />
+              Show source
+            </Button>
+          ) : null
+        }
       />
     );
   }
 
-  if (file.kind === "binary") {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground/75">
-        <FileImage className="size-5" />
-        <p>
-          {basenameOf(activePath)} is a binary file ({Math.ceil(file.size / 1024)} KB).
-        </p>
-      </div>
-    );
+  if (file.kind === "document") {
+    return <FileViewerPdf base64={file.base64} name={basenameOf(activePath)} />;
   }
 
-  const isEditing = editMode && !file.truncated && !isCoarsePointer;
+  if (file.kind === "binary") {
+    return <FileViewerCantShow context={context} path={activePath} size={file.size} />;
+  }
+
+  const isEditing = editMode && !file.truncated && file.editBlock === undefined && !isCoarsePointer;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {readAs === "text" && !isEditing ? (
+        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
+          <span className="text-[11px] text-muted-foreground">SVG source</span>
+          <Button size="xs" variant="ghost" onClick={() => setSvgSourcePath(null)}>
+            <ImageIcon aria-hidden className="size-3" />
+            Show picture
+          </Button>
+        </div>
+      ) : null}
       {file.truncated ? (
         <p className="border-b border-border/60 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-600 dark:text-amber-400">
           Large file: showing the first {Math.ceil(file.content.length / 1024)} KB of{" "}
@@ -1043,9 +1188,10 @@ function FileViewerPreview({
           <FileEditorPane
             // The reload nonce remounts the pane when a conflict resolves by
             // adopting the disk state, re-seeding the editor from the cache.
-            key={`edit:${context.cwd}:${activePath}:${editReloadNonce}`}
+            key={`edit:${context.cwd}:${activePath}:${readAs ?? ""}:${editReloadNonce}`}
             context={context}
             path={activePath}
+            as={readAs}
             initialContents={file.content}
             initialContentHash={file.contentHash}
             wordWrap={wordWrap}
@@ -1072,7 +1218,13 @@ function FileViewerPreview({
         )}
       </div>
       {isEditing ? (
-        <FileEditorStatusFooter context={context} activePath={activePath} />
+        <FileEditorStatusFooter
+          context={context}
+          activePath={activePath}
+          as={readAs}
+          outside={outside}
+          original={file.original}
+        />
       ) : context.threadRef ? (
         <AddSelectionToChatFooter
           threadRef={context.threadRef}
@@ -1096,10 +1248,18 @@ function FileViewerPreview({
 function FileEditorStatusFooter({
   context,
   activePath,
+  as,
+  outside,
+  original,
 }: {
   context: FileViewerContext;
   activePath: string;
+  as: "text" | undefined;
+  /** Outside the project: no git history, so the kept original is the way back. */
+  outside: boolean;
+  original: ProjectFileOriginal | undefined;
 }) {
+  const queryClient = useQueryClient();
   const saveState = useFileViewerStore((state) => state.editSaveState[activePath]);
   const saveShortcutLabel = isMacPlatform(navigator.platform) ? "⌘S" : "Ctrl+S";
 
@@ -1108,6 +1268,7 @@ function FileEditorStatusFooter({
       environmentId: context.environmentId,
       cwd: context.cwd,
       path: activePath,
+      as,
     };
     return (
       <div className="flex items-center justify-between gap-2 border-t border-border/60 bg-amber-500/10 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
@@ -1151,10 +1312,74 @@ function FileEditorStatusFooter({
           : saveState
             ? "Saving..."
             : "All changes saved"}
+        {outside ? " · outside this project, not tracked by git" : null}
       </span>
-      <span className="text-[11px] text-muted-foreground/50">
-        Changes save automatically · {saveShortcutLabel} saves now
-      </span>
+      {original ? (
+        <button
+          type="button"
+          title={`Puts back the file as it was on ${new Date(original.savedAt).toLocaleString()}, before the first save here`}
+          className="inline-flex cursor-pointer items-center rounded-md border border-border/70 bg-background px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-foreground/10"
+          onClick={() => {
+            void restoreFileOriginal({
+              environmentId: context.environmentId,
+              cwd: context.cwd,
+              path: activePath,
+              as,
+              queryClient,
+            });
+          }}
+        >
+          Restore original
+        </button>
+      ) : (
+        <span className="text-[11px] text-muted-foreground/50">
+          Changes save automatically · {saveShortcutLabel} saves now
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A file the viewer can't show (a Word document, a database, an archive):
+ * where it is, and the ways to get at it. Nothing here opens it in another
+ * app directly, since a file that looks like a document can be a program.
+ */
+function FileViewerCantShow({
+  context,
+  path,
+  size,
+}: {
+  context: FileViewerContext;
+  path: string;
+  size: number;
+}) {
+  const target = viewerFileTarget(context.cwd, path);
+  const launchers = readFileActionLaunchers(context.environmentId);
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground">
+      <FileImage aria-hidden className="size-5" />
+      <p>
+        {basenameOf(path)} can't be shown here ({Math.ceil(size / 1024)} KB).
+      </p>
+      <div className="flex items-center gap-2">
+        {launchers.canReveal ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => runFileAction("reveal", target, launchers)}
+          >
+            {`Reveal in ${editorLabel("file-manager")}`}
+          </Button>
+        ) : null}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => runFileAction("copy-path", target, launchers)}
+        >
+          Copy path
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1378,6 +1603,16 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
   const setCoarsePointerWordWrap = useFileViewerStore((state) => state.setCoarsePointerWordWrap);
   const { updateSettings } = useUpdateSettings();
   const wordWrap = isCoarsePointer ? (coarsePointerWordWrap ?? true) : wordWrapSetting;
+  // Shares the preview's read, so this costs no extra request.
+  const activeFileQuery = useQuery(
+    projectReadFileQueryOptions({
+      environmentId: context.environmentId,
+      cwd: context.cwd,
+      relativePath: activePath,
+    }),
+  );
+  const editBlocked =
+    activeFileQuery.data?.kind === "text" ? editBlockReason(activeFileQuery.data.editBlock) : null;
 
   // Below the `sm` breakpoint the tree and preview share the screen one at a
   // time (a 256px tree beside code is unusable on a phone); every file-open
@@ -1411,9 +1646,10 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
         {activePath && !isCoarsePointer ? (
           <Toggle
             aria-label={editMode ? "Done editing" : "Edit file"}
-            tooltip={editMode ? "Done editing" : "Edit file"}
+            tooltip={editBlocked ?? (editMode ? "Done editing" : "Edit file")}
             size="xs"
             className="shrink-0 gap-1 px-1.5"
+            disabled={editBlocked !== null && !editMode}
             pressed={editMode}
             onPressedChange={(pressed) => {
               setEditMode(Boolean(pressed));
@@ -1443,7 +1679,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
         ) : null}
         {activePath ? (
           <span className="max-w-[36ch] shrink-0 truncate text-[11px] text-muted-foreground/60 max-sm:hidden">
-            {activePath}
+            {displayViewerPath(activePath, context.cwd)}
           </span>
         ) : null}
         <button

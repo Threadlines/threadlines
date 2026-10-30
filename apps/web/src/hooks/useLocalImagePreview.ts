@@ -2,7 +2,7 @@ import type { EnvironmentId } from "@threadlines/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { workspaceReadRelativePath } from "../fileViewerStore";
+import { viewerPathFor } from "../fileViewerStore";
 import { isImageFilePath } from "../lib/imageFilePaths";
 import { projectReadFileQueryOptions } from "../lib/projectReactQuery";
 
@@ -25,8 +25,8 @@ const LOADING: LocalImagePreview = { status: "loading" };
  * is fetched once.
  *
  * A path the server reports as gone is `missing`, so the reference can look
- * gone too. Every other failure -- binary, text, outside-root refusal, RPC
- * error -- is one `unavailable`: none of them says the file is not there. A
+ * gone too. Every other failure -- binary, text, RPC error -- is one
+ * `unavailable`: none of them says the file is not there. A
  * reference to a file that has since been deleted is an ordinary thing in a
  * transcript, not an error worth a message.
  */
@@ -36,9 +36,11 @@ export function useLocalImagePreview(input: {
   /** Absolute, `../`-relative, or workspace-relative path to the image. */
   readonly path: string | undefined;
 }): LocalImagePreview {
+  // The path the file viewer opens it by, so a picture shown in chat and the
+  // same picture opened in the viewer share one cached read.
   const relativePath =
     input.cwd && input.path && isImageFilePath(input.path)
-      ? workspaceReadRelativePath(input.path, input.cwd)
+      ? viewerPathFor(input.path, input.cwd, "file")
       : null;
   const enabled = Boolean(input.environmentId && input.cwd && relativePath);
   const query = useQuery({
