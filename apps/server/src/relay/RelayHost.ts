@@ -514,8 +514,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Opens the control socket if there is anything for it to do. With event
-   * tasks it also registers this computer first when it isn't (pairing
-   * flows register on their own).
+   * tasks, or a feature keeping the link online (assistants), it also
+   * registers this computer first when it isn't (pairing flows register on
+   * their own).
    */
   const ensureControl: Effect.Effect<void> = Effect.gen(function* () {
     if (!localOrigin || !relayOrigin) return;
@@ -525,7 +526,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!(yield* loadCredentials)) {
-      if (!(yield* hooks.wantsRelay)) return;
+      if (onlineReasons.size === 0 && !(yield* hooks.wantsRelay)) return;
       yield* ensureRegistered;
     }
     yield* hooks.beforeConnect;
