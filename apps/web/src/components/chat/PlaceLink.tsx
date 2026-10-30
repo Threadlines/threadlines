@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@threadlines/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
 import { type PlaceId, placePage } from "@threadlines/shared/appPlaces";
 import { useRouter } from "@tanstack/react-router";
 import { type ComponentType, createElement, type ReactNode } from "react";
@@ -6,6 +6,7 @@ import { type ComponentType, createElement, type ReactNode } from "react";
 import { placeArrivalHash, resolvePlaceLink } from "../../appPlaceLinks";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { isElectron } from "../../env";
+import { selectEnvironmentState, useStore } from "../../store";
 import { placeLinkLabel } from "../../lib/chatMarkdownDocument";
 import { cn } from "../../lib/utils";
 import { SETTINGS_NAV_ITEMS } from "../settings/settingsNavigation";
@@ -56,6 +57,7 @@ export function PlaceLink({
   href,
   linkText,
   threadEnvironmentId,
+  threadRef,
   className,
   children,
 }: {
@@ -64,6 +66,8 @@ export function PlaceLink({
   readonly linkText: string;
   /** The environment the reply's thread runs on, when it is in one. */
   readonly threadEnvironmentId: EnvironmentId | null;
+  /** The reply's thread, to open project pages on its project. */
+  readonly threadRef: ScopedThreadRef | null;
   readonly className?: string | undefined;
   /** What the link drew as markdown, shown when the place is unknown. */
   readonly children: ReactNode;
@@ -72,11 +76,18 @@ export function PlaceLink({
   const router: ReturnType<typeof useRouter> | undefined = useRouter({ warn: false });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const computerLabel = useComputerLabel();
+  const threadProjectRoot = useStore((state) => {
+    if (threadRef === null) return null;
+    const environment = selectEnvironmentState(state, threadRef.environmentId);
+    const projectId = environment.threadShellById[threadRef.threadId]?.projectId;
+    return projectId === undefined ? null : (environment.projectById[projectId]?.cwd ?? null);
+  });
   const target = resolvePlaceLink({
     href,
     threadEnvironmentId,
     primaryEnvironmentId,
     isDesktopApp: isElectron,
+    threadProjectRoot,
   });
   if (target === null) return children;
 

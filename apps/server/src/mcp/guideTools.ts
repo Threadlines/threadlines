@@ -14,7 +14,7 @@ import { GUIDE_TOOL_NAME } from "./roomToolAccess.ts";
 import { McpRoomInvocation } from "./roomTools.ts";
 
 export const AppGuideResult = Schema.Struct({
-  outcome: Schema.Literals(["ok", "no_match"]),
+  outcome: Schema.Literals(["ok", "no_match", "refused"]),
   /** Markdown: places with their links, current values and topic text. */
   answer: Schema.String,
 });

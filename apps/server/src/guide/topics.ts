@@ -87,7 +87,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
     keywords: ["schedule", "cron", "recurring", "every day", "webhook", "event", "github event"],
     body: `{place:scheduled} lists tasks that start an agent at set times (once, hourly, daily, weekdays, weekly or a cron rule) or when an event arrives at the task's address (a webhook, or GitHub events like a new issue or failed checks). Each run starts a new thread with the task's instructions, or sends them to one thread as a follow-up.
 
-Tasks run while Threadlines is running on that computer; a time missed while it was off or asleep gets one catch-up run. The desktop app can keep the computer awake for them.
+Tasks run while Threadlines is running on that computer. A time missed while it was off or asleep gets one catch-up run when it's back, if the missed time was within the last 7 days. The desktop app can keep the computer awake for them.
 
 Agents can list, create and change scheduled tasks when {place:threads.agentThreads} isn't Off; with Ask me first, a card asks you before a change takes effect.`,
   },

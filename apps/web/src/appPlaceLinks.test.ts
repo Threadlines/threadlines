@@ -39,10 +39,25 @@ describe("resolvePlaceLink", () => {
     });
     expect(fromThread(placeHref("plugins.skills"), THIS_MAC)).toMatchObject({
       kind: "open",
-      href: "/settings/plugins?tab=skills",
+      href: "/settings/plugins?tab=skills&environment=environment-this-mac",
     });
     expect(fromThread("threadlines-place:threads.renamedSince", THIS_MAC)).toBeNull();
     expect(fromThread("https://example.com", THIS_MAC)).toBeNull();
+  });
+
+  it("opens Plugins & Skills on the thread's computer and project", () => {
+    expect(
+      resolvePlaceLink({
+        href: placeHref("plugins.skills"),
+        threadEnvironmentId: WINDOWS_PC,
+        primaryEnvironmentId: THIS_MAC,
+        isDesktopApp: true,
+        threadProjectRoot: "C:/code/site",
+      }),
+    ).toMatchObject({
+      kind: "open",
+      href: "/settings/plugins?tab=skills&environment=environment-windows-pc&project=C%3A%2Fcode%2Fsite",
+    });
   });
 
   it("names another computer's setting without opening this computer's", () => {

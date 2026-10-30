@@ -62,6 +62,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { usePlaceScopeArrival } from "../../hooks/usePlaceArrival";
 import { readEnvironmentApi, useEnvironmentApiAvailable } from "../../environmentApi";
 import { ensureLocalApi } from "../../localApi";
 import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
@@ -4455,6 +4456,11 @@ export function ExtensionsSettingsPanel() {
   const [rememberedScope, setRememberedScope] = useState<ExtensionScopeSelection | null>(
     () => extensionsSettingsPanelMemoryState.scope ?? null,
   );
+  // A place link from a thread opens on that thread's computer and project.
+  usePlaceScopeArrival((scope) => {
+    setRememberedScope({ environmentId: scope.environmentId, cwd: scope.project });
+    return true;
+  });
   const scope = useMemo(
     () => resolveExtensionScope(scopeGroups, rememberedScope),
     [rememberedScope, scopeGroups],

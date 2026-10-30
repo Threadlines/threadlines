@@ -21,6 +21,7 @@ import type { ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
@@ -30,12 +31,12 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
+import { GUIDE_TOOL_NAME, SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinks } from "../links/ComputerLinks.ts";
-import { OutsideAgentConnectionRepository } from "../outsideAgents/OutsideAgentConnectionRepository.ts";
+import { OutsideAgentSignIn } from "../outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
 import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
@@ -223,7 +224,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.orElseSucceed(() => undefined),
       );
     const computerLinks = yield* Effect.serviceOption(ComputerLinks);
-    const outsideAgents = yield* Effect.serviceOption(OutsideAgentConnectionRepository);
+    const outsideAgents = yield* Effect.serviceOption(OutsideAgentSignIn);
     const guide = makeGuideToolHandler({
       computerName: Effect.sync(() =>
         Option.isSome(environment) ? environment.value.currentLabel() : "this computer",
@@ -285,13 +286,19 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           })),
         ),
       ),
+      // The Agents group as Settings shows it: its first snapshot is now.
       outsideAgents: Option.isSome(outsideAgents)
         ? orUndefined(
-            outsideAgents.value.listLive.pipe(
-              Effect.map((rows) => rows.map((row) => ({ name: row.clientName }))),
+            outsideAgents.value.changes.pipe(
+              Stream.take(1),
+              Stream.runHead,
+              Effect.map(Option.getOrUndefined),
+              Effect.map((snapshot) =>
+                snapshot?.connections.map((connection) => ({ name: connection.name })),
+              ),
             ),
           )
-        : Effect.succeed([]),
+        : Effect.succeed(undefined),
       scheduledTasks: Option.isSome(scheduledTasks)
         ? orUndefined(
             scheduledTasks.value.snapshot.pipe(
@@ -301,7 +308,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
               })),
             ),
           )
-        : Effect.succeed({ active: 0, paused: 0 }),
+        : Effect.succeed(undefined),
     });
     const caller = Effect.service(McpRoomInvocation);
     return {
@@ -335,7 +342,17 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_update(scope, input)),
       scheduled_run_finish: (input) =>
         Effect.flatMap(caller, (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
-      app_guide: (input) => guide(input),
+      // Listed only to runtimes granted it; a call from any other is refused
+      // too (a review runtime reads the checkout and nothing else).
+      app_guide: (input) =>
+        Effect.flatMap(caller, (scope) =>
+          scope.roomTools.has(GUIDE_TOOL_NAME)
+            ? guide(input)
+            : Effect.succeed({
+                outcome: "refused" as const,
+                answer: "The Threadlines guide isn't available to you here.",
+              }),
+        ),
     };
   }),
 );

@@ -138,6 +138,7 @@ const PAGES = [
     about: "The agents you can run, their accounts and their models.",
     route: { to: "/settings/providers" },
     keywords: ["agents", "models", "sign in", "account", "claude", "codex", "cursor"],
+    value: { kind: "state", state: "providers" },
   },
   {
     id: "settings.plugins",
@@ -205,6 +206,7 @@ const PAGES = [
     about: "Tasks that start an agent on a schedule or when an event arrives.",
     route: { to: "/scheduled" },
     keywords: ["cron", "schedule", "webhook", "event", "recurring"],
+    value: { kind: "state", state: "scheduledTasks" },
   },
   {
     id: "usage",

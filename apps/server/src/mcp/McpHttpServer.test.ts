@@ -334,12 +334,19 @@ describe("MCP endpoints", () => {
             room: true,
             scheduledRun: true,
           });
+          const guideOnly = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: RUN_THREAD,
+            browser: true,
+            room: true,
+            guideOnly: true,
+          });
 
           const result = yield* Effect.promise(async () => ({
             browser: await listTools(`${base}/mcp`, main.token),
             room: await listTools(`${base}/mcp/room`, main.token),
             // Each credential lists only the room tools it may call.
             scheduledRunRoom: await listTools(`${base}/mcp/room`, scheduledRun.token),
+            guideOnlyRoom: await listTools(`${base}/mcp/room`, guideOnly.token),
             reviewerRoom: await listTools(`${base}/mcp/room`, reviewer.token),
             reviewerOnBrowser: await openSession(`${base}/mcp`, reviewer.token),
             // The screenshot is registered by hand, outside the toolkit; the
@@ -357,6 +364,8 @@ describe("MCP endpoints", () => {
             // Handlers learn who called from the credential, not the model.
             agents: await callTool(`${base}/mcp/room`, main.token, "room_agents"),
             reviewerAgents: await callTool(`${base}/mcp/room`, reviewer.token, "room_agents"),
+            // Not listed to a reviewer, and refused if called anyway.
+            reviewerGuide: await callTool(`${base}/mcp/room`, reviewer.token, "app_guide"),
           }));
 
           expect(result.browser.status).toBe(200);
@@ -371,6 +380,9 @@ describe("MCP endpoints", () => {
           );
           expect("tools" in result.reviewerRoom ? result.reviewerRoom.tools : []).toEqual([
             "room_diff",
+          ]);
+          expect("tools" in result.guideOnlyRoom ? result.guideOnlyRoom.tools : []).toEqual([
+            "app_guide",
           ]);
           for (const listed of [result.browser, result.scheduledRunRoom]) {
             expect("nonObjectInputs" in listed ? listed.nonObjectInputs : ["(not listed)"]).toEqual(
@@ -392,6 +404,7 @@ describe("MCP endpoints", () => {
           ]);
           expect(result.reviewerAgents.isError).toBe(false);
           expect(result.reviewerAgents.structuredContent.outcome).toBe("refused");
+          expect(result.reviewerGuide.structuredContent.outcome).toBe("refused");
 
           yield* mcpSessionRegistry.revoke(THREAD, main.generation);
           yield* mcpSessionRegistry.revoke(

@@ -768,6 +768,7 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
         href={href}
         linkText={markdownChildrenText(children)}
         threadEnvironmentId={threadRef?.environmentId ?? documentContext.environmentId ?? null}
+        threadRef={threadRef}
         className={props.className}
       >
         <InsideMarkdownLinkContext value>{children}</InsideMarkdownLinkContext>

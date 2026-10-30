@@ -26,6 +26,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { usePlaceScopeArrival } from "../../hooks/usePlaceArrival";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
 
 interface InstructionDraft {
@@ -217,6 +218,13 @@ export function AgentInstructionsSettingsPanel() {
     [projects],
   );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  // A place link from a thread opens on that thread's project, once it's listed.
+  usePlaceScopeArrival((scope) => {
+    if (scope.project === null) return true;
+    if (!projectOptions.some((option) => option.value === scope.project)) return false;
+    setCwd(scope.project);
+    return true;
+  });
   // Instruction files live on the machine that owns the project, and the picker
   // spans machines, so the API is resolved from the project rather than from
   // whichever backend this client happens to be paired with. Resolved per call:

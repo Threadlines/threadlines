@@ -1,8 +1,9 @@
+import { EnvironmentId } from "@threadlines/contracts";
 import type { PlaceId } from "@threadlines/shared/appPlaces";
-import { useLocation } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useLocation, useSearch } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 
-import { placeIdFromArrivalHash } from "../appPlaceLinks";
+import { placeIdFromArrivalHash, placeScopeFromSearch } from "../appPlaceLinks";
 
 /** How long a page may take to draw the place before the arrival gives up. */
 const PLACE_ARRIVAL_WAIT_MS = 3_000;
@@ -111,4 +112,43 @@ export function usePlaceArrival(): void {
     const placeId = placeIdFromArrivalHash(hash);
     return placeId === null ? undefined : arriveAtPlace(placeId);
   }, [hash]);
+}
+
+/**
+ * Applies the computer and project a place link named (`?environment=&project=`,
+ * placeScopeFromSearch) once per arrival, for pages that pick their own
+ * (Plugins & Skills, Agent Instructions). Each click carries a new `#place=`
+ * counter, so following a link again applies it again, while a pick made on
+ * the page in between stands. `apply` returns false when the page can't take
+ * it yet (its projects still loading), and is asked again on the next render.
+ */
+export function usePlaceScopeArrival(
+  apply: (scope: {
+    readonly environmentId: EnvironmentId;
+    readonly project: string | null;
+  }) => boolean,
+): void {
+  const scopeKey = useSearch({
+    strict: false,
+    select: (search) => {
+      const scope = placeScopeFromSearch(search as Record<string, unknown>);
+      return scope === null ? null : `${scope.environmentId}\n${scope.project ?? ""}`;
+    },
+  });
+  const hash = useLocation({ select: (location) => location.hash });
+  const applied = useRef<string | null>(null);
+  useEffect(() => {
+    if (scopeKey === null) return;
+    const arrival = `${scopeKey}\n${hash}`;
+    if (applied.current === arrival) return;
+    const [environmentId = "", project = ""] = scopeKey.split("\n");
+    if (
+      apply({
+        environmentId: EnvironmentId.make(environmentId),
+        project: project.length > 0 ? project : null,
+      })
+    ) {
+      applied.current = arrival;
+    }
+  });
 }
