@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 
 import {
+  checkMacMinimumSystemVersion,
   createStagePackageJson,
   createBuildConfig,
   resolveGitHubPublishConfig,
@@ -21,6 +22,7 @@ import {
   resolveMockUpdateServerUrl,
   retryTransientElectronPackaging,
   createDesktopArtifactBuildEnv,
+  withMacMinimumSystemVersion,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
@@ -168,6 +170,41 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
 
         assert.equal(buildConfig.artifactName, "Threadlines-${version}-${os}-${arch}.${ext}");
+      }
+    }),
+  );
+
+  it.effect("tells a Mac too old for this Electron that no update is waiting", () =>
+    Effect.gen(function* () {
+      // electron-updater compares the manifest's minimum with os.release(),
+      // the Darwin version: 22 is macOS 13, where Electron 44+ starts.
+      const manifest = withMacMinimumSystemVersion(
+        [
+          "version: 0.9.0",
+          "files:",
+          "  - url: Threadlines-0.9.0-mac-arm64.zip",
+          "    sha512: abc",
+          "    size: 1",
+          "releaseDate: '2026-10-30T00:00:00.000Z'",
+        ].join("\n"),
+        "latest-mac.yml",
+      );
+      assert.include(manifest, "minimumSystemVersion: '22.0.0'");
+      assert.include(manifest, "url: Threadlines-0.9.0-mac-arm64.zip");
+
+      const plist = (version: string) =>
+        `<dict><key>LSMinimumSystemVersion</key>\n<string>${version}</string></dict>`;
+      assert.isNull(checkMacMinimumSystemVersion(plist("13.0")));
+      assert.include(checkMacMinimumSystemVersion(plist("14.0")) ?? "", "macOS 14.0");
+
+      // The Electron this repo installs, where its binary is downloaded.
+      const fs = yield* FileSystem.FileSystem;
+      const installedPlist = new URL(
+        "../apps/desktop/node_modules/electron/dist/Electron.app/Contents/Info.plist",
+        import.meta.url,
+      ).pathname;
+      if (yield* fs.exists(installedPlist)) {
+        assert.isNull(checkMacMinimumSystemVersion(yield* fs.readFileString(installedPlist)));
       }
     }),
   );
