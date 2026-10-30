@@ -112,7 +112,7 @@ threads and worktrees; access levels; rooms and reviews; threads agents
 start; linking computers (Fleet); phones and other devices; scheduled and
 event tasks; outside agents and the `threadlines` command; providers and
 sign-in; plugins, skills and instructions; the browser panel and sites
-agents can visit; updates and release tracks.
+agents can visit; the file viewer; updates and release tracks.
 
 A unit test fails on an unknown `{place:...}`. Prose about behavior can
 still go stale: AGENTS.md's "Hit every surface" gains a line, "a change users
