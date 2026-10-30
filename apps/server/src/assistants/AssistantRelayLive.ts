@@ -5,8 +5,9 @@
  *
  * The assistant socket authenticates as the control socket and device pipes
  * do: the host secret as a `threadlines-token.` subprotocol. It sends the
- * relay's heartbeat ping every 20 s; once a pong has come back on a socket,
- * 45 s with no frame at all closes it and connects again. A socket refused
+ * relay's heartbeat ping every 20 s, and 45 s with no frame at all (counted
+ * from when it opened, so a socket that never carries anything is caught too)
+ * closes it and connects again. A socket refused
  * before it opened asks the relay (at most once a minute) whether it still
  * knows this computer, so a forgotten host registers again on the next call
  * that needs one.
@@ -77,244 +78,255 @@ const fromApiError = (error: RelayApiError): AssistantRelayError => {
   return new AssistantRelayError({ reason: "refused", detail: error.detail });
 };
 
-export const makeAssistantRelay = Effect.gen(function* () {
-  const link = yield* RelayHostLink;
-  const context = yield* Effect.context<never>();
-  const runFork = Effect.runForkWith(context);
-  const origin = link.relayOrigin;
-  const events = yield* Queue.unbounded<AssistantRelayEvent>();
+/** The socket's heartbeat: how often it pings, and how long it may stay silent. */
+export interface AssistantSocketTiming {
+  readonly pingIntervalMs: number;
+  readonly silenceTimeoutMs: number;
+}
 
-  let wanted = false;
-  let socket: WebSocket | null = null;
-  let attempt = 0;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let pingTimer: ReturnType<typeof setInterval> | null = null;
-  let lastHostCheckAt = 0;
+const DEFAULT_TIMING: AssistantSocketTiming = {
+  pingIntervalMs: PING_INTERVAL_MS,
+  silenceTimeoutMs: SILENCE_TIMEOUT_MS,
+};
 
-  /** Runs a call with this computer's credentials; a host the relay forgot is dropped. */
-  const withHost = <A>(
-    register: boolean,
-    call: (origin: string, creds: RelayHostCredentials) => Effect.Effect<A, RelayApiError>,
-  ): Effect.Effect<A | null, AssistantRelayError> =>
-    Effect.gen(function* () {
-      if (origin === null) return yield* relayOff;
-      const stored = yield* link.credentials;
-      const creds =
-        stored ??
-        (register
-          ? yield* link.register.pipe(
-              Effect.mapError(
-                (error) =>
-                  new AssistantRelayError({
-                    reason: error.transient ? "unreachable" : "refused",
-                    detail: error.detail,
-                  }),
-              ),
-            )
-          : null);
-      if (creds === null) return null;
-      return yield* call(origin, creds).pipe(
-        Effect.catchIf(isRelayHostGone, (error) =>
-          link.forgetHost(creds.hostId).pipe(Effect.andThen(Effect.fail(error))),
+/** makeAssistantRelay with its heartbeat's timing (tests shorten it). */
+export const makeAssistantRelayWith = (timing: AssistantSocketTiming) =>
+  Effect.gen(function* () {
+    const link = yield* RelayHostLink;
+    const context = yield* Effect.context<never>();
+    const runFork = Effect.runForkWith(context);
+    const origin = link.relayOrigin;
+    const events = yield* Queue.unbounded<AssistantRelayEvent>();
+
+    let wanted = false;
+    let socket: WebSocket | null = null;
+    let attempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+    let lastHostCheckAt = 0;
+
+    /** Runs a call with this computer's credentials; a host the relay forgot is dropped. */
+    const withHost = <A>(
+      register: boolean,
+      call: (origin: string, creds: RelayHostCredentials) => Effect.Effect<A, RelayApiError>,
+    ): Effect.Effect<A | null, AssistantRelayError> =>
+      Effect.gen(function* () {
+        if (origin === null) return yield* relayOff;
+        const stored = yield* link.credentials;
+        const creds =
+          stored ??
+          (register
+            ? yield* link.register.pipe(
+                Effect.mapError(
+                  (error) =>
+                    new AssistantRelayError({
+                      reason: error.transient ? "unreachable" : "refused",
+                      detail: error.detail,
+                    }),
+                ),
+              )
+            : null);
+        if (creds === null) return null;
+        return yield* call(origin, creds).pipe(
+          Effect.catchIf(isRelayHostGone, (error) =>
+            link.forgetHost(creds.hostId).pipe(Effect.andThen(Effect.fail(error))),
+          ),
+          Effect.mapError(fromApiError),
+        );
+      });
+
+    /** withHost for calls that always register first. */
+    const registered = <A>(
+      call: (origin: string, creds: RelayHostCredentials) => Effect.Effect<A, RelayApiError>,
+    ): Effect.Effect<A, AssistantRelayError> =>
+      withHost(true, call).pipe(
+        Effect.flatMap((value) =>
+          value === null
+            ? Effect.fail(
+                new AssistantRelayError({
+                  reason: "unreachable",
+                  detail: "This computer isn't registered with the relay yet.",
+                }),
+              )
+            : Effect.succeed(value),
         ),
-        Effect.mapError(fromApiError),
       );
+
+    // ----- the socket ------------------------------------------------------------
+
+    const clearTimers = () => {
+      if (pingTimer !== null) clearInterval(pingTimer);
+      pingTimer = null;
+    };
+
+    const closeSocket = (reason: string) => {
+      clearTimers();
+      const current = socket;
+      socket = null;
+      if (current !== null && current.readyState <= WebSocket.OPEN) {
+        try {
+          current.close(1000, reason);
+        } catch {
+          // Already closing.
+        }
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (!wanted || reconnectTimer !== null) return;
+      const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!;
+      attempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        runFork(connect);
+      }, delay);
+    };
+
+    /** Refused before it opened: does the relay still know this computer? (`info` forgets it if not.) */
+    const checkHost = Effect.suspend(() => {
+      const now = Date.now();
+      if (now - lastHostCheckAt < HOST_CHECK_INTERVAL_MS) return Effect.void;
+      lastHostCheckAt = now;
+      return withHost(false, (relay, creds) =>
+        relayApi.assistantInfo(relay, creds.hostId, creds.hostSecret),
+      ).pipe(Effect.ignore);
     });
 
-  /** withHost for calls that always register first. */
-  const registered = <A>(
-    call: (origin: string, creds: RelayHostCredentials) => Effect.Effect<A, RelayApiError>,
-  ): Effect.Effect<A, AssistantRelayError> =>
-    withHost(true, call).pipe(
-      Effect.flatMap((value) =>
-        value === null
-          ? Effect.fail(
-              new AssistantRelayError({
-                reason: "unreachable",
-                detail: "This computer isn't registered with the relay yet.",
-              }),
-            )
-          : Effect.succeed(value),
+    const connect: Effect.Effect<void> = Effect.gen(function* () {
+      if (!wanted || socket !== null || origin === null) return;
+      const creds = yield* link.credentials;
+      if (creds === null) {
+        // Not registered (again) yet: look again, as a reconnect would.
+        scheduleReconnect();
+        return;
+      }
+      const opened = new WebSocket(
+        relaySocketUrl(origin, `/v2/hosts/${creds.hostId}/assistants/socket`),
+        [RELAY_WEBSOCKET_PROTOCOL, `${RELAY_TOKEN_PROTOCOL_PREFIX}${creds.hostSecret}`],
+      );
+      socket = opened;
+      let isOpen = false;
+      let lastFrameAt = Date.now();
+
+      opened.addEventListener("open", () => {
+        if (socket !== opened) return;
+        isOpen = true;
+        attempt = 0;
+        lastFrameAt = Date.now();
+        Queue.offerUnsafe(events, { type: "open" });
+        pingTimer = setInterval(() => {
+          if (socket !== opened) return;
+          if (Date.now() - lastFrameAt > timing.silenceTimeoutMs) {
+            // The network went quiet without a close: start over.
+            onGone();
+            return;
+          }
+          if (opened.readyState === WebSocket.OPEN) opened.send(RELAY_HEARTBEAT_PING_FRAME);
+        }, timing.pingIntervalMs);
+      });
+      opened.addEventListener("message", (event: MessageEvent) => {
+        if (socket !== opened || typeof event.data !== "string") return;
+        lastFrameAt = Date.now();
+        if (event.data === RELAY_HEARTBEAT_PONG_FRAME) return;
+        if (Buffer.byteLength(event.data, "utf8") > RELAY_ASSISTANT_FRAME_MAX_BYTES) return;
+        const frame = decodeFrame(event.data);
+        if (Option.isSome(frame)) Queue.offerUnsafe(events, { type: "frame", frame: frame.value });
+      });
+      const onGone = () => {
+        if (socket !== opened) return;
+        closeSocket("Reconnecting.");
+        if (isOpen) Queue.offerUnsafe(events, { type: "closed" });
+        else runFork(checkHost);
+        scheduleReconnect();
+      };
+      opened.addEventListener("close", onGone);
+      opened.addEventListener("error", onGone);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("assistants.socket.connect-failed", { cause }).pipe(
+          Effect.andThen(Effect.sync(scheduleReconnect)),
+        ),
       ),
     );
 
-  // ----- the socket ------------------------------------------------------------
-
-  const clearTimers = () => {
-    if (pingTimer !== null) clearInterval(pingTimer);
-    pingTimer = null;
-  };
-
-  const closeSocket = (reason: string) => {
-    clearTimers();
-    const current = socket;
-    socket = null;
-    if (current !== null && current.readyState <= WebSocket.OPEN) {
-      try {
-        current.close(1000, reason);
-      } catch {
-        // Already closing.
-      }
-    }
-  };
-
-  const scheduleReconnect = () => {
-    if (!wanted || reconnectTimer !== null) return;
-    const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!;
-    attempt += 1;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      runFork(connect);
-    }, delay);
-  };
-
-  /** Refused before it opened: does the relay still know this computer? (`info` forgets it if not.) */
-  const checkHost = Effect.suspend(() => {
-    const now = Date.now();
-    if (now - lastHostCheckAt < HOST_CHECK_INTERVAL_MS) return Effect.void;
-    lastHostCheckAt = now;
-    return withHost(false, (relay, creds) =>
-      relayApi.assistantInfo(relay, creds.hostId, creds.hostSecret),
-    ).pipe(Effect.ignore);
-  });
-
-  const connect: Effect.Effect<void> = Effect.gen(function* () {
-    if (!wanted || socket !== null || origin === null) return;
-    const creds = yield* link.credentials;
-    if (creds === null) {
-      // Not registered (again) yet: look again, as a reconnect would.
-      scheduleReconnect();
-      return;
-    }
-    const opened = new WebSocket(
-      relaySocketUrl(origin, `/v2/hosts/${creds.hostId}/assistants/socket`),
-      [RELAY_WEBSOCKET_PROTOCOL, `${RELAY_TOKEN_PROTOCOL_PREFIX}${creds.hostSecret}`],
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        wanted = false;
+        if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        closeSocket("Server stopping.");
+      }),
     );
-    socket = opened;
-    let isOpen = false;
-    let lastFrameAt = Date.now();
-    let pongSeen = false;
 
-    opened.addEventListener("open", () => {
-      if (socket !== opened) return;
-      isOpen = true;
-      attempt = 0;
-      lastFrameAt = Date.now();
-      Queue.offerUnsafe(events, { type: "open" });
-      pingTimer = setInterval(() => {
-        if (socket !== opened) return;
-        if (pongSeen && Date.now() - lastFrameAt > SILENCE_TIMEOUT_MS) {
-          // The network went quiet without a close: start over.
-          onGone();
+    const setWanted: AssistantRelayShape["setWanted"] = (next) =>
+      Effect.gen(function* () {
+        if (origin === null || next === wanted) return;
+        wanted = next;
+        yield* link.keepOnline(ONLINE_REASON, next);
+        if (next) {
+          attempt = 0;
+          yield* connect;
           return;
         }
-        if (opened.readyState === WebSocket.OPEN) opened.send(RELAY_HEARTBEAT_PING_FRAME);
-      }, PING_INTERVAL_MS);
-    });
-    opened.addEventListener("message", (event: MessageEvent) => {
-      if (socket !== opened || typeof event.data !== "string") return;
-      lastFrameAt = Date.now();
-      if (event.data === RELAY_HEARTBEAT_PONG_FRAME) {
-        pongSeen = true;
-        return;
-      }
-      if (Buffer.byteLength(event.data, "utf8") > RELAY_ASSISTANT_FRAME_MAX_BYTES) return;
-      const frame = decodeFrame(event.data);
-      if (Option.isSome(frame)) Queue.offerUnsafe(events, { type: "frame", frame: frame.value });
-    });
-    const onGone = () => {
-      if (socket !== opened) return;
-      closeSocket("Reconnecting.");
-      if (isOpen) Queue.offerUnsafe(events, { type: "closed" });
-      else runFork(checkHost);
-      scheduleReconnect();
-    };
-    opened.addEventListener("close", onGone);
-    opened.addEventListener("error", onGone);
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Effect.logWarning("assistants.socket.connect-failed", { cause }).pipe(
-        Effect.andThen(Effect.sync(scheduleReconnect)),
-      ),
-    ),
-  );
+        if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (socket !== null) {
+          closeSocket("Nothing for the assistant socket to do.");
+          Queue.offerUnsafe(events, { type: "closed" });
+        }
+      });
 
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      wanted = false;
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-      closeSocket("Server stopping.");
-    }),
-  );
+    const send: AssistantRelayShape["send"] = (frame) =>
+      Effect.sync(() => {
+        if (socket === null || socket.readyState !== WebSocket.OPEN) return false;
+        const text = JSON.stringify(frame);
+        if (Buffer.byteLength(text, "utf8") > RELAY_ASSISTANT_FRAME_MAX_BYTES) return false;
+        socket.send(text);
+        return true;
+      });
 
-  const setWanted: AssistantRelayShape["setWanted"] = (next) =>
-    Effect.gen(function* () {
-      if (origin === null || next === wanted) return;
-      wanted = next;
-      yield* link.keepOnline(ONLINE_REASON, next);
-      if (next) {
-        attempt = 0;
-        yield* connect;
-        return;
-      }
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-      if (socket !== null) {
-        closeSocket("Nothing for the assistant socket to do.");
-        Queue.offerUnsafe(events, { type: "closed" });
-      }
-    });
-
-  const send: AssistantRelayShape["send"] = (frame) =>
-    Effect.sync(() => {
-      if (socket === null || socket.readyState !== WebSocket.OPEN) return false;
-      const text = JSON.stringify(frame);
-      if (Buffer.byteLength(text, "utf8") > RELAY_ASSISTANT_FRAME_MAX_BYTES) return false;
-      socket.send(text);
-      return true;
-    });
-
-  return AssistantRelay.of({
-    available: origin !== null,
-    hostId: link.credentials.pipe(Effect.map((creds) => creds?.hostId ?? null)),
-    info: ({ register }) =>
-      withHost(register, (relay, creds) =>
-        relayApi.assistantInfo(relay, creds.hostId, creds.hostSecret),
-      ).pipe(
-        // Not registered yet: the public answer is the same, and asking it
-        // registers nothing.
-        Effect.flatMap((info) =>
-          info !== null || origin === null
-            ? Effect.succeed(info)
-            : relayApi.publicAssistantInfo(origin).pipe(Effect.mapError(fromApiError)),
+    return AssistantRelay.of({
+      available: origin !== null,
+      hostId: link.credentials.pipe(Effect.map((creds) => creds?.hostId ?? null)),
+      info: ({ register }) =>
+        withHost(register, (relay, creds) =>
+          relayApi.assistantInfo(relay, creds.hostId, creds.hostSecret),
+        ).pipe(
+          // Not registered yet: the public answer is the same, and asking it
+          // registers nothing.
+          Effect.flatMap((info) =>
+            info !== null || origin === null
+              ? Effect.succeed(info)
+              : relayApi.publicAssistantInfo(origin).pipe(Effect.mapError(fromApiError)),
+          ),
         ),
+      createCode: registered((relay, creds) =>
+        relayApi.createAssistantCode(relay, creds.hostId, creds.hostSecret),
       ),
-    createCode: registered((relay, creds) =>
-      relayApi.createAssistantCode(relay, creds.hostId, creds.hostSecret),
-    ),
-    cancelCode: withHost(false, (relay, creds) =>
-      relayApi.cancelAssistantCode(relay, creds.hostId, creds.hostSecret),
-    ).pipe(Effect.asVoid),
-    routeTag: (connectionId) =>
-      registered((relay, creds) =>
-        relayApi
-          .assistantRouteTag(relay, creds.hostId, creds.hostSecret, connectionId)
-          .pipe(Effect.map(({ routeTag }) => ({ hostId: creds.hostId, routeTag }))),
-      ),
-    revoke: ({ hostId, connectionIds }) =>
-      withHost(false, (relay, creds) =>
-        creds.hostId !== hostId
-          ? Effect.void
-          : relayApi.revokeAssistants(relay, creds.hostId, creds.hostSecret, {
-              connectionIds: [...connectionIds],
-            }),
+      cancelCode: withHost(false, (relay, creds) =>
+        relayApi.cancelAssistantCode(relay, creds.hostId, creds.hostSecret),
       ).pipe(Effect.asVoid),
-    setWanted,
-    events: Stream.fromQueue(events),
-    send,
+      routeTag: (connectionId) =>
+        registered((relay, creds) =>
+          relayApi
+            .assistantRouteTag(relay, creds.hostId, creds.hostSecret, connectionId)
+            .pipe(Effect.map(({ routeTag }) => ({ hostId: creds.hostId, routeTag }))),
+        ),
+      revoke: ({ hostId, connectionIds }) =>
+        withHost(false, (relay, creds) =>
+          creds.hostId !== hostId
+            ? Effect.void
+            : relayApi.revokeAssistants(relay, creds.hostId, creds.hostSecret, {
+                connectionIds: [...connectionIds],
+              }),
+        ).pipe(Effect.asVoid),
+      setWanted,
+      events: Stream.fromQueue(events),
+      send,
+    });
   });
-});
 
 /** AssistantRelay over RelayHostLink (from RelayHostLive). */
+export const makeAssistantRelay = makeAssistantRelayWith(DEFAULT_TIMING);
+
 export const AssistantRelayLive = Layer.effect(AssistantRelay, makeAssistantRelay);

@@ -144,6 +144,8 @@ const THREADS_LIST_LIMIT = 50;
 /** A `requestId`, at most this long. */
 const REQUEST_ID_CHAR_LIMIT = 200;
 const GIT_TIMEOUT_MS = 15_000;
+/** All of an assistant's thread_start git checks, under the relay's 30 s request timeout. */
+const ASSISTANT_PLACE_DEADLINE = "10 seconds";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const REMOVED =
@@ -1062,7 +1064,20 @@ export const makeConnectToolHandlers = (
           input.access ?? DEFAULT_NEW_THREAD_RUNTIME_MODE,
           grant.maxRuntimeMode,
         );
-        const placement = yield* placeThread(project, input.workspace ?? undefined);
+        // An assistant's answer has to beat the relay's 30 s, so its git
+        // checks get a deadline well under it; nothing is made before them.
+        const placement = assistant
+          ? Option.getOrElse(
+              yield* Effect.timeoutOption(
+                placeThread(project, input.workspace ?? undefined),
+                ASSISTANT_PLACE_DEADLINE,
+              ),
+              () => ({
+                failed:
+                  "Checking the project's git state took too long. Nothing was started; try again with the same requestId.",
+              }),
+            )
+          : yield* placeThread(project, input.workspace ?? undefined);
         if ("failed" in placement) return { outcome: "failed", detail: placement.failed };
 
         const ids = freshRequestIds();

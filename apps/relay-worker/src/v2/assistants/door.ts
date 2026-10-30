@@ -110,11 +110,9 @@ export class AssistantDoor {
     }
     const socket = state.socket;
     if (!socket) return mcp ? mcpOffline(input.body) : tokenUnavailable();
-    if (
-      mcp &&
-      this.core.requestsToday(state.now) + state.uncommittedRequests >= state.dailyRequests
-    ) {
-      return mcpDailyLimit(input.body, secondsUntilUtcMidnight(state.now));
+    if (this.core.requestsToday(state.now) + state.uncommittedRequests >= state.dailyRequests) {
+      const retryAfter = secondsUntilUtcMidnight(state.now);
+      return mcp ? mcpDailyLimit(input.body, retryAfter) : tokenUnavailable(retryAfter);
     }
     if (state.relayBusy) return mcp ? mcpRelayBusy(input.body) : tokenUnavailable(900);
     if (this.pending.size >= this.maxInFlight) {

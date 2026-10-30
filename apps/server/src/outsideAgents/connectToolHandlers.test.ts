@@ -217,6 +217,8 @@ const makeWorld = (
     readonly door?: ConnectToolDoor;
     /** The bootstrap fails before it makes the thread (a worktree that couldn't be cut). */
     readonly failSetup?: boolean;
+    /** Each git command takes 20 s. */
+    readonly slowGit?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -351,7 +353,7 @@ const makeWorld = (
               stderr: "",
               stdoutTruncated: false,
               stderrTruncated: false,
-            }),
+            }).pipe(Effect.delay(options.slowGit ? "20 seconds" : 0)),
         },
         requests: requests.store,
         limits: makeConnectLimits(),
@@ -900,6 +902,22 @@ describe("connect tools: the assistants door", () => {
       }
       expect(world.bootstrapped).toHaveLength(0);
       expect(world.dispatched).toHaveLength(0);
+    }),
+  );
+
+  it.effect("answers an assistant's start before the relay's timeout, even with slow git", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({ door: "assistant", slowGit: true });
+      const starting = yield* world.handlers
+        .thread_start(CALLER, start({ requestId: "start-1" }))
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 seconds");
+      const answer = yield* Fiber.join(starting);
+      expect(answer).toMatchObject({ outcome: "failed" });
+      expect(answer.detail).toContain("took too long");
+      // Nothing was made or recorded: the same requestId may try again.
+      expect(world.bootstrapped).toHaveLength(0);
+      expect(world.requests.rows.get(`${CONNECTION}\u0000start-1`)).toBeUndefined();
     }),
   );
 

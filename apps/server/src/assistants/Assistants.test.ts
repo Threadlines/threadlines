@@ -49,7 +49,7 @@ import {
   type AssistantRelayShape,
 } from "./AssistantRelay.ts";
 import { type AssistantHttpResponse, Assistants } from "./Assistants.ts";
-import { makeAssistantRelay } from "./AssistantRelayLive.ts";
+import { makeAssistantRelay, makeAssistantRelayWith } from "./AssistantRelayLive.ts";
 import { AssistantsLive } from "./AssistantsLive.ts";
 
 const HOST = "8911ad8a-f546-45e5-a2e8-7a6a8adfc65c";
@@ -926,5 +926,52 @@ describe("the assistant socket", () => {
         yield* eventually(() => relaySide.sockets === 2);
         yield* relay.setWanted(false);
       }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped),
+  );
+
+  it.live("starts over when a socket goes quiet before anything came back", () =>
+    Effect.gen(function* () {
+      let sockets = 0;
+      // A relay that takes the socket and then never sends a thing, pongs included.
+      const server = yield* HttpRouter.serve(
+        HttpRouter.add(
+          "GET",
+          "/v2/hosts/:hostId/assistants/socket",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const socket = yield* request.upgrade;
+            const reader = yield* socket.reader;
+            sockets += 1;
+            yield* Effect.gen(function* () {
+              while (true) yield* reader.pull;
+            }).pipe(Effect.ignore);
+            return HttpServerResponse.empty();
+          }).pipe(Effect.scoped),
+        ),
+        { disableListenLog: true, disableLogger: true },
+      ).pipe(
+        Layer.provideMerge(
+          NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0, host: "127.0.0.1" }),
+        ),
+        Layer.build,
+      );
+      const port = (Context.get(server, HttpServer.HttpServer).address as NetAddress.InetAddress)
+        .port;
+      const relay = yield* makeAssistantRelayWith({
+        pingIntervalMs: 50,
+        silenceTimeoutMs: 300,
+      }).pipe(
+        Effect.provideService(RelayHostLink, {
+          relayOrigin: `http://127.0.0.1:${port}`,
+          credentials: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+          register: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+          forgetHost: () => Effect.void,
+          keepOnline: () => Effect.void,
+        }),
+      );
+      yield* relay.setWanted(true);
+      for (let waited = 0; waited < 5_000 && sockets < 2; waited += 10) yield* Effect.sleep(10);
+      expect(sockets).toBeGreaterThanOrEqual(2);
+      yield* relay.setWanted(false);
+    }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped),
   );
 });

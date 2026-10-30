@@ -106,6 +106,8 @@ const HOST_LEASE_MS = 150_000;
 const USAGE_COMMIT_INTERVAL_MS = 60_000;
 /** How long a device's connect waits for the host to attach its end of the pipe. */
 const PIPE_ATTACH_TIMEOUT_MS = 10_000;
+/** Waits before each try at handing a sign-in decision to its shard. */
+const DECISION_RETRY_DELAYS_MS = [0, 500, 2_000, 5_000] as const;
 const LEDGER_BUSY_CACHE_MS = 60_000;
 const MAX_BUFFERED_PIPE_FRAMES = 200;
 const CODE_CLAIM_ATTEMPTS = 8;
@@ -284,9 +286,12 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     if (!host || host.host_id !== input.hostId) {
       throw new Error("This computer isn't registered with the relay.");
     }
+    // The code must still be this host's live one: a cancelled or replaced
+    // code whose shard didn't hear yet starts nothing.
+    if (!this.assistants.claimCode(input.code, Date.now())) {
+      throw new Error("That code was cancelled or replaced.");
+    }
     this.assistants.addSignIn(input.signIn);
-    // The code is used up; the computer's screen moves on to the sign-in.
-    this.assistants.clearCode(input.code);
     for (const socket of this.ctx.getWebSockets("assistant")) {
       this.sendAssistant(socket, { type: "signin", signIn: input.signIn });
     }
@@ -586,6 +591,18 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     if (!config.enabled) return assistantsOff();
     const connectionId = parseRouteTagRequest(await readJson(request));
     if (connectionId === null) return json({ error: "Missing or invalid connection id." }, 400);
+    // Every connection that can exist must have room on the revocation list,
+    // so Remove always holds while the computer is offline.
+    if (!this.assistants.canTagConnections()) {
+      return json(
+        {
+          error: "This computer has made too many assistant connections.",
+          code: "too-many-connections",
+        },
+        409,
+      );
+    }
+    this.assistants.noteTagged(connectionId);
     const routeTag = await assistantRouteTag(
       config.routeKey,
       this.core.host()!.host_id,
@@ -715,22 +732,30 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         return;
       }
     }
-    let outcome: "applied" | "expired" | "gone";
-    try {
-      outcome = await this.env.RELAY_ASSISTANT_SIGN_IN.getByName(
-        signInShardName(frame.signInId),
-      ).decide({
-        signInId: frame.signInId,
-        hostId,
-        decision: frame.decision,
-        ...(frame.decision === "allow" ? { authorizationCode: frame.authorizationCode } : {}),
-      });
-    } catch (error) {
-      log("warn", "assistant sign-in decision not delivered", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      outcome = "gone";
+    // Delivered to the sign-in's shard, retried for a few seconds: its
+    // `decide` is idempotent, so a retry after a lost reply is safe. If it
+    // still can't be reached, the sign-in is kept: it goes to the computer
+    // again on its next reconnect, and the computer answers the same way.
+    let outcome: "applied" | "expired" | "gone" | null = null;
+    for (const delayMs of DECISION_RETRY_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        outcome = await this.env.RELAY_ASSISTANT_SIGN_IN.getByName(
+          signInShardName(frame.signInId),
+        ).decide({
+          signInId: frame.signInId,
+          hostId,
+          decision: frame.decision,
+          ...(frame.decision === "allow" ? { authorizationCode: frame.authorizationCode } : {}),
+        });
+        break;
+      } catch (error) {
+        log("warn", "couldn't hand an assistant sign-in's decision to its shard", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+    if (outcome === null) return;
     this.assistants.removeSignIn(frame.signInId);
     if (outcome !== "applied") {
       this.sendAssistant(ws, {

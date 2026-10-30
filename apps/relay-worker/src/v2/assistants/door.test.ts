@@ -219,6 +219,13 @@ describe("the assistants door with the computer there", () => {
     );
     expect(over.status).toBe(429);
     expect(Number(over.headers["retry-after"])).toBe(12 * 60 * 60);
+    // Refreshes count against the same allowance.
+    const overToken = await door.request(
+      { route: "token", connectionId: "conn-1", credential: "tlar1.x", headers: {}, body: "" },
+      state({ socket, dailyRequests: 10, uncommittedRequests: 1 }),
+    );
+    expect(overToken.status).toBe(503);
+    expect(JSON.parse(overToken.body)).toMatchObject({ error: "temporarily_unavailable" });
 
     const first = door.request(mcpRequest(toolCall), state({ socket }));
     const busy = await door.request(mcpRequest(toolCall), state({ socket }));

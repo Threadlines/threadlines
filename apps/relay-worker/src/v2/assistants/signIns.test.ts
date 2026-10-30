@@ -6,7 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { makeTestSql } from "../testSql.ts";
 import { AssistantCodeShardCore } from "./codes.ts";
-import { AssistantHostCore } from "./hostAssistants.ts";
+import { AssistantHostCore, MAX_REVOKED_CONNECTIONS } from "./hostAssistants.ts";
 import {
   MAX_PENDING_SIGN_INS_PER_IP,
   type NewSignIn,
@@ -48,10 +48,11 @@ function makeWorld() {
   const handed: RelayAssistantSignIn[] = [];
   const deps = {
     takeCode: async (code: string) => codes.take(code, now),
+    // What RelayHost.beginAssistantSignIn does.
     handToHost: async (hostId: string, signIn: RelayAssistantSignIn, code: string) => {
       expect(hostId).toBe(HOST);
+      if (!host.claimCode(code, now)) throw new Error("That code was cancelled or replaced.");
       host.addSignIn(signIn);
-      host.clearCode(code);
       handed.push(signIn);
     },
     now: () => now,
@@ -187,6 +188,16 @@ describe("typing the app's code into the page", () => {
     });
   });
 
+  it("starts nothing with a code the computer replaced before its shard heard", async () => {
+    const world = makeWorld();
+    world.signIns.create(newSignIn("1.a"), T0);
+    world.mintCode(CODE);
+    // The replacement's release to the old code's shard is late (or failed).
+    world.host.setCode("ZZZZ1111", world.now() + ASSISTANT_SIGN_IN_TTL_MS);
+    expect(await world.type("1.a", CODE)).toMatchObject({ status: { state: "failed" } });
+    expect(world.handed).toEqual([]);
+  });
+
   it("keeps one live code per computer: a new one replaces the old", () => {
     const world = makeWorld();
     world.mintCode(CODE);
@@ -219,6 +230,21 @@ describe("the computer's decision", () => {
       state: "done",
       redirectUrl: `https://claude.ai/api/mcp/auth_callback?tenant=a%20b&code=${code}&state=state-123&iss=${encodeURIComponent(ORIGIN)}`,
     });
+  });
+
+  it("takes the same decision again after a lost reply, and no other", async () => {
+    const world = await approvalWaiting();
+    const allow = {
+      signInId: "1.a",
+      hostId: HOST,
+      decision: "allow" as const,
+      authorizationCode: "tlac1.authorization-code",
+    };
+    expect(world.signIns.decide(allow, world.now())).toBe("applied");
+    expect(world.signIns.decide(allow, world.now())).toBe("applied");
+    expect(
+      world.signIns.decide({ signInId: "1.a", hostId: HOST, decision: "deny" }, world.now()),
+    ).toBe("gone");
   });
 
   it("says access_denied on deny, and only the computer it was handed to can decide", async () => {
@@ -263,5 +289,22 @@ describe("redirectWithParams", () => {
     expect(redirectWithParams("https://app.test/cb?", params)).toBe(
       "https://app.test/cb?code=a%20b&state=x%26y",
     );
+  });
+});
+
+describe("removed connections at the relay", () => {
+  it("counts a retried removal once, and stops tagging before the list could fill", () => {
+    const host = new AssistantHostCore(makeTestSql());
+    expect(host.revoke(["c1", "c1", "c2"], T0)).toBe(true);
+    expect(host.revoke(["c1", "c2"], T0)).toBe(true);
+    expect(host.isRevoked("c2")).toBe(true);
+    for (let index = 0; index < MAX_REVOKED_CONNECTIONS - 3; index += 1) {
+      host.noteTagged(`live-${index}`);
+    }
+    expect(host.canTagConnections()).toBe(true);
+    host.noteTagged("last");
+    expect(host.canTagConnections()).toBe(false);
+    // Every tagged connection still fits when it's removed.
+    expect(host.revoke(["last", "live-0"], T0)).toBe(true);
   });
 });

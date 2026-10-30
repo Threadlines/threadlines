@@ -323,16 +323,19 @@ export class SignInCore {
   ): "applied" | "expired" | "gone" {
     const row = this.row(input.signInId);
     if (!row || row.host_id !== input.hostId) return "gone";
-    if (row.status !== "waiting-for-approval") return row.status === "expired" ? "expired" : "gone";
-    if (row.expires_at <= now) return "expired";
     const params: Array<[string, string]> =
       input.decision === "allow" && input.authorizationCode
         ? [["code", input.authorizationCode]]
         : [["error", "access_denied"]];
     params.push(["state", row.oauth_state], ["iss", row.issuer]);
+    const redirectUrl = redirectWithParams(row.redirect_uri, params);
+    // The same decision again (its first reply was lost): already applied.
+    if (row.status === "done") return row.redirect_url === redirectUrl ? "applied" : "gone";
+    if (row.status !== "waiting-for-approval") return row.status === "expired" ? "expired" : "gone";
+    if (row.expires_at <= now) return "expired";
     this.sql.exec(
       "UPDATE sign_ins SET status = 'done', redirect_url = ? WHERE sign_in_id = ?",
-      redirectWithParams(row.redirect_uri, params),
+      redirectUrl,
       input.signInId,
     );
     return "applied";

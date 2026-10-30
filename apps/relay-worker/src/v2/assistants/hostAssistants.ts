@@ -74,6 +74,18 @@ export class AssistantHostCore {
     return previous !== null && previous !== code ? previous : null;
   }
 
+  /**
+   * Uses up `code` for a sign-in its page typed: true only while it is this
+   * host's live, unexpired code. A code cancelled or replaced is refused here,
+   * even if its shard didn't hear yet.
+   */
+  claimCode(code: string, now: number): boolean {
+    const live = this.code(now);
+    if (live === null || live.code !== code) return false;
+    this.sql.exec("DELETE FROM assistant_code WHERE id = 1");
+    return true;
+  }
+
   /** Forgets the live code (or only `code`, when given); the code forgotten. */
   clearCode(code?: string): string | null {
     const previous = this.storedCode();
@@ -152,15 +164,16 @@ export class AssistantHostCore {
 
   // ----- removed connections ---------------------------------------------------
 
-  /** Adds removed connections; false (nothing added) past the per-host cap. */
+  /**
+   * Adds removed connections. Ones already stored don't count again, so a
+   * retried batch always lands. The cap can't strand a removal: route tags
+   * stop (`canTagConnections`) before it's reached, so every connection that
+   * can exist has room here.
+   */
   revoke(connectionIds: ReadonlyArray<string>, now: number): boolean {
-    const stored =
-      sqlRows<{ readonly count: number }>(
-        this.sql,
-        "SELECT COUNT(*) AS count FROM assistant_revoked",
-      )[0]?.count ?? 0;
-    if (stored + connectionIds.length > MAX_REVOKED_CONNECTIONS) return false;
-    for (const connectionId of connectionIds) {
+    const fresh = [...new Set(connectionIds)].filter((id) => !this.isRevoked(id));
+    if (this.revokedCount() + fresh.length > MAX_REVOKED_CONNECTIONS) return false;
+    for (const connectionId of fresh) {
       this.sql.exec(
         "INSERT OR IGNORE INTO assistant_revoked (connection_id, revoked_at) VALUES (?, ?)",
         connectionId,
@@ -168,6 +181,43 @@ export class AssistantHostCore {
       );
     }
     return true;
+  }
+
+  /**
+   * Whether a new connection may get a route tag: only while every connection
+   * that could still be removed has room on the list. Each tag is one
+   * connection; tags already handed out are counted by `tagged`.
+   */
+  canTagConnections(): boolean {
+    return this.revokedCount() + this.taggedLive() < MAX_REVOKED_CONNECTIONS;
+  }
+
+  /** A route tag was handed out: one more connection that may need room on the list. */
+  noteTagged(connectionId: string): void {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO assistant_tagged (connection_id) VALUES (?)",
+      connectionId,
+    );
+  }
+
+  private revokedCount(): number {
+    return (
+      sqlRows<{ readonly count: number }>(
+        this.sql,
+        "SELECT COUNT(*) AS count FROM assistant_revoked",
+      )[0]?.count ?? 0
+    );
+  }
+
+  /** Tagged connections not removed yet. */
+  private taggedLive(): number {
+    return (
+      sqlRows<{ readonly count: number }>(
+        this.sql,
+        `SELECT COUNT(*) AS count FROM assistant_tagged
+         WHERE connection_id NOT IN (SELECT connection_id FROM assistant_revoked)`,
+      )[0]?.count ?? 0
+    );
   }
 
   isRevoked(connectionId: string): boolean {
@@ -223,6 +273,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS assistant_revoked (
      connection_id TEXT PRIMARY KEY,
      revoked_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS assistant_tagged (
+     connection_id TEXT PRIMARY KEY
    )`,
   `CREATE TABLE IF NOT EXISTS assistant_usage (
      day TEXT PRIMARY KEY,
