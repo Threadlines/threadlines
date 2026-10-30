@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { nextPlaceArrivalHash, placeScope, resolvePlaceLink } from "../../appPlaceLinks";
+import { PLACE_COPIES_ATTRIBUTE } from "../../hooks/usePlaceArrival";
 import { usePrimaryEnvironmentId } from "../../environments/primary/context";
 import { isElectron } from "../../env";
 import { formatShortcutLabel, shortcutLabelForCommand } from "../../keybindings";
@@ -194,12 +195,15 @@ function OpenButton({ label }: { readonly label: string }) {
   );
 }
 
-let shortcutOpenings = 0;
+let lastShortcutOpening = 0;
 
-/** Numbers each opening of a shortcut, so the Keybindings page filters again for it. */
+/**
+ * Numbers each opening of a shortcut, so the Keybindings page filters again
+ * for it. Taken from the clock, so a reload never repeats one still in the URL.
+ */
 function nextShortcutOpening(): number {
-  shortcutOpenings += 1;
-  return shortcutOpenings;
+  lastShortcutOpening = Math.max(Date.now(), lastShortcutOpening + 1);
+  return lastShortcutOpening;
 }
 
 /** On the phone app, a setting stored on the paired computer says so: the rest are this phone's. */
@@ -461,7 +465,7 @@ export function SettingsSearchResultsBody({ escHint = false }: { readonly escHin
         description={description}
       />
       {results.length > 0 ? (
-        <SettingsGroup data-testid="settings-search-results">
+        <SettingsGroup data-testid="settings-search-results" {...{ [PLACE_COPIES_ATTRIBUTE]: "" }}>
           {results.map((result) => (
             <ResultRow key={result.item.key} result={result} query={search.query} />
           ))}

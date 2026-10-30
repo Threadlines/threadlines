@@ -138,11 +138,15 @@ const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
 
 /**
  * Whether the desktop app's computer is reachable from other devices, read
- * from the desktop app when a search starts (Connections can change it, so
- * each search reads it fresh). False until it answers.
+ * from the desktop app each time a search starts (Connections can change it
+ * in between). Unknown, so not offered, until this search's read answers.
  */
 function useDesktopReach(enabled: boolean): boolean {
-  const [reachable, setReachable] = useState(false);
+  const search = useSettingsSearchStore((state) => state.searchesStarted);
+  const [answer, setAnswer] = useState<{
+    readonly search: number;
+    readonly reachable: boolean;
+  } | null>(null);
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (!enabled || bridge === undefined) return;
@@ -150,19 +154,20 @@ function useDesktopReach(enabled: boolean): boolean {
     void Promise.all([bridge.getServerExposureState(), bridge.getAdvertisedEndpoints()])
       .then(([state, endpoints]) => {
         if (cancelled) return;
-        setReachable(
-          isRemotelyReachable({
+        setAnswer({
+          search,
+          reachable: isRemotelyReachable({
             networkAccessible: state.mode === "network-accessible",
             endpoints,
           }),
-        );
+        });
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
-  return reachable;
+  }, [enabled, search]);
+  return enabled && answer?.search === search && answer.reachable;
 }
 
 function usePlaceSignals(): PlaceSignals {

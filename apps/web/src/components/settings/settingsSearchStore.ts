@@ -15,6 +15,8 @@ interface SettingsSearchState {
   readonly scope: SettingsPagePlaceId | null;
   /** Bumped to ask the field to take focus (⌘F). */
   readonly focusRequest: number;
+  /** Counts searches started (an empty query getting its first word), for facts read per search. */
+  readonly searchesStarted: number;
   setQuery: (query: string) => void;
   setScope: (scope: SettingsPagePlaceId | null) => void;
   requestFocus: () => void;
@@ -25,8 +27,21 @@ export const useSettingsSearchStore = create<SettingsSearchState>()((set) => ({
   query: "",
   scope: null,
   focusRequest: 0,
+  searchesStarted: 0,
   // A new query asks a new question, so a narrowing chosen for the last one goes.
-  setQuery: (query) => set((state) => (state.query === query ? state : { query, scope: null })),
+  setQuery: (query) =>
+    set((state) =>
+      state.query === query
+        ? state
+        : {
+            query,
+            scope: null,
+            searchesStarted:
+              state.query.trim().length === 0 && query.trim().length > 0
+                ? state.searchesStarted + 1
+                : state.searchesStarted,
+          },
+    ),
   setScope: (scope) => set({ scope }),
   requestFocus: () => set((state) => ({ focusRequest: state.focusRequest + 1 })),
   clear: () => set({ query: "", scope: null }),

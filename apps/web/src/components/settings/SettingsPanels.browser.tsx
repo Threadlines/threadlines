@@ -5654,6 +5654,7 @@ describe("Settings search rows", () => {
 
   afterEach(async () => {
     Reflect.deleteProperty(window, "nativeApi");
+    Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
     resetServerStateForTests();
     await __resetLocalApiForTests();
@@ -5720,23 +5721,50 @@ describe("Settings search rows", () => {
       await vi.waitFor(() => {
         for (const { id } of onPage) expect(drawn(id), id).toBe(shown!(id));
       });
-      for (const { id, Row } of onPage.filter(({ id }) => shown!(id))) {
-        const alone = await renderWithTestRouter(
-          <TestAppProviders>
-            <SettingsGroup data-testid="alone">
-              <Row />
-            </SettingsGroup>
-          </TestAppProviders>,
-        );
-        await vi.waitFor(() =>
-          expect(
-            document.querySelector(`[data-testid="alone"] [data-place="${id}"]`),
-            id,
-          ).not.toBeNull(),
-        );
-        await alone.unmount();
-      }
       await screen.unmount();
     }
+
+    // Alone, as a result draws it: every live row, whatever this fixture's
+    // pages show, so a registry entry naming the wrong component can't hide.
+    // The background rows read the desktop app's options, so they get one.
+    const desktopBackground = new Set<string>([
+      "general.keepAwakeForScheduledTasks",
+      "general.runInBackground",
+    ]);
+    const backgroundOptions = {
+      keepAwakeForScheduledTasks: false,
+      runInBackground: false,
+      runInBackgroundSupported: true,
+    };
+    // Drawn only while a speech model is downloaded, which only the dictation
+    // server's stream reports; the pages above cover its rule.
+    const cannotDrawAlone = new Set<string>(["general.downloadedModels"]);
+    let drawnAlone = 0;
+    for (const { id, Row } of liveRows) {
+      if (cannotDrawAlone.has(id)) continue;
+      if (desktopBackground.has(id)) {
+        window.desktopBridge = {
+          getBackgroundOptions: async () => backgroundOptions,
+          setBackgroundOptions: async () => backgroundOptions,
+        } as unknown as DesktopBridge;
+      }
+      const alone = await renderWithTestRouter(
+        <TestAppProviders>
+          <SettingsGroup data-testid="alone">
+            <Row />
+          </SettingsGroup>
+        </TestAppProviders>,
+      );
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(`[data-testid="alone"] [data-place="${id}"]`),
+          id,
+        ).not.toBeNull(),
+      );
+      drawnAlone += 1;
+      await alone.unmount();
+      Reflect.deleteProperty(window, "desktopBridge");
+    }
+    expect(drawnAlone).toBe(liveRows.length - cannotDrawAlone.size);
   });
 });

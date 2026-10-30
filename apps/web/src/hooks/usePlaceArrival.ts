@@ -12,13 +12,23 @@ const PLACE_SCOPE_WAIT_MS = 5_000;
 /** The overlay's fade (`place-arrival-fade` in index.css), and a little to spare. */
 const PLACE_ARRIVAL_HIGHLIGHT_MS = 1_600;
 /** What can draw a place that is already in the page: a tab or section opening. */
-const REVEAL_ATTRIBUTES = ["data-place", "hidden", "class", "style"];
+const REVEAL_ATTRIBUTES = ["data-place", "hidden", "class", "style", "inert"];
 
-/** The place's element that is drawn now (a page may keep a hidden copy, e.g. a phone layout). */
+/**
+ * Marks a list of copies of places (the settings search results): an arrival
+ * goes to the place on its page, never to a copy.
+ */
+export const PLACE_COPIES_ATTRIBUTE = "data-place-copies";
+
+/**
+ * The place's element that is drawn now (a page may keep a hidden copy, e.g. a
+ * phone layout, or sit inert under the settings search), and not a copy.
+ */
 function findDrawnPlace(placeId: PlaceId): HTMLElement | null {
   for (const element of document.querySelectorAll<HTMLElement>(
     `[data-place="${CSS.escape(placeId)}"]`,
   )) {
+    if (element.closest(`[${PLACE_COPIES_ATTRIBUTE}], [inert]`) !== null) continue;
     if (element.getClientRects().length > 0) return element;
   }
   return null;
