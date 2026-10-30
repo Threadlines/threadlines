@@ -4,11 +4,39 @@ import * as SchemaAST from "../../SchemaAST.ts"
 import type * as SchemaRepresentation from "../../SchemaRepresentation.ts"
 import * as InternalRecord from "../record.ts"
 import * as InternalAnnotations from "./annotations.ts"
+import * as InternalContent from "./content.ts"
+
+const defaultReferencePolicy: SchemaRepresentation.ReferencePolicy = ({ identifier }) => identifier
+
+type CheckRepresentationAnnotation = SchemaRepresentation.CheckRepresentationAnnotation<
+  SchemaRepresentation.Representation
+>
+
+interface ReferenceCandidate {
+  readonly ast: SchemaAST.AST
+  readonly identifier: string | undefined
+  readonly fallback: string | undefined
+  readonly content: Content | undefined
+  occurrences: number
+  visiting?: boolean | undefined
+  isRecursive?: boolean | undefined
+  reference?: string | undefined
+  emitted?: boolean | undefined
+}
+
+interface Content {
+  readonly mediaType: string
+  readonly schema?: ReferenceCandidate | undefined
+}
+
+function annotationsField<A>(annotations: A | undefined): { readonly annotations: A } | undefined {
+  return annotations === undefined ? undefined : { annotations }
+}
 
 /** @internal */
 export function toRepresentation(
   ast: SchemaAST.AST,
-  options?: Options
+  options?: SchemaRepresentation.ToRepresentationOptions
 ): SchemaRepresentation.Document {
   const { references, representations } = toRepresentations([ast], options)
   return { representation: representations[0], references }
@@ -17,122 +45,54 @@ export function toRepresentation(
 /** @internal */
 export function toRepresentations(
   asts: readonly [SchemaAST.AST, ...Array<SchemaAST.AST>],
-  options?: Options
-): SchemaRepresentation.MultiDocument {
-  return fromASTs(asts, options)
-}
-
-/** @internal */
-export interface Options {
-  readonly isAnonymousReferenceAllowed?: ((ast: SchemaAST.AST) => boolean) | undefined
-}
-
-type CheckRepresentationAnnotation = SchemaRepresentation.CheckRepresentationAnnotation<
-  SchemaRepresentation.Representation
->
-
-function annotationsField<A>(annotations: A | undefined): { readonly annotations: A } | undefined {
-  return annotations === undefined ? undefined : { annotations }
-}
-
-function hasShareableStructure(
-  ast: SchemaAST.AST,
-  isAnonymousReferenceAllowed: Options["isAnonymousReferenceAllowed"]
-): boolean {
-  if (isAnonymousReferenceAllowed?.(ast) === false) return false
-  switch (ast._tag) {
-    case "Arrays":
-    case "Objects":
-    case "Suspend":
-      return true
-    case "Declaration":
-      return true
-    case "Union":
-      return ast.types.some((ast) => hasShareableStructure(ast, isAnonymousReferenceAllowed))
-    default:
-      return false
-  }
-}
-
-function isWorthReferencing(bodyCost: number, occurrences: number): boolean {
-  return occurrences * bodyCost > bodyCost + occurrences + 1
-}
-
-function isAnonymousReferenceEligible(
-  ast: SchemaAST.AST,
-  occurrences: number,
-  isAnonymousReferenceAllowed: Options["isAnonymousReferenceAllowed"]
-): boolean {
-  if (isAnonymousReferenceAllowed?.(ast) === false) return false
-  if (hasShareableStructure(ast, isAnonymousReferenceAllowed)) return true
-  switch (ast._tag) {
-    case "Union":
-      return isWorthReferencing(ast.types.length + 1, occurrences)
-    case "Enum":
-      return isWorthReferencing(ast.enums.length + 1, occurrences)
-    case "TemplateLiteral":
-      return isWorthReferencing(ast.parts.length + 1, occurrences)
-    case "Literal":
-      return typeof ast.literal === "string" &&
-        isWorthReferencing(ast.literal.length / 32 + 1, occurrences)
-    default:
-      return false
-  }
-}
-
-interface ReferenceIdentifier {
-  readonly identifier: string
-  readonly fallback?: string | undefined
-}
-
-function resolveReferenceIdentifier(
-  input: SchemaAST.AST,
-  encoded: SchemaAST.AST
-): ReferenceIdentifier | undefined {
-  const identifier = InternalAnnotations.resolveIdentifier(encoded)
-  if (identifier !== undefined) return { identifier }
-  const fallback = (encoded !== input ? InternalAnnotations.resolveIdentifier(input) : undefined) ??
-    InternalAnnotations.resolveIdentifierFallback(encoded)
-  return fallback === undefined
-    ? undefined
-    : { identifier: `${fallback}Encoded`, fallback }
-}
-
-function fromASTs(
-  asts: readonly [SchemaAST.AST, ...Array<SchemaAST.AST>],
-  options: Options | undefined
+  options?: SchemaRepresentation.ToRepresentationOptions
 ): SchemaRepresentation.MultiDocument {
   const references: Record<string, SchemaRepresentation.Representation> = {}
-  const anonymousReferences = new Map<SchemaAST.AST, string>()
-  const referenceOwners = new Map<string, SchemaAST.AST>()
-  const buildingReferences = new Set<string>()
-  const visiting = new Set<SchemaAST.AST>()
-  const occurrences = new Map<SchemaAST.AST, number>()
-  const shared = new Set<SchemaAST.AST>()
+  const usedReferences = new Set<string>()
+  const candidates = new Map<SchemaAST.AST, Array<ReferenceCandidate>>()
 
   for (const ast of asts) visit(ast)
 
-  const representations = Arr.map(asts, (ast) => recur(ast))
+  const referencePolicy = options?.referencePolicy ?? defaultReferencePolicy
+  for (const variants of candidates.values()) {
+    for (const candidate of variants) {
+      const requestedReference = referencePolicy({
+        ast: candidate.ast,
+        occurrences: candidate.occurrences,
+        identifier: candidate.identifier
+      })
+      if (requestedReference !== undefined) {
+        const separator = requestedReference === candidate.identifier ||
+            !requestedReference.endsWith("_")
+          ? "_"
+          : ""
+        candidate.reference = getReference(requestedReference, separator)
+      } else if (candidate.isRecursive) {
+        candidate.reference = getReference(`${candidate.ast._tag}_`, "")
+      }
+    }
+  }
+
+  const representations = Arr.map(asts, recur)
 
   return { representations, references }
 
-  function getReference(prefix: string, owner: SchemaAST.AST, separator = "_"): string {
+  function getReference(prefix: string, separator: string): string {
     let candidate = prefix
     let suffix = 0
-    while (referenceOwners.has(candidate)) {
-      if (referenceOwners.get(candidate) === owner) return candidate
+    while (usedReferences.has(candidate)) {
       candidate = `${prefix}${separator}${++suffix}`
     }
-    referenceOwners.set(candidate, owner)
+    usedReferences.add(candidate)
     return candidate
   }
 
   function annotateReference(
     ast: SchemaAST.AST,
-    referenceIdentifier: ReferenceIdentifier,
+    candidate: ReferenceCandidate,
     reference: string
   ): SchemaAST.AST {
-    const fallback = referenceIdentifier.fallback
+    const fallback = candidate.fallback
     if (fallback !== undefined) {
       return InternalAnnotations.resolveIdentifierFallback(ast) === fallback
         ? ast
@@ -140,43 +100,81 @@ function fromASTs(
           [InternalAnnotations.IDENTIFIER_FALLBACK_KEY]: fallback
         })
     }
-    return reference === referenceIdentifier.identifier
+    return reference === candidate.identifier
       ? ast
       : SchemaAST.annotate(ast, { identifier: reference })
   }
 
-  function makeReference(reference: string, ast: SchemaAST.AST): SchemaRepresentation.Reference {
-    if (!Object.hasOwn(references, reference) && !buildingReferences.has(reference)) {
-      buildingReferences.add(reference)
-      const representation = on(ast)
-      buildingReferences.delete(reference)
-      InternalRecord.assignProperty(references, reference, representation)
+  function getCandidate(
+    input: SchemaAST.AST,
+    encodingLength = input.encoding?.length ?? 0
+  ): ReferenceCandidate {
+    let ast = input
+    let content: Content | undefined
+    while (ast.encoding !== undefined && encodingLength > 0) {
+      const last = ast.encoding[encodingLength - 1]
+      // Only retain content when this operation produces the final string.
+      if (last.to.encoding === undefined && last.to._tag === "String") {
+        const metadata = InternalContent.getContent(last.transformation.encode)
+        if (metadata !== undefined) {
+          content = {
+            mediaType: metadata.mediaType,
+            schema: metadata.preserveSchema ? getCandidate(ast, encodingLength - 1) : undefined
+          }
+        }
+      }
+      ast = last.to
+      encodingLength = ast.encoding?.length ?? 0
     }
-    return { _tag: "Reference", $ref: reference }
+    const owner = SchemaAST.getContextOwner(ast)
+    let identifier = InternalAnnotations.resolveIdentifier(ast)
+    const fallback = identifier === undefined
+      ? (ast !== input ? InternalAnnotations.resolveIdentifier(input) : undefined) ??
+        InternalAnnotations.resolveIdentifierFallback(ast)
+      : undefined
+    if (fallback !== undefined) identifier = `${fallback}Encoded`
+    let variants = candidates.get(owner)
+    if (variants === undefined) {
+      variants = []
+      candidates.set(owner, variants)
+    }
+    let candidate = variants.find((candidate) =>
+      candidate.identifier === identifier &&
+      candidate.content?.mediaType === content?.mediaType &&
+      candidate.content?.schema === content?.schema
+    )
+    if (candidate === undefined) {
+      candidate = {
+        ast: owner,
+        identifier,
+        fallback,
+        content,
+        occurrences: 0
+      }
+      variants.push(candidate)
+    }
+    return candidate
   }
 
-  function visit(input: SchemaAST.AST): void {
-    const ast = SchemaAST.getLastEncoding(input)
-    const owner = SchemaAST.getContextOwner(ast)
-    const count = (occurrences.get(owner) ?? 0) + 1
-    occurrences.set(owner, count)
-    if (count > 1) {
-      if (
-        !shared.has(owner) &&
-        isAnonymousReferenceEligible(owner, count, options?.isAnonymousReferenceAllowed)
-      ) shared.add(owner)
+  function visit(input: SchemaAST.AST): SchemaAST.AST {
+    visitCandidate(getCandidate(input))
+    return input
+  }
+
+  function visitCandidate(candidate: ReferenceCandidate): void {
+    const ast = candidate.ast
+    candidate.occurrences++
+    if (candidate.visiting) {
+      candidate.isRecursive = true
       return
     }
+    if (candidate.occurrences > 1) return
+    candidate.visiting = true
+    if (candidate.content?.schema !== undefined) visitCandidate(candidate.content.schema)
     visitChecks(ast.checks)
     switch (ast._tag) {
-      case "Declaration":
-      case "Arrays":
-      case "Objects":
-      case "Union":
-        ast.recur((child) => {
-          visit(child)
-          return child
-        })
+      default:
+        if ("recur" in ast) ast.recur(visit)
         break
       case "TemplateLiteral":
         ast.parts.forEach(visit)
@@ -185,6 +183,7 @@ function fromASTs(
         visit(ast.thunk())
         break
     }
+    candidate.visiting = false
   }
 
   function visitChecks(checks: SchemaAST.Checks | undefined): void {
@@ -195,99 +194,74 @@ function fromASTs(
   }
 
   function recur(input: SchemaAST.AST): SchemaRepresentation.Representation {
-    const ast = SchemaAST.getLastEncoding(input)
-    const owner = SchemaAST.getContextOwner(ast)
-    const referenceIdentifier = resolveReferenceIdentifier(input, ast)
-    if (referenceIdentifier !== undefined) {
-      const reference = getReference(referenceIdentifier.identifier, owner)
-      return makeReference(reference, annotateReference(ast, referenceIdentifier, reference))
-    }
-
-    const found = anonymousReferences.get(owner)
-    if (found !== undefined) {
-      return { _tag: "Reference", $ref: found }
-    }
-
-    const isShared = shared.has(owner)
-    if (isShared || visiting.has(owner)) {
-      const reference = getReference(`${ast._tag}_`, owner, "")
-      anonymousReferences.set(owner, reference)
-      return isShared
-        ? makeReference(reference, ast)
-        : { _tag: "Reference", $ref: reference }
-    }
-
-    visiting.add(owner)
-    const representation = on(ast)
-    visiting.delete(owner)
-
-    const reference = anonymousReferences.get(owner)
-    if (reference !== undefined) {
-      InternalRecord.assignProperty(references, reference, representation)
-      return { _tag: "Reference", $ref: reference }
-    }
-
-    return representation
+    return recurCandidate(getCandidate(input))
   }
 
-  function on(ast: SchemaAST.AST): SchemaRepresentation.Representation {
-    const checks = fromChecks(ast.checks)
+  function recurCandidate(candidate: ReferenceCandidate): SchemaRepresentation.Representation {
+    const ast = candidate.ast
+    const reference = candidate.reference
+    if (reference !== undefined) {
+      if (!candidate.emitted) {
+        candidate.emitted = true
+        const annotated = candidate.identifier === undefined ? ast : annotateReference(ast, candidate, reference)
+        const representation = on(annotated, candidate.content)
+        InternalRecord.assignProperty(references, reference, representation)
+      }
+      return { _tag: "Reference", $ref: reference }
+    }
+    return on(ast, candidate.content)
+  }
+
+  function on(ast: SchemaAST.AST, content: Content | undefined): SchemaRepresentation.Representation {
+    const common = {
+      checks: ast.checks?.map(fromCheck) ?? [],
+      ...(ast._tag === "Declaration" ? fromAnnotations(ast.annotations) : annotationsField(ast.annotations))
+    }
     switch (ast._tag) {
       case "Declaration":
         return {
-          _tag: "Declaration",
-          typeParameters: ast.typeParameters.map((ast) => recur(ast)),
-          checks,
-          ...fromDeclarationAnnotations(ast.annotations)
+          _tag: ast._tag,
+          typeParameters: ast.typeParameters.map(recur),
+          ...common
         }
-      case "Null":
-      case "Undefined":
-      case "Void":
-      case "Never":
-      case "Unknown":
-      case "Any":
-      case "String":
-      case "Boolean":
-      case "Number":
-      case "BigInt":
-      case "Symbol":
-      case "ObjectKeyword":
+      default:
         return {
           _tag: ast._tag,
-          checks,
-          ...annotationsField(ast.annotations)
+          ...(content === undefined ? undefined : {
+            content: {
+              mediaType: content.mediaType,
+              ...(content.schema === undefined ? undefined : { schema: recurCandidate(content.schema) })
+            }
+          }),
+          ...common
         }
       case "Literal":
         return {
-          _tag: "Literal",
+          _tag: ast._tag,
           literal: ast.literal,
-          checks,
-          ...annotationsField(ast.annotations)
+          ...common
         }
       case "UniqueSymbol":
         return {
-          _tag: "UniqueSymbol",
+          _tag: ast._tag,
           symbol: ast.symbol,
-          checks,
-          ...annotationsField(ast.annotations)
+          ...common
         }
       case "Enum":
         return {
-          _tag: "Enum",
+          _tag: ast._tag,
           enums: ast.enums,
-          checks,
-          ...annotationsField(ast.annotations)
+          ...common
         }
       case "TemplateLiteral":
         return {
-          _tag: "TemplateLiteral",
-          parts: ast.parts.map((ast) => recur(ast)),
-          checks,
-          ...annotationsField(ast.annotations)
+          _tag: ast._tag,
+          parts: ast.parts.map(recur),
+          ...common
         }
       case "Arrays":
         return {
-          _tag: "Arrays",
+          _tag: ast._tag,
           elements: ast.elements.map((element) => {
             const projected = SchemaAST.getLastEncoding(element)
             const annotations = projected.context?.annotations
@@ -297,13 +271,12 @@ function fromASTs(
               ...annotationsField(annotations)
             }
           }),
-          rest: ast.rest.map((ast) => recur(ast)),
-          checks,
-          ...annotationsField(ast.annotations)
+          rest: ast.rest.map(recur),
+          ...common
         }
       case "Objects":
         return {
-          _tag: "Objects",
+          _tag: ast._tag,
           propertySignatures: ast.propertySignatures.map((property) => {
             const projected = SchemaAST.getLastEncoding(property.type)
             const annotations = projected.context?.annotations
@@ -319,83 +292,49 @@ function fromASTs(
             parameter: recur(index.parameter),
             type: recur(index.type)
           })),
-          checks,
-          ...annotationsField(ast.annotations)
+          ...common
         }
       case "Union":
         return {
-          _tag: "Union",
-          types: ast.types.map((ast) => recur(ast)),
-          mode: ast.mode,
-          checks,
-          ...annotationsField(ast.annotations)
+          _tag: ast._tag,
+          types: ast.types.map(recur),
+          ...(ast.options === undefined ? {} : { options: ast.options }),
+          ...common
         }
       case "Suspend":
         return {
-          _tag: "Suspend",
+          _tag: ast._tag,
+          ...common,
           checks: [],
-          thunk: recur(ast.thunk()),
-          ...annotationsField(ast.annotations)
+          thunk: recur(ast.thunk())
         }
     }
-  }
-
-  function fromChecks(
-    checks: readonly [SchemaAST.Check<any>, ...Array<SchemaAST.Check<any>>] | undefined
-  ): Array<SchemaRepresentation.Check> {
-    return checks?.map(fromCheck) ?? []
   }
 
   function fromCheck(
     check: SchemaAST.Check<any>
   ): SchemaRepresentation.Check {
-    switch (check._tag) {
-      case "Filter":
-        return {
-          _tag: "Filter",
-          aborted: check.aborted,
-          ...fromCheckAnnotations(check.annotations)
-        }
-      case "FilterGroup":
-        return {
-          _tag: "FilterGroup",
-          checks: Arr.map(check.checks, fromCheck),
-          ...fromCheckAnnotations(check.annotations)
-        }
-    }
-  }
-
-  function fromDeclarationAnnotations<
-    A extends Schema.Annotations.Annotations & {
-      readonly representation?: SchemaRepresentation.RepresentationAnnotation | undefined
-    }
-  >(annotations: A | undefined): {
-    readonly representation?: SchemaRepresentation.RepresentationAnnotation | undefined
-    readonly annotations?: Omit<A, "representation"> | undefined
-  } | undefined {
-    if (annotations === undefined) return undefined
-    const { representation, ...ordinary } = annotations
     return {
-      ...(representation === undefined ? undefined : { representation }),
-      ...(Object.keys(ordinary).length === 0 ? undefined : { annotations: ordinary })
+      ...(check._tag === "Filter"
+        ? { _tag: check._tag, aborted: check.aborted }
+        : { _tag: check._tag, checks: Arr.map(check.checks, fromCheck) }),
+      ...fromAnnotations(check.annotations, true)
     }
   }
 
-  function fromCheckAnnotations<
+  function fromAnnotations<
     A extends Schema.Annotations.Annotations & {
       readonly representation?: SchemaRepresentation.CheckRepresentationAnnotation<SchemaAST.AST> | undefined
     }
-  >(annotations: A | undefined): {
+  >(annotations: A | undefined, projectSchemas = false): {
     readonly representation?: CheckRepresentationAnnotation | undefined
     readonly annotations?: Omit<A, "representation"> | undefined
   } | undefined {
     if (annotations === undefined) return undefined
     const { representation, ...ordinary } = annotations
-    const projected = representation === undefined
-      ? undefined
-      : representation.schemas === undefined
-      ? representation as CheckRepresentationAnnotation
-      : { ...representation, schemas: representation.schemas.map((schema) => recur(SchemaAST.toType(schema))) }
+    const projected = projectSchemas && representation?.schemas !== undefined
+      ? { ...representation, schemas: representation.schemas.map((schema) => recur(SchemaAST.toType(schema))) }
+      : representation as CheckRepresentationAnnotation | undefined
     return {
       ...(projected === undefined ? undefined : { representation: projected }),
       ...(Object.keys(ordinary).length === 0 ? undefined : { annotations: ordinary })

@@ -38,6 +38,10 @@
           "strictBooleanExpressions": "off",
           "lazyEffect": "off",
           "schemaSyncInEffect": "error",
+          // Effect 4 marks rpc, http, sql, cli and socket "unstable". We build
+          // on them on purpose and pin effect to an exact version, so their
+          // breaking changes are handled at each upgrade, not per call site.
+          "unstableApiUsage": "suggestion",
           // House-style rules the code does not follow yet (hundreds of
           // findings each): editor hints only. Raise one to "error" only
           // together with its cleanup.

@@ -2,9 +2,11 @@ import * as Arr from "../../Array.ts"
 import * as Result from "../../Result.ts"
 import * as Schema from "../../Schema.ts"
 import type * as SchemaAST from "../../SchemaAST.ts"
+import * as SchemaParser from "../../SchemaParser.ts"
 import type * as SchemaRepresentation from "../../SchemaRepresentation.ts"
 import { errorWithPath } from "../errors.ts"
 import * as InternalRecord from "../record.ts"
+import * as InternalToCodec from "./toCodec.ts"
 
 type Path = ReadonlyArray<string | number>
 
@@ -16,7 +18,8 @@ export function fromRepresentations(
   return revivePersisted(document.representations, document.references, makeReviverMap(revivers), false)
 }
 
-class ReferenceSlot {
+/** @internal */
+export class ReferenceSlot {
   body: Schema.Top | undefined
   resolving = false
   readonly wrapper: Schema.Top
@@ -43,7 +46,7 @@ function makeReviverMap(
     }
     out.set(reviver.id, {
       ...reviver,
-      payloadSchema: Schema.toCodecJson(reviver.payloadSchema)
+      payloadSchema: InternalToCodec.toCodecJson(reviver.payloadSchema)
     })
   }
 
@@ -102,7 +105,7 @@ function revivePersisted(
     reviver: SchemaRepresentation.AnyReviver,
     path: Path
   ): any {
-    const decoded = Schema.decodeUnknownResult(reviver.payloadSchema)(representation.payload)
+    const decoded = SchemaParser.decodeUnknownResult(reviver.payloadSchema)(representation.payload)
     if (Result.isFailure(decoded)) {
       throw errorWithPath(`Invalid representation payload for ${representation.id}`, path)
     }
@@ -314,7 +317,7 @@ function revivePersisted(
       }
       case "Union": {
         const members = representation.types.map((member, index) => recur(member, [...path, "types", index]))
-        return finishStructural(Schema.Union(members, { mode: representation.mode }), representation, path)
+        return finishStructural(Schema.Union(members, representation.options), representation, path)
       }
     }
   }

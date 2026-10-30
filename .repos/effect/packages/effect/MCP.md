@@ -9,17 +9,16 @@ It's important to understand the architecture of the Effect MCP server.
 Here is an example of a MCP server implementation:
 
 ```typescript
-import { NodeRuntime, NodeSink, NodeStream } from "@effect/platform-node"
-import { Effect, Layer, Logger } from "effect"
-import { Schema } from "effect/schema"
-import { McpProtocol, McpServer, Tool, Toolkit } from "effect/unstable/ai"
+import { NodeRuntime, NodeStdio } from "@effect/platform-node"
+import { Effect, Layer, Logger, Schema } from "effect"
+import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai"
 
 // Define a simple tool
 const DemoTool = Tool.make("DemoTool", {
   description: "A demo tool that echoes back the input",
-  parameters: {
+  parameters: Schema.Struct({
     message: Schema.String
-  },
+  }),
   success: Schema.String
 })
 
@@ -58,12 +57,12 @@ const ServerLayer = Layer.mergeAll(
     McpServer.layerStdio({
       name: "Demo MCP Server",
       version: "1.0.0",
-      protocols: [McpProtocol.v2025_06_18],
-      stdin: NodeStream.stdin,
-      stdout: NodeSink.stdout
+      protocols: [McpProtocol.v2025_06_18]
     })
   ),
-  Layer.provide(Logger.layer([Logger.consolePretty({ stderr: true })]))
+  Layer.provide(NodeStdio.layer),
+  Layer.provide(Logger.layer([Logger.consolePretty()])),
+  Layer.provideMerge(Layer.succeed(Logger.LogToStderr, true))
 )
 
 Layer.launch(ServerLayer).pipe(NodeRuntime.runMain)
@@ -80,10 +79,17 @@ The server exposes three main parts:
 The part layers are merged into one layer that has a MCP server implementation as dependency.
 `McpServer.layerStdio` is used to create a standard I/O–based MCP server identified by its name and
 version. Its ordered, non-empty `protocols` declaration names implemented protocol adapters rather
-than arbitrary version strings. This release supports `McpProtocol.v2025_06_18`. Because of the
-layer architecture the server implementation can be easily exchanged with an HTTP-based implementation
-with `McpServer.layerHttp`. Finally, a logging layer is added with
-`Logger.layer([Logger.consolePretty({ stderr: true })])`, ensuring logs are written to `stderr`.
+than arbitrary version strings. This release supports `McpProtocol.v2024_11_05`,
+`McpProtocol.v2025_03_26`, `McpProtocol.v2025_06_18`, `McpProtocol.v2025_11_25`, and
+`McpProtocol.v2026_07_28`. Both `layerStdio` and `layerHttp` support all five adapters;
+`layerHttpRequestScoped` supports only the stateless `v2026_07_28` adapter.
+The `v2024_11_05` adapter implements that revision's RPC schemas and stdio framing, including its
+batch policy. It does not implement the historical two-endpoint HTTP+SSE transport.
+`McpServer.layerHttp` instead offers the 2024 RPC schema through the same single-endpoint HTTP
+compatibility transport used by the newer adapters. Because of
+the layer architecture the server implementation can be easily exchanged with this HTTP-based
+implementation. Finally, a logging layer is added with
+`Layer.succeed(Logger.LogToStderr, true)`, ensuring logs are written to `stderr`.
 This is essential when using stdio, as any output to `stdout` would interfere with the protocol
 communication.
 
@@ -95,9 +101,8 @@ resource is defined as a template that specifies its location, behavior, and met
 parameters, completions, and content generation.
 
 ```typescript
-import { Effect } from "effect"
-import { Schema } from "effect/schema"
-import { McpSchema, McpServer } from "effect/unstable/ai"
+import { Effect, Schema } from "effect"
+import { McpSchema, McpServer } from "effect/ai"
 
 const SimpleResource = McpServer.resource({
   uri: "file:///demo.txt",
@@ -137,9 +142,8 @@ structured, parameterized instructions or messages that the client can send to t
 generation logic in a declarative way.
 
 ```typescript
-import { Effect } from "effect"
-import { Schema } from "effect/schema"
-import { McpServer } from "effect/unstable/ai"
+import { Effect, Schema } from "effect"
+import { McpServer } from "effect/ai"
 
 const DemoPrompt = McpServer.prompt({
   name: "Demo Prompt",
@@ -165,24 +169,23 @@ contract while the actual logic is provided separately through an implementation
 grouped into toolkits, which can be combined and converted into layers.
 
 ```typescript
-import { Effect, Layer } from "effect"
-import { Schema } from "effect/schema"
-import { McpServer, Tool, Toolkit } from "effect/unstable/ai"
+import { Effect, Layer, Schema } from "effect"
+import { McpServer, Tool, Toolkit } from "effect/ai"
 
 const DemoTool = Tool.make("DemoTool", {
   description: "This is a demo tool for the documentation",
-  parameters: {
+  parameters: Schema.Struct({
     demoId: Schema.Number,
     demoName: Schema.String
-  },
+  }),
   success: Schema.String
 })
 
 const OtherDemoTool = Tool.make("OtherDemoTool", {
   description: "Another demo tool",
-  parameters: {
+  parameters: Schema.Struct({
     value: Schema.Number
-  },
+  }),
   success: Schema.String
 })
 
@@ -213,9 +216,8 @@ defines both the message shown to the user and the expected response schema, ens
 validated user input.
 
 ```typescript
-import { Effect } from "effect"
-import { Schema } from "effect/schema"
-import { McpServer } from "effect/unstable/ai"
+import { Effect, Schema } from "effect"
+import { McpServer } from "effect/ai"
 
 const DemoElicitation = McpServer.elicit({
   message: `Please answer the question ("yes" | "no") (default "no"):`,
@@ -241,7 +243,7 @@ Here's a complete, copy/pastable MCP server example that combines all the concep
 ```typescript
 import { NodeRuntime, NodeStdio } from "@effect/platform-node"
 import { Effect, Layer, Logger, Schema } from "effect"
-import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai"
+import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 
 // Define tools
 const GreetTool = Tool.make("GreetTool", {
@@ -365,9 +367,205 @@ const ServerLayer = Layer.mergeAll(
     })
   ),
   Layer.provide(NodeStdio.layer),
-  Layer.provide(Layer.succeed(Logger.LogToStderr)(true))
+  Layer.provideMerge(Layer.succeed(Logger.LogToStderr, true))
 )
 
 // Run the server
 Layer.launch(ServerLayer).pipe(NodeRuntime.runMain)
+```
+
+## Connecting to an MCP server
+
+`McpClient` connects to an MCP server, discovers its tools, prompts and resources, and calls them.
+The client and its `McpClientError` module are experimental, so their API may change in minor
+releases. It supports the `2025-11-25` and `2026-07-28` protocol revisions over stdio and Streamable HTTP.
+The transport selects the revision explicitly; the client does not negotiate one.
+
+The client covers discovery, tool calls, prompt retrieval, resource reads and Toolkit adaptation.
+Resource templates, completion, logging, subscriptions, roots, sampling, elicitation, OAuth and
+automatic retries are not implemented. Server requests other than `ping` receive a method-not-found
+response, and modern `input_required` results fail with reason `UnsupportedError`.
+
+### Connecting over HTTP
+
+`McpClient.layerHttp` provides a connected client from an `HttpClient`. The layer scope owns the
+connection: legacy sessions are closed with a `DELETE` when the scope ends.
+
+```typescript
+import { Effect, Layer } from "effect"
+import { McpClient, McpProtocol } from "effect/ai"
+import { FetchHttpClient } from "effect/http"
+
+const ClientLayer = McpClient.layerHttp({
+  name: "report-workflow",
+  version: "1.0.0",
+  protocol: McpProtocol.v2026_07_28,
+  url: "http://localhost:3000/mcp"
+}).pipe(Layer.provide(FetchHttpClient.layer))
+
+const program = Effect.gen(function*() {
+  const client = yield* McpClient.McpClient
+  const tools = yield* client.listTools()
+  yield* Effect.log(tools.map((tool) => tool.name))
+})
+
+await Effect.runPromise(program.pipe(Effect.provide(ClientLayer)))
+```
+
+Transport `headers` can carry static credentials. For rotating tokens, wrap the `HttpClient` with
+`HttpClient.mapRequestEffect` and read the current token there.
+
+### Connecting to a subprocess
+
+`McpClient.layerStdio` spawns the server with the `ChildProcessSpawner` service and exchanges
+newline-delimited JSON-RPC over its stdin and stdout. Server logs belong on stderr.
+
+```typescript
+import { NodeServices } from "@effect/platform-node"
+import { Effect, Layer } from "effect"
+import { McpClient, McpProtocol } from "effect/ai"
+import { ChildProcess } from "effect/process"
+
+const ClientLayer = McpClient.layerStdio({
+  name: "report-workflow",
+  version: "1.0.0",
+  protocol: McpProtocol.v2025_11_25,
+  command: ChildProcess.make("node", ["./mcp-server.mjs"])
+}).pipe(Layer.provide(NodeServices.layer))
+
+const program = Effect.gen(function*() {
+  const client = yield* McpClient.McpClient
+  const tools = yield* client.listTools()
+  yield* Effect.log(tools.map((tool) => tool.name))
+})
+
+await Effect.runPromise(program.pipe(Effect.provide(ClientLayer)))
+```
+
+When the scope closes, the client closes stdin and waits five seconds for the process to exit, then
+sends `SIGTERM`, and `SIGKILL` five seconds later.
+
+To build a client without a layer, provide a `McpClient.Transport` from `McpClient.http` or
+`McpClient.stdio` to `McpClient.make` inside an `Effect.scoped` region, and keep every use of the
+client inside that scope.
+
+### Calling tools
+
+`callTool` takes the descriptor returned by `listTools`, not just a name: on modern HTTP the
+descriptor's `x-mcp-header` annotations decide which arguments are mirrored into request headers.
+Without a `schema` the full `McpSchema.CallToolResult` is returned, including `isError`, so the
+caller decides how to treat tool-reported failures. With a `schema`, `structuredContent` is decoded
+and a tool-reported failure fails with reason `ToolError` carrying the original result.
+
+```typescript
+import { Effect, Schema } from "effect"
+import { McpClient, McpClientError } from "effect/ai"
+
+const Report = Schema.Struct({ count: Schema.Number })
+
+export const readReport = Effect.fn("readReport")(function*(reportId: string) {
+  const client = yield* McpClient.McpClient
+  const tools = yield* client.listTools()
+  const tool = tools.find((tool) => tool.name === "read_report")
+  if (tool === undefined) {
+    return yield* new McpClientError.McpClientError({
+      reason: new McpClientError.UnsupportedError({ description: "Server does not expose read_report" })
+    })
+  }
+  return yield* client.callTool({ tool, arguments: { reportId }, schema: Report }, { timeout: "2 seconds" })
+})
+```
+
+Remote input schemas are returned as JSON Schema metadata only. The client does not validate
+arguments against them; define the argument contract in your application or in a `Toolkit`.
+
+### Handling failures
+
+Every failure is an `McpClientError.McpClientError` whose `reason` is one of the reason classes
+exported by `McpClientError`: `TransportError`, `ProtocolError` (with the JSON-RPC `code` and
+`data`), `HttpError` (with `status` and the `www-authenticate` and `retry-after` headers),
+`ClosedError` (with `sessionExpired`), `TimeoutError` (with `operation`), `LimitError`,
+`UnsupportedError`, `ValidationError`, `ConfigurationError` and `ToolError` (with the tool
+`result`). Each reason derives its `message` from these fields and an optional `description`.
+`McpClientError.isMcpClientError` and `McpClientError.isMcpClientErrorReason` identify them.
+
+```typescript
+import { Effect, Schema } from "effect"
+import type { McpClient, McpSchema } from "effect/ai"
+
+const Report = Schema.Struct({ count: Schema.Number })
+
+export const readWithDeadline = (client: McpClient.McpClient, tool: McpSchema.Tool, reportId: string) =>
+  client.callTool({ tool, arguments: { reportId }, schema: Report }, { timeout: "2 seconds" }).pipe(
+    Effect.map((report) => ({ status: "ready" as const, report })),
+    Effect.catchReason("McpClientError", "TimeoutError", () => Effect.succeed({ status: "deferred" as const }))
+  )
+```
+
+`Effect.catchReason` and `Effect.catchReasons` recover from selected reasons;
+`Effect.catchTag("McpClientError", ...)` handles them all. The client never retries, so a timeout
+says nothing about whether the server completed the call.
+
+### Limits and deadlines
+
+Initialization and each complete discovery run under a single deadline, 60 seconds by default and
+configurable per client with `timeout` or per call with the `timeout` option. Tool calls, prompts and
+resource reads have no deadline unless you pass their `timeout` option or compose `Effect.timeout`.
+Discovery follows pagination until the server stops returning a cursor and fails with `LimitError`
+after 100 pages, 10,000 items or a repeated cursor. A missing server capability makes the list
+operations return an empty array and the retrieval operations fail with `UnsupportedError`.
+
+Discovery omits tools that require task-augmented execution. Modern HTTP discovery also omits tools
+whose `x-mcp-header` annotations are invalid. Messages larger than `maxMessageBytes` (16 MiB by
+default) are rejected in both directions.
+
+The client creates no spans; wrap calls with `Effect.withSpan` or `Effect.fn` as needed.
+
+### Exposing discovered tools to a language model
+
+`McpClient.toolkit` discovers every tool and returns a `Toolkit.WithHandler` that `LanguageModel`
+accepts. An optional prefix qualifies the model-facing names. Results become text by joining text
+blocks, embedded text resources and resource links; when there is no content, `structuredContent`
+is serialized as JSON. Binary content and tool-reported errors fail the handler.
+
+```typescript
+import { Effect } from "effect"
+import { LanguageModel, McpClient } from "effect/ai"
+
+export const readRemoteReport = (client: McpClient.McpClient) =>
+  Effect.gen(function*() {
+    const toolkit = yield* McpClient.toolkit(client, "reports__")
+    return yield* LanguageModel.generateText({ prompt: "Read the quarterly report", toolkit })
+  })
+```
+
+The toolkit is a snapshot: build a new one to pick up changes on the server. For custom naming,
+validation, approval or result conversion, define tools with `Tool.make` or `Tool.dynamic` and
+call `client.callTool` from their handlers.
+
+### Prompts and resources
+
+`listPrompts` and `listResources` return complete snapshots. `getPrompt` takes a discovered
+`McpSchema.Prompt` with optional string arguments; `readResource` takes any URI. Results reuse the
+`McpSchema.GetPromptResult` and `McpSchema.ReadResourceResult` types shared with the server.
+
+```ts
+import { Effect } from "effect"
+import type { McpClient } from "effect/ai"
+
+export const loadContext = (client: McpClient.McpClient) =>
+  Effect.gen(function*() {
+    const prompts = yield* client.listPrompts()
+    const prompt = prompts.find((prompt) => prompt.name === "review")
+    if (prompt !== undefined) {
+      const result = yield* client.getPrompt({ prompt, arguments: { code: "const answer = 42" } })
+      yield* Effect.log(result.messages)
+    }
+
+    const resources = yield* client.listResources()
+    for (const resource of resources) {
+      const result = yield* client.readResource({ uri: resource.uri })
+      yield* Effect.log(result.contents)
+    }
+  })
 ```

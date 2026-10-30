@@ -21,21 +21,22 @@
 import * as Arr from "effect/Array"
 import * as JsonSchema from "effect/JsonSchema"
 import * as Rec from "effect/Record"
+import * as Schema from "effect/Schema"
 import * as SchemaRepresentation from "effect/SchemaRepresentation"
 
 type Source = "openapi-3.0" | "openapi-3.1"
 interface GenerateOptions {
   readonly onEnter?: ((js: JsonSchema.JsonSchema) => JsonSchema.JsonSchema) | undefined
+  readonly multipartSchemaRefs?: MultipartSchemaRefs | undefined
 }
 
-interface MultipartSchemaRefs {
+interface HttpApiMultipartSchemaRefs {
+  readonly kind: "httpapi"
   readonly singleFile: string
   readonly files: string
 }
 
-interface GenerateHttpApiOptions extends GenerateOptions {
-  readonly multipartSchemaRefs?: MultipartSchemaRefs | undefined
-}
+type MultipartSchemaRefs = HttpApiMultipartSchemaRefs | { readonly kind: "client"; readonly singleFile: string }
 
 /**
  * Create a stateful JSON Schema code generator for OpenAPI-derived schemas.
@@ -79,7 +80,7 @@ function makeWithRepresentation() {
     const recursiveReferences = Object.entries(generated.codeDocument.references.recursives)
 
     const nonRecursives = nonRecursiveReferences.map(({ $ref, code }) =>
-      renderSchemaTypeAndRuntime($ref, code, typeOnly)
+      renderSchemaTypeAndRuntime($ref, code, typeOnly, options)
     )
 
     const recursiveDeclarations: Array<string> = []
@@ -87,7 +88,7 @@ function makeWithRepresentation() {
 
     if (typeOnly) {
       for (const [$ref, code] of recursiveReferences) {
-        recursives.push(renderSchemaTypeAndRuntime($ref, code, true))
+        recursives.push(renderSchemaTypeAndRuntime($ref, code, true, options))
       }
     } else {
       const recursivelyForwardReferenced = collectForwardReferencedRecursives(
@@ -111,12 +112,12 @@ function makeWithRepresentation() {
           continue
         }
 
-        recursives.push(renderSchemaTypeAndRuntime($ref, code, false))
+        recursives.push(renderSchemaTypeAndRuntime($ref, code, false, options))
       }
     }
 
     const codes = generated.codeDocument.codes.map((code, i) =>
-      renderSchemaTypeAndRuntime(generated.nameMap[i], code, typeOnly)
+      renderSchemaTypeAndRuntime(generated.nameMap[i], code, typeOnly, options)
     )
 
     return renderImportArtifacts(generated.codeDocument, !typeOnly) +
@@ -129,7 +130,7 @@ function makeWithRepresentation() {
   function generateHttpApi(
     source: Source,
     components: JsonSchema.Definitions,
-    options?: GenerateHttpApiOptions
+    options?: GenerateOptions
   ) {
     const generated = makeCodeDocument(source, components, options)
     if (generated === undefined) {
@@ -140,7 +141,7 @@ function makeWithRepresentation() {
     const recursiveReferences = Object.entries(generated.codeDocument.references.recursives)
 
     const nonRecursives = nonRecursiveReferences.map(({ $ref, code }) =>
-      renderSchemaTypeAndRuntime($ref, code, false, options?.multipartSchemaRefs)
+      renderSchemaTypeAndRuntime($ref, code, false, options)
     )
 
     const recursivelyForwardReferenced = collectForwardReferencedRecursives(nonRecursiveReferences, recursiveReferences)
@@ -164,11 +165,11 @@ function makeWithRepresentation() {
         continue
       }
 
-      recursives.push(renderSchemaTypeAndRuntime($ref, code, false, options?.multipartSchemaRefs))
+      recursives.push(renderSchemaTypeAndRuntime($ref, code, false, options))
     }
 
     const codes = generated.codeDocument.codes.map((code, i) =>
-      renderSchemaTypeAndRuntime(generated.nameMap[i], code, false, options?.multipartSchemaRefs)
+      renderSchemaTypeAndRuntime(generated.nameMap[i], code, false, options)
     )
 
     return renderImportArtifacts(generated.codeDocument, true) +
@@ -181,7 +182,7 @@ function makeWithRepresentation() {
   function makeCodeDocument(
     source: Source,
     components: JsonSchema.Definitions,
-    options?: GenerateHttpApiOptions
+    options?: GenerateOptions
   ): {
     readonly nameMap: Array<string>
     readonly codeDocument: SchemaRepresentation.CodeDocument
@@ -189,7 +190,7 @@ function makeWithRepresentation() {
     const nameMap: Array<string> = []
     const schemas: Array<JsonSchema.JsonSchema> = []
 
-    let definitions: JsonSchema.Definitions = Rec.map(
+    const definitions: JsonSchema.Definitions = Rec.map(
       components,
       (js) => fromSchemaOpenApi(source, js).schema
     )
@@ -202,26 +203,51 @@ function makeWithRepresentation() {
     if (!Arr.isArrayNonEmpty(schemas)) {
       return
     }
-    if (options?.multipartSchemaRefs !== undefined) {
-      definitions = omitSupersededMultipartDefinitions(definitions, schemas, options.multipartSchemaRefs)
-    }
 
     const document = {
       dialect: "draft-2020-12" as const,
       schemas,
       definitions
     }
+    const schemasWithExamples: Array<JsonSchema.JsonSchema> = []
+    const preparedSchemas = new WeakMap<JsonSchema.JsonSchema, JsonSchema.JsonSchema>()
+    const preparedOutputs = new WeakSet<JsonSchema.JsonSchema>()
     const importerOptions: SchemaRepresentation.FromJsonSchemaOptions = {
       patterns: "apply",
       onEnter(js: JsonSchema.JsonSchema) {
+        if (preparedOutputs.has(js)) return js
+        const cached = preparedSchemas.get(js)
+        if (cached !== undefined) return cached
+
         const out = { ...js }
-        if (out.type === "object" && out.additionalProperties === undefined) {
-          out.additionalProperties = false
+        const transformed = { ...(options?.onEnter === undefined ? out : options.onEnter(out)) }
+        preparedSchemas.set(js, transformed)
+        preparedOutputs.add(transformed)
+        if (Array.isArray(transformed.examples)) {
+          schemasWithExamples.push(transformed)
         }
-        return options?.onEnter === undefined ? out : options.onEnter(out)
+        return transformed
       }
     }
-    const rootSchemas = SchemaRepresentation.fromJsonSchemaMultiDocument(document, importerOptions)
+    let rootSchemas = SchemaRepresentation.fromJsonSchemaMultiDocument(document, importerOptions)
+    if (Arr.isArrayNonEmpty(schemasWithExamples)) {
+      const exampleSchemas = SchemaRepresentation.fromJsonSchemaMultiDocument(
+        { ...document, schemas: schemasWithExamples },
+        importerOptions
+      )
+      for (let i = 0; i < schemasWithExamples.length; i++) {
+        const node = schemasWithExamples[i]
+        const examples = node.examples as ReadonlyArray<unknown>
+        const validExamples = examples.filter(Schema.is(exampleSchemas[i]))
+        if (validExamples.length === examples.length) continue
+        if (validExamples.length === 0) {
+          delete node.examples
+        } else {
+          node.examples = validExamples
+        }
+      }
+      rootSchemas = SchemaRepresentation.fromJsonSchemaMultiDocument(document, importerOptions)
+    }
     const codeDocument = SchemaRepresentation.toCodeDocument(
       SchemaRepresentation.toRepresentations(Arr.map(rootSchemas, (schema) => schema.ast))
     )
@@ -232,7 +258,12 @@ function makeWithRepresentation() {
     }
   }
 
-  return { addSchema, generate, generateHttpApi } as const
+  return {
+    addSchema,
+    generate,
+    generateHttpApi,
+    schemas: store as Readonly<Record<string, JsonSchema.JsonSchema>>
+  } as const
 }
 
 function fromSchemaOpenApi(source: Source, jsonSchema: JsonSchema.JsonSchema) {
@@ -248,28 +279,35 @@ function renderSchemaTypeAndRuntime(
   $ref: string,
   code: SchemaRepresentation.Code,
   typeOnly: boolean,
-  multipartSchemaRefs?: MultipartSchemaRefs
+  options?: GenerateOptions
 ) {
-  if (!typeOnly && multipartSchemaRefs !== undefined) {
-    if ($ref === multipartSchemaRefs.singleFile) {
-      return [
-        `export type ${$ref} = Multipart.PersistedFile`,
-        `export const ${$ref} = Multipart.SingleFileSchema`
-      ].join("\n")
-    }
-    if ($ref === multipartSchemaRefs.files) {
-      return [
-        `export type ${$ref} = ReadonlyArray<Multipart.PersistedFile>`,
-        `export const ${$ref} = Multipart.FilesSchema`
-      ].join("\n")
-    }
-  }
-
+  code = multipartCode($ref, options?.multipartSchemaRefs) ?? code
   const strings = [`export type ${$ref} = ${code.Type}`]
   if (!typeOnly) {
     strings.push(`export const ${$ref} = ${code.runtime}`)
   }
   return strings.join("\n")
+}
+
+function multipartCode(
+  $ref: string,
+  refs: MultipartSchemaRefs | undefined
+): SchemaRepresentation.Code | undefined {
+  if (refs === undefined) {
+    return undefined
+  }
+  if ($ref === refs.singleFile) {
+    return refs.kind === "httpapi"
+      ? { Type: "Multipart.PersistedFile", runtime: "Multipart.SingleFileSchema" }
+      : {
+        Type: "globalThis.File | globalThis.Blob",
+        runtime: `Schema.instanceOf(globalThis.Blob, { expected: "File | Blob" })`
+      }
+  }
+  if (refs.kind === "httpapi" && $ref === refs.files) {
+    return { Type: "ReadonlyArray<Multipart.PersistedFile>", runtime: "Multipart.FilesSchema" }
+  }
+  return undefined
 }
 
 function renderRecursiveReferenceDeclaration(
@@ -294,64 +332,6 @@ function renderImportArtifacts(codeDocument: SchemaRepresentation.CodeDocument, 
     artifact._tag === "Import" ? [artifact.importDeclaration] : []
   )
   return imports.length === 0 ? "" : imports.join("\n") + "\n"
-}
-
-function omitSupersededMultipartDefinitions(
-  definitions: JsonSchema.Definitions,
-  schemas: ReadonlyArray<JsonSchema.JsonSchema>,
-  multipartSchemaRefs: MultipartSchemaRefs
-): JsonSchema.Definitions {
-  const rootReferences = collectReferenceKeys(schemas)
-  const multipartReferences = new Set([multipartSchemaRefs.singleFile, multipartSchemaRefs.files])
-  const output: JsonSchema.Definitions = {}
-
-  for (const [key, schema] of Object.entries(definitions)) {
-    const superseded = !multipartReferences.has(key) && !rootReferences.has(key) &&
-      referencesAny(schema, multipartReferences)
-    if (!superseded) {
-      Object.defineProperty(output, key, {
-        value: schema,
-        enumerable: true,
-        configurable: true,
-        writable: true
-      })
-    }
-  }
-  return output
-}
-
-function collectReferenceKeys(input: unknown): Set<string> {
-  const references = new Set<string>()
-  visitReferences(input, ($ref) => {
-    const token = $ref.split("/").at(-1)
-    if (token !== undefined && token.length > 0) {
-      references.add(token.replaceAll("~1", "/").replaceAll("~0", "~"))
-    }
-  })
-  return references
-}
-
-function referencesAny(input: unknown, keys: ReadonlySet<string>): boolean {
-  const references = collectReferenceKeys(input)
-  for (const key of references) {
-    if (keys.has(key)) return true
-  }
-  return false
-}
-
-function visitReferences(input: unknown, onReference: ($ref: string) => void): void {
-  if (Array.isArray(input)) {
-    for (const value of input) visitReferences(value, onReference)
-    return
-  }
-  if (typeof input !== "object" || input === null) return
-  for (const [key, value] of Object.entries(input)) {
-    if (key === "$ref" && typeof value === "string") {
-      onReference(value)
-    } else {
-      visitReferences(value, onReference)
-    }
-  }
 }
 
 const tokenPattern = /[A-Za-z_$][A-Za-z0-9_$]*/g
