@@ -181,7 +181,11 @@ export const makeAssistantRelay = Effect.gen(function* () {
   const connect: Effect.Effect<void> = Effect.gen(function* () {
     if (!wanted || socket !== null || origin === null) return;
     const creds = yield* link.credentials;
-    if (creds === null) return;
+    if (creds === null) {
+      // Not registered (again) yet: look again, as a reconnect would.
+      scheduleReconnect();
+      return;
+    }
     const opened = new WebSocket(
       relaySocketUrl(origin, `/v2/hosts/${creds.hostId}/assistants/socket`),
       [RELAY_WEBSOCKET_PROTOCOL, `${RELAY_TOKEN_PROTOCOL_PREFIX}${creds.hostSecret}`],

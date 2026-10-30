@@ -1,6 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as Crypto from "node:crypto";
 
+import * as NodeHttp from "node:http";
+
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -19,11 +22,19 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import {
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
+import { Socket } from "effect/unstable/socket";
 
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -33,6 +44,7 @@ import { OutsideAgentConnectionRepositoryLive } from "../outsideAgents/OutsideAg
 import { OutsideAgentConnectionsLive } from "../outsideAgents/OutsideAgentConnectionsLive.ts";
 import { OutsideAgentSignIn } from "../outsideAgents/OutsideAgentSignIn.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { RelayHostLink } from "../relay/RelayHostLink.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { makeAssistantMcp } from "./AssistantMcp.ts";
 import {
@@ -41,6 +53,7 @@ import {
   type AssistantRelayShape,
 } from "./AssistantRelay.ts";
 import { type AssistantHttpResponse, Assistants } from "./Assistants.ts";
+import { makeAssistantRelay } from "./AssistantRelayLive.ts";
 import { AssistantsLive } from "./AssistantsLive.ts";
 
 const HOST = "8911ad8a-f546-45e5-a2e8-7a6a8adfc65c";
@@ -779,5 +792,109 @@ describe("AssistantMcp", () => {
         expect(tooLarge.body?.result).toMatchObject({ isError: true });
         expect(JSON.stringify(tooLarge.body?.result)).toContain("too large");
       }),
+  );
+});
+
+describe("the assistant socket", () => {
+  it.live(
+    "authenticates with the host secret, skips frames it doesn't know, answers, and reconnects",
+    () =>
+      Effect.gen(function* () {
+        const relaySide = {
+          sockets: 0,
+          protocols: [] as Array<string>,
+          received: [] as Array<string>,
+          write: null as
+            | ((chunk: string | Socket.CloseEvent) => Effect.Effect<void, Socket.SocketError>)
+            | null,
+        };
+        const server = yield* HttpRouter.serve(
+          HttpRouter.add(
+            "GET",
+            "/v2/hosts/:hostId/assistants/socket",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              relaySide.protocols.push(request.headers["sec-websocket-protocol"] ?? "");
+              const socket = yield* request.upgrade;
+              const write = yield* socket.writer;
+              const running = yield* socket
+                .runRaw((data) => {
+                  relaySide.received.push(
+                    typeof data === "string" ? data : new TextDecoder().decode(data),
+                  );
+                })
+                .pipe(Effect.ignore, Effect.forkChild);
+              relaySide.sockets += 1;
+              relaySide.write = write;
+              yield* Fiber.join(running);
+              return HttpServerResponse.empty();
+            }).pipe(Effect.scoped),
+          ),
+          { disableListenLog: true, disableLogger: true },
+        ).pipe(
+          Layer.provideMerge(
+            NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0, host: "127.0.0.1" }),
+          ),
+          Layer.build,
+        );
+        const port = (Context.get(server, HttpServer.HttpServer).address as HttpServer.TcpAddress)
+          .port;
+        const relay = yield* makeAssistantRelay.pipe(
+          Effect.provideService(RelayHostLink, {
+            relayOrigin: `http://127.0.0.1:${port}`,
+            credentials: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+            register: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+            forgetHost: () => Effect.void,
+            keepOnline: () => Effect.void,
+          }),
+        );
+        const seen: Array<AssistantRelayEvent> = [];
+        yield* relay.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => seen.push(event))),
+          Effect.forkScoped,
+        );
+        const eventually = (done: () => boolean) =>
+          Effect.gen(function* () {
+            for (let waited = 0; waited < 5_000 && !done(); waited += 10) yield* Effect.sleep(10);
+            expect(done()).toBe(true);
+          });
+
+        yield* relay.setWanted(true);
+        yield* eventually(() => seen.some((event) => event.type === "open"));
+        expect(relaySide.protocols[0]).toContain("threadlines-token.host-secret-1");
+
+        yield* relaySide.write!(JSON.stringify({ type: "mystery", id: "x" }));
+        yield* relaySide.write!(
+          JSON.stringify({
+            type: "request",
+            id: "request-1",
+            route: "mcp",
+            credential: "tlak1.credential",
+            resource: RESOURCE,
+            headers: {},
+            body: "{}",
+          }),
+        );
+        yield* eventually(() => seen.some((event) => event.type === "frame"));
+        expect(seen.filter((event) => event.type === "frame")).toMatchObject([
+          { frame: { type: "request", id: "request-1" } },
+        ]);
+        expect(
+          yield* relay.send({
+            type: "response",
+            id: "request-1",
+            status: 200,
+            headers: {},
+            body: "",
+          }),
+        ).toBe(true);
+        yield* eventually(() => relaySide.received.some((frame) => frame.includes("request-1")));
+
+        // The relay drops the socket: it connects again on its own.
+        yield* relaySide.write!(new Socket.CloseEvent(1001, "Relay restarting."));
+        yield* eventually(() => seen.some((event) => event.type === "closed"));
+        yield* eventually(() => relaySide.sockets === 2);
+        yield* relay.setWanted(false);
+      }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped),
   );
 });

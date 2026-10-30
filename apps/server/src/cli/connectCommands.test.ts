@@ -269,7 +269,7 @@ function dataFolder(port: number, token: string | null): string {
 
 const readCredentials = (base: string) =>
   JSON.parse(readFileSync(join(base, "userdata", "cli", "connections.json"), "utf8")) as {
-    resources: Record<string, { clientId: string; accessToken?: string; scope?: string }>;
+    resources: Record<string, { clientId?: string; accessToken?: string; scope?: string }>;
   };
 
 const CliLayer = Layer.mergeAll(NodeServices.layer, NetService.layer, TestConsole.layer);
