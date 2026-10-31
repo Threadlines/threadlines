@@ -23,7 +23,6 @@ import {
   type OutsideAgentGrant,
   type OutsideAgentPendingRequest,
   OutsideAgentRequestId,
-  type OutsideAgentsSnapshot,
 } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -77,6 +76,7 @@ import {
 import {
   OutsideAgentSignIn,
   type OutsideAgentSignInShape,
+  type OutsideAgentsSnapshotWithoutTargets,
   type SignInStatus,
   type TokenResult,
 } from "./OutsideAgentSignIn.ts";
@@ -240,8 +240,8 @@ const makeOutsideAgents = Effect.gen(function* () {
   // The Agents group
   // ---------------------------------------------------------------------------
 
-  const snapshot: Effect.Effect<OutsideAgentsSnapshot, OutsideAgentError> = Effect.gen(
-    function* () {
+  const snapshot: Effect.Effect<OutsideAgentsSnapshotWithoutTargets, OutsideAgentError> =
+    Effect.gen(function* () {
       const rows = yield* repository.listLive.pipe(storeError("read the connections"));
       const now = yield* Clock.currentTimeMillis;
       const waiting: Array<OutsideAgentPendingRequest> = [];
@@ -271,8 +271,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         quietUntil: quietUntil !== null && quietUntil > now ? isoAt(quietUntil) : null,
         assistants: yield* assistants.state,
       };
-    },
-  );
+    });
 
   // Subscribes before the first read, so a change can't fall between the two.
   // An assistant's change (a sign-in, a code, a connection used) counts too.

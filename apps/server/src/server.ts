@@ -97,6 +97,7 @@ import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
 import { AssistantRelayLive } from "./assistants/AssistantRelayLive.ts";
+import { AssistantAlertsLive } from "./assistants/AssistantAlertsLive.ts";
 import { AssistantEventsLive } from "./assistants/AssistantEventsLive.ts";
 import { AssistantsLive } from "./assistants/AssistantsLive.ts";
 import { OutsideAgentConnectionRepositoryLive } from "./outsideAgents/OutsideAgentConnectionRepository.ts";
@@ -337,7 +338,8 @@ const ReactorLayerLive = Layer.empty.pipe(
   // the scheduler's waiting changes from the layers below, and send through
   // the relay; started with the other reactors. The assistants' event record
   // (docs/design/assistants.md) reads the same log with the same checks, from
-  // its own cursor, while an assistant connection exists.
+  // its own cursor, while an assistant connection or an alert target that's
+  // on exists.
   Layer.provideMerge(Layer.mergeAll(PushAlertsLive, AssistantEventsLive)),
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
@@ -629,9 +631,17 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provide(NetService.layer),
 );
 
+// Alerts to a web address (docs/design/assistants.md, step 4) send from the
+// assistants' event record, and ask the phones' presence who is looking at a
+// thread. Startup starts them; the routes manage them.
+const AssistantAlertsLayerLive = AssistantAlertsLive.pipe(
+  Layer.provide(ServerSecretStoreLive),
+  Layer.provideMerge(RuntimeDependenciesLive),
+);
+
 const RuntimeServicesLive = Layer.mergeAll(
   Layer.mergeAll(ServerRuntimeStartupLive, ProviderReadinessTelemetryLive).pipe(
-    Layer.provideMerge(RuntimeDependenciesLive),
+    Layer.provideMerge(AssistantAlertsLayerLive),
   ),
   ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
   // Usage reads provider transcripts straight off disk, so it needs only

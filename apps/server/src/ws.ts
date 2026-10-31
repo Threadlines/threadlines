@@ -61,6 +61,8 @@ import {
   type SourceControlDiscoveryResult,
   SourceControlToolUpdateError,
   WS_METHODS,
+  WsCoreRpcGroup,
+  WsOutsideAgentsRpcGroup,
   WsRpcGroup,
   WsOwnerRequiredError,
 } from "@threadlines/contracts";
@@ -156,6 +158,7 @@ import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
+import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
@@ -428,7 +431,186 @@ function withCurrentEnvironment(
     : { ...event, payload: { ...event.payload, environment } };
 }
 
+/** Access management is owner-only; everything else stays open to paired devices. */
+const ownerOnly = (role: "owner" | "client") => (method: string) =>
+  role === "owner" ? Effect.void : Effect.fail(new WsOwnerRequiredError({ method }));
+
+/**
+ * Managing outside agents and assistants, owner only
+ * (docs/design/outside-agents.md, docs/design/assistants.md): its own RPC
+ * group and layer (WsOutsideAgentsRpcGroup), merged with the rest in
+ * makeWsRpcLayer, which keeps the main group's handler types inside
+ * TypeScript's per-statement cap.
+ */
+const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
+  WsOutsideAgentsRpcGroup.toLayer(
+    Effect.gen(function* () {
+      const requireOwner = ownerOnly(role);
+      const outsideAgents = yield* OutsideAgentSignIn;
+      const assistantAlerts = yield* AssistantAlerts;
+      return WsOutsideAgentsRpcGroup.of({
+        // Outside agents (docs/design/outside-agents.md): managing who may
+        // use this computer is owner only, like the device list.
+        [WS_METHODS.outsideAgentsSubscribe]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.outsideAgentsSubscribe,
+            requireOwner(WS_METHODS.outsideAgentsSubscribe).pipe(
+              // The alert targets are AssistantAlerts', joined in here.
+              Effect.as(
+                Stream.zipLatestWith(
+                  outsideAgents.changes,
+                  assistantAlerts.targets,
+                  (snapshot, alertTargets) => ({
+                    ...snapshot,
+                    assistants: { ...snapshot.assistants, alertTargets },
+                  }),
+                ),
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsApprove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsApprove,
+            requireOwner(WS_METHODS.outsideAgentsApprove).pipe(
+              Effect.andThen(outsideAgents.approve(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsDeny]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsDeny,
+            requireOwner(WS_METHODS.outsideAgentsDeny).pipe(
+              Effect.andThen(outsideAgents.deny(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsDenyAll]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsDenyAll,
+            requireOwner(WS_METHODS.outsideAgentsDenyAll).pipe(
+              Effect.andThen(outsideAgents.denyAll),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsResumeRequests]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsResumeRequests,
+            requireOwner(WS_METHODS.outsideAgentsResumeRequests).pipe(
+              Effect.andThen(outsideAgents.resumeRequests),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsUpdate,
+            requireOwner(WS_METHODS.outsideAgentsUpdate).pipe(
+              Effect.andThen(outsideAgents.update(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsRemove,
+            requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
+              Effect.andThen(outsideAgents.remove(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        // Assistants (docs/design/assistants.md): codes and keys, owner only too.
+        [WS_METHODS.outsideAgentsAssistantCode]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAssistantCode,
+            requireOwner(WS_METHODS.outsideAgentsAssistantCode).pipe(
+              Effect.andThen(outsideAgents.assistantCode),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAssistantCodeCancel]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAssistantCodeCancel,
+            requireOwner(WS_METHODS.outsideAgentsAssistantCodeCancel).pipe(
+              Effect.andThen(outsideAgents.assistantCodeCancel),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsCreateKey]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsCreateKey,
+            requireOwner(WS_METHODS.outsideAgentsCreateKey).pipe(
+              Effect.andThen(outsideAgents.createKey(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        // Alerts to a web address (AssistantAlerts), owner only too.
+        [WS_METHODS.outsideAgentsAlertTargetCreate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetCreate,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetCreate).pipe(
+              Effect.andThen(assistantAlerts.create(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAlertTargetUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetUpdate,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetUpdate).pipe(
+              Effect.andThen(assistantAlerts.update(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAlertTargetSetOn]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetSetOn,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetSetOn).pipe(
+              Effect.andThen(assistantAlerts.setOn(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAlertTargetRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetRemove,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetRemove).pipe(
+              Effect.andThen(assistantAlerts.remove(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAlertTargetTest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetTest,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetTest).pipe(
+              Effect.andThen(assistantAlerts.test(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsAlertTargetSecret]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsAlertTargetSecret,
+            requireOwner(WS_METHODS.outsideAgentsAlertTargetSecret).pipe(
+              Effect.andThen(assistantAlerts.secret(input)),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+      });
+    }),
+  );
+
+/** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
+  currentSession: {
+    readonly sessionId: AuthSessionId;
+    readonly role: "owner" | "client";
+  },
+  viewerId: string,
+  sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
+  devicePlace: MessageSentFrom["place"],
+) =>
+  Layer.mergeAll(
+    makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace),
+    makeOutsideAgentsRpcLayer(currentSession.role),
+  );
+
+const makeCoreRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
@@ -440,18 +622,14 @@ const makeWsRpcLayer = (
   /** Where that device is (sessionDevicePlace), worked out once per connection. */
   devicePlace: MessageSentFrom["place"],
 ) =>
-  WsRpcGroup.toLayer(
+  WsCoreRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const realtimeVoiceDevices = yield* Effect.serviceOption(RealtimeVoiceDevices);
       // Access management is owner-only. Everything else stays open to client
       // sessions: a paired device is meant to use projects, turns, terminals.
-      const requireOwner = (method: string) =>
-        currentSession.role === "owner"
-          ? Effect.void
-          : Effect.fail(new WsOwnerRequiredError({ method }));
+      const requireOwner = ownerOnly(currentSession.role);
       const relayHost = yield* RelayHost;
-      const outsideAgents = yield* OutsideAgentSignIn;
       const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
@@ -1018,7 +1196,7 @@ const makeWsRpcLayer = (
           ),
         );
 
-      return WsRpcGroup.of({
+      return WsCoreRpcGroup.of({
         // A hint while the user types; open to paired devices, like sending.
         [ORCHESTRATION_WS_METHODS.warmUpTurn]: (input) =>
           observeRpcEffect(
@@ -3108,87 +3286,6 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
             "rpc.aggregate": "projectSetups",
           }),
-        // Outside agents (docs/design/outside-agents.md): managing who may
-        // use this computer is owner only, like the device list.
-        [WS_METHODS.outsideAgentsSubscribe]: (_input) =>
-          observeRpcStreamEffect(
-            WS_METHODS.outsideAgentsSubscribe,
-            requireOwner(WS_METHODS.outsideAgentsSubscribe).pipe(Effect.as(outsideAgents.changes)),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsApprove]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsApprove,
-            requireOwner(WS_METHODS.outsideAgentsApprove).pipe(
-              Effect.andThen(outsideAgents.approve(input)),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsDeny]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsDeny,
-            requireOwner(WS_METHODS.outsideAgentsDeny).pipe(
-              Effect.andThen(outsideAgents.deny(input)),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsDenyAll]: (_input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsDenyAll,
-            requireOwner(WS_METHODS.outsideAgentsDenyAll).pipe(
-              Effect.andThen(outsideAgents.denyAll),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsResumeRequests]: (_input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsResumeRequests,
-            requireOwner(WS_METHODS.outsideAgentsResumeRequests).pipe(
-              Effect.andThen(outsideAgents.resumeRequests),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsUpdate]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsUpdate,
-            requireOwner(WS_METHODS.outsideAgentsUpdate).pipe(
-              Effect.andThen(outsideAgents.update(input)),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsRemove]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsRemove,
-            requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
-              Effect.andThen(outsideAgents.remove(input)),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        // Assistants (docs/design/assistants.md): codes and keys, owner only too.
-        [WS_METHODS.outsideAgentsAssistantCode]: (_input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsAssistantCode,
-            requireOwner(WS_METHODS.outsideAgentsAssistantCode).pipe(
-              Effect.andThen(outsideAgents.assistantCode),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsAssistantCodeCancel]: (_input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsAssistantCodeCancel,
-            requireOwner(WS_METHODS.outsideAgentsAssistantCodeCancel).pipe(
-              Effect.andThen(outsideAgents.assistantCodeCancel),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
-        [WS_METHODS.outsideAgentsCreateKey]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.outsideAgentsCreateKey,
-            requireOwner(WS_METHODS.outsideAgentsCreateKey).pipe(
-              Effect.andThen(outsideAgents.createKey(input)),
-            ),
-            { "rpc.aggregate": "outsideAgents" },
-          ),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

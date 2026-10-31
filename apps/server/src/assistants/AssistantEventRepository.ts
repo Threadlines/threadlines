@@ -168,6 +168,13 @@ export interface AssistantEventRepositoryShape {
     readonly names?: ReadonlyArray<AssistantEventName>;
     readonly projectIds?: ReadonlyArray<ProjectId>;
   }) => Effect.Effect<ReadonlyArray<AssistantEvent>, AssistantEventRepositoryError>;
+  /** The recorded event with this `seq`, with its subject key; none once pruned. */
+  readonly recorded: (
+    seq: number,
+  ) => Effect.Effect<
+    Option.Option<AssistantEvent & { readonly subjectKey: string }>,
+    AssistantEventRepositoryError
+  >;
   /** `schedule:` rows still standing (settling, or recorded and unresolved). */
   readonly standingScheduleKeys: Effect.Effect<
     ReadonlyArray<string>,
@@ -467,6 +474,24 @@ const make = Effect.gen(function* () {
           LIMIT ${input.limit}
         `.pipe(Effect.flatMap(decodeRecorded), wrap("since"));
 
+  const decodeRecordedWithKey = Schema.decodeUnknownEffect(
+    Schema.Array(Schema.Struct({ ...RecordedRow.fields, subjectKey: Schema.String })),
+  );
+
+  const recorded: AssistantEventRepositoryShape["recorded"] = (seq) =>
+    sql`
+      SELECT event_id AS "eventId", seq, name, reason, thread_id AS "threadId",
+        project_id AS "projectId", occurred_at AS "occurredAt", recorded_at AS "recordedAt",
+        resolved_at AS "resolvedAt", resolved_reason AS "resolvedReason",
+        subject_key AS "subjectKey"
+      FROM assistant_events
+      WHERE state = 'recorded' AND seq = ${seq}
+    `.pipe(
+      Effect.flatMap(decodeRecordedWithKey),
+      Effect.map((rows) => Option.fromNullishOr(rows[0])),
+      wrap("recorded"),
+    );
+
   const standingScheduleKeys: AssistantEventRepositoryShape["standingScheduleKeys"] = sql<{
     readonly subjectKey: string;
   }>`
@@ -515,6 +540,7 @@ const make = Effect.gen(function* () {
     record,
     recordPlan,
     since,
+    recorded,
     standingScheduleKeys,
     prune,
   });

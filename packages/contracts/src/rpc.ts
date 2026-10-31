@@ -2347,7 +2347,33 @@ export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   success: RelayDirectRoutesResult,
 });
 
-export const WsRpcGroup = RpcGroup.make(
+/**
+ * Managing outside agents and assistants (owner only). A group of its own,
+ * merged into WsRpcGroup below, so the server implements it apart: the
+ * handler types of one group grow with the square of its size, and the main
+ * group sits near TypeScript's cap on type work per statement.
+ */
+export const WsOutsideAgentsRpcGroup = RpcGroup.make(
+  WsOutsideAgentsSubscribeRpc,
+  WsOutsideAgentsApproveRpc,
+  WsOutsideAgentsDenyRpc,
+  WsOutsideAgentsDenyAllRpc,
+  WsOutsideAgentsResumeRequestsRpc,
+  WsOutsideAgentsUpdateRpc,
+  WsOutsideAgentsRemoveRpc,
+  WsOutsideAgentsAssistantCodeRpc,
+  WsOutsideAgentsAssistantCodeCancelRpc,
+  WsOutsideAgentsCreateKeyRpc,
+  WsOutsideAgentsAlertTargetCreateRpc,
+  WsOutsideAgentsAlertTargetUpdateRpc,
+  WsOutsideAgentsAlertTargetSetOnRpc,
+  WsOutsideAgentsAlertTargetRemoveRpc,
+  WsOutsideAgentsAlertTargetTestRpc,
+  WsOutsideAgentsAlertTargetSecretRpc,
+);
+
+/** Everything else the WebSocket serves; with the outside agents' group, WsRpcGroup. */
+export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerStartProviderReviewRpc,
@@ -2555,22 +2581,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectSetupsCancelRpc,
   WsProjectSetupsDismissRpc,
   WsProjectSetupsSubscribeRpc,
-  WsOutsideAgentsSubscribeRpc,
-  WsOutsideAgentsApproveRpc,
-  WsOutsideAgentsDenyRpc,
-  WsOutsideAgentsDenyAllRpc,
-  WsOutsideAgentsResumeRequestsRpc,
-  WsOutsideAgentsUpdateRpc,
-  WsOutsideAgentsRemoveRpc,
-  WsOutsideAgentsAssistantCodeRpc,
-  WsOutsideAgentsAssistantCodeCancelRpc,
-  WsOutsideAgentsCreateKeyRpc,
-  WsOutsideAgentsAlertTargetCreateRpc,
-  WsOutsideAgentsAlertTargetUpdateRpc,
-  WsOutsideAgentsAlertTargetSetOnRpc,
-  WsOutsideAgentsAlertTargetRemoveRpc,
-  WsOutsideAgentsAlertTargetTestRpc,
-  WsOutsideAgentsAlertTargetSecretRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,
@@ -2583,3 +2593,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );
+
+export const WsRpcGroup = WsCoreRpcGroup.merge(WsOutsideAgentsRpcGroup);

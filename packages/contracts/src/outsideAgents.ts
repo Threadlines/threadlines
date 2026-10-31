@@ -111,12 +111,6 @@ export const OutsideAgentAssistantSignIn = Schema.Struct({
 });
 export type OutsideAgentAssistantSignIn = typeof OutsideAgentAssistantSignIn.Type;
 
-/**
- * The assistants door as this computer sees it.
- * - `ready`: the relay's door is on, and this computer is registered with it.
- * - `off`: the relay's door is turned off, or this computer's relay is turned off.
- * - `unreachable`: the relay couldn't be asked; Settings says so and keeps trying.
- */
 /** What an alert is about (docs/design/assistants.md, step 4): `thread.<kind>` events. */
 export const AssistantAlertKind = Schema.Literals(["needs_you", "finished", "failed"]);
 export type AssistantAlertKind = typeof AssistantAlertKind.Type;
@@ -148,6 +142,12 @@ export const AssistantAlertTarget = Schema.Struct({
 });
 export type AssistantAlertTarget = typeof AssistantAlertTarget.Type;
 
+/**
+ * The assistants door as this computer sees it.
+ * - `ready`: the relay's door is on, and this computer is registered with it.
+ * - `off`: the relay's door is turned off, or this computer's relay is turned off.
+ * - `unreachable`: the relay couldn't be asked; Settings says so and keeps trying.
+ */
 export const OutsideAgentAssistantsState = Schema.Struct({
   status: Schema.Literals(["ready", "off", "unreachable"]),
   /** What the user pastes into an assistant (`https://connect.threadlines.dev/mcp`); null until known. */
