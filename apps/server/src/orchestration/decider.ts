@@ -113,7 +113,12 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
-import { outsideStopRefusal, outsideTurnRefusal } from "./outsideTurns.ts";
+import {
+  isOutsideMarked,
+  outsideAnswerDecision,
+  outsideStopRefusal,
+  outsideTurnRefusal,
+} from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -2622,10 +2627,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       // An outside agent's turn (docs/design/outside-agents.md): only in a
-      // thread it started, never above its ceiling, never into a busy thread.
-      // Checked here, in order with the user's own sends and access changes.
+      // thread it started (any thread at Work), never above its ceiling,
+      // never into a busy thread (an answer's own turn passes over its
+      // question). Checked here, in order with the user's own sends and
+      // access changes.
       if (command.fromOutside !== undefined) {
-        const outsideRefusal = outsideTurnRefusal(targetThread, command.fromOutside);
+        const outsideRefusal = outsideTurnRefusal(
+          targetThread,
+          command.fromOutside,
+          command.answering,
+        );
         if (outsideRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
@@ -3488,8 +3499,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // An outside agent's Stop: only in a thread it started, and only while
-      // the thread's access is within its ceiling (docs/design/outside-agents.md).
+      // An outside agent's Stop: only in a thread it started (any thread at
+      // Work), and only while the thread's access is within its ceiling
+      // (docs/design/outside-agents.md).
       if (command.fromOutside !== undefined) {
         const refusal = outsideStopRefusal(thread, command.fromOutside);
         if (refusal !== null) {
@@ -3671,11 +3683,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.user-input.respond": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // An outside agent's answer (docs/design/assistants.md, step 3): Work,
+      // a question that's open and asked by the agent holding the thread,
+      // never above the ceiling. It marks that agent (the projector reads
+      // `fromOutside` with `participantId`).
+      const outside =
+        command.fromOutside === undefined
+          ? undefined
+          : outsideAnswerDecision(thread, command.fromOutside, command.requestId);
+      if (outside?.type === "refused") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: outside.refusal.detail,
+          ...(outside.refusal.refusal !== undefined ? { refusal: outside.refusal.refusal } : {}),
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -3692,7 +3719,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           requestId: command.requestId,
           answers: command.answers,
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+          ...(command.fromOutside !== undefined && outside?.type === "allowed"
+            ? { fromOutside: command.fromOutside, participantId: outside.participantId }
+            : {}),
           createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.outside-work.clear": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!isOutsideMarked(thread, command.participantId)) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.outside-work-cleared",
+        payload: {
+          threadId: command.threadId,
+          participantId: command.participantId,
+          clearedAt: command.createdAt,
         },
       };
     }

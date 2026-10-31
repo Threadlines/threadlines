@@ -38,6 +38,7 @@ export const OutsideAgentRequestTool = Schema.Literals([
   "thread_start",
   "thread_send",
   "thread_stop",
+  "thread_answer",
 ]);
 export type OutsideAgentRequestTool = typeof OutsideAgentRequestTool.Type;
 

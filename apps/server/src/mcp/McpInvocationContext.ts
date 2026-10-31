@@ -1,6 +1,8 @@
 import type { ThreadId } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 
+import type { OutsideToolLimit } from "./outsideToolLimit.ts";
+
 /**
  * Which conversation a tool call belongs to.
  *
@@ -14,5 +16,7 @@ export class McpInvocationContext extends Context.Service<
   {
     readonly threadId: ThreadId;
     readonly agentId: string;
+    /** Read per call: outside work turns the browser off for the agent (outsideToolLimit.ts). */
+    readonly outsideLimit?: OutsideToolLimit | undefined;
   }
 >()("@threadlines/server/mcp/McpInvocationContext") {}

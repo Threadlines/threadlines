@@ -1434,8 +1434,9 @@ on the thread shell for the UI).
     sentence ("An assistant's work ran in this agent's session, so
     Threadlines' agent tools can only read until it starts fresh"):
     `thread_start`, `thread_send`, `thread_stop`, `room_ask`, `room_review`,
-    `room_hand_off`, `room_invite`, `schedule_create`, `schedule_update`,
-    `scheduled_run_finish`. `app_guide` refuses (app-wide settings, linked
+    `room_hand_off`, `room_invite`, `schedule_create`, `schedule_update`
+    (`scheduled_run_finish` only records the caller's own run, so it stays).
+    `app_guide` refuses (app-wide settings, linked
     computers, connection names). Reads stay inside every marking
     connection's live grant: `thread_list` and `thread_read` drop linked
     computers' children; `thread_agents` drops computers; a thread whose

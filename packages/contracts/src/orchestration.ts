@@ -5084,7 +5084,7 @@ export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadUserInputResponseRequestedPayload = Schema.Struct({
+export const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,

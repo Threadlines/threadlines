@@ -22,12 +22,17 @@
  * Credentials die with their runtime: `revoke(sessionKey, generation)` ends
  * exactly one runtime's credentials, so the late stop of a replaced runtime
  * never takes its successor's.
+ *
+ * What a credential may reach can also narrow while it lives: an agent that
+ * outside text reached reads only, inside the connections' grants, until it
+ * starts fresh (outsideToolLimit.ts). That is read per call, from the thread.
  */
 import type { SideTurnId, ThreadId, ThreadParticipantId } from "@threadlines/contracts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as Effect from "effect/Effect";
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 
+import type { OutsideToolLimit } from "./outsideToolLimit.ts";
 import { type RoomSideKind, type RoomToolName, roomToolsFor } from "./roomToolAccess.ts";
 
 export interface McpInvocationScope {
@@ -51,6 +56,17 @@ export interface McpInvocationScope {
   readonly commands: boolean;
   /** Room tools this credential may call at `/mcp/room`. Empty: none. */
   readonly roomTools: ReadonlySet<RoomToolName>;
+  /**
+   * Set when the provider registers its tool servers for a whole folder
+   * (OpenCode), so every session there can call this credential's servers:
+   * a limit on any of them limits all of them.
+   */
+  readonly toolDirectory?: string | undefined;
+  /**
+   * Set per call by the room endpoint, never at minting: what outside work
+   * left this agent's tools able to reach. Absent: nothing limits it.
+   */
+  readonly outsideLimit?: OutsideToolLimit | undefined;
 }
 
 export interface McpCredentialRequest {
@@ -73,6 +89,8 @@ export interface McpCredentialRequest {
   readonly scheduledRun?: boolean | undefined;
   /** Its main runtime gets only the app guide (roomToolsFor). */
   readonly guideOnly?: boolean | undefined;
+  /** See McpInvocationScope.toolDirectory. */
+  readonly toolDirectory?: string | undefined;
 }
 
 export interface McpCredential {
@@ -94,6 +112,10 @@ export interface McpSessionRegistryShape {
    * working. Another runtime of the same key keeps its own.
    */
   readonly revoke: (sessionKey: ThreadId, generation: number) => Effect.Effect<void>;
+  /** Every live credential whose tool servers are registered for `directory`. */
+  readonly sharingDirectory: (
+    directory: string,
+  ) => Effect.Effect<ReadonlyArray<McpInvocationScope>>;
 }
 
 /**
@@ -142,6 +164,7 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
                 })
               : [],
           ),
+          ...(request.toolDirectory !== undefined ? { toolDirectory: request.toolDirectory } : {}),
         });
         return { token, generation };
       }),
@@ -173,6 +196,8 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
           }
         }
       }),
+    sharingDirectory: (directory) =>
+      Effect.sync(() => [...byToken.values()].filter((scope) => scope.toolDirectory === directory)),
   };
 };
 

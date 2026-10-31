@@ -2298,6 +2298,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             commands: input.commandRequests === true,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
+            // OpenCode registers tool servers per folder: every session in
+            // `directory` can call these, so a limit on one limits all.
+            toolDirectory: directory,
           });
           yield* Scope.addFinalizer(
             scope,
