@@ -57,7 +57,10 @@ nothing.
 
 `pushAlertRules.ts` maps events to alerts keyed by what they are about:
 `approval:<requestId>`, `question:<requestId>`, `turn:<turnId>`,
-`side:<sideTurnId>`, `start:<activityId>`, `schedule:<requestId>`. Cancels:
+`side:<sideTurnId>`, `start:<activityId>`, `schedule:<requestId>`. A turn in a
+git checkout ends with its final capture (`thread.turn-diff-completed` with
+`completesTurn`); other turns end with `thread.turn-completed`. Both start the
+same `turn:` alert. Cancels:
 an answered request, a user-requested interrupt (rules out that turn), a child
 result its parent took (`thread.child-request-settled`), the thread being seen,
 wrapped, archived, deleted or moved away.
