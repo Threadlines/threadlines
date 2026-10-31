@@ -398,7 +398,8 @@ const make = Effect.gen(function* () {
       SELECT 1 AS found FROM orchestration_events
       WHERE sequence > ${judgedAt}
         AND ((aggregate_kind = 'thread' AND stream_id = ${threadId})
-          OR event_type = 'thread.child-request-settled')
+          OR (event_type = 'thread.child-request-settled'
+            AND json_extract(payload_json, '$.childThreadId') = ${threadId}))
       LIMIT 1
     `.pipe(Effect.map((rows) => rows.length > 0));
 

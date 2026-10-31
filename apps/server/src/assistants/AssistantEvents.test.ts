@@ -278,10 +278,16 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         });
         yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1"));
         yield* settle();
-        // Another thread streams faster than the record reads: it never
+        // Another family is busy faster than the record reads: it never
         // catches up with the log while this turn settles.
         harness.state.readDelayMs = 3_600_000;
         yield* appended(harness, "thread.message-sent", { threadId: OTHER_THREAD }, OTHER_THREAD);
+        yield* appended(
+          harness,
+          "thread.child-request-settled",
+          { threadId: OTHER_THREAD, requestId: "request-1", childThreadId: "thread-3" },
+          OTHER_THREAD,
+        );
         yield* settle(FINISHED_HOLD_MS + 1_000);
         const names = (yield* recorded(record)).map((event) => event.name);
         assert.deepStrictEqual(names, ["thread.finished"]);

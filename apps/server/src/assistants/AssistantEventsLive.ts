@@ -51,6 +51,8 @@ const PRUNE_EVERY_MS = 6 * 60 * 60_000;
 const IDLE_WAKE_MS = 30_000;
 /** A row deferred again and again (work still going) is looked at less often, up to this. */
 const MAX_RECHECK_MS = 5 * 60_000;
+/** A row whose thread moved while it was judged goes behind the other due rows for this long. */
+const STALE_RETRY_MS = 250;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -155,9 +157,11 @@ const make = Effect.gen(function* () {
 
   // ----- making rows final -----------------------------------------------------
 
-  /** Judges one due row at `cursor`; true when it became final. */
-  const settleOne = (row: SettlingAssistantEventRow, now: number, cursor: number) =>
+  /** Judges one due row at the cursor as it is now; true when it became final. */
+  const settleOne = (row: SettlingAssistantEventRow, now: number) =>
     Effect.gen(function* () {
+      const { cursor } = yield* repo.getState;
+      if (cursor === null) return false;
       const verdict = yield* checks.judge(subjectOf(row), now, {
         available: Option.isSome(scheduledTasks),
         seen: scheduleSnapshotSeen,
@@ -195,8 +199,11 @@ const make = Effect.gen(function* () {
                   now: iso(now),
                   judgedAt: cursor,
                 });
-          // Stale: its thread moved after the cursor. The row stays due and is
-          // judged again on the next pass, once the record read what happened.
+          // Stale: its thread moved after the cursor. It is judged again once
+          // the record read what happened, behind the rows due before it.
+          if (outcome === "stale") {
+            yield* repo.defer(row.subjectKey, iso(now + STALE_RETRY_MS));
+          }
           return outcome === "recorded";
         }
       }
@@ -204,9 +211,9 @@ const make = Effect.gen(function* () {
 
   /**
    * One pass over the settling rows that are due, while the record is on;
-   * true when more are waiting. Each is judged at the cursor as the pass
-   * began: an interrupt or an answer about its thread that the record hasn't
-   * read yet (after a restart, say) keeps it settling (`record`'s rule).
+   * true when more are waiting. An interrupt or an answer about a row's
+   * thread that the record hasn't read yet (after a restart, say) keeps it
+   * settling (`record`'s rule).
    */
   const settleDue = Effect.gen(function* () {
     const state = yield* repo.getState;
@@ -215,7 +222,7 @@ const make = Effect.gen(function* () {
     const rows = yield* repo.dueSettling(iso(now), SETTLE_BATCH);
     let any = false;
     for (const row of rows) {
-      if (yield* settleOne(row, now, state.cursor)) any = true;
+      if (yield* settleOne(row, now)) any = true;
     }
     if (any) yield* PubSub.publish(recorded, undefined);
     return rows.length === SETTLE_BATCH && any;

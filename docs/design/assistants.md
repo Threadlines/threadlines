@@ -1306,11 +1306,12 @@ Choices made inside the plan:
   one 6 s deadline; what doesn't answer reads as null. An open pull request
   already listed is kept when the slower lookup misses the deadline.
 - **A verdict is final only if its thread stood still.** A row is judged at
-  the cursor as the settle pass began, and becomes final only if no event
-  about its thread (or a child result settling on a parent) reached the log
-  after that cursor, read yet or not. So an interrupt or answer already in
-  the log after a restart is read first, and other threads' streaming never
-  holds a row up. Turning the record off drops rows still settling.
+  the record's cursor, and becomes final only if no event about its thread
+  (or its own result settling on its parent) reached the log after that
+  cursor, read yet or not. So an interrupt or answer already in the log
+  after a restart is read first, and other threads' streaming never holds a
+  row up. A row that was stale goes behind the other due rows for 250 ms.
+  Turning the record off drops rows still settling.
 
 Found in the live run: a turn in a git checkout ends with its final capture
 (`thread.turn-diff-completed` with `completesTurn`), not
