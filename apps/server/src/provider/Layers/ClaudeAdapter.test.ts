@@ -62,6 +62,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { outsideWorkLookup } from "../outsideWorkLookup.ts";
 import { ROOM_REQUEST_DEADLINE } from "../../mcp/roomToolTimeouts.ts";
 import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -9988,6 +9989,47 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(scope?.browser, false);
       assert.deepEqual([...(scope?.roomTools ?? [])], ["room_diff"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refuses its own check-backs and goals while outside work marks the agent", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      const entry = options.hooks?.PreToolUse?.find((candidate) =>
+        candidate.matcher?.split("|").includes("CronCreate"),
+      );
+      assert.deepEqual(entry?.matcher?.split("|").toSorted(), [
+        "CronCreate",
+        "ProposeGoal",
+        "ScheduleWakeup",
+      ]);
+      const decide = (marked: boolean) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* outsideWorkLookup.provide((sessionKey) =>
+              Effect.succeed(marked && sessionKey === RESUME_THREAD_ID),
+            );
+            const output = yield* Effect.promise(() =>
+              entry!.hooks[0]!({ tool_name: "CronCreate" } as never, undefined, {
+                signal: new AbortController().signal,
+              }),
+            );
+            return (output as { hookSpecificOutput?: { permissionDecision: string } })
+              .hookSpecificOutput?.permissionDecision;
+          }),
+        );
+      assert.equal(yield* decide(true), "deny");
+      assert.equal(yield* decide(false), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

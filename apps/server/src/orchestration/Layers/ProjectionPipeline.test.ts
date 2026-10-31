@@ -3125,7 +3125,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         },
         runtimeMode: "approval-required",
         interactionMode: "default",
-        fromOutside: { ...agent, maxRuntimeMode: "approval-required" },
+        fromOutside: { ...agent, access: "start", maxRuntimeMode: "approval-required" },
         createdAt,
       });
 
