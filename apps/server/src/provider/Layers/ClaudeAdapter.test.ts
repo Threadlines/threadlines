@@ -3199,6 +3199,37 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit(apiErrorResult({ result: limitText, status: 429 }));
       const limited = yield* Fiber.join(limitedFiber);
 
+      // What the CLI really sends (2.1.314): no rate-limit report, the
+      // refusal and its reset on the error note itself.
+      const notedFiber = yield* nextCompletion();
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "later", attachments: [] });
+      const weeklyText = "You've hit your weekly limit · resets Oct 22 at 11pm (America/New_York)";
+      harness.query.emit({
+        ...(apiErrorNote({ error: "rate_limit", text: weeklyText }) as object),
+        api_error: "usage_limit_reached",
+        api_error_params: {
+          rate_limit_info: {
+            status: "rejected",
+            resetsAt: 1_767_484_800,
+            rateLimitType: "seven_day",
+            overageStatus: "rejected",
+            overageDisabledReason: "out_of_credits",
+            isUsingOverage: false,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit(
+        apiErrorResult({ result: weeklyText, status: 429, uuid: "result-weekly" }),
+      );
+      const noted = yield* Fiber.join(notedFiber);
+      assert.equal(noted._tag, "Some");
+      if (noted._tag === "Some" && noted.value.type === "turn.completed") {
+        assert.deepEqual(noted.value.payload.usageLimit, {
+          window: "weekly",
+          resetsAt: "2026-01-04T00:00:00.000Z",
+        });
+      }
+
       const briefFiber = yield* nextCompletion();
       yield* adapter.sendTurn({ threadId: session.threadId, input: "again", attachments: [] });
       const briefText = "API Error: 429 Too many requests. Try again shortly.";
