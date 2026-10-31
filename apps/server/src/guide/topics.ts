@@ -145,12 +145,17 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
       "claude",
       "codex",
       "cursor",
+      "usage limit",
+      "rate limit",
+      "continue at reset",
     ],
     body: `{place:settings.providers} lists the agents this computer can run (Claude, Codex, Cursor, OpenCode, Pi and others), in use and not in use. Each card has its account and sign-in, its models, how it appears (name and color), and how it launches (command and environment variables).
 
 {place:providers.community} adds agents from the open ACP registry; Threadlines hasn't tested those.
 
-How much of each plan you've used is on {place:usage}.`,
+How much of each plan you've used is on {place:usage}.
+
+When a Claude or Codex usage limit stops a thread, the notice above the composer says which limit and when it resets. Its Continue at reset switch sends "Continue where you left off." a minute after the reset, from the computer the thread runs on, and {place:threads.continueAfterUsageLimits} turns it on for every limit. If you added another account of the same agent that still has room, the notice offers it by name. Threadlines never switches accounts on its own.`,
   },
   {
     id: "plugins-skills-instructions",
