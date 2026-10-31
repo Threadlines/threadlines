@@ -248,6 +248,16 @@ describe("FileViewerOverlay", () => {
       await page.getByRole("button", { name: "Show source" }).click();
       await expect.element(page.getByText("SVG source")).toBeInTheDocument();
       expect(readFile).toHaveBeenCalledWith(expect.objectContaining({ as: "text" }));
+
+      // Editing keeps the way back to the picture, and taking it ends editing.
+      await page.getByRole("button", { name: "Edit file" }).click();
+      await expect.element(page.getByText("Changes save automatically")).toBeInTheDocument();
+      await expect.element(page.getByText("SVG source")).toBeInTheDocument();
+      await page.getByRole("button", { name: "Show picture" }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Preview logo.svg" }))
+        .toBeInTheDocument();
+      expect(useFileViewerStore.getState().editMode).toBe(false);
     } finally {
       await screen.unmount();
     }
