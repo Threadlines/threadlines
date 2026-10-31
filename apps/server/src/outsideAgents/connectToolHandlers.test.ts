@@ -1119,6 +1119,21 @@ describe("inbox", () => {
       }),
   );
 
+  it.effect("leaves out a thread that moved out of the connection's projects since its event", () =>
+    Effect.gen(function* () {
+      // Recorded while the thread was in "app"; it lives in a private project now.
+      const moved = makeThread({ title: "Secret plans", projectId: PRIVATE });
+      const world = yield* makeWorld({
+        grant: { access: "see", projectIds: [APP] },
+        threads: [moved],
+        record: makeRecord([recordedEvent(1, { threadId: moved.id, projectId: APP })]),
+      });
+      const result = yield* world.handlers.inbox(CALLER, {});
+      expect(result.finished).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain("Secret plans");
+    }),
+  );
+
   it.effect("pages through many events, and starts over from a cursor it no longer keeps", () =>
     Effect.gen(function* () {
       const events = Array.from({ length: 57 }, (_, index) => recordedEvent(index + 1));
@@ -1285,6 +1300,24 @@ describe("thread_changes", () => {
       expect(result.totals).toEqual({ files: 205, additions: 205, deletions: 0 });
       // No pull request: the base is the repository's default branch.
       expect(result).toMatchObject({ pullRequest: null, base: "main" });
+    }),
+  );
+
+  it.effect("keeps the open pull request it already listed when the lookup is slow", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({
+        threads: [makeThread({ branch: "fix/build" })],
+        pullRequests: {
+          list: () => Effect.succeed({ viewer: null, entries: [openPullRequest], errors: [] }),
+          lookup: () => Effect.never,
+        },
+      });
+      const changes = yield* world.handlers
+        .thread_changes(CALLER, { threadId: USER_THREAD })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("7 seconds");
+      const result = yield* Fiber.join(changes);
+      expect(result.pullRequest).toMatchObject({ number: openPullRequest.number });
     }),
   );
 });

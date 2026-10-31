@@ -83,6 +83,8 @@ const make = Effect.gen(function* () {
   /** Agents' scheduled-task changes waiting for the user, from the latest snapshot. */
   let waitingScheduleRequests: ReadonlySet<string> = new Set();
   let scheduleSnapshotSeen = false;
+  /** The latest snapshot, applied again when the record turns on. */
+  let latestScheduleSnapshot: ScheduledTasksSnapshot | null = null;
 
   // ----- reading the event log -------------------------------------------------
 
@@ -91,13 +93,16 @@ const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const state = yield* repo.getState;
     if ((yield* connections.countLive("assistant")) === 0) {
-      // Off: nobody to keep it for. Whatever happens until it turns on again is never read.
-      if (state.cursor !== null) yield* repo.stop;
+      // Off: nobody to keep it for. Whatever happens until it turns on again
+      // is never read, and what was still settling is dropped.
+      if (state.cursor !== null) yield* repo.stop(iso(now));
       return false;
     }
     if (state.cursor === null) {
-      // On, from now: history is never recorded.
+      // On, from now: history is never recorded. Scheduled-task changes
+      // answered while it was off resolve their rows now.
       yield* repo.begin({ cursor: yield* repo.latestEventSequence, startedAt: iso(now) });
+      if (latestScheduleSnapshot !== null) yield* onScheduleSnapshot(latestScheduleSnapshot);
       return false;
     }
     const events = yield* engine
@@ -116,6 +121,7 @@ const make = Effect.gen(function* () {
       const current = new Set(snapshot.requests.map((request) => request.requestId));
       waitingScheduleRequests = current;
       scheduleSnapshotSeen = true;
+      latestScheduleSnapshot = snapshot;
       const state = yield* repo.getState;
       if (state.cursor === null) return;
       const actions: AssistantEventAction[] = [];
@@ -149,7 +155,8 @@ const make = Effect.gen(function* () {
 
   // ----- making rows final -----------------------------------------------------
 
-  const settleOne = (row: SettlingAssistantEventRow, now: number) =>
+  /** Judges one due row at `cursor`; true when it became final. */
+  const settleOne = (row: SettlingAssistantEventRow, now: number, cursor: number) =>
     Effect.gen(function* () {
       const verdict = yield* checks.judge(subjectOf(row), now, {
         available: Option.isSome(scheduledTasks),
@@ -167,36 +174,54 @@ const make = Effect.gen(function* () {
           yield* repo.defer(row.subjectKey, iso(Math.max(verdict.untilMs, backoff)));
           return false;
         }
-        case "send":
-          return verdict.planId !== null && row.subjectKey.startsWith("turn:")
-            ? yield* repo.recordPlan({
-                fromSubjectKey: row.subjectKey,
-                planSubjectKey: planEventKey(verdict.planId),
-                threadId: row.threadId,
-                projectId: verdict.thread.projectId,
-                occurredAt: row.occurredAt,
-                now: iso(now),
-              })
-            : yield* repo.record({
-                subjectKey: row.subjectKey,
-                name: assistantEventNameOf(verdict.kind),
-                reason: verdict.reason,
-                projectId: verdict.thread.projectId,
-                now: iso(now),
-              });
+        case "send": {
+          const outcome =
+            verdict.planId !== null && row.subjectKey.startsWith("turn:")
+              ? yield* repo.recordPlan({
+                  fromSubjectKey: row.subjectKey,
+                  planSubjectKey: planEventKey(verdict.planId),
+                  threadId: row.threadId,
+                  projectId: verdict.thread.projectId,
+                  occurredAt: row.occurredAt,
+                  now: iso(now),
+                  expectedCursor: cursor,
+                })
+              : yield* repo.record({
+                  subjectKey: row.subjectKey,
+                  name: assistantEventNameOf(verdict.kind),
+                  reason: verdict.reason,
+                  projectId: verdict.thread.projectId,
+                  now: iso(now),
+                  expectedCursor: cursor,
+                });
+          // Stale: an event was read since the verdict. The row stays due and
+          // is judged again on the next pass, against what that event did.
+          return outcome === "recorded";
+        }
       }
     });
 
-  /** One pass over the settling rows that are due; true when more are waiting. */
+  /**
+   * One pass over the settling rows that are due; true when more are waiting.
+   * Only while the record is on and its cursor has caught up with the event
+   * log: an interrupt or an answer already in the log (after a restart, say)
+   * is read before anything it cancels can become final.
+   */
   const settleDue = Effect.gen(function* () {
+    const state = yield* repo.getState;
+    if (state.cursor === null) return false;
+    if (state.cursor < (yield* repo.latestEventSequence)) {
+      yield* Queue.offer(discoveryBell, undefined);
+      return false;
+    }
     const now = yield* Clock.currentTimeMillis;
     const rows = yield* repo.dueSettling(iso(now), SETTLE_BATCH);
     let any = false;
     for (const row of rows) {
-      if (yield* settleOne(row, now)) any = true;
+      if (yield* settleOne(row, now, state.cursor)) any = true;
     }
     if (any) yield* PubSub.publish(recorded, undefined);
-    return rows.length === SETTLE_BATCH;
+    return rows.length === SETTLE_BATCH && any;
   });
 
   // ----- loops -----------------------------------------------------------------

@@ -79,6 +79,9 @@ const StateRow = Schema.Struct({
   startedAt: Schema.NullOr(Schema.String),
 });
 
+/** What making a settling row final came to (AssistantEventRepositoryShape.record). */
+export type RecordOutcome = "recorded" | "cancelled" | "stale";
+
 export interface AssistantEventRepositoryShape {
   readonly getState: Effect.Effect<AssistantEventState, AssistantEventRepositoryError>;
   /** The newest orchestration event's sequence: where the record starts, so history is never recorded. */
@@ -88,8 +91,12 @@ export interface AssistantEventRepositoryShape {
     readonly cursor: number;
     readonly startedAt: string;
   }) => Effect.Effect<void, AssistantEventRepositoryError>;
-  /** The record turns off: what happens until it turns on again is never read. */
-  readonly stop: Effect.Effect<void, AssistantEventRepositoryError>;
+  /**
+   * The record turns off: what happens until it turns on again is never read,
+   * and rows still settling are dropped (`record_off`), so nothing becomes
+   * final while nobody is connected.
+   */
+  readonly stop: (now: string) => Effect.Effect<void, AssistantEventRepositoryError>;
   /**
    * Applies what some events meant and, in the same transaction, moves the
    * cursor past them: a crash leaves both or neither.
@@ -117,9 +124,14 @@ export interface AssistantEventRepositoryShape {
     readonly now: string;
   }) => Effect.Effect<void, AssistantEventRepositoryError>;
   /**
-   * A settling row becomes final with the next `seq`; false when it was
-   * cancelled meanwhile. A resolution it gathered while settling (a visit)
-   * stays.
+   * A settling row becomes final with the next `seq`. A resolution it
+   * gathered while settling (a visit) stays.
+   *
+   * Only if the cursor is still `expectedCursor`, the one it was judged at:
+   * an event read since (an interrupt, an answer, a dismissed plan) may change
+   * the verdict, so the row stays settling and is judged again (`stale`).
+   * That also keeps a row from becoming final while the record is off.
+   * `cancelled`: the row was dropped meanwhile.
    */
   readonly record: (input: {
     readonly subjectKey: string;
@@ -127,11 +139,12 @@ export interface AssistantEventRepositoryShape {
     readonly reason: string;
     readonly projectId: ProjectId;
     readonly now: string;
-  }) => Effect.Effect<boolean, AssistantEventRepositoryError>;
+    readonly expectedCursor: number;
+  }) => Effect.Effect<RecordOutcome, AssistantEventRepositoryError>;
   /**
    * A finished turn left a plan to review: its row is dropped and the plan's
-   * `plan:<id>` row is recorded instead, with the next `seq`. False when the
-   * turn's row was cancelled meanwhile.
+   * `plan:<id>` row is recorded instead, with the next `seq`. The same
+   * `expectedCursor` rule as `record`.
    */
   readonly recordPlan: (input: {
     readonly fromSubjectKey: string;
@@ -140,7 +153,8 @@ export interface AssistantEventRepositoryShape {
     readonly projectId: ProjectId;
     readonly occurredAt: string;
     readonly now: string;
-  }) => Effect.Effect<boolean, AssistantEventRepositoryError>;
+    readonly expectedCursor: number;
+  }) => Effect.Effect<RecordOutcome, AssistantEventRepositoryError>;
   /**
    * Recorded events with `after < seq <= upTo`, oldest first, at most
    * `limit`; only these names and projects when given.
@@ -227,9 +241,19 @@ const make = Effect.gen(function* () {
       wrap("begin"),
     );
 
-  const stop: AssistantEventRepositoryShape["stop"] = sql`
-    UPDATE assistant_event_state SET event_sequence = NULL WHERE id = 1
-  `.pipe(Effect.asVoid, wrap("stop"));
+  const stop: AssistantEventRepositoryShape["stop"] = (now) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE assistant_event_state SET event_sequence = NULL WHERE id = 1`;
+          yield* sql`
+            UPDATE assistant_events
+            SET state = 'dropped', resolved_at = ${now}, resolved_reason = 'record_off'
+            WHERE state = 'settling'
+          `;
+        }),
+      )
+      .pipe(Effect.asVoid, wrap("stop"));
 
   /**
    * Cancels: a row still settling is dropped, a recorded one is resolved
@@ -360,11 +384,16 @@ const make = Effect.gen(function* () {
       SELECT state FROM assistant_events WHERE subject_key = ${subjectKey}
     `.pipe(Effect.map((rows) => rows[0]?.state === "settling"));
 
+  /** Whether the cursor still is where a verdict was reached (inside the caller's transaction). */
+  const cursorStill = (expected: number) =>
+    getState.pipe(Effect.map((state) => state.cursor === expected));
+
   const record: AssistantEventRepositoryShape["record"] = (input) =>
     sql
       .withTransaction(
         Effect.gen(function* () {
-          if (!(yield* isSettling(input.subjectKey))) return false;
+          if (!(yield* isSettling(input.subjectKey))) return "cancelled" as const;
+          if (!(yield* cursorStill(input.expectedCursor))) return "stale" as const;
           const seq = yield* nextSeq;
           yield* sql`
             UPDATE assistant_events
@@ -372,7 +401,7 @@ const make = Effect.gen(function* () {
               project_id = ${input.projectId}, recorded_at = ${input.now}
             WHERE subject_key = ${input.subjectKey}
           `;
-          return true;
+          return "recorded" as const;
         }),
       )
       .pipe(wrap("record"));
@@ -381,7 +410,8 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          if (!(yield* isSettling(input.fromSubjectKey))) return false;
+          if (!(yield* isSettling(input.fromSubjectKey))) return "cancelled" as const;
+          if (!(yield* cursorStill(input.expectedCursor))) return "stale" as const;
           yield* sql`
             UPDATE assistant_events
             SET state = 'dropped', resolved_at = ${input.now}, resolved_reason = 'became_plan'
@@ -390,7 +420,7 @@ const make = Effect.gen(function* () {
           const existing = yield* sql`
             SELECT 1 FROM assistant_events WHERE subject_key = ${input.planSubjectKey}
           `;
-          if (existing.length > 0) return true;
+          if (existing.length > 0) return "recorded" as const;
           const seq = yield* nextSeq;
           yield* sql`
             INSERT INTO assistant_events (
@@ -402,7 +432,7 @@ const make = Effect.gen(function* () {
               ${input.occurredAt}, ${input.now}, ${input.now}
             )
           `;
-          return true;
+          return "recorded" as const;
         }),
       )
       .pipe(wrap("recordPlan"));

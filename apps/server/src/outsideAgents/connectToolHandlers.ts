@@ -75,6 +75,7 @@ import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/ai";
@@ -940,11 +941,14 @@ export const makeConnectToolHandlers = (
           })
           .pipe(Effect.option);
         if (Option.isNone(page)) return unread;
-        // Titles as the threads are named now; a deleted thread's event is left out.
+        // Titles as the threads are named now, read only within the projects
+        // this connection sees now: a thread moved out of them since (or
+        // deleted) is left out, so its new title never shows.
         const eventThreads = new Map(
           (page.value.events.length === 0
             ? []
             : yield* deps.listThreads({
+                projectIds,
                 threadIds: [...new Set(page.value.events.map((event) => event.threadId))],
                 includeArchived: true,
               })
@@ -954,12 +958,12 @@ export const makeConnectToolHandlers = (
         const failed: Array<InboxEvent> = [];
         for (const event of page.value.events) {
           const shell = eventThreads.get(event.threadId);
-          if (shell === undefined) continue;
+          if (shell === undefined || !projectNames.has(shell.projectId)) continue;
           (event.name === "thread.finished" ? finished : failed).push({
             threadId: event.threadId,
             title: shell.title,
-            projectId: event.projectId,
-            project: projectNames.get(event.projectId) ?? "",
+            projectId: shell.projectId,
+            project: projectNames.get(shell.projectId) ?? "",
             reason: event.reason,
             summary: alertReasonText(event.reason),
             at: event.occurredAt,
@@ -1037,24 +1041,22 @@ export const makeConnectToolHandlers = (
           return null;
         }
         const sameRepository = (other: string) => other.toLowerCase() === repository.toLowerCase();
-        const [listed, looked] = yield* Effect.all(
-          [
-            deps.pullRequests
-              .list({ state: "open", projectId: project.id, includeAuthored: false })
-              .pipe(Effect.option),
-            deps.pullRequests
-              .lookup({
-                projectId: project.id,
-                repository,
-                items: [
-                  ...(shell.branch !== null ? [{ branch: shell.branch }] : []),
-                  ...linked.slice(0, PULL_REQUEST_LOOKUP_LIMIT - 1).map((number) => ({ number })),
-                ],
-              })
-              .pipe(Effect.option),
-          ],
-          { concurrency: 2 },
-        );
+        // Both start at once; the open list (usually cached) answers alone
+        // when it has the thread's own pull request, so a slow lookup can't
+        // throw that away at the deadline.
+        const lookup = yield* deps.pullRequests
+          .lookup({
+            projectId: project.id,
+            repository,
+            items: [
+              ...(shell.branch !== null ? [{ branch: shell.branch }] : []),
+              ...linked.slice(0, PULL_REQUEST_LOOKUP_LIMIT - 1).map((number) => ({ number })),
+            ],
+          })
+          .pipe(Effect.option, Effect.forkChild);
+        const listed = yield* deps.pullRequests
+          .list({ state: "open", projectId: project.id, includeAuthored: false })
+          .pipe(Effect.option);
         const open = Option.isSome(listed)
           ? listed.value.entries.filter(
               (entry) => entry.origin !== "authored" && sameRepository(entry.repository),
@@ -1092,7 +1094,11 @@ export const makeConnectToolHandlers = (
               };
         };
         const ownOpen = open.find((entry) => entry.headBranch === shell.branch);
-        if (ownOpen !== undefined) return fromList(ownOpen);
+        if (ownOpen !== undefined) {
+          yield* Fiber.interrupt(lookup);
+          return fromList(ownOpen);
+        }
+        const looked = yield* Fiber.join(lookup);
         const answers = Option.isSome(looked) ? looked.value.answers : [];
         const byBranch = answers.find((answer) => "branch" in answer.item)?.pullRequest ?? null;
         if (byBranch !== null) return fromLookup(byBranch);

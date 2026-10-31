@@ -6,9 +6,11 @@ import {
   type OrchestrationThread,
   ProjectId,
   ThreadId,
+  type ScheduledTasksSnapshot,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -27,6 +29,7 @@ import {
   AssistantEventRepository,
   AssistantEventRepositoryLive,
 } from "./AssistantEventRepository.ts";
+import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import { AssistantEvents } from "./AssistantEvents.ts";
 import { AssistantEventsLayer } from "./AssistantEventsLive.ts";
 
@@ -63,8 +66,11 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
 const makeHarness = Effect.gen(function* () {
   const events: OrchestrationEvent[] = [];
   const published = yield* PubSub.unbounded<OrchestrationEvent>();
-  const state = { thread: makeThread(), assistants: 1 };
+  /** `readDelayMs`: how long reading the event log takes (to make the settle loop win a race). */
+  const state = { thread: makeThread(), assistants: 1, readDelayMs: 0 };
   const storage = yield* Layer.build(SqlitePersistenceMemory);
+  /** The scheduled tasks' snapshots, as ScheduledTasks.changes sends them. */
+  const schedules = yield* PubSub.unbounded<ScheduledTasksSnapshot>();
   // The real storage, but the event log is the fake's: its newest event is where a record starts.
   const repository = Layer.effect(
     AssistantEventRepository,
@@ -84,12 +90,16 @@ const makeHarness = Effect.gen(function* () {
           countLive: () => Effect.sync(() => state.assistants),
         }),
         Layer.mock(OrchestrationEngineService)({
-          readEvents: (after) => Stream.fromIterable(events.filter((e) => e.sequence > after)),
+          readEvents: (after) =>
+            Stream.fromEffect(Effect.sleep(Duration.millis(state.readDelayMs))).pipe(
+              Stream.flatMap(() => Stream.fromIterable(events.filter((e) => e.sequence > after))),
+            ),
           streamDomainEvents: Stream.fromPubSub(published),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
           getThreadDetailById: () => Effect.sync(() => Option.some(state.thread)),
         }),
+        Layer.mock(ScheduledTasks)({ changes: Stream.fromPubSub(schedules) }),
       ),
     ),
     Layer.provide(Layer.succeedContext(storage)),
@@ -102,7 +112,7 @@ const makeHarness = Effect.gen(function* () {
     yield* record.start().pipe(Scope.provide(scope));
     return { record, stop: Scope.close(scope, Exit.void) };
   });
-  return { events, published, state, boot };
+  return { events, published, state, boot, schedules };
 });
 
 type Harness = Effect.Success<typeof makeHarness>;
@@ -269,6 +279,101 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         });
         yield* settle(5_000);
         assert.deepStrictEqual(yield* recorded(record), []);
+      }),
+    ),
+  );
+
+  it.effect(
+    "reads an interrupt already in the log before a restart's overdue failure is final",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness;
+          yield* TestClock.adjust("1 hour");
+          const first = yield* harness.boot;
+          yield* settle();
+          harness.state.thread = makeThread({
+            latestTurn: { turnId: "turn-1", state: "error" } as never,
+          });
+          yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1", "error"));
+          yield* settle(1_000);
+          yield* first.stop;
+          // While the process is down the user's stop is written, and the
+          // failure's settle runs out.
+          yield* appended(harness, "thread.turn-interrupt-requested", {
+            threadId: THREAD,
+            turnId: "turn-1",
+          });
+          yield* TestClock.adjust("10 seconds");
+          // Reading the log is slow after the restart: settling must still wait for it.
+          harness.state.readDelayMs = 2_000;
+          const second = yield* harness.boot;
+          yield* settle(5_000);
+          assert.deepStrictEqual(yield* recorded(second.record), []);
+        }),
+      ),
+  );
+
+  it.effect(
+    "drops what was settling when the last assistant goes, and records none of it later",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness;
+          yield* TestClock.adjust("1 hour");
+          const { record } = yield* harness.boot;
+          yield* settle();
+          harness.state.thread = makeThread({
+            latestTurn: { turnId: "turn-1", state: "error" } as never,
+          });
+          yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1", "error"));
+          yield* settle(1_000);
+          // The last connection goes; in the app, its removal wakes the record at once.
+          harness.state.assistants = 0;
+          yield* PubSub.publish(harness.published, harness.events.at(-1)!);
+          yield* settle(31_000);
+          assert.strictEqual((yield* record.position).running, false);
+          harness.state.assistants = 1;
+          yield* settle(31_000);
+          assert.strictEqual((yield* record.position).running, true);
+          assert.deepStrictEqual(yield* recorded(record), []);
+        }),
+      ),
+  );
+
+  it.effect("resolves a scheduled-task card answered while it was off, once it's on again", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+        const snapshot = (requests: ReadonlyArray<{ requestId: string; createdAt: string }>) =>
+          ({
+            tasks: [],
+            requests: requests.map((request) => ({ ...request, threadId: THREAD })),
+          }) as unknown as ScheduledTasksSnapshot;
+        // A card waits for the user (made after the record turned on).
+        yield* TestClock.adjust("2 minutes");
+        const createdAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        yield* PubSub.publish(harness.schedules, snapshot([{ requestId: "card-1", createdAt }]));
+        yield* settle(1_000);
+        const [card] = yield* recorded(record);
+        assert.strictEqual(card?.name, "thread.needs_you");
+        assert.strictEqual(card?.resolvedAt, null);
+
+        // The last assistant goes; the user answers the card while the record is off.
+        harness.state.assistants = 0;
+        yield* PubSub.publish(harness.published, harness.events.at(-1) ?? ({} as never));
+        yield* settle(1_000);
+        yield* PubSub.publish(harness.schedules, snapshot([]));
+        yield* settle(1_000);
+        assert.strictEqual((yield* recorded(record))[0]?.resolvedAt, null);
+
+        // On again: the snapshot it missed resolves the card.
+        harness.state.assistants = 1;
+        yield* settle(31_000);
+        assert.notStrictEqual((yield* recorded(record))[0]?.resolvedAt, null);
       }),
     ),
   );
