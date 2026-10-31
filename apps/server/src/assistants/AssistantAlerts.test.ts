@@ -111,10 +111,10 @@ const makeHarness = Effect.gen(function* () {
       Layer.mergeAll(
         Layer.succeed(AssistantEvents, record),
         Layer.mock(PushAlerts)({ isViewed: (threadId) => Effect.succeed(viewed.has(threadId)) }),
-        Layer.mock(ServerEnvironment)({
-          getEnvironmentId: Effect.succeed("environment-1" as never),
-          getDescriptor: Effect.succeed({ label: "Will's MacBook Pro" } as never),
-        }),
+        Layer.succeed(ServerEnvironment, {
+          getEnvironmentId: Effect.succeed("environment-1"),
+          getDescriptor: Effect.succeed({ label: "Will's MacBook Pro" }),
+        } as never),
         Layer.succeed(ServerSecretStore, {
           get: (name) => Effect.sync(() => secrets.get(name) ?? null),
           set: (name, value) => Effect.sync(() => void secrets.set(name, value)),
@@ -182,8 +182,11 @@ const targetOf = (alerts: AssistantAlertsShape, targetId: AssistantAlertTargetId
   alerts.targets.pipe(
     Stream.take(1),
     Stream.runCollect,
-    Effect.map((emitted) => emitted[0]!.find((target) => target.targetId === targetId)),
-  ) as Effect.Effect<AssistantAlertTarget | undefined>;
+    Effect.map((emitted) =>
+      emitted[0]!.find((target: AssistantAlertTarget) => target.targetId === targetId),
+    ),
+    Effect.orDie,
+  );
 
 const createTarget = (alerts: AssistantAlertsShape) =>
   alerts

@@ -1752,3 +1752,36 @@ Nine findings, all taken:
   start finishes any `deleting` target. A target whose signing secret is
   missing doesn't send (it shows an error), and the secret is made only at
   create.
+
+### Build notes: step 4 (Oct 31)
+
+What the build changed from the plan above:
+
+- **Which answers are tried again.** A call that plainly never arrived, and
+  401, 403, 408, 425, 429 and 5xx. Any other answer (a 3xx, 400, 404, 413,
+  422 ...) means the receiver read it and turned it down, so it ends
+  `failed` at once: trying again can't help, and a receiver that started a
+  run shouldn't get a second. 410 still turns the target `gone`.
+- **NAT64.** An address in 64:ff9b::/96 is judged by the IPv4 inside it, not
+  refused outright, so a computer on an IPv6-only network with DNS64 still
+  reaches a receiver with only an IPv4 address. 64:ff9b:1::/48 and the old
+  IPv4-compatible ::/96 are refused.
+- **Two more columns.** `scanned_seq` (how far through the record a target
+  looked) is kept apart from `watermark`, so a retrying event doesn't make
+  every pass read everything after it again. `has_authorization` says
+  whether the secret store holds an Authorization value, so the snapshot
+  never reads secrets.
+- **A test send that gets through** counts as a send: it clears the
+  receiver's refusals and the last problem.
+- **The snapshot.** OutsideAgentSignIn's snapshot carries everything but the
+  targets; the `outsideAgents.subscribe` route joins in AssistantAlerts'
+  list. `AssistantEvents.current` gives the event's project name with it.
+- **The RPC group split.** The outside agents' 16 RPCs (with the six new
+  ones) are their own group, `WsOutsideAgentsRpcGroup`, merged into
+  `WsRpcGroup` (clients don't change) and served by their own layer in
+  `ws.ts`. The main group's handler types cost about the square of its size
+  in type work, all in one statement, and TypeScript stops at 5 million
+  instantiations per statement. Past that it doesn't report an error: the
+  server layer's type silently became `any`, and only `bin.ts` failed to
+  compile. With the split, about 12 more RPCs fit in the main group; 24 don't.
+  The lasting fix is splitting it further by area (a follow-up).
