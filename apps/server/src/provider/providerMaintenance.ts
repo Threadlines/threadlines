@@ -12,15 +12,30 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 
 const LATEST_VERSION_CACHE_TTL_MS = 60 * 60 * 1_000;
 const LATEST_VERSION_TIMEOUT_MS = 4_000;
 const PROVIDER_UPDATE_ACTION_TOAST_MESSAGE = "Install the update now or review provider settings.";
 
+/**
+ * Where an update route's newest version is published. Release channels can
+ * sit behind npm for hours or days, so a route that doesn't install from npm
+ * names its own source: comparing it to npm would offer an update that can't
+ * deliver the version it promises.
+ */
+export type ProviderLatestVersionSource =
+  | { readonly kind: "npm"; readonly packageName: string }
+  /** A URL whose whole body is a version number. */
+  | { readonly kind: "releasePointer"; readonly url: string }
+  | { readonly kind: "homebrewCask"; readonly token: string }
+  | { readonly kind: "homebrewFormula"; readonly name: string };
+
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  /** Defaults to npm's `packageName`. */
+  readonly latestVersionSource?: ProviderLatestVersionSource;
   readonly update: ProviderMaintenanceCommandAction | null;
   /**
    * How Threadlines would put this provider's CLI on the machine when it is
@@ -53,6 +68,7 @@ export interface ProviderMaintenanceCommandDefinition {
   readonly displayCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
   readonly environmentPatch?: Readonly<Record<string, string>>;
+  readonly latestVersionSource?: ProviderLatestVersionSource;
 }
 
 export interface ProviderMaintenanceCapabilityResolutionOptions {
@@ -92,9 +108,17 @@ interface LatestVersionCacheEntry {
 }
 
 const latestVersionCache = new Map<string, LatestVersionCacheEntry>();
-const NpmLatestVersionResponse = Schema.Struct({
-  version: Schema.optional(Schema.String),
-});
+const decodeNpmLatestVersion = Schema.decodeUnknownEffect(
+  Schema.Struct({ version: Schema.optional(Schema.String) }),
+);
+const decodeHomebrewCask = Schema.decodeUnknownEffect(
+  Schema.Struct({ version: Schema.optional(Schema.String) }),
+);
+const decodeHomebrewFormula = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    versions: Schema.optional(Schema.Struct({ stable: Schema.optional(Schema.String) })),
+  }),
+);
 
 export function clearLatestProviderVersionCacheForTests(): void {
   latestVersionCache.clear();
@@ -115,6 +139,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly install?: ProviderMaintenanceCommandAction | null | undefined;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
+  readonly latestVersionSource?: ProviderLatestVersionSource | undefined;
 }): ProviderMaintenanceCapabilities {
   const update =
     input.updateExecutable === null || input.updateLockKey === null
@@ -132,6 +157,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   return {
     provider: input.provider,
     packageName: input.packageName,
+    ...(input.latestVersionSource ? { latestVersionSource: input.latestVersionSource } : {}),
     update,
     install: input.install ?? null,
     manualUpdateCommand: input.manualUpdateCommand ?? null,
@@ -144,6 +170,7 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   readonly packageName: string | null;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
+  readonly latestVersionSource?: ProviderLatestVersionSource | undefined;
 }): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: input.provider,
@@ -153,6 +180,7 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
     updateLockKey: null,
     manualUpdateCommand: input.manualUpdateCommand,
     advisoryMessage: input.advisoryMessage,
+    latestVersionSource: input.latestVersionSource,
   });
 }
 
@@ -291,8 +319,47 @@ function makeVitePlusGlobalProviderMaintenanceCapabilities(
   });
 }
 
+/**
+ * The cask a command path belongs to. A cask's `binary` stanza links into
+ * Caskroom, and one tool can ship as several casks (`claude-code` and
+ * `claude-code@latest`), so the path says which one is installed.
+ */
+function homebrewCaskToken(commandPaths: ReadonlyArray<string>): string | null {
+  for (const commandPath of commandPaths) {
+    const token = /\/caskroom\/([a-z0-9][a-z0-9@._+-]*)\//.exec(
+      normalizeCommandPath(commandPath),
+    )?.[1];
+    if (token) {
+      return token;
+    }
+  }
+  return null;
+}
+
+/**
+ * Homebrew publishes what `brew upgrade` will install, except for third-party
+ * taps (a `/` in the name) and paths that don't show how it was installed.
+ * Those stay on the default source.
+ */
+function homebrewLatestVersionSource(input: {
+  readonly formula: string;
+  readonly caskToken: string | null;
+  readonly commandPaths: ReadonlyArray<string>;
+}): ProviderLatestVersionSource | undefined {
+  if (input.caskToken) {
+    return { kind: "homebrewCask", token: input.caskToken };
+  }
+  const isCoreFormula =
+    !input.formula.includes("/") &&
+    input.commandPaths.some((commandPath) =>
+      normalizeCommandPath(commandPath).includes("/cellar/"),
+    );
+  return isCoreFormula ? { kind: "homebrewFormula", name: input.formula } : undefined;
+}
+
 function makeHomebrewProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  commandPaths: ReadonlyArray<string>,
 ): ProviderMaintenanceCapabilities {
   if (!definition.homebrewFormula) {
     return makeManualOnlyProviderMaintenanceCapabilities({
@@ -301,12 +368,18 @@ function makeHomebrewProviderMaintenanceCapabilities(
     });
   }
 
+  const caskToken = homebrewCaskToken(commandPaths);
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
     updateExecutable: "brew",
-    updateArgs: ["upgrade", definition.homebrewFormula],
+    updateArgs: ["upgrade", caskToken ?? definition.homebrewFormula],
     updateLockKey: "homebrew",
+    latestVersionSource: homebrewLatestVersionSource({
+      formula: definition.homebrewFormula,
+      caskToken,
+      commandPaths,
+    }),
   });
 }
 
@@ -328,6 +401,7 @@ function makeNativeProviderMaintenanceCapabilities(
     updateDisplayCommand: update.displayCommand,
     ...(update.environmentPatch ? { updateEnvironmentPatch: update.environmentPatch } : {}),
     advisoryMessage: update.advisoryMessage ?? definition.nativeUpdate.advisoryMessage,
+    latestVersionSource: update.latestVersionSource ?? definition.nativeUpdate.latestVersionSource,
   });
 }
 
@@ -339,6 +413,7 @@ function makeNativeManualOnlyProviderMaintenanceCapabilities(
     packageName: definition.npmPackageName,
     manualUpdateCommand: definition.nativeUpdate?.manualCommand ?? null,
     advisoryMessage: definition.nativeUpdate?.advisoryMessage ?? null,
+    latestVersionSource: definition.nativeUpdate?.latestVersionSource,
   });
 }
 
@@ -504,7 +579,7 @@ export function resolvePackageManagedProviderMaintenance(
       return makeNpmGlobalProviderMaintenanceCapabilities(definition);
     }
     if (commandPaths.some(isHomebrewCommandPath)) {
-      return makeHomebrewProviderMaintenanceCapabilities(definition);
+      return makeHomebrewProviderMaintenanceCapabilities(definition, commandPaths);
     }
   }
 
@@ -631,15 +706,58 @@ export function createProviderVersionAdvisory(input: {
   };
 }
 
-const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (packageName: string) {
+function latestVersionSourceUrl(source: ProviderLatestVersionSource): string {
+  switch (source.kind) {
+    case "npm":
+      return `https://registry.npmjs.org/${encodeURIComponent(source.packageName)}/latest`;
+    case "releasePointer":
+      return source.url;
+    case "homebrewCask":
+      return `https://formulae.brew.sh/api/cask/${source.token}.json`;
+    case "homebrewFormula":
+      return `https://formulae.brew.sh/api/formula/${source.name}.json`;
+  }
+}
+
+/** Pulls the version out of a source's response. `undefined` when it has none. */
+function readLatestVersionResponse(
+  source: ProviderLatestVersionSource,
+  response: HttpClientResponse.HttpClientResponse,
+) {
+  switch (source.kind) {
+    case "npm":
+      return response.json.pipe(
+        Effect.flatMap(decodeNpmLatestVersion),
+        Effect.map((payload) => payload.version),
+      );
+    case "releasePointer":
+      return response.text.pipe(
+        Effect.map((text) => (/^\d+\.\d+\.\d+/.test(text.trim()) ? text : undefined)),
+      );
+    case "homebrewCask":
+      // A cask version can carry a build after a comma: `1.2.3,456`.
+      return response.json.pipe(
+        Effect.flatMap(decodeHomebrewCask),
+        Effect.map((payload) => payload.version?.split(",")[0]),
+      );
+    case "homebrewFormula":
+      return response.json.pipe(
+        Effect.flatMap(decodeHomebrewFormula),
+        Effect.map((payload) => payload.versions?.stable),
+      );
+  }
+}
+
+const fetchLatestVersion = Effect.fn("fetchLatestVersion")(function* (
+  source: ProviderLatestVersionSource,
+) {
   const client = yield* HttpClient.HttpClient;
-  const request = HttpClientRequest.get(
-    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
-  ).pipe(HttpClientRequest.setHeader("accept", "application/json"));
-  const response = yield* client.execute(request).pipe(
-    Effect.timeoutOption(LATEST_VERSION_TIMEOUT_MS),
-    Effect.catch(() => Effect.succeed(Option.none())),
-  );
+  const response = yield* client
+    .execute(HttpClientRequest.get(latestVersionSourceUrl(source)))
+    .pipe(
+      Effect.timeoutOption(LATEST_VERSION_TIMEOUT_MS),
+      Effect.catch(() => Effect.succeed(Option.none())),
+    );
   if (Option.isNone(response)) {
     return null;
   }
@@ -647,29 +765,32 @@ const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (pack
   if (httpResponse.status < 200 || httpResponse.status >= 300) {
     return null;
   }
-  const payload = yield* httpResponse.json.pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(NpmLatestVersionResponse)),
-    Effect.catch(() => Effect.succeed(null)),
+  const version = yield* readLatestVersionResponse(source, httpResponse).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
   );
-  return payload ? nonEmptyString(payload.version) : null;
+  return nonEmptyString(version);
 });
 
 export const resolveLatestProviderVersion = Effect.fn("resolveLatestProviderVersion")(function* (
   maintenanceCapabilities: ProviderMaintenanceCapabilities,
 ) {
   const packageName = maintenanceCapabilities.packageName;
-  if (!packageName) {
+  const source: ProviderLatestVersionSource | null =
+    maintenanceCapabilities.latestVersionSource ??
+    (packageName ? { kind: "npm", packageName } : null);
+  if (!source) {
     return null;
   }
 
-  const cached = latestVersionCache.get(packageName);
+  const cacheKey = latestVersionSourceUrl(source);
+  const cached = latestVersionCache.get(cacheKey);
   const now = DateTime.toEpochMillis(yield* DateTime.now);
   if (cached && cached.expiresAt > now) {
     return cached.version;
   }
 
-  const version = yield* fetchNpmLatestVersion(packageName);
-  latestVersionCache.set(packageName, {
+  const version = yield* fetchLatestVersion(source);
+  latestVersionCache.set(cacheKey, {
     expiresAt: now + LATEST_VERSION_CACHE_TTL_MS,
     version,
   });
@@ -693,8 +814,8 @@ export const enrichProviderSnapshotWithVersionAdvisory = Effect.fn(
     };
   }
 
-  // npm first; CLIs outside npm report their newest release from their own
-  // probe, which the snapshot's advisory already carries.
+  // The route's published version first; CLIs without one report their newest
+  // release from their own probe, which the snapshot's advisory already carries.
   const latestVersion =
     (yield* resolveLatestProviderVersion(capabilities)) ??
     snapshot.versionAdvisory?.latestVersion ??

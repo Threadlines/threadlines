@@ -7,8 +7,9 @@ import path from "node:path";
 import { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import {
+  type ProviderMaintenanceCapabilities,
   clearLatestProviderVersionCacheForTests,
   createProviderVersionAdvisory,
   enrichProviderSnapshotWithVersionAdvisory,
@@ -903,5 +904,177 @@ describe("providerMaintenance", () => {
       update: null,
       ...noInstallOrManualUpdate,
     });
+  });
+
+  describe("latest version source", () => {
+    const NPM_URL = "https://registry.npmjs.org/%40example%2Fpackage-tool/latest";
+    const POINTER_URL = "https://example.test/releases/latest";
+    const npmAhead = { [NPM_URL]: () => Response.json({ version: "2.1.316" }) };
+    const pointerUpdate = makePackageManagedProviderMaintenanceResolver({
+      provider: driver("packageTool"),
+      npmPackageName: "@example/package-tool",
+      homebrewFormula: "package-tool",
+      nativeUpdate: {
+        executable: "package-tool",
+        args: ["update"],
+        lockKey: "package-tool-native",
+        isCommandPath: isNativeTestCommandPath("/.local/bin/package-tool"),
+        latestVersionSource: { kind: "releasePointer", url: POINTER_URL },
+      },
+    });
+
+    /** The advisory for `currentVersion` when each URL answers as given, and what was asked. */
+    const advisoryFor = Effect.fn("advisoryFor")(function* (input: {
+      readonly currentVersion: string;
+      readonly capabilities: ProviderMaintenanceCapabilities;
+      readonly responses: Readonly<Record<string, () => Response>>;
+    }) {
+      const requested: Array<string> = [];
+      const draft = buildServerProvider({
+        driver: driver("packageTool"),
+        presentation: { displayName: "Package Tool" },
+        enabled: true,
+        checkedAt: "2026-10-30T00:00:00.000Z",
+        models: [],
+        probe: {
+          installed: true,
+          version: input.currentVersion,
+          status: "ready",
+          auth: { status: "authenticated" },
+        },
+      });
+      const { versionAdvisory } = yield* enrichProviderSnapshotWithVersionAdvisory(
+        {
+          ...draft,
+          instanceId: ProviderInstanceId.make("packageTool"),
+          driver: driver("packageTool"),
+        },
+        input.capabilities,
+      ).pipe(
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) => {
+            requested.push(request.url);
+            const respond = input.responses[request.url];
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                respond ? respond() : new Response("", { status: 404 }),
+              ),
+            );
+          }),
+        ),
+      );
+      return { versionAdvisory, requested };
+    });
+
+    it.effect("compares a native install to its own channel, not a newer npm release", () =>
+      Effect.gen(function* () {
+        const capabilities = pointerUpdate.resolve({
+          binaryPath: "/Users/alice/.local/bin/package-tool",
+          platform: "darwin",
+          env: { PATH: "" },
+        });
+
+        const caughtUp = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities,
+          responses: { ...npmAhead, [POINTER_URL]: () => new Response("2.1.314\n") },
+        });
+        expect(caughtUp.requested).toEqual([POINTER_URL]);
+        expect(caughtUp.versionAdvisory).toMatchObject({
+          status: "current",
+          latestVersion: "2.1.314",
+        });
+
+        clearLatestProviderVersionCacheForTests();
+        const channelMoved = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities,
+          responses: { ...npmAhead, [POINTER_URL]: () => new Response("2.1.316") },
+        });
+        expect(channelMoved.versionAdvisory).toMatchObject({
+          status: "behind_latest",
+          latestVersion: "2.1.316",
+        });
+      }),
+    );
+
+    it.effect("offers nothing when the channel answers with something other than a version", () =>
+      Effect.gen(function* () {
+        const { versionAdvisory } = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities: pointerUpdate.resolve({
+            binaryPath: "/Users/alice/.local/bin/package-tool",
+            platform: "darwin",
+            env: { PATH: "" },
+          }),
+          responses: { ...npmAhead, [POINTER_URL]: () => new Response("<html>blocked</html>") },
+        });
+        expect(versionAdvisory).toMatchObject({ status: "unknown", latestVersion: null });
+      }),
+    );
+
+    it.effect("upgrades and checks the cask the binary actually belongs to", () =>
+      Effect.gen(function* () {
+        const caskUrl = "https://formulae.brew.sh/api/cask/package-tool@latest.json";
+        const capabilities = pointerUpdate.resolve({
+          binaryPath: "/opt/homebrew/bin/package-tool",
+          realCommandPath: "/opt/homebrew/Caskroom/package-tool@latest/2.1.314/package-tool",
+          platform: "darwin",
+          env: { PATH: "" },
+        });
+        expect(capabilities.update?.args).toEqual(["upgrade", "package-tool@latest"]);
+
+        const { versionAdvisory, requested } = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities,
+          responses: { ...npmAhead, [caskUrl]: () => Response.json({ version: "2.1.315,99" }) },
+        });
+        expect(requested).toEqual([caskUrl]);
+        expect(versionAdvisory).toMatchObject({
+          status: "behind_latest",
+          latestVersion: "2.1.315",
+        });
+      }),
+    );
+
+    it.effect("checks a core formula through Homebrew and a tap formula through npm", () =>
+      Effect.gen(function* () {
+        const formulaUrl = "https://formulae.brew.sh/api/formula/package-tool.json";
+        const core = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities: pointerUpdate.resolve({
+            binaryPath: "/opt/homebrew/bin/package-tool",
+            realCommandPath: "/opt/homebrew/Cellar/package-tool/2.1.314/bin/package-tool",
+            platform: "darwin",
+            env: { PATH: "" },
+          }),
+          responses: {
+            ...npmAhead,
+            [formulaUrl]: () => Response.json({ versions: { stable: "2.1.314" } }),
+          },
+        });
+        expect(core.requested).toEqual([formulaUrl]);
+        expect(core.versionAdvisory).toMatchObject({ status: "current" });
+
+        const tapped = yield* advisoryFor({
+          currentVersion: "2.1.314",
+          capabilities: makePackageManagedProviderMaintenanceResolver({
+            provider: driver("packageTool"),
+            npmPackageName: "@example/package-tool",
+            homebrewFormula: "example/tap/package-tool",
+            nativeUpdate: null,
+          }).resolve({
+            binaryPath: "/opt/homebrew/bin/package-tool",
+            realCommandPath: "/opt/homebrew/Cellar/package-tool/2.1.314/bin/package-tool",
+            platform: "darwin",
+            env: { PATH: "" },
+          }),
+          responses: npmAhead,
+        });
+        expect(tapped.requested).toEqual([NPM_URL]);
+      }),
+    );
   });
 });

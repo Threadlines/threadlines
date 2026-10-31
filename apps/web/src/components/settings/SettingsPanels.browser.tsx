@@ -671,8 +671,7 @@ function createVerifiedNativeOutdatedClaudeProvider(): ServerProvider {
       status: "behind_latest",
       currentVersion: "2.1.183",
       latestVersion: "2.1.185",
-      message:
-        "Threadlines will run a checksum-verified Windows native Claude updater because `claude update` and Anthropic's installer can report success without replacing the active binary.",
+      message: "Install the update now or review provider settings.",
       checkedAt: "2026-05-04T10:00:00.000Z",
       updateCommand: nativeUpdaterCommand,
       canUpdate: true,
