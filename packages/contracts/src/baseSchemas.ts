@@ -94,6 +94,8 @@ export type ProjectSetupId = typeof ProjectSetupId.Type;
 /** An outside agent's connection to this computer (docs/design/outside-agents.md). */
 export const OutsideAgentConnectionId = makeEntityId("OutsideAgentConnectionId");
 export type OutsideAgentConnectionId = typeof OutsideAgentConnectionId.Type;
+export const AssistantAlertTargetId = makeEntityId("AssistantAlertTargetId");
+export type AssistantAlertTargetId = typeof AssistantAlertTargetId.Type;
 /** An outside agent's sign-in waiting for the user's approval. */
 export const OutsideAgentRequestId = makeEntityId("OutsideAgentRequestId");
 export type OutsideAgentRequestId = typeof OutsideAgentRequestId.Type;

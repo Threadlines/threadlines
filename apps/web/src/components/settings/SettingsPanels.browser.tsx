@@ -3,6 +3,8 @@ import "../../index.css";
 import {
   type AcpRegistryCatalog,
   type AcpRegistryCatalogAgent,
+  type AssistantAlertTarget,
+  AssistantAlertTargetId,
   type AuthAccessStreamEvent,
   type AuthAccessSnapshot,
   AuthSessionId,
@@ -97,6 +99,7 @@ import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { usePlaceArrival } from "../../hooks/usePlaceArrival";
 import { SidebarProvider } from "../ui/sidebar";
+import { ToastProvider, toastManager } from "../ui/toast";
 import { SettingsSearchResultsBody } from "./SettingsSearch";
 import { useSettingsSearchActive } from "./SettingsSearchField";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
@@ -487,6 +490,12 @@ const outsideAgentsHarness = vi.hoisted(() => {
     assistantCode: vi.fn(),
     assistantCodeCancel: vi.fn(),
     createKey: vi.fn(),
+    alertTargetCreate: vi.fn(),
+    alertTargetUpdate: vi.fn(),
+    alertTargetSetOn: vi.fn(),
+    alertTargetRemove: vi.fn(),
+    alertTargetTest: vi.fn(),
+    alertTargetSecret: vi.fn(),
   };
   return {
     client,
@@ -505,6 +514,12 @@ const outsideAgentsHarness = vi.hoisted(() => {
         client.assistantCode,
         client.assistantCodeCancel,
         client.createKey,
+        client.alertTargetCreate,
+        client.alertTargetUpdate,
+        client.alertTargetSetOn,
+        client.alertTargetRemove,
+        client.alertTargetTest,
+        client.alertTargetSecret,
       ]) {
         call.mockReset().mockResolvedValue(undefined);
       }
@@ -5259,7 +5274,14 @@ describe("Agents outside Threadlines", () => {
   function assistantsState(
     parts: Partial<OutsideAgentAssistantsState> = {},
   ): OutsideAgentAssistantsState {
-    return { status: "ready", address: ASSISTANT_ADDRESS, code: null, signIns: [], ...parts };
+    return {
+      status: "ready",
+      address: ASSISTANT_ADDRESS,
+      code: null,
+      signIns: [],
+      alertTargets: [],
+      ...parts,
+    };
   }
 
   function assistantSignIn(
@@ -5301,7 +5323,7 @@ describe("Agents outside Threadlines", () => {
       connections: [],
       pending: [],
       quietUntil: null,
-      assistants: { status: "off", address: null, code: null, signIns: [] },
+      assistants: { status: "off", address: null, code: null, signIns: [], alertTargets: [] },
       ...parts,
     };
   }
@@ -5355,6 +5377,7 @@ describe("Agents outside Threadlines", () => {
   afterEach(async () => {
     await mounted?.unmount();
     mounted = null;
+    toastManager.close();
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
@@ -5829,6 +5852,171 @@ describe("Agents outside Threadlines", () => {
     await page.getByTestId("assistants-create-key").click();
     await expect.element(page.getByTestId("assistant-key-name")).toHaveValue("");
     expect(document.body.textContent).not.toContain(KEY);
+  });
+
+  function alertTarget(
+    id: string,
+    overrides: Partial<AssistantAlertTarget> = {},
+  ): AssistantAlertTarget {
+    return {
+      targetId: AssistantAlertTargetId.make(id),
+      url: "https://hooks.example.com/routines/abc",
+      kinds: ["needs_you", "finished", "failed"],
+      projectIds: null,
+      skipViewed: true,
+      state: "on",
+      hasAuthorization: false,
+      refusedSince: null,
+      lastSentAt: null,
+      lastError: null,
+      retrying: 0,
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  it("adds a web address for alerts with the dialog's choices, and edits its header without showing it", async () => {
+    outsideAgentsHarness.emit(snapshot({ assistants: assistantsState() }));
+    await mountConnectionsWithHost();
+
+    const alerts = page.getByTestId("assistant-alerts-section");
+    await expect.element(alerts).toMatchTextContent("No web addresses yet.");
+    await alerts.getByRole("button", { name: "Add a web address" }).click();
+    const dialog = page.getByTestId("assistant-alert-dialog");
+    await expect.element(dialog.getByTestId("assistant-alert-save")).toBeDisabled();
+    await dialog.getByTestId("assistant-alert-url").fill(" http://10.0.0.5/hook ");
+    await dialog.getByTestId("assistant-alert-authorization").fill("Bearer crsr_secret");
+    await dialog.getByTestId("assistant-alert-kind-finished").click();
+    await dialog.getByTestId("outside-agent-projects-some").click();
+    await dialog.getByRole("checkbox", { name: "web" }).click();
+    await dialog.getByTestId("assistant-alert-skip-viewed").click();
+
+    // The server checks the address, and its refusal shows in its words.
+    outsideAgentsHarness.client.alertTargetCreate.mockRejectedValueOnce({
+      _tag: "OutsideAgentError",
+      detail: "Alerts only go to https addresses.",
+    });
+    await dialog.getByTestId("assistant-alert-save").click();
+    await expect
+      .element(dialog.getByTestId("outside-agent-error"))
+      .toHaveTextContent("Alerts only go to https addresses.");
+
+    const added = alertTarget("target-new", {
+      kinds: ["needs_you", "failed"],
+      projectIds: [WEB],
+      skipViewed: false,
+      hasAuthorization: true,
+    });
+    outsideAgentsHarness.client.alertTargetCreate.mockResolvedValue({ targetId: added.targetId });
+    await dialog.getByTestId("assistant-alert-url").fill("https://hooks.example.com/routines/abc");
+    await dialog.getByTestId("assistant-alert-save").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.alertTargetCreate).toHaveBeenLastCalledWith({
+        url: "https://hooks.example.com/routines/abc",
+        kinds: ["needs_you", "failed"],
+        projectIds: [WEB],
+        skipViewed: false,
+        authorization: "Bearer crsr_secret",
+      });
+    });
+    await expect.element(page.getByTestId("assistant-alert-dialog")).not.toBeInTheDocument();
+
+    outsideAgentsHarness.emit(snapshot({ assistants: assistantsState({ alertTargets: [added] }) }));
+    const row = alerts.getByTestId(`assistant-alert-row-${added.targetId}`);
+    await expect.element(row.getByRole("heading", { name: "hooks.example.com" })).toBeVisible();
+    await expect.element(row).toMatchTextContent("Needs you and failed · web · Nothing sent yet");
+
+    // Edit says a header is set, never what it is, and can clear it.
+    await row.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect
+      .element(dialog.getByTestId("assistant-alert-authorization-state"))
+      .toHaveTextContent("Unchanged");
+    expect(document.body.textContent).not.toContain("crsr_secret");
+    await dialog.getByTestId("assistant-alert-authorization-clear").click();
+    await dialog.getByTestId("assistant-alert-save").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.alertTargetUpdate).toHaveBeenCalledWith({
+        targetId: added.targetId,
+        url: added.url,
+        kinds: ["needs_you", "failed"],
+        projectIds: [WEB],
+        skipViewed: false,
+        authorization: { kind: "clear" },
+      });
+    });
+    await expect.element(page.getByTestId("assistant-alert-dialog")).not.toBeInTheDocument();
+  });
+
+  it("says how each web address is doing, sends a test, and turns one the receiver turned off back on", async () => {
+    const refused = alertTarget("target-refused", {
+      lastSentAt: new Date(Date.now() - 2 * 60_000 - 5_000).toISOString(),
+      retrying: 2,
+      refusedSince: new Date(Date.now() - 60_000).toISOString(),
+      lastError: "The receiver answered 401.",
+    });
+    const gone = alertTarget("target-gone", {
+      url: "https://alerts.example.org/in",
+      kinds: ["needs_you"],
+      state: "gone",
+    });
+    outsideAgentsHarness.emit(
+      snapshot({ assistants: assistantsState({ alertTargets: [refused, gone] }) }),
+    );
+    outsideAgentsHarness.client.alertTargetTest.mockResolvedValue({
+      outcome: "refused",
+      status: 401,
+      detail: "The receiver answered 401. Check the Authorization header.",
+    });
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ToastProvider>
+          <ConnectionsSettings />
+        </ToastProvider>
+      </TestAppProviders>,
+    );
+
+    const refusedRow = page.getByTestId(`assistant-alert-row-${refused.targetId}`);
+    await expect
+      .element(refusedRow)
+      .toMatchTextContent(
+        "Needs you, finished and failed · All projects · Last sent 2m ago · retrying 2",
+      );
+    await expect
+      .element(page.getByTestId(`assistant-alert-warning-${refused.targetId}`))
+      .toHaveTextContent("Refused by the receiver. The receiver answered 401.");
+    await refusedRow.getByRole("button", { name: "Send a test" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.alertTargetTest).toHaveBeenCalledWith({
+        targetId: refused.targetId,
+      });
+    });
+    await expect.element(page.getByText("Couldn't send a test")).toBeVisible();
+    await expect
+      .element(page.getByText("The receiver answered 401. Check the Authorization header."))
+      .toBeVisible();
+
+    const goneRow = page.getByTestId(`assistant-alert-row-${gone.targetId}`);
+    await expect
+      .element(goneRow.getByRole("heading", { name: "alerts.example.org" }))
+      .toBeVisible();
+    await expect.element(goneRow).toMatchTextContent("Needs you · All projects");
+    await expect
+      .element(page.getByTestId(`assistant-alert-warning-${gone.targetId}`))
+      .toHaveTextContent("Turned off by the receiver");
+    await expect
+      .element(goneRow.getByRole("button", { name: "Send a test" }))
+      .not.toBeInTheDocument();
+    await goneRow.getByRole("button", { name: "Turn on" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.alertTargetSetOn).toHaveBeenCalledWith({
+        targetId: gone.targetId,
+        on: true,
+      });
+    });
+    await expect.element(goneRow).toMatchTextContent("Needs you · All projects · Nothing sent yet");
+    await expect
+      .element(page.getByTestId(`assistant-alert-warning-${gone.targetId}`))
+      .not.toBeInTheDocument();
   });
 });
 

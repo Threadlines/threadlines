@@ -29,6 +29,14 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+/**
+ * The Agents group as sign-in keeps it: everything but the assistants'
+ * alert targets, which AssistantAlerts keeps and the route adds.
+ */
+export type OutsideAgentsSnapshotWithoutTargets = Omit<OutsideAgentsSnapshot, "assistants"> & {
+  readonly assistants: Omit<OutsideAgentsSnapshot["assistants"], "alertTargets">;
+};
+
 import type { OAuthFailure } from "./oauthRequests.ts";
 
 /** A registration's answer: the client id, or why not. */
@@ -126,7 +134,7 @@ export interface OutsideAgentSignInShape {
   readonly bootId: string;
 
   /** The Agents group now, then again on every change. */
-  readonly changes: Stream.Stream<OutsideAgentsSnapshot, OutsideAgentError>;
+  readonly changes: Stream.Stream<OutsideAgentsSnapshotWithoutTargets, OutsideAgentError>;
   /**
    * Allows a waiting sign-in with what the user picked (at most what it
    * asked for). The connection is saved when the agent exchanges its code;

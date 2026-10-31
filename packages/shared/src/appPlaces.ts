@@ -516,6 +516,18 @@ const SECTIONS = [
     widensAgents: true,
   },
   {
+    id: "connections.assistantAlerts",
+    kind: "section",
+    parent: "settings.connections",
+    title: "Alerts to a web address",
+    about:
+      "Web addresses (a Grok routine's webhook, say) this computer sends a signed alert to when a thread needs you, finishes or fails, each with the kinds and projects it gets. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote.",
+    route: { to: "/settings/connections", search: { section: "assistants" } },
+    keywords: ["webhook", "grok routine", "routine", "notify", "signed", "authorization"],
+    // It sends word of threads off this computer, to any address it's given.
+    widensAgents: true,
+  },
+  {
     id: "connections.computersFromHere",
     kind: "section",
     parent: "settings.connections",

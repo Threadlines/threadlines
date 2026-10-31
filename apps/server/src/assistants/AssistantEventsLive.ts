@@ -1,12 +1,13 @@
 /**
  * Keeps the assistants' event record (AssistantEvents.ts): one loop reads the
- * event log from the record's cursor while an assistant connection exists,
+ * event log from the record's cursor while an assistant connection or an
+ * alert target that's on exists,
  * another makes settling rows final as they come due, and the scheduled
  * tasks' changes add and resolve `schedule:` rows. The live event stream and
  * connection changes only ring a bell; everything is read from storage, so a
  * restart neither loses an event nor records one twice.
  */
-import type { ScheduledTasksSnapshot } from "@threadlines/contracts";
+import type { ScheduledTasksSnapshot, ThreadId } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -16,9 +17,11 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   OutsideAgentConnectionRepository,
   OutsideAgentConnectionRepositoryLive,
@@ -27,11 +30,16 @@ import { type AlertSubject, makeAlertChecks } from "../pushAlerts/alertChecks.ts
 import { scheduleRequestAlertId } from "../pushAlerts/pushAlertRules.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import {
+  AssistantAlertRepository,
+  AssistantAlertRepositoryLive,
+} from "./AssistantAlertRepository.ts";
+import {
   AssistantEventRepository,
   AssistantEventRepositoryLive,
   type SettlingAssistantEventRow,
 } from "./AssistantEventRepository.ts";
 import {
+  type AssistantEvent,
   type AssistantEventAction,
   assistantEventActionsForEvent,
   assistantEventNameOf,
@@ -76,12 +84,16 @@ const make = Effect.gen(function* () {
   const repo = yield* AssistantEventRepository;
   const engine = yield* OrchestrationEngineService;
   const connections = yield* OutsideAgentConnectionRepository;
+  const alertTargets = yield* AssistantAlertRepository;
+  const projections = yield* ProjectionSnapshotQuery;
   const assistants = yield* Effect.serviceOption(Assistants);
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
   const checks = yield* makeAlertChecks;
   const discoveryBell = yield* Queue.sliding<void>(1);
   const settleBell = yield* Queue.sliding<void>(1);
   const recorded = yield* PubSub.sliding<void>(1);
+  /** Turning on and off, against `keep`: a target saved inside it keeps the record on. */
+  const onOff = yield* Semaphore.make(1);
   /** Agents' scheduled-task changes waiting for the user, from the latest snapshot. */
   let waitingScheduleRequests: ReadonlySet<string> = new Set();
   let scheduleSnapshotSeen = false;
@@ -90,25 +102,43 @@ const make = Effect.gen(function* () {
 
   // ----- reading the event log -------------------------------------------------
 
-  /** One pass through the event log; true when more is waiting. */
-  const discoverOnce = Effect.gen(function* () {
+  /** On, from now: history is never recorded. Scheduled-task changes answered while it was off resolve their rows now. */
+  const begin = (now: number) =>
+    Effect.gen(function* () {
+      yield* repo.begin({ cursor: yield* repo.latestEventSequence, startedAt: iso(now) });
+      if (latestScheduleSnapshot !== null) yield* onScheduleSnapshot(latestScheduleSnapshot);
+    });
+
+  /** Whether anything keeps the record: an assistant connection, or a target that's on. */
+  const wanted = Effect.gen(function* () {
+    if ((yield* connections.countLive("assistant")) > 0) return true;
+    return (yield* alertTargets.countOn.pipe(Effect.orElseSucceed(() => 1))) > 0;
+  });
+
+  /** Turns the record on or off as it should be; the cursor to read from, or null while off. */
+  const turnOnOrOff = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const state = yield* repo.getState;
-    if ((yield* connections.countLive("assistant")) === 0) {
+    if (!(yield* wanted)) {
       // Off: nobody to keep it for. Whatever happens until it turns on again
       // is never read, and what was still settling is dropped.
       if (state.cursor !== null) yield* repo.stop(iso(now));
-      return false;
+      return null;
     }
     if (state.cursor === null) {
-      // On, from now: history is never recorded. Scheduled-task changes
-      // answered while it was off resolve their rows now.
-      yield* repo.begin({ cursor: yield* repo.latestEventSequence, startedAt: iso(now) });
-      if (latestScheduleSnapshot !== null) yield* onScheduleSnapshot(latestScheduleSnapshot);
-      return false;
+      yield* begin(now);
+      return null;
     }
+    return state.cursor;
+  }).pipe(onOff.withPermits(1));
+
+  /** One pass through the event log; true when more is waiting. */
+  const discoverOnce = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const cursor = yield* turnOnOrOff;
+    if (cursor === null) return false;
     const events = yield* engine
-      .readEvents(state.cursor)
+      .readEvents(cursor)
       .pipe(Stream.take(EVENT_BATCH), Stream.runCollect);
     const last = events.at(-1);
     if (!last) return false;
@@ -294,6 +324,74 @@ const make = Effect.gen(function* () {
       yield* Effect.forkScoped(settleLoop);
     });
 
+  const keep: AssistantEventsShape["keep"] = (use) =>
+    Effect.gen(function* () {
+      const state = yield* repo.getState;
+      if (state.cursor === null) yield* begin(yield* Clock.currentTimeMillis);
+      return yield* use(yield* position);
+    }).pipe(onOff.withPermits(1));
+
+  /** Whether a plan the record holds as needing the user still does: open, on the thread's latest turn. */
+  const planStands = (threadId: ThreadId, planId: string) =>
+    projections.getThreadDetailById(threadId).pipe(
+      Effect.map((found) => {
+        if (Option.isNone(found)) return false;
+        const thread = found.value;
+        const plan = thread.proposedPlans.find((entry) => entry.id === planId);
+        return (
+          plan !== undefined &&
+          plan.implementedAt === null &&
+          plan.dismissedAt === null &&
+          thread.latestTurn?.turnId === plan.turnId
+        );
+      }),
+      Effect.orElseSucceed(() => "unknown" as const),
+    );
+
+  const current: AssistantEventsShape["current"] = (seq) =>
+    Effect.gen(function* () {
+      const found = yield* repo.recorded(seq);
+      if (Option.isNone(found)) return null;
+      const { subjectKey, ...event } = found.value;
+      const project = yield* projections.getProjectShellById(event.projectId).pipe(
+        Effect.map((shell) => (Option.isSome(shell) ? shell.value.title : null)),
+        Effect.orElseSucceed(() => null),
+      );
+      return { event, project, stands: yield* standsNow(event, subjectKey) };
+    });
+
+  /** Whether a recorded event still holds (`current`). */
+  const standsNow = (event: AssistantEvent, subjectKey: string) =>
+    Effect.gen(function* () {
+      if (event.name !== "thread.needs_you") return true;
+      if (event.resolvedAt !== null) return false;
+      if (subjectKey.startsWith("plan:")) {
+        return yield* planStands(event.threadId, subjectKey.slice("plan:".length));
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const verdict = yield* checks.judge(
+        {
+          alertId: subjectKey,
+          threadId: event.threadId,
+          kind: "needs_you",
+          reason: event.reason,
+          subjectId: subjectKey.slice(subjectKey.indexOf(":") + 1),
+          occurredAt: event.occurredAt,
+        },
+        now,
+        {
+          available: Option.isSome(scheduledTasks),
+          seen: scheduleSnapshotSeen,
+          waiting: waitingScheduleRequests,
+        },
+      );
+      return verdict.type === "send"
+        ? verdict.kind === "needs_you"
+        : verdict.type === "drop"
+          ? false
+          : ("unknown" as const);
+    });
+
   const position: AssistantEventsShape["position"] = repo.getState.pipe(
     Effect.map((state) => ({
       recordId: state.recordId,
@@ -326,6 +424,8 @@ const make = Effect.gen(function* () {
   return AssistantEvents.of({
     position,
     since,
+    current,
+    keep,
     changes: Stream.fromPubSub(recorded),
     start,
   });
@@ -335,5 +435,11 @@ const make = Effect.gen(function* () {
 export const AssistantEventsLayer = Layer.effect(AssistantEvents, make);
 
 export const AssistantEventsLive = AssistantEventsLayer.pipe(
-  Layer.provide(Layer.mergeAll(AssistantEventRepositoryLive, OutsideAgentConnectionRepositoryLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      AssistantEventRepositoryLive,
+      OutsideAgentConnectionRepositoryLive,
+      AssistantAlertRepositoryLive,
+    ),
+  ),
 );

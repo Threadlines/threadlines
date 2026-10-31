@@ -129,12 +129,17 @@ What it can do is up to you: See threads, Start threads (and message or stop the
       "connector",
       "key",
       "inbox",
+      "webhook",
+      "alert",
+      "grok routine",
     ],
-    body: `Always-on assistants run in their makers' cloud. Through the relay they can see projects and threads, start threads, and message or stop the ones they started. With Work with all threads, which only you grant, they can also message, stop and answer questions in any thread in their projects. Checking in, they see what needs you (approvals, questions and plans), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected.
+    body: `Always-on assistants run in their makers' cloud. Through the relay they can see projects and threads, start threads, and message or stop the ones they started. With Work with all threads, which only you grant, they can also message, stop and answer questions in any thread in their projects. Checking in, they see what needs you (approvals, questions and plans), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected or an alert address is on.
 
 To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant, type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and its highest access. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
 
 {place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Assistants never answer approvals or plans; those wait for you. Once an assistant's work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
+
+With {place:connections.assistantAlerts}, this computer wakes an assistant instead of waiting for it to check in: it sends a signed alert to a web address when a thread needs you, finishes or fails. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote. For a Grok routine, add its webhook URL with its key (\`Bearer crsr_…\`) as the Authorization header, so the routine runs and checks in to see what happened. Skip threads I'm looking at, on by default, holds back alerts for threads you have open, since the routine runs a model for each one.
 
 While this computer is asleep or Threadlines is closed, assistants are told it's offline. The relay passes their requests to this computer and can read them, unlike a phone's, which are end-to-end encrypted.`,
   },

@@ -52,6 +52,7 @@ import {
   alertPayload,
   type PushAlertAction,
   pushAlertActionsForEvent,
+  MAX_DELIVERY_ATTEMPTS,
   retryDelayMs,
   scheduleRequestAlertId,
   testAlertPayload,
@@ -75,6 +76,8 @@ export interface PushAlertsShape {
   readonly setViewing: (viewerId: string, threadId: ThreadId | null) => Effect.Effect<void>;
   /** The connection closed. */
   readonly releaseViewer: (viewerId: string) => Effect.Effect<void>;
+  /** Whether someone is looking at `threadId` now, by the same leases (alerts to a web address skip it). */
+  readonly isViewed: (threadId: ThreadId) => Effect.Effect<boolean>;
   /** Looks for alerts and sends them until the scope closes. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
 }
@@ -87,8 +90,6 @@ export class PushAlerts extends Context.Service<PushAlerts, PushAlertsShape>()(
 const EVENT_BATCH = 500;
 /** Alerts handled per pass. */
 const ALERT_BATCH = 20;
-/** Attempts per phone before an alert gives up on it. */
-const MAX_DELIVERY_ATTEMPTS = 6;
 /** Finished alerts are forgotten after this. */
 const KEEP_FINISHED_ALERTS_MS = 2 * 24 * 60 * 60_000;
 const PRUNE_EVERY_MS = 6 * 60 * 60_000;
@@ -507,6 +508,8 @@ const make = Effect.gen(function* () {
     setViewing: (viewerId, threadId) =>
       Clock.currentTimeMillis.pipe(Effect.map((now) => presence.set(viewerId, threadId, now))),
     releaseViewer: (viewerId) => Effect.sync(() => presence.release(viewerId)),
+    isViewed: (threadId) =>
+      Clock.currentTimeMillis.pipe(Effect.map((now) => presence.isViewed(threadId, now))),
     start,
   });
 });

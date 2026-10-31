@@ -51,7 +51,6 @@ import { cn } from "../../lib/utils";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { CopyButton } from "../CopyButton";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import {
   DialogDescription,
   DialogFooter,
@@ -62,8 +61,13 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Radio, RadioGroup } from "../ui/radio-group";
-import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  OUTSIDE_AGENT_FIELD_LABEL_CLASS as FIELD_LABEL_CLASS,
+  OUTSIDE_AGENT_HINT_CLASS as HINT_CLASS,
+  OutsideAgentErrorLine as ErrorLine,
+  OutsideAgentProjectsField,
+} from "./OutsideAgentFields";
 
 /**
  * What the dialog is about: a sign-in waiting for the user (a local agent's
@@ -85,9 +89,6 @@ export type OutsideAgentDialogSubject =
   | { readonly kind: "key" };
 
 type GrantSubject = Exclude<OutsideAgentDialogSubject, { readonly kind: "key" }>;
-
-const FIELD_LABEL_CLASS = "text-xs font-medium text-foreground";
-const HINT_CLASS = "text-[12.5px] leading-[18px] text-muted-foreground";
 
 const ACCESS_DETAILS: Record<OutsideAgentAccess, string> = {
   see: "Projects, agents, and every thread's status and messages.",
@@ -456,14 +457,6 @@ function SecretField({
   );
 }
 
-function ErrorLine({ error }: { readonly error: string | null }) {
-  return error !== null ? (
-    <p role="alert" className="text-[12.5px] text-destructive" data-testid="outside-agent-error">
-      {error}
-    </p>
-  ) : null;
-}
-
 /**
  * What a connection may do (See only, if that's all it asked for), in which
  * projects, and the highest access a thread may have for it to start, send
@@ -535,10 +528,10 @@ function GrantFields({
         </RadioGroup>
       </div>
 
-      <ProjectsField
+      <OutsideAgentProjectsField
         labelId={`${fieldId}-projects`}
         projects={projects}
-        draft={draft}
+        choice={draft}
         disabled={disabled}
         onChange={onChange}
       />
@@ -575,80 +568,5 @@ function GrantFields({
         </div>
       ) : null}
     </>
-  );
-}
-
-/** All of this computer's projects, or the ones ticked. */
-function ProjectsField({
-  labelId,
-  projects,
-  draft,
-  disabled,
-  onChange,
-}: {
-  readonly labelId: string;
-  readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly name: string }>;
-  readonly draft: OutsideAgentGrantDraft;
-  readonly disabled: boolean;
-  readonly onChange: (change: Partial<OutsideAgentGrantDraft>) => void;
-}) {
-  const noneTicked = projects.every((project) => !draft.projectIds.has(project.id));
-  return (
-    <div className="grid gap-1.5">
-      <span className={FIELD_LABEL_CLASS} id={labelId}>
-        Projects
-      </span>
-      <SegmentedControl
-        value={draft.allProjects ? "all" : "some"}
-        onValueChange={(value) => onChange({ allProjects: value === "all" })}
-        aria-labelledby={labelId}
-        disabled={disabled}
-      >
-        <SegmentedControlItem value="all" data-testid="outside-agent-projects-all">
-          All projects
-        </SegmentedControlItem>
-        <SegmentedControlItem value="some" data-testid="outside-agent-projects-some">
-          Only some
-        </SegmentedControlItem>
-      </SegmentedControl>
-      {draft.allProjects ? (
-        <p className={HINT_CLASS}>Including projects you add later.</p>
-      ) : projects.length === 0 ? (
-        <p className={HINT_CLASS}>This computer has no projects yet.</p>
-      ) : (
-        <>
-          <div
-            className="surface-group max-h-44 overflow-y-auto py-1"
-            data-testid="outside-agent-projects"
-          >
-            {projects.map((project) => {
-              const checked = draft.projectIds.has(project.id);
-              return (
-                <label
-                  key={project.id}
-                  className="flex min-h-8 cursor-pointer items-center gap-2.5 px-3 py-1"
-                >
-                  <Checkbox
-                    checked={checked}
-                    disabled={disabled}
-                    aria-label={project.name}
-                    onCheckedChange={(next) => {
-                      const projectIds = new Set(draft.projectIds);
-                      if (next) projectIds.add(project.id);
-                      else projectIds.delete(project.id);
-                      onChange({ projectIds });
-                    }}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
-                    {project.name}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-          {noneTicked ? <p className={HINT_CLASS}>Tick at least one.</p> : null}
-        </>
-      )}
-    </div>
   );
 }

@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AssistantAlertTargetId,
   CommandId,
   EventId,
   type OrchestrationEvent,
@@ -30,6 +31,10 @@ import { FINISHED_HOLD_MS } from "../pushAlerts/pushAlertRules.ts";
 import { AssistantEventRepositoryLive } from "./AssistantEventRepository.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import { AssistantEvents } from "./AssistantEvents.ts";
+import {
+  AssistantAlertRepository,
+  AssistantAlertRepositoryLive,
+} from "./AssistantAlertRepository.ts";
 import { AssistantEventsLayer } from "./AssistantEventsLive.ts";
 
 const THREAD = ThreadId.make("thread-1");
@@ -77,6 +82,7 @@ const makeHarness = Effect.gen(function* () {
     Layer.provide(
       Layer.mergeAll(
         AssistantEventRepositoryLive,
+        AssistantAlertRepositoryLive,
         Layer.mock(OutsideAgentConnectionRepository)({
           countLive: () => Effect.sync(() => state.assistants),
         }),
@@ -103,7 +109,7 @@ const makeHarness = Effect.gen(function* () {
     yield* record.start().pipe(Scope.provide(scope));
     return { record, stop: Scope.close(scope, Exit.void) };
   });
-  return { events, published, state, boot, schedules, sql };
+  return { events, published, state, boot, schedules, sql, storage };
 });
 
 type Harness = Effect.Success<typeof makeHarness>;
@@ -373,6 +379,57 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
           assert.deepStrictEqual(yield* recorded(record), []);
         }),
       ),
+  );
+
+  it.effect("an alert target that's on keeps the record, from the moment it's added", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        harness.state.assistants = 0;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+        assert.strictEqual((yield* record.position).running, false);
+
+        // Adding a target starts the record before it's saved: nothing between is lost.
+        const targets = yield* AssistantAlertRepository.pipe(
+          Effect.provide(
+            AssistantAlertRepositoryLive.pipe(Layer.provide(Layer.succeedContext(harness.storage))),
+          ),
+        );
+        yield* record.keep((position) =>
+          targets.insert({
+            targetId: AssistantAlertTargetId.make("target-1"),
+            url: "https://alerts.example/hook",
+            names: ["thread.needs_you"],
+            projectIds: null,
+            skipViewed: true,
+            authorizationSecret: null,
+            startSeq: position.lastSeq,
+            now: "2026-10-31T10:00:00.000Z",
+          }),
+        );
+        harness.state.thread = makeThread({
+          activities: [approvalRequested("r1").activity] as never,
+        });
+        yield* appended(harness, "thread.activity-appended", approvalRequested("r1"));
+        yield* settle();
+        assert.strictEqual((yield* record.position).running, true);
+        assert.deepStrictEqual(
+          (yield* recorded(record)).map((event) => event.name),
+          ["thread.needs_you"],
+        );
+
+        // Off again with no assistant connected: the record stops.
+        yield* targets.setState({
+          targetId: AssistantAlertTargetId.make("target-1"),
+          state: "off",
+          now: "2026-10-31T10:01:00.000Z",
+        });
+        yield* settle(31_000);
+        assert.strictEqual((yield* record.position).running, false);
+      }),
+    ),
   );
 
   it.effect("resolves a scheduled-task card answered while it was off, once it's on again", () =>

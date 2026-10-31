@@ -114,6 +114,7 @@ import Migration0092 from "./Migrations/092_UsageLimitContinueAtReset.ts";
 import Migration0093 from "./Migrations/093_OutsideAgentAssistants.ts";
 import Migration0094 from "./Migrations/094_AssistantEvents.ts";
 import Migration0095 from "./Migrations/095_OutsideWork.ts";
+import Migration0096 from "./Migrations/096_AssistantAlertTargets.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -221,6 +222,7 @@ export const migrationEntries = [
   [93, "OutsideAgentAssistants", Migration0093],
   [94, "AssistantEvents", Migration0094],
   [95, "OutsideWork", Migration0095],
+  [96, "AssistantAlertTargets", Migration0096],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

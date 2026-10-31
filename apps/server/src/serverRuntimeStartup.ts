@@ -30,6 +30,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
+import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { AssistantEvents } from "./assistants/AssistantEvents.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
@@ -342,6 +343,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
   const pushAlerts = yield* Effect.serviceOption(PushAlerts);
   const assistantEvents = yield* Effect.serviceOption(AssistantEvents);
+  const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const continueAtResetSweeper = yield* ContinueAtResetSweeper;
@@ -418,6 +420,10 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         }
         if (Option.isSome(assistantEvents)) {
           yield* assistantEvents.value.start().pipe(Scope.provide(reactorScope));
+        }
+        // After the record it sends from.
+        if (Option.isSome(assistantAlerts)) {
+          yield* assistantAlerts.value.start().pipe(Scope.provide(reactorScope));
         }
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));

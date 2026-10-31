@@ -22,7 +22,8 @@
  * New here, not in the phone rules: a plan that is dismissed, implemented or
  * replaced resolves its `plan:<id>` row.
  *
- * The record is kept only while an assistant connection exists. Turning on
+ * The record is kept only while an assistant connection or an alert target
+ * that's on exists (AssistantAlerts). Turning on
  * with no cursor saved starts at the newest event, so history is never
  * recorded; turning off forgets the cursor, so the time it was off never is.
  * Rows are kept 7 days.
@@ -214,7 +215,7 @@ export const decodeEventCursor = (
 /** Where the record stands. */
 export interface AssistantEventsPosition {
   readonly recordId: string;
-  /** Kept now: an assistant connection exists and the record is reading the event log. */
+  /** Kept now: an assistant connection or a target that's on exists, and the record is reading the event log. */
   readonly running: boolean;
   /** The highest `seq` recorded so far (0 before any). */
   readonly lastSeq: number;
@@ -243,6 +244,31 @@ export interface AssistantEventsShape {
     },
     AssistantEventRepositoryError
   >;
+  /**
+   * A recorded event as it stands now, for an alert about to go out; null
+   * once pruned. A needs-you is judged again, live, by the checks phones use
+   * (alertChecks.ts), since the record can lag (after a restart) or miss an
+   * answer given while it was off: `stands` is false once it no longer needs
+   * the user, "unknown" when its thread couldn't be read. Finished and
+   * failed always stand. `project` is its project's name now (null: gone).
+   */
+  readonly current: (seq: number) => Effect.Effect<
+    {
+      readonly event: AssistantEvent;
+      readonly stands: boolean | "unknown";
+      readonly project: string | null;
+    } | null,
+    AssistantEventRepositoryError
+  >;
+  /**
+   * Runs `use` with the record on: started now if it was off, and not turned
+   * off before `use` is done, so what `use` saves (a target that is on)
+   * keeps it on. A target made or turned on inside starts at `lastSeq` and
+   * misses nothing after it.
+   */
+  readonly keep: <A, E>(
+    use: (position: AssistantEventsPosition) => Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | AssistantEventRepositoryError>;
   /** Emits after events are recorded. */
   readonly changes: Stream.Stream<void>;
   /** Keeps the record until the scope closes. */

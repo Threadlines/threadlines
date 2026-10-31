@@ -59,8 +59,12 @@ export type AssistantMcpHandler = (
 ) => Effect.Effect<AssistantHttpResponse>;
 
 export interface AssistantsShape {
-  /** The snapshot's `assistants`. Reading it asks the relay again when what it said is stale. */
-  readonly state: Effect.Effect<OutsideAgentAssistantsState>;
+  /**
+   * The snapshot's `assistants`, but for the alert targets (AssistantAlerts',
+   * added where the snapshot is sent). Reading it asks the relay again when
+   * what it said is stale.
+   */
+  readonly state: Effect.Effect<Omit<OutsideAgentAssistantsState, "alertTargets">>;
   /** Something in `state`, or an assistant connection, changed. */
   readonly changes: Stream.Stream<void>;
   /** Whether `requestId` is an assistant's sign-in waiting for the user. */

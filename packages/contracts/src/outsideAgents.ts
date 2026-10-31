@@ -1,7 +1,10 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  AssistantAlertTargetId,
   IsoDateTime,
+  NonNegativeInt,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
   PositiveInt,
@@ -108,6 +111,37 @@ export const OutsideAgentAssistantSignIn = Schema.Struct({
 });
 export type OutsideAgentAssistantSignIn = typeof OutsideAgentAssistantSignIn.Type;
 
+/** What an alert is about (docs/design/assistants.md, step 4): `thread.<kind>` events. */
+export const AssistantAlertKind = Schema.Literals(["needs_you", "finished", "failed"]);
+export type AssistantAlertKind = typeof AssistantAlertKind.Type;
+
+/**
+ * A web address the computer sends signed alerts to (a Grok routine's
+ * webhook, say). `on` sends; `off` the user turned it off; `gone` the
+ * receiver answered 410. Turning it on again never sends what it missed.
+ */
+export const AssistantAlertTarget = Schema.Struct({
+  targetId: AssistantAlertTargetId,
+  url: TrimmedNonEmptyString,
+  kinds: Schema.Array(AssistantAlertKind),
+  /** Null: every project. */
+  projectIds: Schema.NullOr(Schema.Array(ProjectId)),
+  /** Skip threads someone is looking at in Threadlines. */
+  skipViewed: Schema.Boolean,
+  state: Schema.Literals(["on", "off", "gone"]),
+  /** An Authorization header is set (its value is never sent to the app). */
+  hasAuthorization: Schema.Boolean,
+  /** The receiver answered 401 or 403 three times in a row, since then; null: not refusing. */
+  refusedSince: Schema.NullOr(IsoDateTime),
+  lastSentAt: Schema.NullOr(IsoDateTime),
+  /** The latest problem in Threadlines' words, until a send works. */
+  lastError: Schema.NullOr(TrimmedNonEmptyString),
+  /** Alerts waiting for another try. */
+  retrying: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+export type AssistantAlertTarget = typeof AssistantAlertTarget.Type;
+
 /**
  * The assistants door as this computer sees it.
  * - `ready`: the relay's door is on, and this computer is registered with it.
@@ -127,6 +161,10 @@ export const OutsideAgentAssistantsState = Schema.Struct({
   ),
   /** Assistant sign-ins waiting for the user, oldest first. */
   signIns: Schema.Array(OutsideAgentAssistantSignIn),
+  /** Web addresses alerts go to, oldest first. */
+  alertTargets: Schema.Array(AssistantAlertTarget).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type OutsideAgentAssistantsState = typeof OutsideAgentAssistantsState.Type;
 
@@ -179,6 +217,56 @@ export const OutsideAgentCreateKeyResult = Schema.Struct({
   address: TrimmedNonEmptyString,
 });
 export type OutsideAgentCreateKeyResult = typeof OutsideAgentCreateKeyResult.Type;
+
+/** The fields Add and Edit share. */
+const AssistantAlertTargetFields = {
+  url: TrimmedNonEmptyString,
+  kinds: Schema.Array(AssistantAlertKind),
+  projectIds: Schema.NullOr(Schema.Array(ProjectId)),
+  skipViewed: Schema.Boolean,
+};
+
+export const AssistantAlertTargetCreateInput = Schema.Struct({
+  ...AssistantAlertTargetFields,
+  /** The Authorization header's whole value (`Bearer crsr_…`); null: none. */
+  authorization: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type AssistantAlertTargetCreateInput = typeof AssistantAlertTargetCreateInput.Type;
+
+export const AssistantAlertTargetUpdateInput = Schema.Struct({
+  targetId: AssistantAlertTargetId,
+  ...AssistantAlertTargetFields,
+  /** Keep the Authorization header as it is, replace it, or clear it. */
+  authorization: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("keep") }),
+    Schema.Struct({ kind: Schema.Literal("set"), value: TrimmedNonEmptyString }),
+    Schema.Struct({ kind: Schema.Literal("clear") }),
+  ]),
+});
+export type AssistantAlertTargetUpdateInput = typeof AssistantAlertTargetUpdateInput.Type;
+
+export const AssistantAlertTargetInput = Schema.Struct({ targetId: AssistantAlertTargetId });
+export type AssistantAlertTargetInput = typeof AssistantAlertTargetInput.Type;
+
+/** Turn sending on or off. On again starts from now: nothing it missed is sent. */
+export const AssistantAlertTargetSetOnInput = Schema.Struct({
+  targetId: AssistantAlertTargetId,
+  on: Schema.Boolean,
+});
+export type AssistantAlertTargetSetOnInput = typeof AssistantAlertTargetSetOnInput.Type;
+
+/** What a test send came to, in Threadlines' words. */
+export const AssistantAlertTargetTestResult = Schema.Struct({
+  outcome: Schema.Literals(["sent", "refused", "failed"]),
+  /** The receiver's HTTP status, when it answered. */
+  status: Schema.NullOr(Schema.Int),
+  detail: TrimmedNonEmptyString,
+});
+export type AssistantAlertTargetTestResult = typeof AssistantAlertTargetTestResult.Type;
+
+/** The target's signing secret (`whsec_…`), for the receiver to check signatures with. */
+export const AssistantAlertTargetSecretResult = Schema.Struct({ secret: TrimmedNonEmptyString });
+export type AssistantAlertTargetSecretResult = typeof AssistantAlertTargetSecretResult.Type;
 
 export class OutsideAgentError extends Schema.TaggedError<OutsideAgentError>()(
   "OutsideAgentError",

@@ -311,6 +311,9 @@ export function testAlertPayload(input: {
   });
 }
 
+/** Attempts per delivery before it gives up (a phone, or a web address's alert). */
+export const MAX_DELIVERY_ATTEMPTS = 6;
+
 /** Delay before retry `attempt` (1-based): 5 s, 15 s, 45 s, ... up to 5 minutes. */
 export function retryDelayMs(attempt: number, retryAfterSeconds?: number): number {
   const backoff = Math.min(5_000 * 3 ** Math.max(0, attempt - 1), 5 * 60_000);

@@ -1600,3 +1600,202 @@ restart the runtime it had just stopped to clear a goal (a stop leaves an
 agent with such a goal marked for its next fresh start, which has a runtime);
 and an agent moved to a provider without goals stayed marked for good (a
 provider without goals skips that step).
+
+## Build plan: step 4 (alerts to a web address)
+
+Written Oct 31 on main (`035ae18eb`), from "2. Targets" and "Webhooks" above.
+
+### What already exists
+
+- The record (`AssistantEvents`): `since(after, names?, projectIds?)` with
+  `upTo`, `changes`, and events that carry `resolvedAt`. It runs only while
+  an assistant connection exists (`AssistantEventsLive` checks `countLive`).
+- Phone alerts: `retryDelayMs` (5 s up to 5 min) and 6 attempts
+  (`PushAlerts.ts`), and the presence leases that say who is looking at a
+  thread (`pushPresence.ts`, owned by `PushAlerts`).
+- `ServerSecretStore` for secrets, and the `outsideAgents.subscribe` snapshot
+  Settings reads.
+- Nothing on the server makes outbound calls under network rules yet.
+
+### Targets and deliveries (migration 096)
+
+- `assistant_targets`: `target_id`, `kind` (`webhook` now; `subscription` in
+  step 5), `connection_id` (null for one the user added), `url`, `names_json`,
+  `project_ids_json` (null: all), `skip_viewed`, `state` (`on`, `off`,
+  `gone`), `refused_since` (repeated 401 or 403), `watermark`,
+  `last_sent_at`, `last_error`, `expires_at` (step 5), timestamps.
+- `assistant_deliveries`: (`target_id`, `seq`) key, `event_id`, `state`
+  (`pending`, `sent`, `dropped`, `failed`), `attempts`, `next_attempt_at`,
+  `first_attempt_at`.
+- Secrets in `ServerSecretStore`: the target's signing secret (`whsec_`, 32
+  random bytes) and its optional Authorization value. Removing a target
+  removes both.
+- A new target's watermark starts at the record's last `seq`: no history.
+
+### Sending (`AssistantAlertsLive`)
+
+- The record runs while an assistant connection **or a target that's on**
+  exists.
+- A loop wakes on the record's `changes`, on target changes, and on the next
+  due retry. Per target that's on:
+  1. Read `since(watermark, names, projects)` in pages. Each matching event
+     gets a `pending` delivery row; events that don't match need nothing.
+  2. Send due rows, oldest first, one at a time per target. Right before each
+     send, read the event again: a `needs_you` event that's resolved, or any
+     event on a thread someone is looking at (with `skip_viewed`), is
+     `dropped`. Finished and failed go out even if resolved.
+  3. The watermark moves to just below the oldest delivery that isn't final
+     (`sent`, `dropped`, `failed`), or to `upTo` when none is open, in the
+     same transaction as the rows. A retrying event is never skipped.
+- Answers:
+  - 2xx: `sent`.
+  - 410: the target turns `gone`; its open deliveries are dropped; Settings
+    says the receiver turned it off and offers Turn on again.
+  - 401 or 403: retried like any failure; three in a row set
+    `refused_since`, shown as "refused by the receiver" until a 2xx.
+  - 413: `failed` at once.
+  - Anything else, a timeout or a refused address: retried with
+    `retryDelayMs` (`Retry-After` honored), until 6 attempts or 24 hours
+    after the first, then `failed`.
+- The envelope, as "What an event carries" says: `{ eventId, name,
+  timestamp, data, cursor }`. `cursor` is the record cursor at the target's
+  watermark, so `inbox(since: cursor)` catches up. `data` carries no title
+  and no agent text.
+- Headers: `content-type: application/json`, Standard Webhooks
+  `webhook-id` (the `eventId`), `webhook-timestamp`, `webhook-signature`
+  (`v1,` HMAC-SHA256 over `id.timestamp.body`), the optional Authorization,
+  and `user-agent: Threadlines`.
+
+### Outbound calls (`net/outboundHttps.ts`, shared with step 5)
+
+- `https:` only, port 443 or any explicit port, no credentials in the URL.
+- Resolve the host (`dns.lookup`, all addresses). Refuse when any address is
+  private, loopback, link-local, CGNAT, multicast, unspecified or reserved
+  (IPv4 and IPv6, IPv4-mapped included; Node's `net.BlockList`).
+- Connect to the checked address (`https.request` with a fixed `lookup`, the
+  host as SNI and Host), so DNS can't change between check and connect.
+- No redirects (a 3xx is a failure), 10 s for the whole call, the answer
+  body read up to 64 KiB and ignored.
+
+### Settings and RPCs
+
+- Settings › Connections › Assistants gets "Alerts to a web address":
+  - a row per target: its host, kinds, projects, and status (on, last sent,
+    retrying, refused by the receiver, turned off by the receiver, off);
+  - Add and Edit: the URL, an optional Authorization header (write-only,
+    kept or replaced or cleared), the kinds (needs you, finished, failed),
+    the projects, and "Skip threads I'm looking at" (on by default);
+  - row actions: Send a test, Copy signing secret, Turn off or on, Remove.
+- RPCs (owner only): `outsideAgents.alertTargetCreate`, `…Update`, `…Remove`,
+  `…Test` (sends a `threadlines.test` envelope at once and answers with the
+  status or error) and `…Secret` (the signing secret, on request only).
+  Targets ride the `outsideAgents.subscribe` snapshot without secrets.
+- The URL is checked when saved (the scheme, the host resolving to a public
+  address), so a typo shows at once.
+- The app guide gets the place; the assistants topic says how to use it with
+  a Grok routine (its webhook URL and its `crsr_` key as the Authorization).
+
+### Tests
+
+- Outbound: private, loopback, link-local, CGNAT and mapped addresses are
+  refused; the connection goes to the checked address; a redirect isn't
+  followed; the timeout.
+- Signing matches the Standard Webhooks test vector.
+- Sending: a retrying event holds the watermark while a later one is sent;
+  410 turns the target off; three 401s mark it refused and a 2xx clears it;
+  a needs-you resolved before sending is dropped and the watermark moves; a
+  viewed thread is skipped; no title or agent text in any body; a new target
+  sends no history; a restart carries on from the rows.
+- Web: the group, the dialog, the row states.
+
+### Sol's review of the step 4 plan (Oct 31), and what changed
+
+Nine findings, all taken:
+
+- **Proxies.** Node can route the default agent through `HTTPS_PROXY`
+  (`NODE_USE_ENV_PROXY`), which would resolve and connect on its own. Every
+  call gets its own direct `https.Agent`, never the global one.
+- **At most once when the outcome is unknown.** A receiver may start a paid
+  run and then lose the answer. So the attempt is written (attempts + 1,
+  `in_flight`) before the call. A send is retried only when it plainly didn't
+  arrive: the address was refused, DNS or the connection or TLS failed, or
+  the receiver answered 429 or 5xx. A timeout after the body went out, or a
+  row still `in_flight` after a restart, ends `failed` ("may have arrived; not
+  sent again"). The stable `webhook-id` lets a receiver that keeps ids drop a
+  repeat.
+- **Live checks before a needs-you goes out.** The record can lag (after a
+  restart) or be stale (an answer given while the record was off isn't read).
+  So a needs-you event is judged again by the shared alert checks
+  (`alertChecks.ts`, as phones do) right before each send; one that no longer
+  holds is dropped.
+- **No gap when the first target turns on.** Creating or turning on a target
+  starts the record at once (`AssistantEvents.keep`, which begins it if off),
+  then sets the target's watermark to the record's last `seq`.
+- **Missing events and lifetimes.** A delivery whose event was pruned is
+  dropped. A delivery's 24 hours count from when it was queued
+  (`queued_at`), not from its first attempt.
+- **Presence is shared.** `PushAlerts` exposes `isViewed`, so the sender asks
+  the same leases the app reports to.
+- **Address rules are concrete.** IPv4: 0/8, 10/8, 100.64/10, 127/8,
+  169.254/16, 172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16,
+  198.18/15, 198.51.100/24, 203.0.113/24, 224/4, 240/4. IPv6: ::/128, ::1/128,
+  IPv4-mapped (checked as IPv4), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64),
+  100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4), fc00::/7,
+  fe80::/10, fec0::/10, ff00::/8. Honest limit: a network-specific NAT64
+  prefix looks public and can't be told apart.
+- **Turning back on never replays.** A target turned on again (after Off or a 410) starts at the record's last `seq`; what it missed isn't sent. A
+  `refused_streak` column counts 401 and 403 in a row (three set
+  `refused_since`); a 2xx, a successful test or new credentials reset it.
+  `failed` deliveries are never retried.
+- **Remove is coordinated.** Sends and Remove take the target's lock. Remove
+  marks the target `deleting`, then deletes its secrets, then its rows; a
+  start finishes any `deleting` target. A target whose signing secret is
+  missing doesn't send (it shows an error), and the secret is made only at
+  create.
+
+### Build notes: step 4 (Oct 31)
+
+What the build changed from the plan above:
+
+- **Which answers are tried again.** A call that plainly never arrived, and
+  401, 403, 408, 425, 429 and 5xx. Any other answer (a 3xx, 400, 404, 413,
+  422 ...) means the receiver read it and turned it down, so it ends
+  `failed` at once: trying again can't help, and a receiver that started a
+  run shouldn't get a second. 410 still turns the target `gone`.
+- **NAT64.** An address in 64:ff9b::/96 is judged by the IPv4 inside it, not
+  refused outright, so a computer on an IPv6-only network with DNS64 still
+  reaches a receiver with only an IPv4 address. 64:ff9b:1::/48 and the old
+  IPv4-compatible ::/96 are refused.
+- **Two more columns.** `scanned_seq` (how far through the record a target
+  looked) is kept apart from `watermark`, so a retrying event doesn't make
+  every pass read everything after it again. `authorization_secret` names
+  the secret store entry holding the Authorization value (null: none), so
+  the snapshot never reads secrets.
+- **A test send that gets through** counts as a send: it clears the
+  receiver's refusals and the last problem.
+- **The snapshot.** OutsideAgentSignIn's snapshot carries everything but the
+  targets; the `outsideAgents.subscribe` route joins in AssistantAlerts'
+  list. `AssistantEvents.current` gives the event's project name with it.
+- **The RPC group split.** The outside agents' 16 RPCs (with the six new
+  ones) are their own group, `WsOutsideAgentsRpcGroup`, merged into
+  `WsRpcGroup` (clients don't change) and served by their own layer in
+  `ws.ts`. The main group's handler types cost about the square of its size
+  in type work, all in one statement, and TypeScript stops at 5 million
+  instantiations per statement. Past that it doesn't report an error: the
+  server layer's type silently became `any`, and only `bin.ts` failed to
+  compile. With the split, about 12 more RPCs fit in the main group; 24 don't.
+  The lasting fix is splitting it further by area (a follow-up).
+
+Sol's review of the build (Oct 31), three findings, all fixed:
+
+- **An edit could pair a new key with the old address.** The key was
+  overwritten before the row saved the new address; a failure between the
+  two would send the new key to the old receiver. Now every new value goes
+  in a new entry and the row's one write switches address and entry
+  together; the old entry goes after.
+- **Waiting alerts ignored an edit.** A retry went out even after Edit
+  dropped its kind or project. Each send now checks the target's current
+  kinds and projects.
+- **A stalled body lost the answer.** A 503 whose body never finished
+  timed out as "may have arrived" and was never retried. An answer keeps its
+  status once its headers come.

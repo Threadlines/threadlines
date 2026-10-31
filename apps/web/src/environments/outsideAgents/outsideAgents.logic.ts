@@ -4,10 +4,18 @@
  * connection may do, where, how it signs in and when it last called; how each
  * client connects; the sign-ins waiting, oldest first; the choices the
  * approval dialog starts from and the grant they make; when a new sign-in
- * earns a system notification; and what a thread says while their work limits
- * its agents' tools. Pure, so Settings, the dialog and the labels say it
- * alike.
+ * earns a system notification; what a thread says while their work limits
+ * its agents' tools; and the web addresses assistants' alerts go to, with
+ * their dialog's choices. Pure, so Settings, the dialogs and the labels say
+ * it alike.
  */
+import {
+  AssistantAlertKind,
+  type AssistantAlertTarget,
+  type AssistantAlertTargetCreateInput,
+  type AssistantAlertTargetId,
+  type AssistantAlertTargetUpdateInput,
+} from "@threadlines/contracts";
 import type {
   OutsideAgentAccess,
   OutsideAgentAssistantSignIn,
@@ -266,12 +274,29 @@ export function outsideAgentConnectGuides(
   ];
 }
 
-/** The approval dialog's choices while the user makes them. */
-export interface OutsideAgentGrantDraft {
-  readonly access: OutsideAgentAccess;
+/** All projects, or only the ones ticked: the project picker the dialogs share. */
+export interface OutsideAgentProjectsChoice {
   /** False: only `projectIds`. */
   readonly allProjects: boolean;
   readonly projectIds: ReadonlySet<ProjectId>;
+}
+
+/**
+ * The projects a choice picks: null for all of them (projects added later
+ * too), or the ones ticked that this computer still has, in its order. Empty
+ * while none is ticked, which picks nothing.
+ */
+export function chosenProjectIds(
+  choice: OutsideAgentProjectsChoice,
+  availableProjectIds: ReadonlyArray<ProjectId>,
+): ReadonlyArray<ProjectId> | null {
+  if (choice.allProjects) return null;
+  return availableProjectIds.filter((projectId) => choice.projectIds.has(projectId));
+}
+
+/** The approval dialog's choices while the user makes them. */
+export interface OutsideAgentGrantDraft extends OutsideAgentProjectsChoice {
+  readonly access: OutsideAgentAccess;
   readonly maxRuntimeMode: RuntimeMode;
 }
 
@@ -309,13 +334,8 @@ export function outsideAgentGrantFromDraft(
   const access: OutsideAgentAccess = outsideAgentAccessAllowed(draft.access, input.requestedAccess)
     ? draft.access
     : "see";
-  if (draft.allProjects) {
-    return { access, maxRuntimeMode: draft.maxRuntimeMode, projectIds: null };
-  }
-  const projectIds = input.availableProjectIds.filter((projectId) =>
-    draft.projectIds.has(projectId),
-  );
-  return projectIds.length === 0
+  const projectIds = chosenProjectIds(draft, input.availableProjectIds);
+  return projectIds?.length === 0
     ? null
     : { access, maxRuntimeMode: draft.maxRuntimeMode, projectIds };
 }
@@ -345,4 +365,198 @@ export function nextOutsideAgentNotification<
     input.lastNotifiedAtMs !== null &&
     input.nowMs - input.lastNotifiedAtMs < OUTSIDE_AGENT_NOTIFY_INTERVAL_MS;
   return { notify: input.attended || throttled ? null : (fresh.at(-1) ?? null), seen };
+}
+
+/** What an alert is about, as the dialog's checkboxes say it. */
+export const ASSISTANT_ALERT_KIND_LABELS: Record<AssistantAlertKind, string> = {
+  needs_you: "Needs you",
+  finished: "Finished",
+  failed: "Failed",
+};
+
+/**
+ * The kinds a web address gets, in their usual order, as its row says them:
+ * "Needs you, finished and failed", "Finished and failed", "Needs you".
+ */
+export function describeAssistantAlertKinds(kinds: ReadonlyArray<AssistantAlertKind>): string {
+  const words = AssistantAlertKind.literals
+    .filter((kind) => kinds.includes(kind))
+    .map((kind, index) => {
+      const label = ASSISTANT_ALERT_KIND_LABELS[kind];
+      return index === 0 ? label : label.toLowerCase();
+    });
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+/** A web address's host and path, or null when it doesn't read as one. */
+function parseAlertAddress(url: string): { readonly host: string; readonly path: string } | null {
+  try {
+    const parsed = new URL(url);
+    return { host: parsed.host, path: parsed.pathname === "/" ? "" : parsed.pathname };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Each web address's row title: its host ("hooks.example.com"), or its host
+ * and path where two share a host (two routines at one service), so the rows
+ * tell apart.
+ */
+export function assistantAlertTargetTitles(
+  targets: ReadonlyArray<Pick<AssistantAlertTarget, "targetId" | "url">>,
+): ReadonlyMap<AssistantAlertTargetId, string> {
+  const parsed = targets.map((target) => ({ target, address: parseAlertAddress(target.url) }));
+  const hostCounts = new Map<string, number>();
+  for (const { address } of parsed) {
+    if (address !== null) hostCounts.set(address.host, (hostCounts.get(address.host) ?? 0) + 1);
+  }
+  return new Map(
+    parsed.map(({ target, address }) => {
+      if (address === null) return [target.targetId, target.url] as const;
+      const shared = (hostCounts.get(address.host) ?? 0) > 1;
+      return [target.targetId, shared ? `${address.host}${address.path}` : address.host] as const;
+    }),
+  );
+}
+
+/** How a web address is doing, as its row says it. */
+export interface AssistantAlertTargetStatus {
+  /** Said after its kinds and projects: "Last sent 2m ago · retrying 2", "Nothing sent yet", "Off". */
+  readonly quiet: string | null;
+  /** Worth a look, in the warning tone: the receiver refused or turned it off, and the last problem. */
+  readonly warning: string | null;
+}
+
+/**
+ * A web address's status: when it last sent and how many alerts wait for
+ * another try while it's on, or Off; and, as a warning, the receiver
+ * refusing it or turning it off (a 410), with the last problem in
+ * Threadlines' words.
+ */
+export function describeAssistantAlertTargetStatus(
+  target: Pick<
+    AssistantAlertTarget,
+    "state" | "refusedSince" | "lastSentAt" | "lastError" | "retrying"
+  >,
+  nowMs: number,
+): AssistantAlertTargetStatus {
+  const sent =
+    target.lastSentAt === null
+      ? "Nothing sent yet"
+      : `Last sent ${formatRelativeTimeLabel(target.lastSentAt, nowMs)}`;
+  const quiet =
+    target.state === "off"
+      ? "Off"
+      : target.state === "gone"
+        ? null
+        : target.retrying > 0
+          ? `${sent} · retrying ${target.retrying}`
+          : sent;
+  const label =
+    target.state === "gone"
+      ? "Turned off by the receiver"
+      : target.refusedSince !== null
+        ? "Refused by the receiver"
+        : null;
+  const warning = [label, target.lastError].filter((part) => part !== null).join(". ");
+  return { quiet, warning: warning.length > 0 ? warning : null };
+}
+
+/**
+ * The Authorization header as the dialog holds it, never its saved value:
+ * kept as it is (Edit, with one set), being typed (empty: none, or unchanged
+ * in Edit), or cleared on save.
+ */
+export type AssistantAlertAuthorizationDraft =
+  | { readonly kind: "keep" }
+  | { readonly kind: "set"; readonly value: string }
+  | { readonly kind: "clear" };
+
+/** The Add and Edit dialog's choices while the user makes them. */
+export interface AssistantAlertTargetDraft extends OutsideAgentProjectsChoice {
+  readonly url: string;
+  readonly kinds: ReadonlySet<AssistantAlertKind>;
+  readonly skipViewed: boolean;
+  readonly authorization: AssistantAlertAuthorizationDraft;
+}
+
+/**
+ * Where the dialog starts: a web address's own choices for Edit; for Add,
+ * every kind, all projects, and skipping threads you're looking at.
+ */
+export function initialAssistantAlertTargetDraft(
+  target: AssistantAlertTarget | null,
+): AssistantAlertTargetDraft {
+  if (target === null) {
+    return {
+      url: "",
+      kinds: new Set(AssistantAlertKind.literals),
+      allProjects: true,
+      projectIds: new Set(),
+      skipViewed: true,
+      authorization: { kind: "set", value: "" },
+    };
+  }
+  return {
+    url: target.url,
+    kinds: new Set(target.kinds),
+    allProjects: target.projectIds === null,
+    projectIds: new Set(target.projectIds ?? []),
+    skipViewed: target.skipViewed,
+    authorization: target.hasAuthorization ? { kind: "keep" } : { kind: "set", value: "" },
+  };
+}
+
+/**
+ * The fields Add and Edit share, or null while the choices can't be saved:
+ * no address, no kind ticked, or only some projects with none ticked. The
+ * server checks the address itself (https, and not a private one).
+ */
+function assistantAlertTargetFields(
+  draft: AssistantAlertTargetDraft,
+  availableProjectIds: ReadonlyArray<ProjectId>,
+): Omit<AssistantAlertTargetCreateInput, "authorization"> | null {
+  const url = draft.url.trim();
+  const kinds = AssistantAlertKind.literals.filter((kind) => draft.kinds.has(kind));
+  const projectIds = chosenProjectIds(draft, availableProjectIds);
+  if (url.length === 0 || kinds.length === 0 || projectIds?.length === 0) return null;
+  return { url, kinds, projectIds, skipViewed: draft.skipViewed };
+}
+
+/** The header's value as typed, trimmed; null when nothing is. */
+function typedAuthorization(draft: AssistantAlertTargetDraft): string | null {
+  const value = draft.authorization.kind === "set" ? draft.authorization.value.trim() : "";
+  return value.length > 0 ? value : null;
+}
+
+/** What Add sends, or null while the choices can't be saved. */
+export function assistantAlertTargetCreateInput(
+  draft: AssistantAlertTargetDraft,
+  availableProjectIds: ReadonlyArray<ProjectId>,
+): AssistantAlertTargetCreateInput | null {
+  const fields = assistantAlertTargetFields(draft, availableProjectIds);
+  return fields === null ? null : { ...fields, authorization: typedAuthorization(draft) };
+}
+
+/** What Edit sends, or null while the choices can't be saved. An empty header field keeps the one set. */
+export function assistantAlertTargetUpdateInput(
+  targetId: AssistantAlertTargetId,
+  draft: AssistantAlertTargetDraft,
+  availableProjectIds: ReadonlyArray<ProjectId>,
+): AssistantAlertTargetUpdateInput | null {
+  const fields = assistantAlertTargetFields(draft, availableProjectIds);
+  if (fields === null) return null;
+  const typed = typedAuthorization(draft);
+  return {
+    targetId,
+    ...fields,
+    authorization:
+      draft.authorization.kind === "clear"
+        ? { kind: "clear" }
+        : typed !== null
+          ? { kind: "set", value: typed }
+          : { kind: "keep" },
+  };
 }
