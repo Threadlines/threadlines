@@ -1768,9 +1768,9 @@ What the build changed from the plan above:
   IPv4-compatible ::/96 are refused.
 - **Two more columns.** `scanned_seq` (how far through the record a target
   looked) is kept apart from `watermark`, so a retrying event doesn't make
-  every pass read everything after it again. `has_authorization` says
-  whether the secret store holds an Authorization value, so the snapshot
-  never reads secrets.
+  every pass read everything after it again. `authorization_secret` names
+  the secret store entry holding the Authorization value (null: none), so
+  the snapshot never reads secrets.
 - **A test send that gets through** counts as a send: it clears the
   receiver's refusals and the last problem.
 - **The snapshot.** OutsideAgentSignIn's snapshot carries everything but the
@@ -1785,3 +1785,17 @@ What the build changed from the plan above:
   server layer's type silently became `any`, and only `bin.ts` failed to
   compile. With the split, about 12 more RPCs fit in the main group; 24 don't.
   The lasting fix is splitting it further by area (a follow-up).
+
+Sol's review of the build (Oct 31), three findings, all fixed:
+
+- **An edit could pair a new key with the old address.** The key was
+  overwritten before the row saved the new address; a failure between the
+  two would send the new key to the old receiver. Now every new value goes
+  in a new entry and the row's one write switches address and entry
+  together; the old entry goes after.
+- **Waiting alerts ignored an edit.** A retry went out even after Edit
+  dropped its kind or project. Each send now checks the target's current
+  kinds and projects.
+- **A stalled body lost the answer.** A 503 whose body never finished
+  timed out as "may have arrived" and was never retried. An answer keeps its
+  status once its headers come.
