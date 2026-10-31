@@ -169,11 +169,12 @@ describe.skipIf(process.platform === "win32")("makeManagedNode", () => {
     Effect.gen(function* () {
       const toolsDir = yield* tempToolsDir;
       const pidFile = path.join(toolsDir, "node.pid");
-      // A `node` that hangs, like one waiting on something it will never get.
+      // A `node` that hangs, like one waiting on something it will never
+      // get, and ignores being asked to stop: it has to be killed outright.
       const hanging = makeFixture([
         {
           name: "node/bin/node",
-          data: Buffer.from(`#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 60\n`),
+          data: Buffer.from(`#!/bin/sh\ntrap '' TERM\necho $$ > "${pidFile}"\nexec sleep 60\n`),
           mode: 0o755,
         },
         { name: "node/lib/node_modules/npm/bin/npm-cli.js", data: Buffer.from("// npm\n") },
