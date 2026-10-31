@@ -1,9 +1,12 @@
 import {
   ChildRequestBatchId,
   ChildRequestId,
+  EMPTY_CHILD_REQUEST_STATE,
   EnvironmentId,
   MessageId,
+  ModelSelection,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -15,8 +18,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   describeThreadStartCall,
   parseThreadStartResult,
+  pendingChildThreads,
   type ThreadStartCall,
 } from "./childThreads";
+import type { ProviderInstanceEntry } from "./providerInstances";
 import type { SidebarThreadSummary } from "./types";
 
 const TURN = TurnId.make("turn-parent");
@@ -273,5 +278,86 @@ describe("thread_start records in the parent's chat", () => {
       heading: "Tried to start threads",
       outcome: "not started",
     });
+  });
+});
+
+describe("the approval card", () => {
+  it("names the reasoning each thread was asked at, never this computer's default in its place", () => {
+    // This computer's Sol offers Low (its default) and Extra High, not Max.
+    const codex = {
+      instanceId: ProviderInstanceId.make("codex"),
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [
+        {
+          slug: "gpt-6.1-sol",
+          name: "GPT-6.1 Sol",
+          isCustom: false,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "low", label: "Low", isDefault: true },
+                  { id: "xhigh", label: "Extra High" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as ProviderInstanceEntry;
+    const sol = (reasoning?: string) =>
+      ({
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        ...(reasoning !== undefined
+          ? { options: [{ id: "reasoningEffort", value: reasoning }] }
+          : {}),
+      }) as ModelSelection;
+    const request = (
+      id: string,
+      modelSelection: ModelSelection,
+      remote: boolean,
+    ): OrchestrationChildRequest => {
+      const base = waitingRequest(id, "batch-1");
+      return {
+        ...base,
+        launch: {
+          ...base.launch!,
+          modelSelection,
+          ...(remote
+            ? {
+                workspace: { kind: "remote", projectKey: "repo", checkout: "worktree" },
+                target: { environmentId: MAC_MINI, label: "Mac mini" },
+              }
+            : {}),
+        },
+      };
+    };
+    const card = pendingChildThreads(
+      {
+        modelSelection: sol("xhigh"),
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          open: [
+            request("here-default", sol(), false),
+            request("there-xhigh", sol("xhigh"), true),
+            request("there-max", sol("max"), true),
+            request("there-default", sol(), true),
+          ],
+        },
+      },
+      [codex],
+      (model) => model.name,
+    );
+    expect(card?.threads.map((thread) => thread.reasoning)).toEqual([
+      "Low",
+      "Extra High",
+      "max",
+      null,
+    ]);
   });
 });

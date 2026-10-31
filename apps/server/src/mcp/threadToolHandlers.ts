@@ -23,7 +23,9 @@ import {
   type AgentThreadsMode,
   CHILD_THREADS_PER_CALL,
   type EnvironmentId,
+  type PeerAgent,
   type PeerDescriptor,
+  type PeerModelReasoning,
   ChildRequestBatchId,
   ChildRequestId,
   ChildThreadLaunch,
@@ -59,9 +61,16 @@ import { childRequestCommandId, derivedUuid } from "../orchestration/childReques
 import { pendingChildRequest } from "../orchestration/childThreadDecisions.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
-import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
+import {
+  childModelRefusal,
+  providerModelReasoning,
+  type ReasoningSource,
+  reasoningLevel,
+  settleChildReasoning,
+} from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
+  agentForCaller,
   dispatchOutcome,
   listThreadAgents,
   modelLabel,
@@ -76,6 +85,7 @@ import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
+import { roomAgentEntries } from "./roomAgents.ts";
 import { roomCheckoutCwd } from "./roomToolHandlers.ts";
 import type {
   ThreadAgentsResult,
@@ -108,6 +118,8 @@ export interface ThreadToolDeps {
   ) => Effect.Effect<Pick<OrchestrationProjectShell, "kind" | "workspaceRoot"> | undefined>;
   /** The provider snapshots: who a child could run on. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
+  /** The user's default for new threads (Settings): the last reasoning a child follows. */
+  readonly userDefaultModel: Effect.Effect<ModelSelection | null>;
   /** Whether agents may start threads, read live at every call. */
   readonly threadsMode: Effect.Effect<AgentThreadsMode>;
   readonly git: Pick<GitVcsDriverShape, "execute">;
@@ -185,6 +197,63 @@ export const callerModelSelection = (
     ? thread.participants.find((participant) => participant.id === participantId)?.modelSelection
     : undefined) ?? thread.modelSelection;
 
+/** A started thread's `reasoning`, when its selection names a level. */
+const withReasoningOf = (selection: ModelSelection) => {
+  const reasoning = reasoningLevel(selection);
+  return reasoning !== undefined ? { reasoning } : {};
+};
+
+/** A model as the thread tools show it, with the reasoning level it names. */
+const shownModel = (selection: ModelSelection) => ({
+  instanceId: selection.instanceId,
+  model: selection.model,
+  ...withReasoningOf(selection),
+});
+
+/**
+ * Whose reasoning a child (or a scheduled task's runs) follows when the call
+ * names none, in order: the asking agent, the room's other agents still in
+ * it, the user's default for new threads (settleChildReasoning).
+ */
+export const reasoningSources = (
+  thread: OrchestrationThread,
+  participantId: McpInvocationScope["participantId"],
+  providers: ReadonlyArray<ServerProvider>,
+  userDefault: ModelSelection | null,
+): ReadonlyArray<ReasoningSource> =>
+  [
+    callerModelSelection(thread, participantId),
+    ...(participantId !== null ? [thread.modelSelection] : []),
+    ...thread.participants
+      .filter((participant) => participant.leftAt === null && participant.id !== participantId)
+      .map((participant) => participant.modelSelection),
+    ...(userDefault !== null ? [userDefault] : []),
+  ].map((selection) => ({
+    driver: providers.find((provider) => provider.instanceId === selection.instanceId)?.driver,
+    selection,
+  }));
+
+/**
+ * What a model on a linked computer offers for reasoning: what it said,
+ * else what the same kind of agent's model offers here (a model left off its
+ * list, or an older computer that doesn't say), else unknown. The computer
+ * that runs the thread checks the level again.
+ */
+const remoteModelReasoning = (
+  agent: PeerAgent,
+  model: string,
+  providers: ReadonlyArray<ServerProvider>,
+): PeerModelReasoning | null | undefined => {
+  const listed = agent.models.find((entry) => entry.model === model)?.reasoningSetting;
+  if (listed !== undefined) return listed;
+  for (const provider of providers) {
+    if (provider.driver !== agent.driver) continue;
+    const here = providerModelReasoning(provider, model);
+    if (here !== undefined) return here;
+  }
+  return undefined;
+};
+
 /** A child on a linked computer's last reported status, as a status word. */
 const remoteStatusWord = (cachedStatus: string): ThreadStatusWord =>
   (["working", "needs the user", "waiting", "failed", "idle", "wrapped"] as const).find(
@@ -230,6 +299,8 @@ interface StartSpec {
   readonly title: string;
   readonly prompt: string;
   readonly agent: ModelSelection | undefined;
+  /** A reasoning level the call named, settled with the agent (settleChildReasoning). */
+  readonly reasoning: string | undefined;
   readonly runSetup: boolean;
 }
 
@@ -241,6 +312,7 @@ interface StartInput {
       | {
           readonly instanceId: string;
           readonly model: string;
+          readonly reasoning?: string | undefined;
           readonly options?:
             | ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>
             | undefined;
@@ -329,7 +401,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         interactionMode: thread.interactionMode,
         only,
       });
-      const agents = listedAgents.agents.map(({ driver: _driver, ...agent }) => agent);
+      const agents = listedAgents.agents.map(agentForCaller);
       const unavailable = listedAgents.unavailable;
       if (only !== undefined && agents.length === 0 && unavailable.length === 0) {
         return {
@@ -339,12 +411,25 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         } satisfies ThreadAgentsResult;
       }
       const yours = callerModelSelection(thread, scope.participantId);
+      // The room's other agents, so the caller can pick a model the user
+      // already set up here, at the reasoning they chose for it.
+      const room = roomAgentEntries(thread, modelLabel(thread.modelSelection, providers)).filter(
+        (entry) => entry.present && entry.participantId !== scope.participantId,
+      );
       const computers =
         deps.links === undefined || only !== undefined ? [] : yield* deps.links.computers;
       return {
         outcome: "ok",
         approval: mode,
-        yours: { instanceId: yours.instanceId, model: yours.model },
+        yours: shownModel(yours),
+        ...(room.length > 0
+          ? {
+              room: room.map((entry) => ({
+                name: entry.name,
+                ...shownModel(entry.modelSelection),
+              })),
+            }
+          : {}),
         agents,
         unavailable,
         ...(computers.length > 0
@@ -353,9 +438,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 name: computer.label,
                 environmentId: computer.environmentId,
                 reachable: computer.reachable,
-                agents: (computer.descriptor?.agents ?? []).map(
-                  ({ driver: _driver, ...agent }) => agent,
-                ),
+                agents: (computer.descriptor?.agents ?? []).map(agentForCaller),
               })),
             }
           : only === undefined && deps.links !== undefined
@@ -524,6 +607,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               request.launch !== undefined
                 ? modelLabel(request.launch.modelSelection, providers)
                 : "",
+            ...(request.launch !== undefined ? withReasoningOf(request.launch.modelSelection) : {}),
             workspace: request.launch?.workspace.kind ?? "worktree",
           })),
         } satisfies ThreadStartResult;
@@ -546,6 +630,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           threadId: shell.id,
           title: shell.title,
           model: modelLabel(shell.modelSelection, providers),
+          ...withReasoningOf(shell.modelSelection),
           workspace: shell.worktreePath !== null ? "worktree" : "project_folder",
         })),
       } satisfies ThreadStartResult;
@@ -599,7 +684,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             detail: agent.refused,
           } satisfies ThreadStartResult;
         }
-        specs.push({ title, prompt, agent, runSetup: entry.runSetup ?? true });
+        const reasoning = entry.agent?.reasoning?.trim() || undefined;
+        specs.push({ title, prompt, agent, reasoning, runSetup: entry.runSetup ?? true });
       }
       const callerTurnId = thread.session?.activeTurnId ?? null;
       if (callerTurnId === null) {
@@ -653,6 +739,12 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           }
           const interactionMode: ProviderInteractionMode = current.interactionMode;
           const callerModel = callerModelSelection(current, scope.participantId);
+          const sources = reasoningSources(
+            current,
+            scope.participantId,
+            providers,
+            yield* deps.userDefaultModel,
+          );
           const selections: ModelSelection[] = [];
           for (const spec of specs) {
             const selection = spec.agent ?? callerModel;
@@ -671,7 +763,24 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                     : modelRefusal,
               } satisfies ThreadStartResult;
             }
-            selections.push(selection);
+            // Your own model, unnamed, keeps your reasoning as it is.
+            if (spec.agent === undefined && spec.reasoning === undefined) {
+              selections.push(selection);
+              continue;
+            }
+            const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
+            const settled = settleChildReasoning({
+              selection,
+              reasoning: spec.reasoning,
+              driver: provider?.driver,
+              setting: providerModelReasoning(provider, selection.model),
+              sources,
+              name: modelLabel(selection, providers),
+            });
+            if ("refused" in settled) {
+              return { outcome: "refused", detail: settled.refused } satisfies ThreadStartResult;
+            }
+            selections.push(settled);
           }
           const placement = yield* resolveWorkspace(current);
           if ("refused" in placement) {
@@ -727,6 +836,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               threadId: child.childThreadId,
               title: launches[index]!.title,
               model: modelLabel(launches[index]!.modelSelection, providers),
+              ...withReasoningOf(launches[index]!.modelSelection),
               workspace: workspace.kind,
             })),
           } satisfies ThreadStartResult;
@@ -786,12 +896,15 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
    * The agent a thread there runs on: the one named (its instance id there),
    * or that computer's agent of the caller's own kind, its default, or its
    * first. The caller's own instance id means nothing there and is never sent.
+   * Its reasoning is settled after (settleChildReasoning).
    */
   const remoteAgent = (
     descriptor: PeerDescriptor,
     spec: StartSpec,
     caller: { readonly driver: string | undefined; readonly model: string },
-  ): ModelSelection | { readonly refused: string } => {
+  ):
+    | { readonly selection: ModelSelection; readonly agent: PeerAgent }
+    | { readonly refused: string } => {
     if (spec.agent !== undefined) {
       const agent = descriptor.agents.find((entry) => entry.instanceId === spec.agent!.instanceId);
       if (agent === undefined) {
@@ -799,7 +912,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           refused: `${descriptor.label} has no agent "${spec.agent.instanceId}". thread_agents lists its agents under computers.`,
         };
       }
-      return spec.agent;
+      return { selection: spec.agent, agent };
     }
     const sameKind =
       caller.driver === undefined
@@ -824,7 +937,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     if (model === undefined) {
       return { refused: `${descriptor.label}'s ${agent.name} has no model to run on.` };
     }
-    return { instanceId: ProviderInstanceId.make(agent.instanceId), model };
+    return { selection: { instanceId: ProviderInstanceId.make(agent.instanceId), model }, agent };
   };
 
   const remoteStart = (input: {
@@ -882,6 +995,9 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 threadId: request.childThreadId,
                 title: request.launch?.title ?? request.childThreadId,
                 model: request.launch?.modelSelection.model ?? "",
+                ...(request.launch !== undefined
+                  ? withReasoningOf(request.launch.modelSelection)
+                  : {}),
                 workspace: "remote" as const,
                 computer: computer.label,
               })),
@@ -941,19 +1057,39 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const callerDriver = providers.find(
             (provider) => provider.instanceId === callerModel.instanceId,
           )?.driver;
+          // Matched by kind of agent and model, so a model in this room
+          // runs there at the reasoning the user set for it here.
+          const sources = reasoningSources(
+            current,
+            scope.participantId,
+            providers,
+            yield* deps.userDefaultModel,
+          );
           const selections: ModelSelection[] = [];
           for (const spec of specs) {
-            const selection = remoteAgent(descriptor, spec, {
+            const picked = remoteAgent(descriptor, spec, {
               driver: callerDriver,
               model: callerModel.model,
             });
-            if ("refused" in selection) {
+            if ("refused" in picked) {
               return {
                 outcome: "unavailable_agent",
-                detail: selection.refused,
+                detail: picked.refused,
               } satisfies ThreadStartResult;
             }
-            selections.push(selection);
+            const { selection, agent } = picked;
+            const settled = settleChildReasoning({
+              selection,
+              reasoning: spec.reasoning,
+              driver: agent.driver,
+              setting: remoteModelReasoning(agent, selection.model, providers),
+              sources,
+              name: `${descriptor.label}'s ${agent.models.find((entry) => entry.model === selection.model)?.name ?? selection.model}`,
+            });
+            if ("refused" in settled) {
+              return { outcome: "refused", detail: settled.refused } satisfies ThreadStartResult;
+            }
+            selections.push(settled);
           }
           const checkout = roomCheckoutCwd(current, project.workspaceRoot) ?? project.workspaceRoot;
           const branch = yield* pushedBranch(checkout);
@@ -1016,6 +1152,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               threadId: child.childThreadId,
               title: launches[index]!.title,
               model: selections[index]!.model,
+              ...withReasoningOf(selections[index]!),
               workspace: "remote" as const,
               computer: descriptor.label,
             })),

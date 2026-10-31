@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   type AgentThreadsMode,
   EMPTY_AGENT_REQUEST_STATE,
+  type ModelSelection,
   EnvironmentId,
   type PeerDescriptor,
   EMPTY_CHILD_REQUEST_STATE,
@@ -17,6 +18,7 @@ import {
   type ServerProvider,
   SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -51,13 +53,54 @@ const provider = (
     ...patch,
   }) as unknown as ServerProvider;
 
+/** Codex's reasoning levels, as its model picker lists them. */
+const CODEX_REASONING = {
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low", isDefault: true },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+        { id: "xhigh", label: "Extra High" },
+      ],
+    },
+  ],
+};
+
 const PROVIDERS = [
   provider("codex", "codex", {
     models: [
       { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false, capabilities: null },
+      { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol", isCustom: false, capabilities: CODEX_REASONING },
     ] as never,
   }),
-  provider("claudeAgent", "claudeAgent"),
+  provider("claudeAgent", "claudeAgent", {
+    models: [
+      {
+        slug: "claudeAgent-model",
+        name: "claudeAgent model",
+        isCustom: false,
+        // Ultracode is a switch of its own, no longer an effort level.
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "effort",
+              label: "Effort",
+              type: "select",
+              options: [
+                { id: "high", label: "High", isDefault: true },
+                { id: "xhigh", label: "Extra High" },
+              ],
+            },
+            { id: "ultracode", label: "Ultracode", type: "boolean" },
+          ],
+        },
+      },
+    ] as never,
+  }),
   provider("claudeApi", "claudeAgent", {
     auth: { status: "authenticated", type: "apiKey", label: "API key" },
   }),
@@ -156,6 +199,7 @@ const makeTools = (options: {
   readonly mode?: AgentThreadsMode;
   readonly gitRepository?: boolean;
   readonly links?: ThreadToolLinks;
+  readonly userDefault?: ModelSelection;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -207,6 +251,7 @@ const makeTools = (options: {
         ),
       readProject: () => Effect.succeed({ kind: "workspace" as const, workspaceRoot: "/project" }),
       providers: Effect.succeed(PROVIDERS),
+      userDefaultModel: Effect.succeed(options.userDefault ?? null),
       threadsMode: Effect.succeed(options.mode ?? "auto"),
       git: {
         execute: (input) =>
@@ -454,6 +499,46 @@ describe("thread_start", () => {
       expect(
         ofType(tools.dispatched, "thread.child.start")[0]?.children[0]?.launch.workspace,
       ).toEqual({ kind: "project_folder" });
+    }),
+  );
+});
+
+describe("a thread's reasoning", () => {
+  it.effect("sets a level the agent names, by id or picker name, or the provider's own", () =>
+    Effect.gen(function* () {
+      // The user's default for new threads is Sol at Extra High.
+      const tools = yield* makeTools({
+        userDefault: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6.1-sol",
+          options: [{ id: "reasoningEffort", value: "xhigh" }],
+        },
+      });
+      const start = (reasoning?: string) =>
+        tools.handlers.thread_start(mainCaller(), {
+          threads: [
+            {
+              title: `Check ${reasoning ?? "it"}`,
+              prompt: "Check it.",
+              agent: {
+                instanceId: "codex",
+                model: "gpt-6.1-sol",
+                ...(reasoning !== undefined ? { reasoning } : {}),
+              },
+            },
+          ],
+        });
+
+      expect((yield* start()).threads?.[0]?.reasoning).toBe("xhigh");
+      expect((yield* start("High")).threads?.[0]?.reasoning).toBe("high");
+      const providers = yield* start("default");
+      expect(providers.outcome).toBe("started");
+      expect(providers.threads?.[0]?.reasoning).toBeUndefined();
+      expect(yield* start("ultra")).toMatchObject({
+        outcome: "refused",
+        detail: `GPT-6.1 Sol has no reasoning level "ultra". Its levels: low, medium, high, xhigh, or "default" for the provider's own.`,
+      });
+      expect(ofType(tools.dispatched, "thread.child.start")).toHaveLength(3);
     }),
   );
 });
@@ -770,6 +855,51 @@ const fakeLinks = (patch: Partial<ThreadToolLinks> = {}): ThreadToolLinks => ({
   ...patch,
 });
 
+/** Astra asking, in a room the user brought Sol into at Extra High (and fast). */
+const SOL_ROOM = makeThread({
+  participants: [
+    {
+      id: ThreadParticipantId.make("sol"),
+      handle: "GPT-6.1 Sol",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+      joinedAt: AT,
+      leftAt: null,
+    },
+  ],
+});
+
+/** The Mac mini, its Codex also offering Sol at these reasoning levels. */
+const solThere = (levels: ReadonlyArray<string>): PeerDescriptor => {
+  const [claude, codex] = MAC_DESCRIPTOR.agents;
+  return {
+    ...MAC_DESCRIPTOR,
+    agents: [
+      claude!,
+      {
+        ...codex!,
+        models: [
+          ...codex!.models,
+          {
+            model: "gpt-6.1-sol",
+            name: "GPT-6.1 Sol",
+            reasoningSetting: {
+              option: "reasoningEffort",
+              levels: levels.map((id) => ({ id, label: id })),
+            },
+          },
+        ],
+      },
+    ],
+  };
+};
+
 describe("thread tools across linked computers", () => {
   it.effect("starts a thread on a linked computer with that computer's own agent", () =>
     Effect.gen(function* () {
@@ -826,6 +956,121 @@ describe("thread tools across linked computers", () => {
       });
       expect(ofType(missing.dispatched, "thread.child.start")).toEqual([]);
     }),
+  );
+
+  it.effect("runs a room agent's model at the reasoning the user set for it, here and there", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({
+        caller: SOL_ROOM,
+        links: fakeLinks({ describe: () => Effect.succeed(solThere(["low", "xhigh"])) }),
+      });
+
+      const agents = yield* tools.handlers.thread_agents(mainCaller());
+      expect(agents.room).toEqual([
+        { name: "GPT-6.1 Sol", instanceId: "codex", model: "gpt-6.1-sol", reasoning: "xhigh" },
+      ]);
+      expect(agents.agents[0]?.models[1]).toEqual({
+        model: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        reasoning: ["low", "medium", "high", "xhigh"],
+      });
+
+      const here = yield* tools.handlers.thread_start(mainCaller(), {
+        threads: [
+          {
+            title: "Review",
+            prompt: "Review it.",
+            agent: { instanceId: "codex", model: "gpt-6.1-sol" },
+          },
+        ],
+      });
+      const there = yield* tools.handlers.thread_start(mainCaller(), {
+        threads: [
+          {
+            title: "Review there",
+            prompt: "Review it.",
+            agent: { instanceId: "mac-codex", model: "gpt-6.1-sol" },
+          },
+        ],
+        computer: "Mac mini",
+      });
+      expect([here.threads?.[0]?.reasoning, there.threads?.[0]?.reasoning]).toEqual([
+        "xhigh",
+        "xhigh",
+      ]);
+      // The reasoning follows; the rest of what the user set for Sol doesn't.
+      expect(
+        ofType(tools.dispatched, "thread.child.start").map(
+          (start) => start.children[0]?.launch.modelSelection,
+        ),
+      ).toEqual([
+        {
+          instanceId: "codex",
+          model: "gpt-6.1-sol",
+          options: [{ id: "reasoningEffort", value: "xhigh" }],
+        },
+        {
+          instanceId: "mac-codex",
+          model: "gpt-6.1-sol",
+          options: [{ id: "reasoningEffort", value: "xhigh" }],
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "refuses a room level a model doesn't offer, and follows a retired one as it is now",
+    () =>
+      Effect.gen(function* () {
+        // Sol there has no Extra High: the agent hears so instead of a quiet default.
+        const tools = yield* makeTools({
+          caller: SOL_ROOM,
+          links: fakeLinks({ describe: () => Effect.succeed(solThere(["low", "high"])) }),
+        });
+        const there = yield* tools.handlers.thread_start(mainCaller(), {
+          threads: [
+            {
+              title: "Review there",
+              prompt: "Review it.",
+              agent: { instanceId: "mac-codex", model: "gpt-6.1-sol" },
+            },
+          ],
+          computer: "Mac mini",
+        });
+        expect(there).toMatchObject({
+          outcome: "refused",
+          detail: `Mac mini's GPT-6.1 Sol doesn't offer "xhigh", the reasoning the user set for this model here. Name one of its levels in \`reasoning\`: low, high, or "default" for the provider's own.`,
+        });
+
+        // A caller still on Claude's old "ultracode" effort: its thread runs
+        // at Extra High, without turning Ultracode on.
+        const claude = yield* makeTools({
+          caller: makeThread({
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claudeAgent-model",
+              options: [{ id: "effort", value: "ultracode" }],
+            },
+          }),
+        });
+        const started = yield* claude.handlers.thread_start(mainCaller(), {
+          threads: [
+            {
+              title: "Check",
+              prompt: "Check it.",
+              agent: { instanceId: "claudeAgent", model: "claudeAgent-model" },
+            },
+          ],
+        });
+        expect(started.threads?.[0]?.reasoning).toBe("xhigh");
+        expect(
+          ofType(claude.dispatched, "thread.child.start")[0]?.children[0]?.launch.modelSelection,
+        ).toEqual({
+          instanceId: "claudeAgent",
+          model: "claudeAgent-model",
+          options: [{ id: "effort", value: "xhigh" }],
+        });
+      }),
   );
 
   it.effect("lists linked computers and their agents", () =>

@@ -101,12 +101,25 @@ export const AgentThreadAgent = Schema.Struct({
       /** Pass as thread_start's `agent.model`. */
       model: Schema.String,
       name: Schema.String,
+      /** Its reasoning levels, for thread_start's `agent.reasoning`. Absent: none to choose. */
+      reasoning: Schema.optional(Schema.Array(Schema.String)),
     }),
   ),
   /** Models left off a long list; thread_agents with this `instanceId` lists them all. */
   moreModels: Schema.optional(Schema.Number),
 });
 export type AgentThreadAgent = typeof AgentThreadAgent.Type;
+
+/**
+ * A model's reasoning setting as another computer needs it to name a level:
+ * the option the level goes in ("reasoningEffort") and the levels, with the
+ * names the model picker shows ("Extra High").
+ */
+export const PeerModelReasoning = Schema.Struct({
+  option: Schema.String,
+  levels: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+});
+export type PeerModelReasoning = typeof PeerModelReasoning.Type;
 
 // ----- peer.describe ----------------------------------------------------------------
 
@@ -119,6 +132,14 @@ export type PeerCaller = typeof PeerCaller.Type;
 
 export const PeerAgent = Schema.Struct({
   ...AgentThreadAgent.fields,
+  models: Schema.Array(
+    Schema.Struct({
+      model: Schema.String,
+      name: Schema.String,
+      /** Absent: no levels to choose, or an older server that doesn't say. */
+      reasoningSetting: Schema.optional(PeerModelReasoning),
+    }),
+  ),
   /** The provider kind (`codex`, `claudeAgent`, ...), to pick the caller's kind by default. */
   driver: Schema.String,
 });

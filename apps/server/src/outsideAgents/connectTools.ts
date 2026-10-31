@@ -474,7 +474,12 @@ export const OutsideThreadStartTool = drivesThreads(
       title: Schema.optional(
         Schema.String.annotate({ description: "A few words naming the work." }),
       ),
-      agent: Schema.optional(agentParameter("agents")),
+      agent: Schema.optional(
+        agentParameter(
+          "agents",
+          "the user's default for new threads when it is that model, else the provider's",
+        ),
+      ),
       workspace: Schema.optional(
         Schema.Literals(["worktree", "project_folder"]).annotate({
           description:

@@ -17,17 +17,24 @@ import type {
   TurnId,
 } from "@threadlines/contracts";
 import { awaitingChildBatch } from "@threadlines/shared/childThreads";
+import {
+  findReasoningOptionDescriptor,
+  findReasoningSelection,
+  getPromotedChoiceReplacement,
+} from "@threadlines/shared/model";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { formatChildThreadCount } from "./components/Sidebar.logic";
 import { toSortableTimestamp } from "./lib/threadSort";
 import type { ProviderInstanceEntry } from "./providerInstances";
+import { getProviderModelCapabilities } from "./providerModels";
 import {
   buildRoomAgentLabels,
   roomAgentDisplayName,
   roomAgentKey,
   roomModelName,
+  roomReasoningLabel,
   type RoomThreadLike,
 } from "./rooms";
 import { selectEnvironmentState, useStore } from "./store";
@@ -188,6 +195,8 @@ export interface PendingChildThread {
   readonly title: string;
   readonly prompt: string;
   readonly modelName: string;
+  /** The reasoning it would run at, as the model picker names it ("Extra High"), if known. */
+  readonly reasoning: string | null;
   readonly entry: ProviderInstanceEntry | undefined;
   /** False in a project without git: it shares the project folder. */
   readonly ownWorktree: boolean;
@@ -201,6 +210,34 @@ export interface PendingChildThreads {
   /** The asking agent's name, the way the rest of the chat names it. */
   readonly fromName: string;
   readonly threads: ReadonlyArray<PendingChildThread>;
+}
+
+/**
+ * The reasoning a thread would run at, as the model picker names it. A level
+ * the launch names keeps its own id when this app's catalog lacks it (another
+ * computer's can differ), never this one's default in its place. An unnamed
+ * level is the provider's default, known here only for this computer.
+ */
+function launchReasoning(
+  selection: ModelSelection,
+  entry: ProviderInstanceEntry | undefined,
+  remote: boolean,
+): string | null {
+  const named = findReasoningSelection(selection.options);
+  if (named === undefined) {
+    return remote || entry === undefined ? null : roomReasoningLabel(selection, entry);
+  }
+  const value = String(named.value);
+  const caps = entry
+    ? getProviderModelCapabilities(entry.models, selection.model, entry.driverKind)
+    : null;
+  const levels = findReasoningOptionDescriptor(caps?.optionDescriptors ?? [])?.options ?? [];
+  const current = getPromotedChoiceReplacement(named.id, value);
+  return (
+    levels.find((level) => level.id === value)?.label ??
+    levels.find((level) => level.id === current)?.label ??
+    value
+  );
 }
 
 /** The batch the approval card asks about, or null when none waits. */
@@ -234,13 +271,21 @@ export function pendingChildThreads(
     threads: batch.flatMap((request) => {
       const launch = request.launch;
       if (launch === undefined) return [];
+      const entry = entries.find(
+        (candidate) => candidate.instanceId === launch.modelSelection.instanceId,
+      );
       return [
         {
           requestId: request.requestId,
           title: launch.title,
           prompt: launch.prompt,
           modelName: roomModelName(launch.modelSelection, entries, modelDisplayName),
-          entry: entries.find((entry) => entry.instanceId === launch.modelSelection.instanceId),
+          reasoning: launchReasoning(
+            launch.modelSelection,
+            entry,
+            launch.workspace.kind === "remote",
+          ),
+          entry,
           ownWorktree: launch.workspace.kind === "worktree",
           computer: launch.workspace.kind === "remote" ? (launch.target?.label ?? null) : null,
         },

@@ -1309,6 +1309,87 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
     roomTools: new Set(roomToolsFor(undefined, { scheduledRun })),
   });
 
+  it.effect("an agent's task runs at the reasoning set for its model, or at a level it names", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      // The run asking is at Extra High, as the user set it.
+      const task = yield* service.create(
+        draft({
+          cadence: { kind: "manual" },
+          modelSelection: {
+            instanceId: CODEX,
+            model: "gpt-6-astra",
+            options: [{ id: "reasoningEffort", value: "xhigh" }],
+          },
+        }),
+      );
+      const run = yield* service.runNow({ id: task.id });
+      const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the run started",
+      );
+      yield* computer.turnRuns(threadId, TurnId.make("run-turn"));
+      const tools = makeScheduleToolHandlers({
+        scheduledTasks: service,
+        readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
+        threadsMode: Effect.succeed("auto"),
+        providers: Effect.succeed([
+          {
+            ...PROVIDER,
+            models: [
+              {
+                slug: "gpt-6-astra",
+                name: "GPT-6 Astra",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select",
+                      options: [
+                        { id: "medium", label: "Medium", isDefault: true },
+                        { id: "high", label: "High" },
+                        { id: "xhigh", label: "Extra High" },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          } as unknown as ServerProvider,
+        ]),
+        userDefaultModel: Effect.succeed(null),
+        localTimeZone: "UTC",
+      });
+      const create = (name: string, reasoning?: string) =>
+        tools.schedule_create(callerScope(threadId, false), {
+          name,
+          prompt: "Check the build.",
+          schedule: { kind: "weekdays", time: { hour: 9, minute: 0 } },
+          agent: {
+            instanceId: CODEX,
+            model: "gpt-6-astra",
+            ...(reasoning !== undefined ? { reasoning } : {}),
+          },
+        });
+
+      assert.equal((yield* create("Follows")).task?.agent.reasoning, "xhigh");
+      assert.equal((yield* create("Named", "High")).task?.agent.reasoning, "high");
+      const unknown = yield* create("Unknown", "ultra");
+      assert.deepEqual(
+        [unknown.outcome, unknown.detail],
+        [
+          "refused",
+          `GPT-6 Astra has no reasoning level "ultra". Its levels: medium, high, xhigh, or "default" for the provider's own.`,
+        ],
+      );
+    }),
+  );
+
   it.effect(
     "ask waits for the user's Allow, auto applies at once, and only the run's own turn finishes it",
     () =>
@@ -1330,6 +1411,7 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
           readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
           threadsMode: Effect.sync(() => mode),
           providers: Effect.succeed([PROVIDER]),
+          userDefaultModel: Effect.succeed(null),
           localTimeZone: "Europe/Madrid",
         });
         const scope = callerScope(threadId, true);
@@ -1437,6 +1519,7 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
           readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
           threadsMode: Effect.succeed("ask"),
           providers: Effect.succeed([PROVIDER]),
+          userDefaultModel: Effect.succeed(null),
           localTimeZone: "UTC",
         });
         const asked = yield* tools.schedule_create(callerScope(threadId, false), {
@@ -1498,6 +1581,7 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
           readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
           threadsMode: Effect.sync(() => mode),
           providers: Effect.succeed([PROVIDER]),
+          userDefaultModel: Effect.succeed(null),
           localTimeZone: "UTC",
         });
         const scope = callerScope(threadId, false);
@@ -1649,6 +1733,7 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
         readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
         threadsMode: Effect.succeed("auto"),
         providers: Effect.succeed([PROVIDER]),
+        userDefaultModel: Effect.succeed(null),
         localTimeZone: "UTC",
       });
       // Even a stale credential that carries every tool.

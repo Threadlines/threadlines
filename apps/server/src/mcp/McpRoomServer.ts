@@ -178,6 +178,11 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     });
     // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
     const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+    // The user's default for new threads: the last reasoning an agent-made thread follows.
+    const userDefaultModel = settings.getSettings.pipe(
+      Effect.map((current) => current.newThreadModelSelection),
+      Effect.orElseSucceed(() => null),
+    );
     const threadHandlers = makeThreadToolHandlers({
       engine,
       readThread,
@@ -195,6 +200,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           .getProjectShellById(projectId)
           .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
       providers: providers.getProviders,
+      userDefaultModel,
       threadsMode: settings.getSettings.pipe(
         Effect.map(agentThreadsMode),
         Effect.orElseSucceed(() => "off" as const),
@@ -214,6 +220,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.orElseSucceed(() => "off" as const),
       ),
       providers: providers.getProviders,
+      userDefaultModel,
       localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     // The app guide reads this computer's values only as an answer shows them.

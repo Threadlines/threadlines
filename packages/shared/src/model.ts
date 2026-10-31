@@ -316,6 +316,13 @@ export function findReasoningOptionDescriptor(
   );
 }
 
+/** The reasoning level among a selection's options; undefined when its provider picks. */
+export function findReasoningSelection(
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ProviderOptionSelection | undefined {
+  return selections?.find((selection) => REASONING_OPTION_IDS.has(selection.id));
+}
+
 /**
  * Whether a model still offers the reasoning level a selection names. True
  * for a selection that names none: its provider picks.
@@ -324,7 +331,7 @@ export function offersSelectedReasoning(
   caps: ModelCapabilities | null | undefined,
   selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
 ): boolean {
-  const chosen = selections?.find((selection) => REASONING_OPTION_IDS.has(selection.id));
+  const chosen = findReasoningSelection(selections);
   if (chosen === undefined) {
     return true;
   }
