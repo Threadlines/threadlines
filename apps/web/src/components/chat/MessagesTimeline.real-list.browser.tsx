@@ -1993,7 +1993,7 @@ describe("text selection popover with the real virtual list", () => {
     }
   });
 
-  it("keeps the selection and its actions when the list moves the text's row", async () => {
+  it("keeps the selection and its actions when the list moves the text's row, unless the reader moved on", async () => {
     const { screen } = await renderLongChat();
     try {
       dragSelectWord("message-51", "pelican");
@@ -2005,13 +2005,41 @@ describe("text selection popover with the real virtual list", () => {
       // The list keeps its rows' elements in order by moving them, which a
       // scroll can set off. A move collapses every range inside the row, the
       // page's selection too, and nothing says so.
-      const row = rowElement("message-51");
-      row.parentElement!.moveBefore(row, null);
-      await vi.waitFor(() => {
-        expect(window.getSelection()!.toString()).toBe("pelican");
-        expect(isShown(selectionPopover())).toBe(true);
-        expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
-      });
+      const moveRow = () => {
+        const row = rowElement("message-51");
+        row.parentElement!.moveBefore(row, null);
+      };
+      const expectSelectionBack = () =>
+        vi.waitFor(() => {
+          expect(window.getSelection()!.toString()).toBe("pelican");
+          expect(isShown(selectionPopover())).toBe(true);
+          expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
+        });
+      moveRow();
+      await expectSelectionBack();
+
+      // An edit inside the message in the same moment as the move.
+      const body = document.querySelector<HTMLElement>(
+        '[data-transcript-message-body="true"][data-transcript-message-id="message-51"]',
+      )!;
+      const edit = document.createTextNode("");
+      body.append(edit);
+      edit.remove();
+      moveRow();
+      await expectSelectionBack();
+
+      // A click elsewhere before the next frame is the reader's: the actions go.
+      moveRow();
+      const elsewhere = document
+        .createTreeWalker(
+          document.querySelector('[data-message-id="message-52"]')!,
+          NodeFilter.SHOW_TEXT,
+        )
+        .nextNode()!;
+      window.getSelection()!.collapse(elsewhere, 0);
+      await vi.waitFor(() => expect(selectionPopover()).toBeNull());
+      await nextFrame();
+      expect(window.getSelection()!.isCollapsed).toBe(true);
     } finally {
       await screen.unmount();
     }
