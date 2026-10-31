@@ -64,6 +64,7 @@ import {
   retryDelayMs,
   scheduleRequestAlertId,
   testAlertPayload,
+  turnAlertId,
 } from "./pushAlertRules.ts";
 import { makePushPresence } from "./pushPresence.ts";
 import { encryptWebPushPayload } from "./webPushEncryption.ts";
@@ -430,6 +431,15 @@ const make = Effect.gen(function* () {
       if (Option.isNone(read.found)) return DROP;
       const thread = read.found.value;
       if (!ASKS_THE_USER.has(alert.reason)) {
+        // A child's turn whose result went back to its parent: the parent's
+        // alert counts. Its cancel can come first, since a turn's final
+        // capture, which starts this alert, often lands after the hand-back.
+        if (
+          alert.alertId === turnAlertId(alert.subjectId) &&
+          thread.handedBackTurnId === alert.subjectId
+        ) {
+          return DROP;
+        }
         const answered = yield* answeredOverLink(thread, alert, now).pipe(
           Effect.orElseSucceed(() => "unread" as const),
         );
