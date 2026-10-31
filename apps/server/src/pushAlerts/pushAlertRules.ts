@@ -82,6 +82,25 @@ function activityDetail(payload: unknown): string | null {
   return typeof detail === "string" && detail.trim().length > 0 ? detail.trim() : null;
 }
 
+/** A turn that ended on its own: finished, or failed. */
+const turnEndAlert = (
+  occurredAt: string,
+  threadId: ThreadId,
+  turnId: string,
+  completed: boolean,
+): ReadonlyArray<PushAlertAction> => [
+  add({
+    occurredAt,
+    alertId: turnAlertId(turnId),
+    threadId,
+    kind: completed ? "finished" : "failed",
+    reason: completed ? "finished" : "error",
+    subjectId: turnId,
+    detail: null,
+    holdMs: completed ? FINISHED_HOLD_MS : FAILED_HOLD_MS,
+  }),
+];
+
 /** The alerts one event starts, cancels or rules out. */
 export function pushAlertActionsForEvent(
   event: OrchestrationEvent,
@@ -163,21 +182,19 @@ export function pushAlertActionsForEvent(
         ? []
         : [{ type: "suppress", alertId: turnAlertId(turnId), threadId }];
     }
+    // A turn in a git checkout ends with its final capture; the rest end
+    // with thread.turn-completed. Both share the turn's alert id, so a turn
+    // that gets both (a late settle) still alerts once.
+    case "thread.turn-diff-completed": {
+      const { threadId, turnId, status, completesTurn } = event.payload;
+      // Older events without the flag are past ALERT_EVENT_MAX_AGE_MS anyway.
+      if (completesTurn !== true || status === "missing") return [];
+      return turnEndAlert(event.occurredAt, threadId, turnId, status === "ready");
+    }
     case "thread.turn-completed": {
       const { threadId, turnId, state } = event.payload;
       if (state === "interrupted") return [];
-      return [
-        add({
-          occurredAt: event.occurredAt,
-          alertId: turnAlertId(turnId),
-          threadId,
-          kind: state === "completed" ? "finished" : "failed",
-          reason: state === "completed" ? "finished" : "error",
-          subjectId: turnId,
-          detail: null,
-          holdMs: state === "completed" ? FINISHED_HOLD_MS : FAILED_HOLD_MS,
-        }),
-      ];
+      return turnEndAlert(event.occurredAt, threadId, turnId, state === "completed");
     }
     case "thread.side-turn-settled": {
       const { threadId, sideTurnId, outcome, error } = event.payload;

@@ -115,6 +115,35 @@ describe("pushAlertActionsForEvent", () => {
     ).toEqual([{ type: "suppress", alertId: "turn:turn-4", threadId: THREAD }]);
   });
 
+  it("alerts a turn in a git checkout when its final capture ends it", () => {
+    const captured = (turnId: string, status: string, completesTurn: boolean) =>
+      pushAlertActionsForEvent(
+        event("thread.turn-diff-completed", {
+          threadId: THREAD,
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: "refs/threadlines/checkpoints/1",
+          status,
+          files: [],
+          assistantMessageId: null,
+          completedAt: "2026-10-23T12:00:00.000Z",
+          completesTurn,
+        }),
+      );
+    expect(captured("turn-1", "ready", true)).toMatchObject([
+      {
+        type: "add",
+        intent: { alertId: "turn:turn-1", kind: "finished", holdMs: FINISHED_HOLD_MS },
+      },
+    ]);
+    expect(captured("turn-2", "error", true)).toMatchObject([
+      { type: "add", intent: { alertId: "turn:turn-2", kind: "failed", reason: "error" } },
+    ]);
+    // A capture mid-turn, or a placeholder for a stopped turn, ends nothing.
+    expect(captured("turn-3", "ready", false)).toEqual([]);
+    expect(captured("turn-4", "missing", true)).toEqual([]);
+  });
+
   it("reports a turn cut off by a restart, a start that failed, and a side answer that failed", () => {
     expect(
       pushAlertActionsForEvent(activity("provider.session.restart-interrupted", {}, "turn-9")),
