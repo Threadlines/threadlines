@@ -184,36 +184,33 @@ const make = Effect.gen(function* () {
                   projectId: verdict.thread.projectId,
                   occurredAt: row.occurredAt,
                   now: iso(now),
-                  expectedCursor: cursor,
+                  judgedAt: cursor,
                 })
               : yield* repo.record({
                   subjectKey: row.subjectKey,
+                  threadId: row.threadId,
                   name: assistantEventNameOf(verdict.kind),
                   reason: verdict.reason,
                   projectId: verdict.thread.projectId,
                   now: iso(now),
-                  expectedCursor: cursor,
+                  judgedAt: cursor,
                 });
-          // Stale: an event was read since the verdict. The row stays due and
-          // is judged again on the next pass, against what that event did.
+          // Stale: its thread moved after the cursor. The row stays due and is
+          // judged again on the next pass, once the record read what happened.
           return outcome === "recorded";
         }
       }
     });
 
   /**
-   * One pass over the settling rows that are due; true when more are waiting.
-   * Only while the record is on and its cursor has caught up with the event
-   * log: an interrupt or an answer already in the log (after a restart, say)
-   * is read before anything it cancels can become final.
+   * One pass over the settling rows that are due, while the record is on;
+   * true when more are waiting. Each is judged at the cursor as the pass
+   * began: an interrupt or an answer about its thread that the record hasn't
+   * read yet (after a restart, say) keeps it settling (`record`'s rule).
    */
   const settleDue = Effect.gen(function* () {
     const state = yield* repo.getState;
     if (state.cursor === null) return false;
-    if (state.cursor < (yield* repo.latestEventSequence)) {
-      yield* Queue.offer(discoveryBell, undefined);
-      return false;
-    }
     const now = yield* Clock.currentTimeMillis;
     const rows = yield* repo.dueSettling(iso(now), SETTLE_BATCH);
     let any = false;

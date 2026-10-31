@@ -10,6 +10,7 @@ import {
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -17,6 +18,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -25,15 +27,13 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { OutsideAgentConnectionRepository } from "../outsideAgents/OutsideAgentConnectionRepository.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { FINISHED_HOLD_MS } from "../pushAlerts/pushAlertRules.ts";
-import {
-  AssistantEventRepository,
-  AssistantEventRepositoryLive,
-} from "./AssistantEventRepository.ts";
+import { AssistantEventRepositoryLive } from "./AssistantEventRepository.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import { AssistantEvents } from "./AssistantEvents.ts";
 import { AssistantEventsLayer } from "./AssistantEventsLive.ts";
 
 const THREAD = ThreadId.make("thread-1");
+const OTHER_THREAD = ThreadId.make("thread-2");
 const PROJECT = ProjectId.make("project-app");
 
 function makeThread(overrides: Partial<OrchestrationThread> = {}): OrchestrationThread {
@@ -59,9 +59,10 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
 }
 
 /**
- * A computer with an assistant connected: the event log and the thread as
- * the projections read it are fakes the test drives; the record's storage is
- * real SQLite, kept across `restart`s.
+ * A computer with an assistant connected: the thread as the projections read
+ * it is a fake the test drives; the record's storage and the event log's
+ * table are real SQLite, kept across `restart`s. The engine reads the same
+ * events from memory, after `readDelayMs`.
  */
 const makeHarness = Effect.gen(function* () {
   const events: OrchestrationEvent[] = [];
@@ -69,23 +70,13 @@ const makeHarness = Effect.gen(function* () {
   /** `readDelayMs`: how long reading the event log takes (to make the settle loop win a race). */
   const state = { thread: makeThread(), assistants: 1, readDelayMs: 0 };
   const storage = yield* Layer.build(SqlitePersistenceMemory);
+  const sql = Context.get(storage, SqlClient.SqlClient);
   /** The scheduled tasks' snapshots, as ScheduledTasks.changes sends them. */
   const schedules = yield* PubSub.unbounded<ScheduledTasksSnapshot>();
-  // The real storage, but the event log is the fake's: its newest event is where a record starts.
-  const repository = Layer.effect(
-    AssistantEventRepository,
-    Effect.gen(function* () {
-      const real = yield* AssistantEventRepository;
-      return AssistantEventRepository.of({
-        ...real,
-        latestEventSequence: Effect.sync(() => events.at(-1)?.sequence ?? 0),
-      });
-    }),
-  ).pipe(Layer.provide(AssistantEventRepositoryLive));
   const layer = AssistantEventsLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        repository,
+        AssistantEventRepositoryLive,
         Layer.mock(OutsideAgentConnectionRepository)({
           countLive: () => Effect.sync(() => state.assistants),
         }),
@@ -112,13 +103,18 @@ const makeHarness = Effect.gen(function* () {
     yield* record.start().pipe(Scope.provide(scope));
     return { record, stop: Scope.close(scope, Exit.void) };
   });
-  return { events, published, state, boot, schedules };
+  return { events, published, state, boot, schedules, sql };
 });
 
 type Harness = Effect.Success<typeof makeHarness>;
 
 let sequence = 0;
-const appended = (harness: Harness, type: OrchestrationEvent["type"], payload: object) =>
+const appended = (
+  harness: Harness,
+  type: OrchestrationEvent["type"],
+  payload: object,
+  threadId: ThreadId = THREAD,
+) =>
   Effect.gen(function* () {
     sequence += 1;
     const event = {
@@ -126,7 +122,7 @@ const appended = (harness: Harness, type: OrchestrationEvent["type"], payload: o
       eventId: EventId.make(`event-${sequence}`),
       type,
       aggregateKind: "thread",
-      aggregateId: THREAD,
+      aggregateId: threadId,
       occurredAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
       commandId: CommandId.make(`command-${sequence}`),
       causationEventId: null,
@@ -135,6 +131,15 @@ const appended = (harness: Harness, type: OrchestrationEvent["type"], payload: o
       payload,
     } as OrchestrationEvent;
     harness.events.push(event);
+    yield* harness.sql`
+      INSERT INTO orchestration_events (
+        sequence, event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, command_id, actor_kind, payload_json, metadata_json
+      ) VALUES (
+        ${sequence}, ${event.eventId}, 'thread', ${threadId}, ${sequence}, ${type},
+        ${event.occurredAt}, ${event.commandId}, 'server', ${JSON.stringify(payload)}, '{}'
+      )
+    `.pipe(Effect.orDie);
     yield* PubSub.publish(harness.published, event);
     return event;
   });
@@ -257,6 +262,29 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         const events = yield* recorded(second.record);
         assert.strictEqual(events.length, 1);
         assert.strictEqual(events[0]?.seq, 1);
+      }),
+    ),
+  );
+
+  it.effect("isn't held up by another thread's events while it settles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+        harness.state.thread = makeThread({
+          latestTurn: { turnId: "turn-1", state: "completed" } as never,
+        });
+        yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1"));
+        yield* settle();
+        // Another thread streams faster than the record reads: it never
+        // catches up with the log while this turn settles.
+        harness.state.readDelayMs = 3_600_000;
+        yield* appended(harness, "thread.message-sent", { threadId: OTHER_THREAD }, OTHER_THREAD);
+        yield* settle(FINISHED_HOLD_MS + 1_000);
+        const names = (yield* recorded(record)).map((event) => event.name);
+        assert.deepStrictEqual(names, ["thread.finished"]);
       }),
     ),
   );

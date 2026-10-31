@@ -1233,7 +1233,7 @@ production deploy and its secrets.
 
 ## Build notes: step 2 (the record and the read tools)
 
-What was built (`feat/assistants-step2`):
+What was built (`feat/assistants-read-tools`):
 
 - **The record** (`assistants/AssistantEvents.ts`, `AssistantEventsLive.ts`,
   `AssistantEventRepository.ts`, migration 094). Its own cursor over the event
@@ -1300,16 +1300,39 @@ Choices made inside the plan:
   projectId })` for checks, review and mergeability, and `lookup` by branch
   and by the thread's linked numbers for merged or closed ones. Both are
   cached 30 s and ask the host on a miss. The base branch is the pull
-  request's, else `branch.<b>.gh-merge-base`, else `origin/HEAD`. The host
-  and git share one 6 s deadline; what doesn't answer reads as null.
+  request's, else the git driver's own rule for a branch without an upstream
+  (`resolveBaseBranchName`: `branch.<b>.gh-merge-base`, else the remote's
+  default, else `main` or `master`, whichever exists). The host and git share
+  one 6 s deadline; what doesn't answer reads as null. An open pull request
+  already listed is kept when the slower lookup misses the deadline.
+- **A verdict is final only if its thread stood still.** A row is judged at
+  the cursor as the settle pass began, and becomes final only if no event
+  about its thread (or a child result settling on a parent) reached the log
+  after that cursor, read yet or not. So an interrupt or answer already in
+  the log after a restart is read first, and other threads' streaming never
+  holds a row up. Turning the record off drops rows still settling.
+
+Found in the live run: a turn in a git checkout ends with its final capture
+(`thread.turn-diff-completed` with `completesTurn`), not
+`thread.turn-completed`, which only closes turns without one. The alert
+rules listened only for the latter, so phones (since #614) and the record
+missed most finished and failed turns. The rules now take both. A child's
+turn alert also drops once its result went back to the parent
+(`handedBackTurnId`), since the capture that starts it often lands after
+the parent's cancel.
 
 Tests: `AssistantEvents.test.ts` (no phone, a visit, read late, restart
-mid-settle, interrupt mid-settle, `seq` order, the plan rule, history and
-pruning), `connectToolHandlers.test.ts` (`inbox` live, scoped, paged,
+mid-settle, interrupt mid-settle, another thread streaming, turned off
+mid-settle, `seq` order, the plan rule, history and pruning), `connectToolHandlers.test.ts` (`inbox` live, scoped, paged,
 truncated and not kept; `thread_changes` with the cap and with and without a
 pull request; `waiting` for each kind), the tool lists in
 `McpConnectServer.test.ts` and `Assistants.test.ts`. Migration 094 took 3 ms
 on a copy of a real database (5.5 GB, 884,000 events).
 
+Live run (production relay, a throwaway Threadlines with a stand-in agent):
+sign-in, `inbox` listing a finished thread and an approval (gone once
+approved in the app), `thread_changes` with a file and its base branch, and
+`waiting` with the command asked for.
+
 Not done here: `threadlines inbox` and `threadlines thread changes` commands;
-a live run against a hosted assistant.
+a run against a real hosted assistant.

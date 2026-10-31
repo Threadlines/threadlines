@@ -9,8 +9,8 @@
  * - a finished turn that is still the newest, with no work going on
  *   (`childHasLiveWork` defers it), and a plan it left to review turning it
  *   into "needs you";
- * - a child thread an agent on a linked computer started: once its report
- *   reached that computer, the asking thread's own alert is the one that
+ * - a child thread whose turn's result went back to its parent thread, here
+ *   or on a linked computer: the asking thread's own alert is the one that
  *   counts.
  */
 import type { OrchestrationThread, PushAlertKind, ThreadId } from "@threadlines/contracts";
@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import { LinkRequestRepository, type LinkRequestRow } from "../links/LinkRequestRepository.ts";
 import { childHasLiveWork } from "../orchestration/childThreadDecisions.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import type { PushAlertReason } from "./pushAlertRules.ts";
+import { type PushAlertReason, turnAlertId } from "./pushAlertRules.ts";
 
 /** What an alert is about, as both its owners keep it. */
 export interface AlertSubject {
@@ -149,6 +149,14 @@ export const makeAlertChecks = Effect.gen(function* () {
       if (Option.isNone(read.found)) return DROP;
       const thread = read.found.value;
       if (!ASKS_THE_USER.has(alert.reason)) {
+        // The parent's cancel can come first: a turn's final capture, which
+        // starts its alert, often lands after the result was handed back.
+        if (
+          alert.alertId === turnAlertId(alert.subjectId) &&
+          thread.handedBackTurnId === alert.subjectId
+        ) {
+          return DROP;
+        }
         const answered = yield* answeredOverLink(thread, alert, now).pipe(
           Effect.orElseSucceed(() => "unread" as const),
         );

@@ -127,24 +127,26 @@ export interface AssistantEventRepositoryShape {
    * A settling row becomes final with the next `seq`. A resolution it
    * gathered while settling (a visit) stays.
    *
-   * Only if the cursor is still `expectedCursor`, the one it was judged at:
-   * an event read since (an interrupt, an answer, a dismissed plan) may change
-   * the verdict, so the row stays settling and is judged again (`stale`).
-   * That also keeps a row from becoming final while the record is off.
-   * `cancelled`: the row was dropped meanwhile.
+   * Only if nothing that could change the verdict reached the event log
+   * after `judgedAt`, the cursor it was judged at: an event about its thread
+   * (an interrupt, an answer, a new turn, a dismissed plan), read yet or not,
+   * leaves the row settling to be judged again (`stale`). Other threads'
+   * events don't hold it up. `cancelled`: the row was dropped meanwhile,
+   * which is also what turning the record off does.
    */
   readonly record: (input: {
     readonly subjectKey: string;
+    readonly threadId: ThreadId;
     readonly name: AssistantEventName;
     readonly reason: string;
     readonly projectId: ProjectId;
     readonly now: string;
-    readonly expectedCursor: number;
+    readonly judgedAt: number;
   }) => Effect.Effect<RecordOutcome, AssistantEventRepositoryError>;
   /**
    * A finished turn left a plan to review: its row is dropped and the plan's
    * `plan:<id>` row is recorded instead, with the next `seq`. The same
-   * `expectedCursor` rule as `record`.
+   * `judgedAt` rule as `record`.
    */
   readonly recordPlan: (input: {
     readonly fromSubjectKey: string;
@@ -153,7 +155,7 @@ export interface AssistantEventRepositoryShape {
     readonly projectId: ProjectId;
     readonly occurredAt: string;
     readonly now: string;
-    readonly expectedCursor: number;
+    readonly judgedAt: number;
   }) => Effect.Effect<RecordOutcome, AssistantEventRepositoryError>;
   /**
    * Recorded events with `after < seq <= upTo`, oldest first, at most
@@ -384,16 +386,28 @@ const make = Effect.gen(function* () {
       SELECT state FROM assistant_events WHERE subject_key = ${subjectKey}
     `.pipe(Effect.map((rows) => rows[0]?.state === "settling"));
 
-  /** Whether the cursor still is where a verdict was reached (inside the caller's transaction). */
-  const cursorStill = (expected: number) =>
-    getState.pipe(Effect.map((state) => state.cursor === expected));
+  /**
+   * Whether an event that could change a verdict on `threadId` reached the
+   * log after `judgedAt` (inside the caller's transaction). Every rule closes
+   * rows of the event's own thread, except a child's result settling on its
+   * parent, which closes the child's. Only the few events after the cursor
+   * are scanned.
+   */
+  const threadMovedSince = (threadId: ThreadId, judgedAt: number) =>
+    sql<{ readonly found: number }>`
+      SELECT 1 AS found FROM orchestration_events
+      WHERE sequence > ${judgedAt}
+        AND ((aggregate_kind = 'thread' AND stream_id = ${threadId})
+          OR event_type = 'thread.child-request-settled')
+      LIMIT 1
+    `.pipe(Effect.map((rows) => rows.length > 0));
 
   const record: AssistantEventRepositoryShape["record"] = (input) =>
     sql
       .withTransaction(
         Effect.gen(function* () {
           if (!(yield* isSettling(input.subjectKey))) return "cancelled" as const;
-          if (!(yield* cursorStill(input.expectedCursor))) return "stale" as const;
+          if (yield* threadMovedSince(input.threadId, input.judgedAt)) return "stale" as const;
           const seq = yield* nextSeq;
           yield* sql`
             UPDATE assistant_events
@@ -411,7 +425,7 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           if (!(yield* isSettling(input.fromSubjectKey))) return "cancelled" as const;
-          if (!(yield* cursorStill(input.expectedCursor))) return "stale" as const;
+          if (yield* threadMovedSince(input.threadId, input.judgedAt)) return "stale" as const;
           yield* sql`
             UPDATE assistant_events
             SET state = 'dropped', resolved_at = ${input.now}, resolved_reason = 'became_plan'

@@ -355,7 +355,7 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
       }),
     ),
   );
-  it.effect("leaves a child's alert to the computer that asked, once it has the result", () =>
+  it.effect("leaves a child's alert to the thread that asked, once it has the result", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness;
@@ -425,6 +425,26 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
         yield* settle(30_000);
         assert.strictEqual(harness.sent.length, 1);
         yield* settle(40_000);
+        assert.strictEqual(harness.sent.length, 2);
+
+        // A child here: its parent took turn 4's result before the turn's
+        // final capture started the alert.
+        harness.state.thread = makeThread({
+          latestTurn: { turnId: "turn-4", state: "completed" } as never,
+          handedBackTurnId: "turn-4" as never,
+        });
+        yield* appended(harness, "thread.turn-diff-completed", {
+          threadId: THREAD,
+          turnId: "turn-4",
+          checkpointTurnCount: 4,
+          checkpointRef: "refs/threadlines/checkpoints/4",
+          status: "ready",
+          files: [],
+          assistantMessageId: null,
+          completedAt: yield* nowIso(),
+          completesTurn: true,
+        });
+        yield* settle(FINISHED_HOLD_MS + 2_000);
         assert.strictEqual(harness.sent.length, 2);
       }),
     ),
