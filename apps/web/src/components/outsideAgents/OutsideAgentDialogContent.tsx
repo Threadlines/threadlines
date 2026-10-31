@@ -17,7 +17,7 @@
  * root.
  */
 import {
-  type OutsideAgentAccess,
+  OutsideAgentAccess,
   type OutsideAgentAssistantSignIn,
   type OutsideAgentConnection,
   type OutsideAgentCreateKeyResult,
@@ -43,6 +43,7 @@ import {
   describeOutsideAgentsWaiting,
   initialOutsideAgentDraft,
   OUTSIDE_AGENT_ACCESS_CHOICES,
+  outsideAgentAccessAllowed,
   outsideAgentGrantFromDraft,
   type OutsideAgentGrantDraft,
 } from "../../environments/outsideAgents/outsideAgents.logic";
@@ -88,10 +89,18 @@ type GrantSubject = Exclude<OutsideAgentDialogSubject, { readonly kind: "key" }>
 const FIELD_LABEL_CLASS = "text-xs font-medium text-foreground";
 const HINT_CLASS = "text-[12.5px] leading-[18px] text-muted-foreground";
 
-const ACCESS_DETAILS = {
+const ACCESS_DETAILS: Record<OutsideAgentAccess, string> = {
   see: "Projects, agents, and every thread's status and messages.",
   start: "All of that, and start threads of its own.",
-} as const;
+  work: "Can also message, stop and answer questions in any thread in its projects. Never approvals.",
+};
+
+/** What the highest access means at each level that has one. */
+const CEILING_HINTS: Record<Exclude<OutsideAgentAccess, "see">, string> = {
+  start:
+    "It can start threads, and send to or stop the ones it started. It can't answer their approvals. You do that here.",
+  work: "It can message, stop and answer questions in threads at or under this access, and only read the rest. It can't answer approvals. You do that here.",
+};
 
 /** A key's name, as the server takes it. */
 const KEY_NAME_MAX_LENGTH = 60;
@@ -456,8 +465,9 @@ function ErrorLine({ error }: { readonly error: string | null }) {
 }
 
 /**
- * What a connection may do (never more than it asked for), in which
- * projects, and with how much access the threads it starts may run.
+ * What a connection may do (See only, if that's all it asked for), in which
+ * projects, and the highest access a thread may have for it to start, send
+ * or answer there.
  */
 function GrantFields({
   projects,
@@ -473,8 +483,10 @@ function GrantFields({
   readonly onChange: (change: Partial<OutsideAgentGrantDraft>) => void;
 }) {
   const fieldId = useId();
-  // What it may do as the dialog shows it: never more than it asked for.
-  const shownAccess = requestedAccess === "see" ? "see" : draft.access;
+  // What it may do as the dialog shows it: only a level the sign-in allows.
+  const shownAccess = outsideAgentAccessAllowed(draft.access, requestedAccess)
+    ? draft.access
+    : "see";
   return (
     <>
       <div className="grid gap-1.5">
@@ -488,8 +500,8 @@ function GrantFields({
           disabled={disabled}
           className="gap-1"
         >
-          {(["see", "start"] as const).map((access) => {
-            const unavailable = access === "start" && requestedAccess === "see";
+          {OutsideAgentAccess.literals.map((access) => {
+            const unavailable = !outsideAgentAccessAllowed(access, requestedAccess);
             return (
               <label
                 key={access}
@@ -531,7 +543,7 @@ function GrantFields({
         onChange={onChange}
       />
 
-      {shownAccess === "start" ? (
+      {shownAccess !== "see" ? (
         <div className="grid gap-1.5">
           <span className={FIELD_LABEL_CLASS} id={`${fieldId}-ceiling`}>
             Highest access
@@ -557,9 +569,8 @@ function GrantFields({
               ))}
             </SelectPopup>
           </Select>
-          <p className={HINT_CLASS}>
-            It can start threads, and send to or stop the ones it started. It can&apos;t answer
-            their approvals. You do that here.
+          <p className={HINT_CLASS} data-testid="outside-agent-ceiling-hint">
+            {CEILING_HINTS[shownAccess]}
           </p>
         </div>
       ) : null}

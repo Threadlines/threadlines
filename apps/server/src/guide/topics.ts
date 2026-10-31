@@ -39,7 +39,7 @@ When a thread is done it wraps up and moves to the Wrapped shelf at the bottom o
 - Auto: no routine prompts; a safety check reviews risky actions.
 - Full access: no prompts or sandbox. For trusted repos only.
 
-Some agents lack a level; they run at the next safer one they have, and the composer shows what actually applies. Threads started for you by other means never get more than they were allowed: a thread an agent starts gets at most its parent's level, one another computer starts gets at most what that link allows ({place:fleet.worksWith}), an outside agent's threads at most what you approved for it ({place:connections.agentsUsingThis}), and an assistant's the same ({place:connections.assistantsUsingThis}).`,
+Some agents lack a level; they run at the next safer one they have, and the composer shows what actually applies. Threads started for you by other means never get more than they were allowed: a thread an agent starts gets at most its parent's level, one another computer starts gets at most what that link allows ({place:fleet.worksWith}), and an outside agent starts, messages or answers only in threads at or under the most access you approved for it ({place:connections.agentsUsingThis}), an assistant the same ({place:connections.assistantsUsingThis}).`,
   },
   {
     id: "rooms",
@@ -105,7 +105,9 @@ Agents can list, create and change scheduled tasks when {place:threads.agentThre
     ],
     body: `An agent running in a terminal (Claude Code, Codex and others) can use Threadlines through the threadlines command: list projects, start threads, read them, message and stop them.
 
-{place:connections.threadlinesCommand} (desktop app) puts the command on your PATH. Then, in a new terminal, \`threadlines connect\` signs the agent in: the browser shows a short code, and you approve the agent in the Threadlines window when the same code shows there, choosing the most access its threads get. After that: \`threadlines projects\`, \`threadlines thread start <project> "<prompt>" --wait\`, and \`threadlines thread list\`, \`read\`, \`send\`, \`wait\`, \`stop\`.
+What it can do is up to you: See threads, Start threads (and message or stop the ones it started), or Work with all threads, which also lets it message, stop and answer questions in any thread in its projects. Only you grant Work, and no outside agent answers approvals. Once its work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
+
+{place:connections.threadlinesCommand} (desktop app) puts the command on your PATH. Then, in a new terminal, \`threadlines connect\` signs the agent in: the browser shows a short code, and you approve the agent in the Threadlines window when the same code shows there, choosing what it can do and its highest access. After that: \`threadlines projects\`, \`threadlines thread start <project> "<prompt>" --wait\`, and \`threadlines thread list\`, \`read\`, \`send\`, \`wait\`, \`stop\`.
 
 {place:connections.agentsUsingThis} lists each agent you let in, to change its access or remove it. {place:connections.agents} also shows the address agents use.`,
   },
@@ -124,11 +126,11 @@ Agents can list, create and change scheduled tasks when {place:threads.agentThre
       "key",
       "inbox",
     ],
-    body: `Always-on assistants run in their makers' cloud. They can use Threadlines from there through the relay: see projects and threads, start threads, and message or stop the ones they started. When they check in, they can see what needs you (approvals, questions and plans waiting in Threadlines), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected.
+    body: `Always-on assistants run in their makers' cloud. Through the relay they can see projects and threads, start threads, and message or stop the ones they started. With Work with all threads, which only you grant, they can also message, stop and answer questions in any thread in their projects. Checking in, they see what needs you (approvals, questions and plans), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected.
 
-To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant and type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and the most access its threads get. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
+To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant, type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and its highest access. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
 
-{place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Assistants can't answer approvals, questions or plans; those wait for you in Threadlines.
+{place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Assistants never answer approvals or plans; those wait for you. Once an assistant's work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
 
 While this computer is asleep or Threadlines is closed, assistants are told it's offline. The relay passes their requests to this computer and can read them, unlike a phone's, which are end-to-end encrypted.`,
   },

@@ -870,6 +870,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     hasActionableProposedPlan: false,
     ...(thread.move ? { move: thread.move } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
+    ...(thread.outsideWork ? { outsideWork: thread.outsideWork } : {}),
   };
 }
 

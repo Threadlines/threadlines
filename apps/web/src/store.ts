@@ -47,7 +47,13 @@ import {
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
-import type { OutsideAgentRef, ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
+import type {
+  OrchestrationOutsideWork,
+  OutsideAgentRef,
+  ThreadId,
+  ThreadScheduledRun,
+  TurnId,
+} from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
@@ -752,6 +758,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...outsideWorkField(thread.outsideWork),
     agentRequests: thread.agentRequests,
     childRequests: thread.childRequests,
     ...threadLineage(thread),
@@ -808,6 +815,7 @@ function mapThreadShell(
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
@@ -893,6 +901,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     ...remoteFamily(thread),
@@ -1094,6 +1103,35 @@ function threadDiffStatsEqual(
   if (left === right) return true;
   if (left === null || right === null) return false;
   return left.additions === right.additions && left.deletions === right.deletions;
+}
+
+/** Outside work on a thread (OrchestrationOutsideWork), left out while there's none. */
+function outsideWorkField(
+  work: ReadonlyArray<OrchestrationOutsideWork> | undefined,
+): Pick<ThreadShell, "outsideWork"> {
+  return work !== undefined && work.length > 0 ? { outsideWork: work } : {};
+}
+
+function outsideWorkEqual(
+  left: ReadonlyArray<OrchestrationOutsideWork> | undefined,
+  right: ReadonlyArray<OrchestrationOutsideWork> | undefined,
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((entry, index) => {
+      const other = rightList[index]!;
+      return (
+        entry.participantId === other.participantId &&
+        entry.since === other.since &&
+        entry.connections.length === other.connections.length &&
+        entry.connections.every((connection, connectionIndex) =>
+          outsideOriginsEqual(connection, other.connections[connectionIndex]),
+        )
+      );
+    })
+  );
 }
 
 /** Absent when none, so a thread with none carries no field. */
@@ -1335,6 +1373,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
+    outsideWorkEqual(left.outsideWork, right.outsideWork) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&

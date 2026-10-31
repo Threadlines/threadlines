@@ -3,7 +3,7 @@
 Claude Code, Codex, Gemini CLI, Cursor and other agents you run outside
 Threadlines can use it: list your projects, start a thread, wait for its reply,
 send it more work and stop it. You approve each one first, in Threadlines, and
-pick how much it may do.
+pick how much it may do: See threads, Start threads, or Work with all threads.
 
 Its tools:
 
@@ -17,8 +17,9 @@ Its tools:
 | `inbox`          | What needs you right now, and what finished or failed since it last looked.                                   | See    |
 | `thread_changes` | A thread's branch, the files it changed, and its pull request's checks and review.                            | See    |
 | `thread_start`   | Starts a thread.                                                                                              | Start  |
-| `thread_send`    | Sends more work to a thread it started.                                                                       | Start  |
-| `thread_stop`    | Stops a thread it started.                                                                                    | Start  |
+| `thread_send`    | Sends more work to a thread it started. At Work, to any thread in its projects.                               | Start  |
+| `thread_stop`    | Stops a thread it started. At Work, any thread in its projects.                                               | Start  |
+| `thread_answer`  | Answers an agent's question in a thread. Never an approval.                                                   | Work   |
 
 `inbox` only lists what finished or failed while an assistant is connected
 (Settings → Connections → Assistants): that's when this computer keeps the
@@ -44,9 +45,13 @@ same moment Threadlines asks you, in its own window:
 
 - **What it can do.** See threads: your projects, your agents, and every
   thread's status and messages. Start threads: all of that, plus starting
-  threads and sending to or stopping the ones it started.
+  threads and sending to or stopping the ones it started. Work with all
+  threads: all of that, plus sending to, stopping and answering questions in
+  any thread in its projects. No agent asks for Work; only you can give it,
+  to an agent that asked to start threads.
 - **Projects.** All of them, or the ones you pick.
-- **Highest access.** For threads it starts. Supervised by default.
+- **Highest access.** The most access a thread may have for it to start,
+  send or answer there. Supervised by default.
 
 Check that the code matches the one in your browser, then Allow. The name in the
 dialog is the one the agent gave; Threadlines can't check it.
@@ -110,13 +115,20 @@ or delete `/usr/local/bin/threadlines` (macOS), `~/.local/bin/threadlines`
 
 - It sees only the projects you gave it. A thread elsewhere looks like it
   doesn't exist.
-- It can send to and stop only threads it started, and only while their access
-  is at or below its highest access. If you raise a thread above it, the agent
-  can read that thread but no longer drive it.
+- At Start it can send to and stop only threads it started; at Work, any
+  thread in its projects. Either way, only while the thread's access is at or
+  below its highest access. If you raise a thread above it, the agent can read
+  that thread but no longer drive it.
 - It sends one message at a time: while the thread is working or waiting for
   you, a send answers "busy" and the agent waits.
-- It can't answer approvals, questions or plans in its threads. Those wait for
-  you in Threadlines; the agent sees what's waiting and can tell you.
+- It never answers approvals, plans or forms. At Work it can answer an
+  agent's questions; the rest waits for you in Threadlines, and the agent sees
+  what's waiting and can tell you.
+- Once its text reaches a thread's agent (a message or an answer), that
+  agent's Threadlines tools only read and its browser panel is off, until it
+  starts fresh. Your next message there does that, or Start fresh on the
+  thread's notice. So outside work can't use the thread's agent to reach
+  further than you allowed.
 - Threads it starts are labelled with its name, and so are the messages it
   sends. They get no Threadlines agent tools of their own: they can't start
   more threads, invite agents or schedule tasks.

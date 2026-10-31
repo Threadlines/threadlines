@@ -2,6 +2,7 @@ import {
   EventId,
   ORCHESTRATION_WS_METHODS,
   MessageId,
+  OutsideAgentConnectionId,
   ProviderInstanceId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -51,6 +52,7 @@ import {
   waitForServerConfigToApply,
   mountChatView,
   registerChatViewSuiteHooks,
+  sendShellThreadUpsert,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -1149,6 +1151,85 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         ),
         "There is no turn to interrupt.",
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("says whose outside work limits the agent's tools until Start fresh stops it", async () => {
+    // Assistants worked in this thread, so its agent's Threadlines tools only
+    // read. Start fresh stops the session; the server clears the mark once
+    // the agent is gone, and the notice goes with it.
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-outside-work" as MessageId,
+      targetText: "outside work target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                outsideWork: [
+                  {
+                    participantId: null,
+                    connections: [
+                      {
+                        connectionId: OutsideAgentConnectionId.make("connection-grok"),
+                        name: "Grok Bot",
+                      },
+                      {
+                        connectionId: OutsideAgentConnectionId.make("connection-dots"),
+                        name: "dots",
+                      },
+                    ],
+                    since: NOW_ISO,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.session.stop"
+        ) {
+          return undefined;
+        }
+        fixture.snapshot = {
+          ...fixture.snapshot,
+          snapshotSequence: fixture.snapshot.snapshotSequence + 1,
+          threads: fixture.snapshot.threads.map((thread) =>
+            thread.id === THREAD_ID ? { ...thread, outsideWork: [] } : thread,
+          ),
+        };
+        queueMicrotask(() => sendShellThreadUpsert(THREAD_ID));
+        return { sequence: fixture.snapshot.snapshotSequence };
+      },
+    });
+    try {
+      await expect.element(page.getByText("Grok Bot and dots's work ran here,")).toBeVisible();
+      await expect
+        .element(
+          page.getByText("so this agent's Threadlines tools are limited until it starts fresh."),
+        )
+        .toBeVisible();
+      await page.getByRole("button", { name: "Start fresh" }).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.session.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID });
+      });
+      await expect
+        .element(page.getByText("Grok Bot and dots's work ran here,"))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
