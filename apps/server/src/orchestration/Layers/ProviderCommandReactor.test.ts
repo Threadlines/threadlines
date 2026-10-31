@@ -3028,6 +3028,158 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls.length).toBe(2);
   });
 
+  it("starts an agent outside work reached fresh for a person's next message, then clears its mark", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const turn = (id: string, from: "outside" | "person" | "agent") =>
+      dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${id}`),
+        threadId,
+        message: { messageId: asMessageId(id), role: "user", text: "work", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        ...(from === "outside"
+          ? {
+              fromOutside: {
+                connectionId: OutsideAgentConnectionId.make("connection-1"),
+                name: "Grok Bot",
+                access: "work" as const,
+                maxRuntimeMode: "approval-required" as const,
+              },
+            }
+          : from === "person"
+            ? { sentFrom: { kind: "computer" as const, os: "macOS" } }
+            : {}),
+        createdAt: now,
+      });
+    const settle = (id: string, pendingBackgroundTaskCount = 0) =>
+      dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-ready-${id}`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          pendingBackgroundTaskCount,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+    const marks = async () =>
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)?.outsideWork ??
+      [];
+
+    await turn("outside", "outside");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await settle("1");
+    expect((await marks()).map((entry) => entry.connections[0]?.name)).toEqual(["Grok Bot"]);
+
+    // An agent's own turn (no person sent it) keeps the runtime, and the mark.
+    await turn("agent", "agent");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    await settle("2", 1);
+
+    // A person's message while background work runs: still the same runtime.
+    await turn("person-busy", "person");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(await marks()).toHaveLength(1);
+    await settle("3");
+
+    // Once it's quiet: a fresh runtime, resumed, that nothing queued may wake.
+    await turn("person", "person");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 4);
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      quietResume: true,
+      resumeCursor: { opaque: "resume-1" },
+    });
+    await waitFor(async () => (await marks()).length === 0);
+  });
+
+  it("clears an outside mark on Start fresh only once the agent's runtime is gone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const marks = async () =>
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)?.outsideWork ??
+      [];
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-outside"),
+      threadId,
+      message: { messageId: asMessageId("outside"), role: "user", text: "work", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      fromOutside: {
+        connectionId: OutsideAgentConnectionId.make("connection-1"),
+        name: "Grok Bot",
+        access: "work",
+        maxRuntimeMode: "approval-required",
+      },
+      createdAt: now,
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const stop = (id: string) =>
+      dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make(`cmd-stop-${id}`),
+        threadId,
+        createdAt: now,
+      });
+    // A stop that leaves the runtime running leaves the mark.
+    harness.stopSession.mockImplementationOnce(() => Effect.void);
+    await stop("kept");
+    await harness.drain();
+    expect(await marks()).toHaveLength(1);
+    // A goal set while it was marked needs a runtime to clear it on: Start
+    // fresh neither starts one for that nor lifts the mark.
+    await dispatch({
+      type: "thread.goal.state.set",
+      commandId: CommandId.make("cmd-goal"),
+      threadId,
+      goal: {
+        threadId,
+        objective: "Ship the release",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: "2026-01-01T00:00:05.000Z",
+        updatedAt: "2026-01-01T00:00:05.000Z",
+      },
+      createdAt: now,
+    });
+    harness.runtimeSessions.splice(0);
+    const starts = harness.startSession.mock.calls.length;
+    await stop("with-goal");
+    await harness.drain();
+    expect(await marks()).toHaveLength(1);
+    expect(harness.startSession.mock.calls.length).toBe(starts);
+
+    // Without that goal, once the runtime is gone, Start fresh clears it.
+    await dispatch({
+      type: "thread.goal.state.set",
+      commandId: CommandId.make("cmd-goal-gone"),
+      threadId,
+      goal: null,
+      createdAt: now,
+    });
+    await stop("gone");
+    await waitFor(async () => (await marks()).length === 0);
+  });
+
   it("gives a scheduled run's thread its tools on its own, and a linked computer's thread none", async () => {
     // Agents may neither invite nor start threads.
     const harness = await createHarness({
@@ -3138,7 +3290,7 @@ describe("ProviderCommandReactor", () => {
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
-          fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+          fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
           createdAt: "2026-01-01T00:00:01.000Z",
         }),
       );
@@ -8127,6 +8279,56 @@ describe("ProviderCommandReactor", () => {
       );
       await harness.drain();
     }
+
+    it("keeps an outside agent's answer its own: steered with its name, or as its own turn", async () => {
+      const grok = {
+        connectionId: OutsideAgentConnectionId.make("connection-1"),
+        name: "Grok Bot",
+        access: "work" as const,
+        maxRuntimeMode: "approval-required" as const,
+      };
+      const answerFromOutside = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.user-input.respond",
+            commandId: CommandId.make("cmd-outside-answer"),
+            threadId: ThreadId.make("thread-1"),
+            requestId,
+            answers: { signed_in: "Both are signed in", page: "Clone picker" },
+            fromOutside: grok,
+            createdAt: now,
+          }),
+        );
+        await harness.drain();
+      };
+      const answeredBy = (thread: OrchestrationThread | undefined) =>
+        thread?.activities
+          .filter((activity) => activity.kind === "user-input.answered-from-outside")
+          .map((activity) => activity.summary);
+
+      const running = await prepareQuestion("running");
+      await answerFromOutside(running);
+      expect(running.steerTurn.mock.calls[0]?.[0]?.input).toMatch(/^This answer is from Grok Bot/);
+      const steered = (await running.readModel()).threads[0];
+      expect(steered?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({
+          fromOutside: { connectionId: grok.connectionId, name: "Grok Bot" },
+        }),
+      ]);
+      expect(answeredBy(steered)).toEqual(["Answered by Grok Bot"]);
+
+      const ready = await prepareQuestion("ready");
+      await answerFromOutside(ready);
+      await waitFor(() => ready.sendTurn.mock.calls.length === 1);
+      const turned = (await ready.readModel()).threads[0];
+      expect(turned?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({
+          fromOutside: { connectionId: grok.connectionId, name: "Grok Bot" },
+        }),
+      ]);
+      // The agent outside text reached is marked until it starts fresh.
+      expect(turned?.outsideWork?.map((entry) => entry.participantId)).toEqual([null]);
+    });
 
     it("steers a running turn, saves the answer in the transcript, and closes the question once", async () => {
       const harness = await prepareQuestion();

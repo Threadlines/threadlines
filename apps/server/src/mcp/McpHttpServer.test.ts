@@ -186,7 +186,10 @@ const ROOM_THREAD = {
 };
 
 /** The room server's dependencies: only the thread read is reached here. */
-const roomServerStubs = (settings?: Parameters<typeof ServerSettingsService.layerTest>[0]) =>
+const roomServerStubs = (
+  settings?: Parameters<typeof ServerSettingsService.layerTest>[0],
+  thread: object = ROOM_THREAD,
+) =>
   Layer.mergeAll(
     Layer.succeed(OrchestrationEngineService, {
       readEvents: () => Effect.die("not used by this test") as never,
@@ -196,7 +199,8 @@ const roomServerStubs = (settings?: Parameters<typeof ServerSettingsService.laye
       subscribeDomainEvents: unused(),
     } as never),
     Layer.succeed(ProjectionSnapshotQuery, {
-      getThreadDetailById: () => Effect.succeed(Option.some(ROOM_THREAD)),
+      getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+      getThreadShellById: () => Effect.succeed(Option.some(thread)),
     } as never),
     Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
     Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
@@ -284,13 +288,13 @@ const waitFor = async (done: () => boolean) => {
 };
 
 /** Call one tool in a fresh session; its result. */
-const callTool = async (url: string, token: string, name: string) => {
+const callTool = async (url: string, token: string, name: string, args: object = {}) => {
   const opened = await openSession(url, token);
   if (!("session" in opened)) throw new Error(`refused: ${opened.status}`);
   const response = await post(
     url,
     token,
-    { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name, arguments: {} } },
+    { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name, arguments: args } },
     opened.session,
   );
   const body = (await response.json()) as {
@@ -304,6 +308,67 @@ const callTool = async (url: string, token: string, name: string) => {
 };
 
 describe("MCP endpoints", () => {
+  it("limits an agent outside work reached: no changes, guide or browser; its room peers keep theirs", async () => {
+    const marked = {
+      ...ROOM_THREAD,
+      projectId: "project-1",
+      outsideWork: [
+        {
+          participantId: null,
+          connections: [{ connectionId: "connection-1", name: "Grok Bot" }],
+          since: "2026-10-30T10:00:00.000Z",
+        },
+      ],
+    };
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            Layer.mergeAll(McpHttpServer.layer, McpRoomServer.layer).pipe(
+              Layer.provide(roomServerStubs(undefined, marked)),
+            ),
+          );
+          const agent = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: true,
+          });
+          const peer = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: participantSessionKey(THREAD, AGENT),
+            browser: true,
+            room: true,
+          });
+          const result = yield* Effect.promise(async () => ({
+            stop: await callTool(`${base}/mcp/room`, agent.token, "thread_stop", {
+              threadId: "child-1",
+            }),
+            guide: await callTool(`${base}/mcp/room`, agent.token, "app_guide", {}),
+            browser: await callTool(`${base}/mcp`, agent.token, "browser_status", {}),
+            ownRead: await callTool(`${base}/mcp/room`, agent.token, "room_agents"),
+            peerStop: await callTool(`${base}/mcp/room`, peer.token, "thread_stop", {
+              threadId: "child-1",
+            }),
+          }));
+          const limited = "Grok Bot's work ran in this agent's session";
+          expect(result.stop.structuredContent).toMatchObject({
+            outcome: "refused",
+            detail: expect.stringContaining(limited),
+          });
+          expect(result.guide.structuredContent).toMatchObject({
+            outcome: "refused",
+            answer: expect.stringContaining(limited),
+          });
+          expect(JSON.stringify(result.browser)).toContain("browser panel is off");
+          expect(result.ownRead.isError).toBe(false);
+          // Another agent of the room isn't marked: its call reaches the handler.
+          expect(JSON.stringify(result.peerStop)).not.toContain(limited);
+          yield* mcpSessionRegistry.revoke(THREAD, agent.generation);
+          yield* mcpSessionRegistry.revoke(participantSessionKey(THREAD, AGENT), peer.generation);
+        }),
+      ).pipe(onLoopback),
+    );
+  });
+
   it("lists only its own tools on each endpoint, and keeps side runtimes off the browser", async () => {
     await Effect.runPromise(
       Effect.scoped(
@@ -458,6 +523,12 @@ describe("MCP endpoints", () => {
           const base = yield* serve(
             McpHttpServer.layer.pipe(
               Layer.provide(Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker)),
+              Layer.provide(
+                Layer.succeed(ProjectionSnapshotQuery, {
+                  getThreadShellById: () => Effect.succeed(Option.none()),
+                  getThreadDetailById: () => Effect.succeed(Option.none()),
+                } as never),
+              ),
             ),
           );
           // The desktop's side: answers every request with a shrunk JPEG.

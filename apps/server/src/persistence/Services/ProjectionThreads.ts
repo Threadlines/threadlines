@@ -33,6 +33,7 @@ import {
   OrchestrationThreadMove,
   ThreadMovedFrom,
   ThreadRemoteOrigin,
+  OrchestrationOutsideWork,
   OutsideAgentRef,
   ThreadScheduledRun,
 } from "@threadlines/contracts";
@@ -158,6 +159,8 @@ export const ProjectionThread = Schema.Struct({
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See `OrchestrationThread.outsideOrigin`. Absent or null reads as none. */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
+  /** See `OrchestrationThread.outsideWork`. Absent, null or empty reads as none. */
+  outsideWork: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationOutsideWork))),
   /** See `OrchestrationThread.move`. Absent or null reads as none. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
   /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */

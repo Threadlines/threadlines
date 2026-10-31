@@ -100,7 +100,9 @@ const OutsideAgentConnectionDbRow = Schema.Struct({
   softwareId: Schema.NullOr(Schema.String),
   redirectUri: Schema.String,
   resource: Schema.String,
+  /** `start` for a Work connection too; `workLevel` says Work (see storedAccess). */
   access: OutsideAgentAccess,
+  workLevel: Schema.Number,
   maxRuntimeMode: RuntimeMode,
   projectIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(ProjectId))),
   tokenGeneration: Schema.Int,
@@ -120,6 +122,15 @@ const OutsideAgentConnectionDbRow = Schema.Struct({
 });
 type OutsideAgentConnectionDbRow = typeof OutsideAgentConnectionDbRow.Type;
 
+/**
+ * How a level is stored: Work as `start` with `work_level = 1`, so a build
+ * that knows only See and Start reads it as Start (migration 095). A grant
+ * change also bumps `grant_writes`; the migration's trigger clears Work when
+ * one doesn't, which only an older build's change does.
+ */
+const storedAccess = (access: OutsideAgentAccess) =>
+  access === "work" ? { access: "start" as const, workLevel: 1 } : { access, workLevel: 0 };
+
 const fromDb = (row: OutsideAgentConnectionDbRow): OutsideAgentConnectionRow => ({
   connectionId: row.connectionId,
   kind: row.kind,
@@ -129,7 +140,7 @@ const fromDb = (row: OutsideAgentConnectionDbRow): OutsideAgentConnectionRow => 
   softwareId: row.softwareId,
   redirectUri: row.redirectUri,
   resource: row.resource,
-  access: row.access,
+  access: row.access === "start" && row.workLevel !== 0 ? "work" : row.access,
   maxRuntimeMode: row.maxRuntimeMode,
   projectIds: row.projectIds,
   tokenGeneration: row.tokenGeneration,
@@ -285,6 +296,7 @@ const make = Effect.gen(function* () {
       redirect_uri AS "redirectUri",
       resource AS "resource",
       access AS "access",
+      work_level AS "workLevel",
       max_runtime_mode AS "maxRuntimeMode",
       project_ids_json AS "projectIds",
       token_generation AS "tokenGeneration",
@@ -348,13 +360,14 @@ const make = Effect.gen(function* () {
       yield* sql`
         INSERT INTO outside_agent_connections (
           connection_id, kind, sign_in, client_id_hash, client_name, software_id, redirect_uri,
-          resource, access, max_runtime_mode, project_ids_json, token_generation,
+          resource, access, work_level, max_runtime_mode, project_ids_json, token_generation,
           identity_host, identity_verified, identity_known, host_id, route_tag,
           refresh_generation, refresh_rotated_at, refresh_seen_generation, key_hash,
           created_at, last_used_at, removed_at, removed_reason, relay_revoke_pending
         ) VALUES (
           ${row.connectionId}, ${row.kind}, ${row.signIn}, ${row.clientIdHash}, ${row.clientName},
-          ${row.softwareId}, ${row.redirectUri}, ${row.resource}, ${row.access},
+          ${row.softwareId}, ${row.redirectUri}, ${row.resource},
+          ${storedAccess(row.access).access}, ${storedAccess(row.access).workLevel},
           ${row.maxRuntimeMode}, ${projectIdsJson(row.projectIds)}, ${row.tokenGeneration},
           ${row.identity?.host ?? null}, ${flag(row.identity?.verified)},
           ${flag(row.identity?.known)}, ${row.hostId}, ${row.routeTag},
@@ -371,7 +384,9 @@ const make = Effect.gen(function* () {
       const updated = yield* sql<{ readonly connectionId: string }>`
         UPDATE outside_agent_connections
         SET
-          access = ${input.grant.access},
+          access = ${storedAccess(input.grant.access).access},
+          work_level = ${storedAccess(input.grant.access).workLevel},
+          grant_writes = grant_writes + 1,
           max_runtime_mode = ${input.grant.maxRuntimeMode},
           project_ids_json = ${projectIdsJson(input.grant.projectIds)}
         WHERE connection_id = ${input.connectionId} AND removed_at IS NULL

@@ -645,15 +645,49 @@ export const OutsideAgentRef = Schema.Struct({
 export type OutsideAgentRef = typeof OutsideAgentRef.Type;
 
 /**
- * A turn an outside agent started: who, and the highest access the thread
- * may have for the turn to run (its connection's ceiling when it asked). The
- * decider refuses the turn when the thread's access is above it.
+ * What an outside connection may do. `see`: projects, agents, and every
+ * thread's status and messages in its projects. `start`: that, plus start
+ * threads and send to or stop the threads it started. `work`: that, plus
+ * send to, stop and answer agents' questions in any thread in its projects,
+ * never approvals. Only the user grants `work`; no sign-in asks for it.
+ */
+export const OutsideAgentAccess = Schema.Literals(["see", "start", "work"]);
+export type OutsideAgentAccess = typeof OutsideAgentAccess.Type;
+
+/**
+ * A turn an outside agent started: who, its level when it asked, and the
+ * highest access the thread may have for the turn to run (its connection's
+ * ceiling then). The decider refuses the turn when the thread's access is
+ * above it, and in a thread it didn't start unless the level is `work`.
+ * Events written before levels were carried read as `start`.
  */
 export const OutsideTurnOrigin = Schema.Struct({
   ...OutsideAgentRef.fields,
+  access: OutsideAgentAccess.pipe(Schema.withDecodingDefault(Effect.succeed("start" as const))),
   maxRuntimeMode: RuntimeMode,
 });
 export type OutsideTurnOrigin = typeof OutsideTurnOrigin.Type;
+
+/**
+ * An agent of the thread (a room participant; null: the thread's own agent)
+ * that outside text reached, and every connection that reached it
+ * (docs/design/assistants.md, "Build plan: step 3"). While it's listed, that
+ * agent's Threadlines agent tools only read, inside those connections'
+ * grants, and the browser panel is off for it. It ends when the agent's
+ * runtime starts fresh at a turn that isn't from outside.
+ */
+export const OrchestrationOutsideWork = Schema.Struct({
+  participantId: Schema.NullOr(ThreadParticipantId),
+  connections: Schema.Array(OutsideAgentRef),
+  since: IsoDateTime,
+  /**
+   * Bumped each time outside text reaches the agent. A clear names the
+   * version it saw, so outside text that arrived while the agent was being
+   * started fresh keeps its mark.
+   */
+  version: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
+});
+export type OrchestrationOutsideWork = typeof OrchestrationOutsideWork.Type;
 /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
 export const ThreadMovePhase = Schema.Literals([
   "exporting",
@@ -2277,6 +2311,8 @@ export const OrchestrationThread = Schema.Struct({
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See OrchestrationThreadShell.outsideOrigin. */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
+  /** See OrchestrationThreadShell.outsideWork. */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /** See OrchestrationThreadShell.move. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
   /** See OrchestrationThreadShell.movedFrom. */
@@ -2506,6 +2542,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    * Absent or null: started in Threadlines.
    */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
+  /**
+   * The agents outside text reached whose tools are limited: see
+   * OrchestrationOutsideWork. Absent or empty: none.
+   */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /**
    * On a parent: its children on linked computers with their last known
    * status (OrchestrationChildRequestState.remoteChildren), so its family
@@ -3078,6 +3119,12 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * refuses it when the thread's access is above `maxRuntimeMode`.
    */
   fromOutside: Schema.optional(OutsideTurnOrigin),
+  /**
+   * Server only: this outside turn carries the answer to the open question
+   * `answering` (a `responseMode: "message"` question), so the decider's
+   * busy rule passes over that one question.
+   */
+  answering: Schema.optional(ApprovalRequestId),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom (server only: set from the connection's sign-in). */
@@ -3325,6 +3372,13 @@ const ThreadUserInputRespondCommand = Schema.Struct({
    * answer sent back as a message (`responseMode: "message"`) is written with it.
    */
   sentFrom: Schema.optional(MessageSentFrom),
+  /**
+   * An outside agent's answer (server only, set by `/mcp/connect`). The
+   * decider refuses an approval, a question that isn't open, one whose agent
+   * no longer holds the thread, a thread the level doesn't reach, and one
+   * above `maxRuntimeMode`.
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
 });
 
 /**
@@ -3825,6 +3879,21 @@ const ThreadTurnCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server-internal: an agent outside text reached started fresh (a new
+ * runtime, the old one gone) for a turn that isn't from outside, so its
+ * tools are no longer limited (OrchestrationOutsideWork).
+ */
+const ThreadOutsideWorkClearCommand = Schema.Struct({
+  type: Schema.Literal("thread.outside-work.clear"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** The mark's version the fresh start saw (OrchestrationOutsideWork.version); a newer one stays. */
+  version: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
 /** Provider-internal: refresh the file summary of an existing turn checkpoint
  * while the turn is still streaming. Never touches the checkpoint ref, status,
  * or turn count — those belong to `thread.turn.diff.complete`. */
@@ -3886,6 +3955,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** An outside agent's answer steered into the turn (server only). */
+  fromOutside: Schema.optional(OutsideAgentRef),
   createdAt: IsoDateTime,
 });
 
@@ -4424,6 +4495,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadCommandRunDeliverOutputCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadTurnCompleteCommand,
+  ThreadOutsideWorkClearCommand,
   ThreadTurnDiffSummaryUpdateCommand,
   ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
@@ -4535,6 +4607,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-diff-completed",
   "thread.turn-diff-summary-updated",
   "thread.turn-completed",
+  "thread.outside-work-cleared",
   "thread.diffstat-rebased",
   "thread.activity-appended",
   "thread.workflow-run-recorded",
@@ -5035,6 +5108,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See OrchestrationMessage.fromOutside: an outside agent's answer steered into the turn. */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /**
    * The user's message that overtook a continue (OrchestrationQueuedFollowUp
    * .overtakes), steered into that continue's turn: a steer that fails puts
@@ -5100,12 +5175,16 @@ export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadUserInputResponseRequestedPayload = Schema.Struct({
+export const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
   /** See ThreadUserInputRespondCommand.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See ThreadUserInputRespondCommand.fromOutside. */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
+  /** With `fromOutside`: the agent that asked, which the answer may only reach. */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   createdAt: IsoDateTime,
 });
 
@@ -5264,6 +5343,13 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
   completesTurn: Schema.optional(Schema.Boolean),
+});
+
+/** See ThreadOutsideWorkClearCommand. */
+export const ThreadOutsideWorkClearedPayload = Schema.Struct({
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  clearedAt: IsoDateTime,
 });
 
 /** See ThreadTurnCompleteCommand. Only ever settles the turn it names while it runs. */
@@ -5732,6 +5818,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-completed"),
     payload: ThreadTurnCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.outside-work-cleared"),
+    payload: ThreadOutsideWorkClearedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

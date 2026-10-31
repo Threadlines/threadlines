@@ -102,6 +102,14 @@ export interface ProviderAdapterCapabilities {
   readonly threadGoals?: ProviderThreadGoalsMode;
 
   /**
+   * The provider keeps a session's own queued work in a server of its own,
+   * past the runtime (OpenCode): stopping the runtime doesn't end what it
+   * left, so outside work's mark clears only at a quiet fresh start
+   * (`quietResume`), never at a stop.
+   */
+  readonly sessionOutlivesRuntime?: boolean;
+
+  /**
    * Declares whether a supported goal can be paused and resumed. Absent means
    * it can. Claude's goals cannot: they survive a stopped session as they are.
    */

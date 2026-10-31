@@ -45,7 +45,9 @@ import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/s
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
-import { exceedsRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { isOutsideMarked, outsideCeilingDetail, outsideWorkOf } from "../outsideTurns.ts";
+import { OutsideAgentConnections } from "../../outsideAgents/OutsideAgentConnections.ts";
 import {
   hasAgentRecords,
   isRoomThread,
@@ -230,6 +232,13 @@ interface EnsureSessionOptions {
    * on the same read of the thread the session starts from.
    */
   readonly outsideCeiling?: OutsideTurnOrigin;
+  /**
+   * A turn that isn't from outside: an agent outside text reached
+   * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
+   * clean token, once its runtime has no background tasks or turn in
+   * flight, and its mark clears (docs/design/assistants.md, step 3).
+   */
+  readonly shedOutsideWork?: boolean;
 }
 
 interface ForkBoundaryMessage {
@@ -488,6 +497,9 @@ const make = Effect.gen(function* () {
   const remoteRequestGate = yield* Effect.serviceOption(RemoteRequestGate);
   // Scheduled tasks, when this server has them: see ScheduledTaskNotes.
   const scheduledTaskNotes = yield* Effect.serviceOption(ScheduledTaskNotes);
+  // Outside agents' live grants, read again right before an answer of theirs
+  // reaches an agent (docs/design/assistants.md, step 3).
+  const outsideConnections = yield* Effect.serviceOption(OutsideAgentConnections);
   /** The scope start() runs in: timers for held turns live there. */
   let reactorScope: Scope.Scope | undefined;
   const providerService = yield* ProviderService;
@@ -632,6 +644,82 @@ const make = Effect.gen(function* () {
 
   /** The newest launch that marked each thread's session as launching. */
   const launchGenerations = makeSessionLaunchGenerations<ThreadId>();
+
+  /**
+   * An agent outside text reached started fresh for a turn that isn't from
+   * outside (docs/design/assistants.md, step 3): the mark it had when this
+   * began clears (outside text that reached it since keeps a newer one). A
+   * goal set since the mark is cleared at the provider first, since goals
+   * come back on resume and the agent may have set it from the outside text;
+   * if that fails, the agent stays marked, and the chat says so. That takes
+   * the new runtime (`started`): a stop, which has none, leaves such an
+   * agent marked for its next fresh start. A provider that doesn't say it
+   * supports goals has none to bring back.
+   */
+  const shedOutsideWork = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+    createdAt: string,
+    started: ProviderSession | null,
+  ) {
+    const entry = outsideWorkOf(thread, participantId);
+    if (entry === undefined) return;
+    const names = entry.connections.map((connection) => connection.name).join(" and ");
+    const goal = thread.goal;
+    const goalsHere =
+      started?.providerInstanceId === undefined
+        ? undefined
+        : (yield* providerService
+            .getCapabilities(started.providerInstanceId)
+            .pipe(Effect.orElseSucceed(() => undefined)))?.threadGoals;
+    if (
+      goal !== null &&
+      goal.createdAt >= entry.since &&
+      sessionSlotParticipantId(thread.session) === participantId &&
+      // No runtime to clear it on: leave the mark to the next fresh start.
+      (started === null || goalsHere === "supported")
+    ) {
+      if (started === null) return;
+      const cleared = yield* providerService
+        .clearThreadGoal({ threadId: participantSessionKey(thread.id, participantId) })
+        .pipe(Effect.result);
+      const note = (detail: string) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("outside-work-goal"),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(crypto.randomUUID()),
+              tone: cleared._tag === "Success" ? "info" : "error",
+              kind: "outside-work.goal-cleared",
+              summary: cleared._tag === "Success" ? "Goal cleared" : "Goal not cleared",
+              payload: { detail },
+              turnId: null,
+              createdAt,
+            },
+            createdAt,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      if (cleared._tag === "Failure") {
+        yield* note(
+          `The goal "${goal.objective}" was set while ${names}'s work ran here, and it couldn't be cleared, so this agent's tools stay limited. Clear the goal, then start it fresh.`,
+        );
+        return;
+      }
+      yield* note(
+        `The goal "${goal.objective}" was set while ${names}'s work ran here, so it was cleared when the agent started fresh. Set it again if you want it.`,
+      );
+    }
+    yield* orchestrationEngine.dispatch({
+      type: "thread.outside-work.clear",
+      commandId: serverCommandId("outside-work-clear"),
+      threadId: thread.id,
+      participantId,
+      version: entry.version,
+      createdAt,
+    });
+  });
 
   const noteCheckoutSwitchDeferred = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1194,6 +1282,10 @@ const make = Effect.gen(function* () {
       });
     }
     const sessionKey = participantSessionKey(threadId, participantId);
+    const shedsOutsideWork =
+      options?.shedOutsideWork === true &&
+      options?.early === undefined &&
+      isOutsideMarked(thread, participantId);
     const early = options?.early;
     // A turn about to show the mark finds none of this reactor's launches
     // running, since a thread's ensures run one at a time: one it finds is
@@ -1431,6 +1523,7 @@ const make = Effect.gen(function* () {
       ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
       ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
       ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
+      ...(shedsOutsideWork ? { quietResume: true } : {}),
       ...(roomToolsWanted ? { roomTools: true } : {}),
       ...(guideTools ? { guideTools: true } : {}),
       ...(roomToolsWanted && scheduledRunTools ? { scheduledRunTools: true } : {}),
@@ -1611,6 +1704,8 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
+      if (shedsOutsideWork)
+        yield* shedOutsideWork(thread, participantId, createdAt, handoffSession);
       if (contextSeed !== undefined) {
         owedHistorySeeds.delete(sessionKey);
         // A moved thread's debt is paid once a turn reaches the provider on
@@ -1702,13 +1797,18 @@ const make = Effect.gen(function* () {
       // resume, once; an adapter that could not attach them reports false,
       // and restarting again would not help.
       const roomToolsMissing = roomToolsWanted && activeSession?.roomTools === undefined;
+      // An agent outside text reached sheds it by starting fresh for a turn
+      // that isn't from outside: the old runtime, and whatever it left
+      // running, loses its token.
+      const outsideWorkToShed = shedsOutsideWork;
 
       if (
         !runtimeModeChanged &&
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
-        !roomToolsMissing
+        !roomToolsMissing &&
+        !outsideWorkToShed
       ) {
         deferredCheckoutSwitchThreads.delete(threadId);
         deferredAccessRaiseThreads.delete(threadId);
@@ -1734,13 +1834,17 @@ const make = Effect.gen(function* () {
         shouldRestartForModelChange;
       // Picking up room tools can wait the same way, and also for a turn in
       // flight: a goal or access change can get here mid-turn, and restarting
-      // then would cut the turn short. The next turn picks them up.
+      // then would cut the turn short. The next turn picks them up. Shedding
+      // outside work waits alike: the turn runs with the agent still marked.
       const turnInFlight = (projectedSession?.activeTurnId ?? null) !== null;
       if (
-        (cwdChanged || roomToolsMissing || runtimeModeRaiseWaits) &&
+        (cwdChanged || roomToolsMissing || runtimeModeRaiseWaits || outsideWorkToShed) &&
         !restartRequiredBeyondCwd &&
         (pendingBackgroundTaskCount > 0 ||
-          (roomToolsMissing && !cwdChanged && !runtimeModeChanged && turnInFlight))
+          ((roomToolsMissing || outsideWorkToShed) &&
+            !cwdChanged &&
+            !runtimeModeChanged &&
+            turnInFlight))
       ) {
         // A change no longer waiting ends its streak, so its next deferral
         // is said again.
@@ -1782,7 +1886,9 @@ const make = Effect.gen(function* () {
             ? "instance"
             : shouldRestartForModelChange
               ? "model"
-              : "room_tools";
+              : roomToolsMissing
+                ? "room_tools"
+                : "outside_work";
       yield* increment(providerSessionRestartsTotal, {
         provider: preferredProvider,
         reason: restartReason,
@@ -1830,6 +1936,9 @@ const make = Effect.gen(function* () {
       });
       yield* bindSessionToThread(restartedSession);
       yield* noteResumeFailure(restartedSession);
+      if (shedsOutsideWork) {
+        yield* shedOutsideWork(thread, participantId, createdAt, restartedSession);
+      }
       return { sessionThreadId: restartedSession.threadId, nativeForkApplied: false };
     }
 
@@ -1857,6 +1966,9 @@ const make = Effect.gen(function* () {
       );
       if (Option.isSome(forkedSession)) {
         yield* bindSessionToThread(forkedSession.value);
+        if (shedsOutsideWork) {
+          yield* shedOutsideWork(thread, participantId, createdAt, forkedSession.value);
+        }
         return { sessionThreadId: forkedSession.value.threadId, nativeForkApplied: true };
       }
     }
@@ -1864,6 +1976,7 @@ const make = Effect.gen(function* () {
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
     yield* noteResumeFailure(startedSession);
+    if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt, startedSession);
     return { sessionThreadId: startedSession.threadId, nativeForkApplied: false };
   });
 
@@ -1946,6 +2059,10 @@ const make = Effect.gen(function* () {
    * Outside agents (docs/design/outside-agents.md): a message one wrote is
    * named as its, so the agent here never takes it for the user's own words.
    */
+  /** Told to the agent with an outside agent's answer steered into its turn. */
+  const outsideAnswerContext = (name: string) =>
+    `This answer is from ${name}, an agent running outside Threadlines that the user connected to this computer and let answer questions. It is that agent's answer, not the user's own words.`;
+
   const outsideAgentContext = (thread: OrchestrationThread, messageId: MessageId) => {
     const author = thread.messages.find((message) => message.id === messageId)?.fromOutside;
     return author === undefined
@@ -1997,6 +2114,12 @@ const make = Effect.gen(function* () {
     readonly fromThread?: ThreadMessageOrigin | undefined;
     /** An outside agent's turn: runs only within its ceiling. */
     readonly fromOutside?: OutsideTurnOrigin | undefined;
+    /**
+     * A person sent it from the app (`sentFrom`): an agent outside text
+     * reached starts fresh for it (EnsureSessionOptions.shedOutsideWork).
+     * Agents', threads' and automations' turns keep the mark.
+     */
+    readonly sentByPerson?: boolean;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -2058,6 +2181,9 @@ const make = Effect.gen(function* () {
       preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
+      ...(input.sentByPerson === true && input.fromOutside === undefined
+        ? { shedOutsideWork: true }
+        : {}),
     });
     const nativeForkApplied = ensured.nativeForkApplied;
     if (input.modelSelection !== undefined) {
@@ -2959,6 +3085,7 @@ const make = Effect.gen(function* () {
         ...(event.payload.fromOutside !== undefined
           ? { fromOutside: event.payload.fromOutside }
           : {}),
+        sentByPerson: message.sentFrom !== undefined,
         createdAt: event.payload.createdAt,
       }).pipe(
         // Preparing the session, a restart included, runs in this thread's
@@ -3734,6 +3861,73 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * Why an outside agent's answer can't reach the agent now, or null: checked
+   * again right before delivery, since the decider let it through. The agent
+   * that asked must still hold the thread; the connection must still have
+   * Work over the thread's project; the live runtime must be at or under its
+   * ceiling.
+   */
+  const outsideAnswerRefusal = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    origin: OutsideTurnOrigin,
+    askerId: ThreadParticipantId | null,
+  ) {
+    if (sessionSlotParticipantId(thread.session) !== askerId) {
+      return "The agent that asked doesn't hold the thread anymore.";
+    }
+    let ceiling = origin.maxRuntimeMode;
+    if (Option.isSome(outsideConnections)) {
+      const grant = yield* outsideConnections.value.grant(origin.connectionId);
+      if (grant === null) return `${origin.name} was removed in Threadlines.`;
+      if (grant.access !== "work") return `${origin.name} may no longer answer questions.`;
+      if (grant.projectIds !== null && !grant.projectIds.includes(thread.projectId)) {
+        return `${origin.name} may no longer reach this thread's project.`;
+      }
+      ceiling = saferRuntimeMode(ceiling, grant.maxRuntimeMode);
+    }
+    const sessionKey = participantSessionKey(thread.id, askerId);
+    const runtime = (yield* providerService
+      .listSessions()
+      .pipe(Effect.orElseSucceed(() => [] as const))).find(
+      (session) => session.threadId === sessionKey,
+    );
+    const runtimeMode = runtime?.runtimeMode ?? thread.runtimeMode;
+    if (
+      exceedsRuntimeMode(runtimeMode, ceiling) ||
+      exceedsRuntimeMode(thread.runtimeMode, ceiling)
+    ) {
+      return outsideCeilingDetail(origin.name);
+    }
+    return null;
+  });
+
+  /** The chat's line for an answer an outside agent gave. */
+  const noteOutsideAnswer = (
+    thread: OrchestrationThread,
+    origin: OutsideTurnOrigin,
+    requestId: string,
+    turnId: TurnId | null,
+    createdAt: string,
+  ) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(`outside-answered:${requestId}`),
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(`outside-answered:${requestId}`),
+          kind: "user-input.answered-from-outside",
+          tone: "info",
+          summary: `Answered by ${origin.name}`,
+          payload: { requestId, connectionId: origin.connectionId, name: origin.name },
+          turnId,
+          createdAt,
+        },
+        createdAt,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+
   const processUserInputResponseRequested = Effect.fn("processUserInputResponseRequested")(
     function* (
       event: Extract<ProviderIntentEvent, { type: "thread.user-input-response-requested" }>,
@@ -3746,6 +3940,26 @@ const make = Effect.gen(function* () {
         thread.activities,
         USER_INPUT_ACTIVITY_KINDS,
       ).find((open) => open.requestId === event.payload.requestId);
+      const fromOutside = event.payload.fromOutside;
+      if (fromOutside !== undefined) {
+        const refusal = yield* outsideAnswerRefusal(
+          thread,
+          fromOutside,
+          event.payload.participantId ?? null,
+        );
+        if (refusal !== null) {
+          // Nothing is sent: the question stays open for the user.
+          return yield* appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.user-input.respond.failed",
+            summary: `Answer from ${fromOutside.name} not sent`,
+            detail: refusal,
+            turnId: openQuestion?.activity.turnId ?? null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
+          });
+        }
+      }
       const requested = openQuestion
         ? readRequestedUserInput(openQuestion.activity.payload)
         : Option.none();
@@ -3797,7 +4011,10 @@ const make = Effect.gen(function* () {
                   threadId: participantSessionKey(thread.id, answeringAgentId),
                   expectedTurnId: activeTurnId,
                   messageId,
-                  input,
+                  input:
+                    fromOutside === undefined
+                      ? input
+                      : `${outsideAnswerContext(fromOutside.name)}\n\n${input}`,
                   ...(deviceNote !== undefined ? { deviceNote } : {}),
                 })
                 .pipe(
@@ -3818,6 +4035,14 @@ const make = Effect.gen(function* () {
                   message: { messageId, role: "user", text: input, attachments: [] },
                   ...(event.payload.sentFrom !== undefined
                     ? { sentFrom: event.payload.sentFrom }
+                    : {}),
+                  ...(fromOutside !== undefined
+                    ? {
+                        fromOutside: {
+                          connectionId: fromOutside.connectionId,
+                          name: fromOutside.name,
+                        },
+                      }
                     : {}),
                   createdAt: event.payload.createdAt,
                 });
@@ -3852,6 +4077,8 @@ const make = Effect.gen(function* () {
             if (!steered) {
               // Persist the answer through the normal turn path. If starting
               // the provider fails, the transcript keeps the reply for Retry.
+              // An outside agent's answer is its turn, with its ceiling
+              // checked again at launch; it passes over its own question.
               yield* orchestrationEngine.dispatch({
                 type: "thread.turn.start",
                 commandId: CommandId.make(`question-answer-start:${event.payload.requestId}`),
@@ -3859,9 +4086,16 @@ const make = Effect.gen(function* () {
                 message: { messageId, role: "user", text: input, attachments: [] },
                 runtimeMode: thread.runtimeMode,
                 interactionMode: thread.interactionMode,
-                ...(event.payload.sentFrom !== undefined
-                  ? { sentFrom: event.payload.sentFrom }
-                  : {}),
+                ...(fromOutside !== undefined
+                  ? {
+                      fromOutside,
+                      answering: event.payload.requestId,
+                      // The agent that asked, which the decider checked holds the thread.
+                      participantId: event.payload.participantId ?? null,
+                    }
+                  : event.payload.sentFrom !== undefined
+                    ? { sentFrom: event.payload.sentFrom }
+                    : {}),
                 createdAt: event.payload.createdAt,
               });
             }
@@ -3881,6 +4115,15 @@ const make = Effect.gen(function* () {
             },
             createdAt: event.payload.createdAt,
           });
+          if (fromOutside !== undefined) {
+            yield* noteOutsideAnswer(
+              thread,
+              fromOutside,
+              event.payload.requestId,
+              openQuestion?.activity.turnId ?? null,
+              event.payload.createdAt,
+            );
+          }
         }).pipe(Effect.catchCause((cause) => fail(formatFailureDetail(cause))));
         return;
       }
@@ -3905,6 +4148,17 @@ const make = Effect.gen(function* () {
           answers: event.payload.answers,
         })
         .pipe(
+          Effect.andThen(
+            fromOutside === undefined
+              ? Effect.void
+              : noteOutsideAnswer(
+                  thread,
+                  fromOutside,
+                  event.payload.requestId,
+                  openQuestion?.activity.turnId ?? null,
+                  event.payload.createdAt,
+                ),
+          ),
           Effect.catchCause((cause) =>
             appendProviderFailureActivity({
               threadId: event.payload.threadId,
@@ -4106,6 +4360,38 @@ const make = Effect.gen(function* () {
       { discard: true },
     );
     yield* endSideTurn(thread.id, thread.sideTurn, event.payload.createdAt);
+    // Every runtime of the thread is gone, and with it whatever outside work
+    // left running: the agents it marked start fresh next time, unless their
+    // provider keeps queued work past the runtime (they clear at that start).
+    // Only an agent whose runtime is confirmed gone: a stop that failed
+    // leaves its runtime, and its mark.
+    const stillRunning = new Set(
+      (yield* providerService.listSessions().pipe(Effect.orElseSucceed(() => [] as const)))
+        .filter((session) => session.status !== "closed")
+        .map((session) => session.threadId),
+    );
+    yield* Effect.forEach(
+      (thread.outsideWork ?? []).filter(
+        (entry) => !stillRunning.has(participantSessionKey(thread.id, entry.participantId)),
+      ),
+      (entry) =>
+        Effect.gen(function* () {
+          const instanceId =
+            entry.participantId === null
+              ? thread.modelSelection.instanceId
+              : thread.participants.find((participant) => participant.id === entry.participantId)
+                  ?.modelSelection.instanceId;
+          const capabilities =
+            instanceId === undefined
+              ? undefined
+              : yield* providerService
+                  .getCapabilities(instanceId)
+                  .pipe(Effect.orElseSucceed(() => undefined));
+          if (capabilities === undefined || capabilities.sessionOutlivesRuntime === true) return;
+          yield* shedOutsideWork(thread, entry.participantId, event.payload.createdAt, null);
+        }).pipe(Effect.ignoreCause({ log: true })),
+      { discard: true },
+    );
 
     explicitlyStoppedThreads.add(thread.id);
     const stoppedThread = yield* resolveThread(thread.id);

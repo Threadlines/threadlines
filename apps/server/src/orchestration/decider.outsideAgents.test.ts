@@ -6,11 +6,13 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OutsideTurnOrigin,
   OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
   type RuntimeMode,
   ThreadId,
+  type ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
@@ -104,7 +106,7 @@ const outsideTurn = (
   message: { messageId: MessageId.make(messageId), role: "user", text: "Go", attachments: [] },
   runtimeMode: "approval-required",
   interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-  fromOutside: { ...AGENT, maxRuntimeMode },
+  fromOutside: { ...AGENT, access: "start", maxRuntimeMode },
   createdAt: at(2),
 });
 
@@ -127,7 +129,7 @@ describe("decider outside agents", () => {
     expect(sent?.payload).toMatchObject({ fromOutside: AGENT });
     // The turn carries the ceiling it was accepted under.
     expect(requested?.payload).toMatchObject({
-      fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+      fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
     });
     expect(turn.model.threads[0]?.messages[0]?.fromOutside).toEqual(AGENT);
   });
@@ -154,7 +156,7 @@ describe("decider outside agents", () => {
         type: "thread.turn.interrupt",
         commandId: CommandId.make("stop"),
         threadId: THREAD,
-        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+        fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
         createdAt: at(4),
       });
     const raised = await run(turn.model, raiseTo("full-access"));
@@ -164,7 +166,7 @@ describe("decider outside agents", () => {
       type: "thread.turn.interrupt",
       commandId: CommandId.make("stop-ok"),
       threadId: THREAD,
-      fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+      fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
       createdAt: at(4),
     });
     expect(stopped.events.map((event) => event.type)).toContain("thread.turn-interrupt-requested");
@@ -227,4 +229,201 @@ describe("decider outside agents", () => {
     expect(refused.refusal).toBeUndefined();
     expect(refused.detail).toContain("didn't start this thread");
   });
+
+  it("lets Work reach a thread the user started, marks the agent it reached, and clears it by agent", async () => {
+    const created = await userThread();
+    const work = {
+      ...AGENT,
+      access: "work" as const,
+      maxRuntimeMode: "approval-required" as const,
+    };
+    expect((await refusal(created.model, outsideTurn("start-level"))).detail).toContain(
+      "didn't start this thread",
+    );
+    const sent = await run(created.model, {
+      ...outsideTurn("work-level"),
+      fromOutside: work,
+    } as OrchestrationCommand);
+    expect(threadOf(sent.model).outsideWork).toEqual([
+      { participantId: null, connections: [AGENT], since: at(2), version: 1 },
+    ]);
+
+    const clear = (version: number): OrchestrationCommand => ({
+      type: "thread.outside-work.clear",
+      commandId: CommandId.make(`clear-${version}`),
+      threadId: THREAD,
+      participantId: null,
+      version,
+      createdAt: at(9),
+    });
+    // Its turn failed: Retry would send its words again without its mark or ceiling.
+    const failed = await run(sent.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("failed"),
+      threadId: THREAD,
+      session: {
+        threadId: THREAD,
+        status: "error",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: "The model is overloaded.",
+        updatedAt: at(3),
+      },
+      createdAt: at(3),
+    });
+    expect(
+      (
+        await refusal(failed.model, {
+          type: "thread.turn.retry",
+          commandId: CommandId.make("retry"),
+          threadId: THREAD,
+          createdAt: at(4),
+        } as OrchestrationCommand)
+      ).detail,
+    ).toContain("came from Claude Code");
+
+    // Outside text that reached it after the fresh start began keeps the mark.
+    expect((await run(sent.model, clear(0))).events).toEqual([]);
+    const cleared = await run(sent.model, clear(1));
+    expect(threadOf(cleared.model).outsideWork).toEqual([]);
+    // Nothing left to clear: no event.
+    expect((await run(cleared.model, clear(1))).events).toEqual([]);
+  });
+
+  it("answers only an open question, at Work, asked by the agent holding the thread, never an approval", async () => {
+    const created = await userThread();
+    const ready = await run(created.model, readySession());
+    const asked = await run(ready.model, question("q-1", undefined));
+    const withApproval = await run(asked.model, approval("a-1"));
+    const fromOtherAgent = await run(withApproval.model, question("q-2", "participant-2" as never));
+    const work = {
+      ...AGENT,
+      access: "work" as const,
+      maxRuntimeMode: "approval-required" as const,
+    };
+    const respond = (
+      requestId: string,
+      fromOutside: OutsideTurnOrigin = work,
+    ): OrchestrationCommand => ({
+      type: "thread.user-input.respond",
+      commandId: CommandId.make(`respond-${requestId}`),
+      threadId: THREAD,
+      requestId: requestId as never,
+      answers: { "Which one?": "The first" },
+      fromOutside,
+      createdAt: at(8),
+    });
+    const current = fromOtherAgent.model;
+    expect((await refusal(current, respond("q-1", { ...work, access: "start" }))).detail).toContain(
+      "can't answer questions",
+    );
+    expect((await refusal(current, respond("a-1"))).detail).toContain("approval");
+    expect((await refusal(current, respond("q-9"))).detail).toContain("isn't open");
+    expect((await refusal(current, respond("q-2"))).detail).toContain("doesn't hold the thread");
+
+    const answered = await run(current, respond("q-1"));
+    expect(answered.events[0]?.payload).toMatchObject({
+      fromOutside: work,
+      participantId: null,
+    });
+    expect(threadOf(answered.model).outsideWork?.[0]?.connections).toEqual([AGENT]);
+
+    // The answer's own turn passes over its question; any other outside turn
+    // waits, and so does it while an approval waits too.
+    const questionsOnly = (await run(asked.model, question("q-3", undefined))).model;
+    const answerTurn = (answering?: string): OrchestrationCommand =>
+      ({
+        ...outsideTurn(`answer-${answering ?? "none"}`),
+        fromOutside: work,
+        ...(answering !== undefined ? { answering: answering as never } : {}),
+      }) as OrchestrationCommand;
+    expect((await refusal(questionsOnly, answerTurn())).detail).toContain("answer a question");
+    expect((await refusal(questionsOnly, answerTurn("q-3"))).detail).toContain("answer a question");
+    expect((await refusal(current, answerTurn("q-1"))).detail).toContain("approve");
+    const onlyOne = (await run(asked.model, readySession())).model;
+    expect((await run(onlyOne, answerTurn("q-1"))).events[0]?.type).toBe("thread.message-sent");
+  });
+});
+
+/** A thread the user started, as Supervised. */
+const userThread = () =>
+  run(emptyModel, {
+    type: "thread.create",
+    commandId: CommandId.make("create-user"),
+    threadId: THREAD,
+    projectId,
+    title: "Tidy the docs",
+    modelSelection: model,
+    runtimeMode: "approval-required",
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    branch: null,
+    worktreePath: null,
+    createdAt: at(1),
+  });
+
+const threadOf = (current: OrchestrationReadModel) =>
+  current.threads.find((thread) => thread.id === THREAD)!;
+
+const readySession = (): OrchestrationCommand => ({
+  type: "thread.session.set",
+  commandId: CommandId.make("ready"),
+  threadId: THREAD,
+  session: {
+    threadId: THREAD,
+    status: "ready",
+    providerName: "codex",
+    runtimeMode: "approval-required",
+    activeTurnId: null,
+    lastError: null,
+    updatedAt: at(3),
+  },
+  createdAt: at(3),
+});
+
+const question = (
+  requestId: string,
+  participantId: ThreadParticipantId | undefined,
+): OrchestrationCommand => ({
+  type: "thread.activity.append",
+  commandId: CommandId.make(`question-${requestId}`),
+  threadId: THREAD,
+  activity: {
+    id: EventId.make(`question-${requestId}`),
+    tone: "info",
+    kind: "user-input.requested",
+    summary: "A question",
+    payload: {
+      requestId,
+      questions: [
+        {
+          id: "Which one?",
+          header: "Pick",
+          question: "Which one?",
+          options: [{ label: "The first", description: "" }],
+          multiSelect: false,
+        },
+      ],
+    },
+    turnId: TurnId.make("turn-1"),
+    ...(participantId !== undefined ? { participantId } : {}),
+    createdAt: at(4),
+  },
+  createdAt: at(4),
+});
+
+const approval = (requestId: string): OrchestrationCommand => ({
+  type: "thread.activity.append",
+  commandId: CommandId.make(`approval-${requestId}`),
+  threadId: THREAD,
+  activity: {
+    id: EventId.make(`approval-${requestId}`),
+    tone: "approval",
+    kind: "approval.requested",
+    summary: "Run the tests",
+    payload: { requestId, requestType: "command_execution_approval" },
+    turnId: TurnId.make("turn-1"),
+    createdAt: at(5),
+  },
+  createdAt: at(5),
 });

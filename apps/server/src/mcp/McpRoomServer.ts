@@ -48,7 +48,8 @@ import {
   readBearerToken,
   unauthorizedMcpResponse,
 } from "./McpHttpServer.ts";
-import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { limitReaches, makeOutsideToolLimits, outsideLimitDetail } from "./outsideToolLimit.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
@@ -68,8 +69,46 @@ const RoomEndpointToolkit = Toolkit.merge(
   GuideToolkit,
 );
 
+type RoomEndpointToolName = keyof typeof RoomEndpointToolkit.tools;
+
+/**
+ * What each tool on this endpoint reaches, for outside work's limit: `own`,
+ * only the caller's own thread or checkout; `project`, threads and tasks
+ * beyond it; `changes`, it changes or starts something beyond its own
+ * thread. The app guide is refused on its own.
+ * Keyed by every tool, so a new one has to say.
+ */
+const ROOM_TOOL_REACH = {
+  room_agents: "own",
+  room_history: "own",
+  room_diff: "own",
+  room_available_agents: "own",
+  room_ask: "changes",
+  room_review: "changes",
+  room_hand_off: "changes",
+  room_invite: "changes",
+  thread_agents: "project",
+  thread_start: "changes",
+  thread_list: "project",
+  thread_read: "project",
+  thread_send: "changes",
+  thread_stop: "changes",
+  schedule_list: "project",
+  schedule_create: "changes",
+  schedule_update: "changes",
+  // Records that the caller's own scheduled run is done: its own thread only.
+  scheduled_run_finish: "own",
+} as const satisfies Record<
+  Exclude<RoomEndpointToolName, typeof GUIDE_TOOL_NAME>,
+  "own" | "project" | "changes"
+>;
+type ToolsReaching<R> = {
+  [K in keyof typeof ROOM_TOOL_REACH]: (typeof ROOM_TOOL_REACH)[K] extends R ? K : never;
+}[keyof typeof ROOM_TOOL_REACH];
+
 const authenticate = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
+  const limits = yield* makeOutsideToolLimits;
   return Effect.fn("McpRoomServer.authenticate")(function* (
     handler: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
@@ -96,8 +135,13 @@ const authenticate = Effect.gen(function* () {
             ),
           )
         : scope.roomTools;
+    // Read per call: outside work can limit a credential while it lives.
+    const outsideLimit = yield* limits.forScope(scope);
     return yield* handler.pipe(
-      Effect.provideService(McpRoomInvocation, scope),
+      Effect.provideService(
+        McpRoomInvocation,
+        outsideLimit === null ? scope : { ...scope, outsideLimit },
+      ),
       Effect.map((response) => listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed)),
     );
   });
@@ -312,47 +356,105 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         : Effect.succeed(undefined),
     });
     const caller = requestService(McpRoomInvocation);
+    type Refused = { readonly outcome: "refused"; readonly detail: string };
+    /**
+     * Every call goes through one of these, by what its tool reaches
+     * (ROOM_TOOL_REACH, checked by type). While outside work limits the
+     * caller (outsideToolLimit.ts): a read of its own thread or checkout goes
+     * through; a read beyond it stays inside the limit's projects (the
+     * handlers drop linked computers themselves); a change is refused.
+     */
+    const own = <A>(
+      _tool: ToolsReaching<"own">,
+      run: (scope: McpInvocationScope) => Effect.Effect<A>,
+    ) => Effect.flatMap(caller, run);
+    const changes = <A>(
+      _tool: ToolsReaching<"changes">,
+      run: (scope: McpInvocationScope) => Effect.Effect<A>,
+    ) =>
+      Effect.flatMap(caller, (scope): Effect.Effect<A | Refused> =>
+        scope.outsideLimit === undefined
+          ? run(scope)
+          : Effect.succeed({ outcome: "refused", detail: outsideLimitDetail(scope.outsideLimit) }),
+      );
+    const projectRead = <A>(
+      _tool: ToolsReaching<"project">,
+      run: (scope: McpInvocationScope) => Effect.Effect<A>,
+      refusedAs: (detail: string) => A,
+    ) =>
+      Effect.flatMap(caller, (scope) =>
+        Effect.gen(function* () {
+          const limit = scope.outsideLimit;
+          if (limit === undefined) return yield* run(scope);
+          const shell = yield* readThreadShell(scope.threadId);
+          return shell !== undefined && limitReaches(limit, shell.projectId)
+            ? yield* run(scope)
+            : refusedAs(outsideLimitDetail(limit));
+        }),
+      );
     return {
-      room_agents: () => Effect.flatMap(caller, handlers.room_agents),
-      room_history: (input) =>
-        Effect.flatMap(caller, (scope) => handlers.room_history(scope, input)),
-      room_diff: (input) => Effect.flatMap(caller, (scope) => handlers.room_diff(scope, input)),
-      room_ask: (input) => Effect.flatMap(caller, (scope) => handlers.room_ask(scope, input)),
-      room_review: (input) => Effect.flatMap(caller, (scope) => handlers.room_review(scope, input)),
+      room_agents: () => own("room_agents", handlers.room_agents),
+      room_history: (input) => own("room_history", (scope) => handlers.room_history(scope, input)),
+      room_diff: (input) => own("room_diff", (scope) => handlers.room_diff(scope, input)),
+      room_ask: (input) => changes("room_ask", (scope) => handlers.room_ask(scope, input)),
+      room_review: (input) => changes("room_review", (scope) => handlers.room_review(scope, input)),
       room_hand_off: (input) =>
-        Effect.flatMap(caller, (scope) => handlers.room_hand_off(scope, input)),
-      room_available_agents: () => Effect.flatMap(caller, handlers.room_available_agents),
-      room_invite: (input) => Effect.flatMap(caller, (scope) => handlers.room_invite(scope, input)),
+        changes("room_hand_off", (scope) => handlers.room_hand_off(scope, input)),
+      room_available_agents: () => own("room_available_agents", handlers.room_available_agents),
+      room_invite: (input) => changes("room_invite", (scope) => handlers.room_invite(scope, input)),
       thread_agents: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_agents(scope, input)),
+        projectRead(
+          "thread_agents",
+          (scope) => threadHandlers.thread_agents(scope, input),
+          (detail) => ({ outcome: "refused", detail, agents: [], unavailable: [] }),
+        ),
       thread_start: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_start(scope, input)),
+        changes("thread_start", (scope) => threadHandlers.thread_start(scope, input)),
       thread_list: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_list(scope, input)),
+        projectRead(
+          "thread_list",
+          (scope) => threadHandlers.thread_list(scope, input),
+          (detail) => ({ outcome: "refused", detail, threads: [] }),
+        ),
       thread_read: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_read(scope, input)),
+        projectRead(
+          "thread_read",
+          (scope) => threadHandlers.thread_read(scope, input),
+          (detail) => ({ outcome: "refused", detail, messages: [], next: null, more: false }),
+        ),
       thread_send: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_send(scope, input)),
+        changes("thread_send", (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
-        Effect.flatMap(caller, (scope) => threadHandlers.thread_stop(scope, input)),
+        changes("thread_stop", (scope) => threadHandlers.thread_stop(scope, input)),
       schedule_list: (input) =>
-        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_list(scope, input)),
+        projectRead(
+          "schedule_list",
+          (scope) => scheduleHandlers.schedule_list(scope, input),
+          (detail) => ({ outcome: "refused", detail, tasks: [] }),
+        ),
       schedule_create: (input) =>
-        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_create(scope, input)),
+        changes("schedule_create", (scope) => scheduleHandlers.schedule_create(scope, input)),
       schedule_update: (input) =>
-        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_update(scope, input)),
+        changes("schedule_update", (scope) => scheduleHandlers.schedule_update(scope, input)),
       scheduled_run_finish: (input) =>
-        Effect.flatMap(caller, (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
+        own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
       // Listed only to runtimes granted it; a call from any other is refused
-      // too (a review runtime reads the checkout and nothing else).
+      // too (a review runtime reads the checkout and nothing else). Refused
+      // while outside work limits the caller: it reads app-wide settings,
+      // linked computers and connection names.
       app_guide: (input) =>
         Effect.flatMap(caller, (scope) =>
-          scope.roomTools.has(GUIDE_TOOL_NAME)
-            ? guide(input)
-            : Effect.succeed({
+          scope.outsideLimit !== undefined
+            ? Effect.succeed({
                 outcome: "refused" as const,
-                answer: "The Threadlines guide isn't available to you here.",
-              }),
+                answer: outsideLimitDetail(scope.outsideLimit),
+              })
+            : scope.roomTools.has(GUIDE_TOOL_NAME)
+              ? guide(input)
+              : Effect.succeed({
+                  outcome: "refused" as const,
+                  answer: "The Threadlines guide isn't available to you here.",
+                }),
         ),
     };
   }),

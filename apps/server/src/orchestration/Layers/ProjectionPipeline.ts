@@ -106,6 +106,7 @@ import {
   applyWorkflowRunPatch,
   retainWorkflowRunsAfterRevert,
 } from "@threadlines/shared/workflowRuns";
+import { clearOutsideWork, markOutsideWork } from "../outsideTurns.ts";
 import { hasActionableProposedPlan } from "../proposedPlans.ts";
 import { carriedBackgroundTasks } from "../sessionBackgroundTasks.ts";
 
@@ -1004,6 +1005,34 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               participantId,
               modelSelection,
             ),
+            // See the in-memory projector: outside text marks this agent.
+            ...(event.payload.fromOutside !== undefined
+              ? {
+                  outsideWork: markOutsideWork(
+                    existingRow.value.outsideWork ?? undefined,
+                    participantId,
+                    event.payload.fromOutside,
+                    event.payload.createdAt,
+                  ),
+                }
+              : {}),
+          });
+          return;
+        }
+
+        case "thread.outside-work-cleared": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            outsideWork: clearOutsideWork(
+              existingRow.value.outsideWork ?? undefined,
+              event.payload.participantId,
+            ),
           });
           return;
         }
@@ -1262,6 +1291,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.occurredAt,
+            // An outside answer marks the agent that asked (see the projector).
+            ...(event.type === "thread.user-input-response-requested" &&
+            event.payload.fromOutside !== undefined
+              ? {
+                  outsideWork: markOutsideWork(
+                    existingRow.value.outsideWork ?? undefined,
+                    event.payload.participantId ?? null,
+                    event.payload.fromOutside,
+                    event.payload.createdAt,
+                  ),
+                }
+              : {}),
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
           return;
@@ -1606,6 +1647,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
+            ...(event.payload.fromOutside !== undefined
+              ? { fromOutside: event.payload.fromOutside }
+              : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.createdAt,

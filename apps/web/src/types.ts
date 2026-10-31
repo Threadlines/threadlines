@@ -59,6 +59,7 @@ import type {
   RuntimeMode,
   ThreadMessageOrigin,
   OutsideAgentRef,
+  OrchestrationOutsideWork,
 } from "@threadlines/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -258,6 +259,8 @@ export interface Thread {
   scheduledRun?: ThreadScheduledRun | null;
   /** See ThreadShell.outsideOrigin. */
   outsideOrigin?: OutsideAgentRef | null;
+  /** See ThreadShell.outsideWork. */
+  outsideWork?: ReadonlyArray<OrchestrationOutsideWork>;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
@@ -370,6 +373,11 @@ export interface ThreadShell {
    * labelled with its name. Absent or null: started in Threadlines.
    */
   outsideOrigin?: OutsideAgentRef | null;
+  /**
+   * The agents outside text reached, whose Threadlines tools only read until
+   * they start fresh (OrchestrationOutsideWork). Absent means none.
+   */
+  outsideWork?: ReadonlyArray<OrchestrationOutsideWork>;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */

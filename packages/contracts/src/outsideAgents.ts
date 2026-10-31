@@ -8,7 +8,7 @@ import {
   ProjectId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { OutsideAgentRef, RuntimeMode } from "./orchestration.ts";
+import { OutsideAgentAccess, OutsideAgentRef, RuntimeMode } from "./orchestration.ts";
 
 /**
  * Outside agents (docs/design/outside-agents.md): coding agents running
@@ -18,21 +18,13 @@ import { OutsideAgentRef, RuntimeMode } from "./orchestration.ts";
  * group and the approval dialog show, and the owner-only RPCs behind them.
  */
 
-/**
- * What a connection may do. `see`: projects, agents, and every thread's
- * status and messages in its projects. `start`: that, plus start threads and
- * send to or stop the threads it started.
- */
-export const OutsideAgentAccess = Schema.Literals(["see", "start"]);
-export type OutsideAgentAccess = typeof OutsideAgentAccess.Type;
-
 /** What the user granted a connection; the one authority every call is checked against. */
 export const OutsideAgentGrant = Schema.Struct({
   access: OutsideAgentAccess,
   /**
    * The highest access a thread may have for this connection to start a
-   * turn in it. New threads it starts get at most this. Kept with `see` too,
-   * so switching to `start` later has a value; it allows nothing there.
+   * turn, send or answer in it. New threads it starts get at most this. Kept
+   * with `see` too, so switching up later has a value; it allows nothing there.
    */
   maxRuntimeMode: RuntimeMode,
   /** The projects it may see and start threads in; null: all of them. */

@@ -27,15 +27,17 @@ export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentCon
 
 /**
  * Why a grant the user picked can't be given: more than the sign-in asked
- * for (`requested`; null for a Change or a key), or no projects.
+ * for (`requested`; null for a Change or a key), or no projects. No sign-in
+ * asks for Work: one that asked to start threads may be given it, one that
+ * asked only to see may not.
  */
 export const grantRefusal = (
   grant: OutsideAgentGrant,
   requested: OutsideAgentAccess | null,
   who: "agent" | "assistant" = "agent",
 ): string | null => {
-  if (requested === "see" && grant.access === "start") {
-    return `This ${who} asked only to see threads, so it can't be allowed to start them.`;
+  if (requested === "see" && grant.access !== "see") {
+    return `This ${who} asked only to see threads, so it can't be allowed to do more.`;
   }
   if (grant.projectIds !== null && grant.projectIds.length === 0) {
     return "Pick at least one project, or allow all of them.";

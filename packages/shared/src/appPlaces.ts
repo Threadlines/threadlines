@@ -475,7 +475,7 @@ const SECTIONS = [
     parent: "settings.connections",
     title: "Agents",
     about:
-      "Outside agents (Claude Code, Codex in a terminal) using this computer through the threadlines command.",
+      "Outside agents (Claude Code, Codex in a terminal) using this computer through the threadlines command. Each can see threads, start threads or work with all threads, as far as you allow.",
     route: { to: "/settings/connections", search: { section: "agents" } },
     keywords: ["outside agents", "cli", "threadlines command", "terminal", "connect"],
     widensAgents: true,
@@ -485,7 +485,9 @@ const SECTIONS = [
     kind: "section",
     parent: "settings.connections",
     title: "Agents that can use this computer",
-    about: "Each outside agent you let in, with the most access its threads get.",
+    about:
+      "Each outside agent you let in, what it can do, and the most access a thread may have for it to act there. Work with all threads, which only you can grant, also lets it message, stop and answer questions in any thread in its projects, never approvals.",
+    keywords: ["see threads", "start threads", "work with all threads", "access level"],
     route: { to: "/settings/connections", search: { section: "agents" } },
     value: { kind: "state", state: "outsideAgents" },
     widensAgents: true,
@@ -496,7 +498,7 @@ const SECTIONS = [
     parent: "settings.connections",
     title: "Assistants",
     about:
-      "Always-on assistants (Grok Bot, dots, Muse, Claude Duet) using this computer from their own cloud, through the relay.",
+      "Always-on assistants (Grok Bot, dots, Muse, Claude Duet) using this computer from their own cloud, through the relay. Each can see threads, start threads or work with all threads, as far as you allow.",
     route: { to: "/settings/connections", search: { section: "assistants" } },
     keywords: ["grok bot", "dots", "muse", "claude duet", "connector", "always-on", "mcp"],
     widensAgents: true,
@@ -506,7 +508,9 @@ const SECTIONS = [
     kind: "section",
     parent: "settings.connections",
     title: "Assistants that can use this computer",
-    about: "Each assistant you let in, how it signs in, and the most access its threads get.",
+    about:
+      "Each assistant you let in, how it signs in, what it can do, and the most access a thread may have for it to act there. Work with all threads, which only you can grant, also lets it message, stop and answer questions in any thread in its projects, never approvals.",
+    keywords: ["see threads", "start threads", "work with all threads", "access level"],
     route: { to: "/settings/connections", search: { section: "assistants" } },
     value: { kind: "state", state: "outsideAgents" },
     widensAgents: true,

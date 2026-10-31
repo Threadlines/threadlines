@@ -1,8 +1,11 @@
 import {
+  OutsideAgentConnectionId,
   OutsideAgentRequestId,
+  type OrchestrationOutsideWork,
   type OutsideAgentAssistantSignIn,
   type OutsideAgentPendingRequest,
   ProjectId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -10,6 +13,7 @@ import {
   describeOutsideAgentAccess,
   describeOutsideAgentProjects,
   describeOutsideAgentSignIn,
+  describeOutsideWork,
   initialOutsideAgentDraft,
   nextOutsideAgentNotification,
   nextShownAssistantCode,
@@ -46,6 +50,9 @@ describe("outside agent wording", () => {
     expect(
       describeOutsideAgentAccess({ access: "start", maxRuntimeMode: "approval-required" }),
     ).toBe("Starts threads · Supervised");
+    expect(describeOutsideAgentAccess({ access: "work", maxRuntimeMode: "auto" })).toBe(
+      "Works with all threads · Auto",
+    );
 
     const names = new Map([
       [WEB, "web"],
@@ -107,6 +114,15 @@ describe("outsideAgentGrantFromDraft", () => {
         availableProjectIds: [WEB, API],
       }),
     ).toEqual({ access: "start", maxRuntimeMode: "approval-required", projectIds: [WEB] });
+    // No sign-in asks for Work: the user may give it to one that asked to
+    // start threads, never to one that asked only to see them.
+    const work = { ...draft, access: "work" as const };
+    expect(
+      outsideAgentGrantFromDraft(work, { requestedAccess: "start", availableProjectIds: [WEB] }),
+    ).toEqual({ access: "work", maxRuntimeMode: "approval-required", projectIds: [WEB] });
+    expect(
+      outsideAgentGrantFromDraft(work, { requestedAccess: "see", availableProjectIds: [WEB] }),
+    ).toEqual({ access: "see", maxRuntimeMode: "approval-required", projectIds: [WEB] });
     // Only some projects, none of them ticked: nothing to allow yet.
     expect(
       outsideAgentGrantFromDraft(
@@ -125,6 +141,63 @@ describe("outsideAgentGrantFromDraft", () => {
     expect(
       outsideAgentGrantFromDraft(draft, { requestedAccess: "start", availableProjectIds: [WEB] }),
     ).toEqual({ access: "start", maxRuntimeMode: "auto", projectIds: null });
+  });
+});
+
+describe("describeOutsideWork", () => {
+  const REVIEWER = ThreadParticipantId.make("participant-reviewer");
+  const ref = (id: string, name: string) => ({
+    connectionId: OutsideAgentConnectionId.make(id),
+    name,
+  });
+  const marked = (
+    participantId: ThreadParticipantId | null,
+    ...connections: ReadonlyArray<ReturnType<typeof ref>>
+  ): OrchestrationOutsideWork => ({
+    participantId,
+    connections,
+    since: "2026-10-30T12:00:00.000Z",
+    version: 1,
+  });
+  const roomNames = (participantId: ThreadParticipantId | null) =>
+    participantId === null ? "Opus 5.5" : "GPT-6.1 Sol (Reviewer)";
+
+  it("names whose work ran here, each connection once, and keeps a long list short", () => {
+    expect(describeOutsideWork([], null)).toBeNull();
+    expect(describeOutsideWork([marked(null, ref("grok", "Grok Bot"))], null)).toEqual({
+      lead: "Grok Bot worked here.",
+      detail: "Tools are limited until a fresh start.",
+    });
+    expect(
+      describeOutsideWork(
+        [marked(null, ref("grok", "Grok Bot"), ref("dots", "dots"), ref("grok", "Grok Bot"))],
+        null,
+      )?.lead,
+    ).toBe("Grok Bot and dots worked here.");
+    expect(
+      describeOutsideWork(
+        [
+          marked(null, ref("grok", "Grok Bot"), ref("dots", "dots")),
+          marked(REVIEWER, ref("claude", "Claude Code")),
+        ],
+        null,
+      )?.lead,
+    ).toBe("Grok Bot, dots and others worked here.");
+  });
+
+  it("names the agents it reached in a room", () => {
+    expect(
+      describeOutsideWork([marked(REVIEWER, ref("grok", "Grok Bot"))], roomNames)?.detail,
+    ).toBe("Tools of GPT-6.1 Sol (Reviewer) are limited until a fresh start.");
+    expect(
+      describeOutsideWork(
+        [marked(null, ref("grok", "Grok Bot")), marked(REVIEWER, ref("grok", "Grok Bot"))],
+        roomNames,
+      ),
+    ).toEqual({
+      lead: "Grok Bot worked here.",
+      detail: "Tools of Opus 5.5 and GPT-6.1 Sol (Reviewer) are limited until a fresh start.",
+    });
   });
 });
 

@@ -3,9 +3,10 @@
  * (docs/design/assistants.md), in the words the app shows them: what a
  * connection may do, where, how it signs in and when it last called; how each
  * client connects; the sign-ins waiting, oldest first; the choices the
- * approval dialog starts from and the grant they make; and when a new sign-in
- * earns a system notification. Pure, so Settings, the dialog and the labels
- * say it alike.
+ * approval dialog starts from and the grant they make; when a new sign-in
+ * earns a system notification; and what a thread says while their work limits
+ * its agents' tools. Pure, so Settings, the dialog and the labels say it
+ * alike.
  */
 import type {
   OutsideAgentAccess,
@@ -16,8 +17,10 @@ import type {
   OutsideAgentPendingRequest,
   OutsideAgentRef,
   OutsideAgentsSnapshot,
+  OrchestrationOutsideWork,
   ProjectId,
   RuntimeMode,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 
 import { runtimeModeConfig } from "../../runtimeModeOptions";
@@ -27,15 +30,41 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 export const OUTSIDE_AGENT_ACCESS_CHOICES: Record<OutsideAgentAccess, string> = {
   see: "See threads",
   start: "Start threads",
+  work: "Work with all threads",
 };
 
-/** What a connection's grant allows, on its row: "Sees threads", "Starts threads · Supervised". */
+/** The same on its row, said of the connection. */
+const OUTSIDE_AGENT_ACCESS_ON_ROW: Record<OutsideAgentAccess, string> = {
+  see: "Sees threads",
+  start: "Starts threads",
+  work: "Works with all threads",
+};
+
+/**
+ * What a connection's grant allows, on its row: "Sees threads", "Starts
+ * threads · Supervised", "Works with all threads · Auto". The highest access
+ * shows wherever it limits something, which is every level past See.
+ */
 export function describeOutsideAgentAccess(
   grant: Pick<OutsideAgentGrant, "access" | "maxRuntimeMode">,
 ): string {
+  const doing = OUTSIDE_AGENT_ACCESS_ON_ROW[grant.access];
   return grant.access === "see"
-    ? "Sees threads"
-    : `Starts threads · ${runtimeModeConfig[grant.maxRuntimeMode].label}`;
+    ? doing
+    : `${doing} · ${runtimeModeConfig[grant.maxRuntimeMode].label}`;
+}
+
+/**
+ * Whether the dialog may give `access` to a sign-in that asked for
+ * `requestedAccess`. One that asked only to see threads stays at See. One
+ * that asked to start them may get any level: no sign-in asks for Work, only
+ * the user grants it. Keys and Change ask as Start.
+ */
+export function outsideAgentAccessAllowed(
+  access: OutsideAgentAccess,
+  requestedAccess: OutsideAgentAccess,
+): boolean {
+  return access === "see" || requestedAccess !== "see";
 }
 
 /**
@@ -153,6 +182,47 @@ export function outsideOriginDescription(origin: Pick<OutsideAgentRef, "name">):
   return `Started by ${origin.name}, an agent outside Threadlines`;
 }
 
+/** "A", "A and B", "A, B and others": a list that stays short. */
+function joinNames(names: ReadonlyArray<string>): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]}, ${names[1]} and others`;
+}
+
+/**
+ * The thread's notice while outside work limits its agents' tools
+ * (OrchestrationOutsideWork), as one sentence in two parts: who worked here
+ * (`lead`), and whose Threadlines tools it limits until when (`detail`).
+ * `agentName` names a room's agents; null while the thread has only its own,
+ * which the notice calls "this agent". Null when nothing is marked.
+ */
+export function describeOutsideWork(
+  work: ReadonlyArray<OrchestrationOutsideWork>,
+  agentName: ((participantId: ThreadParticipantId | null) => string) | null,
+): { readonly lead: string; readonly detail: string } | null {
+  if (work.length === 0) return null;
+  const connections = new Map<string, string>();
+  for (const entry of work) {
+    for (const connection of entry.connections) {
+      if (!connections.has(connection.connectionId)) {
+        connections.set(connection.connectionId, connection.name);
+      }
+    }
+  }
+  const names = [...new Set(connections.values())];
+  // Short enough to read on a phone; the button's tooltip says the rest.
+  const lead = `${joinNames(names)} worked here.`;
+  const agents =
+    agentName === null ? [] : [...new Set(work.map((entry) => agentName(entry.participantId)))];
+  // A room's names can end in a role ("GPT-6 Astra 2 (Reviewer)"): no
+  // possessive after them.
+  const detail =
+    agents.length === 0
+      ? "Tools are limited until a fresh start."
+      : `Tools of ${joinNames(agents)} are limited until a fresh start.`;
+  return { lead, detail };
+}
+
 export type OutsideAgentClientId = "claude" | "codex" | "gemini" | "cursor";
 
 /** How one client connects to this computer: what to run (or paste), and one line of help. */
@@ -226,8 +296,8 @@ export function initialOutsideAgentDraft(grant: OutsideAgentGrant | null): Outsi
 
 /**
  * The grant the dialog's choices make, or null while they make none (some
- * projects, none of them picked). Never more than the agent asked for
- * (`requestedAccess`), and only projects this computer still has.
+ * projects, none of them picked). Only a level the sign-in allows
+ * (outsideAgentAccessAllowed), and only projects this computer still has.
  */
 export function outsideAgentGrantFromDraft(
   draft: OutsideAgentGrantDraft,
@@ -236,7 +306,9 @@ export function outsideAgentGrantFromDraft(
     readonly availableProjectIds: ReadonlyArray<ProjectId>;
   },
 ): OutsideAgentGrant | null {
-  const access: OutsideAgentAccess = input.requestedAccess === "see" ? "see" : draft.access;
+  const access: OutsideAgentAccess = outsideAgentAccessAllowed(draft.access, input.requestedAccess)
+    ? draft.access
+    : "see";
   if (draft.allProjects) {
     return { access, maxRuntimeMode: draft.maxRuntimeMode, projectIds: null };
   }

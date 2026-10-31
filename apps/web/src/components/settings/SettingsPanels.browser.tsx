@@ -5441,7 +5441,10 @@ describe("Agents outside Threadlines", () => {
     await expect
       .element(dialog.getByTestId("outside-agent-access-start"))
       .toHaveAttribute("aria-disabled", "true");
-    await expect.element(dialog.getByText("It only asked to see threads.")).toBeVisible();
+    await expect
+      .element(dialog.getByTestId("outside-agent-access-work"))
+      .toHaveAttribute("aria-disabled", "true");
+    await expect.element(dialog.getByText("It only asked to see threads.").first()).toBeVisible();
     await expect.element(dialog.getByText("1 more waiting")).toBeVisible();
 
     await dialog.getByTestId("outside-agent-deny-all").click();
@@ -5466,7 +5469,7 @@ describe("Agents outside Threadlines", () => {
     const claude = connection();
     outsideAgentsHarness.emit(snapshot({ connections: [claude] }));
     outsideAgentsHarness.client.update.mockImplementation(
-      async (input: { access: "see" | "start" }) => ({ ...claude, ...input }),
+      async (input: Pick<OutsideAgentConnection, "access">) => ({ ...claude, ...input }),
     );
     await mountConnectionsWithHost();
 
@@ -5493,6 +5496,27 @@ describe("Agents outside Threadlines", () => {
     });
     await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
     await expect.element(row).toMatchTextContent("Sees threads · web · Used 2m ago");
+
+    // Work is the user's to give: Change offers it, with the highest access it works under.
+    await row.getByRole("button", { name: "Change", exact: true }).click();
+    await dialog.getByTestId("outside-agent-access-work").click();
+    await expect
+      .element(dialog.getByTestId("outside-agent-ceiling-hint"))
+      .toHaveTextContent(
+        "It can message, stop and answer questions in threads at or under this access, and only read the rest. It can't answer approvals. You do that here.",
+      );
+    await dialog.getByTestId("outside-agent-save").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.update).toHaveBeenLastCalledWith({
+        connectionId: claude.connectionId,
+        access: "work",
+        maxRuntimeMode: "approval-required",
+        projectIds: [WEB],
+      });
+    });
+    await expect
+      .element(row)
+      .toMatchTextContent("Works with all threads · Supervised · web · Used 2m ago");
 
     await row.getByRole("button", { name: "Remove access", exact: true }).click();
     await expect.element(page.getByText("Remove access for Claude Code?")).toBeVisible();
@@ -5758,6 +5782,7 @@ describe("Agents outside Threadlines", () => {
       name: "Muse",
       signIn: "key",
       identity: null,
+      access: "work",
     });
     outsideAgentsHarness.emit(snapshot({ assistants: assistantsState() }));
     outsideAgentsHarness.client.createKey.mockResolvedValue({
@@ -5771,11 +5796,13 @@ describe("Agents outside Threadlines", () => {
     const form = page.getByTestId("assistant-key-dialog");
     await expect.element(form.getByTestId("assistant-key-create")).toBeDisabled();
     await form.getByTestId("assistant-key-name").fill("  Muse ");
+    // A key asks as Start does, so every level is the user's to give.
+    await form.getByTestId("outside-agent-access-work").click();
     await form.getByTestId("assistant-key-create").click();
     await vi.waitFor(() => {
       expect(outsideAgentsHarness.client.createKey).toHaveBeenCalledWith({
         name: "Muse",
-        access: "see",
+        access: "work",
         maxRuntimeMode: "approval-required",
         projectIds: null,
       });
@@ -5794,7 +5821,9 @@ describe("Agents outside Threadlines", () => {
     expect(document.body.textContent).not.toContain(KEY);
     await expect
       .element(page.getByTestId(`outside-agent-row-${muse.connectionId}`))
-      .toMatchTextContent("Key · Sees threads · All projects · Not used yet");
+      .toMatchTextContent(
+        "Key · Works with all threads · Supervised · All projects · Not used yet",
+      );
 
     // Opening it again starts a new key; the last one is gone.
     await page.getByTestId("assistants-create-key").click();
