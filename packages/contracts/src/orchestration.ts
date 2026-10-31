@@ -685,7 +685,7 @@ export const OrchestrationOutsideWork = Schema.Struct({
    * version it saw, so outside text that arrived while the agent was being
    * started fresh keeps its mark.
    */
-  version: NonNegativeInt,
+  version: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
 });
 export type OrchestrationOutsideWork = typeof OrchestrationOutsideWork.Type;
 /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */

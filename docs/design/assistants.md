@@ -1593,3 +1593,10 @@ start ignored a failed interrupt (the start fails instead); an answer's own
 turn went to the thread's own agent instead of the room agent that asked;
 and an archived thread read as unmarked while its runtimes were still
 stopping (the lookups read archived threads too).
+
+Its re-check of those fixes found three more, fixed: a mark saved before
+versions existed wouldn't load (it reads as version 1); Start fresh could
+restart the runtime it had just stopped to clear a goal (a stop leaves an
+agent with such a goal marked for its next fresh start, which has a runtime);
+and an agent moved to a provider without goals stayed marked for good (a
+provider without goals skips that step).

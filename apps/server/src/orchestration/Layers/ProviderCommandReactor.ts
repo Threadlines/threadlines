@@ -651,22 +651,35 @@ const make = Effect.gen(function* () {
    * began clears (outside text that reached it since keeps a newer one). A
    * goal set since the mark is cleared at the provider first, since goals
    * come back on resume and the agent may have set it from the outside text;
-   * if that fails, the agent stays marked. The chat says either way.
+   * if that fails, the agent stays marked, and the chat says so. That takes
+   * the new runtime (`started`): a stop, which has none, leaves such an
+   * agent marked for its next fresh start. A provider without goals has none
+   * to bring back.
    */
   const shedOutsideWork = Effect.fnUntraced(function* (
     thread: OrchestrationThread,
     participantId: ThreadParticipantId | null,
     createdAt: string,
+    started: ProviderSession | null,
   ) {
     const entry = outsideWorkOf(thread, participantId);
     if (entry === undefined) return;
     const names = entry.connections.map((connection) => connection.name).join(" and ");
     const goal = thread.goal;
+    const goalsHere =
+      started?.providerInstanceId === undefined
+        ? undefined
+        : (yield* providerService
+            .getCapabilities(started.providerInstanceId)
+            .pipe(Effect.orElseSucceed(() => undefined)))?.threadGoals;
     if (
       goal !== null &&
       goal.createdAt >= entry.since &&
-      sessionSlotParticipantId(thread.session) === participantId
+      sessionSlotParticipantId(thread.session) === participantId &&
+      goalsHere !== "unsupported"
     ) {
+      // No runtime to clear it on: leave the mark to the next fresh start.
+      if (started === null) return;
       const cleared = yield* providerService
         .clearThreadGoal({ threadId: participantSessionKey(thread.id, participantId) })
         .pipe(Effect.result);
@@ -1691,7 +1704,8 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
-      if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt);
+      if (shedsOutsideWork)
+        yield* shedOutsideWork(thread, participantId, createdAt, handoffSession);
       if (contextSeed !== undefined) {
         owedHistorySeeds.delete(sessionKey);
         // A moved thread's debt is paid once a turn reaches the provider on
@@ -1922,7 +1936,9 @@ const make = Effect.gen(function* () {
       });
       yield* bindSessionToThread(restartedSession);
       yield* noteResumeFailure(restartedSession);
-      if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt);
+      if (shedsOutsideWork) {
+        yield* shedOutsideWork(thread, participantId, createdAt, restartedSession);
+      }
       return { sessionThreadId: restartedSession.threadId, nativeForkApplied: false };
     }
 
@@ -1950,7 +1966,9 @@ const make = Effect.gen(function* () {
       );
       if (Option.isSome(forkedSession)) {
         yield* bindSessionToThread(forkedSession.value);
-        if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt);
+        if (shedsOutsideWork) {
+          yield* shedOutsideWork(thread, participantId, createdAt, forkedSession.value);
+        }
         return { sessionThreadId: forkedSession.value.threadId, nativeForkApplied: true };
       }
     }
@@ -1958,7 +1976,7 @@ const make = Effect.gen(function* () {
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
     yield* noteResumeFailure(startedSession);
-    if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt);
+    if (shedsOutsideWork) yield* shedOutsideWork(thread, participantId, createdAt, startedSession);
     return { sessionThreadId: startedSession.threadId, nativeForkApplied: false };
   });
 
@@ -4370,7 +4388,7 @@ const make = Effect.gen(function* () {
                   .getCapabilities(instanceId)
                   .pipe(Effect.orElseSucceed(() => undefined));
           if (capabilities === undefined || capabilities.sessionOutlivesRuntime === true) return;
-          yield* shedOutsideWork(thread, entry.participantId, event.payload.createdAt);
+          yield* shedOutsideWork(thread, entry.participantId, event.payload.createdAt, null);
         }).pipe(Effect.ignoreCause({ log: true })),
       { discard: true },
     );

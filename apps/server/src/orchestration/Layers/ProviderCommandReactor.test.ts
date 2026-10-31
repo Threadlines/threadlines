@@ -3143,8 +3143,39 @@ describe("ProviderCommandReactor", () => {
     await stop("kept");
     await harness.drain();
     expect(await marks()).toHaveLength(1);
-    // Once that runtime is gone, Start fresh clears it.
+    // A goal set while it was marked needs a runtime to clear it on: Start
+    // fresh neither starts one for that nor lifts the mark.
+    await dispatch({
+      type: "thread.goal.state.set",
+      commandId: CommandId.make("cmd-goal"),
+      threadId,
+      goal: {
+        threadId,
+        objective: "Ship the release",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: "2026-01-01T00:00:05.000Z",
+        updatedAt: "2026-01-01T00:00:05.000Z",
+      },
+      createdAt: now,
+    });
     harness.runtimeSessions.splice(0);
+    const starts = harness.startSession.mock.calls.length;
+    await stop("with-goal");
+    await harness.drain();
+    expect(await marks()).toHaveLength(1);
+    expect(harness.startSession.mock.calls.length).toBe(starts);
+
+    // Without that goal, once the runtime is gone, Start fresh clears it.
+    await dispatch({
+      type: "thread.goal.state.set",
+      commandId: CommandId.make("cmd-goal-gone"),
+      threadId,
+      goal: null,
+      createdAt: now,
+    });
     await stop("gone");
     await waitFor(async () => (await marks()).length === 0);
   });
