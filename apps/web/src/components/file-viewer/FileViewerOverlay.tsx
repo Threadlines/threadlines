@@ -1160,10 +1160,19 @@ function FileViewerPreview({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {readAs === "text" && !isEditing ? (
+      {readAs === "text" ? (
         <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
           <span className="text-[11px] text-muted-foreground">SVG source</span>
-          <Button size="xs" variant="ghost" onClick={() => setSvgSourcePath(null)}>
+          {/* While editing, the source is all there is: going back to the
+              picture finishes editing too, saving like Done. */}
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => {
+              setSvgSourcePath(null);
+              if (editMode) setEditMode(false);
+            }}
+          >
             <ImageIcon aria-hidden className="size-3" />
             Show picture
           </Button>
