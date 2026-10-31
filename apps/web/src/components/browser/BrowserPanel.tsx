@@ -3,6 +3,7 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../../lib/pickedElementContext";
+import { MAX_BROWSER_PAGE_DIMENSION } from "@threadlines/contracts";
 import type {
   AgentBrowserSitePolicy,
   DesktopPreviewAnnotationMode,
@@ -48,8 +49,6 @@ import { BROWSER_SLOT_ANCHOR, claimThreadBrowser, closeThreadBrowser } from "./B
 import type { PreviewWebview } from "./PreviewTabFrame";
 
 import {
-  BROWSER_VIEWPORT_PRESETS,
-  RESPONSIVE_VIEWPORT,
   callWhenReady,
   getPreviewWebview,
   selectActiveTab,
@@ -61,8 +60,22 @@ import {
   useBrowserPanelStore,
   type BrowserAppearance,
   type BrowserTab,
-  type BrowserViewport,
 } from "../../browserPanelStore";
+import { updateSettings, useSettings } from "../../hooks/useSettings";
+import {
+  BROWSER_PAGE_SIZE_PRESETS,
+  RESPONSIVE_PAGE_SIZE_ID,
+  RESPONSIVE_PAGE_SIZE_LABEL,
+  RESPONSIVE_VIEWPORT,
+  fixedPageSize,
+  formatPageDimensions,
+  pageSizeChoiceId,
+  pageSizeName,
+  sameViewport,
+  viewportForPageSizeChoice,
+  type BrowserViewport,
+} from "./pageSizes";
+import { PageSizeLabel } from "./PageSizeLabel";
 import { BrowserFindBar } from "./BrowserFindBar";
 import { BrowserPageErrorsButton } from "./BrowserPageErrors";
 import { distillPageErrors, type PageErrorItem } from "./pageErrors";
@@ -88,6 +101,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
+import { SelectButton } from "../ui/select";
 import { failureNotice, toastManager } from "../ui/toast";
 import { copyWithNotice } from "../ui/copyWithNotice";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1893,8 +1907,9 @@ function BrowserUnavailableNotice({ title, detail }: { title: string; detail: st
  *
  * Hidden until asked for, because sizing is an occasional task and a permanent
  * control costs toolbar width on every page you ever look at. Width and height
- * are editable rather than a fixed menu of devices: the presets fill them in,
- * and any other size is reachable by typing it.
+ * are editable rather than a fixed menu of devices: the size menu fills them
+ * in, and any other size is reachable by typing it. The same menu sets the
+ * size new tabs open at, which Settings also offers.
  */
 function DeviceToolbar({
   viewport,
@@ -1909,39 +1924,77 @@ function DeviceToolbar({
   onZoomChange: (factor: number) => void;
   onClose: () => void;
 }) {
-  const matchingPreset = BROWSER_VIEWPORT_PRESETS.find(
-    (entry) => entry.width === viewport.width && entry.height === viewport.height,
-  );
-  const selectedMode = matchingPreset?.label ?? "Custom";
+  const choiceId = pageSizeChoiceId(viewport);
+  const sizeName = choiceId === null ? "Custom" : pageSizeName(viewport);
+  const newTabSize = useSettings((settings) => settings.browserNewTabSize);
+  const newTabViewport = newTabSize ?? RESPONSIVE_VIEWPORT;
+  const isNewTabSize = sameViewport(viewport, newTabViewport);
 
   return (
     <div
       className="flex h-9 shrink-0 items-center justify-center gap-1.5 overflow-x-auto border-b border-border px-2"
       data-testid="browser-device-toolbar"
     >
-      <select
-        aria-label="Device"
-        data-testid="browser-device-preset"
-        className="min-w-0 max-w-28 shrink rounded-md border border-border bg-background px-1 py-1 text-[11px] text-muted-foreground outline-none focus:border-ring"
-        value={selectedMode}
-        onChange={(event) => {
-          const preset = BROWSER_VIEWPORT_PRESETS.find((p) => p.label === event.target.value);
-          if (preset !== undefined) {
-            onViewportChange({ width: preset.width, height: preset.height });
+      <Menu>
+        <MenuTrigger
+          render={
+            <SelectButton
+              variant="ghost"
+              size="xs"
+              aria-label={`Page size: ${sizeName}`}
+              data-testid="browser-device-preset"
+              className="min-w-0 max-w-36 shrink"
+            />
           }
-        }}
-      >
-        {matchingPreset === undefined ? (
-          <option value="Custom" disabled>
-            Custom
-          </option>
-        ) : null}
-        {BROWSER_VIEWPORT_PRESETS.map((preset) => (
-          <option key={preset.label} value={preset.label}>
-            {preset.label}
-          </option>
-        ))}
-      </select>
+        >
+          {sizeName}
+        </MenuTrigger>
+        <MenuPopup align="start" className="min-w-60">
+          <MenuRadioGroup
+            value={choiceId ?? ""}
+            onValueChange={(id: string) => {
+              const next = viewportForPageSizeChoice(id);
+              if (next !== null) onViewportChange(next);
+            }}
+          >
+            <PageSizeMenuItem
+              id={RESPONSIVE_PAGE_SIZE_ID}
+              label={RESPONSIVE_PAGE_SIZE_LABEL}
+              detail="Fills the panel"
+              mono={false}
+            />
+            {BROWSER_PAGE_SIZE_PRESETS.map((size) => (
+              <PageSizeMenuItem
+                key={size.id}
+                id={size.id}
+                label={size.label}
+                detail={formatPageDimensions(size.width, size.height)}
+              />
+            ))}
+          </MenuRadioGroup>
+          <MenuSeparator />
+          {isNewTabSize ? (
+            <div
+              className="flex min-h-7 items-center gap-2 py-1 ps-2 pe-4 text-xs text-muted-foreground"
+              data-testid="browser-new-tab-size-status"
+            >
+              <CheckIcon className="size-3.5 shrink-0" />
+              Used for new tabs
+            </div>
+          ) : (
+            <MenuItem
+              className="pe-4"
+              data-testid="browser-new-tab-size"
+              onClick={() => updateSettings({ browserNewTabSize: fixedPageSize(viewport) })}
+            >
+              Use for new tabs
+              <span className="ms-auto ps-4 text-xs text-muted-foreground">
+                {`instead of ${pageSizeName(newTabViewport)}`}
+              </span>
+            </MenuItem>
+          )}
+        </MenuPopup>
+      </Menu>
 
       <DimensionInput
         label="Width"
@@ -2014,6 +2067,25 @@ function DeviceToolbar({
   );
 }
 
+/** One size in the size menu, chosen by its id. */
+function PageSizeMenuItem({
+  id,
+  label,
+  detail,
+  mono = true,
+}: {
+  id: string;
+  label: string;
+  detail: string;
+  mono?: boolean;
+}) {
+  return (
+    <MenuRadioItem value={id} data-testid={`browser-page-size-${id}`}>
+      <PageSizeLabel label={label} detail={detail} mono={mono} />
+    </MenuRadioItem>
+  );
+}
+
 /** Empty means "let it fill", which is how you get back to responsive by typing. */
 function DimensionInput({
   label,
@@ -2036,7 +2108,9 @@ function DimensionInput({
       return;
     }
     const parsed = Number.parseInt(trimmed, 10);
-    onCommit(Number.isNaN(parsed) || parsed < 1 ? value : Math.min(parsed, 9999));
+    onCommit(
+      Number.isNaN(parsed) || parsed < 1 ? value : Math.min(parsed, MAX_BROWSER_PAGE_DIMENSION),
+    );
   };
 
   return (

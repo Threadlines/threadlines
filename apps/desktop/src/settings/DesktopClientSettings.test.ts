@@ -16,6 +16,7 @@ const clientSettings: ClientSettings = {
   agentBrowserSitePolicy: "ask",
   agentBrowserProjectSitePolicy: {},
   agentBrowserTrustedCertificates: {},
+  browserNewTabSize: null,
   autoOpenAgentsPanel: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
