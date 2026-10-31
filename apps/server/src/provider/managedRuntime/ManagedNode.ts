@@ -230,6 +230,8 @@ export interface ManagedNode {
 const LABEL = "Node.js";
 const ARCHIVE_FILE = "a";
 const VALIDATE_TIMEOUT_MS = 30_000;
+/** How long a check asked to stop gets before it is killed outright. */
+const STOP_GRACE_MS = 2_000;
 
 const NodeMarker = Schema.Struct({
   releaseId: Schema.String.check(Schema.isPattern(MANAGED_RELEASE_ID_PATTERN)),
@@ -252,7 +254,12 @@ const layoutFor = (platform: NodeJS.Platform) =>
         bin: ["bin"],
       };
 
-/** Runs a program to its end. Aborting kills it, and this settles only once it has exited. */
+/**
+ * Runs a program to its end. Aborting (or the timeout) asks it to stop and
+ * kills it outright after STOP_GRACE_MS. Settles only once it has exited:
+ * execFile answers an abort the moment it sends the stop, while the program
+ * may still be running from a folder that is about to be moved or deleted.
+ */
 const runOnce = (
   program: string,
   args: ReadonlyArray<string>,
@@ -260,12 +267,32 @@ const runOnce = (
   signal: AbortSignal,
 ) =>
   new Promise<string>((resolve, reject) => {
-    execFile(
+    let answer: { readonly error: Error | null; readonly stdout: string } | undefined;
+    let exited = false;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const settle = () => {
+      // A program that never started (no pid) has no exit to wait for.
+      if (answer === undefined || (!exited && child.pid !== undefined)) return;
+      clearTimeout(forceKill);
+      if (answer.error) reject(answer.error);
+      else resolve(answer.stdout.trim());
+    };
+    const child = execFile(
       program,
       [...args],
       { env, signal, timeout: VALIDATE_TIMEOUT_MS, windowsHide: true },
-      (error, stdout) => (error ? reject(error) : resolve(String(stdout).trim())),
+      (error, stdout) => {
+        answer = { error, stdout: String(stdout) };
+        if (error && !exited) {
+          forceKill = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
+        }
+        settle();
+      },
     );
+    child.once("exit", () => {
+      exited = true;
+      settle();
+    });
   });
 
 /** Builds the manager for one pinned release. Cheap; holds no resources. */
