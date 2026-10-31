@@ -1303,6 +1303,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // the bar closes or the reader scrolls (any wheel, scroll key, scrollbar
   // drag or touch), after which following works as it always does.
   const findHoldsPositionRef = useRef(false);
+  const cancelMessageRevealRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!findOpen) findHoldsPositionRef.current = false;
   }, [findOpen]);
@@ -1397,7 +1398,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // The list aims by guessed heights for rows it has not drawn, and older
       // steps loading on the way can move the row: once there, the row is put
       // where it was meant to go, or found again and aimed at anew.
-      revealTimelineRow({
+      cancelMessageRevealRef.current?.();
+      cancelMessageRevealRef.current = revealTimelineRow({
         getList: () => listRef.current,
         resolveIndex: () =>
           rowsForRevealRef.current.findIndex(
@@ -1417,13 +1419,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [listRef, markUserScrollIntent],
   );
 
-  const stickToBottomNow = useCallback(() => {
+  // A message jump still on its way ends when the reader takes the list
+  // (scrolling, or pressing on it to select): its next attempt would pull
+  // them back.
+  const cancelMessageReveal = useCallback(() => {
+    cancelMessageRevealRef.current?.();
+    cancelMessageRevealRef.current = null;
+  }, []);
+
+  // The reader scrolling themselves also ends a jump's hold on their position.
+  const onReaderScrollInput = useCallback(() => {
+    findHoldsPositionRef.current = false;
+    cancelMessageReveal();
+  }, [cancelMessageReveal]);
+
+  const followEndAgain = useCallback(() => {
     findHoldsPositionRef.current = false;
     clearUserScrollLockTimer();
     setAutoStickToBottomState(true);
     onIsAtEndChange(true);
+  }, [clearUserScrollLockTimer, onIsAtEndChange, setAutoStickToBottomState]);
+
+  const stickToBottomNow = useCallback(() => {
+    followEndAgain();
     void listRef.current?.scrollToEnd?.({ animated: false });
-  }, [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState]);
+  }, [followEndAgain, listRef]);
 
   const clearTouchSettleTimer = useCallback(() => {
     if (touchSettleTimerRef.current === null) {
@@ -1465,11 +1485,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         !findHoldsPositionRef.current &&
         (autoStickToBottomRef.current || holdEndedAtBottomRef.current)
       ) {
-        stickToBottomNow();
+        followEndAgain();
       }
     },
-    [clearTouchSettleTimer, stickToBottomNow],
+    [clearTouchSettleTimer, followEndAgain],
   );
+
+  // Following comes back on (a hold that ended at the bottom, a scroll back
+  // down) in a render that turns maintainScrollAtEnd back on. The list keeps
+  // up with growing content only after a scroll to the end it took while that
+  // was on, so catch up in this render: the scroll lands where the reader
+  // already is, or brings in what streamed during a hold.
+  const followsEnd = autoStickToBottom && !listHeld;
+  const followedEndRef = useRef(followsEnd);
+  useLayoutEffect(() => {
+    const turnedOn = followsEnd && !followedEndRef.current;
+    followedEndRef.current = followsEnd;
+    if (turnedOn && searchTargetRowIndex < 0) {
+      void listRef.current?.scrollToEnd?.({ animated: false });
+    }
+  }, [followsEnd, listRef, searchTargetRowIndex]);
 
   // Catch-up frames scheduled before a hold began skip the frames that land
   // during it; `settleListHold` catches up once it ends.
@@ -1566,19 +1601,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent) => {
-      findHoldsPositionRef.current = false;
+      onReaderScrollInput();
       if (event.deltaY < 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
         markUserScrollIntent({ notifyAwayFromEnd: true });
       }
     },
-    [markUserScrollIntent],
+    [markUserScrollIntent, onReaderScrollInput],
   );
 
   const handlePointerDownCapture = useCallback(
     (event: ReactPointerEvent) => {
       const targetBounds = event.currentTarget.getBoundingClientRect();
       if (event.clientX >= targetBounds.right - SCROLLBAR_POINTER_GUTTER_PX) {
-        findHoldsPositionRef.current = false;
+        onReaderScrollInput();
         markUserScrollIntent();
       }
       // A mouse button down on the list holds it, as a finger does: a
@@ -1588,6 +1623,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (event.pointerType === "touch" || event.button !== 0) {
         return;
       }
+      cancelMessageReveal();
       beginListHold("pointer");
       pointerReleaseListenersRef.current?.abort();
       const listeners = new AbortController();
@@ -1611,7 +1647,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       window.addEventListener("contextmenu", release, options);
       window.addEventListener("blur", release, { signal: listeners.signal });
     },
-    [beginListHold, markUserScrollIntent, settleListHold],
+    [beginListHold, cancelMessageReveal, markUserScrollIntent, onReaderScrollInput, settleListHold],
   );
 
   const releaseTouch = useCallback(
@@ -1631,7 +1667,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleTouchStartCapture = useCallback(
     (event: ReactTouchEvent) => {
-      findHoldsPositionRef.current = false;
+      onReaderScrollInput();
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
       touchReleasedAtRef.current = null;
       clearTouchSettleTimer();
@@ -1653,7 +1689,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         target.addEventListener("touchcancel", onLift, options);
       }
     },
-    [beginListHold, clearTouchSettleTimer, releaseTouch],
+    [beginListHold, clearTouchSettleTimer, onReaderScrollInput, releaseTouch],
   );
 
   const handleTouchMoveCapture = useCallback(
@@ -1680,7 +1716,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const handleKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent) => {
       if (SCROLL_KEYS.has(event.key)) {
-        findHoldsPositionRef.current = false;
+        onReaderScrollInput();
       }
       if (
         event.key === "ArrowUp" ||
@@ -1691,7 +1727,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         markUserScrollIntent({ notifyAwayFromEnd: true });
       }
     },
-    [markUserScrollIntent],
+    [markUserScrollIntent, onReaderScrollInput],
   );
 
   const hasRows = rows.length > 0;
@@ -1884,6 +1920,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       clearTouchSettleTimer();
       touchLiftListenersRef.current?.abort();
       pointerReleaseListenersRef.current?.abort();
+      cancelMessageRevealRef.current?.();
     };
   }, [clearTouchSettleTimer, clearUserScrollLockTimer]);
 

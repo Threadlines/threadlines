@@ -38,7 +38,7 @@ updates:
       - dependency-name: "effect"
       - dependency-name: "@effect/*"
       # @legendapp/list is patched for chat scrolling
-      # (patches/@legendapp__list@3.3.9.patch) and pinned to that exact
+      # (patches/@legendapp__list@3.7.0.patch) and pinned to that exact
       # version. pnpm refuses to resolve a bump while the patch names the old
       # version (ERR_PNPM_UNUSED_PATCH), which failed the whole
       # production-dependencies job on every run. Bump manually, re-cutting

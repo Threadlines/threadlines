@@ -1,0 +1,502 @@
+diff --git a/react.d.ts b/react.d.ts
+index e583fe57211c5bf42902fd7eef0ada1eae3d589e..bd0a6ec98f7f09575abec92af6dd566455c412d2 100644
+--- a/react.d.ts
++++ b/react.d.ts
+@@ -231,6 +231,11 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
+      * Change extraData when the fixed sizes returned by this callback change.
+      */
+     getFixedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
++    /**
++     * Estimates the size of an item that has not been measured yet, in place of the running
++     * average of measured items. Return undefined to fall back to the average.
++     */
++    getEstimatedItemSize?: (item: ItemT, index: number, type: TItemType) => number | undefined;
+     /**
+      * Returns a stable item type used for pooling and size estimation.
+      */
+diff --git a/react.js b/react.js
+index 5955aaaaf0b988530f57835276f3ec2d15a69e53..370d6a1b96ede38e5bd90f79bae07ac1247abfcc 100644
+--- a/react.js
++++ b/react.js
+@@ -794,6 +794,40 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - nativeScroll);
+   }
+ }
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold. A hold does
++// not interrupt end following the way a user scroll does: let go at the end
++// and following carries on.
++function beginHoldOnList(ctx, holder) {
++  var _a3;
++  const state = ctx.state;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && !!scrollingTo.isScrollToEnd;
++  const tracker = ctx.scrollRequestTracker;
++  const isWaitingToScrollToEnd = !!tracker && state.waitingScrollToEndToken !== void 0 && tracker.isCurrent(state.waitingScrollToEndToken) && tracker.isWaitingToRun();
++  if (isScrollingToEnd || state.pendingScrollToEnd || isWaitingToScrollToEnd) {
++    // A scroll request that replaced an animated one owes that animation its
++    // stop, which it pays when it runs. Pay it here, since it never will.
++    const owesStop = !!((_a3 = ctx.scrollRequestTracker) == null ? void 0 : _a3.cancel());
++    cancelImperativeScroll(state);
++    if (owesStop) {
++      stopScrollAnimation(ctx);
++      state.scrollAdjustHandler.commitPendingAdjust();
++    }
++    syncScrollActive(ctx);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ 
+ // src/utils/checkThreshold.ts
+ var HYSTERESIS_MULTIPLIER = 1.3;
+@@ -1418,6 +1452,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return renderedSize;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1653,6 +1696,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = !!explicitAnchor || (dataChanged ? mvcpData : mvcpScroll);
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (explicitAnchor && scrollTarget === void 0) {
+@@ -1663,12 +1718,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = (_b = scrollingTo == null ? void 0 : scrollingTo.key) != null ? _b : getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -2093,7 +2148,7 @@ function doMaintainScrollAtEnd(ctx, options) {
+   var _a3, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+   const state = ctx.state;
+   if (state.isUnmounted) return false;
+-  if (state.isDragging || state.userScrollContentSize !== void 0 || ((_b = (_a3 = state.refScroller.current) == null ? void 0 : _a3.isScrollInRange) == null ? void 0 : _b.call(_a3)) === false) {
++  if (state.isDragging || state.isTouchingList || state.isPointerHoldingList || state.userScrollContentSize !== void 0 || ((_b = (_a3 = state.refScroller.current) == null ? void 0 : _a3.isScrollInRange) == null ? void 0 : _b.call(_a3)) === false) {
+     finishMaintainScrollAtEnd(ctx);
+     return false;
+   }
+@@ -5499,7 +5554,7 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
+     if (itemKey !== void 0 && element) {
+       const generation = (_b = ctx.state.containerItemGenerations[containerId]) != null ? _b : 0;
+       const rect = element.getBoundingClientRect();
+-      setContainerLayoutBaseline(element, rect);
++      recordContainerMeasurement(element, rect);
+       measurements.push({
+         containerId,
+         generation,
+@@ -5884,6 +5939,25 @@ function getGlobalResizeObserver() {
+   return globalResizeObserver;
+ }
+ var callbackMap = /* @__PURE__ */ new WeakMap();
++function rearmResizeObserver(element) {
++  if (globalResizeObserver && callbackMap.has(element)) {
++    globalResizeObserver.unobserve(element);
++    globalResizeObserver.observe(element, { box: "border-box" });
++  }
++}
++// Records a size read outside the resize observer (in a commit, or confirming a
++// shrink a frame later). It can be one the row holds only until its own next
++// render, before the frame is laid out: the observer then finds the size it
++// last reported and stays quiet, and the passing size stays recorded. So a
++// read that changes the recorded size has the observer report the size the
++// frame lays out, whatever it is.
++function recordContainerMeasurement(element, rect) {
++  const previousRect = getContainerLayoutBaseline(element);
++  setContainerLayoutBaseline(element, rect);
++  if (previousRect !== void 0 && (previousRect.height !== rect.height || previousRect.width !== rect.width)) {
++    rearmResizeObserver(element);
++  }
++}
+ function createResizeObserver(element, callback) {
+   var _a3;
+   if (typeof ResizeObserver === "undefined" || !element) {
+@@ -5961,9 +6035,13 @@ function useOnLayoutSync({
+         top: entry.contentRect.top,
+         width: borderBoxSize.inlineSize
+       } : (_a4 = target == null ? void 0 : target.getBoundingClientRect()) != null ? _a4 : entry.contentRect;
+-      const previousRect = prevRect != null ? prevRect : getContainerLayoutBaseline(element);
++      // Compared with the size recorded last, by this observer or by a commit's
++      // measurement, which can be newer than this observer's last report.
++      const recordedRect = getContainerLayoutBaseline(element);
++      const previousRect = recordedRect != null ? recordedRect : prevRect;
+       const didSizeChange = previousRect === void 0 || rectObserved.width !== previousRect.width || rectObserved.height !== previousRect.height;
+       prevRect = rectObserved;
++      setContainerLayoutBaseline(element, rectObserved);
+       const shouldResyncLayout = !!((_c = (_b2 = callbacks.current).webLayoutResync) == null ? void 0 : _c.call(_b2));
+       if (didSizeChange || shouldResyncLayout) {
+         emit(toLayout(rectObserved), false);
+@@ -6032,6 +6110,7 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+         const rect = (_a4 = element == null ? void 0 : element.getBoundingClientRect) == null ? void 0 : _a4.call(element);
+         if (rect) {
+           layout = { height: rect.height, width: rect.width };
++          recordContainerMeasurement(element, rect);
+         }
+         applyLayout();
+       }
+@@ -6947,7 +7026,51 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+     if (!target) return;
+     target.addEventListener("scroll", handleScroll, { passive: true });
+     if ("onscrollend" in target) target.addEventListener("scrollend", emitScrollEnd);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isTouchingList = false;
++      ctx.state.isPointerHoldingList = false;
+       target.removeEventListener("scroll", handleScroll);
+       target.removeEventListener("scrollend", emitScrollEnd);
+       const timeout = scrollEndFallbackRef.current;
+@@ -8337,6 +8460,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+     if (pendingScroll) {
+       state.pendingScrollToEnd = void 0;
+       if (scrollRequestTracker.isCurrent(pendingScroll.token)) {
++        // Still a scroll to the end while it waits for the list to be ready,
++        // so a hold that starts meanwhile can find and cancel it.
++        state.waitingScrollToEndToken = pendingScroll.token;
+         runScrollRequest(
+           pendingScroll.token,
+           state.pendingScrollResolve,
+@@ -8817,6 +8943,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -9110,6 +9237,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hasExternalScroll,
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
+diff --git a/react.mjs b/react.mjs
+index cb5b274f81ea1d33067c4aa688b8c87d6442d0bf..8f82ba9555c87836bf98696e94cbe7172de31f66 100644
+--- a/react.mjs
++++ b/react.mjs
+@@ -773,6 +773,40 @@ function finishMaintainScrollAtEnd(ctx) {
+     requestAdjust(ctx, nextScroll - nativeScroll);
+   }
+ }
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold. A hold does
++// not interrupt end following the way a user scroll does: let go at the end
++// and following carries on.
++function beginHoldOnList(ctx, holder) {
++  var _a3;
++  const state = ctx.state;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
++  const scrollingTo = state.scrollingTo;
++  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && !!scrollingTo.isScrollToEnd;
++  const tracker = ctx.scrollRequestTracker;
++  const isWaitingToScrollToEnd = !!tracker && state.waitingScrollToEndToken !== void 0 && tracker.isCurrent(state.waitingScrollToEndToken) && tracker.isWaitingToRun();
++  if (isScrollingToEnd || state.pendingScrollToEnd || isWaitingToScrollToEnd) {
++    // A scroll request that replaced an animated one owes that animation its
++    // stop, which it pays when it runs. Pay it here, since it never will.
++    const owesStop = !!((_a3 = ctx.scrollRequestTracker) == null ? void 0 : _a3.cancel());
++    cancelImperativeScroll(state);
++    if (owesStop) {
++      stopScrollAnimation(ctx);
++      state.scrollAdjustHandler.commitPendingAdjust();
++    }
++    syncScrollActive(ctx);
++  }
++  if (state.maintainingScrollAtEnd || state.pendingMaintainScrollAtEnd) {
++    finishMaintainScrollAtEnd(ctx);
++  }
++}
+ 
+ // src/utils/checkThreshold.ts
+ var HYSTERESIS_MULTIPLIER = 1.3;
+@@ -1397,6 +1431,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
+     return renderedSize;
+   }
+   const itemType = (_b = resolved == null ? void 0 : resolved.itemType) != null ? _b : getItemType ? (_a3 = getItemType(data, index)) != null ? _a3 : "" : "";
++  // A caller's estimate for an item that has not been measured beats the running
++  // average, which lets one tall kind of row inflate every guess for a short one.
++  const getEstimatedItemSize = state.props.getEstimatedItemSize;
++  const estimatedForItem = getEstimatedItemSize ? getEstimatedItemSize(data, index, itemType) : void 0;
++  if (typeof estimatedForItem === "number" && Number.isFinite(estimatedForItem)) {
++    size = roundSize(estimatedForItem) + ctx.scrollAxisGap;
++    setSize(ctx, key, size, notifyTotalSize);
++    return size;
++  }
+   if (useAverageSize && !scrollingTo) {
+     const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
+     if (averageSizeForType !== void 0) {
+@@ -1632,6 +1675,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+   const shouldMVCP = !!explicitAnchor || (dataChanged ? mvcpData : mvcpScroll);
+   const indexByKey = state.indexByKey;
+   const prevScroll = state.scroll;
++  // Size changes honor shouldRestorePosition too, not only data changes. When no
++  // row that starts on screen qualifies (a short tail row under a tall one),
++  // fall back to the partially visible first row instead of the rejected row.
++  const canAnchor = (id) => {
++    const index = indexByKey.get(id);
++    if (index === void 0) return false;
++    if (!shouldRestorePosition) return true;
++    const item = state.props.data[index];
++    return item !== void 0 && shouldRestorePosition(item, index, state.props.data);
++  };
++  const partiallyVisibleId = state.startNoBuffer === void 0 || state.startNoBuffer === null || state.startNoBuffer < 0 ? void 0 : state.idCache[state.startNoBuffer];
++  const anchorCandidateIds = partiallyVisibleId === void 0 || partiallyVisibleId === null || idsInView.includes(partiallyVisibleId) ? idsInView : [...idsInView, partiallyVisibleId];
+   getContentSize(ctx);
+   if (shouldMVCP) {
+     if (explicitAnchor && scrollTarget === void 0) {
+@@ -1642,12 +1697,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+       prevPosition = anchorLock.position;
+     } else if (scrollTarget !== void 0) {
+       targetId = (_b = scrollingTo == null ? void 0 : scrollingTo.key) != null ? _b : getId(state, scrollTarget);
+-    } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
+-      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
++    } else if (anchorCandidateIds.length > 0 && state.didContainersLayout && !dataChanged) {
++      targetId = anchorCandidateIds.find(canAnchor);
+     }
+-    if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
+-      for (let i = 0; i < idsInView.length; i++) {
+-        const id = idsInView[i];
++    if (dataChanged && anchorCandidateIds.length > 0 && state.didContainersLayout) {
++      for (let i = 0; i < anchorCandidateIds.length; i++) {
++        const id = anchorCandidateIds[i];
+         const index = indexByKey.get(id);
+         if (index !== void 0) {
+           const position = positions[index];
+@@ -2072,7 +2127,7 @@ function doMaintainScrollAtEnd(ctx, options) {
+   var _a3, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+   const state = ctx.state;
+   if (state.isUnmounted) return false;
+-  if (state.isDragging || state.userScrollContentSize !== void 0 || ((_b = (_a3 = state.refScroller.current) == null ? void 0 : _a3.isScrollInRange) == null ? void 0 : _b.call(_a3)) === false) {
++  if (state.isDragging || state.isTouchingList || state.isPointerHoldingList || state.userScrollContentSize !== void 0 || ((_b = (_a3 = state.refScroller.current) == null ? void 0 : _a3.isScrollInRange) == null ? void 0 : _b.call(_a3)) === false) {
+     finishMaintainScrollAtEnd(ctx);
+     return false;
+   }
+@@ -5478,7 +5533,7 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
+     if (itemKey !== void 0 && element) {
+       const generation = (_b = ctx.state.containerItemGenerations[containerId]) != null ? _b : 0;
+       const rect = element.getBoundingClientRect();
+-      setContainerLayoutBaseline(element, rect);
++      recordContainerMeasurement(element, rect);
+       measurements.push({
+         containerId,
+         generation,
+@@ -5863,6 +5918,25 @@ function getGlobalResizeObserver() {
+   return globalResizeObserver;
+ }
+ var callbackMap = /* @__PURE__ */ new WeakMap();
++function rearmResizeObserver(element) {
++  if (globalResizeObserver && callbackMap.has(element)) {
++    globalResizeObserver.unobserve(element);
++    globalResizeObserver.observe(element, { box: "border-box" });
++  }
++}
++// Records a size read outside the resize observer (in a commit, or confirming a
++// shrink a frame later). It can be one the row holds only until its own next
++// render, before the frame is laid out: the observer then finds the size it
++// last reported and stays quiet, and the passing size stays recorded. So a
++// read that changes the recorded size has the observer report the size the
++// frame lays out, whatever it is.
++function recordContainerMeasurement(element, rect) {
++  const previousRect = getContainerLayoutBaseline(element);
++  setContainerLayoutBaseline(element, rect);
++  if (previousRect !== void 0 && (previousRect.height !== rect.height || previousRect.width !== rect.width)) {
++    rearmResizeObserver(element);
++  }
++}
+ function createResizeObserver(element, callback) {
+   var _a3;
+   if (typeof ResizeObserver === "undefined" || !element) {
+@@ -5940,9 +6014,13 @@ function useOnLayoutSync({
+         top: entry.contentRect.top,
+         width: borderBoxSize.inlineSize
+       } : (_a4 = target == null ? void 0 : target.getBoundingClientRect()) != null ? _a4 : entry.contentRect;
+-      const previousRect = prevRect != null ? prevRect : getContainerLayoutBaseline(element);
++      // Compared with the size recorded last, by this observer or by a commit's
++      // measurement, which can be newer than this observer's last report.
++      const recordedRect = getContainerLayoutBaseline(element);
++      const previousRect = recordedRect != null ? recordedRect : prevRect;
+       const didSizeChange = previousRect === void 0 || rectObserved.width !== previousRect.width || rectObserved.height !== previousRect.height;
+       prevRect = rectObserved;
++      setContainerLayoutBaseline(element, rectObserved);
+       const shouldResyncLayout = !!((_c = (_b2 = callbacks.current).webLayoutResync) == null ? void 0 : _c.call(_b2));
+       if (didSizeChange || shouldResyncLayout) {
+         emit(toLayout(rectObserved), false);
+@@ -6011,6 +6089,7 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+         const rect = (_a4 = element == null ? void 0 : element.getBoundingClientRect) == null ? void 0 : _a4.call(element);
+         if (rect) {
+           layout = { height: rect.height, width: rect.width };
++          recordContainerMeasurement(element, rect);
+         }
+         applyLayout();
+       }
+@@ -6926,7 +7005,51 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+     if (!target) return;
+     target.addEventListener("scroll", handleScroll, { passive: true });
+     if ("onscrollend" in target) target.addEventListener("scrollend", emitScrollEnd);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
++    const onTouchEnd = (event) => {
++      if (!event.touches || event.touches.length === 0) {
++        ctx.state.isTouchingList = false;
++      }
++    };
++    target.addEventListener("touchstart", onTouchStart, { passive: true });
++    target.addEventListener("touchend", onTouchEnd, { passive: true });
++    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
+     return () => {
++      target.removeEventListener("touchstart", onTouchStart);
++      target.removeEventListener("touchend", onTouchEnd);
++      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isTouchingList = false;
++      ctx.state.isPointerHoldingList = false;
+       target.removeEventListener("scroll", handleScroll);
+       target.removeEventListener("scrollend", emitScrollEnd);
+       const timeout = scrollEndFallbackRef.current;
+@@ -8316,6 +8439,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+     if (pendingScroll) {
+       state.pendingScrollToEnd = void 0;
+       if (scrollRequestTracker.isCurrent(pendingScroll.token)) {
++        // Still a scroll to the end while it waits for the list to be ready,
++        // so a hold that starts meanwhile can find and cancel it.
++        state.waitingScrollToEndToken = pendingScroll.token;
+         runScrollRequest(
+           pendingScroll.token,
+           state.pendingScrollResolve,
+@@ -8796,6 +8922,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     estimatedListSize,
+     extraData,
+     getFixedItemSize,
++    getEstimatedItemSize,
+     getItemType,
+     horizontal,
+     rtl,
+@@ -9089,6 +9216,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+     drawDistance,
+     estimatedItemSize,
+     getFixedItemSize: useWrapIfItem(getFixedItemSize),
++    getEstimatedItemSize: useWrapIfItem(getEstimatedItemSize),
+     getItemType: useWrapIfItem(getItemType),
+     hasExternalScroll,
+     hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,

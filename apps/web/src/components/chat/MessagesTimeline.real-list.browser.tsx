@@ -500,6 +500,87 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
+  it("catches up and follows when a hold that began up the thread ends at the bottom", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const message: ChatMessage = {
+      id: "streaming-response" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(20),
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: message.id,
+              kind: "message",
+              createdAt: message.createdAt,
+              message: { ...message, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    let text = message.text;
+    const screen = await renderTimeline(renderList(text));
+    const streamChunk = async () => {
+      text += sentence;
+      await screen.rerender(renderList(text));
+      await nextFrame();
+      await nextFrame();
+    };
+    const pointer = (type: "pointerdown" | "pointerup", target: EventTarget) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          clientX: 100,
+          clientY: 200,
+        }),
+      );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
+
+      // Reading up the thread: following stops.
+      list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -150 }));
+      list.scrollTop -= 150;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await streamChunk();
+      expect(distanceFromEnd()).toBeGreaterThan(100);
+
+      // A selection drag carries the list to the bottom, and more streams in
+      // while the button is still down.
+      pointer("pointerdown", body);
+      list.scrollTop = list.scrollHeight;
+      await nextFrame();
+      await nextFrame();
+      await streamChunk();
+      await streamChunk();
+      expect(distanceFromEnd()).toBeGreaterThan(20);
+
+      pointer("pointerup", window);
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThanOrEqual(1), {
+        timeout: 1_500,
+      });
+      await streamChunk();
+      await streamChunk();
+      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   // A row that just landed first takes the list's guess of its height, then
   // the list shrinks to the height the row really draws. Desktop browsers
   // settle that before painting, but a phone's scroll can be caught past the
