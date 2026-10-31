@@ -328,6 +328,106 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
+  it("edits text in place so other words keep their spelling underlines", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-spellcheck-in-place" as MessageId,
+        targetText: "spellcheck in place",
+      }),
+    });
+
+    // Chromium drops every spelling underline an edit overlaps, so a write
+    // that replaces a text node's whole value clears the underlines of every
+    // word in it. Lexical's reconciler writes only the changed part in
+    // Chromium (lexical#9354, once our patch). Record each write to the
+    // composer's text as the range of old text it replaces.
+    const writes: Array<{ readonly start: number; readonly end: number }> = [];
+    const prototypes = [Node.prototype, CharacterData.prototype];
+    const originals = prototypes.flatMap((target) =>
+      Object.entries(Object.getOwnPropertyDescriptors(target)).map(
+        ([key, descriptor]) => [target, key, descriptor] as const,
+      ),
+    );
+    const restore = () => {
+      for (const [target, key, descriptor] of originals) {
+        Object.defineProperty(target, key, descriptor);
+      }
+    };
+    try {
+      await waitForComposerText("speeling and teh");
+      const composerEditor = await waitForComposerEditor();
+      const textNode = document.createTreeWalker(composerEditor, NodeFilter.SHOW_TEXT).nextNode();
+      expect(textNode?.nodeValue).toBe("speeling and teh");
+      const record = (node: Node, range: (length: number) => readonly [number, number]) => {
+        if (node instanceof Text && composerEditor.contains(node)) {
+          const [start, end] = range(node.length);
+          writes.push({ start, end });
+        }
+      };
+      const ranges: Record<
+        string,
+        (args: ReadonlyArray<number>) => (length: number) => readonly [number, number]
+      > = {
+        replaceData:
+          ([offset = 0, count = 0]) =>
+          () => [offset, offset + count],
+        deleteData:
+          ([offset = 0, count = 0]) =>
+          () => [offset, offset + count],
+        insertData:
+          ([offset = 0]) =>
+          () => [offset, offset],
+        appendData: () => (length) => [length, length],
+      };
+      for (const [target, key, descriptor] of originals) {
+        if (descriptor.set && (key === "nodeValue" || key === "textContent" || key === "data")) {
+          Object.defineProperty(target, key, {
+            ...descriptor,
+            set(this: Node, value: string) {
+              record(this, (length) => [0, length]);
+              descriptor.set!.call(this, value);
+            },
+          });
+        }
+        const toRange = ranges[key];
+        if (toRange && typeof descriptor.value === "function") {
+          const method = descriptor.value as (...args: unknown[]) => unknown;
+          Object.defineProperty(target, key, {
+            ...descriptor,
+            value(this: Node, ...args: unknown[]) {
+              record(this, toRange(args.filter((arg): arg is number => typeof arg === "number")));
+              return method.apply(this, args);
+            },
+          });
+        }
+      }
+      await setComposerSelectionByTextOffsets({
+        start: "speeling and teh".length,
+        end: "speeling and teh".length,
+      });
+
+      // A real Backspace: Lexical deletes the character itself and the
+      // reconciler writes the new text.
+      await userEvent.keyboard("{Backspace}");
+      await waitForComposerText("speeling and te");
+      restore();
+
+      expect(textNode?.isConnected).toBe(true);
+      expect(textNode?.nodeValue).toBe("speeling and te");
+      // The reconciler made the edit, not the browser, so this test still
+      // checks something.
+      expect(writes.length).toBeGreaterThan(0);
+      // Nothing before the deleted character was written over.
+      expect(writes.filter(({ start }) => start < "speeling and te".length)).toEqual([]);
+    } finally {
+      restore();
+      await mounted.cleanup();
+    }
+  });
+
   it("surrounds text after a mention using the correct expanded offsets", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "hi @package.json there");
 
