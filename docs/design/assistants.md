@@ -1600,3 +1600,110 @@ restart the runtime it had just stopped to clear a goal (a stop leaves an
 agent with such a goal marked for its next fresh start, which has a runtime);
 and an agent moved to a provider without goals stayed marked for good (a
 provider without goals skips that step).
+
+## Build plan: step 4 (alerts to a web address)
+
+Written Oct 31 on main (`035ae18eb`), from "2. Targets" and "Webhooks" above.
+
+### What already exists
+
+- The record (`AssistantEvents`): `since(after, names?, projectIds?)` with
+  `upTo`, `changes`, and events that carry `resolvedAt`. It runs only while
+  an assistant connection exists (`AssistantEventsLive` checks `countLive`).
+- Phone alerts: `retryDelayMs` (5 s up to 5 min) and 6 attempts
+  (`PushAlerts.ts`), and the presence leases that say who is looking at a
+  thread (`pushPresence.ts`, owned by `PushAlerts`).
+- `ServerSecretStore` for secrets, and the `outsideAgents.subscribe` snapshot
+  Settings reads.
+- Nothing on the server makes outbound calls under network rules yet.
+
+### Targets and deliveries (migration 096)
+
+- `assistant_targets`: `target_id`, `kind` (`webhook` now; `subscription` in
+  step 5), `connection_id` (null for one the user added), `url`, `names_json`,
+  `project_ids_json` (null: all), `skip_viewed`, `state` (`on`, `off`,
+  `gone`), `refused_since` (repeated 401 or 403), `watermark`,
+  `last_sent_at`, `last_error`, `expires_at` (step 5), timestamps.
+- `assistant_deliveries`: (`target_id`, `seq`) key, `event_id`, `state`
+  (`pending`, `sent`, `dropped`, `failed`), `attempts`, `next_attempt_at`,
+  `first_attempt_at`.
+- Secrets in `ServerSecretStore`: the target's signing secret (`whsec_`, 32
+  random bytes) and its optional Authorization value. Removing a target
+  removes both.
+- A new target's watermark starts at the record's last `seq`: no history.
+
+### Sending (`AssistantAlertsLive`)
+
+- The record runs while an assistant connection **or a target that's on**
+  exists.
+- A loop wakes on the record's `changes`, on target changes, and on the next
+  due retry. Per target that's on:
+  1. Read `since(watermark, names, projects)` in pages. Each matching event
+     gets a `pending` delivery row; events that don't match need nothing.
+  2. Send due rows, oldest first, one at a time per target. Right before each
+     send, read the event again: a `needs_you` event that's resolved, or any
+     event on a thread someone is looking at (with `skip_viewed`), is
+     `dropped`. Finished and failed go out even if resolved.
+  3. The watermark moves to just below the oldest delivery that isn't final
+     (`sent`, `dropped`, `failed`), or to `upTo` when none is open, in the
+     same transaction as the rows. A retrying event is never skipped.
+- Answers:
+  - 2xx: `sent`.
+  - 410: the target turns `gone`; its open deliveries are dropped; Settings
+    says the receiver turned it off and offers Turn on again.
+  - 401 or 403: retried like any failure; three in a row set
+    `refused_since`, shown as "refused by the receiver" until a 2xx.
+  - 413: `failed` at once.
+  - Anything else, a timeout or a refused address: retried with
+    `retryDelayMs` (`Retry-After` honored), until 6 attempts or 24 hours
+    after the first, then `failed`.
+- The envelope, as "What an event carries" says: `{ eventId, name,
+  timestamp, data, cursor }`. `cursor` is the record cursor at the target's
+  watermark, so `inbox(since: cursor)` catches up. `data` carries no title
+  and no agent text.
+- Headers: `content-type: application/json`, Standard Webhooks
+  `webhook-id` (the `eventId`), `webhook-timestamp`, `webhook-signature`
+  (`v1,` HMAC-SHA256 over `id.timestamp.body`), the optional Authorization,
+  and `user-agent: Threadlines`.
+
+### Outbound calls (`net/outboundHttps.ts`, shared with step 5)
+
+- `https:` only, port 443 or any explicit port, no credentials in the URL.
+- Resolve the host (`dns.lookup`, all addresses). Refuse when any address is
+  private, loopback, link-local, CGNAT, multicast, unspecified or reserved
+  (IPv4 and IPv6, IPv4-mapped included; Node's `net.BlockList`).
+- Connect to the checked address (`https.request` with a fixed `lookup`, the
+  host as SNI and Host), so DNS can't change between check and connect.
+- No redirects (a 3xx is a failure), 10 s for the whole call, the answer
+  body read up to 64 KiB and ignored.
+
+### Settings and RPCs
+
+- Settings › Connections › Assistants gets "Alerts to a web address":
+  - a row per target: its host, kinds, projects, and status (on, last sent,
+    retrying, refused by the receiver, turned off by the receiver, off);
+  - Add and Edit: the URL, an optional Authorization header (write-only,
+    kept or replaced or cleared), the kinds (needs you, finished, failed),
+    the projects, and "Skip threads I'm looking at" (on by default);
+  - row actions: Send a test, Copy signing secret, Turn off or on, Remove.
+- RPCs (owner only): `outsideAgents.alertTargetCreate`, `…Update`, `…Remove`,
+  `…Test` (sends a `threadlines.test` envelope at once and answers with the
+  status or error) and `…Secret` (the signing secret, on request only).
+  Targets ride the `outsideAgents.subscribe` snapshot without secrets.
+- The URL is checked when saved (the scheme, the host resolving to a public
+  address), so a typo shows at once.
+- The app guide gets the place; the assistants topic says how to use it with
+  a Grok routine (its webhook URL and its `crsr_` key as the Authorization).
+
+### Tests
+
+- Outbound: private, loopback, link-local, CGNAT and mapped addresses are
+  refused; the connection goes to the checked address; a redirect isn't
+  followed; the timeout.
+- Signing matches the Standard Webhooks test vector.
+- Sending: a retrying event holds the watermark while a later one is sent;
+  410 turns the target off; three 401s mark it refused and a 2xx clears it;
+  a needs-you resolved before sending is dropped and the watermark moves; a
+  viewed thread is skipped; no title or agent text in any body; a new target
+  sends no history; a restart carries on from the rows.
+- Web: the group, the dialog, the row states.
