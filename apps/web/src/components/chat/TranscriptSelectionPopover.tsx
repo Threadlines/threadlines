@@ -265,9 +265,10 @@ function TranscriptSelectionPopover({
     // one and the page's selection, to the spot the row was taken from, and no
     // event says so. Seen here as the row's element leaving its parent: the
     // text is found again, and the reader gets back the selection the move
-    // took. Only while it still sits where the move left it: a caret anywhere
-    // else is the reader's. A note keeps its own highlight and its box's focus.
-    let collapsedByMove: { readonly node: Node; readonly offset: number } | null = null;
+    // took. Only while it is still a caret in the rows' parent, where the move
+    // left it (its offset shifts as the list moves other rows): a caret in any
+    // text is the reader's. A note keeps its own highlight and its box's focus.
+    let collapsedInto: Node | null = null;
     const moveObserver = new MutationObserver((records) => {
       const body = observedBody;
       const moves =
@@ -283,10 +284,8 @@ function TranscriptSelectionPopover({
       reshapeHighlight = true;
       const page = document.getSelection();
       const caret = page?.isCollapsed ? page.anchorNode : null;
-      collapsedByMove =
-        !noting && caret && moves.some((record) => record.target === caret)
-          ? { node: caret, offset: page!.anchorOffset }
-          : null;
+      collapsedInto =
+        !noting && caret && moves.some((record) => record.target === caret) ? caret : null;
       scheduleUpdate();
     });
     const resolveAnchor = () => {
@@ -309,16 +308,11 @@ function TranscriptSelectionPopover({
       frameId = null;
       const resolved = resolveAnchor();
       const range = resolved?.range ?? null;
-      if (collapsedByMove !== null) {
-        const left = collapsedByMove;
-        collapsedByMove = null;
+      if (collapsedInto !== null) {
+        const left = collapsedInto;
+        collapsedInto = null;
         const page = document.getSelection();
-        if (
-          range &&
-          page?.isCollapsed &&
-          page.anchorNode === left.node &&
-          page.anchorOffset === left.offset
-        ) {
+        if (range && page?.isCollapsed && page.anchorNode === left) {
           page.removeAllRanges();
           page.addRange(range.cloneRange());
         }
