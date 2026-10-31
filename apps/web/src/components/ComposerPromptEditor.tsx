@@ -2003,15 +2003,20 @@ function ComposerPromptEditorInner({
                 className,
               )}
               data-testid="composer-editor"
+              // Still a text box while locked (a thread moving to another
+              // computer, say): Lexical drops the role and the placeholder of
+              // a read-only editor with no role or name of its own, and the
+              // placeholder is what tells a screen reader why it is locked.
+              role="textbox"
               aria-placeholder={
                 suggestion ? promptSuggestionAriaPlaceholder(suggestion.text) : placeholder
               }
               placeholder={<span />}
               // Native browser spellcheck. Blink attaches spelling markers to
               // DOM text nodes and drops every marker a script rewrite
-              // touches, so two things keep the underlines stable: the
-              // lexical patch (patches/lexical@0.41.0.patch) makes reconciler
-              // text writes minimal diffs instead of full nodeValue rewrites,
+              // touches, so two things keep the underlines stable: Lexical's
+              // reconciler writes only the changed part of a text node in
+              // Chromium (lexical#9354) instead of rewriting its whole value,
               // and ComposerNativeSpellcheckReplacementPlugin lets accepted
               // corrections run as native editing commands so Blink also
               // re-checks afterwards. Do not add spellcheck-attribute toggles
