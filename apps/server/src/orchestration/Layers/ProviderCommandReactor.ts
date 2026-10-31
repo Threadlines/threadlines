@@ -653,8 +653,8 @@ const make = Effect.gen(function* () {
    * come back on resume and the agent may have set it from the outside text;
    * if that fails, the agent stays marked, and the chat says so. That takes
    * the new runtime (`started`): a stop, which has none, leaves such an
-   * agent marked for its next fresh start. A provider without goals has none
-   * to bring back.
+   * agent marked for its next fresh start. A provider that doesn't say it
+   * supports goals has none to bring back.
    */
   const shedOutsideWork = Effect.fnUntraced(function* (
     thread: OrchestrationThread,
@@ -676,9 +676,9 @@ const make = Effect.gen(function* () {
       goal !== null &&
       goal.createdAt >= entry.since &&
       sessionSlotParticipantId(thread.session) === participantId &&
-      goalsHere !== "unsupported"
-    ) {
       // No runtime to clear it on: leave the mark to the next fresh start.
+      (started === null || goalsHere === "supported")
+    ) {
       if (started === null) return;
       const cleared = yield* providerService
         .clearThreadGoal({ threadId: participantSessionKey(thread.id, participantId) })
