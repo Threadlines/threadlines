@@ -151,7 +151,11 @@ import {
   type ThreadStartCall,
 } from "../../childThreads";
 import { selectEnvironmentState, useStore } from "../../store";
-import { remoteChildEntry, remoteChildStatusText, resolveThreadStatusPill } from "../Sidebar.logic";
+import {
+  remoteChildStanding,
+  remoteChildStatusText,
+  resolveThreadStatusPill,
+} from "../Sidebar.logic";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import {
   describeScheduleCall,
@@ -4652,7 +4656,7 @@ function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
   if (thread !== undefined) {
     return <StartedThreadLine thread={thread} computer={computer} />;
   }
-  const entry = remoteChildEntry(child, computer);
+  const entry = { ...remoteChildStanding(child), computerLabel: computer };
   return (
     <li
       className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/85"

@@ -4,6 +4,8 @@ import type {
   EnvironmentId,
   RemoteChildRequestStatus,
   FamilyRemoteChild,
+  RemoteThreadFiling,
+  ScopedThreadRef,
   ThreadId,
 } from "@threadlines/contracts";
 import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
@@ -20,6 +22,11 @@ import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logi
 import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
 import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
+import {
+  hasUnseenCompletion as hasUnseenCompletionSince,
+  hasUnseenSessionFailure as hasUnseenSessionFailureSince,
+  threadLastActivityAt,
+} from "@threadlines/shared/threadFiling";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -176,14 +183,7 @@ export function useThreadJumpHintVisibility(): {
 export function hasUnseenCompletion(
   thread: Pick<SidebarThreadSummary, "latestTurn"> & { lastVisitedAt?: string | undefined },
 ): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return true;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  return hasUnseenCompletionSince(thread, thread.lastVisitedAt);
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -656,12 +656,7 @@ type InboxLifecycleInput = Pick<
 };
 
 function hasUnseenSessionFailure(thread: InboxLifecycleInput): boolean {
-  if (thread.session?.status !== "error") return false;
-  const failedAt = Date.parse(thread.session.updatedAt);
-  if (Number.isNaN(failedAt)) return false;
-  if (thread.lastVisitedAt == null) return true;
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  return Number.isNaN(lastVisitedAt) || failedAt > lastVisitedAt;
+  return hasUnseenSessionFailureSince(thread, thread.lastVisitedAt);
 }
 
 /**
@@ -868,26 +863,123 @@ export function isThreadDone(
       handedBackTurnId: thread.handedBackTurnId ?? null,
       latestTurn: thread.latestTurn,
     });
-  if (!canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen })) return false;
-  const freshOverride = freshThreadDoneOverride(thread, override);
+  return fileByFacts(
+    {
+      held: () => !canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen }),
+      freshOverride: () => freshThreadDoneOverride(thread, override),
+      pinned: thread.pinnedAt !== null,
+      childFinished: childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone),
+      filedByPullRequest: () =>
+        isFiledByPullRequest(thread, override, options.pullRequestSettledAt),
+      unseenCompletion: () => hasUnseenCompletion(thread),
+      lastActivityAt: () => resolveDoneTimestamp(thread, null),
+    },
+    options,
+  );
+}
+
+/**
+ * What the wrap-up rules weigh ({@link isThreadDone}), however a thread's
+ * facts were found: from its summary for a thread this app has, or from what
+ * its computer says for a child this app can't see ({@link isRemoteChildDone}).
+ * Costlier facts are read only when their rule is reached.
+ */
+interface FilingFacts {
+  /** Rule 1: moving, blocked on the user, queued, or unread work it can't be filed with. */
+  readonly held: () => boolean;
+  /** Rule 2: the user's word, while it is fresher than the thread's last activity. */
+  readonly freshOverride: () => ThreadDoneOverride | null;
+  /** Rule 3. */
+  readonly pinned: boolean;
+  /** Rule 4: a child whose work for its parent is over (its answer went back, or the parent wrapped). */
+  readonly childFinished: boolean;
+  /** Rule 5: its pull request landed, and the user hasn't spoken since. */
+  readonly filedByPullRequest: () => boolean;
+  readonly unseenCompletion: () => boolean;
+  /** Rule 6's clock. */
+  readonly lastActivityAt: () => string | null;
+}
+
+function fileByFacts(
+  facts: FilingFacts,
+  options: { readonly now: string; readonly autoDoneAfterDays?: number | null },
+): boolean {
+  if (facts.held()) return false;
+  const freshOverride = facts.freshOverride();
   if (freshOverride !== null) {
     return freshOverride.state === "done";
   }
-  if (thread.pinnedAt !== null) return false;
-  if (childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone)) {
-    return true;
-  }
-  if (
-    isFiledByPullRequest(thread, override, options.pullRequestSettledAt) &&
-    !hasUnseenCompletion(thread)
-  ) {
-    return true;
-  }
+  if (facts.pinned) return false;
+  if (facts.childFinished) return true;
+  if (facts.filedByPullRequest() && !facts.unseenCompletion()) return true;
   if (options.autoDoneAfterDays == null) return false;
-  if (hasUnseenCompletion(thread)) return false;
-  const lastActivityAt = resolveDoneTimestamp(thread, null);
+  if (facts.unseenCompletion()) return false;
+  const lastActivityAt = facts.lastActivityAt();
   if (lastActivityAt === null) return false;
   return Date.parse(lastActivityAt) < Date.parse(options.now) - options.autoDoneAfterDays * DAY_MS;
+}
+
+/**
+ * The same rules for a child on a computer this app can't see, read from
+ * what that computer says (`RemoteThreadFiling`), so it files here as it
+ * does there: moving, blocked on the user or waiting holds it, and so does a
+ * failure the user hasn't opened, or a finished turn that didn't go back to
+ * the parent; then the user's word (given there, or here and sent on), a pin
+ * there, its answer having reached the parent, and sitting idle. Waiting to
+ * start again (a check-back, a usage reset, a queued message) holds it too.
+ * A Wrap up given here also marks it seen there (`peer.thread.wrap`), the
+ * visit a child here gets before it can be wrapped, so until that computer
+ * has it (`unsentWordHere`) it outranks what is unread there. Archived or
+ * deleted there, it is done. A link this computer no
+ * longer has to that one (`linked` false) means nothing more will come of
+ * it, so only the user's word decides.
+ */
+export function isRemoteChildDone(input: {
+  readonly phase: AgentThreadStatusWord;
+  readonly filing: RemoteThreadFiling;
+  /** The freshest of the word given here and the one given there. */
+  readonly override: ThreadDoneOverride | null;
+  /** That word was given here and that computer doesn't have it yet. */
+  readonly unsentWordHere: boolean;
+  readonly linked: boolean;
+  readonly now: string;
+  readonly wrapUpOnFinish: boolean;
+  readonly autoDoneAfterDays: number | null;
+}): boolean {
+  const { filing } = input;
+  if (filing.archived) return true;
+  if (!input.linked) return input.override?.state === "done";
+  const handedBackSeen = input.wrapUpOnFinish && filing.handedBackAt !== null;
+  const freshOverride = () => {
+    const override = input.override;
+    if (override === null) return null;
+    return Date.parse(filing.lastActivityAt) > Date.parse(override.at) ? null : override;
+  };
+  // A failure holds it until seen, handed back or not; a finished turn only
+  // when its answer didn't go back.
+  const unseenHolds = filing.unseen && (input.phase === "failed" || !handedBackSeen);
+  return fileByFacts(
+    {
+      held: () =>
+        isRemoteChildHeld(input.phase, filing) ||
+        (unseenHolds && !(input.unsentWordHere && freshOverride()?.state === "done")),
+      freshOverride,
+      pinned: filing.pinned,
+      childFinished: handedBackSeen,
+      filedByPullRequest: () => false,
+      unseenCompletion: () => filing.unseen,
+      lastActivityAt: () => filing.lastActivityAt,
+    },
+    { now: input.now, autoDoneAfterDays: input.autoDoneAfterDays },
+  );
+}
+
+/** A child's status words that keep it in front of the user, whatever was said. */
+const REMOTE_HELD_PHASES: ReadonlySet<string> = new Set(["working", "needs the user", "waiting"]);
+
+/** Moving, blocked on the user, or bound to start again: no word files it away. */
+function isRemoteChildHeld(phase: string, filing: RemoteThreadFiling | undefined): boolean {
+  return REMOTE_HELD_PHASES.has(phase) || filing?.waiting === true;
 }
 
 /**
@@ -1057,22 +1149,7 @@ export function resolveDoneTimestamp(
   if (override?.state === "done" && !Number.isNaN(Date.parse(override.at))) {
     return override.at;
   }
-  let latest: string | null = null;
-  let latestMs = Number.NEGATIVE_INFINITY;
-  for (const candidate of [
-    thread.latestUserMessageAt,
-    thread.latestTurn?.requestedAt,
-    thread.latestTurn?.startedAt,
-    thread.latestTurn?.completedAt,
-  ]) {
-    if (candidate == null) continue;
-    const parsed = Date.parse(candidate);
-    if (!Number.isNaN(parsed) && parsed > latestMs) {
-      latest = candidate;
-      latestMs = parsed;
-    }
-  }
-  return latest ?? thread.updatedAt ?? thread.createdAt;
+  return threadLastActivityAt(thread);
 }
 
 export function sortDoneThreads<T extends DoneSortInput & { readonly id: string }>(
@@ -1356,6 +1433,14 @@ export interface InboxRemoteChild extends InboxFamilyExit {
   readonly computerLabel: string;
   readonly title: string;
   readonly phase: InboxRemoteChildPhase;
+  /**
+   * The user can wrap it up (or reopen it, once done) from here: a thread
+   * there that nothing holds in front of them. Absent: a start, or one being
+   * set up, which can't.
+   */
+  readonly canWrap?: boolean | undefined;
+  /** The parent whose record of it a Wrap up or Reopen lands on. */
+  readonly parentRef?: ScopedThreadRef | undefined;
 }
 
 /** One live row: a thread, the family it heads, and what shows under it. */
@@ -1377,6 +1462,16 @@ export interface InboxLiveRow<E extends InboxFamilyEntry> {
    * stands on its own, naming the parent and its computer.
    */
   readonly scopedOutParent: E | null;
+}
+
+/**
+ * A child on a computer this app can't see that left its live parent's
+ * family ({@link hasLeftLiveFamily}): a row of its own in Wrapped, naming
+ * the parent, as a child here does.
+ */
+export interface InboxDoneRemoteRow<E extends InboxFamilyEntry> {
+  readonly child: InboxRemoteChild;
+  readonly startedBy: E;
 }
 
 /** One wrapped row: a thread, and the threads its family had. */
@@ -1495,7 +1590,12 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly now: string;
   readonly sortLive: (entries: readonly E[]) => E[];
   readonly sortDone: (entries: readonly E[]) => E[];
-}): { readonly live: InboxLiveRow<E>[]; readonly done: InboxDoneRow<E>[] } {
+}): {
+  readonly live: InboxLiveRow<E>[];
+  readonly done: InboxDoneRow<E>[];
+  /** Children on computers this app can't see that left a live family, newest wrap first. */
+  readonly doneRemote: InboxDoneRemoteRow<E>[];
+} {
   const entryByKey = new Map(input.entries.map((entry) => [entry.threadKey, entry] as const));
   const parentOf = (entry: E): E | null => {
     const parentKey = input.parentKeyOf(entry);
@@ -1570,6 +1670,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     wrappedParentByKey.set(entry.threadKey, parent);
   }
 
+  const doneRemote: InboxDoneRemoteRow<E>[] = [];
   const live = input.sortLive(liveHeads).map((entry): InboxLiveRow<E> => {
     const wrappedParent = wrappedParentByKey.get(entry.threadKey) ?? null;
     const scopedOutParent = scopedOutParentByKey.get(entry.threadKey) ?? null;
@@ -1579,9 +1680,11 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
           (child) => !liveParentByKey.has(child.threadKey),
         )
       : [];
-    const remoteChildren = heads
-      ? remoteChildrenOf(entry).filter((child) => !hasLeftLiveFamily(child, entry, input.now))
-      : [];
+    const remoteChildren: InboxRemoteChild[] = [];
+    for (const child of heads ? remoteChildrenOf(entry) : []) {
+      if (hasLeftLiveFamily(child, entry, input.now)) doneRemote.push({ child, startedBy: entry });
+      else remoteChildren.push(child);
+    }
     const open = input.isFamilyOpen(entry.threadKey);
     const shownChildren = open
       ? children
@@ -1615,7 +1718,54 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       startedBy,
     };
   });
-  return { live, done };
+  doneRemote.sort(
+    (left, right) =>
+      (toSortableTimestamp(right.child.settledAt ?? undefined) ?? 0) -
+      (toSortableTimestamp(left.child.settledAt ?? undefined) ?? 0),
+  );
+  return { live, done, doneRemote };
+}
+
+/** One row of the Wrapped shelf: a thread this app has, or a child on a computer it can't see. */
+export type WrappedShelfRow<E extends InboxFamilyEntry> =
+  | { readonly kind: "thread"; readonly key: string; readonly row: InboxDoneRow<E> }
+  | { readonly kind: "remote"; readonly key: string; readonly row: InboxDoneRemoteRow<E> };
+
+/**
+ * The Wrapped shelf's rows, newest wrap first: the wrapped threads in their
+ * order, with the remote children that left a live family placed among them
+ * by when each wrapped. Both lists come sorted that way.
+ */
+export function mergeWrappedShelfRows<E extends InboxFamilyEntry>(
+  done: readonly InboxDoneRow<E>[],
+  doneRemote: readonly InboxDoneRemoteRow<E>[],
+  doneAtOf: (row: InboxDoneRow<E>) => string | null,
+): WrappedShelfRow<E>[] {
+  const rows: WrappedShelfRow<E>[] = [];
+  let remoteIndex = 0;
+  const wrappedMs = (at: string | null) => toSortableTimestamp(at ?? undefined) ?? 0;
+  for (const row of done) {
+    const at = wrappedMs(doneAtOf(row));
+    while (true) {
+      const remote = doneRemote[remoteIndex];
+      if (remote === undefined || wrappedMs(remote.child.settledAt) <= at) break;
+      rows.push({ kind: "remote", key: remote.child.threadKey, row: remote });
+      remoteIndex += 1;
+    }
+    rows.push({ kind: "thread", key: row.entry.threadKey, row });
+  }
+  for (const remote of doneRemote.slice(remoteIndex)) {
+    rows.push({ kind: "remote", key: remote.child.threadKey, row: remote });
+  }
+  return rows;
+}
+
+/** When a Wrapped shelf row wrapped: its day label and its "today" count read this. */
+export function wrappedShelfRowDoneAt<E extends InboxFamilyEntry>(
+  row: WrappedShelfRow<E>,
+  doneAtOf: (row: InboxDoneRow<E>) => string | null,
+): string | null {
+  return row.kind === "thread" ? doneAtOf(row.row) : row.row.child.settledAt;
 }
 
 /** Whether a live row earns a seat past the fold: it or a live child shows a status. */
@@ -1659,13 +1809,15 @@ export function inboxLiveRowHolds(
  * is the thread open in the chat or holds it. Order never changes.
  */
 export function windowInboxDoneRows<E extends InboxFamilyEntry>(
-  rows: readonly InboxDoneRow<E>[],
+  rows: readonly WrappedShelfRow<E>[],
   limit: number,
   activeThreadKey: string | null,
-): InboxDoneRow<E>[] {
+): WrappedShelfRow<E>[] {
   return rows.filter(
     (row, index) =>
-      index < limit || row.openChild !== null || row.entry.threadKey === activeThreadKey,
+      index < limit ||
+      (row.kind === "thread" &&
+        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)),
   );
 }
 
@@ -1945,21 +2097,26 @@ const REMOTE_PHASE_PILLS: Record<InboxRemoteChildPhase, ThreadStatusPill | null>
 export function resolveRemoteFamilyChildren(input: {
   readonly parent: Pick<
     SidebarThreadSummary,
-    "environmentId" | "remoteChildren" | "remoteChildStarts" | "localChildStarts"
+    "id" | "environmentId" | "remoteChildren" | "remoteChildStarts" | "localChildStarts"
   >;
   readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
   readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
   readonly hasThread: (threadId: ThreadId) => boolean;
-  /** The "wrap up finished child threads" setting (see remoteChildEntry). */
-  readonly wrapUpOnFinish: boolean;
+  /** How a child there files (see remoteChildEntry). */
+  readonly filing: RemoteChildFilingOptions;
 }): InboxRemoteChild[] {
   const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] =>
     input.canSeeComputer(child.environmentId)
       ? []
       : [
-          remoteChildEntry(child, input.computerLabel(child.environmentId, child.label), {
-            wrapUpOnFinish: input.wrapUpOnFinish,
-          }),
+          {
+            ...remoteChildEntry(
+              child,
+              input.computerLabel(child.environmentId, child.label),
+              input.filing,
+            ),
+            parentRef: scopeThreadRef(input.parent.environmentId, input.parent.id),
+          },
         ],
   );
   const starts = (input.parent.remoteChildStarts ?? [])
@@ -1996,40 +2153,104 @@ export function resolveRemoteFamilyChildren(input: {
 }
 
 /**
+ * How a child on another computer is doing, as its parent last heard: its
+ * status word (an unknown one reads as idle, the way the parent's own tools
+ * read it) and the pill for it.
+ */
+export function remoteChildStanding(child: Pick<FamilyRemoteChild, "cachedStatus">): {
+  readonly phase: AgentThreadStatusWord;
+  readonly status: ThreadStatusPill | null;
+} {
+  const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
+  return { phase, status: REMOTE_PHASE_PILLS[phase] };
+}
+
+/** What decides how a child on a computer this app can't see files. */
+export interface RemoteChildFilingOptions {
+  /** The inbox clock. */
+  readonly now: string;
+  /** "Wrap up finished child threads": one whose answer went back counts as done. */
+  readonly wrapUpOnFinish: boolean;
+  /** "Wrap up idle threads": how long one sits quiet before it files itself; null: never. */
+  readonly autoDoneAfterDays: number | null;
+  /**
+   * The parent's computer still links to that one (false only once this app
+   * knows the link is gone): nothing more will be heard of a child there
+   * otherwise.
+   */
+  readonly linked: (environmentId: EnvironmentId) => boolean;
+}
+
+/**
  * A child on a computer this app can't see, from its parent's record: its
- * last known status, under `computerLabel`.
+ * last known status, under `computerLabel`, filed by what that computer says
+ * ({@link isRemoteChildDone}). From an older computer, which says nothing of
+ * filing and only how a child is doing while a request to it is open, a
+ * quiet child no request is open to counts as finished.
  */
 export function remoteChildEntry(
   child: FamilyRemoteChild,
   computerLabel: string,
-  options: {
-    /** "Wrap up finished child threads": one whose work for the parent is over counts as done. */
-    readonly wrapUpOnFinish?: boolean;
-  } = {},
+  options: RemoteChildFilingOptions,
 ): InboxRemoteChild {
-  // An unknown word reads as idle, the way the parent's own tools read it.
-  const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
-  return {
+  const { phase, status } = remoteChildStanding(child);
+  const linked = options.linked(child.environmentId);
+  const base = {
     threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.threadId)),
     environmentId: child.environmentId,
     threadId: child.threadId,
     computerLabel,
     title: child.title,
     phase,
-    status: REMOTE_PHASE_PILLS[phase],
-    // Wrapped there, or quiet and no longer followed from here: its answer
-    // is in (or it failed or was stopped), the way a child here wraps once
-    // its answer went back. Word of it can still come while a sibling keeps
-    // that computer watched, and new work there brings it back. It leaves
-    // the family as one here does, once the parent was seen after it
-    // (`updatedAt`: its record's last change, a status or a request to it
-    // settling).
-    isDone:
-      phase === "wrapped" ||
-      (options.wrapUpOnFinish === true &&
-        child.followed === false &&
-        (phase === "idle" || phase === "failed")),
-    settledAt: child.updatedAt,
+    // With its link gone, its last word is history, not news.
+    status: linked ? status : null,
+  };
+  const filing = child.filing;
+  if (filing === undefined) {
+    const own = child.override ?? null;
+    const ownStands = own !== null && Date.parse(own.at) >= Date.parse(child.updatedAt);
+    const isDone = ownStands
+      ? own.state === "done"
+      : phase === "wrapped" ||
+        !linked ||
+        (options.wrapUpOnFinish &&
+          child.followed === false &&
+          (phase === "idle" || phase === "failed"));
+    return {
+      ...base,
+      isDone,
+      settledAt: ownStands && own.state === "done" ? own.at : child.updatedAt,
+      wrappedByUser: ownStands && own.state === "done",
+      canWrap: isDone || !linked || !isRemoteChildHeld(phase, undefined),
+    };
+  }
+  const override = mergeThreadDoneOverride(child.override, filing.override);
+  const own = child.override;
+  const isDone = isRemoteChildDone({
+    phase,
+    filing,
+    override,
+    unsentWordHere: own !== undefined && override === own && filing.override?.at !== own.at,
+    linked,
+    now: options.now,
+    wrapUpOnFinish: options.wrapUpOnFinish,
+    autoDoneAfterDays: options.autoDoneAfterDays,
+  });
+  const wrappedByUser =
+    filing.archived ||
+    (override?.state === "done" &&
+      (!linked || Date.parse(override.at) >= Date.parse(filing.lastActivityAt)));
+  return {
+    ...base,
+    isDone,
+    // When its work there ended, or the user's word on it: what the parent
+    // must have been seen after for it to leave the family.
+    settledAt: wrappedByUser && override !== null ? override.at : filing.lastActivityAt,
+    seenAt: filing.seenAt ?? undefined,
+    deliveredAt: filing.handedBackAt,
+    wrappedByUser,
+    // Archived there, nothing here can bring it back.
+    canWrap: !filing.archived && (isDone || !linked || !isRemoteChildHeld(phase, filing)),
   };
 }
 

@@ -13,13 +13,22 @@
  *    request's unsent start or send, since the decision that cancels it
  *    settles it.
  * 2. The watch. While any request there is open, or an ack failed, or
- *    since startup it hasn't replayed what it held, `peer.watch` stays open.
- *    Status changes update the request; a report records the child it names
- *    and settles the request with the answer (written into the parent like a
- *    local child's), then is acked. A report whose request already settled
+ *    since startup it hasn't replayed what it held, or a parent here that is
+ *    neither archived nor deleted holds a child there (and the link is still
+ *    usable), `peer.watch` stays open. It asks for those children's state
+ *    on connect, and hears every change after, so the parent's record of
+ *    each says how it stands there now and how that computer files it
+ *    (`RemoteChildThread.filing`). Status changes update the request; a
+ *    report records the child it names and settles the request with the
+ *    answer (written into the parent like a local child's), then is acked,
+ *    saying whether the answer reached the parent (that computer then marks
+ *    the answering turn handed back). A report whose request already settled
  *    here is acked too. An ack that fails is retried until it lands; the
  *    other computer keeps the report until then, and replays it.
- * 3. Restart: the outbox is the parent's durable state, so a restart finds
+ * 3. Wraps. The user's Wrap up or Reopen of a child there, given here
+ *    (`RemoteChildThread.override`), goes to that computer as
+ *    `peer.thread.wrap` once it can take it, with the same stamp.
+ * 4. Restart: the outbox is the parent's durable state, so a restart finds
  *    it again; every linked computer is watched once to drain what it held.
  *
  * Parents are read from their stored rows, archived and deleted ones too:
@@ -29,6 +38,7 @@
  * reads that worked show nothing is open for it.
  */
 import {
+  type ChildRequestId,
   type ChildRequestOutcome,
   CommandId,
   EMPTY_CHILD_REQUEST_STATE,
@@ -45,7 +55,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { remoteChildOf } from "@threadlines/shared/childThreads";
+import { remoteChildOf, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -69,6 +79,7 @@ import { ComputerLinkRepository, isUsableLink } from "./ComputerLinkRepository.t
 
 /** How often owed work is retried while a computer can't be reached. */
 const RETRY_EVERY = Duration.seconds(15);
+
 /** How long a watch with nothing left to wait for stays open. */
 const WATCH_LINGER_MS = 10_000;
 const WATCH_CHECK_EVERY = Duration.seconds(5);
@@ -87,8 +98,27 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** What the reactor needs of a parent, read from its stored row. */
 type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> & {
+  readonly archivedAt: string | null;
   readonly deletedAt: string | null;
 };
+
+/** Its children there, while it still shows them: neither archived nor deleted. */
+const childrenFollowed = (parent: Parent, environmentId: string) =>
+  parent.deletedAt !== null || parent.archivedAt !== null
+    ? []
+    : (parent.childRequests.remoteChildren ?? []).filter(
+        (child) => child.environmentId === environmentId,
+      );
+
+/** The user's word on a child given here that that computer hasn't taken yet. */
+const wrapOwed = (child: RemoteChildThread) => {
+  const mine = child.override;
+  if (mine === undefined || child.filing?.archived === true) return false;
+  const theirs = child.filing?.override ?? null;
+  return theirs === null || Date.parse(theirs.at) < Date.parse(mine.at);
+};
+
+const childKey = (environmentId: string, threadId: string) => `${environmentId}\u0000${threadId}`;
 
 /** A parent's open requests to one computer; a deleted parent's are owed nothing. */
 const openRemote = (parent: Parent, environmentId: string) =>
@@ -145,8 +175,31 @@ const make = Effect.gen(function* () {
   const watching = new Set<string>();
   /** Computers whose watch has replayed what they held since this process started. */
   const drained = new Set<string>();
-  /** Reports recorded here whose ack hasn't reached their computer yet. */
-  const pendingAcks = new Map<string, Set<string>>();
+  /**
+   * Reports recorded here whose ack hasn't reached their computer yet, each
+   * with whether its answer reached the parent.
+   */
+  const pendingAcks = new Map<string, Map<string, boolean>>();
+  /** Parents that may hold children there, by computer (see `parentsFollowing`). */
+  const followersByEnvironment = new Map<string, Set<ThreadId>>();
+  /** The parents holding each child, by `childKey`, so its news reads only them. */
+  const holdersByChild = new Map<string, Set<ThreadId>>();
+  /**
+   * Wraps sent this process, by `childKey`: the stamp sent, and the word that
+   * computer had when it went. Sent again only if that computer's word moved
+   * since and is still older (a word given there that arrived late).
+   */
+  const wrapsSent = new Map<string, { readonly at: string; readonly against: string | null }>();
+  const wrapLanes = new Map<string, Semaphore.Semaphore>();
+  /** Computers whose watch should start again, to ask about the children held there now. */
+  const rewatch = new Set<string>();
+  /** The children each open watch asked about when it connected. */
+  const watchedThreads = new Map<string, ReadonlySet<ThreadId>>();
+  /**
+   * Parents with a Wrap up or Reopen given here, by computer, archived ones
+   * too: a word is owed to that computer however the parent is filed here.
+   */
+  const wrapOwers = new Map<string, Set<ThreadId>>();
 
   const laneOf = (lanes: Map<string, Semaphore.Semaphore>, environmentId: string) => {
     let lane = lanes.get(environmentId);
@@ -157,13 +210,22 @@ const make = Effect.gen(function* () {
     return lane;
   };
 
-  const track = (environmentId: string, parentId: ThreadId) => {
-    let parents = parentsByEnvironment.get(environmentId);
-    if (parents === undefined) {
-      parents = new Set();
-      parentsByEnvironment.set(environmentId, parents);
+  const addTo = <K, V>(map: Map<K, Set<V>>, key: K, value: V) => {
+    let values = map.get(key);
+    if (values === undefined) {
+      values = new Set();
+      map.set(key, values);
     }
-    parents.add(parentId);
+    values.add(value);
+  };
+
+  const track = (environmentId: string, parentId: ThreadId) =>
+    addTo(parentsByEnvironment, environmentId, parentId);
+
+  /** A parent holds a child there: the watch follows it. */
+  const follow = (environmentId: string, parentId: ThreadId, childThreadId: ThreadId) => {
+    addTo(followersByEnvironment, environmentId, parentId);
+    addTo(holdersByChild, childKey(environmentId, childThreadId), parentId);
   };
 
   /** A parent as stored, archived and deleted ones included; undefined only when there is none. */
@@ -177,6 +239,7 @@ const make = Effect.gen(function* () {
               title: found.value.title,
               participants: found.value.participants ?? [],
               childRequests: found.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+              archivedAt: found.value.archivedAt,
               deletedAt: found.value.deletedAt,
             },
       ),
@@ -215,6 +278,60 @@ const make = Effect.gen(function* () {
         else parentsByEnvironment.get(environmentId)?.delete(id);
       }
       return parents;
+    });
+
+  /** The parents still showing a child there (neither archived nor deleted), read afresh. */
+  const parentsFollowing = (environmentId: string) =>
+    Effect.gen(function* () {
+      // A copy: reading may drop parents from the set.
+      const ids = [...(followersByEnvironment.get(environmentId) ?? [])];
+      const parents: Array<Parent> = [];
+      for (const id of ids) {
+        const parent = yield* readParent(id);
+        if (parent !== undefined && childrenFollowed(parent, environmentId).length > 0) {
+          parents.push(parent);
+        } else {
+          followersByEnvironment.get(environmentId)?.delete(id);
+        }
+      }
+      return parents;
+    });
+
+  /** Whether a computer's link still works, so following its children can get anywhere. */
+  const linkUsable = (environmentId: string) =>
+    links.getByEnvironment(environmentId as EnvironmentId).pipe(
+      Effect.map((found) => Option.isSome(found) && isUsableLink(found.value)),
+      Effect.orElseSucceed(() => false),
+    );
+
+  /** Whether a computer has children here to follow: some held, and a link that works. */
+  const isFollowing = (environmentId: string) =>
+    Effect.gen(function* () {
+      if ((followersByEnvironment.get(environmentId)?.size ?? 0) === 0) return false;
+      if (!(yield* linkUsable(environmentId))) return false;
+      return (yield* parentsFollowing(environmentId)).length > 0;
+    });
+
+  /**
+   * The parents a computer's word about one of its threads is for: those
+   * holding it, then any with a request open to it whose record isn't
+   * followed yet. A read that fails fails.
+   */
+  const parentsHolding = (environmentId: string, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const byId = new Map<ThreadId, Parent>();
+      for (const id of holdersByChild.get(childKey(environmentId, threadId)) ?? []) {
+        const parent = yield* readParent(id);
+        if (parent !== undefined && remoteChildOf(parent.childRequests, threadId) !== undefined) {
+          byId.set(id, parent);
+        }
+      }
+      for (const parent of yield* parentsOwing(environmentId)) {
+        if (byId.has(parent.id)) continue;
+        if (remoteChildOf(parent.childRequests, threadId) !== undefined)
+          byId.set(parent.id, parent);
+      }
+      return [...byId.values()];
     });
 
   /**
@@ -319,6 +436,7 @@ const make = Effect.gen(function* () {
       attachmentEpoch: existing?.attachmentEpoch ?? 0,
       cachedStatus,
       updatedAt,
+      // The record's filing and the user's word stay as it has them (the decider keeps them).
     };
   };
 
@@ -431,15 +549,22 @@ const make = Effect.gen(function* () {
           return;
         }
         case "thread": {
-          for (const parent of yield* parentsOwing(environmentId)) {
+          for (const parent of yield* parentsHolding(environmentId, event.threadId)) {
             const existing = remoteChildOf(parent.childRequests, event.threadId);
             if (existing === undefined || existing.environmentId !== environmentId) continue;
-            if (existing.cachedStatus === event.status && existing.title === event.title) continue;
+            const filing = event.filing ?? existing.filing;
+            if (
+              existing.cachedStatus === event.status &&
+              existing.title === event.title &&
+              sameRemoteThreadFiling(existing.filing, filing)
+            ) {
+              continue;
+            }
             yield* dispatch(
               {
                 type: "thread.remote-child.update",
                 commandId: CommandId.make(
-                  `server:remote-child:${environmentId}:${event.threadId}:${event.updatedAt}`,
+                  `server:remote-child:${parent.id}:${environmentId}:${event.threadId}:${event.updatedAt}`,
                 ),
                 threadId: parent.id,
                 child: {
@@ -447,6 +572,7 @@ const make = Effect.gen(function* () {
                   title: event.title,
                   cachedStatus: event.status,
                   updatedAt: event.updatedAt,
+                  ...(filing !== undefined ? { filing } : {}),
                 },
                 createdAt: yield* nowIso,
               },
@@ -476,7 +602,7 @@ const make = Effect.gen(function* () {
                       parent,
                       request,
                       event.threadId,
-                      event.outcome === "answered" ? "idle" : "failed",
+                      reportedStatus(parent, event.threadId, event.outcome),
                       yield* nowIso,
                     ),
                   }
@@ -487,19 +613,45 @@ const make = Effect.gen(function* () {
               return yield* new ReportNotRecordedError({ requestId: event.requestId });
             }
           }
-          yield* ackReport(environmentId, event.reportId);
+          // Read whatever settled it, now or before a restart: the answer
+          // reached the parent only if it was written there.
+          const delivered = yield* answerWritten(event.requestId).pipe(
+            Effect.mapError(() => new ReportNotRecordedError({ requestId: event.requestId })),
+          );
+          yield* ackReport(environmentId, event.reportId, delivered);
           return;
         }
       }
     });
 
   /**
-   * Acks a recorded report; one that doesn't land is kept, and the watch
-   * stays open, until a later try does.
+   * How a child stands once a request to it ended: what the report says,
+   * unless that computer tells its threads' state itself (`filing`), whose
+   * word, newer than any request's end, stands.
    */
-  const ackReport = (environmentId: string, reportId: string) =>
+  const reportedStatus = (parent: Parent, threadId: ThreadId, outcome: PeerRequestOutcome) => {
+    const existing = remoteChildOf(parent.childRequests, threadId);
+    if (existing?.filing !== undefined) return existing.cachedStatus;
+    return outcome === "answered" ? "idle" : "failed";
+  };
+
+  /** Whether a request's answer was written into its parent (not dropped by Stop, a wrap, ...). */
+  const answerWritten = (requestId: ChildRequestId) =>
+    sql<{ readonly found: number }>`
+      SELECT 1 AS "found" FROM projection_thread_messages
+      WHERE message_id = ${childReportMessageId(requestId)}
+      LIMIT 1
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+  /**
+   * Acks a recorded report, saying whether its answer reached the parent; one
+   * that doesn't land is kept, and the watch stays open, until a later try does.
+   */
+  const ackReport = (environmentId: string, reportId: string, delivered: boolean) =>
     client
-      .withPeer(environmentId as EnvironmentId, (peer) => peer["peer.report.ack"]({ reportId }))
+      .withPeer(environmentId as EnvironmentId, (peer) =>
+        peer["peer.report.ack"]({ reportId, delivered }),
+      )
       .pipe(
         Effect.matchEffect({
           onSuccess: () =>
@@ -510,19 +662,19 @@ const make = Effect.gen(function* () {
             Effect.sync(() => {
               let owed = pendingAcks.get(environmentId);
               if (owed === undefined) {
-                owed = new Set();
+                owed = new Map();
                 pendingAcks.set(environmentId, owed);
               }
-              owed.add(reportId);
+              owed.set(reportId, delivered);
             }),
         }),
       );
 
   const retryAcks = (environmentId: string) =>
     Effect.gen(function* () {
-      // A Set may lose the entry being visited: an ack that lands removes it.
-      for (const reportId of pendingAcks.get(environmentId) ?? []) {
-        yield* ackReport(environmentId, reportId);
+      // A Map may lose the entry being visited: an ack that lands removes it.
+      for (const [reportId, delivered] of pendingAcks.get(environmentId) ?? []) {
+        yield* ackReport(environmentId, reportId, delivered);
       }
     });
 
@@ -785,28 +937,51 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Whether a computer's watch still has anything to wait for; fails when that can't be read. */
+  /**
+   * Whether a computer's watch still has anything to wait for (owed work, or
+   * children held here to follow); fails when that can't be read.
+   */
   const needsWatch = (environmentId: string) =>
-    Effect.map(
-      parentsOwing(environmentId),
-      (parents) =>
+    Effect.gen(function* () {
+      const parents = yield* parentsOwing(environmentId);
+      const owed =
         !drained.has(environmentId) ||
         (pendingAcks.get(environmentId)?.size ?? 0) > 0 ||
         parents.some((parent) =>
           openRemote(parent, environmentId).some((request) => request.remote?.status !== "sending"),
+        );
+      return owed || (yield* isFollowing(environmentId));
+    });
+
+  /** The children held here on a computer, for its watch to tell how they stand. */
+  const followedThreadIds = (environmentId: string) =>
+    Effect.map(parentsFollowing(environmentId), (parents) => [
+      ...new Set(
+        parents.flatMap((parent) =>
+          childrenFollowed(parent, environmentId).map((child) => child.threadId),
         ),
-    );
+      ),
+    ]);
 
   const ensureWatch = (environmentId: string) =>
     Effect.gen(function* () {
       if (watching.has(environmentId)) return;
       if (!(yield* needsWatch(environmentId))) return;
       watching.add(environmentId);
-      // Ends the watch once nothing has been owed for a while, events or not.
+      rewatch.delete(environmentId);
+      const threads = yield* followedThreadIds(environmentId).pipe(Effect.orElseSucceed(() => []));
+      watchedThreads.set(environmentId, new Set(threads));
+      let restarting = false;
+      // Ends the watch once nothing has been owed for a while, events or not,
+      // or so a new one asks about the children held now.
       const settledDown = Effect.gen(function* () {
         let quietSince: number | null = null;
         while (true) {
           yield* Effect.sleep(WATCH_CHECK_EVERY);
+          if (rewatch.delete(environmentId)) {
+            restarting = true;
+            return;
+          }
           // A read that fails keeps it open.
           if (yield* needsWatch(environmentId).pipe(Effect.orElseSucceed(() => true))) {
             quietSince = null;
@@ -818,7 +993,7 @@ const make = Effect.gen(function* () {
         }
       });
       yield* client
-        .peerStream(environmentId as EnvironmentId, (peer) => peer["peer.watch"]({}))
+        .peerStream(environmentId as EnvironmentId, (peer) => peer["peer.watch"]({ threads }))
         .pipe(
           Stream.mapEffect((event) => onWatchEvent(environmentId, event)),
           Stream.interruptWhen(settledDown),
@@ -837,12 +1012,83 @@ const make = Effect.gen(function* () {
               cause: Cause.pretty(cause),
             }),
           ),
-          Effect.ensuring(Effect.sync(() => watching.delete(environmentId))),
+          Effect.ensuring(
+            Effect.suspend(() => {
+              watching.delete(environmentId);
+              watchedThreads.delete(environmentId);
+              return restarting ? pump(environmentId) : Effect.void;
+            }),
+          ),
           Effect.forkDetach,
         );
     });
 
-  const pump = (environmentId: string) =>
+  // ---------------------------------------------------------------------------
+  // Wraps given here
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The user's Wrap up or Reopen of children there, given here, to that
+   * computer, once per word: one it took (or had a newer word for) is done,
+   * and one it can't take (an older computer, or a thread no longer its
+   * link's) stays a word on this side only.
+   */
+  const pumpWraps = (environmentId: string) =>
+    laneOf(wrapLanes, environmentId).withPermits(1)(
+      Effect.gen(function* () {
+        const owed: Array<{
+          readonly child: RemoteChildThread;
+          readonly override: NonNullable<RemoteChildThread["override"]>;
+        }> = [];
+        // A copy: reading drops parents that owe nothing more.
+        const owerIds = [...(wrapOwers.get(environmentId) ?? [])];
+        for (const id of owerIds) {
+          const parent = yield* readParent(id);
+          const words = (parent?.deletedAt === null ? parent.childRequests.remoteChildren : [])
+            ?.filter((child) => child.environmentId === environmentId && wrapOwed(child))
+            .flatMap((child) => {
+              const sent = wrapsSent.get(childKey(environmentId, child.threadId));
+              return child.override !== undefined &&
+                !(
+                  sent?.at === child.override.at &&
+                  sent.against === (child.filing?.override?.at ?? null)
+                )
+                ? [{ child, override: child.override }]
+                : [];
+            });
+          if (words === undefined || words.length === 0) {
+            wrapOwers.get(environmentId)?.delete(id);
+          } else {
+            owed.push(...words);
+          }
+        }
+        if (owed.length === 0) return;
+        const descriptor = yield* client
+          .describe(environmentId as EnvironmentId)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (descriptor === null || descriptor.threadFiling !== true) return;
+        for (const { child, override } of owed) {
+          const sent = yield* client
+            .withPeer(environmentId as EnvironmentId, (peer) =>
+              peer["peer.thread.wrap"]({ threadId: child.threadId, override }),
+            )
+            .pipe(
+              Effect.as(true),
+              Effect.catch((error) =>
+                handleUnavailable(environmentId, error).pipe(Effect.as(false)),
+              ),
+            );
+          // Tried again with the next pump.
+          if (!sent) return;
+          wrapsSent.set(childKey(environmentId, child.threadId), {
+            at: override.at,
+            against: child.filing?.override?.at ?? null,
+          });
+        }
+      }),
+    );
+
+  const pump = (environmentId: string): Effect.Effect<void> =>
     Effect.gen(function* () {
       yield* pumpCancels(environmentId).pipe(
         Effect.catchCause((cause) =>
@@ -856,6 +1102,7 @@ const make = Effect.gen(function* () {
       yield* retryAcks(environmentId);
       yield* pumpRequests(environmentId);
       yield* ensureWatch(environmentId);
+      yield* pumpWraps(environmentId);
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("remote child reactor could not send owed work", {
@@ -865,9 +1112,21 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** Follows every child a parent still shows; the computers they're on. */
+  const followAll = (parent: Parent) => {
+    const environments = new Set<string>();
+    if (parent.deletedAt !== null || parent.archivedAt !== null) return environments;
+    for (const child of parent.childRequests.remoteChildren ?? []) {
+      follow(child.environmentId, parent.id, child.threadId);
+      environments.add(child.environmentId);
+    }
+    return environments;
+  };
+
   /**
    * Parents with remote work at startup: open remote requests, or owed
-   * cancels (archived and deleted parents included).
+   * cancels (archived and deleted parents included), and the parents still
+   * showing children on linked computers.
    */
   let loaded = false;
   const loadOwing = Effect.gen(function* () {
@@ -875,7 +1134,8 @@ const make = Effect.gen(function* () {
       SELECT thread_id AS "threadId" FROM projection_threads
       WHERE child_requests IS NOT NULL
         AND ((deleted_at IS NULL AND child_requests LIKE '%"remote":{%')
-          OR child_requests LIKE '%"remoteCancels":[{%')
+          OR child_requests LIKE '%"remoteCancels":[{%'
+          OR (deleted_at IS NULL AND child_requests LIKE '%"remoteChildren":[{%'))
     `;
     for (const row of rows) {
       const parent = yield* readParent(row.threadId as ThreadId);
@@ -885,6 +1145,12 @@ const make = Effect.gen(function* () {
       }
       for (const cancel of parent.childRequests.remoteCancels ?? []) {
         track(cancel.environmentId, parent.id);
+      }
+      followAll(parent);
+      for (const child of parent.deletedAt === null
+        ? (parent.childRequests.remoteChildren ?? [])
+        : []) {
+        if (wrapOwed(child)) addTo(wrapOwers, child.environmentId, parent.id);
       }
     }
     loaded = true;
@@ -900,6 +1166,42 @@ const make = Effect.gen(function* () {
   /** What one orchestration event means for owed work; a failure is logged, never fatal. */
   const onEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
+      if (event.type === "thread.remote-child-updated") {
+        // Followed from its first record; a word the user gave here goes out.
+        const child = event.payload.child;
+        const environmentId = child.environmentId;
+        follow(environmentId, event.payload.threadId, child.threadId);
+        const owed = wrapOwed(child);
+        if (owed) addTo(wrapOwers, environmentId, event.payload.threadId);
+        // A child the open watch didn't ask about: a new one asks how it stands.
+        const unasked =
+          watching.has(environmentId) && !watchedThreads.get(environmentId)?.has(child.threadId);
+        if (unasked) rewatch.add(environmentId);
+        if (!watching.has(environmentId) || owed) {
+          yield* pump(environmentId).pipe(Effect.forkDetach);
+        }
+        return;
+      }
+      if (event.type === "thread.unarchived") {
+        // Shown again: its children are followed again, and a watch already
+        // open starts over to ask how they stand now.
+        const parent = yield* readParent(event.payload.threadId);
+        if (parent === undefined) return;
+        for (const environmentId of followAll(parent)) {
+          if (!watching.has(environmentId)) {
+            yield* pump(environmentId).pipe(Effect.forkDetach);
+          } else if (
+            (parent.childRequests.remoteChildren ?? []).some(
+              (child) =>
+                child.environmentId === environmentId &&
+                !watchedThreads.get(environmentId)?.has(child.threadId),
+            )
+          ) {
+            rewatch.add(environmentId);
+          }
+        }
+        return;
+      }
       if (
         event.type === "thread.child-request-submitted" &&
         event.payload.request.remote !== undefined
@@ -953,14 +1255,18 @@ const make = Effect.gen(function* () {
         if (!isUsableLink(link)) continue;
         yield* pump(link.remoteEnvironmentId).pipe(Effect.forkDetach);
       }
-      for (const environmentId of parentsByEnvironment.keys()) {
+      for (const environmentId of new Set([
+        ...parentsByEnvironment.keys(),
+        ...followersByEnvironment.keys(),
+      ])) {
         if (all.some((link) => link.remoteEnvironmentId === environmentId)) continue;
         yield* pump(environmentId).pipe(Effect.forkDetach);
       }
       yield* Effect.forkScoped(Stream.runForEach(events, onEvent));
       // Owed work is retried while a computer can't be reached, and so is
       // the first drain of a computer that was offline at startup (and the
-      // startup scan, until it works).
+      // startup scan, until it works), and the watch and wraps of one whose
+      // children are followed.
       yield* Effect.gen(function* () {
         if (!loaded) yield* loadOwing;
         const environments = new Set([...parentsByEnvironment.keys(), ...pendingAcks.keys()]);
@@ -968,6 +1274,11 @@ const make = Effect.gen(function* () {
           if (isUsableLink(link) && !drained.has(link.remoteEnvironmentId)) {
             environments.add(link.remoteEnvironmentId);
           }
+        }
+        // And computers whose children are followed: a watch that dropped,
+        // or a wrap that didn't go out.
+        for (const environmentId of [...followersByEnvironment.keys(), ...wrapOwers.keys()]) {
+          environments.add(environmentId);
         }
         for (const environmentId of environments) {
           yield* pump(environmentId);

@@ -16,7 +16,15 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebar/sidebarListField";
 import { toSortableTimestamp } from "../lib/threadSort";
-import { markThreadDoneByKey, reopenThreadByKey } from "../lib/threadInboxSync";
+import {
+  markThreadDoneByKey,
+  reopenThreadByKey,
+  setRemoteChildDoneOverride,
+} from "../lib/threadInboxSync";
+import {
+  useComputerLinksStore,
+  type ComputerLinksEntry,
+} from "../environments/links/computerLinks";
 import { selectBootstrapCompleteForActiveEnvironment, useStore, type AppState } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -80,8 +88,10 @@ import {
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isNeedsUserStatus,
+  INBOX_AUTO_DONE_AFTER_DAYS,
   labelWrappedRowsByDay,
   mergeThreadDoneOverride,
+  mergeWrappedShelfRows,
   resolveAdjacentThreadId,
   resolveInboxLiveFoldLimit,
   resolveScopedComposeTarget,
@@ -95,6 +105,7 @@ import {
   windowInboxDoneRows,
   windowInboxThreads,
   wrappedDayGroupOf,
+  wrappedShelfRowDoneAt,
   useThreadJumpHintVisibility,
   WRAPPED_DAY_GROUP_LABELS,
   type InboxLiveRow,
@@ -107,8 +118,10 @@ import {
   InboxDoneRow,
   InboxLinkRequestRow,
   InboxRemoteChildRow,
+  InboxRemoteDoneRow,
   InboxThreadRow,
   type InboxThreadFamily,
+  type RemoteChildSetDone,
   type RemoteParentLine,
 } from "./sidebar/InboxRows";
 import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
@@ -243,6 +256,37 @@ interface InboxLiveSection {
 
 /** Every parent without children on other computers shares this. */
 const NO_REMOTE_CHILDREN: readonly InboxRemoteChild[] = [];
+
+/**
+ * Whether a computer still links to another, as its last links snapshot says.
+ * Unknown (no snapshot yet, or one no longer live) reads as linked: only a
+ * computer that says so has dropped the link.
+ */
+function stillLinked(entry: ComputerLinksEntry | undefined, environmentId: EnvironmentId) {
+  if (entry === undefined || !entry.live) return true;
+  return entry.snapshot.outbound.some(
+    (link) =>
+      link.remoteEnvironmentId === environmentId &&
+      (link.state === "active" || link.state === "failed"),
+  );
+}
+
+/** Wraps up or reopens a child on a computer this app can't see, through its parent's computer. */
+const setRemoteChildDone: RemoteChildSetDone = (child, state) => {
+  if (child.parentRef === undefined || child.threadId === null) return;
+  setRemoteChildDoneOverride(
+    child.parentRef,
+    { environmentId: child.environmentId, threadId: child.threadId },
+    state,
+  ).catch((error: unknown) => {
+    toastManager.add(
+      failureNotice({
+        title: state === "done" ? "Couldn't wrap up the thread" : "Couldn't reopen the thread",
+        error,
+      }),
+    );
+  });
+};
 
 /**
  * The computers whose thread lists this app has: their threads speak for
@@ -534,6 +578,10 @@ export default function Sidebar() {
   const selectedDestination = useSelectedDestination();
   const sidebarGroupingSetting = useSettings((s) => s.sidebarGrouping);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
+  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
+  // Which computers each computer still links to: a child on one it no
+  // longer does has nothing more to say.
+  const computerLinksByEnvironmentId = useComputerLinksStore((state) => state.byEnvironmentId);
   const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
   // The Rooms filter (in the scope menu) narrows what the inbox shows, never
@@ -768,7 +816,7 @@ export default function Sidebar() {
   // every scope, and a family takes one row in the live list. A family can
   // span computers: a child on a computer the machine filter shows, under a
   // parent on one it hides, stands on its own instead.
-  const { liveEntries, doneEntries } = useMemo(() => {
+  const { liveEntries, doneEntries, doneRemoteEntries } = useMemo(() => {
     const entryByThreadKey = new Map(entries.map((entry) => [entry.threadKey, entry] as const));
     const lookup = (thread: SidebarThreadSummary) =>
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
@@ -780,7 +828,7 @@ export default function Sidebar() {
       (scopedProjectKeySet.size === 0 || scopedProjectKeySet.has(entry.projectKey));
     const canSeeComputer = (environmentId: EnvironmentId) =>
       environmentIdsWithThreads.has(environmentId);
-    const { live, done } = buildInboxSections({
+    const { live, done, doneRemote } = buildInboxSections({
       entries,
       parentKeyOf: (entry) => familyParentKeyOf(entry.thread),
       inScope,
@@ -802,7 +850,16 @@ export default function Sidebar() {
                 entryByThreadKey.has(
                   scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
                 ),
-              wrapUpOnFinish: wrapUpChildThreadsOnFinish,
+              filing: {
+                now: nowIso,
+                wrapUpOnFinish: wrapUpChildThreadsOnFinish,
+                autoDoneAfterDays: wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
+                linked: (environmentId) =>
+                  stillLinked(
+                    computerLinksByEnvironmentId[parent.thread.environmentId],
+                    environmentId,
+                  ),
+              },
             }),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,
@@ -818,10 +875,11 @@ export default function Sidebar() {
             ),
         ).map(lookup),
     });
-    return { liveEntries: live, doneEntries: done };
+    return { liveEntries: live, doneEntries: done, doneRemoteEntries: doneRemote };
   }, [
     childThreadFamilyOpenById,
     computerLabel,
+    computerLinksByEnvironmentId,
     doneThreadOverlays,
     entries,
     environmentIdsWithThreads,
@@ -831,7 +889,14 @@ export default function Sidebar() {
     scopedEnvironmentIdValue,
     scopedProjectKeys,
     wrapUpChildThreadsOnFinish,
+    wrapUpIdleThreads,
   ]);
+  // The Wrapped shelf: wrapped threads, and children on computers this app
+  // can't see that left a live family, by when each wrapped.
+  const wrappedRows = useMemo(
+    () => mergeWrappedShelfRows(doneEntries, doneRemoteEntries, (row) => row.entry.doneAt),
+    [doneEntries, doneRemoteEntries],
+  );
 
   // Grouping by computer needs a second computer to mean anything.
   const sidebarGrouping: SidebarGrouping =
@@ -923,12 +988,12 @@ export default function Sidebar() {
   );
   const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
-    () => windowInboxDoneRows(doneEntries, DONE_PREVIEW_COUNT + revealedDoneCount, routeThreadKey),
-    [doneEntries, revealedDoneCount, routeThreadKey],
+    () => windowInboxDoneRows(wrappedRows, DONE_PREVIEW_COUNT + revealedDoneCount, routeThreadKey),
+    [wrappedRows, revealedDoneCount, routeThreadKey],
   );
   const nextDoneRevealCount = Math.min(
     DONE_REVEAL_STEP,
-    doneEntries.length - visibleDoneEntries.length,
+    wrappedRows.length - visibleDoneEntries.length,
   );
   // Closed, the shelf still holds the thread you are reading: closing a
   // section should not close the thing you have open in it.
@@ -936,23 +1001,36 @@ export default function Sidebar() {
     () =>
       wrappedOpen
         ? visibleDoneEntries
-        : doneEntries.filter((row) => row.entry.threadKey === routeThreadKey || row.openChild),
-    [doneEntries, routeThreadKey, visibleDoneEntries, wrappedOpen],
+        : wrappedRows.filter(
+            (row) =>
+              row.kind === "thread" &&
+              (row.row.entry.threadKey === routeThreadKey || row.row.openChild !== null),
+          ),
+    [wrappedRows, routeThreadKey, visibleDoneEntries, wrappedOpen],
   );
   // Open, the shelf sorts its rows under days; closed, its header says how
   // many wrapped today, so a thread filed away on its own is not lost.
   const doneDayLabels = useMemo(
     () =>
       wrappedOpen
-        ? labelWrappedRowsByDay(renderedDoneEntries, (row) => row.entry.doneAt, todayStartMs)
+        ? labelWrappedRowsByDay(
+            renderedDoneEntries,
+            (row) => wrappedShelfRowDoneAt(row, (done) => done.entry.doneAt),
+            todayStartMs,
+          )
         : null,
     [renderedDoneEntries, todayStartMs, wrappedOpen],
   );
   const wrappedTodayCount = useMemo(
     () =>
-      doneEntries.filter((row) => wrappedDayGroupOf(row.entry.doneAt, todayStartMs) === "today")
-        .length,
-    [doneEntries, todayStartMs],
+      wrappedRows.filter(
+        (row) =>
+          wrappedDayGroupOf(
+            wrappedShelfRowDoneAt(row, (done) => done.entry.doneAt),
+            todayStartMs,
+          ) === "today",
+      ).length,
+    [wrappedRows, todayStartMs],
   );
   // What a family's rows show: the parent's summary line, and the hover
   // cards' "Started by" and "Threads" lines.
@@ -1147,8 +1225,12 @@ export default function Sidebar() {
   const orderedThreadKeys = useMemo(
     () => [
       ...liveSections.flatMap((section) => section.rows.flatMap(inboxLiveRowThreadKeys)),
-      ...renderedDoneEntries.flatMap((row) =>
-        row.openChild ? [row.entry.threadKey, row.openChild.threadKey] : [row.entry.threadKey],
+      ...renderedDoneEntries.flatMap(({ kind, row }) =>
+        kind === "remote"
+          ? []
+          : row.openChild
+            ? [row.entry.threadKey, row.openChild.threadKey]
+            : [row.entry.threadKey],
       ),
     ],
     [liveSections, renderedDoneEntries],
@@ -1955,7 +2037,11 @@ export default function Sidebar() {
                                     />
                                   ))}
                                   {shownRemoteChildren.map((child) => (
-                                    <InboxRemoteChildRow key={child.threadKey} child={child} />
+                                    <InboxRemoteChildRow
+                                      key={child.threadKey}
+                                      child={child}
+                                      onSetDone={setRemoteChildDone}
+                                    />
                                   ))}
                                 </React.Fragment>
                               ),
@@ -2020,7 +2106,7 @@ export default function Sidebar() {
                       </div>
                     ) : null}
                   </SidebarContent>
-                  {doneEntries.length > 0 ? (
+                  {wrappedRows.length > 0 ? (
                     <span
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
@@ -2034,10 +2120,10 @@ export default function Sidebar() {
                     />
                   ) : null}
                 </div>
-                {doneEntries.length > 0 ? (
+                {wrappedRows.length > 0 ? (
                   <InboxWrappedShelf
                     open={wrappedOpen}
-                    count={doneEntries.length}
+                    count={wrappedRows.length}
                     todayCount={wrappedTodayCount}
                     liveContentHeight={liveContentHeight}
                     shelfRef={wrappedShelfRef}
@@ -2086,82 +2172,93 @@ export default function Sidebar() {
                     }
                   >
                     <ul data-testid="inbox-done-list">
-                      {renderedDoneEntries.map(
-                        ({ entry, children, remoteChildren, openChild, startedBy }, index) => {
-                          const dayGroup = doneDayLabels?.[index] ?? null;
+                      {renderedDoneEntries.map((shelfRow, index) => {
+                        const dayGroup = doneDayLabels?.[index] ?? null;
+                        if (shelfRow.kind === "remote") {
+                          const { child, startedBy } = shelfRow.row;
                           return (
-                            <React.Fragment key={entry.threadKey}>
+                            <React.Fragment key={shelfRow.key}>
                               {dayGroup !== null ? <InboxWrappedDayLabel group={dayGroup} /> : null}
-                              <InboxDoneRow
-                                thread={entry.thread}
-                                projectLabel={entry.projectLabel}
-                                doneAt={entry.doneAt}
-                                isActive={routeThreadKey === entry.threadKey}
-                                appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
-                                confirmingArchiveThreadKey={confirmingArchiveThreadKey}
-                                setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
-                                confirmArchiveButtonRefs={confirmArchiveButtonRefs}
-                                navigateToThread={navigateToThread}
-                                handleThreadContextMenu={handleThreadContextMenu}
-                                reopenThread={reopenThread}
-                                attemptArchiveThread={attemptArchiveThread}
-                                listPullRequest={
-                                  pullRequestByThreadKey.get(entry.threadKey) ?? null
-                                }
-                                linkedPullRequests={
-                                  linkedPullRequestsByThreadKey.get(entry.threadKey) ??
-                                  NO_PULL_REQUESTS
-                                }
-                                openPrLink={openPrLink}
-                                childCount={children.length + remoteChildren.length}
-                                startedByTitle={startedBy?.thread.title ?? null}
-                                lineage={lineageByThreadKey.get(entry.threadKey)}
-                                onSwipeAction={handleRowSwipe}
+                              <InboxRemoteDoneRow
+                                child={child}
+                                startedByTitle={startedBy.thread.title}
+                                onSetDone={setRemoteChildDone}
                               />
-                              {/* Its wrapped threads live inside it; the one open
-                                in the chat still shows where it is. */}
-                              {openChild ? (
-                                <InboxChildRow
-                                  thread={openChild.thread}
-                                  status={openChild.status}
-                                  isDone
-                                  doneAt={openChild.doneAt}
-                                  isActive
-                                  jumpLabel={
-                                    visibleThreadJumpLabelByKey.get(openChild.threadKey) ?? null
-                                  }
-                                  canMarkDone={false}
-                                  orderedThreadKeys={orderedThreadKeys}
-                                  renamingThreadKey={renamingThreadKey}
-                                  renamingTitle={renamingTitle}
-                                  setRenamingTitle={setRenamingTitle}
-                                  renamingInputRef={renamingInputRef}
-                                  renamingCommittedRef={renamingCommittedRef}
-                                  handleThreadClick={handleThreadClick}
-                                  navigateToThread={navigateToThread}
-                                  handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                                  handleThreadContextMenu={handleThreadContextMenu}
-                                  clearSelection={clearSelection}
-                                  commitRename={commitRename}
-                                  cancelRename={cancelRename}
-                                  markThreadDone={markThreadDone}
-                                  reopenThread={reopenThread}
-                                  lineage={lineageByThreadKey.get(openChild.threadKey)}
-                                  onSwipeAction={handleRowSwipe}
-                                  computerLabel={
-                                    openChild.thread.environmentId === entry.thread.environmentId
-                                      ? null
-                                      : computerLabel(
-                                          openChild.thread.environmentId,
-                                          "another computer",
-                                        )
-                                  }
-                                />
-                              ) : null}
                             </React.Fragment>
                           );
-                        },
-                      )}
+                        }
+                        const { entry, children, remoteChildren, openChild, startedBy } =
+                          shelfRow.row;
+                        return (
+                          <React.Fragment key={entry.threadKey}>
+                            {dayGroup !== null ? <InboxWrappedDayLabel group={dayGroup} /> : null}
+                            <InboxDoneRow
+                              thread={entry.thread}
+                              projectLabel={entry.projectLabel}
+                              doneAt={entry.doneAt}
+                              isActive={routeThreadKey === entry.threadKey}
+                              appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
+                              confirmingArchiveThreadKey={confirmingArchiveThreadKey}
+                              setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
+                              confirmArchiveButtonRefs={confirmArchiveButtonRefs}
+                              navigateToThread={navigateToThread}
+                              handleThreadContextMenu={handleThreadContextMenu}
+                              reopenThread={reopenThread}
+                              attemptArchiveThread={attemptArchiveThread}
+                              listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
+                              linkedPullRequests={
+                                linkedPullRequestsByThreadKey.get(entry.threadKey) ??
+                                NO_PULL_REQUESTS
+                              }
+                              openPrLink={openPrLink}
+                              childCount={children.length + remoteChildren.length}
+                              startedByTitle={startedBy?.thread.title ?? null}
+                              lineage={lineageByThreadKey.get(entry.threadKey)}
+                              onSwipeAction={handleRowSwipe}
+                            />
+                            {/* Its wrapped threads live inside it; the one open
+                                in the chat still shows where it is. */}
+                            {openChild ? (
+                              <InboxChildRow
+                                thread={openChild.thread}
+                                status={openChild.status}
+                                isDone
+                                doneAt={openChild.doneAt}
+                                isActive
+                                jumpLabel={
+                                  visibleThreadJumpLabelByKey.get(openChild.threadKey) ?? null
+                                }
+                                canMarkDone={false}
+                                orderedThreadKeys={orderedThreadKeys}
+                                renamingThreadKey={renamingThreadKey}
+                                renamingTitle={renamingTitle}
+                                setRenamingTitle={setRenamingTitle}
+                                renamingInputRef={renamingInputRef}
+                                renamingCommittedRef={renamingCommittedRef}
+                                handleThreadClick={handleThreadClick}
+                                navigateToThread={navigateToThread}
+                                handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                handleThreadContextMenu={handleThreadContextMenu}
+                                clearSelection={clearSelection}
+                                commitRename={commitRename}
+                                cancelRename={cancelRename}
+                                markThreadDone={markThreadDone}
+                                reopenThread={reopenThread}
+                                lineage={lineageByThreadKey.get(openChild.threadKey)}
+                                onSwipeAction={handleRowSwipe}
+                                computerLabel={
+                                  openChild.thread.environmentId === entry.thread.environmentId
+                                    ? null
+                                    : computerLabel(
+                                        openChild.thread.environmentId,
+                                        "another computer",
+                                      )
+                                }
+                              />
+                            ) : null}
+                          </React.Fragment>
+                        );
+                      })}
                     </ul>
                   </InboxWrappedShelf>
                 ) : null}

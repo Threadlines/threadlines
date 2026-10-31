@@ -341,7 +341,7 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
   - The report-delivery cancellation check `isReportDeliveryCancelled` (ProviderCommandReactor.ts:830-846) uses the parent's remote request state for remote reports, not a local child lookup. It covers queued delivery and restart recovery too.
 - **`RemoteChildReactor`** owns remote requests:
   1. **Outbox, in order per link.** Starts, sends and cancels are dispatched as `peer.request.*` in the order they were recorded, and each retries with its own requestId until B answers. A start's answer records `remote.threadId` and status.
-  2. **Watch.** While any remote request is open, or any report is unacked, `peer.watch` stays open. A report becomes the remote settle with the report text (`fromThread` origin with `environmentId`), then `peer.report.ack`. If the decider says that report id is already recorded, that counts as success, and the reactor acks it. Unacked reports are tracked even after the parent request closed.
+  2. **Watch.** While any remote request is open, or any report is unacked, or a parent that is neither archived nor deleted holds a child there (and the link is usable), `peer.watch` stays open. It passes the held children's ids (`PeerWatchInput.threads`) so B replays their state on connect. A report becomes the remote settle with the report text (`fromThread` origin with `environmentId`), then `peer.report.ack` with `delivered` (the report message was written into the parent). If the decider says that report id is already recorded, that counts as success, and the reactor acks it. Unacked reports are tracked even after the parent request closed.
   3. **Terminal outcomes** (denied, expired, failed, cancelled) settle the parent request with a plain reply ("Mac mini didn't allow it").
   4. **Stop and wrap.** Stopping or wrapping the parent raises the delivery epoch as today. It also records `cancelRequested` on every attached remote request and enqueues `peer.request.cancel`, plus `peer.thread.stop` once a thread id exists. An in-flight start that lands after Stop is cancelled by B's tombstone (below).
   5. **Restart.** The reactor reloads open remote requests and the outbox, then re-attaches watches.
@@ -362,6 +362,18 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
 
 - The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status.
 - Fleet draws cross-computer work on the line between the two computers.
+
+### Filing a child on another computer (Oct 30)
+
+Before, A heard about a child only while a request to it was open, and the sidebar counted a quiet child nobody followed as finished. A user who picked the child up again on B never showed on A, and a child that wrapped on A had no row anywhere (A's app has no thread for it), while B kept it under the parent. The computer the child runs on now decides, and both computers apply one rule.
+
+- **B says how it files the thread.** Every `thread` watch event carries `RemoteThreadFiling`: when its newest turn's answer reached the parent (`handedBackAt`), pinned, the user's Wrap up or Reopen (with its stamp), last activity, seen stamp, unseen work, and archived or deleted. B publishes on every change to those facts and replays the requested threads' state after the reports on connect, so a thread's state outranks how a request ended. `remoteThreadFilingOf` (`packages/shared/src/threadFiling.ts`) computes it with the same helpers the sidebar uses.
+- **Handed back on B.** A delivered ack dispatches `thread.remote-handed-back.record` before the ledger marks the report delivered (a retried ack finishes both; the command id is per report). The decider records `thread.handed-back` only while that turn is the thread's newest and has ended, so a late ack for an older turn never takes back a newer one.
+- **A records it.** A thread event updates every parent holding that child (`holdersByChild`), keeping `filing`. A report keeps the record's status when B sends filing, since B's thread state is newer than any request's end.
+- **One rule.** `isRemoteChildDone` (Sidebar.logic.ts) runs the same ladder as `isThreadDone` (`fileByFacts`) over B's facts: moving, blocked or waiting holds it; so does an unseen failure, or an unseen turn that didn't go back; then the freshest of the two overrides, a pin, the answer having reached the parent, and idle time. Archived on B is done. An older B (no filing) keeps the earlier rule. Settings stay per device.
+- **Wrapped.** A child that leaves a live family gets its own row in Wrapped (`InboxDoneRemoteRow`): the started-by arrow, its computer, and when it wrapped.
+- **Wrap up and Reopen from A.** The row's button dispatches `thread.remote-child.done-override.set` on the parent. The record keeps `override`, and the reactor sends `peer.thread.wrap` with the same stamp to a B whose descriptor has `threadFiling`, once per word. B keeps a newer word it already has. A Wrap up also marks the thread seen on B: the user read its answer on A, and that is the visit a failed or unread thread needs before it can be wrapped.
+- **A link that's gone.** When the parent's computer no longer links to B (its live links snapshot), the child's last status is history: no pill, the button always shows, and only the user's word files it.
 
 ## Part 3: Move a thread (issue #48, v1)
 

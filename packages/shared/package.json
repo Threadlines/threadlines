@@ -327,6 +327,10 @@
       "types": "./src/childThreads.ts",
       "import": "./src/childThreads.ts"
     },
+    "./threadFiling": {
+      "types": "./src/threadFiling.ts",
+      "import": "./src/threadFiling.ts"
+    },
     "./appPlaces": {
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"

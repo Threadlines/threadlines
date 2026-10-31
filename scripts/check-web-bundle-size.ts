@@ -30,8 +30,12 @@ import { gzipSync } from "node:zlib";
 // folded two chunks that already loaded at startup (Base UI's combobox and the
 // composer handle chunk, ~15 KB gzip) into the entry, taking it to 245.8 KB,
 // while the startup closure below grew 1.7 KB. Judge growth by the closure.
-// Raise deliberately, never reactively.
-const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 250_000;
+// Raised to 255 KB (2026-10-31, Will's OK): main measured 248.7 KB locally
+// (about 0.6 KB more in CI's build), and the rows for a child on another
+// computer and their Wrap up / Reopen buttons (#722), which draw in the
+// sidebar at startup, added 1.1 KB; the closure grew 2.2 KB, well inside its
+// budget. Raise deliberately, never reactively.
+const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // Measured 823 KB gzip (2026-10-23, 0.8.0): 67 JS files (769 KB) and 1 CSS
 // file (54 KB). Up from 749 KB with Fleet's app shell (the navigation rail,
 // the shared thread menu, the inbox's view menu and swipe rows, the phone

@@ -1193,4 +1193,110 @@ describe("decider child threads on a linked computer", () => {
       kind: "request",
     });
   });
+
+  it("keeps the user's Wrap up of a child there on the parent's record, and only for its own child", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const override = { state: "done" as const, at: at(20) };
+    const wrapped = await run(family, {
+      type: "thread.remote-child.done-override.set",
+      commandId: CommandId.make("wrap-remote-child"),
+      threadId: PARENT,
+      environmentId: MAC_MINI,
+      childThreadId: REMOTE_CHILD,
+      ...override,
+    });
+    expect(threadIn(wrapped.model, PARENT).childRequests.remoteChildren?.[0]).toMatchObject({
+      cachedStatus: "working",
+      override,
+    });
+    // News of the child read before the click can't take the click back.
+    const news = await run(wrapped.model, {
+      type: "thread.remote-child.update",
+      commandId: CommandId.make("remote-child-news"),
+      threadId: PARENT,
+      child: {
+        environmentId: MAC_MINI,
+        label: "Mac mini",
+        threadId: REMOTE_CHILD,
+        handle: "Claude",
+        title: "Write the changelog",
+        attachmentEpoch: 0,
+        cachedStatus: "idle",
+        updatedAt: at(21),
+      },
+      createdAt: at(21),
+    });
+    expect(threadIn(news.model, PARENT).childRequests.remoteChildren?.[0]).toMatchObject({
+      cachedStatus: "idle",
+      override,
+    });
+    expect(
+      await refused(family, {
+        type: "thread.remote-child.done-override.set",
+        commandId: CommandId.make("wrap-someone-elses"),
+        threadId: PARENT,
+        environmentId: MAC_MINI,
+        childThreadId: ThreadId.make("not-its-child"),
+        ...override,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("decider on a child's computer", () => {
+  const latestTurn = (turnId: string, state: "running" | "completed") => ({
+    turnId: TurnId.make(turnId),
+    state,
+    requestedAt: at(1),
+    startedAt: at(1),
+    completedAt: state === "running" ? null : at(5),
+    assistantMessageId: null,
+  });
+  const record = (turnId: string, commandId: string) => ({
+    type: "thread.remote-handed-back.record" as const,
+    commandId: CommandId.make(commandId),
+    threadId: CHILD,
+    turnId: TurnId.make(turnId),
+    createdAt: at(10),
+  });
+
+  it("marks a thread's answer handed back only while that turn is its newest and has ended", async () => {
+    const ended = readModel([thread(CHILD, { latestTurn: latestTurn("turn-2", "completed") })]);
+    const handedBack = await run(ended, record("turn-2", "hand-back-2"));
+    expect(threadIn(handedBack.model, CHILD)).toMatchObject({
+      handedBackTurnId: "turn-2",
+      handedBackAt: at(10),
+    });
+    // An older turn's answer, arriving late, never takes back the newer one's.
+    expect(await refused(handedBack.model, record("turn-1", "hand-back-1"))).toBe(true);
+    // Nor is a turn still running marked.
+    const running = readModel([thread(CHILD, { latestTurn: latestTurn("turn-3", "running") })]);
+    expect(await refused(running, record("turn-3", "hand-back-3"))).toBe(true);
+  });
+
+  it("takes a Wrap up from the parent's computer as a visit, and never over a newer word", async () => {
+    const wrap = (state: "done" | "active", seconds: number, commandId: string) => ({
+      type: "thread.done-override.set" as const,
+      commandId: CommandId.make(commandId),
+      threadId: CHILD,
+      state,
+      at: at(seconds),
+      fromLinkedComputer: true,
+    });
+    const quiet = readModel([thread(CHILD, { latestTurn: latestTurn("turn-2", "completed") })]);
+    const wrapped = await run(quiet, wrap("done", 20, "linked-wrap"));
+    expect(threadIn(wrapped.model, CHILD)).toMatchObject({
+      doneOverride: { state: "done", at: at(20) },
+      lastSeenAt: at(20),
+    });
+    // Reopened here later: an older word from there changes nothing.
+    const reopened = await run(wrapped.model, {
+      type: "thread.done-override.set",
+      commandId: CommandId.make("reopen-here"),
+      threadId: CHILD,
+      state: "active",
+      at: at(30),
+    });
+    expect((await run(reopened.model, wrap("done", 25, "late-linked-wrap"))).events).toEqual([]);
+  });
 });

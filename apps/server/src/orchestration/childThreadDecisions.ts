@@ -27,6 +27,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
+  type RemoteChildThread,
 } from "@threadlines/contracts";
 import {
   childAttachRefusal,
@@ -770,13 +771,13 @@ function decideRemoteRequestSettle(
             type: "thread.remote-child-updated",
             payload: {
               threadId: parent.id,
-              child: {
-                ...named,
-                attachmentEpoch: Math.max(
-                  named.attachmentEpoch,
-                  remoteChildOf(parent.childRequests, named.threadId)?.attachmentEpoch ?? 0,
-                ),
-              },
+              // What the record holds now outranks what the reactor read
+              // before: that computer's newest word, and the user's.
+              child: keptOnRecord(
+                parent,
+                named,
+                remoteChildOf(parent.childRequests, named.threadId)?.filing,
+              ),
               updatedAt: command.createdAt,
             },
           },
@@ -883,12 +884,89 @@ export function decideRemoteChildUpdate(
       type: "thread.remote-child-updated",
       payload: {
         threadId: parent.id,
-        child: {
-          ...command.child,
-          attachmentEpoch: Math.max(command.child.attachmentEpoch, existing?.attachmentEpoch ?? 0),
-        },
+        child: keptOnRecord(parent, command.child, command.child.filing ?? existing?.filing),
         updatedAt: command.createdAt,
       },
+    },
+  ];
+}
+
+/**
+ * A child's record as written from what a reactor read: Stop's attachment
+ * epoch never goes back, and the user's Wrap up or Reopen given here stays as
+ * the record has it (only `thread.remote-child.done-override.set` sets it), so
+ * a status that raced a click can't take the click back.
+ */
+function keptOnRecord(
+  parent: OrchestrationThread,
+  child: RemoteChildThread,
+  filing: RemoteChildThread["filing"],
+): RemoteChildThread {
+  const existing = remoteChildOf(parent.childRequests, child.threadId);
+  const { override: _read, filing: _filing, ...reported } = child;
+  return {
+    ...reported,
+    attachmentEpoch: Math.max(child.attachmentEpoch, existing?.attachmentEpoch ?? 0),
+    ...(filing !== undefined ? { filing } : {}),
+    ...(existing?.override !== undefined ? { override: existing.override } : {}),
+  };
+}
+
+/**
+ * The user's Wrap up or Reopen for a child on a linked computer, given here
+ * (`thread.remote-child.done-override.set`): kept on the parent's record of
+ * it, which the remote child reactor sends on to that computer.
+ */
+export function decideRemoteChildDoneOverride(
+  parent: OrchestrationThread,
+  command: CommandOf<"thread.remote-child.done-override.set">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const existing = remoteChildOf(parent.childRequests, command.childThreadId);
+  if (existing === undefined || existing.environmentId !== command.environmentId) {
+    return refuse("This thread didn't start that thread.");
+  }
+  return [
+    {
+      ...baseFor(parent.id),
+      type: "thread.remote-child-updated",
+      payload: {
+        threadId: parent.id,
+        child: { ...existing, override: { state: command.state, at: command.at } },
+        updatedAt: command.at,
+      },
+    },
+  ];
+}
+
+/**
+ * On a child's computer: the parent's computer wrote this thread's answer from
+ * `turnId` into the parent (`thread.remote-handed-back.record`). Like a local
+ * child's delivered answer, it is recorded on the thread, but only while that
+ * turn is still its newest and has ended: an answer from an older turn, or
+ * one a retried ack brings again, leaves the thread as it is (refused).
+ */
+export function decideRemoteHandedBackRecord(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.remote-handed-back.record">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const latest = thread.latestTurn;
+  if (
+    latest === null ||
+    latest.turnId !== command.turnId ||
+    latest.state === "running" ||
+    thread.handedBackTurnId === command.turnId
+  ) {
+    return refuse(
+      "That answer is not the thread's newest finished turn, or it is already recorded.",
+    );
+  }
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.handed-back",
+      payload: { threadId: thread.id, turnId: command.turnId, handedBackAt: command.createdAt },
     },
   ];
 }

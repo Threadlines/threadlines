@@ -83,7 +83,9 @@ import {
   decideChildDeliveriesStop,
   decideChildNotesDelivered,
   decideRemoteCancelsDelivered,
+  decideRemoteChildDoneOverride,
   decideRemoteChildUpdate,
+  decideRemoteHandedBackRecord,
   decideRemoteRequestQueue,
   remoteCancelEvents,
   decideChildRequestSettle,
@@ -1560,6 +1562,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         return [];
       }
+      // A word from the parent's computer never takes back a newer one given here.
+      const fromLinkedComputer = command.fromLinkedComputer === true;
+      if (
+        fromLinkedComputer &&
+        thread.doneOverride !== null &&
+        Date.parse(thread.doneOverride.at) >= Date.parse(command.at)
+      ) {
+        return [];
+      }
       const occurredAt = yield* nowIso;
       // Child threads: a wrapped parent is not woken by a late answer.
       const wrapEvents =
@@ -1589,21 +1600,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           at: command.at,
         },
       };
-      const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> =
-        command.whileQuietAfter !== undefined
-          ? [
-              {
-                ...withEventBase({
-                  aggregateKind: "thread",
-                  aggregateId: command.threadId,
-                  occurredAt,
-                  commandId: command.commandId,
-                }),
-                type: "thread.seen-set",
-                payload: { threadId: command.threadId, at: command.at },
-              },
-            ]
-          : [];
+      // A Wrap up from the parent's computer comes after the user read the
+      // thread's answer there: the visit a thread gets before it is wrapped.
+      const marksSeen =
+        command.whileQuietAfter !== undefined ||
+        (fromLinkedComputer &&
+          command.state === "done" &&
+          !(thread.lastSeenAt !== null && Date.parse(thread.lastSeenAt) >= Date.parse(command.at)));
+      const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> = marksSeen
+        ? [
+            {
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt,
+                commandId: command.commandId,
+              }),
+              type: "thread.seen-set",
+              payload: { threadId: command.threadId, at: command.at },
+            },
+          ]
+        : [];
       return wrapEvents.length === 0 && seenEvents.length === 0
         ? overrideEvent
         : [...wrapEvents, overrideEvent, ...seenEvents];
@@ -1981,7 +1998,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "thread.child-notes.delivered":
     case "thread.remote-child.update":
     case "thread.remote-cancels.delivered":
-    case "thread.remote-request.queue": {
+    case "thread.remote-request.queue":
+    case "thread.remote-handed-back.record": {
       const thread = yield* requireThread({
         readModel,
         command,
@@ -2006,7 +2024,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                       ? decideRemoteCancelsDelivered(thread, command, baseFor)
                       : command.type === "thread.remote-request.queue"
                         ? decideRemoteRequestQueue(thread, command, baseFor)
-                        : decideChildNotesDelivered(thread, command, baseFor),
+                        : command.type === "thread.remote-handed-back.record"
+                          ? decideRemoteHandedBackRecord(thread, command, baseFor)
+                          : decideChildNotesDelivered(thread, command, baseFor),
+      );
+    }
+
+    // The user's Wrap up or Reopen for a child on a linked computer.
+    case "thread.remote-child.done-override.set": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return yield* planChildThreadDecision(
+        command.type,
+        decideRemoteChildDoneOverride(thread, command, childEventBase(command, command.at)),
       );
     }
 
