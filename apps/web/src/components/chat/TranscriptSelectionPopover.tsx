@@ -257,6 +257,26 @@ function TranscriptSelectionPopover({
       reshapeHighlight = true;
       scheduleUpdate();
     });
+    // The list keeps its rows' elements in order by moving them, and a scroll
+    // can set that off. A move collapses every live range inside the row, this
+    // one and the page's selection, and no event says so. Seen here as the
+    // row's element leaving its parent: the text is found again, and the
+    // reader gets back the selection the move took (a note keeps its own
+    // highlight, and its box keeps the focus).
+    let giveBackSelection = false;
+    const moveObserver = new MutationObserver((records) => {
+      const body = anchor?.body;
+      if (
+        body === undefined ||
+        !records.some((record) => [...record.removedNodes].some((node) => node.contains(body)))
+      ) {
+        return;
+      }
+      anchor = null;
+      reshapeHighlight = true;
+      giveBackSelection = !noting;
+      scheduleUpdate();
+    });
     const resolveAnchor = () => {
       if (anchor?.body.isConnected) {
         return anchor;
@@ -275,6 +295,15 @@ function TranscriptSelectionPopover({
       frameId = null;
       const resolved = resolveAnchor();
       const range = resolved?.range ?? null;
+      if (giveBackSelection) {
+        giveBackSelection = false;
+        const page = document.getSelection();
+        // Only a selection the move collapsed: one the reader changed is theirs.
+        if (range && page?.isCollapsed && container.contains(page.anchorNode)) {
+          page.removeAllRanges();
+          page.addRange(range.cloneRange());
+        }
+      }
       const containerRect = container.getBoundingClientRect();
       const toContainerBox = (rect: DOMRect) => ({
         top: rect.top - containerRect.top,
@@ -347,10 +376,12 @@ function TranscriptSelectionPopover({
     });
     resizeObserver.observe(container);
     resizeObserver.observe(popover);
+    moveObserver.observe(container, { childList: true, subtree: true });
     return () => {
       container.removeEventListener("scroll", scheduleUpdate, { capture: true });
       resizeObserver.disconnect();
       bodyObserver.disconnect();
+      moveObserver.disconnect();
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }

@@ -1898,6 +1898,16 @@ async function expectPelicanToHoldStill(list: HTMLElement) {
   expect(after!.bottom).toBeLessThanOrEqual(listRect.bottom);
 }
 
+// The element the list places for a message's row: the outermost one that
+// holds that message and no other.
+function rowElement(messageId: string): HTMLElement {
+  let element = document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`)!;
+  while (element.parentElement?.querySelectorAll("[data-message-id]").length === 1) {
+    element = element.parentElement;
+  }
+  return element;
+}
+
 function selectionPopover(): HTMLElement | null {
   return document.querySelector<HTMLElement>(SELECTION_POPOVER);
 }
@@ -1978,6 +1988,30 @@ describe("text selection popover with the real virtual list", () => {
       // Clearing the selection takes the actions away.
       window.getSelection()!.removeAllRanges();
       await vi.waitFor(() => expect(selectionPopover()).toBeNull());
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps the selection and its actions when the list moves the text's row", async () => {
+    const { screen } = await renderLongChat();
+    try {
+      dragSelectWord("message-51", "pelican");
+      await vi.waitFor(() => expect(isShown(selectionPopover())).toBe(true));
+      const gapBelowWord = () =>
+        selectionPopover()!.getBoundingClientRect().top - wordRect("message-51", "pelican")!.bottom;
+      const gap = gapBelowWord();
+
+      // The list keeps its rows' elements in order by moving them, which a
+      // scroll can set off. A move collapses every range inside the row, the
+      // page's selection too, and nothing says so.
+      const row = rowElement("message-51");
+      row.parentElement!.moveBefore(row, null);
+      await vi.waitFor(() => {
+        expect(window.getSelection()!.toString()).toBe("pelican");
+        expect(isShown(selectionPopover())).toBe(true);
+        expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
+      });
     } finally {
       await screen.unmount();
     }
