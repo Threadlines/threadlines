@@ -404,7 +404,7 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
             names: ["thread.needs_you"],
             projectIds: null,
             skipViewed: true,
-            hasAuthorization: false,
+            authorizationSecret: null,
             startSeq: position.lastSeq,
             now: "2026-10-31T10:00:00.000Z",
           }),

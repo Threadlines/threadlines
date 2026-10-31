@@ -15,7 +15,10 @@ import * as SqlClient from "effect/sql/SqlClient";
  *   final for it, which a retrying event holds back. `refused_streak` counts
  *   401 and 403 answers in a row; the third sets `refused_since`. Its signing
  *   secret and Authorization value are in the secret store, never here;
- *   `has_authorization` says whether there is one.
+ *   `authorization_secret` names the one entry holding its Authorization
+ *   value (null: none). A new value goes in a new entry, and only this
+ *   column moves the target to it, so the address and the credential sent
+ *   to it always change together.
  * - `assistant_deliveries`: one row per event that matched, keyed by
  *   (`target_id`, `seq`). `state` is `pending`, `in_flight` (written before
  *   the call, so a crash mid-call is never sent again), `sent`, `dropped` or
@@ -32,7 +35,7 @@ export default Effect.gen(function* () {
       names_json TEXT NOT NULL,
       project_ids_json TEXT,
       skip_viewed INTEGER NOT NULL,
-      has_authorization INTEGER NOT NULL DEFAULT 0,
+      authorization_secret TEXT,
       state TEXT NOT NULL,
       scanned_seq INTEGER NOT NULL,
       watermark INTEGER NOT NULL,

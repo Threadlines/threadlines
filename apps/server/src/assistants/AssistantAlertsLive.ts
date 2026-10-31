@@ -8,7 +8,8 @@
  *    gets a pending delivery row.
  * 2. Due rows go out oldest first, one at a time. Right before each, the
  *    event is read again: a needs-you that no longer needs the user (judged
- *    live, as phones are), or any event on a thread someone is looking at
+ *    live, as phones are), an event the target no longer takes (Edit changed
+ *    its kinds or projects), or any event on a thread someone is looking at
  *    (with "Skip threads I'm looking at"), is dropped. The attempt is
  *    written before the call, so one cut off by a crash is never repeated.
  * 3. The answer settles the row, and the target's watermark moves with it.
@@ -111,7 +112,9 @@ const KIND_OF_NAME: Record<AssistantEventName, AssistantAlertKind> = {
 };
 
 const signingSecretName = (targetId: string) => `assistant-alert-${targetId}-signing`;
-const authorizationName = (targetId: string) => `assistant-alert-${targetId}-authorization`;
+/** A new entry for every value: the row names the one in use (AssistantAlertRepository). */
+const newAuthorizationName = (targetId: string) =>
+  `assistant-alert-${targetId}-authorization-${randomUUID().slice(0, 8)}`;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const failure = (detail: string) => new OutsideAgentError({ detail });
@@ -169,7 +172,7 @@ const toContract = (row: AlertTargetRow): AssistantAlertTarget | null =>
         projectIds: row.projectIds,
         skipViewed: row.skipViewed,
         state: row.state,
-        hasAuthorization: row.hasAuthorization,
+        hasAuthorization: row.authorizationSecret !== null,
         refusedSince: row.refusedSince,
         lastSentAt: row.lastSentAt,
         lastError: row.lastError?.trim() || null,
@@ -209,10 +212,10 @@ const make = (transport: AlertTransport) =>
     const isViewed = (threadId: AssistantEvent["threadId"]) =>
       Option.isSome(pushAlerts) ? pushAlerts.value.isViewed(threadId) : Effect.succeed(false);
 
-    const removeSecrets = (targetId: string) =>
+    const removeSecrets = (targetId: string, authorizationSecret: string | null) =>
       Effect.all([
         secrets.remove(signingSecretName(targetId)),
-        secrets.remove(authorizationName(targetId)),
+        ...(authorizationSecret !== null ? [secrets.remove(authorizationSecret)] : []),
       ]).pipe(Effect.asVoid);
 
     // ----- the list Settings shows ----------------------------------------------
@@ -286,12 +289,13 @@ const make = (transport: AlertTransport) =>
           );
         }
         const targetId = AssistantAlertTargetId.make(randomUUID());
+        const authorizationSecret = authorization === null ? null : newAuthorizationName(targetId);
         const now = iso(yield* Clock.currentTimeMillis);
         // Secrets first: a target never stands without its signing secret.
         yield* Effect.gen(function* () {
           yield* secrets.set(signingSecretName(targetId), randomBytes(WEBHOOK_SECRET_BYTES));
-          if (authorization !== null) {
-            yield* secrets.set(authorizationName(targetId), Buffer.from(authorization, "utf8"));
+          if (authorization !== null && authorizationSecret !== null) {
+            yield* secrets.set(authorizationSecret, Buffer.from(authorization, "utf8"));
           }
           // On from now: the record starts if it was off, and the target's
           // watermark is its last `seq`, so no history is sent.
@@ -300,13 +304,13 @@ const make = (transport: AlertTransport) =>
               targetId,
               ...fields,
               skipViewed: input.skipViewed,
-              hasAuthorization: authorization !== null,
+              authorizationSecret,
               startSeq: position.lastSeq,
               now,
             }),
           );
         }).pipe(
-          Effect.onError(() => removeSecrets(targetId).pipe(Effect.ignore)),
+          Effect.onError(() => removeSecrets(targetId, authorizationSecret).pipe(Effect.ignore)),
           stored("save the address"),
         );
         yield* notify;
@@ -323,14 +327,23 @@ const make = (transport: AlertTransport) =>
         yield* withTarget(input.targetId, (row) =>
           Effect.gen(function* () {
             const now = iso(yield* Clock.currentTimeMillis);
-            if (input.authorization.kind === "set" && authorization !== null) {
+            // A new value goes in a new entry, which the row's one write
+            // switches to with the address: a failure on the way leaves the
+            // old address with the old credential, never mixed.
+            const nextSecret =
+              input.authorization.kind === "set"
+                ? newAuthorizationName(row.targetId)
+                : input.authorization.kind === "clear"
+                  ? null
+                  : row.authorizationSecret;
+            if (
+              nextSecret !== null &&
+              nextSecret !== row.authorizationSecret &&
+              authorization !== null
+            ) {
               yield* secrets
-                .set(authorizationName(row.targetId), Buffer.from(authorization, "utf8"))
+                .set(nextSecret, Buffer.from(authorization, "utf8"))
                 .pipe(stored("save the Authorization value"));
-            } else if (input.authorization.kind === "clear") {
-              yield* secrets
-                .remove(authorizationName(row.targetId))
-                .pipe(stored("clear the Authorization value"));
             }
             const credentialsChanged = input.authorization.kind !== "keep";
             yield* repo
@@ -338,13 +351,22 @@ const make = (transport: AlertTransport) =>
                 targetId: row.targetId,
                 ...fields,
                 skipViewed: input.skipViewed,
-                ...(credentialsChanged
-                  ? { hasAuthorization: input.authorization.kind === "set" }
-                  : {}),
+                ...(credentialsChanged ? { authorizationSecret: nextSecret } : {}),
                 newCredentials: credentialsChanged || fields.url !== row.url,
                 now,
               })
-              .pipe(stored("save the address"));
+              .pipe(
+                Effect.tapError(() =>
+                  nextSecret !== row.authorizationSecret && nextSecret !== null
+                    ? secrets.remove(nextSecret).pipe(Effect.ignore)
+                    : Effect.void,
+                ),
+                stored("save the address"),
+              );
+            // The old value goes once nothing names it.
+            if (credentialsChanged && row.authorizationSecret !== null) {
+              yield* secrets.remove(row.authorizationSecret).pipe(Effect.ignore);
+            }
           }),
         );
         yield* notify;
@@ -372,17 +394,17 @@ const make = (transport: AlertTransport) =>
       ).pipe(Effect.andThen(notify));
 
     /** Remove's steps, in an order a restart can finish: marked, secrets gone, rows gone. */
-    const finishRemoving = (targetId: AssistantAlertTargetId) =>
+    const finishRemoving = (row: AlertTargetRow) =>
       Effect.gen(function* () {
         const now = iso(yield* Clock.currentTimeMillis);
-        yield* repo.setState({ targetId, state: "deleting", now });
-        yield* removeSecrets(targetId);
-        yield* repo.delete(targetId);
+        yield* repo.setState({ targetId: row.targetId, state: "deleting", now });
+        yield* removeSecrets(row.targetId, row.authorizationSecret);
+        yield* repo.delete(row.targetId);
       });
 
     const remove: AssistantAlertsShape["remove"] = (input) =>
       withTarget(input.targetId, (row) =>
-        finishRemoving(row.targetId).pipe(stored("remove the address")),
+        finishRemoving(row).pipe(stored("remove the address")),
       ).pipe(
         Effect.andThen(
           Effect.sync(() => {
@@ -452,10 +474,9 @@ const make = (transport: AlertTransport) =>
       Effect.gen(function* () {
         const signing = yield* secrets.get(signingSecretName(row.targetId));
         if (signing === null) return null;
-        const authorization = row.hasAuthorization
-          ? yield* secrets.get(authorizationName(row.targetId))
-          : null;
-        if (row.hasAuthorization && authorization === null) return null;
+        const authorization =
+          row.authorizationSecret !== null ? yield* secrets.get(row.authorizationSecret) : null;
+        if (row.authorizationSecret !== null && authorization === null) return null;
         const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         return {
           ...webhookHeaders({ secret: signing, id, timestamp, body }),
@@ -526,7 +547,12 @@ const make = (transport: AlertTransport) =>
           yield* settle({ state: "pending", nextAttemptAt: iso(now + READ_RETRY_MS) });
           return "done" as const;
         }
-        if (row.skipViewed && (yield* isViewed(current.event.threadId))) {
+        // Edited since it was queued (other kinds or projects), or a thread
+        // someone is looking at: not for this address now.
+        const wanted =
+          row.names.includes(current.event.name) &&
+          (row.projectIds === null || row.projectIds.includes(current.event.projectId));
+        if (!wanted || (row.skipViewed && (yield* isViewed(current.event.threadId)))) {
           yield* settle({ state: "dropped" });
           return "done" as const;
         }
@@ -711,7 +737,7 @@ const make = (transport: AlertTransport) =>
           Effect.flatMap((rows) =>
             Effect.forEach(
               rows.filter((row) => row.state === "deleting"),
-              (row) => finishRemoving(row.targetId),
+              (row) => finishRemoving(row),
               { discard: true },
             ),
           ),

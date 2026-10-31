@@ -247,6 +247,8 @@ export const postToAddresses = (
     let settled = false;
     // Up once TLS is: before that the receiver can't have read a byte.
     let connected = false;
+    // The answer, once its headers came: a body that never ends doesn't undo it.
+    let answer: OutboundResult | null = null;
     const finish = (result: OutboundResult) => {
       if (settled) return;
       settled = true;
@@ -255,8 +257,9 @@ export const postToAddresses = (
       agent.destroy();
       resume(Effect.succeed(result));
     };
+    /** A timeout or a broken connection: an answer already received still stands. */
     const failed = (detail: string) =>
-      finish(connected ? { type: "unknown", detail } : { type: "not_sent", detail });
+      finish(answer ?? (connected ? { type: "unknown", detail } : { type: "not_sent", detail }));
 
     try {
       request = https.request({
@@ -292,27 +295,27 @@ export const postToAddresses = (
     });
     request.on("error", (error) => failed(error.message || "The connection failed."));
     request.on("response", (response) => {
-      const status = response.statusCode ?? 0;
       const retryAfter = Number(response.headers["retry-after"]);
+      const answered: OutboundResult = {
+        type: "answered",
+        status: response.statusCode ?? 0,
+        retryAfterSeconds:
+          response.headers["retry-after"] !== undefined &&
+          Number.isFinite(retryAfter) &&
+          retryAfter >= 0
+            ? retryAfter
+            : undefined,
+      };
+      answer = answered;
       let read = 0;
       response.on("data", (chunk: Buffer) => {
         read += chunk.length;
         if (read > ANSWER_READ_LIMIT) response.destroy();
       });
-      const answered = () =>
-        finish({
-          type: "answered",
-          status,
-          retryAfterSeconds:
-            response.headers["retry-after"] !== undefined &&
-            Number.isFinite(retryAfter) &&
-            retryAfter >= 0
-              ? retryAfter
-              : undefined,
-        });
-      response.on("end", answered);
-      response.on("close", answered);
-      response.on("error", answered);
+      const done = () => finish(answered);
+      response.on("end", done);
+      response.on("close", done);
+      response.on("error", done);
     });
     request.end(input.body);
     signal.addEventListener("abort", () => failed("Stopped."), { once: true });

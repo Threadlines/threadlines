@@ -164,7 +164,7 @@ const makeHarness = Effect.gen(function* () {
       return seq;
     });
 
-  return { boot, calls, answers, record: record_, stands };
+  return { boot, calls, answers, record: record_, stands, secrets };
 });
 
 /** Lets the sender's loop run: time moves on in small steps. */
@@ -392,6 +392,45 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
       yield* settle();
       assert.strictEqual(harness.calls.length, 1);
       yield* second.stop;
+    }),
+  );
+
+  it.effect("an edit reaches alerts still waiting, and moves address and key together", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const { alerts, stop } = yield* harness.boot;
+      const targetId = yield* createTarget(alerts);
+      harness.answers.push({ type: "answered", status: 503, retryAfterSeconds: undefined });
+      yield* harness.record("thread.finished");
+      yield* settle();
+      assert.strictEqual(harness.calls.length, 1);
+
+      // Now only needs-you, at a new address with a new key: the finished
+      // event waiting for its retry is no longer this address's.
+      yield* alerts.update({
+        targetId,
+        url: "https://alerts.example/other",
+        kinds: ["needs_you"],
+        projectIds: null,
+        skipViewed: true,
+        authorization: { kind: "set", value: "Bearer crsr_new" },
+      });
+      yield* settle(6_000);
+      assert.strictEqual(harness.calls.length, 1);
+      const needed = yield* harness.record("thread.needs_you");
+      yield* settle();
+      const last = harness.calls.at(-1)!;
+      assert.strictEqual(bodyOf(last).eventId, `event-${needed}`);
+      assert.strictEqual(last.url, "https://alerts.example/other");
+      assert.strictEqual(last.headers.authorization, "Bearer crsr_new");
+      // The old key is gone from the secret store; only the new one is kept.
+      const keys = [...harness.secrets.keys()].filter((name) => name.includes("-authorization"));
+      assert.strictEqual(keys.length, 1);
+      assert.strictEqual(
+        new TextDecoder().decode(harness.secrets.get(keys[0]!)),
+        "Bearer crsr_new",
+      );
+      yield* stop;
     }),
   );
 

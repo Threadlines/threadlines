@@ -40,7 +40,7 @@ const AlertTargetDbRow = Schema.Struct({
   names: Schema.fromJsonString(Schema.Array(AssistantEventNameSchema)),
   projectIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(ProjectId))),
   skipViewed: Schema.Number,
-  hasAuthorization: Schema.Number,
+  authorizationSecret: Schema.NullOr(Schema.String),
   state: AlertTargetState,
   scannedSeq: Schema.Number,
   watermark: Schema.Number,
@@ -59,8 +59,8 @@ export interface AlertTargetRow {
   /** Null: every project. */
   readonly projectIds: ReadonlyArray<ProjectIdType> | null;
   readonly skipViewed: boolean;
-  /** An Authorization value is in the secret store. */
-  readonly hasAuthorization: boolean;
+  /** The secret store entry holding its Authorization value; null: none. */
+  readonly authorizationSecret: string | null;
   readonly state: AlertTargetState;
   /** How far through the record it looked for events. */
   readonly scannedSeq: number;
@@ -119,7 +119,7 @@ export interface AssistantAlertRepositoryShape {
     readonly names: ReadonlyArray<AssistantEventName>;
     readonly projectIds: ReadonlyArray<ProjectIdType> | null;
     readonly skipViewed: boolean;
-    readonly hasAuthorization: boolean;
+    readonly authorizationSecret: string | null;
     /** The record's last `seq` when it was made: nothing before it is sent. */
     readonly startSeq: number;
     readonly now: string;
@@ -131,8 +131,8 @@ export interface AssistantAlertRepositoryShape {
     readonly names: ReadonlyArray<AssistantEventName>;
     readonly projectIds: ReadonlyArray<ProjectIdType> | null;
     readonly skipViewed: boolean;
-    /** Left out: as it is. */
-    readonly hasAuthorization?: boolean;
+    /** The entry its Authorization value is in now; left out: as it is. */
+    readonly authorizationSecret?: string | null;
     readonly newCredentials: boolean;
     readonly now: string;
   }) => Effect.Effect<void, AssistantAlertRepositoryError>;
@@ -211,7 +211,6 @@ export class AssistantAlertRepository extends Context.Service<
 const fromDb = (row: typeof AlertTargetDbRow.Type): AlertTargetRow => ({
   ...row,
   skipViewed: row.skipViewed !== 0,
-  hasAuthorization: row.hasAuthorization !== 0,
 });
 
 const make = Effect.gen(function* () {
@@ -230,7 +229,7 @@ const make = Effect.gen(function* () {
       t.names_json AS "names",
       t.project_ids_json AS "projectIds",
       t.skip_viewed AS "skipViewed",
-      t.has_authorization AS "hasAuthorization",
+      t.authorization_secret AS "authorizationSecret",
       t.state AS "state",
       t.scanned_seq AS "scannedSeq",
       t.watermark AS "watermark",
@@ -278,11 +277,11 @@ const make = Effect.gen(function* () {
     sql`
       INSERT INTO assistant_targets (
         target_id, kind, connection_id, url, names_json, project_ids_json, skip_viewed,
-        has_authorization, state, scanned_seq, watermark, created_at, updated_at
+        authorization_secret, state, scanned_seq, watermark, created_at, updated_at
       ) VALUES (
         ${input.targetId}, 'webhook', NULL, ${input.url}, ${JSON.stringify(input.names)},
         ${projectIdsJson(input.projectIds)}, ${input.skipViewed ? 1 : 0},
-        ${input.hasAuthorization ? 1 : 0}, 'on', ${input.startSeq}, ${input.startSeq},
+        ${input.authorizationSecret}, 'on', ${input.startSeq}, ${input.startSeq},
         ${input.now}, ${input.now}
       )
     `.pipe(Effect.asVoid, wrap("insert"));
@@ -294,8 +293,8 @@ const make = Effect.gen(function* () {
         project_ids_json = ${projectIdsJson(input.projectIds)},
         skip_viewed = ${input.skipViewed ? 1 : 0}, updated_at = ${input.now}
         ${
-          input.hasAuthorization !== undefined
-            ? sql`, has_authorization = ${input.hasAuthorization ? 1 : 0}`
+          input.authorizationSecret !== undefined
+            ? sql`, authorization_secret = ${input.authorizationSecret}`
             : sql``
         }
         ${input.newCredentials ? sql`, refused_streak = 0, refused_since = NULL` : sql``}
