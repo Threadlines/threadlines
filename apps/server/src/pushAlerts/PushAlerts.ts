@@ -16,7 +16,6 @@ import { createHash } from "node:crypto";
 
 import {
   type AuthSessionId,
-  type OrchestrationThread,
   PushAlertsError,
   type PushAlertKind,
   type PushRegisterInput,
@@ -25,11 +24,6 @@ import {
   type ScheduledTasksSnapshot,
   type ThreadId,
 } from "@threadlines/contracts";
-import {
-  APPROVAL_ACTIVITY_KINDS,
-  collectOpenPendingRequests,
-  USER_INPUT_ACTIVITY_KINDS,
-} from "@threadlines/shared/pendingRequests";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -43,12 +37,10 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { childHasLiveWork } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { LinkRequestRepository, type LinkRequestRow } from "../links/LinkRequestRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
+import { type AlertVerdict, makeAlertChecks } from "./alertChecks.ts";
 import {
   type PushAlertRow,
   PushAlertRepository,
@@ -59,12 +51,10 @@ import {
   ALERT_EVENT_MAX_AGE_MS,
   alertPayload,
   type PushAlertAction,
-  type PushAlertReason,
   pushAlertActionsForEvent,
   retryDelayMs,
   scheduleRequestAlertId,
   testAlertPayload,
-  turnAlertId,
 } from "./pushAlertRules.ts";
 import { makePushPresence } from "./pushPresence.ts";
 import { encryptWebPushPayload } from "./webPushEncryption.ts";
@@ -97,35 +87,6 @@ export class PushAlerts extends Context.Service<PushAlerts, PushAlertsShape>()(
 const EVENT_BATCH = 500;
 /** Alerts handled per pass. */
 const ALERT_BATCH = 20;
-/** A finished turn whose thread still has work going is looked at again after this. */
-const LIVE_WORK_RECHECK_MS = 10_000;
-/** A thread read that failed, or a schedule alert before the first snapshot, is tried again after this. */
-const READ_RETRY_MS = 5_000;
-/** How far apart a turnless report and the outcome it answers may be written. */
-const LINK_REPORT_SLACK_MS = 60_000;
-/** How long a child's alert waits for its report to reach the asking computer. */
-const LINK_DELIVERY_WAIT_MS = 60_000;
-/** Alerts that ask the user for something: no report to another agent stands in for them. */
-const ASKS_THE_USER: ReadonlySet<string> = new Set(["approval", "question", "schedule"]);
-
-/** Whether a link request's report tells the asking agent about this alert's outcome. */
-function reportCovers(row: LinkRequestRow, alert: PushAlertRow): boolean {
-  if (row.reportTurnId === alert.subjectId || row.turnId === alert.subjectId) return true;
-  if (row.reportTurnId !== null || row.settledAt === null) return false;
-  // A report naming no turn: a start that failed, or a restart that cut
-  // whatever ran off (a background continuation too). It answers an outcome
-  // of that kind written about the same moment.
-  const near =
-    Math.abs(Date.parse(row.settledAt) - Date.parse(alert.occurredAt)) <= LINK_REPORT_SLACK_MS;
-  switch (alert.reason) {
-    case "start-failed":
-      return near && row.turnId === null;
-    case "restart":
-      return near;
-    default:
-      return false;
-  }
-}
 /** Attempts per phone before an alert gives up on it. */
 const MAX_DELIVERY_ATTEMPTS = 6;
 /** Finished alerts are forgotten after this. */
@@ -144,18 +105,6 @@ const alertKey = (alertId: string) =>
 const alertTopic = (threadId: string) =>
   createHash("sha256").update(threadId).digest("base64url").slice(0, 22);
 
-type Verdict =
-  | {
-      readonly type: "send";
-      readonly kind: PushAlertKind;
-      readonly reason: PushAlertReason;
-      readonly title: string;
-    }
-  | { readonly type: "drop" }
-  | { readonly type: "defer"; readonly untilMs: number };
-
-const DROP: Verdict = { type: "drop" };
-
 /** The phone's app origin, when it is one alerts may open: https, or http on this machine. */
 function checkedAppOrigin(text: string): string | null {
   try {
@@ -170,31 +119,13 @@ function checkedAppOrigin(text: string): string | null {
   }
 }
 
-function hasOpenRequest(
-  thread: OrchestrationThread,
-  reason: "approval" | "question",
-  requestId: string,
-): boolean {
-  const kinds = reason === "approval" ? APPROVAL_ACTIVITY_KINDS : USER_INPUT_ACTIVITY_KINDS;
-  return collectOpenPendingRequests(thread.activities, kinds).some(
-    (request) => request.requestId === requestId,
-  );
-}
-
-function hasActionablePlan(thread: OrchestrationThread, turnId: string): boolean {
-  return thread.proposedPlans.some(
-    (plan) => plan.turnId === turnId && plan.implementedAt === null && plan.dismissedAt === null,
-  );
-}
-
 const make = Effect.gen(function* () {
   const repo = yield* PushAlertRepository;
   const relayHost = yield* RelayHost;
   const engine = yield* OrchestrationEngineService;
-  const projections = yield* ProjectionSnapshotQuery;
   const environment = yield* ServerEnvironment;
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
-  const linkRequests = yield* Effect.serviceOption(LinkRequestRepository);
+  const checks = yield* makeAlertChecks;
   const presence = makePushPresence();
   const senderBell = yield* Queue.sliding<void>(1);
   const discoveryBell = yield* Queue.sliding<void>(1);
@@ -398,99 +329,15 @@ const make = Effect.gen(function* () {
 
   // ----- sending them ----------------------------------------------------------
 
-  /**
-   * A thread an agent on a linked computer started answers that agent: once
-   * its result reached that computer, the asking thread's own alert is the one
-   * that counts. "waiting" while the report is on its way; a computer that
-   * doesn't take it for a while is likely offline, so this alert goes out.
-   */
-  const answeredOverLink = (thread: OrchestrationThread, alert: PushAlertRow, now: number) =>
-    Effect.gen(function* () {
-      if (!thread.remoteOrigin || Option.isNone(linkRequests)) return "no" as const;
-      const rows = yield* linkRequests.value.listByThread(thread.id);
-      const reports = rows.filter((row) => row.reportId !== null && reportCovers(row, alert));
-      if (reports.some((row) => row.deliveredAt !== null)) return "answered" as const;
-      return reports.some(
-        (row) => row.settledAt !== null && now - Date.parse(row.settledAt) < LINK_DELIVERY_WAIT_MS,
-      )
-        ? ("waiting" as const)
-        : ("no" as const);
-    });
-
-  /** Whether the alert still holds, as the thread is now. */
-  const evaluate = (alert: PushAlertRow, now: number) =>
-    Effect.gen(function* () {
-      if (presence.isViewed(alert.threadId, now)) return DROP;
-      const read = yield* projections.getThreadDetailById(alert.threadId).pipe(
-        Effect.map((found) => ({ ok: true as const, found })),
-        Effect.orElseSucceed(() => ({ ok: false as const })),
-      );
-      // A read that failed says nothing about the thread: look again soon.
-      if (!read.ok) return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
-      // Archived or deleted: nothing to say.
-      if (Option.isNone(read.found)) return DROP;
-      const thread = read.found.value;
-      if (!ASKS_THE_USER.has(alert.reason)) {
-        // A child's turn whose result went back to its parent: the parent's
-        // alert counts. Its cancel can come first, since a turn's final
-        // capture, which starts this alert, often lands after the hand-back.
-        if (
-          alert.alertId === turnAlertId(alert.subjectId) &&
-          thread.handedBackTurnId === alert.subjectId
-        ) {
-          return DROP;
-        }
-        const answered = yield* answeredOverLink(thread, alert, now).pipe(
-          Effect.orElseSucceed(() => "unread" as const),
-        );
-        if (answered === "answered") return DROP;
-        if (answered !== "no") {
-          return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
-        }
-      }
-      const send = (kind: PushAlertKind, reason: PushAlertReason): Verdict => ({
-        type: "send",
-        kind,
-        reason,
-        title: thread.title,
-      });
-      switch (alert.reason) {
-        case "approval":
-        case "question":
-          return hasOpenRequest(thread, alert.reason, alert.subjectId)
-            ? send("needs_you", alert.reason)
-            : DROP;
-        case "schedule":
-          if (Option.isNone(scheduledTasks)) return DROP;
-          if (!scheduleSnapshotSeen) {
-            return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
-          }
-          return waitingScheduleRequests.has(alert.subjectId)
-            ? send("needs_you", "schedule")
-            : DROP;
-        case "plan":
-          // A plan alert that waits for a retry still needs its plan open, on the latest turn.
-          return thread.latestTurn?.turnId === alert.subjectId &&
-            hasActionablePlan(thread, alert.subjectId)
-            ? send("needs_you", "plan")
-            : DROP;
-        case "finished": {
-          if (alert.alertId.startsWith("turn:")) {
-            // A newer turn took over: that one alerts for itself.
-            if (thread.latestTurn?.turnId !== alert.subjectId) return DROP;
-            if (hasActionablePlan(thread, alert.subjectId)) return send("needs_you", "plan");
-          }
-          // More work going (a queued message, a side answer, awaited tasks, a
-          // request): not finished yet. Looked at again until it expires.
-          if (childHasLiveWork(thread)) {
-            return { type: "defer", untilMs: now + LIVE_WORK_RECHECK_MS } satisfies Verdict;
-          }
-          return send("finished", "finished");
-        }
-        default:
-          return send(alert.kind, alert.reason as PushAlertReason);
-      }
-    });
+  /** Whether the alert still holds, as the thread is now (alertChecks), with nobody looking at it. */
+  const evaluate = (alert: PushAlertRow, now: number): Effect.Effect<AlertVerdict> =>
+    presence.isViewed(alert.threadId, now)
+      ? Effect.succeed({ type: "drop" })
+      : checks.judge(alert, now, {
+          available: Option.isSome(scheduledTasks),
+          seen: scheduleSnapshotSeen,
+          waiting: waitingScheduleRequests,
+        });
 
   const handleAlert = (
     alert: PushAlertRow,
@@ -543,7 +390,7 @@ const make = Effect.gen(function* () {
           return yield* repo.finishAlert(alert.alertId, "dropped");
         }
         const text = alertPayload({
-          threadTitle: verdict.title,
+          threadTitle: verdict.thread.title,
           reason: verdict.reason,
           detail: alert.detail,
           computerLabel: label,

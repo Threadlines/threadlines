@@ -246,6 +246,10 @@ const REASON_TEXT: Record<PushAlertReason, string> = {
   "side-failed": "Couldn't finish a side answer",
 };
 
+/** An alert's reason in the words a phone shows it; a reason these rules don't know reads as itself. */
+export const alertReasonText = (reason: string): string =>
+  Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT[reason as PushAlertReason] : reason;
+
 /** What fits in one push message once sealed (RFC 8291: 4096 less the header and padding). */
 export const MAX_ALERT_PLAINTEXT_BYTES = 3993;
 

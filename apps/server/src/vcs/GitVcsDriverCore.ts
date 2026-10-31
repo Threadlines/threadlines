@@ -2089,7 +2089,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
-  const resolveBaseBranchForNoUpstream = Effect.fn("resolveBaseBranchForNoUpstream")(function* (
+  /**
+   * The branch a branch is compared against when it has no upstream, by git
+   * alone: its recorded merge base, else the remote's default, else main or
+   * master. `ref` is what git reads (the remote-tracking copy when only the
+   * remote has it); `branch` is its name.
+   */
+  const resolveBaseBranchCandidate = Effect.fn("resolveBaseBranchCandidate")(function* (
     cwd: string,
     refName: string,
     reads?: StatusReads,
@@ -2118,19 +2124,35 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
 
       if (yield* branchExists(cwd, normalizedCandidate)) {
-        return normalizedCandidate;
+        return { branch: normalizedCandidate, ref: normalizedCandidate };
       }
 
       if (
         primaryRemoteName &&
         (yield* remoteBranchExists(cwd, primaryRemoteName, normalizedCandidate))
       ) {
-        return `${primaryRemoteName}/${normalizedCandidate}`;
+        return {
+          branch: normalizedCandidate,
+          ref: `${primaryRemoteName}/${normalizedCandidate}`,
+        };
       }
     }
 
     return null;
   });
+
+  const resolveBaseBranchForNoUpstream = (cwd: string, refName: string, reads?: StatusReads) =>
+    resolveBaseBranchCandidate(cwd, refName, reads).pipe(
+      Effect.map((candidate) => candidate?.ref ?? null),
+    );
+
+  const resolveBaseBranchName: GitVcsDriver.GitVcsDriverShape["resolveBaseBranchName"] = (
+    cwd,
+    branch,
+  ) =>
+    resolveBaseBranchCandidate(cwd, branch).pipe(
+      Effect.map((candidate) => candidate?.branch ?? null),
+    );
 
   const computeAheadCountAgainstBase = Effect.fn("computeAheadCountAgainstBase")(function* (
     cwd: string,
@@ -5810,6 +5832,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     status,
     statusDetails,
     statusDetailsLocal,
+    resolveBaseBranchName,
     statusDetailsRemote,
     prepareCommitContext,
     previewCommitContext,

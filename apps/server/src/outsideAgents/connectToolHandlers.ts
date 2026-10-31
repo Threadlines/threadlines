@@ -60,19 +60,31 @@ import {
   type OrchestrationThreadSearchInput,
   type OutsideAgentConnectionId,
   type ProjectId,
+  PULL_REQUEST_LOOKUP_LIMIT,
+  type PullRequestListEntry,
+  type PullRequestLookupEntry,
+  type ScheduledTaskRequest,
   type ServerProvider,
   ThreadId,
 } from "@threadlines/contracts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
 import { truncate } from "@threadlines/shared/String";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/ai";
 
+import {
+  type AssistantEventsShape,
+  decodeEventCursor,
+  encodeEventCursor,
+} from "../assistants/AssistantEvents.ts";
 import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns.ts";
@@ -99,6 +111,9 @@ import {
   type ThreadStatusFeed,
   watchThreadStatus,
 } from "../threads/threadOperations.ts";
+import { threadWaitingItems } from "../threads/threadWaiting.ts";
+import type { PullRequestServiceShape } from "../pullRequest/PullRequestService.ts";
+import { alertReasonText } from "../pushAlerts/pushAlertRules.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import {
   type ConnectLimits,
@@ -109,6 +124,11 @@ import {
 import {
   type AgentsResult,
   type AgentsTool,
+  INBOX_EVENTS_LIMIT,
+  type InboxEvent,
+  type InboxNeedsYou,
+  type InboxResult,
+  type InboxTool,
   type OutsideThreadReadResult,
   type OutsideThreadReadTool,
   type OutsideThreadSendResult,
@@ -122,6 +142,9 @@ import {
   type ProjectsResult,
   THREAD_WAIT_DEFAULT_SECONDS,
   THREAD_WAIT_MAX_SECONDS,
+  type ThreadChangesPullRequest,
+  type ThreadChangesResult,
+  type ThreadChangesTool,
   type ThreadsListResult,
   type ThreadsListTool,
   type ThreadWaitResult,
@@ -167,6 +190,16 @@ const SET_UP_CUT_OFF =
   "Threadlines restarted while this thread was being set up, before it was made. Start again with a new requestId.";
 /** How long a start whose setup failed before its thread existed stays in threads_list. */
 const FAILED_START_KEPT = Duration.hours(1);
+/** `inbox` reads at most this many threads that need the user, most recently active first. */
+const INBOX_WAITING_THREADS = 50;
+/** `thread_changes` lists at most this many files. */
+const THREAD_CHANGES_FILES = 200;
+/** All of `thread_changes`' asking the host and git, well under the relay's 30 s. */
+const THREAD_CHANGES_DEADLINE = "6 seconds";
+const RECORD_NOT_KEPT =
+  "No assistant is connected to this computer, so it keeps no record of what finished or failed. needsYou is live.";
+/** Recorded events the user dealt with in Threadlines: opened the thread, marked it done or archived it. */
+const SEEN_IN_THREADLINES: ReadonlySet<string> = new Set(["seen", "wrapped", "archived"]);
 
 /** Which door the calls come through (docs/design/assistants.md). */
 export type ConnectToolDoor = "local" | "assistant";
@@ -198,6 +231,7 @@ export interface ConnectToolDeps {
    */
   readonly listThreads: (input: {
     readonly projectIds?: ReadonlyArray<ProjectId>;
+    readonly threadIds?: ReadonlyArray<ThreadId>;
     readonly outsideConnectionId?: OutsideAgentConnectionId;
     readonly includeArchived?: boolean;
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>>;
@@ -212,13 +246,21 @@ export interface ConnectToolDeps {
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
   /** The user's default model for new threads (Settings); null: none set. */
   readonly userDefaultModel: Effect.Effect<ModelSelection | null>;
-  readonly git: Pick<GitVcsDriverShape, "execute">;
+  readonly git: Pick<GitVcsDriverShape, "execute" | "resolveBaseBranchName">;
   /** Threads whose messages match `query` (ThreadSearch); absent: titles only. */
   readonly searchThreads?: (
     input: OrchestrationThreadSearchInput,
   ) => Effect.Effect<ReadonlyArray<ThreadId>>;
   readonly requests: OutsideAgentRequestsShape;
   readonly limits: ConnectLimits;
+  /** Agents' scheduled-task changes waiting for the user (ScheduledTasks); empty without them. */
+  readonly scheduleRequests: Effect.Effect<ReadonlyArray<ScheduledTaskRequest>>;
+  /** Where the user opens a thread (the hosted app's address for it); null when unknown. */
+  readonly threadLink: (threadId: ThreadId) => Effect.Effect<string | null>;
+  /** The assistants' event record (AssistantEvents): `inbox`'s finished and failed. Absent: none. */
+  readonly record?: Pick<AssistantEventsShape, "position" | "since">;
+  /** The pull request records the app keeps (PullRequestService). Absent: none. */
+  readonly pullRequests?: Pick<PullRequestServiceShape, "list" | "lookup">;
 }
 
 /** A project as these tools see it. */
@@ -461,11 +503,21 @@ export const makeConnectToolHandlers = (
       lastTurn: threadLastTurn(shell),
     });
 
-    /** What a thread that needs the user waits on, for a read or wait result. */
-    const waitingOnOf = (shell: OrchestrationThreadShell, scheduleAnswerWaiting: boolean) => {
-      const status = threadStatus(shell, scheduleAnswerWaiting);
-      return status.waitingOn !== null ? { waitingOn: status.waitingOn } : {};
-    };
+    /** What a thread that needs the user waits on, and each thing in detail, for a read or wait result. */
+    const waitingOnOf = (
+      shell: OrchestrationThreadShell,
+      scheduleAnswerWaiting: boolean,
+      thread: OrchestrationThread | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const status = threadStatus(shell, scheduleAnswerWaiting);
+        if (status.waitingOn === null) return {};
+        const waiting =
+          thread === undefined
+            ? []
+            : threadWaitingItems(thread, { shell, scheduleRequests: yield* deps.scheduleRequests });
+        return { waitingOn: status.waitingOn, ...(waiting.length > 0 ? { waiting } : {}) };
+      });
 
     /**
      * The connection's threads running now: live state, archived threads
@@ -623,16 +675,35 @@ export const makeConnectToolHandlers = (
             }),
           );
         if (!assistant) return { outcome: "ok", threads } satisfies ThreadsListResult;
-        // An assistant's starts that have no thread yet: still being set up, or failed.
+        const starting = yield* startsWithoutThread(
+          caller,
+          projectIds,
+          (entry) =>
+            !titles.has(entry.threadId) &&
+            (input.status === undefined ||
+              (input.status === "failed" && entry.state === "failed")) &&
+            (query.length === 0 || entry.title.toLowerCase().includes(query.toLowerCase())),
+        );
+        return { outcome: "ok", threads, starting } satisfies ThreadsListResult;
+      });
+
+    /**
+     * An assistant's starts in `projectIds` that have no thread yet: still
+     * being set up, or failed before the thread was made. Only the ones `keep`
+     * takes.
+     */
+    const startsWithoutThread = (
+      caller: OutsideAgentCaller,
+      projectIds: ReadonlyArray<ProjectId>,
+      keep: (entry: SettingUp) => boolean,
+    ) =>
+      Effect.gen(function* () {
         const starting: Array<OutsideStartingThread> = [];
         for (const entry of settingUp.values()) {
           if (
             entry.connectionId !== caller.connectionId ||
-            titles.has(entry.threadId) ||
             !projectIds.includes(entry.projectId) ||
-            (input.status !== undefined &&
-              !(input.status === "failed" && entry.state === "failed")) ||
-            (query.length > 0 && !entry.title.toLowerCase().includes(query.toLowerCase())) ||
+            !keep(entry) ||
             (yield* deps.status.readShell(entry.threadId)) !== undefined
           ) {
             continue;
@@ -648,7 +719,7 @@ export const makeConnectToolHandlers = (
               : {}),
           });
         }
-        return { outcome: "ok", threads, starting } satisfies ThreadsListResult;
+        return starting;
       });
 
     const threadRead = (
@@ -679,7 +750,7 @@ export const makeConnectToolHandlers = (
             scheduleAnswerWaiting: waiting ? new Set([target.id]) : new Set(),
             titleOf: (threadId) => titles.get(threadId),
           }),
-          ...waitingOnOf(visible.shell, waiting),
+          ...(yield* waitingOnOf(visible.shell, waiting, target)),
           ...readThreadPage(target, { providers, titles, after: input.after, limit: input.limit }),
         } satisfies OutsideThreadReadResult;
       });
@@ -746,9 +817,349 @@ export const makeConnectToolHandlers = (
             scheduleAnswerWaiting: waiting ? new Set([shell.id]) : new Set(),
             titleOf: () => undefined,
           }),
-          ...waitingOnOf(shell, waiting),
+          ...(yield* waitingOnOf(shell, waiting, thread)),
           reply: newestReply(thread),
         } satisfies ThreadWaitResult;
+      });
+
+    // -------------------------------------------------------------------------
+    // inbox, thread_changes
+    // -------------------------------------------------------------------------
+
+    /**
+     * What needs the user, live: every open approval, question and plan in
+     * the projects, from the threads whose status says so.
+     */
+    const needsYouIn = (
+      projects: ReadonlyMap<string, string>,
+      shells: ReadonlyArray<OrchestrationThreadShell>,
+    ) =>
+      Effect.gen(function* () {
+        const scheduleRequests = yield* deps.scheduleRequests;
+        const scheduleThreads = new Set<string>(scheduleRequests.map((entry) => entry.threadId));
+        const waitingShells = shells
+          .filter(
+            (shell) => threadStatus(shell, scheduleThreads.has(shell.id)).word === "needs the user",
+          )
+          .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+          .slice(0, INBOX_WAITING_THREADS);
+        const perThread = yield* Effect.forEach(
+          waitingShells,
+          (shell) =>
+            Effect.gen(function* () {
+              const thread = yield* deps.readThread(shell.id);
+              if (thread === undefined) return [];
+              const link = yield* deps.threadLink(shell.id);
+              return threadWaitingItems(thread, { shell, scheduleRequests }).map(
+                (item): InboxNeedsYou => ({
+                  threadId: shell.id,
+                  title: shell.title,
+                  projectId: shell.projectId,
+                  project: projects.get(shell.projectId) ?? "",
+                  kind: item.kind,
+                  requestId: item.requestId,
+                  summary: item.summary,
+                  askedAt: item.askedAt,
+                  link,
+                }),
+              );
+            }),
+          { concurrency: 4 },
+        );
+        return perThread
+          .flat()
+          .toSorted((left, right) => left.askedAt.localeCompare(right.askedAt));
+      });
+
+    const inbox = (
+      caller: OutsideAgentCaller,
+      input: Tool.Parameters<typeof InboxTool>,
+    ): Effect.Effect<InboxResult> =>
+      Effect.gen(function* () {
+        const empty = { needsYou: [], finished: [], failed: [], more: false, recordKept: false };
+        const gated = yield* gate(caller, "see");
+        if ("refusal" in gated) return { ...gated.refusal, ...empty };
+        let visible = projectsIn(yield* deps.projects, gated.grant);
+        if (input.project !== undefined) {
+          const found = findProject(visible, input.project);
+          if ("detail" in found) return { outcome: "not_found", detail: found.detail, ...empty };
+          visible = [found.project];
+        }
+        const projectNames = new Map<string, string>(
+          visible.map((project) => [project.id, project.title]),
+        );
+        const projectIds = visible.map((project) => project.id);
+        const shells = projectIds.length === 0 ? [] : yield* deps.listThreads({ projectIds });
+        const needsYou = yield* needsYouIn(projectNames, shells);
+        const starting = assistant
+          ? { starting: yield* startsWithoutThread(caller, projectIds, () => true) }
+          : {};
+
+        const { record } = deps;
+        // The record couldn't be read: say so, and keep the caller's place.
+        const unread = {
+          outcome: "ok",
+          detail:
+            "Threadlines couldn't read what finished or failed just now. needsYou is live; try again for the rest.",
+          ...empty,
+          needsYou,
+          recordKept: true,
+          ...(input.since !== undefined ? { cursor: input.since } : {}),
+          ...starting,
+        } satisfies InboxResult;
+        const notKept = (cursor: string | undefined) =>
+          ({
+            outcome: "ok",
+            detail: RECORD_NOT_KEPT,
+            ...empty,
+            needsYou,
+            ...(cursor !== undefined ? { cursor } : {}),
+            ...starting,
+          }) satisfies InboxResult;
+        if (record === undefined) return notKept(undefined);
+        const position = yield* record.position.pipe(Effect.option);
+        if (Option.isNone(position)) return unread;
+        const { recordId, lastSeq, prunedThroughSeq, running } = position.value;
+        // While no assistant is connected nothing is recorded; the cursor still marks now.
+        if (!running) return notKept(encodeEventCursor(recordId, lastSeq));
+        // A cursor from another computer (or a reset one), from beyond what
+        // was recorded, or from before what is kept: start from the oldest kept.
+        const decoded = input.since === undefined ? null : decodeEventCursor(input.since);
+        const truncated =
+          input.since !== undefined &&
+          (decoded === null ||
+            decoded.recordId !== recordId ||
+            decoded.seq > lastSeq ||
+            decoded.seq < prunedThroughSeq);
+        const page = yield* record
+          .since({
+            after: decoded !== null && !truncated ? decoded.seq : 0,
+            limit: INBOX_EVENTS_LIMIT,
+            names: ["thread.finished", "thread.failed"],
+            projectIds,
+          })
+          .pipe(Effect.option);
+        if (Option.isNone(page)) return unread;
+        // Titles as the threads are named now, read only within the projects
+        // this connection sees now: a thread moved out of them since (or
+        // deleted) is left out, so its new title never shows.
+        const eventThreads = new Map(
+          (page.value.events.length === 0
+            ? []
+            : yield* deps.listThreads({
+                projectIds,
+                threadIds: [...new Set(page.value.events.map((event) => event.threadId))],
+                includeArchived: true,
+              })
+          ).map((shell) => [shell.id, shell] as const),
+        );
+        const finished: Array<InboxEvent> = [];
+        const failed: Array<InboxEvent> = [];
+        for (const event of page.value.events) {
+          const shell = eventThreads.get(event.threadId);
+          if (shell === undefined || !projectNames.has(shell.projectId)) continue;
+          (event.name === "thread.finished" ? finished : failed).push({
+            threadId: event.threadId,
+            title: shell.title,
+            projectId: shell.projectId,
+            project: projectNames.get(shell.projectId) ?? "",
+            reason: event.reason,
+            summary: alertReasonText(event.reason),
+            at: event.occurredAt,
+            seenInThreadlines:
+              event.resolvedReason !== null && SEEN_IN_THREADLINES.has(event.resolvedReason),
+            link: yield* deps.threadLink(event.threadId),
+          });
+        }
+        return {
+          outcome: "ok",
+          needsYou,
+          finished,
+          failed,
+          cursor: encodeEventCursor(recordId, page.value.upTo),
+          more: page.value.more,
+          ...(truncated ? { truncated: true } : {}),
+          recordKept: true,
+          ...starting,
+        } satisfies InboxResult;
+      });
+
+    /** The branch a thread's checkout would merge into, by git alone, as the app judges it. */
+    const defaultBaseBranch = (cwd: string, branch: string | null) =>
+      deps.git.resolveBaseBranchName(cwd, branch ?? "HEAD").pipe(Effect.orElseSucceed(() => null));
+
+    /**
+     * The thread's pull request from the records the app keeps
+     * (PullRequestService, cached; it asks the host on a miss): the open one
+     * from its branch, with checks, review and mergeability, else the newest
+     * from its branch or one its agent opened elsewhere.
+     */
+    const threadPullRequest = (
+      project: OrchestrationProjectShell,
+      shell: OrchestrationThreadShell,
+    ) =>
+      Effect.gen(function* () {
+        const repository = changeRequestRepositoryName(project.repositoryIdentity);
+        const linked = shell.linkedPullRequests.map((entry) => entry.number);
+        if (
+          deps.pullRequests === undefined ||
+          repository === null ||
+          (shell.branch === null && linked.length === 0)
+        ) {
+          return null;
+        }
+        const sameRepository = (other: string) => other.toLowerCase() === repository.toLowerCase();
+        // Both start at once; the open list (usually cached) answers alone
+        // when it has the thread's own pull request, so a slow lookup can't
+        // throw that away at the deadline.
+        const lookup = yield* deps.pullRequests
+          .lookup({
+            projectId: project.id,
+            repository,
+            items: [
+              ...(shell.branch !== null ? [{ branch: shell.branch }] : []),
+              ...linked.slice(0, PULL_REQUEST_LOOKUP_LIMIT - 1).map((number) => ({ number })),
+            ],
+          })
+          .pipe(Effect.option, Effect.forkChild);
+        const listed = yield* deps.pullRequests
+          .list({ state: "open", projectId: project.id, includeAuthored: false })
+          .pipe(Effect.option);
+        const open = Option.isSome(listed)
+          ? listed.value.entries.filter(
+              (entry) => entry.origin !== "authored" && sameRepository(entry.repository),
+            )
+          : [];
+        const fromList = (entry: PullRequestListEntry): ThreadChangesPullRequest => ({
+          number: entry.number,
+          url: entry.url,
+          title: entry.title,
+          state: entry.state,
+          isDraft: entry.isDraft,
+          baseBranch: entry.baseBranch,
+          checks: entry.checksState ?? null,
+          reviewDecision: entry.reviewDecision ?? null,
+          mergeability: entry.mergeability ?? null,
+          additions: entry.additions,
+          deletions: entry.deletions,
+        });
+        const fromLookup = (entry: PullRequestLookupEntry): ThreadChangesPullRequest => {
+          const richer = open.find((candidate) => candidate.number === entry.number);
+          return richer !== undefined
+            ? fromList(richer)
+            : {
+                number: entry.number,
+                url: entry.url,
+                title: entry.title,
+                state: entry.state,
+                isDraft: entry.isDraft,
+                baseBranch: null,
+                checks: null,
+                reviewDecision: null,
+                mergeability: null,
+                additions: entry.additions,
+                deletions: entry.deletions,
+              };
+        };
+        const ownOpen = open.find((entry) => entry.headBranch === shell.branch);
+        if (ownOpen !== undefined) {
+          yield* Fiber.interrupt(lookup);
+          return fromList(ownOpen);
+        }
+        const looked = yield* Fiber.join(lookup);
+        const answers = Option.isSome(looked) ? looked.value.answers : [];
+        const byBranch = answers.find((answer) => "branch" in answer.item)?.pullRequest ?? null;
+        if (byBranch !== null) return fromLookup(byBranch);
+        const newestLinked = answers
+          .flatMap((answer) =>
+            "number" in answer.item && answer.pullRequest !== null ? [answer.pullRequest] : [],
+          )
+          .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+        if (newestLinked !== undefined) return fromLookup(newestLinked);
+        const linkedOpen = open
+          .filter((entry) => linked.includes(entry.number))
+          .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+        return linkedOpen === undefined ? null : fromList(linkedOpen);
+      });
+
+    const threadChanges = (
+      caller: OutsideAgentCaller,
+      input: Tool.Parameters<typeof ThreadChangesTool>,
+    ): Effect.Effect<ThreadChangesResult> =>
+      Effect.gen(function* () {
+        const gated = yield* gate(caller, "see");
+        if ("refusal" in gated) return gated.refusal;
+        const visible = yield* visibleThread(gated.grant, input.threadId);
+        const thread = visible === undefined ? undefined : yield* deps.readThread(visible.shell.id);
+        if (visible === undefined || thread === undefined) {
+          const pending = yield* pendingStart(caller, gated.grant, input.threadId);
+          return pending !== undefined
+            ? { outcome: pending.outcome, detail: pending.detail, threadId: input.threadId.trim() }
+            : { outcome: "not_found", detail: THREAD_NOT_FOUND };
+        }
+        const { shell, project } = visible;
+        // The turns the sidebar's count covers: those since the checkout was last clean.
+        const baseline = shell.diffStatBaselineTurnCount;
+        const byPath = new Map<string, { additions: number; deletions: number }>();
+        for (const checkpoint of thread.checkpoints) {
+          if (checkpoint.checkpointTurnCount <= baseline) continue;
+          for (const file of checkpoint.files) {
+            const entry = byPath.get(file.path) ?? { additions: 0, deletions: 0 };
+            entry.additions += file.additions;
+            entry.deletions += file.deletions;
+            byPath.set(file.path, entry);
+          }
+        }
+        const files = [...byPath]
+          .map(([path, counts]) => ({ path, ...counts }))
+          .toSorted(
+            (left, right) =>
+              right.additions + right.deletions - (left.additions + left.deletions) ||
+              left.path.localeCompare(right.path),
+          );
+        const summed = files.reduce(
+          (sum, file) => ({
+            additions: sum.additions + file.additions,
+            deletions: sum.deletions + file.deletions,
+          }),
+          { additions: 0, deletions: 0 },
+        );
+        const counted = shell.cumulativeDiffStat ?? summed;
+        const cwd = resolveThreadWorkingCwd({
+          projectCwd: project.workspaceRoot,
+          worktreePath: shell.worktreePath,
+          effectiveCwd: shell.effectiveCwd,
+        });
+        // The host and git each get a deadline; whatever doesn't answer in time reads as unknown.
+        const [pullRequest, defaultBase] = yield* Effect.all(
+          [
+            threadPullRequest(project, shell).pipe(
+              Effect.timeoutOption(THREAD_CHANGES_DEADLINE),
+              Effect.map(Option.getOrNull),
+            ),
+            defaultBaseBranch(cwd, shell.branch).pipe(
+              Effect.timeoutOption(THREAD_CHANGES_DEADLINE),
+              Effect.map(Option.getOrNull),
+            ),
+          ],
+          { concurrency: 2 },
+        );
+        return {
+          outcome: "ok",
+          threadId: shell.id,
+          branch: shell.branch,
+          base: pullRequest?.baseBranch ?? defaultBase,
+          files: files.slice(0, THREAD_CHANGES_FILES),
+          ...(files.length > THREAD_CHANGES_FILES
+            ? { moreFiles: files.length - THREAD_CHANGES_FILES }
+            : {}),
+          totals: {
+            files: files.length,
+            additions: counted.additions,
+            deletions: counted.deletions,
+          },
+          pullRequest,
+        } satisfies ThreadChangesResult;
       });
 
     // -------------------------------------------------------------------------
@@ -1632,6 +2043,8 @@ export const makeConnectToolHandlers = (
       threads_list: threadsList,
       thread_read: threadRead,
       thread_wait: threadWait,
+      inbox,
+      thread_changes: threadChanges,
       thread_start: threadStart,
       thread_send: threadSend,
       thread_stop: threadStop,

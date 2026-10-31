@@ -752,6 +752,8 @@ describe("AssistantMcp", () => {
         "threads_list",
         "thread_read",
         "thread_wait",
+        "inbox",
+        "thread_changes",
       ]);
       const start = yield* rpc(
         handler,
@@ -765,6 +767,8 @@ describe("AssistantMcp", () => {
         "threads_list",
         "thread_read",
         "thread_wait",
+        "inbox",
+        "thread_changes",
         "thread_start",
         "thread_send",
         "thread_stop",
@@ -787,6 +791,11 @@ describe("AssistantMcp", () => {
         expect(tool.inputSchema.type, tool.name).toBe("object");
         expect(typeof tool.title, tool.name).toBe("string");
         expect(tool.annotations, tool.name).toMatchObject({ destructiveHint: false });
+      }
+      for (const name of ["inbox", "thread_changes"]) {
+        expect(tools.find((tool) => tool.name === name)?.annotations, name).toMatchObject({
+          readOnlyHint: true,
+        });
       }
       expect(tools.find((tool) => tool.name === "thread_start")?.inputSchema.required).toContain(
         "requestId",

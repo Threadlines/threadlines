@@ -30,6 +30,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
+import { AssistantEvents } from "./assistants/AssistantEvents.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
@@ -340,6 +341,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
   const pushAlerts = yield* Effect.serviceOption(PushAlerts);
+  const assistantEvents = yield* Effect.serviceOption(AssistantEvents);
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const continueAtResetSweeper = yield* ContinueAtResetSweeper;
@@ -413,6 +415,9 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         // After the scheduler, whose waiting changes it watches.
         if (Option.isSome(pushAlerts)) {
           yield* pushAlerts.value.start().pipe(Scope.provide(reactorScope));
+        }
+        if (Option.isSome(assistantEvents)) {
+          yield* assistantEvents.value.start().pipe(Scope.provide(reactorScope));
         }
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));

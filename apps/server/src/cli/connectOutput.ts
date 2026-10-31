@@ -10,6 +10,7 @@ import type {
   OutsideThreadStartResult,
   OutsideThreadStopResult,
   OutsideThreadSummary,
+  OutsideWaitingItem,
   OutsideWaitingOn,
   ProjectsResult,
   ThreadsListResult,
@@ -149,10 +150,17 @@ const WAITING_ON_TEXT: Record<OutsideWaitingOn, string> = {
   plan: "It's waiting for its plan to be approved in Threadlines.",
 };
 
+/** One thing it waits on, on one line: Threadlines' words, then the agent's (clipped). */
+const waitingLine = (item: OutsideWaitingItem) => {
+  const said = item.detail ?? item.questions?.[0]?.question ?? item.title ?? null;
+  return `  ${item.summary}${said === null ? "" : `: ${said.replace(/\s+/gu, " ")}`}`;
+};
+
 /** The thread's title and how it's doing, on one line, then what it waits on. */
 function threadStatusLines(
   thread: OutsideThreadSummary,
   waitingOn: OutsideWaitingOn | undefined,
+  waiting: ReadonlyArray<OutsideWaitingItem> = [],
 ): string[] {
   const ended = thread.lastTurn?.state;
   const how =
@@ -162,14 +170,18 @@ function threadStatusLines(
         ? "idle, its last turn ended in an error"
         : thread.status;
   const lines = [`${thread.title} (${thread.threadId}): ${how}`];
-  if (waitingOn !== undefined) lines.push(WAITING_ON_TEXT[waitingOn]);
+  if (waitingOn !== undefined) {
+    lines.push(WAITING_ON_TEXT[waitingOn], ...waiting.map(waitingLine));
+  }
   return lines;
 }
 
 export function formatThreadRead(result: OutsideThreadReadResult): string {
   if (result.outcome === "starting") return result.detail ?? "It's still being set up.";
   const lines =
-    result.thread === undefined ? [] : threadStatusLines(result.thread, result.waitingOn);
+    result.thread === undefined
+      ? []
+      : threadStatusLines(result.thread, result.waitingOn, result.waiting);
   for (const message of result.messages) {
     lines.push("", `${message.author}:`, message.text);
   }
@@ -181,7 +193,7 @@ export function formatThreadRead(result: OutsideThreadReadResult): string {
 
 export function formatWait(result: ThreadWaitResult): string {
   if (result.thread === undefined) return result.detail ?? result.outcome;
-  const lines = threadStatusLines(result.thread, result.waitingOn);
+  const lines = threadStatusLines(result.thread, result.waitingOn, result.waiting);
   if (result.outcome === "still_working") lines.push("It's still working.");
   if (result.reply !== undefined && result.reply !== null && result.reply.length > 0) {
     lines.push("", result.reply);

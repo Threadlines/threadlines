@@ -1230,3 +1230,110 @@ Live checks (Oct 30), all with a stand-in agent and a throwaway home:
 Not yet: a real hosted assistant (Grok Bot, Claude, dots, Muse) against the
 staging relay; a nicer address than the relay's own; the relay's
 production deploy and its secrets.
+
+## Build notes: step 2 (the record and the read tools)
+
+What was built (`feat/assistants-read-tools`):
+
+- **The record** (`assistants/AssistantEvents.ts`, `AssistantEventsLive.ts`,
+  `AssistantEventRepository.ts`, migration 094). Its own cursor over the event
+  log, rows in the cursor's transaction, `settling` → `recorded` (next `seq`)
+  or `dropped`, cancels drop or resolve, the plan rule, 7 days, the scheduled
+  tasks' cards as `schedule:` rows. Service API for steps 4 and 5:
+  `since(after, limit, names?, projectIds?)` → events, `upTo`, `more`;
+  `position` (record id, running, last `seq`, pruned through); `changes`.
+- **The checks are shared.** `pushAlerts/alertChecks.ts` is `PushAlerts`'
+  old `evaluate` minus presence; phones call it and add presence, the record
+  calls it as is. Phone behavior is unchanged.
+- **`inbox`, `thread_changes`** on both doors (See), titled and read-only.
+- **`waiting`** on `thread_read` and `thread_wait` (both doors), beside the
+  old `waitingOn`. The `threadlines` command prints a line per item.
+- **Shared reading of what waits:** `threads/threadWaiting.ts`, used by
+  `waiting` and `needsYou`.
+
+Choices made inside the plan:
+
+- **A visit doesn't drop a settling row.** Phones drop on `thread.seen-set`;
+  the record still records the event and marks it resolved `seen`. That is
+  how "a thread being looked at still gets its event" holds even though the
+  app marks a thread seen the moment a turn finishes in view.
+  `seenInThreadlines` is a resolution of `seen`, `wrapped` or `archived`. A
+  visit resolves only rows that happened at or before its stamp: the app
+  stamps a visit with the turn's completion time (which is the turn event's
+  `occurredAt`) and "Mark unread" a millisecond before it, so marking a
+  thread unread never counts as seeing it. A side answer or restart that
+  happened after the turn the visit was stamped with stays unseen.
+- **Off forgets the cursor.** With no assistant connection the record stops
+  reading and clears its cursor, so the next connection starts from the
+  newest event: the time with nobody connected is history too. Cards waiting
+  since before the record started are skipped for the same reason.
+- **Long-running work backs off.** A finished turn whose thread still has
+  work going is re-checked after 10 s, then less often the longer it has
+  been settling (a tenth of that time, at most 5 minutes; `added_at`). Phones instead give up after the
+  alert's 10-minute life; the record has no age rule.
+- **`needsYou` covers every card the status counts:** tool approvals, the
+  scheduled-task changes an agent asked for, and threads an agent asked to
+  start, all as `approval` (the summary says which), then questions, then
+  the plan when the thread's status is "needs the user". At most 50 threads
+  are read per call, most recently active first.
+- **`waiting` is a list,** one item per open request, the kind `waitingOn`
+  names first. Approval: `asks`, `tool`, `detail` (command or path, clipped
+  at 300). Question: `requestId`, questions with options. Plan: id and title
+  (its first heading).
+- **`inbox` on the local door** answers `needsYou` always; `finished` and
+  `failed` only while the record runs, otherwise `recordKept: false` with a
+  cursor that marks now. On the assistants door it also lists `starting`:
+  its own starts that have no thread yet.
+- **Cursors** are `base64url("ae1:<recordId>:<seq>")`. One from another
+  computer, from beyond the last `seq`, or below the pruned mark reads from
+  the start with `truncated: true`.
+- **Links** go to the hosted app of the build's channel (nightly builds to
+  `nightly.app.threadlines.dev`, as phone pairing does), at
+  `/<environmentId>/<threadId>`.
+- **`thread_changes`' files** come from the turns' stored file summaries
+  since the checkout was last clean, the source of the sidebar's count and
+  the turn cards. No git diff per call. Per-file numbers are summed over
+  turns, so a line changed twice counts twice; `totals` is the sidebar's own
+  number (`cumulativeDiffStat`, which uses the latest whole-thread
+  measurement), so the two can differ.
+- **Its pull request** comes from `PullRequestService`: `list({ open,
+  projectId })` for checks, review and mergeability, and `lookup` by branch
+  and by the thread's linked numbers for merged or closed ones. Both are
+  cached 30 s and ask the host on a miss. The base branch is the pull
+  request's, else the git driver's own rule for a branch without an upstream
+  (`resolveBaseBranchName`: `branch.<b>.gh-merge-base`, else the remote's
+  default, else `main` or `master`, whichever exists). The host and git share
+  one 6 s deadline; what doesn't answer reads as null. An open pull request
+  already listed is kept when the slower lookup misses the deadline.
+- **A verdict is final only if its thread stood still.** A row is judged at
+  the record's cursor, and becomes final only if no event about its thread
+  (or its own result settling on its parent) reached the log after that
+  cursor, read yet or not. So an interrupt or answer already in the log
+  after a restart is read first, and other threads' streaming never holds a
+  row up. A row that was stale goes behind the other due rows for 250 ms.
+  Turning the record off drops rows still settling.
+
+Found in the live run: a turn in a git checkout ends with its final capture
+(`thread.turn-diff-completed` with `completesTurn`), not
+`thread.turn-completed`, which only closes turns without one. The alert
+rules listened only for the latter, so phones (since #614) and the record
+missed most finished and failed turns. The rules now take both. A child's
+turn alert also drops once its result went back to the parent
+(`handedBackTurnId`), since the capture that starts it often lands after
+the parent's cancel.
+
+Tests: `AssistantEvents.test.ts` (no phone, a visit, read late, restart
+mid-settle, interrupt mid-settle, another thread streaming, turned off
+mid-settle, `seq` order, the plan rule, history and pruning), `connectToolHandlers.test.ts` (`inbox` live, scoped, paged,
+truncated and not kept; `thread_changes` with the cap and with and without a
+pull request; `waiting` for each kind), the tool lists in
+`McpConnectServer.test.ts` and `Assistants.test.ts`. Migration 094 took 3 ms
+on a copy of a real database (5.5 GB, 884,000 events).
+
+Live run (production relay, a throwaway Threadlines with a stand-in agent):
+sign-in, `inbox` listing a finished thread and an approval (gone once
+approved in the app), `thread_changes` with a file and its base branch, and
+`waiting` with the command asked for.
+
+Not done here: `threadlines inbox` and `threadlines thread changes` commands;
+a run against a real hosted assistant.

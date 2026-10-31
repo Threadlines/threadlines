@@ -197,6 +197,15 @@ const standIn = (script: Script, seen: Seen) => {
       unavailable: [],
     })),
     threads_list: record("threads_list", () => ({ outcome: "ok" as const, threads: [thread()] })),
+    inbox: record("inbox", () => ({
+      outcome: "ok" as const,
+      needsYou: [],
+      finished: [],
+      failed: [],
+      more: false,
+      recordKept: false,
+    })),
+    thread_changes: record("thread_changes", () => ({ outcome: "ok" as const })),
     thread_read: record("thread_read", () => ({
       outcome: "ok" as const,
       messages: [],

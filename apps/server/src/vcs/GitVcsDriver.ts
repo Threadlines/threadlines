@@ -248,6 +248,15 @@ export interface GitVcsDriverShape {
   readonly statusDetailsLocal: (
     cwd: string,
   ) => Effect.Effect<GitLocalStatusDetails, GitCommandError>;
+  /**
+   * The branch `branch` would merge into, by git alone (no host lookup): its
+   * recorded merge base, else the remote's default, else main or master.
+   * Null when none of them exists here.
+   */
+  readonly resolveBaseBranchName: (
+    cwd: string,
+    branch: string,
+  ) => Effect.Effect<string | null, GitCommandError>;
   readonly statusDetailsRemote: (
     cwd: string,
     options?: GitRemoteStatusOptions,

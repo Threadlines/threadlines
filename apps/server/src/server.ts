@@ -97,6 +97,7 @@ import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
 import { AssistantRelayLive } from "./assistants/AssistantRelayLive.ts";
+import { AssistantEventsLive } from "./assistants/AssistantEventsLive.ts";
 import { AssistantsLive } from "./assistants/AssistantsLive.ts";
 import { OutsideAgentConnectionRepositoryLive } from "./outsideAgents/OutsideAgentConnectionRepository.ts";
 import { OutsideAgentRequestsLive } from "./outsideAgents/OutsideAgentRequests.ts";
@@ -333,8 +334,10 @@ const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSou
 const ReactorLayerLive = Layer.empty.pipe(
   // Phone alerts (docs/design/push-alerts.md) read the event log, threads and
   // the scheduler's waiting changes from the layers below, and send through
-  // the relay; started with the other reactors.
-  Layer.provideMerge(PushAlertsLive),
+  // the relay; started with the other reactors. The assistants' event record
+  // (docs/design/assistants.md) reads the same log with the same checks, from
+  // its own cursor, while an assistant connection exists.
+  Layer.provideMerge(Layer.mergeAll(PushAlertsLive, AssistantEventsLive)),
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),

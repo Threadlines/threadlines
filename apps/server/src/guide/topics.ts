@@ -122,8 +122,9 @@ Agents can list, create and change scheduled tasks when {place:threads.agentThre
       "custom connector",
       "connector",
       "key",
+      "inbox",
     ],
-    body: `Always-on assistants run in their makers' cloud. They can use Threadlines from there through the relay: see projects and threads, start threads, and message or stop the ones they started.
+    body: `Always-on assistants run in their makers' cloud. They can use Threadlines from there through the relay: see projects and threads, start threads, and message or stop the ones they started. When they check in, they can see what needs you (approvals, questions and plans waiting in Threadlines), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected.
 
 To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant and type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and the most access its threads get. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
 

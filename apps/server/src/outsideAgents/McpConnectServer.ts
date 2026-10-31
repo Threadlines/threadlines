@@ -165,6 +165,16 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
           "thread_wait",
           Effect.flatMap(caller, (connection) => handlers.thread_wait(connection, input)),
         ),
+      inbox: (input) =>
+        counted(
+          "inbox",
+          Effect.flatMap(caller, (connection) => handlers.inbox(connection, input)),
+        ),
+      thread_changes: (input) =>
+        counted(
+          "thread_changes",
+          Effect.flatMap(caller, (connection) => handlers.thread_changes(connection, input)),
+        ),
       thread_start: (input) =>
         counted(
           "thread_start",

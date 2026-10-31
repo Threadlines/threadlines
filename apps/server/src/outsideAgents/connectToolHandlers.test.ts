@@ -8,6 +8,8 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadSearchInput,
   type OrchestrationThreadShell,
+  type PullRequestListEntry,
+  type ScheduledTaskRequest,
   OutsideAgentConnectionId as ConnectionId,
   ProjectId,
   ProviderDriverKind,
@@ -24,7 +26,16 @@ import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  USER_INPUT_ACTIVITY_KINDS,
+} from "@threadlines/shared/pendingRequests";
+
+import type { AssistantEvent, AssistantEventsShape } from "../assistants/AssistantEvents.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
+import { hasActionableProposedPlan } from "../orchestration/proposedPlans.ts";
+import type { PullRequestServiceShape } from "../pullRequest/PullRequestService.ts";
 import type { ThreadTurnStartCommand } from "../orchestration/Services/ThreadBootstrap.ts";
 import { makeConnectLimits } from "./connectLimits.ts";
 import { type ConnectToolDoor, makeConnectToolHandlers } from "./connectToolHandlers.ts";
@@ -81,19 +92,29 @@ const makeThread = (patch: Partial<OrchestrationThread>): OrchestrationThread =>
     messages: [],
     activities: [],
     proposedPlans: [],
+    checkpoints: [],
     createdAt: AT,
     updatedAt: AT,
     ...patch,
   }) as unknown as OrchestrationThread;
 
+/** The thread's sidebar summary, as the projections fold it. */
 const shellOf = (thread: OrchestrationThread): OrchestrationThreadShell =>
   ({
+    cumulativeDiffStat: null,
     ...thread,
-    hasPendingApprovals: thread.activities.some(
-      (activity) => activity.kind === "approval.requested",
-    ),
-    hasPendingUserInput: false,
-    hasActionableProposedPlan: false,
+    diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
+    linkedPullRequests: thread.linkedPullRequests ?? [],
+    effectiveCwd: thread.effectiveCwd ?? null,
+    hasPendingApprovals:
+      collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0,
+    hasPendingUserInput:
+      collectOpenPendingRequests(thread.activities, USER_INPUT_ACTIVITY_KINDS).length > 0,
+    hasActionableProposedPlan: hasActionableProposedPlan({
+      latestTurnId: thread.latestTurn?.turnId ?? null,
+      proposedPlans: thread.proposedPlans,
+      idOf: (plan) => plan.id,
+    }),
     pendingChildApproval: false,
     awaitedChildThreadCount: 0,
     doneOverride: null,
@@ -219,6 +240,12 @@ const makeWorld = (
     readonly failSetup?: boolean;
     /** Each git command takes 20 s. */
     readonly slowGit?: boolean;
+    /** Agents' scheduled-task changes waiting for the user. */
+    readonly scheduleRequests?: ReadonlyArray<ScheduledTaskRequest>;
+    /** The assistants' event record, for `inbox`. */
+    readonly record?: Pick<AssistantEventsShape, "position" | "since">;
+    /** The pull request records, for `thread_changes`. */
+    readonly pullRequests?: Pick<PullRequestServiceShape, "list" | "lookup">;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -233,7 +260,18 @@ const makeWorld = (
     const threads = new Map<string, OrchestrationThread>(
       (options.threads ?? []).map((thread) => [thread.id, thread]),
     );
-    const projects = [project(APP, "app"), project(PRIVATE, "private")];
+    const projects = [
+      {
+        ...project(APP, "app"),
+        repositoryIdentity: {
+          canonicalKey: "github.com/acme/app",
+          provider: "github",
+          owner: "acme",
+          name: "app",
+        } as never,
+      },
+      project(PRIVATE, "private"),
+    ];
     const dispatched: OrchestrationCommand[] = [];
     const bootstrapped: ThreadTurnStartCommand[] = [];
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
@@ -308,6 +346,9 @@ const makeWorld = (
                   input.projectIds === undefined || input.projectIds.includes(thread.projectId),
               )
               .filter(
+                (thread) => input.threadIds === undefined || input.threadIds.includes(thread.id),
+              )
+              .filter(
                 (thread) =>
                   input.outsideConnectionId === undefined ||
                   thread.outsideOrigin?.connectionId === input.outsideConnectionId,
@@ -354,9 +395,14 @@ const makeWorld = (
               stdoutTruncated: false,
               stderrTruncated: false,
             }).pipe(Effect.delay(options.slowGit ? "20 seconds" : 0)),
+          resolveBaseBranchName: () => Effect.succeed("main"),
         },
         requests: requests.store,
         limits: makeConnectLimits(),
+        scheduleRequests: Effect.succeed(options.scheduleRequests ?? []),
+        threadLink: (threadId) => Effect.succeed(`https://app.threadlines.dev/env-mac/${threadId}`),
+        ...(options.record !== undefined ? { record: options.record } : {}),
+        ...(options.pullRequests !== undefined ? { pullRequests: options.pullRequests } : {}),
       },
       { door: options.door ?? "local" },
     );
@@ -932,6 +978,428 @@ describe("connect tools: the assistants door", () => {
         .pipe(Effect.forkChild);
       yield* TestClock.adjust("25 seconds");
       expect(yield* Fiber.join(waiting)).toMatchObject({ outcome: "still_working" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// inbox, thread_changes, and what a thread waits on
+// ---------------------------------------------------------------------------
+
+const approval = (requestId: string, payload: Record<string, unknown> = {}) => ({
+  id: `approval-${requestId}`,
+  tone: "approval",
+  kind: "approval.requested",
+  summary: "Command approval requested",
+  payload: { requestId, requestKind: "command", ...payload },
+  turnId: "turn-1",
+  createdAt: AT,
+});
+
+/** The assistants' record over a list, as AssistantEvents.since reads it. */
+const makeRecord = (
+  events: Array<AssistantEvent>,
+  options: { readonly prunedThroughSeq?: () => number; readonly running?: boolean } = {},
+): Pick<AssistantEventsShape, "position" | "since"> => {
+  const lastSeq = () => events.reduce((max, event) => Math.max(max, event.seq), 0);
+  return {
+    position: Effect.sync(() => ({
+      recordId: "record-1",
+      running: options.running ?? true,
+      lastSeq: lastSeq(),
+      prunedThroughSeq: options.prunedThroughSeq?.() ?? 0,
+    })),
+    since: (input) =>
+      Effect.sync(() => {
+        const matching = events.filter(
+          (event) =>
+            event.seq > input.after &&
+            (input.names === undefined || input.names.includes(event.name)) &&
+            (input.projectIds === undefined || input.projectIds.includes(event.projectId)),
+        );
+        const more = matching.length > input.limit;
+        const page = matching.slice(0, input.limit);
+        return { events: page, more, upTo: more ? page.at(-1)!.seq : lastSeq() };
+      }),
+  };
+};
+
+const recordedEvent = (seq: number, patch: Partial<AssistantEvent> = {}): AssistantEvent => ({
+  eventId: `event-${seq}`,
+  seq,
+  name: "thread.finished",
+  reason: "finished",
+  threadId: USER_THREAD,
+  projectId: APP,
+  occurredAt: AT,
+  recordedAt: AT,
+  resolvedAt: null,
+  resolvedReason: null,
+  ...patch,
+});
+
+describe("inbox", () => {
+  it.effect(
+    "lists what needs the user live, and what finished or failed since the cursor, in its projects",
+    () =>
+      Effect.gen(function* () {
+        const hidden = makeThread({
+          id: ThreadId.make("hidden"),
+          projectId: PRIVATE,
+          activities: [approval("hidden-request")] as never,
+        });
+        const asking = makeThread({
+          title: "Fix the build",
+          activities: [approval("r1")] as never,
+        });
+        const events = [
+          recordedEvent(1),
+          recordedEvent(2, {
+            name: "thread.failed",
+            reason: "error",
+            threadId: hidden.id,
+            projectId: PRIVATE,
+          }),
+          recordedEvent(3, {
+            name: "thread.failed",
+            reason: "error",
+            resolvedAt: AT,
+            resolvedReason: "seen",
+          }),
+        ];
+        const world = yield* makeWorld({
+          grant: { access: "see" },
+          threads: [asking, hidden],
+          record: makeRecord(events),
+        });
+
+        const first = yield* world.handlers.inbox(CALLER, {});
+        expect(first.needsYou).toEqual([
+          {
+            threadId: USER_THREAD,
+            title: "Fix the build",
+            projectId: APP,
+            project: "app",
+            kind: "approval",
+            requestId: "r1",
+            summary: "Wants to run a command",
+            askedAt: AT,
+            link: `https://app.threadlines.dev/env-mac/${USER_THREAD}`,
+          },
+        ]);
+        expect(first.finished.map((event) => [event.threadId, event.summary])).toEqual([
+          [USER_THREAD, "Finished"],
+        ]);
+        expect(first.failed).toMatchObject([
+          { threadId: USER_THREAD, reason: "error", seenInThreadlines: true },
+        ]);
+        expect(first).toMatchObject({ more: false, recordKept: true });
+
+        // Answered in Threadlines: gone from needsYou at once. Nothing new since the cursor.
+        yield* world.update(
+          makeThread({
+            title: "Fix the build",
+            activities: [
+              approval("r1"),
+              { ...approval("r1"), id: "resolved-r1", kind: "approval.resolved" },
+            ] as never,
+          }),
+        );
+        const again = yield* world.handlers.inbox(CALLER, { since: first.cursor! });
+        expect(again).toMatchObject({ needsYou: [], finished: [], failed: [], more: false });
+
+        // A later finish shows up after the cursor, and only that one.
+        events.push(recordedEvent(4, { occurredAt: "2026-10-23T11:00:00.000Z" }));
+        const later = yield* world.handlers.inbox(CALLER, { since: again.cursor! });
+        expect(later.finished.map((event) => event.at)).toEqual(["2026-10-23T11:00:00.000Z"]);
+      }),
+  );
+
+  it.effect("leaves out a thread that moved out of the connection's projects since its event", () =>
+    Effect.gen(function* () {
+      // Recorded while the thread was in "app"; it lives in a private project now.
+      const moved = makeThread({ title: "Secret plans", projectId: PRIVATE });
+      const world = yield* makeWorld({
+        grant: { access: "see", projectIds: [APP] },
+        threads: [moved],
+        record: makeRecord([recordedEvent(1, { threadId: moved.id, projectId: APP })]),
+      });
+      const result = yield* world.handlers.inbox(CALLER, {});
+      expect(result.finished).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain("Secret plans");
+    }),
+  );
+
+  it.effect("pages through many events, and starts over from a cursor it no longer keeps", () =>
+    Effect.gen(function* () {
+      const events = Array.from({ length: 57 }, (_, index) => recordedEvent(index + 1));
+      let pruned = 0;
+      const world = yield* makeWorld({
+        threads: [makeThread({})],
+        record: makeRecord(events, { prunedThroughSeq: () => pruned }),
+      });
+      const first = yield* world.handlers.inbox(CALLER, {});
+      expect(first.finished).toHaveLength(50);
+      expect(first.more).toBe(true);
+      const rest = yield* world.handlers.inbox(CALLER, { since: first.cursor! });
+      expect(rest.finished).toHaveLength(7);
+      expect(rest.more).toBe(false);
+      expect(rest.truncated).toBeUndefined();
+
+      // Older than what is kept, or not a cursor this computer gave out: from the start.
+      pruned = 52;
+      const old = yield* world.handlers.inbox(CALLER, { since: first.cursor! });
+      expect(old).toMatchObject({ truncated: true });
+      expect(old.finished).toHaveLength(50);
+      expect(yield* world.handlers.inbox(CALLER, { since: "junk" })).toMatchObject({
+        truncated: true,
+      });
+    }),
+  );
+
+  it.effect(
+    "says the record isn't kept while no assistant is connected, and still lists what needs the user",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* makeWorld({
+          threads: [makeThread({ activities: [approval("r1")] as never })],
+          record: makeRecord([recordedEvent(1)], { running: false }),
+        });
+        const result = yield* world.handlers.inbox(CALLER, {});
+        expect(result).toMatchObject({ recordKept: false, finished: [], failed: [] });
+        expect(result.needsYou).toHaveLength(1);
+      }),
+  );
+});
+
+describe("thread_changes", () => {
+  const checkpoint = (turnCount: number, files: ReadonlyArray<[string, number, number]>) => ({
+    turnId: TurnId.make(`turn-${turnCount}`),
+    checkpointTurnCount: turnCount,
+    checkpointRef: `refs/threadlines/${turnCount}`,
+    status: "ready",
+    files: files.map(([path, additions, deletions]) => ({
+      path,
+      kind: "modified",
+      additions,
+      deletions,
+    })),
+    assistantMessageId: null,
+    completedAt: AT,
+  });
+
+  const openPullRequest = {
+    provider: "github",
+    projectId: APP,
+    projectTitle: "app",
+    repository: "Acme/App",
+    number: 42,
+    title: "Fix the build",
+    url: "https://github.com/acme/app/pull/42",
+    author: null,
+    headBranch: "fix/build",
+    baseBranch: "release",
+    state: "open",
+    isDraft: false,
+    additions: 30,
+    deletions: 4,
+    createdAt: AT,
+    updatedAt: AT,
+    viewerIsAuthor: true,
+    viewerReviewRequested: false,
+    reviewDecision: "approved",
+    checksState: "failure",
+    mergeability: "conflicting",
+    labels: [],
+    origin: "workspace",
+  } as unknown as PullRequestListEntry;
+
+  it.effect(
+    "sums the counted turns' files, most changed first, with the pull request from its branch",
+    () =>
+      Effect.gen(function* () {
+        const thread = makeThread({
+          branch: "fix/build",
+          checkpoints: [
+            checkpoint(1, [["old.ts", 99, 99]]),
+            checkpoint(2, [
+              ["src/a.ts", 10, 2],
+              ["src/b.ts", 1, 0],
+            ]),
+            checkpoint(3, [["src/a.ts", 5, 5]]),
+          ] as never,
+          // Turn 1 was committed: the sidebar counts from turn 2.
+          diffStatBaselineTurnCount: 1,
+          cumulativeDiffStat: { additions: 14, deletions: 6 },
+        } as never);
+        const asked: Array<unknown> = [];
+        const world = yield* makeWorld({
+          grant: { access: "see" },
+          threads: [thread, makeThread({ id: ThreadId.make("hidden"), projectId: PRIVATE })],
+          pullRequests: {
+            list: (input) =>
+              Effect.sync(() => {
+                asked.push(input);
+                return { viewer: "will", entries: [openPullRequest], errors: [] };
+              }),
+            lookup: () => Effect.succeed({ supported: true, answers: [] }),
+          },
+        });
+        const result = yield* world.handlers.thread_changes(CALLER, { threadId: USER_THREAD });
+        expect(result).toMatchObject({
+          outcome: "ok",
+          branch: "fix/build",
+          base: "release",
+          files: [
+            { path: "src/a.ts", additions: 15, deletions: 7 },
+            { path: "src/b.ts", additions: 1, deletions: 0 },
+          ],
+          totals: { files: 2, additions: 14, deletions: 6 },
+          pullRequest: {
+            number: 42,
+            state: "open",
+            checks: "failure",
+            reviewDecision: "approved",
+            mergeability: "conflicting",
+          },
+        });
+        expect(asked).toEqual([{ state: "open", projectId: APP, includeAuthored: false }]);
+        expect((yield* world.handlers.thread_changes(CALLER, { threadId: "hidden" })).outcome).toBe(
+          "not_found",
+        );
+      }),
+  );
+
+  it.effect("lists at most 200 files, and answers null for a branch without a pull request", () =>
+    Effect.gen(function* () {
+      const files = Array.from(
+        { length: 205 },
+        (_, index) =>
+          [`file-${String(index).padStart(3, "0")}.ts`, 1, 0] as [string, number, number],
+      );
+      const world = yield* makeWorld({
+        threads: [
+          makeThread({ branch: "feature/x", checkpoints: [checkpoint(1, files)] as never }),
+        ],
+        pullRequests: {
+          list: () => Effect.succeed({ viewer: null, entries: [openPullRequest], errors: [] }),
+          lookup: (input) =>
+            Effect.succeed({
+              supported: true,
+              answers: input.items.map((item) => ({ item, pullRequest: null, answeredAt: AT })),
+            }),
+        },
+      });
+      const result = yield* world.handlers.thread_changes(CALLER, { threadId: USER_THREAD });
+      expect(result.files).toHaveLength(200);
+      expect(result.moreFiles).toBe(5);
+      expect(result.totals).toEqual({ files: 205, additions: 205, deletions: 0 });
+      // No pull request: the base is the repository's default branch.
+      expect(result).toMatchObject({ pullRequest: null, base: "main" });
+    }),
+  );
+
+  it.effect("keeps the open pull request it already listed when the lookup is slow", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({
+        threads: [makeThread({ branch: "fix/build" })],
+        pullRequests: {
+          list: () => Effect.succeed({ viewer: null, entries: [openPullRequest], errors: [] }),
+          lookup: () => Effect.never,
+        },
+      });
+      const changes = yield* world.handlers
+        .thread_changes(CALLER, { threadId: USER_THREAD })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("7 seconds");
+      const result = yield* Fiber.join(changes);
+      expect(result.pullRequest).toMatchObject({ number: openPullRequest.number });
+    }),
+  );
+});
+
+describe("what a thread waits on", () => {
+  it.effect("details an approval, a question and a plan, in thread_read and thread_wait", () =>
+    Effect.gen(function* () {
+      const command = `npm run test -- ${"x".repeat(400)}`;
+      const asking = makeThread({
+        activities: [
+          approval("r1", { toolName: "Bash", detail: command }),
+          {
+            id: "question-q1",
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId: "q1",
+              questions: [
+                {
+                  id: "db",
+                  header: "Database",
+                  question: "Which database should it use?",
+                  options: [
+                    { label: "SQLite", description: "Local file" },
+                    { label: "Postgres", description: "The shared server" },
+                  ],
+                },
+              ],
+            },
+            turnId: "turn-1",
+            createdAt: AT,
+          },
+        ] as never,
+      });
+      const planning = makeThread({
+        id: ThreadId.make("planning"),
+        latestTurn: { turnId: TurnId.make("turn-1"), state: "completed" } as never,
+        proposedPlans: [
+          {
+            id: "plan-1",
+            turnId: TurnId.make("turn-1"),
+            planMarkdown: "# Move the cache\n\n1. First",
+            implementedAt: null,
+            implementationThreadId: null,
+            dismissedAt: null,
+            createdAt: AT,
+            updatedAt: AT,
+          },
+        ] as never,
+      });
+      const world = yield* makeWorld({ threads: [asking, planning] });
+
+      const read = yield* world.handlers.thread_read(CALLER, { threadId: USER_THREAD });
+      expect(read.waitingOn).toBe("approval");
+      const [approvalItem, questionItem] = read.waiting ?? [];
+      expect(approvalItem).toMatchObject({
+        kind: "approval",
+        requestId: "r1",
+        asks: "command",
+        tool: "Bash",
+        summary: "Wants to run a command",
+      });
+      expect(approvalItem?.detail?.length).toBe(300);
+      expect(approvalItem?.detail?.startsWith("npm run test")).toBe(true);
+      expect(questionItem).toMatchObject({
+        kind: "question",
+        requestId: "q1",
+        questions: [
+          {
+            header: "Database",
+            question: "Which database should it use?",
+            options: [
+              { label: "SQLite", description: "Local file" },
+              { label: "Postgres", description: "The shared server" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      });
+
+      const waited = yield* world.handlers.thread_wait(CALLER, { threadId: "planning" });
+      expect(waited).toMatchObject({
+        waitingOn: "plan",
+        waiting: [{ kind: "plan", requestId: "plan-1", title: "Move the cache" }],
+      });
     }),
   );
 });
