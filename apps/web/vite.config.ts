@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
-import babel from "@rolldown/plugin-babel";
+import babel, { type RolldownBabelPreset } from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { resolveGitReleaseVersion } from "@threadlines/shared/gitVersion";
 import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
@@ -128,6 +128,19 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
+/**
+ * plugin-react's React Compiler preset with its Babel half (a function that
+ * names the compiler plugin) called here, so the preset is plain data that
+ * plugin-babel can send to its worker threads. Its filters and hooks stay in
+ * this process.
+ */
+function reactCompilerWorkerPreset(): RolldownBabelPreset {
+  const compiler = reactCompilerPreset();
+  return typeof compiler.preset === "function"
+    ? { ...compiler, preset: compiler.preset() }
+    : compiler;
+}
+
 export function createWebPlugins(options?: {
   readonly routerAutoCodeSplitting?: boolean;
 }): PluginOption[] {
@@ -145,7 +158,10 @@ export function createWebPlugins(options?: {
       // whereas the previous version of the plugin parsed all files with a .ts extension.
       // This caused our packages/ directory to fail to parse, as they are not relative to the CWD.
       parserOpts: { plugins: ["typescript", "jsx"] },
-      presets: [reactCompilerPreset()],
+      presets: [reactCompilerWorkerPreset()],
+      // Babel (the React Compiler) is most of a build's time; run it on up
+      // to four worker threads.
+      parallel: true,
       exclude: [
         // The plugin's default, which an explicit exclude replaces.
         /[/\\]node_modules[/\\]|^\0rolldown\/runtime\.js$/,
