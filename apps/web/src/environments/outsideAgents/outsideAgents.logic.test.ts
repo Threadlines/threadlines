@@ -164,15 +164,15 @@ describe("describeOutsideWork", () => {
   it("names whose work ran here, each connection once, and keeps a long list short", () => {
     expect(describeOutsideWork([], null)).toBeNull();
     expect(describeOutsideWork([marked(null, ref("grok", "Grok Bot"))], null)).toEqual({
-      lead: "Grok Bot's work ran here,",
-      detail: "so this agent's Threadlines tools are limited until it starts fresh.",
+      lead: "Grok Bot worked here.",
+      detail: "Tools are limited until a fresh start.",
     });
     expect(
       describeOutsideWork(
         [marked(null, ref("grok", "Grok Bot"), ref("dots", "dots"), ref("grok", "Grok Bot"))],
         null,
       )?.lead,
-    ).toBe("Grok Bot and dots's work ran here,");
+    ).toBe("Grok Bot and dots worked here.");
     expect(
       describeOutsideWork(
         [
@@ -181,22 +181,21 @@ describe("describeOutsideWork", () => {
         ],
         null,
       )?.lead,
-    ).toBe("Grok Bot, dots and others' work ran here,");
+    ).toBe("Grok Bot, dots and others worked here.");
   });
 
   it("names the agents it reached in a room", () => {
     expect(
       describeOutsideWork([marked(REVIEWER, ref("grok", "Grok Bot"))], roomNames)?.detail,
-    ).toBe("so the Threadlines tools of GPT-6.1 Sol (Reviewer) are limited until it starts fresh.");
+    ).toBe("Tools of GPT-6.1 Sol (Reviewer) are limited until a fresh start.");
     expect(
       describeOutsideWork(
         [marked(null, ref("grok", "Grok Bot")), marked(REVIEWER, ref("grok", "Grok Bot"))],
         roomNames,
       ),
     ).toEqual({
-      lead: "Grok Bot's work ran here,",
-      detail:
-        "so the Threadlines tools of Opus 5.5 and GPT-6.1 Sol (Reviewer) are limited until they start fresh.",
+      lead: "Grok Bot worked here.",
+      detail: "Tools of Opus 5.5 and GPT-6.1 Sol (Reviewer) are limited until a fresh start.",
     });
   });
 });

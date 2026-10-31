@@ -6,6 +6,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OutsideTurnOrigin,
   OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
@@ -239,7 +240,10 @@ describe("decider outside agents", () => {
     expect((await refusal(created.model, outsideTurn("start-level"))).detail).toContain(
       "didn't start this thread",
     );
-    const sent = await run(created.model, { ...outsideTurn("work-level"), fromOutside: work });
+    const sent = await run(created.model, {
+      ...outsideTurn("work-level"),
+      fromOutside: work,
+    } as OrchestrationCommand);
     expect(threadOf(sent.model).outsideWork).toEqual([
       { participantId: null, connections: [AGENT], since: at(2) },
     ]);
@@ -270,7 +274,10 @@ describe("decider outside agents", () => {
       access: "work" as const,
       maxRuntimeMode: "approval-required" as const,
     };
-    const respond = (requestId: string, fromOutside = work): OrchestrationCommand => ({
+    const respond = (
+      requestId: string,
+      fromOutside: OutsideTurnOrigin = work,
+    ): OrchestrationCommand => ({
       type: "thread.user-input.respond",
       commandId: CommandId.make(`respond-${requestId}`),
       threadId: THREAD,
@@ -297,11 +304,12 @@ describe("decider outside agents", () => {
     // The answer's own turn passes over its question; any other outside turn
     // waits, and so does it while an approval waits too.
     const questionsOnly = (await run(asked.model, question("q-3", undefined))).model;
-    const answerTurn = (answering?: string): OrchestrationCommand => ({
-      ...outsideTurn(`answer-${answering ?? "none"}`),
-      fromOutside: work,
-      ...(answering !== undefined ? { answering: answering as never } : {}),
-    });
+    const answerTurn = (answering?: string): OrchestrationCommand =>
+      ({
+        ...outsideTurn(`answer-${answering ?? "none"}`),
+        fromOutside: work,
+        ...(answering !== undefined ? { answering: answering as never } : {}),
+      }) as OrchestrationCommand;
     expect((await refusal(questionsOnly, answerTurn())).detail).toContain("answer a question");
     expect((await refusal(questionsOnly, answerTurn("q-3"))).detail).toContain("answer a question");
     expect((await refusal(current, answerTurn("q-1"))).detail).toContain("approve");

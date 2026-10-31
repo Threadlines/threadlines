@@ -210,18 +210,16 @@ export function describeOutsideWork(
     }
   }
   const names = [...new Set(connections.values())];
-  const lead =
-    names.length > 2
-      ? `${joinNames(names)}' work ran here,`
-      : `${joinNames(names)}'s work ran here,`;
+  // Short enough to read on a phone; the button's tooltip says the rest.
+  const lead = `${joinNames(names)} worked here.`;
   const agents =
     agentName === null ? [] : [...new Set(work.map((entry) => agentName(entry.participantId)))];
   // A room's names can end in a role ("GPT-6 Astra 2 (Reviewer)"): no
   // possessive after them.
   const detail =
     agents.length === 0
-      ? "so this agent's Threadlines tools are limited until it starts fresh."
-      : `so the Threadlines tools of ${joinNames(agents)} are limited until ${agents.length === 1 ? "it starts" : "they start"} fresh.`;
+      ? "Tools are limited until a fresh start."
+      : `Tools of ${joinNames(agents)} are limited until a fresh start.`;
   return { lead, detail };
 }
 

@@ -1427,7 +1427,7 @@ on the thread shell for the UI).
     agents block the turn instead) still restarts when its runtime reports
     no turn; any work it hid ends with the runtime. The notice says so.
   - The user can also start it fresh from the thread's notice.
-  No timers and no reading of what looks idle.
+    No timers and no reading of what looks idle.
 - **While marked, every call with that agent's token is gated** (its
   subagents, background agents and side answers use it or inherit the mark):
   - **Room endpoint:** every tool that changes something refuses with one
@@ -1577,7 +1577,6 @@ reviving Work. Answered by: the promise stated above (history is data, as
 today), per-directory gating for OpenCode, answers bound to the asking
 agent, the live lookup for the hook plus goals refused or cleared, and the
 `grant_writes` trigger.
-
 
 A last focused pass found one more: OpenCode's restart keeps the native
 session, so a report queued by outside work could wake the fresh runtime.

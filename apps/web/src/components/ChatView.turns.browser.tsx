@@ -1211,12 +1211,8 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       },
     });
     try {
-      await expect.element(page.getByText("Grok Bot and dots's work ran here,")).toBeVisible();
-      await expect
-        .element(
-          page.getByText("so this agent's Threadlines tools are limited until it starts fresh."),
-        )
-        .toBeVisible();
+      await expect.element(page.getByText("Grok Bot and dots worked here.")).toBeVisible();
+      await expect.element(page.getByText("Tools are limited until a fresh start.")).toBeVisible();
       await page.getByRole("button", { name: "Start fresh" }).click();
       await vi.waitFor(() => {
         expect(
@@ -1228,7 +1224,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         ).toMatchObject({ threadId: THREAD_ID });
       });
       await expect
-        .element(page.getByText("Grok Bot and dots's work ran here,"))
+        .element(page.getByText("Grok Bot and dots worked here."))
         .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
