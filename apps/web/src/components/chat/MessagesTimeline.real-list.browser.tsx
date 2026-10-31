@@ -1906,6 +1906,11 @@ function isShown(element: HTMLElement | null): boolean {
   return element !== null && getComputedStyle(element).visibility === "visible";
 }
 
+// After a scroll the list draws the rows coming into view and finishes the
+// scroll on its own timers before the actions move to the text's new place.
+// On a busy CI runner that takes longer than the default second.
+const AFTER_SCROLL = { timeout: 5_000 };
+
 describe("text selection popover with the real virtual list", () => {
   afterEach(() => {
     window.getSelection()?.removeAllRanges();
@@ -1950,25 +1955,25 @@ describe("text selection popover with the real virtual list", () => {
         selectionPopover()!.getBoundingClientRect().top - wordRect("message-51", "pelican")!.bottom;
       const gap = gapBelowWord();
 
-      list.scrollTop += 60;
+      wheelScroll(list, 60);
       await vi.waitFor(() => {
         expect(isShown(selectionPopover())).toBe(true);
         expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
-      });
+      }, AFTER_SCROLL);
 
       // Out of view the actions hide, and they come back with the text.
       const scrolledAway =
         wordRect("message-51", "pelican")!.top - list.getBoundingClientRect().top;
-      list.scrollTop += scrolledAway + 120;
+      wheelScroll(list, scrolledAway + 120);
       await vi.waitFor(() => {
         expect(selectionPopover()).not.toBeNull();
         expect(isShown(selectionPopover())).toBe(false);
-      });
-      list.scrollTop -= scrolledAway + 120;
+      }, AFTER_SCROLL);
+      wheelScroll(list, -(scrolledAway + 120));
       await vi.waitFor(() => {
         expect(isShown(selectionPopover())).toBe(true);
         expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
-      });
+      }, AFTER_SCROLL);
 
       // Clearing the selection takes the actions away.
       window.getSelection()!.removeAllRanges();
