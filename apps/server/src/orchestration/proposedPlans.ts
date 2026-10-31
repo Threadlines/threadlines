@@ -12,18 +12,19 @@ interface PlanLike {
 }
 
 /**
- * Whether a thread holds a plan the user has yet to act on (the sidebar's
- * "plan ready"): the newest plan of its newest turn, or with none there its
- * newest plan, neither implemented nor dismissed. The shell's `hasActionableProposedPlan`
- * comes from here, and so does the decider's check that an outside agent's
- * turn waits for the user.
+ * The plan a thread holds for the user to act on (the sidebar's "plan
+ * ready"): the newest plan of its newest turn, or with none there its newest
+ * plan, when it is neither implemented nor dismissed; undefined otherwise.
+ * The shell's `hasActionableProposedPlan` comes from here, and so do the
+ * decider's check that an outside agent's turn waits for the user and the
+ * plan an outside agent's `inbox` lists.
  */
-export function hasActionableProposedPlan<Plan extends PlanLike>(input: {
+export function actionableProposedPlan<Plan extends PlanLike>(input: {
   readonly latestTurnId: string | null;
   readonly proposedPlans: ReadonlyArray<Plan>;
   /** The plan's id, the last tiebreak. */
   readonly idOf: (plan: Plan) => string;
-}): boolean {
+}): Plan | undefined {
   const sorted = [...input.proposedPlans].toSorted(
     (left, right) =>
       (left.eventSequence === undefined && right.eventSequence === undefined
@@ -31,15 +32,28 @@ export function hasActionableProposedPlan<Plan extends PlanLike>(input: {
         : compareTranscriptPosition(left, right)) ||
       input.idOf(left).localeCompare(input.idOf(right)),
   );
-  if (input.latestTurnId !== null) {
-    const latestForTurn = sorted.findLast((plan) => plan.turnId === input.latestTurnId);
-    if (latestForTurn !== undefined) {
-      return awaitsUser(latestForTurn);
-    }
-  }
-  const latestPlan = sorted.at(-1);
-  return latestPlan !== undefined && awaitsUser(latestPlan);
+  const latestForTurn =
+    input.latestTurnId === null
+      ? undefined
+      : sorted.findLast((plan) => plan.turnId === input.latestTurnId);
+  const candidate = latestForTurn ?? sorted.at(-1);
+  return candidate !== undefined && awaitsUser(candidate) ? candidate : undefined;
+}
+
+/** Whether a thread holds a plan the user has yet to act on (actionableProposedPlan). */
+export function hasActionableProposedPlan<Plan extends PlanLike>(input: {
+  readonly latestTurnId: string | null;
+  readonly proposedPlans: ReadonlyArray<Plan>;
+  readonly idOf: (plan: Plan) => string;
+}): boolean {
+  return actionableProposedPlan(input) !== undefined;
 }
 
 const awaitsUser = (plan: PlanLike): boolean =>
   plan.implementedAt === null && (plan.dismissedAt ?? null) === null;
+
+/** A plan's title: its first Markdown heading, as the app's plan card shows it; null without one. */
+export function proposedPlanTitle(planMarkdown: string): string | null {
+  const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
+  return heading && heading.length > 0 ? heading : null;
+}

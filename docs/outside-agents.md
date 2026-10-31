@@ -5,6 +5,25 @@ Threadlines can use it: list your projects, start a thread, wait for its reply,
 send it more work and stop it. You approve each one first, in Threadlines, and
 pick how much it may do.
 
+Its tools:
+
+| Tool             | What it does                                                                                                  | Access |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- | ------ |
+| `projects`       | The projects it may use.                                                                                      | See    |
+| `agents`         | The agents and models a thread can run on.                                                                    | See    |
+| `threads_list`   | Threads in its projects, with their status.                                                                   | See    |
+| `thread_read`    | A thread's messages and what it waits on: the command an approval is for, a question and its options, a plan. | See    |
+| `thread_wait`    | Waits for a thread to stop working.                                                                           | See    |
+| `inbox`          | What needs you right now, and what finished or failed since it last looked.                                   | See    |
+| `thread_changes` | A thread's branch, the files it changed, and its pull request's checks and review.                            | See    |
+| `thread_start`   | Starts a thread.                                                                                              | Start  |
+| `thread_send`    | Sends more work to a thread it started.                                                                       | Start  |
+| `thread_stop`    | Stops a thread it started.                                                                                    | Start  |
+
+`inbox` only lists what finished or failed while an assistant is connected
+(Settings → Connections → Assistants): that's when this computer keeps the
+record, for 7 days. What needs you is always there.
+
 The design is in `design/outside-agents.md`.
 
 ## Connect an agent
