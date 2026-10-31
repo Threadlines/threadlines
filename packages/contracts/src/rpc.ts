@@ -10,6 +10,12 @@ import {
   OutsideAgentConnectionInput,
   OutsideAgentCreateKeyInput,
   OutsideAgentCreateKeyResult,
+  AssistantAlertTargetCreateInput,
+  AssistantAlertTargetInput,
+  AssistantAlertTargetSecretResult,
+  AssistantAlertTargetSetOnInput,
+  AssistantAlertTargetTestResult,
+  AssistantAlertTargetUpdateInput,
   OutsideAgentError,
   OutsideAgentRequestInput,
   OutsideAgentsSnapshot,
@@ -711,6 +717,12 @@ export const WS_METHODS = {
   outsideAgentsAssistantCode: "outsideAgents.assistantCode",
   outsideAgentsAssistantCodeCancel: "outsideAgents.assistantCodeCancel",
   outsideAgentsCreateKey: "outsideAgents.createKey",
+  outsideAgentsAlertTargetCreate: "outsideAgents.alertTargetCreate",
+  outsideAgentsAlertTargetUpdate: "outsideAgents.alertTargetUpdate",
+  outsideAgentsAlertTargetSetOn: "outsideAgents.alertTargetSetOn",
+  outsideAgentsAlertTargetRemove: "outsideAgents.alertTargetRemove",
+  outsideAgentsAlertTargetTest: "outsideAgents.alertTargetTest",
+  outsideAgentsAlertTargetSecret: "outsideAgents.alertTargetSecret",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -2275,6 +2287,60 @@ export const WsOutsideAgentsCreateKeyRpc = Rpc.make(WS_METHODS.outsideAgentsCrea
   error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
 });
 
+/**
+ * Web addresses assistants' alerts go to (docs/design/assistants.md, step 4).
+ * Owner only. The targets themselves ride `outsideAgents.subscribe`, without
+ * secrets; the signing secret comes only from `alertTargetSecret`.
+ */
+export const WsOutsideAgentsAlertTargetCreateRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAlertTargetCreate,
+  {
+    payload: AssistantAlertTargetCreateInput,
+    success: AssistantAlertTargetInput,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
+export const WsOutsideAgentsAlertTargetUpdateRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAlertTargetUpdate,
+  {
+    payload: AssistantAlertTargetUpdateInput,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
+export const WsOutsideAgentsAlertTargetSetOnRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAlertTargetSetOn,
+  {
+    payload: AssistantAlertTargetSetOnInput,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
+export const WsOutsideAgentsAlertTargetRemoveRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAlertTargetRemove,
+  {
+    payload: AssistantAlertTargetInput,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
+/** Sends a `threadlines.test` alert now and says how it went. */
+export const WsOutsideAgentsAlertTargetTestRpc = Rpc.make(WS_METHODS.outsideAgentsAlertTargetTest, {
+  payload: AssistantAlertTargetInput,
+  success: AssistantAlertTargetTestResult,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+export const WsOutsideAgentsAlertTargetSecretRpc = Rpc.make(
+  WS_METHODS.outsideAgentsAlertTargetSecret,
+  {
+    payload: AssistantAlertTargetInput,
+    success: AssistantAlertTargetSecretResult,
+    error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  },
+);
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -2499,6 +2565,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsOutsideAgentsAssistantCodeRpc,
   WsOutsideAgentsAssistantCodeCancelRpc,
   WsOutsideAgentsCreateKeyRpc,
+  WsOutsideAgentsAlertTargetCreateRpc,
+  WsOutsideAgentsAlertTargetUpdateRpc,
+  WsOutsideAgentsAlertTargetSetOnRpc,
+  WsOutsideAgentsAlertTargetRemoveRpc,
+  WsOutsideAgentsAlertTargetTestRpc,
+  WsOutsideAgentsAlertTargetSecretRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,
