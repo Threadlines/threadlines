@@ -1555,57 +1555,67 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
  * and title as a child row has them, then under the title the cloud (it
  * isn't on this device) with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
  * it"): a second line, so a narrow list keeps both the title and the
- * computer. The app has no thread to open, so the row only explains itself
- * on hover.
+ * computer. The app has no thread to open, so the status line explains
+ * itself on hover. One that nothing holds in front of the user can be
+ * wrapped up (or reopened) from here, like a child here.
  */
 export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   child,
+  onSetDone,
 }: {
   child: InboxRemoteChild;
+  /** Wraps it up or reopens it; absent: the row has no button. */
+  onSetDone?: RemoteChildSetDone | undefined;
 }) {
   const statusText = remoteChildStatusText(child);
   const isStart = child.threadId === null;
   const tone = child.isDone ? undefined : child.status?.colorClass;
+  const showAction = onSetDone !== undefined && child.canWrap === true;
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-inbox-child-row="remote">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <div
-              data-testid={`remote-child-row-${child.threadKey}`}
-              data-wrapped={child.isDone ? "true" : undefined}
-              className="cursor-default px-3 py-[5px] select-none pointer-coarse:py-2"
+      <div
+        data-testid={`remote-child-row-${child.threadKey}`}
+        data-wrapped={child.isDone ? "true" : undefined}
+        className="cursor-default px-3 py-[5px] select-none pointer-coarse:py-2"
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {child.isDone ? (
+            <CheckIcon
+              aria-label="Wrapped"
+              className="size-2.5 shrink-0 text-muted-foreground/50"
             />
-          }
-        >
-          <span className="flex min-w-0 items-center gap-1.5">
-            {child.isDone ? (
-              <CheckIcon
-                aria-label="Wrapped"
-                className="size-2.5 shrink-0 text-muted-foreground/50"
-              />
-            ) : (
-              <span
-                aria-label={child.status?.label ?? "Idle"}
-                className={cn(
-                  "size-1.5 shrink-0 rounded-full",
-                  child.status?.dotClass ?? "bg-muted-foreground/45",
-                )}
-              />
-            )}
+          ) : (
             <span
+              aria-label={child.status?.label ?? "Idle"}
               className={cn(
-                "min-w-0 flex-1 truncate text-xs leading-4",
-                child.isDone ? "text-muted-foreground/80" : "text-foreground/85",
+                "size-1.5 shrink-0 rounded-full",
+                child.status?.dotClass ?? "bg-muted-foreground/45",
               )}
-            >
-              {child.title}
-            </span>
-          </span>
+            />
+          )}
           <span
-            data-testid={`remote-child-meta-${child.threadKey}`}
-            // Under the title: the dot's width plus the gap.
-            className="mt-0.5 flex min-w-0 items-center gap-1 ps-3 text-[11px] leading-4 text-muted-foreground/60"
+            className={cn(
+              "min-w-0 flex-1 truncate text-xs leading-4",
+              child.isDone ? "text-muted-foreground/80" : "text-foreground/85",
+            )}
+          >
+            {child.title}
+          </span>
+          {showAction ? (
+            <span className={ROW_META_SLOT_CLASS_NAME}>
+              <RemoteChildWrapButton child={child} onSetDone={onSetDone} />
+            </span>
+          ) : null}
+        </span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                data-testid={`remote-child-meta-${child.threadKey}`}
+                // Under the title: the dot's width plus the gap.
+                className="mt-0.5 flex min-w-0 items-center gap-1 ps-3 text-[11px] leading-4 text-muted-foreground/60"
+              />
+            }
           >
             {/* Being set up here: no other computer to point at. */}
             {child.phase === "setting_up" ? null : (
@@ -1620,16 +1630,125 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
                 <span className={cn("shrink-0 font-mono", tone)}>{statusText}</span>
               </>
             )}
-          </span>
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          {child.phase === "setting_up"
-            ? "Its worktree is being made. It opens here once it starts."
-            : isStart
-              ? statusText
-              : `Its last known status. Connect to ${child.computerLabel} to open it.`}
-        </TooltipPopup>
+          </TooltipTrigger>
+          <TooltipPopup side="top">
+            {child.phase === "setting_up"
+              ? "Its worktree is being made. It opens here once it starts."
+              : isStart
+                ? statusText
+                : `How it stands on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+          </TooltipPopup>
+        </Tooltip>
+      </div>
+    </li>
+  );
+});
+
+/** Wraps up (`done`) or reopens (`active`) a child on a computer this app can't see. */
+export type RemoteChildSetDone = (child: InboxRemoteChild, state: "done" | "active") => void;
+
+/** The Wrap up or Reopen button of a child on a computer this app can't see. */
+function RemoteChildWrapButton({
+  child,
+  onSetDone,
+  testIdPrefix = "remote-child",
+}: {
+  child: InboxRemoteChild;
+  onSetDone: RemoteChildSetDone;
+  testIdPrefix?: string;
+}) {
+  const label = child.isDone ? "Reopen" : "Wrap up";
+  return (
+    <RowFloatingActions isActive={false} isSelected={false}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              data-thread-selection-safe
+              data-testid={`${testIdPrefix}-${child.isDone ? "reopen" : "done"}-${child.threadKey}`}
+              aria-label={`${label} ${child.title}`}
+              className={ROW_ACTION_BUTTON_CLASS_NAME}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSetDone(child, child.isDone ? "active" : "done");
+              }}
+            >
+              {child.isDone ? (
+                <Undo2Icon className="size-3.5" />
+              ) : (
+                <CheckIcon className="size-3.5" />
+              )}
+            </button>
+          }
+        />
+        <TooltipPopup side="top">{label}</TooltipPopup>
       </Tooltip>
+    </RowFloatingActions>
+  );
+}
+
+/**
+ * A child on a computer this app can't see that left its parent's family for
+ * Wrapped (`InboxDoneRemoteRow`): one line like a wrapped thread, the arrow
+ * naming the thread that started it, the cloud naming its computer, then
+ * when it wrapped. There is no thread here to open; Reopen puts it back
+ * under its parent, on both computers.
+ */
+export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
+  child,
+  startedByTitle,
+  onSetDone,
+}: {
+  child: InboxRemoteChild;
+  startedByTitle: string;
+  onSetDone?: RemoteChildSetDone | undefined;
+}) {
+  return (
+    <li className={ROW_ITEM_CLASS_NAME} data-inbox-done-row="remote">
+      <div
+        data-testid={`remote-done-row-${child.threadKey}`}
+        className={cn(
+          ROW_SURFACE_CLASS_NAME,
+          "flex cursor-default items-center gap-2 px-3 py-1.5",
+          resolveRowSurfaceTone({ isActive: false, isSelected: false }),
+        )}
+      >
+        <Tooltip>
+          <TooltipTrigger render={<span className="flex min-w-0 flex-1 items-center gap-2" />}>
+            <span
+              role="img"
+              aria-label={`Started by ${startedByTitle}`}
+              className="-mr-1 inline-flex shrink-0 items-center text-muted-foreground/60"
+            >
+              <CornerDownRightIcon className="size-3" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              {child.title}
+            </span>
+          </TooltipTrigger>
+          <TooltipPopup side="top">
+            {`Started by ${startedByTitle}, on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+          </TooltipPopup>
+        </Tooltip>
+        <span className={ROW_META_SLOT_CLASS_NAME}>
+          <span
+            role="img"
+            aria-label={`On ${child.computerLabel}`}
+            className="inline-flex shrink-0 items-center"
+          >
+            <CloudIcon aria-hidden className="size-3 text-muted-foreground/50" />
+          </span>
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
+            {child.settledAt ? formatRelativeTimeLabel(child.settledAt) : null}
+          </span>
+          {onSetDone !== undefined && child.canWrap === true ? (
+            <RemoteChildWrapButton child={child} onSetDone={onSetDone} testIdPrefix="remote-done" />
+          ) : null}
+        </span>
+      </div>
     </li>
   );
 });

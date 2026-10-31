@@ -1950,11 +1950,43 @@ export const RemoteChildRequest = Schema.Struct({
 export type RemoteChildRequest = typeof RemoteChildRequest.Type;
 
 /**
+ * What a linked computer says about a thread it runs for a parent on another
+ * computer: the facts its own sidebar files that thread by, so the parent's
+ * computer files it the same way (docs/design/fleet.md, "Filing a child on
+ * another computer"). Sent with every change, and again whenever the parent's
+ * computer starts listening.
+ */
+export const RemoteThreadFiling = Schema.Struct({
+  /**
+   * When its newest turn's answer reached the parent (`thread.handed-back`),
+   * while that turn is still its newest and has ended. Null otherwise.
+   */
+  handedBackAt: Schema.NullOr(IsoDateTime),
+  /** Pinned there: no automatic rule files it. */
+  pinned: Schema.Boolean,
+  /** The user's Wrap up or Reopen there, as stamped; how much it still counts is weighed by the reader. */
+  override: Schema.NullOr(OrchestrationThreadDoneOverride),
+  /** When its work last moved (its newest message or turn): what a wrap-up's timing reads. */
+  lastActivityAt: IsoDateTime,
+  /** When the user last saw it there. */
+  seenAt: Schema.NullOr(IsoDateTime),
+  /** It holds a finished turn or a failure the user hasn't opened there. */
+  unseen: Schema.Boolean,
+  /** It starts again on its own: a check-back is set, a usage reset continues it, or a message waits to run. */
+  waiting: Schema.Boolean,
+  /** Archived or deleted there: it left that computer's lists. */
+  archived: Schema.Boolean,
+});
+export type RemoteThreadFiling = typeof RemoteThreadFiling.Type;
+
+/**
  * A child on a linked computer, kept on its parent after its requests settle
  * (settling removes open requests): thread_read, thread_send, thread_stop and
  * report checks use it. `attachmentEpoch` moves when the parent stops it, so
  * an answer it gave before is never delivered. `cachedStatus` is the last
- * status that computer reported, for when it can't be reached.
+ * status that computer reported: this computer keeps listening while a live
+ * parent holds the child, so it is current whenever that computer can be
+ * reached.
  */
 export const RemoteChildThread = Schema.Struct({
   environmentId: EnvironmentId,
@@ -1967,16 +1999,22 @@ export const RemoteChildThread = Schema.Struct({
   attachmentEpoch: NonNegativeInt,
   cachedStatus: TrimmedNonEmptyString,
   updatedAt: IsoDateTime,
+  /** What that computer last said about filing it. Absent: an older computer, or nothing heard yet. */
+  filing: Schema.optional(RemoteThreadFiling),
+  /**
+   * The user's Wrap up or Reopen given here, stamped when given. It is sent on
+   * to that computer, which keeps the same stamp, so both weigh one word.
+   */
+  override: Schema.optional(OrchestrationThreadDoneOverride),
 });
 export type RemoteChildThread = typeof RemoteChildThread.Type;
 
 /**
  * A child on a linked computer as a parent's family shows it
- * (`remoteChildrenOf`): its record, and whether this computer still follows
- * it. Statuses from that computer only come in while a request to the child is
- * open. Once none is (its answer is in, or it failed or was stopped),
- * `cachedStatus` is the last this computer hears, and the child's work for the
- * parent is over: it wraps up like a finished child here would.
+ * (`remoteChildrenOf`): its record, and whether a request to it is open. A
+ * computer that sends `filing` is filed by it; for an older one, which only
+ * says how a child is doing while a request to it is open, a quiet child no
+ * request is open to counts as finished.
  */
 export const FamilyRemoteChild = Schema.Struct({
   ...RemoteChildThread.fields,
@@ -2840,6 +2878,29 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
    * work leaves the thread as it is.
    */
   whileQuietAfter: Schema.optional(Schema.Struct({ turnId: TurnId, messageId: MessageId })),
+  /**
+   * Server only (a Wrap up or Reopen sent from the computer whose thread
+   * started this one, `peer.thread.wrap`): skipped when the thread holds a
+   * word at least as new, and a Wrap up also marks the thread seen as of
+   * `at` unless it was seen later, in the same step.
+   */
+  fromLinkedComputer: Schema.optional(Schema.Boolean),
+});
+
+/**
+ * The user's Wrap up or Reopen for a parent's child on a linked computer,
+ * given here (`RemoteChildThread.override`). Recorded on the parent's record
+ * of the child at once, then sent on to that computer with the same stamp.
+ */
+const ThreadRemoteChildDoneOverrideSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.remote-child.done-override.set"),
+  commandId: CommandId,
+  /** The parent. */
+  threadId: ThreadId,
+  environmentId: EnvironmentId,
+  childThreadId: ThreadId,
+  state: ThreadDoneOverrideState,
+  at: IsoDateTime,
 });
 
 /**
@@ -3440,6 +3501,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestAutomationSetCommand,
   ThreadPullRequestDismissCommand,
   ThreadDoneOverrideSetCommand,
+  ThreadRemoteChildDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
   ThreadParticipantUpdateCommand,
@@ -3492,6 +3554,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestAutomationSetCommand,
   ThreadPullRequestDismissCommand,
   ThreadDoneOverrideSetCommand,
+  ThreadRemoteChildDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
   ThreadParticipantUpdateCommand,
@@ -4113,6 +4176,21 @@ const ThreadRemoteRequestQueueCommand = Schema.Struct({
 });
 
 /**
+ * Linked computers, on the child's computer: the asking computer wrote this
+ * thread's answer from `turnId` into its parent (`thread.handed-back`, like a
+ * local child's delivered answer). Recorded only while that turn is still the
+ * thread's newest and has ended, so an older answer never takes back a newer
+ * one's.
+ */
+const ThreadRemoteHandedBackRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.remote-handed-back.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  createdAt: IsoDateTime,
+});
+
+/**
  * Child threads: a request is over. With `reply`, the child's answer is
  * delivered to the agent that asked and queued for it, in the same step,
  * unless its delivery was cancelled meanwhile. With `note`, the agent hears
@@ -4324,6 +4402,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadRemoteChildUpdateCommand,
   ThreadRemoteCancelsDeliveredCommand,
   ThreadRemoteRequestQueueCommand,
+  ThreadRemoteHandedBackRecordCommand,
   ThreadSessionSetCommand,
   ThreadContinueAtResetFireCommand,
   ThreadContinueAtResetPostponeCommand,

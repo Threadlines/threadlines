@@ -46,8 +46,12 @@ import {
   type PeerStartResult,
   type PeerThreadListResult,
   type PeerThreadReadInput,
+  type PeerReportAckInput,
   type PeerThreadStopResult,
+  type PeerThreadWrapInput,
+  type PeerThreadWrapResult,
   type PeerWatchEvent,
+  type PeerWatchInput,
   PeerRpcError,
   ProviderInstanceId,
   type RuntimeMode,
@@ -55,6 +59,8 @@ import {
   type ThreadRemoteOrigin,
   TurnId,
 } from "@threadlines/contracts";
+import { sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import { remoteThreadFilingOf } from "@threadlines/shared/threadFiling";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -178,10 +184,22 @@ export interface LinkRequestsShape {
     input: PeerThreadReadInput,
   ) => Effect.Effect<AgentThreadReadResult, PeerRpcError>;
   readonly listThreads: (link: PeerLink) => Effect.Effect<PeerThreadListResult>;
-  /** Open requests' status and unacked reports, `synced`, then live changes. */
-  readonly watch: (link: PeerLink) => Stream.Stream<PeerWatchEvent>;
-  /** Fails unless the ack was recorded, so the asking computer acks again. */
-  readonly ack: (link: PeerLink, reportId: string) => Effect.Effect<void, PeerRpcError>;
+  /**
+   * Open requests' status, unacked reports, the state of the threads asked
+   * about, `synced`, then live changes.
+   */
+  readonly watch: (link: PeerLink, input: PeerWatchInput) => Stream.Stream<PeerWatchEvent>;
+  /**
+   * Fails unless the ack was recorded, so the asking computer acks again. A
+   * delivered answer marks its turn handed back first, so a retried ack
+   * finishes that too.
+   */
+  readonly ack: (link: PeerLink, input: PeerReportAckInput) => Effect.Effect<void, PeerRpcError>;
+  /** The asking computer's user wrapped up or reopened a thread its link started. */
+  readonly wrapThread: (
+    link: PeerLink,
+    input: PeerThreadWrapInput,
+  ) => Effect.Effect<PeerThreadWrapResult, PeerRpcError>;
   /** This computer's user allows or denies a start that waits for them. */
   readonly respond: (input: LinksRespondRequestInput) => Effect.Effect<void, ComputerLinkError>;
   readonly pending: Effect.Effect<ReadonlyArray<ComputerLinkPendingRequest>>;
@@ -265,6 +283,15 @@ export class LinkRequests extends Context.Service<LinkRequests, LinkRequestsShap
 ) {}
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** A thread a link started, as its watch hears it. */
+type ThreadStateEvent = Extract<PeerWatchEvent, { readonly type: "thread" }>;
+
+/** Two states the asking computer reads the same; when one was sent doesn't count. */
+const sameThreadState = (left: ThreadStateEvent, right: ThreadStateEvent) =>
+  left.status === right.status &&
+  left.title === right.title &&
+  sameRemoteThreadFiling(left.filing, right.filing);
 
 /**
  * The most access a linked computer's thread gets, until its link is set
@@ -360,8 +387,8 @@ const make = Effect.gen(function* () {
   const ownRequests = new Set<string>();
   const quietChecks = new Set<string>();
   const stopChecks = new Set<string>();
-  /** The status word last sent per thread, so watches only hear changes. */
-  const lastThreadStatus = new Map<string, string>();
+  /** What was last sent per thread (status word, title, filing), so watches only hear changes. */
+  const lastThreadStatus = new Map<string, ThreadStateEvent>();
 
   const requestKey = (deviceId: string, requestId: string) => `${deviceId}\u0000${requestId}`;
 
@@ -509,6 +536,25 @@ const make = Effect.gen(function* () {
           Effect.as("failed" as const),
         ),
       ),
+    );
+
+  /**
+   * A dispatch whose rules may decline it (the engine's refusal, now or for
+   * this command id before): `refused` is an answer, not a failure. Anything
+   * else that goes wrong fails, so the asking computer tries again.
+   */
+  const dispatchUnlessRefused = (command: OrchestrationCommand, what: string) =>
+    engine.dispatch(command).pipe(
+      Effect.as("ok" as const),
+      Effect.catch((error) => {
+        const tag = (error as { readonly _tag?: string })._tag;
+        return tag === "OrchestrationCommandInvariantError" ||
+          tag === "OrchestrationCommandPreviouslyRejectedError"
+          ? Effect.succeed("refused" as const)
+          : Effect.logInfo(`link requests could not ${what}`, { detail: String(error) }).pipe(
+              Effect.andThen(Effect.fail(peerError(`${ownLabel()} couldn't ${what}.`))),
+            );
+      }),
     );
 
   /** A dispatch the asking computer must hear failed, so it tries again. */
@@ -1303,7 +1349,7 @@ const make = Effect.gen(function* () {
   // The watch
   // ---------------------------------------------------------------------------
 
-  const watch: LinkRequestsShape["watch"] = (link) =>
+  const watch: LinkRequestsShape["watch"] = (link, input) =>
     Stream.unwrap(
       Effect.gen(function* () {
         // Subscribed before the replay is read, so nothing falls between.
@@ -1312,6 +1358,12 @@ const make = Effect.gen(function* () {
         const replay: Array<PeerWatchEvent> = [];
         for (const row of rows) {
           replay.push((yield* reportEvent(row)) ?? statusEvent(row));
+        }
+        // After the reports, so a thread's state now outranks how a request
+        // to it ended. Only threads this link started.
+        for (const threadId of new Set(input.threads ?? [])) {
+          const state = yield* threadState(threadId);
+          if (state !== undefined && state.deviceId === link.deviceId) replay.push(state.event);
         }
         replay.push({ type: "synced" });
         return Stream.concat(
@@ -1324,11 +1376,69 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const ack: LinkRequestsShape["ack"] = (link, reportId) =>
+  const ack: LinkRequestsShape["ack"] = (link, input) =>
     Effect.gen(function* () {
+      const failed = () => peerError(`${ownLabel()} couldn't record that.`);
+      if (input.delivered === true) {
+        // Before the ack lands, so a crash between the two is retried whole.
+        const row = yield* ledger
+          .getByReport(link.deviceId, input.reportId)
+          .pipe(Effect.mapError(failed));
+        if (
+          Option.isSome(row) &&
+          row.value.deliveredAt === null &&
+          row.value.threadId !== null &&
+          row.value.reportTurnId !== null
+        ) {
+          // Refused: an older turn's answer, or one already recorded.
+          yield* dispatchUnlessRefused(
+            {
+              type: "thread.remote-handed-back.record",
+              commandId: CommandId.make(
+                `server:link-handed-back:${link.deviceId}:${input.reportId}`,
+              ),
+              threadId: row.value.threadId,
+              turnId: TurnId.make(row.value.reportTurnId),
+              createdAt: yield* nowIso,
+            },
+            "record that its answer reached the thread that asked",
+          );
+        }
+      }
       yield* ledger
-        .markDelivered({ linkDeviceId: link.deviceId, reportId, now: yield* nowIso })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record that.`)));
+        .markDelivered({
+          linkDeviceId: link.deviceId,
+          reportId: input.reportId,
+          now: yield* nowIso,
+        })
+        .pipe(Effect.mapError(failed));
+    });
+
+  /**
+   * Wrapping up from the asking computer comes after the user read the
+   * thread's answer there, so it counts as seeing it here too: the visit a
+   * thread gets before a failure or unread answer may be wrapped away.
+   */
+  const wrapThread: LinkRequestsShape["wrapThread"] = (link, input) =>
+    Effect.gen(function* () {
+      const thread = yield* linkThread(link, input.threadId);
+      if (thread === undefined) return { status: "not_yours" } as const;
+      // In one step: a newer word given here stands (refused), and a Wrap up
+      // marks it seen.
+      yield* dispatchUnlessRefused(
+        {
+          type: "thread.done-override.set",
+          commandId: CommandId.make(
+            `server:link-wrap:${link.deviceId}:${input.threadId}:${input.override.state}:${input.override.at}`,
+          ),
+          threadId: input.threadId,
+          state: input.override.state,
+          at: input.override.at,
+          fromLinkedComputer: true,
+        },
+        input.override.state === "done" ? "wrap up that thread" : "reopen that thread",
+      );
+      return { status: "ok" } as const;
     });
 
   // ---------------------------------------------------------------------------
@@ -1678,25 +1788,73 @@ const make = Effect.gen(function* () {
       }
     });
 
-  /** The asking computer's record of a thread its link started: its status word, when it moves. */
-  const publishThreadStatus = (threadId: ThreadId) =>
+  /**
+   * A thread a link started as that computer hears it: its status word, and
+   * the facts its sidebar files it by (`RemoteThreadFiling`). An archived or
+   * deleted one says so, keeping the rest of what was last sent. Undefined
+   * for a thread no link started.
+   */
+  const threadState = (threadId: ThreadId) =>
     Effect.gen(function* () {
+      // Null: it couldn't be read, so nothing is said of it.
       const shell = yield* snapshots.getThreadShellById(threadId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => null),
+      );
+      if (shell === null) return undefined;
+      if (shell !== undefined) {
+        const origin = shell.remoteOrigin ?? null;
+        if (origin === null) return undefined;
+        const event: ThreadStateEvent = {
+          type: "thread",
+          threadId,
+          title: shell.title,
+          status: threadStatus(shell).word,
+          updatedAt: yield* nowIso,
+          filing: remoteThreadFilingOf(shell),
+        };
+        return { deviceId: origin.linkDeviceId, event };
+      }
+      // Not in the live lists: archived or deleted, or never here.
+      const row = yield* threadRows.getById({ threadId }).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-      const origin = shell?.remoteOrigin ?? null;
-      if (shell === undefined || origin === null) return;
-      const word = threadStatus(shell).word;
-      if (lastThreadStatus.get(threadId) === word) return;
-      lastThreadStatus.set(threadId, word);
-      yield* publish(origin.linkDeviceId, {
+      const origin = row?.remoteOrigin ?? null;
+      if (row === undefined || origin === null) return undefined;
+      // Not actually archived or deleted: the live read just missed it.
+      if (row.archivedAt === null && row.deletedAt === null) return undefined;
+      const last = lastThreadStatus.get(threadId);
+      const event: ThreadStateEvent = {
         type: "thread",
         threadId,
-        title: shell.title,
-        status: word,
+        title: row.title.trim().length > 0 ? row.title : (last?.title ?? "A thread"),
+        status: last?.status ?? "idle",
         updatedAt: yield* nowIso,
-      });
+        filing: {
+          handedBackAt: null,
+          pinned: false,
+          override: null,
+          lastActivityAt: row.updatedAt,
+          seenAt: null,
+          unseen: false,
+          waiting: false,
+          ...last?.filing,
+          archived: true,
+        },
+      };
+      return { deviceId: origin.linkDeviceId, event };
+    });
+
+  /** Tells the asking computer how a thread its link started stands, when that moves. */
+  const publishThreadStatus = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const state = yield* threadState(threadId);
+      if (state === undefined) return;
+      const last = lastThreadStatus.get(threadId);
+      if (last !== undefined && sameThreadState(last, state.event)) return;
+      lastThreadStatus.set(threadId, state.event);
+      yield* publish(state.deviceId, state.event);
     });
 
   const onEvent = (event: OrchestrationEvent) =>
@@ -1724,12 +1882,24 @@ const make = Effect.gen(function* () {
         case "thread.session-set":
           yield* onSession(event.payload.threadId);
           return;
+        // Everything the asking computer files the thread by.
         case "thread.turn-completed":
         case "thread.activity-appended":
         case "thread.done-override-set":
+        case "thread.handed-back":
+        case "thread.pinned":
+        case "thread.unpinned":
+        case "thread.seen-set":
+        case "thread.meta-updated":
+        case "thread.unarchived":
+        case "thread.check-backs-set":
+        case "thread.follow-up-queued":
+        case "thread.continue-at-reset-set":
+        case "thread.continue-at-reset-skipped":
           yield* publishThreadStatus(event.payload.threadId);
           return;
         case "thread.follow-up-unqueued": {
+          yield* publishThreadStatus(event.payload.threadId);
           if (event.payload.reason === "sent") return;
           const thread = yield* readThread(event.payload.threadId);
           const deviceId = thread?.remoteOrigin?.linkDeviceId;
@@ -1758,6 +1928,7 @@ const make = Effect.gen(function* () {
               `The user on ${ownLabel()} ${event.type === "thread.deleted" ? "deleted" : "archived"} that thread before it finished.`,
             );
           }
+          yield* publishThreadStatus(event.payload.threadId);
           return;
         }
         default:
@@ -2111,6 +2282,7 @@ const make = Effect.gen(function* () {
     send,
     cancel,
     stopThread,
+    wrapThread,
     readThread: readLinkThread,
     listThreads,
     watch,

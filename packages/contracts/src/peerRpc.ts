@@ -16,7 +16,9 @@ import { ProviderOptionSelections } from "./model.ts";
 import {
   ModelSelection,
   OrchestrationThreadActivity,
+  OrchestrationThreadDoneOverride,
   ProviderInteractionMode,
+  RemoteThreadFiling,
   RuntimeMode,
   ThreadImportMessage,
 } from "./orchestration.ts";
@@ -151,6 +153,11 @@ export const PeerDescriptor = Schema.Struct({
   projects: Schema.Array(PeerProject),
   /** Takes threads moved here (`peer.move.*`). Absent: an older server that can't. */
   moves: Schema.optional(Schema.Boolean),
+  /**
+   * Says how the caller's threads here are filed (`filing` on `thread` watch
+   * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
+   */
+  threadFiling: Schema.optional(Schema.Boolean),
 });
 export type PeerDescriptor = typeof PeerDescriptor.Type;
 
@@ -242,6 +249,22 @@ export const PeerThreadStopResult = Schema.Struct({
 });
 export type PeerThreadStopResult = typeof PeerThreadStopResult.Type;
 
+/**
+ * The caller's user wrapped up or reopened a thread its link started here,
+ * from the caller's sidebar. Stored with the caller's stamp, so both
+ * computers weigh the same word.
+ */
+export const PeerThreadWrapInput = Schema.Struct({
+  threadId: ThreadId,
+  override: OrchestrationThreadDoneOverride,
+});
+export type PeerThreadWrapInput = typeof PeerThreadWrapInput.Type;
+
+export const PeerThreadWrapResult = Schema.Struct({
+  status: Schema.Literals(["ok", "not_yours"]),
+});
+export type PeerThreadWrapResult = typeof PeerThreadWrapResult.Type;
+
 export const PeerThreadReadInput = Schema.Struct({
   threadId: ThreadId,
   after: Schema.optional(Schema.Number),
@@ -292,7 +315,8 @@ export type PeerRequestOutcome = typeof PeerRequestOutcome.Type;
  * What `peer.watch` streams: a request moved on (`status`), a request ended
  * (`report`, kept and replayed on every connect until `peer.report.ack`), or
  * a thread the caller started changed (`thread`). On connect it first sends
- * every open request's status and every unacked report, then `synced`.
+ * every open request's status and every unacked report, then the state of
+ * each thread the caller asked about (`PeerWatchInput.threads`), then `synced`.
  */
 export const PeerWatchEvent = Schema.Union([
   Schema.Struct({
@@ -321,12 +345,33 @@ export const PeerWatchEvent = Schema.Union([
     title: TrimmedNonEmptyString,
     status: AgentThreadStatusWord,
     updatedAt: IsoDateTime,
+    /** How it is filed here. Absent: an older server. */
+    filing: Schema.optional(RemoteThreadFiling),
   }),
   Schema.Struct({ type: Schema.Literal("synced") }),
 ]);
 export type PeerWatchEvent = typeof PeerWatchEvent.Type;
 
-export const PeerReportAckInput = Schema.Struct({ reportId: TrimmedNonEmptyString });
+/**
+ * What the caller holds of this computer's threads it started: their state now
+ * is sent on connect, after the reports and before `synced`. Absent: an older
+ * caller, which hears only changes.
+ */
+export const PeerWatchInput = Schema.Struct({
+  threads: Schema.optional(Schema.Array(ThreadId)),
+});
+export type PeerWatchInput = typeof PeerWatchInput.Type;
+
+export const PeerReportAckInput = Schema.Struct({
+  reportId: TrimmedNonEmptyString,
+  /**
+   * The answer was written into the parent for its agent, not dropped (by
+   * Stop, a wrap, an archive, or an agent that left): the thread here records
+   * its answering turn as handed back. Absent: an older caller; nothing is
+   * recorded.
+   */
+  delivered: Schema.optional(Schema.Boolean),
+});
 export type PeerReportAckInput = typeof PeerReportAckInput.Type;
 
 // ----- moving a thread here (docs/design/fleet.md, Part 3) ---------------------------------
@@ -445,6 +490,7 @@ export const PEER_METHODS = {
   requestSend: "peer.request.send",
   requestCancel: "peer.request.cancel",
   threadStop: "peer.thread.stop",
+  threadWrap: "peer.thread.wrap",
   threadRead: "peer.thread.read",
   threadList: "peer.thread.list",
   watch: "peer.watch",
@@ -487,6 +533,12 @@ export const PeerThreadStopRpc = Rpc.make(PEER_METHODS.threadStop, {
   error: PeerRpcError,
 });
 
+export const PeerThreadWrapRpc = Rpc.make(PEER_METHODS.threadWrap, {
+  payload: PeerThreadWrapInput,
+  success: PeerThreadWrapResult,
+  error: PeerRpcError,
+});
+
 export const PeerThreadReadRpc = Rpc.make(PEER_METHODS.threadRead, {
   payload: PeerThreadReadInput,
   success: AgentThreadReadResult,
@@ -500,7 +552,7 @@ export const PeerThreadListRpc = Rpc.make(PEER_METHODS.threadList, {
 });
 
 export const PeerWatchRpc = Rpc.make(PEER_METHODS.watch, {
-  payload: Schema.Struct({}),
+  payload: PeerWatchInput,
   success: PeerWatchEvent,
   error: PeerRpcError,
   stream: true,
@@ -568,6 +620,7 @@ export const PeerRpcGroup = RpcGroup.make(
   PeerRequestSendRpc,
   PeerRequestCancelRpc,
   PeerThreadStopRpc,
+  PeerThreadWrapRpc,
   PeerThreadReadRpc,
   PeerThreadListRpc,
   PeerWatchRpc,

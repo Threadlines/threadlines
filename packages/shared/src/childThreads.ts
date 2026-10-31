@@ -20,6 +20,7 @@ import {
   type FamilyRemoteChild,
   type RemoteChildStart,
   type RemoteChildThread,
+  type RemoteThreadFiling,
   type RoomAgentRef,
   type LocalChildStart,
   type ThreadId,
@@ -250,13 +251,35 @@ const sameRemoteRequest = (
   left.threadId === right.threadId &&
   left.status === right.status;
 
+/** Two filings say the same, so a watch only hears a change. */
+export function sameRemoteThreadFiling(
+  left: RemoteThreadFiling | undefined,
+  right: RemoteThreadFiling | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.handedBackAt === right.handedBackAt &&
+    left.pinned === right.pinned &&
+    left.override?.state === right.override?.state &&
+    left.override?.at === right.override?.at &&
+    left.lastActivityAt === right.lastActivityAt &&
+    left.seenAt === right.seenAt &&
+    left.unseen === right.unseen &&
+    left.waiting === right.waiting &&
+    left.archived === right.archived
+  );
+}
+
 const sameRemoteChild = (left: RemoteChildThread, right: RemoteChildThread): boolean =>
   left.label === right.label &&
   left.title === right.title &&
   left.handle === right.handle &&
   left.attachmentEpoch === right.attachmentEpoch &&
   left.cachedStatus === right.cachedStatus &&
-  left.updatedAt === right.updatedAt;
+  left.updatedAt === right.updatedAt &&
+  sameRemoteThreadFiling(left.filing, right.filing) &&
+  left.override?.state === right.override?.state &&
+  left.override?.at === right.override?.at;
 
 /** A parent's record of its child on a linked computer, if it has one. */
 export const remoteChildOf = (

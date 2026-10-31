@@ -59,7 +59,9 @@ Whether the thread's agent may bring in another model on its own is {place:threa
 
 {place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
 
-A started thread gets at most its parent's access level, and the parent's model unless the agent picks another. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).`,
+A started thread gets at most its parent's access level, and the parent's model unless the agent picks another. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).
+
+A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.`,
   },
   {
     id: "linking-computers",

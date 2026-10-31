@@ -52,6 +52,7 @@ import {
   InboxChildRow,
   InboxLinkRequestRow,
   InboxRemoteChildRow,
+  InboxRemoteDoneRow,
   InboxThreadRow,
 } from "./InboxRows";
 import { usePendingLinkRequests } from "./linkedComputers";
@@ -137,6 +138,13 @@ function renderRow(
   );
   return { openPrLink };
 }
+
+const REMOTE_FILING = {
+  now: "2026-10-21T10:00:00.000Z",
+  wrapUpOnFinish: true,
+  autoDoneAfterDays: 2,
+  linked: () => true,
+};
 
 describe("InboxThreadRow on a touch screen", () => {
   it("opens the thread's menu on a held finger, and the lift doesn't also open the thread", async () => {
@@ -624,6 +632,7 @@ describe("child thread families in the inbox", () => {
     // A start Windows PC hasn't allowed yet: there is no thread there.
     const [waitingStart] = resolveRemoteFamilyChildren({
       parent: {
+        id: ThreadId.make("thread-release"),
         environmentId: EnvironmentId.make("environment-mac"),
         remoteChildStarts: [
           {
@@ -639,11 +648,12 @@ describe("child thread families in the inbox", () => {
       canSeeComputer: () => false,
       computerLabel: (_environmentId, lastKnown) => lastKnown,
       hasThread: () => false,
-      wrapUpOnFinish: true,
+      filing: REMOTE_FILING,
     });
     // A child started here whose worktree is still being made: nowhere else to name.
     const [settingUp] = resolveRemoteFamilyChildren({
       parent: {
+        id: ThreadId.make("thread-release"),
         environmentId: ENVIRONMENT_ID,
         localChildStarts: [
           {
@@ -657,7 +667,7 @@ describe("child thread families in the inbox", () => {
       canSeeComputer: () => true,
       computerLabel: (_environmentId, lastKnown) => lastKnown,
       hasThread: () => false,
-      wrapUpOnFinish: true,
+      filing: REMOTE_FILING,
     });
     render(
       <ThreadHoverCardProvider>
@@ -726,6 +736,75 @@ describe("child thread families in the inbox", () => {
     const settingUpMeta = page.getByTestId("remote-child-meta-setup:request-changelog");
     await expect.element(settingUpMeta).toMatchTextContent("Setting up");
     expect(settingUpMeta.element().querySelector("svg")).toBeNull();
+  });
+
+  it("wraps up a finished child on another computer from its row, and reopens it from Wrapped", async () => {
+    const windows = EnvironmentId.make("environment-windows");
+    const recorded = (cachedStatus: string) => ({
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make("thread-checks"),
+      handle: "Codex",
+      title: "Run the Windows checks",
+      attachmentEpoch: 0,
+      cachedStatus,
+      updatedAt: "2026-10-21T09:05:00.000Z",
+      followed: false,
+      filing: {
+        handedBackAt: null,
+        pinned: false,
+        override: null,
+        lastActivityAt: "2026-10-21T09:30:00.000Z",
+        seenAt: null,
+        unseen: true,
+        waiting: false,
+        archived: false,
+      },
+    });
+    const childOf = (cachedStatus: string) =>
+      resolveRemoteFamilyChildren({
+        parent: {
+          id: ThreadId.make("thread-release"),
+          environmentId: ENVIRONMENT_ID,
+          remoteChildren: [recorded(cachedStatus)],
+        },
+        canSeeComputer: () => false,
+        computerLabel: (_environmentId, lastKnown) => lastKnown,
+        hasThread: () => false,
+        filing: REMOTE_FILING,
+      })[0]!;
+    const quiet = childOf("idle");
+    const busy = { ...childOf("working"), threadKey: "busy" };
+    const wrapped = { ...quiet, isDone: true, settledAt: "2026-10-21T09:40:00.000Z" };
+    const setDone = vi.fn();
+    render(
+      <ul>
+        <InboxRemoteChildRow child={quiet} onSetDone={setDone} />
+        <InboxRemoteChildRow child={busy} onSetDone={setDone} />
+        <InboxRemoteDoneRow
+          child={wrapped}
+          startedByTitle="Ship the 0.6 release"
+          onSetDone={setDone}
+        />
+      </ul>,
+    );
+
+    // Its turn there didn't go back to the parent, so it waits under it,
+    // and the user can wrap it up from here.
+    expect(quiet.isDone).toBe(false);
+    await page.getByTestId(`remote-child-row-${quiet.threadKey}`).hover();
+    await userEvent.click(page.getByTestId(`remote-child-done-${quiet.threadKey}`));
+    expect(setDone).toHaveBeenLastCalledWith(quiet, "done");
+    // One still working there can't be waved away.
+    expect(page.getByTestId("remote-child-done-busy").query()).toBeNull();
+
+    // In Wrapped it names the thread that started it, and Reopen puts it back.
+    await expect
+      .element(page.getByTestId(`remote-done-row-${wrapped.threadKey}`))
+      .toMatchTextContent("Run the Windows checks");
+    await page.getByTestId(`remote-done-row-${wrapped.threadKey}`).hover();
+    await userEvent.click(page.getByTestId(`remote-done-reopen-${wrapped.threadKey}`));
+    expect(setDone).toHaveBeenLastCalledWith(wrapped, "active");
   });
 });
 
