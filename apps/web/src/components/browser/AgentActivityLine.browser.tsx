@@ -163,14 +163,13 @@ describe("BrowserPanel device toolbar", () => {
 
     try {
       await expect.element(page.getByTestId("browser-device-toolbar")).toBeVisible();
-      const preset = (await page
-        .getByTestId("browser-device-preset")
-        .element()) as HTMLSelectElement;
       const width = (await page.getByTestId("browser-device-width").element()) as HTMLInputElement;
       const activeTab =
         useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs[0];
 
-      expect(preset.value).toBe("Responsive");
+      await expect
+        .element(page.getByTestId("browser-device-preset"))
+        .toHaveTextContent("Responsive");
       expect(width.value).toBe("");
       expect(activeTab?.viewport).toEqual({ width: null, height: null });
     } finally {
@@ -187,10 +186,10 @@ describe("BrowserPanel device toolbar", () => {
 
     try {
       const preset = page.getByTestId("browser-device-preset");
-      await expect.element(preset).toBeVisible();
-      expect(((await preset.element()) as HTMLSelectElement).value).toBe("Custom");
+      await expect.element(preset).toHaveTextContent("Custom");
 
-      await preset.selectOptions("Responsive");
+      await preset.click();
+      await page.getByTestId("browser-page-size-responsive").click();
 
       const activeTab =
         useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs[0];
@@ -198,6 +197,44 @@ describe("BrowserPanel device toolbar", () => {
     } finally {
       screen.unmount();
       resetBrowserPanel();
+    }
+  });
+
+  it("opens new tabs, and a thread's first tab, at the size chosen for new tabs", async () => {
+    seedBrowserPanel({ width: null, height: null });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} flexGrow={1} onClose={() => {}} />,
+    );
+    const laptop = { width: 1280, height: 800 };
+    const otherThread = scopeThreadRef(
+      EnvironmentId.make("environment-browser-panel"),
+      ThreadId.make("thread-browser-panel-other"),
+    );
+
+    try {
+      const preset = page.getByTestId("browser-device-preset");
+      await preset.click();
+      await page.getByTestId("browser-page-size-laptop").click();
+      await expect.element(preset).toHaveTextContent("Laptop");
+
+      await preset.click();
+      await page.getByTestId("browser-new-tab-size").click();
+      expect(getClientSettings().browserNewTabSize).toEqual(laptop);
+
+      const store = useBrowserPanelStore.getState();
+      const newTabId = store.openTab(THREAD_REF);
+      const tabs = useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs;
+      expect(tabs?.find((tab) => tab.id === newTabId)?.viewport).toEqual(laptop);
+
+      store.toggleBrowserOpen(otherThread);
+      expect(
+        useBrowserPanelStore.getState().browserStateByThreadKey[scopedThreadKey(otherThread)]
+          ?.tabs[0]?.viewport,
+      ).toEqual(laptop);
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+      updateSettings({ browserNewTabSize: null });
     }
   });
 });

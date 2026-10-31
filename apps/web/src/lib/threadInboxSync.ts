@@ -14,7 +14,7 @@
  * is offered again when the environment answers (see `sendSeen`).
  */
 import { parseScopedThreadKey, scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@threadlines/contracts";
 import { useShallow } from "zustand/react/shallow";
 
 import {
@@ -164,6 +164,36 @@ export function reopenThreadByKey(threadKey: string, at?: string): void {
   const threadRef = parseScopedThreadKey(threadKey);
   if (!threadRef) return;
   setThreadDoneOverride(threadRef, "active", at);
+}
+
+/**
+ * Wrap up (or reopen) a parent's child on a computer this app can't see. The
+ * word lands on the parent's record of it, on the parent's computer, which
+ * sends it on to the child's computer with the same stamp
+ * (`thread.remote-child.done-override.set`). The parent's computer answers
+ * within a moment, so the row moves on its word, not an overlay.
+ */
+export function setRemoteChildDoneOverride(
+  parentRef: ScopedThreadRef,
+  child: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+  state: "done" | "active",
+  at: string = new Date().toISOString(),
+): Promise<void> {
+  const api = readEnvironmentApi(parentRef.environmentId);
+  if (!api) {
+    return Promise.reject(new Error(`Environment ${parentRef.environmentId} is not connected.`));
+  }
+  return api.orchestration
+    .dispatchCommand({
+      type: "thread.remote-child.done-override.set",
+      commandId: newCommandId(),
+      threadId: parentRef.threadId,
+      environmentId: child.environmentId,
+      childThreadId: child.threadId,
+      state,
+      at,
+    })
+    .then(() => undefined);
 }
 
 /**

@@ -96,6 +96,20 @@ export const BrowserTrustedCertificate = Schema.Struct({
 });
 export type BrowserTrustedCertificate = typeof BrowserTrustedCertificate.Type;
 
+/** The largest width or height a browser page size can have, in CSS pixels. */
+export const MAX_BROWSER_PAGE_DIMENSION = 9999;
+
+const BrowserPageDimension = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
+  Schema.isLessThanOrEqualTo(MAX_BROWSER_PAGE_DIMENSION),
+);
+
+/** A fixed page size for the browser panel, in CSS pixels. */
+export const BrowserPageSize = Schema.Struct({
+  width: BrowserPageDimension,
+  height: BrowserPageDimension,
+});
+export type BrowserPageSize = typeof BrowserPageSize.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   // Sites the browser panel may be driven to, per project, while that project
   // asks first. Values are approval keys: the exact lowercased host, with `www.`
@@ -121,6 +135,12 @@ export const ClientSettingsSchema = Schema.Struct({
     ProjectId,
     Schema.Array(BrowserTrustedCertificate),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // The size new browser panel tabs open at. null fills the panel and reflows
+  // with it; a fixed size is scaled down to fit. Kept on this computer, like
+  // the browser itself.
+  browserNewTabSize: Schema.NullOr(BrowserPageSize).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   // Whether a thread's first subagent opens the right panel on its Agents tab.
   // Off, only the user opens the panel. Per device: it is a choice about how
   // much room this screen has.
@@ -1209,6 +1229,7 @@ export const ClientSettingsPatch = Schema.Struct({
   agentBrowserTrustedCertificates: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.Array(BrowserTrustedCertificate)),
   ),
+  browserNewTabSize: Schema.optionalKey(Schema.NullOr(BrowserPageSize)),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),

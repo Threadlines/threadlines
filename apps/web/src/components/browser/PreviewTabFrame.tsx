@@ -7,8 +7,8 @@ import {
   selectThreadAgentState,
   useBrowserPanelStore,
   type BrowserTab,
-  type BrowserViewport,
 } from "../../browserPanelStore";
+import type { BrowserViewport } from "./pageSizes";
 import { useBrowserLiveStore } from "../../browserLiveStore";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
@@ -134,6 +134,8 @@ export function PreviewTabFrame({
   colorSchemeRef.current = colorScheme;
   const zoomFactorRef = useRef(zoomFactor);
   zoomFactorRef.current = zoomFactor;
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   useEffect(() => {
     const webview = elementRef.current;
@@ -190,6 +192,16 @@ export function PreviewTabFrame({
           webContentsId: attachedId as number,
           colorScheme: colorSchemeRef.current,
         });
+        // A tab that starts at a set size -- new tabs can, and restored ones
+        // do -- had it set before there was a guest to take it.
+        const { width, height } = viewportRef.current;
+        if (width !== null && height !== null) {
+          void window.desktopBridge?.previewSetViewport?.({
+            webContentsId: attachedId as number,
+            width,
+            height,
+          });
+        }
       });
     };
     const publishNav = (loading: boolean) => {

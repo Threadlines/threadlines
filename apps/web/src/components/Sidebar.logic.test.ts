@@ -36,6 +36,7 @@ import {
   isThreadDone,
   isUnreadFinishedWork,
   mergeThreadDoneOverride,
+  mergeWrappedShelfRows,
   mergeThreadLastSeenAt,
   remoteChildStatusText,
   resolveRemoteFamilyChildren,
@@ -47,6 +48,8 @@ import {
   labelWrappedRowsByDay,
   resolveInboxLiveFoldLimit,
   windowInboxThreads,
+  type InboxDoneRemoteRow,
+  type InboxDoneRow,
   type InboxFamilyEntry,
   type ThreadStatusPill,
 } from "./Sidebar.logic";
@@ -56,6 +59,7 @@ import {
   OrchestrationLatestTurn,
   ProjectId,
   ProviderInstanceId,
+  type RemoteThreadFiling,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -1654,7 +1658,11 @@ describe("child thread families", () => {
       { active: "wrapped-open-child" },
     ).done;
     expect(
-      windowInboxDoneRows(done, 2, "wrapped-open-child").map((row) => row.entry.threadKey),
+      windowInboxDoneRows(
+        mergeWrappedShelfRows(done, [], () => null),
+        2,
+        "wrapped-open-child",
+      ).map((row) => row.key),
     ).toEqual(["x", "y", "wrapped-parent"]);
 
     // A wrapped thread open in the chat past the shelf's limit stays too.
@@ -1662,11 +1670,13 @@ describe("child thread families", () => {
       [entry("x", { done: true }), entry("y", { done: true }), entry("z", { done: true })],
       { active: "z" },
     ).done;
-    expect(windowInboxDoneRows(doneWithOpenRow, 2, "z").map((row) => row.entry.threadKey)).toEqual([
-      "x",
-      "y",
-      "z",
-    ]);
+    expect(
+      windowInboxDoneRows(
+        mergeWrappedShelfRows(doneWithOpenRow, [], () => null),
+        2,
+        "z",
+      ).map((row) => row.key),
+    ).toEqual(["x", "y", "z"]);
   });
 
   it("gives a quiet parent a seat past the fold when one of its threads has a status", () => {
@@ -1952,8 +1962,12 @@ describe("families across computers", () => {
       open?: boolean;
       computersWithThreads?: readonly EnvironmentId[];
       wrapUpOnFinish?: boolean;
+      /** The Mac's link to Windows is gone. */
+      unlinked?: boolean;
+      now?: string;
     } = {},
   ) => {
+    const now = options.now ?? "2026-10-21T10:00:00.000Z";
     const inScope = (candidate: Entry) =>
       (options.machine === undefined || candidate.thread.environmentId === options.machine) &&
       !(options.hidden ?? []).includes(candidate.threadKey);
@@ -1975,11 +1989,16 @@ describe("families across computers", () => {
             entries.some(
               (candidate) => candidate.threadKey === keyOf(parent.thread.environmentId, threadId),
             ),
-          wrapUpOnFinish: options.wrapUpOnFinish ?? true,
+          filing: {
+            now,
+            wrapUpOnFinish: options.wrapUpOnFinish ?? true,
+            autoDoneAfterDays: 2,
+            linked: () => options.unlinked !== true,
+          },
         }),
       isFamilyOpen: () => options.open ?? false,
       activeThreadKey: null,
-      now: "2026-10-21T10:00:00.000Z",
+      now,
       sortLive: (heads) => [...heads],
       sortDone: (heads) => [...heads],
     });
@@ -2098,16 +2117,23 @@ describe("families across computers", () => {
     ).toBe("6 threads · 2 needs you");
     expect(countInboxRowAttention([unseen!])).toEqual({ needsYou: 2, working: 2 });
 
-    // Wrapped there, or answered and no longer followed, and seen through the
-    // parent since: each leaves the family like a thread here, with no row
-    // of its own to stand on.
+    // From a computer that says nothing of filing (an older one): wrapped
+    // there, or answered and no longer followed, and seen through the parent
+    // since, each leaves the family for a row of its own in Wrapped.
     const visitedParent = { ...parent, seenAt: "2026-10-21T09:10:00.000Z" };
-    const [visited] = sections([visitedParent], { computersWithThreads: [mac] }).live;
+    const visitedSections = sections([visitedParent], { computersWithThreads: [mac] });
+    const [visited] = visitedSections.live;
     expect(visited!.remoteChildren.map((child) => child.title)).toEqual([
       "Fix the flaky test",
       "Rerun the benchmark",
       "Write the changelog",
       "Draft the notes",
+    ]);
+    expect(
+      visitedSections.doneRemote.map((row) => [row.child.title, row.startedBy.threadKey]),
+    ).toEqual([
+      ["Update the docs", visitedParent.threadKey],
+      ["Run the Windows checks", visitedParent.threadKey],
     ]);
     // With "wrap up finished child threads" off, the answered one stays.
     const [kept] = sections([visitedParent], {
@@ -2128,6 +2154,134 @@ describe("families across computers", () => {
     // has no thread anywhere, so it stays.
     const [seen] = sections([parent], { computersWithThreads: [mac, windows] }).live;
     expect(seen!.remoteChildren.map((child) => child.title)).toEqual(["Write the changelog"]);
+  });
+
+  it("files a child on another computer the way that computer does, and wraps it into Wrapped", () => {
+    const filing = (overrides: Partial<RemoteThreadFiling> = {}): RemoteThreadFiling => ({
+      handedBackAt: "2026-10-21T09:06:00.000Z",
+      pinned: false,
+      override: null,
+      lastActivityAt: "2026-10-21T09:05:00.000Z",
+      seenAt: null,
+      unseen: true,
+      waiting: false,
+      archived: false,
+      ...overrides,
+    });
+    const record = (
+      cachedStatus: string,
+      childFiling: RemoteThreadFiling,
+      override?: { readonly state: "done" | "active"; readonly at: string },
+    ) => ({
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make("checks"),
+      handle: "Codex",
+      title: "Run the Windows checks",
+      attachmentEpoch: 0,
+      cachedStatus,
+      updatedAt: "2026-10-21T09:05:00.000Z",
+      followed: false,
+      filing: childFiling,
+      ...(override !== undefined ? { override } : {}),
+    });
+    // The parent was seen after the answer came back.
+    const place = (child: ReturnType<typeof record>, options: { unlinked?: boolean } = {}) => {
+      const parent = {
+        ...entry(mac, "release", { remoteChildren: [child] }),
+        seenAt: "2026-10-21T09:10:00.000Z",
+      };
+      const result = sections([parent], { computersWithThreads: [mac], ...options });
+      return {
+        family: result.live[0]?.remoteChildren ?? [],
+        wrapped: result.doneRemote.map((row) => row.child.title),
+      };
+    };
+    const inFamily = { family: [expect.objectContaining({ title: "Run the Windows checks" })] };
+    const inWrapped = { family: [], wrapped: ["Run the Windows checks"] };
+
+    // Its answer reached the parent: it wraps there and here alike, and once
+    // the parent was seen it has a row in Wrapped instead of vanishing.
+    expect(place(record("idle", filing()))).toEqual(inWrapped);
+    // Picked up again there: back under its parent, working.
+    const typedThere = filing({ handedBackAt: null, lastActivityAt: "2026-10-21T09:30:00.000Z" });
+    expect(place(record("working", typedThere))).toMatchObject({ ...inFamily, wrapped: [] });
+    // That turn ended without going back to the parent and nobody saw it
+    // there: it stays, until it is wrapped up from here.
+    expect(place(record("idle", typedThere))).toMatchObject({ ...inFamily, wrapped: [] });
+    const wrappedHere = { state: "done" as const, at: "2026-10-21T09:40:00.000Z" };
+    expect(place(record("idle", typedThere, wrappedHere))).toEqual(inWrapped);
+    // Reopened there after that: the freshest word stands.
+    expect(
+      place(
+        record(
+          "idle",
+          { ...typedThere, override: { state: "active", at: "2026-10-21T09:45:00.000Z" } },
+          wrappedHere,
+        ),
+      ),
+    ).toMatchObject({ ...inFamily, wrapped: [] });
+    // Pinned there, kept here; archived there, gone from the family at once.
+    expect(place(record("idle", filing({ pinned: true })))).toMatchObject(inFamily);
+    expect(place(record("idle", filing({ archived: true, handedBackAt: null })))).toEqual(
+      inWrapped,
+    );
+    // A failure holds it until someone opens it there, even with its answer back.
+    expect(place(record("failed", filing()))).toMatchObject(inFamily);
+    expect(place(record("failed", filing({ unseen: false })))).toEqual(inWrapped);
+    // Once that computer has the Wrap up given here, a failure after it holds
+    // it again, as it does there.
+    expect(
+      place(record("failed", filing({ handedBackAt: null, override: wrappedHere }), wrappedHere)),
+    ).toMatchObject(inFamily);
+    // Bound to start again there (a check-back): kept, whatever was said.
+    expect(
+      place(record("idle", filing({ waiting: true }), wrappedHere)).family.map(
+        (child) => child.canWrap,
+      ),
+    ).toEqual([false]);
+    // Archived there: nothing here brings it back, so it offers no Reopen.
+    const archived = sections(
+      [
+        {
+          ...entry(mac, "release", {
+            remoteChildren: [record("idle", filing({ archived: true }))],
+          }),
+          seenAt: "2026-10-21T09:10:00.000Z",
+        },
+      ],
+      { computersWithThreads: [mac] },
+    ).doneRemote;
+    expect(archived.map((row) => row.child.canWrap)).toEqual([false]);
+
+    // The link to Windows is gone: its last word is history (no status), and
+    // it can be wrapped up from here whatever that word was.
+    const unlinked = place(record("working", typedThere), { unlinked: true });
+    expect(unlinked.family.map((child) => [child.status, child.canWrap])).toEqual([[null, true]]);
+    expect(place(record("working", typedThere, wrappedHere), { unlinked: true })).toEqual(
+      inWrapped,
+    );
+  });
+
+  it("places children from other computers among the wrapped threads by when each wrapped", () => {
+    const thread = (key: string) => ({ entry: { threadKey: key } }) as InboxDoneRow<Entry>;
+    const remote = (key: string, settledAt: string) =>
+      ({ child: { threadKey: key, settledAt } }) as InboxDoneRemoteRow<Entry>;
+    const doneAt: Record<string, string> = {
+      newest: "2026-10-21T09:50:00.000Z",
+      older: "2026-10-21T09:10:00.000Z",
+    };
+    const rows = mergeWrappedShelfRows(
+      [thread("newest"), thread("older")],
+      [remote("between", "2026-10-21T09:30:00.000Z"), remote("oldest", "2026-10-20T09:00:00.000Z")],
+      (row) => doneAt[row.entry.threadKey] ?? null,
+    );
+    expect(rows.map((row) => [row.kind, row.key])).toEqual([
+      ["thread", "newest"],
+      ["remote", "between"],
+      ["thread", "older"],
+      ["remote", "oldest"],
+    ]);
   });
 
   it("keeps a wrapped parent live while a child the app can't see still works or needs the user", () => {

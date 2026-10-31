@@ -59,7 +59,9 @@ Whether the thread's agent may bring in another model on its own is {place:threa
 
 {place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
 
-A started thread gets at most its parent's access level, and the parent's model unless the agent picks another. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).`,
+A started thread gets at most its parent's access level, and the parent's model unless the agent picks another. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).
+
+A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.`,
   },
   {
     id: "linking-computers",
@@ -147,12 +149,17 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
       "claude",
       "codex",
       "cursor",
+      "usage limit",
+      "rate limit",
+      "continue at reset",
     ],
     body: `{place:settings.providers} lists the agents this computer can run (Claude, Codex, Cursor, OpenCode, Pi and others), in use and not in use. Each card has its account and sign-in, its models, how it appears (name and color), and how it launches (command and environment variables).
 
 {place:providers.community} adds agents from the open ACP registry; Threadlines hasn't tested those.
 
-How much of each plan you've used is on {place:usage}.`,
+How much of each plan you've used is on {place:usage}.
+
+When a Claude or Codex usage limit stops a thread, the notice above the composer says which limit and when it resets. Its Continue at reset switch sends "Continue where you left off." a minute after the reset, from the computer the thread runs on, and {place:threads.continueAfterUsageLimits} turns it on for every limit. If you added another account of the same agent that still has room, the notice offers it by name. Threadlines never switches accounts on its own.`,
   },
   {
     id: "plugins-skills-instructions",
@@ -174,10 +181,21 @@ How much of each plan you've used is on {place:usage}.`,
   {
     id: "browser-panel",
     title: "The browser panel",
-    keywords: ["browser", "preview", "localhost", "web page", "screenshot", "sites"],
+    keywords: [
+      "browser",
+      "preview",
+      "localhost",
+      "web page",
+      "screenshot",
+      "sites",
+      "page size",
+      "viewport",
+    ],
     body: `In the desktop app a browser panel sits beside the chat. Agents use it to open your dev server, check a layout, reproduce a bug or fill in a form, and you watch every step; you can also mark up the page and send the marks to the agent.
 
-{place:general.sitesAgentsCanVisit} decides which sites agents may open without asking you first. Local addresses always work.`,
+{place:general.sitesAgentsCanVisit} decides which sites agents may open without asking you first. Local addresses always work.
+
+Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.`,
   },
   {
     id: "file-viewer",

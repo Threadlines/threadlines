@@ -160,6 +160,7 @@ export const makePeerRpcLayer = (input: {
                 : { instanceId: defaultAgent.instanceId, model: defaultAgent.model },
             projects,
             moves: true,
+            threadFiling: true,
           } satisfies PeerDescriptor;
         });
 
@@ -191,14 +192,16 @@ export const makePeerRpcLayer = (input: {
           guarded(
             Effect.flatMap(currentLink, (link) => linkRequests.stopThread(link, payload.threadId)),
           ),
+        "peer.thread.wrap": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkRequests.wrapThread(link, payload))),
         "peer.thread.read": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.readThread(link, payload))),
         "peer.thread.list": () =>
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.listThreads(link))),
-        "peer.watch": () =>
-          Stream.unwrap(Effect.map(currentLink, (link) => linkRequests.watch(link))),
+        "peer.watch": (payload) =>
+          Stream.unwrap(Effect.map(currentLink, (link) => linkRequests.watch(link, payload))),
         "peer.report.ack": (payload) =>
-          guarded(Effect.flatMap(currentLink, (link) => linkRequests.ack(link, payload.reportId))),
+          guarded(Effect.flatMap(currentLink, (link) => linkRequests.ack(link, payload))),
         // Moving a thread here (LinkMoves). An offer names the computer it
         // comes from, like a start does.
         "peer.move.prepare": (payload) =>

@@ -129,6 +129,7 @@ import {
   hasPendingChildApproval,
   remoteChildrenOf,
   remoteChildStartsOf,
+  sameRemoteThreadFiling,
   localChildStartsOf,
 } from "@threadlines/shared/childThreads";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
@@ -524,7 +525,10 @@ function remoteChildrenEqual(
         child.title === other.title &&
         child.cachedStatus === other.cachedStatus &&
         child.updatedAt === other.updatedAt &&
-        child.followed === other.followed
+        child.followed === other.followed &&
+        sameRemoteThreadFiling(child.filing, other.filing) &&
+        child.override?.state === other.override?.state &&
+        child.override?.at === other.override?.at
       );
     })
   );

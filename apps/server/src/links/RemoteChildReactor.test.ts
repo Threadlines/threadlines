@@ -11,8 +11,10 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
   MessageId,
+  type PeerDescriptor,
   type PeerStartResult,
   type PeerWatchEvent,
+  type RemoteThreadFiling,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -103,6 +105,8 @@ interface LinkedComputer {
   readonly start?: () => Effect.Effect<PeerStartResult, ComputerLinkUnavailableError>;
   /** Replayed every time a watch opens, which then stays open. */
   readonly watch?: ReadonlyArray<PeerWatchEvent>;
+  /** It says how threads are filed and takes `peer.thread.wrap` (`PeerDescriptor.threadFiling`). */
+  readonly threadFiling?: boolean;
 }
 
 /**
@@ -239,8 +243,16 @@ const makeComputer = Effect.gen(function* () {
             return reply();
           });
       const peer = {
-        "peer.watch": () =>
-          Stream.concat(Stream.fromIterable(linked.watch ?? [{ type: "synced" }]), Stream.never),
+        "peer.watch": (payload: unknown) => {
+          calls.push({ method: "peer.watch", payload });
+          return Stream.concat(
+            Stream.fromIterable(linked.watch ?? [{ type: "synced" }]),
+            Stream.never,
+          );
+        },
+        "peer.thread.wrap": answer("peer.thread.wrap", () =>
+          Effect.succeed({ status: "ok" as const }),
+        ),
         "peer.report.ack": answer("peer.report.ack", () => Effect.void),
         "peer.request.cancel": answer("peer.request.cancel", () =>
           Effect.succeed({ status: "cancelled" as const }),
@@ -263,6 +275,10 @@ const makeComputer = Effect.gen(function* () {
               withPeer: (_environmentId, use) => use(peer) as never,
               peerStream: (_environmentId, use) => use(peer) as never,
               cachedDescribe: () => null,
+              describe: () =>
+                Effect.succeed({
+                  threadFiling: linked.threadFiling === true,
+                } as unknown as PeerDescriptor),
               noteRemoteLabel: () => undefined,
             }),
             Layer.mock(ComputerLinkRepository)({
@@ -370,9 +386,128 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
         })),
       ].find((entry) => entry.id === replyId);
       assert.include(reply?.text ?? "", "Mac mini didn't allow it.");
+      // The answer was written into the parent, and the ack says so.
       assert.deepEqual(computer.callsTo("peer.report.ack")[0]?.payload, {
         reportId: `${REQUEST}:report`,
+        delivered: true,
       });
+    }),
+  );
+
+  it.effect(
+    "keeps hearing a child after its answer is in, and asks how it stands after a restart",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* computer.askForThread;
+        yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+        const filing: RemoteThreadFiling = {
+          handedBackAt: null,
+          pinned: false,
+          override: null,
+          lastActivityAt: "2026-10-20T10:30:00.000Z",
+          seenAt: "2026-10-20T10:31:00.000Z",
+          unseen: false,
+          waiting: false,
+          archived: false,
+        };
+        // The report ends the request; then the user picks the thread up again
+        // there, and that computer says so.
+        yield* computer.boot({
+          watch: [
+            report({}),
+            {
+              type: "thread",
+              threadId: REMOTE_CHILD,
+              title: "Write the changelog",
+              status: "working",
+              updatedAt: "2026-10-20T10:30:00.000Z",
+              filing,
+            },
+            { type: "synced" },
+          ],
+        });
+        yield* eventually(
+          Effect.map(
+            computer.stored,
+            (parent) => parent.childRequests?.remoteChildren?.[0]?.cachedStatus === "working",
+          ),
+          "the child's new work is recorded",
+        );
+        const [child] = (yield* computer.stored).childRequests?.remoteChildren ?? [];
+        assert.deepEqual(child?.filing, filing);
+        assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 0);
+
+        // A restart asks that computer how the child it still shows stands.
+        yield* computer.boot();
+        yield* eventually(
+          Effect.sync(() =>
+            computer
+              .callsTo("peer.watch")
+              .some(
+                (call) =>
+                  (call.payload as { threads?: unknown }).threads !== undefined &&
+                  JSON.stringify((call.payload as { threads: unknown }).threads) ===
+                    JSON.stringify([REMOTE_CHILD]),
+              ),
+          ),
+          "the watch asks about the child",
+        );
+      }),
+  );
+
+  it.effect("acks a report whose answer never reached the parent as not delivered", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* computer.askForThread;
+      yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+      // Nothing to say: no answer is written into the parent.
+      yield* computer.boot({ watch: [report({ text: "" }), { type: "synced" }] });
+      yield* eventually(
+        Effect.sync(() => computer.callsTo("peer.report.ack").length > 0),
+        "the report is acked",
+      );
+      assert.deepEqual(computer.callsTo("peer.report.ack")[0]?.payload, {
+        reportId: `${REQUEST}:report`,
+        delivered: false,
+      });
+    }),
+  );
+
+  it.effect("sends the user's Wrap up of a child there once, to a computer that takes it", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* computer.askForThread;
+      yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+      yield* computer.boot({ watch: [report({}), { type: "synced" }], threadFiling: true });
+      yield* eventually(
+        Effect.map(computer.stored, (parent) => (parent.childRequests?.open ?? []).length === 0),
+        "the request settles",
+      );
+      const override = { state: "done" as const, at: "2026-10-20T11:00:00.000Z" };
+      yield* computer.engine.dispatch({
+        type: "thread.remote-child.done-override.set",
+        commandId: CommandId.make("wrap-child"),
+        threadId: PARENT,
+        environmentId: MAC_MINI,
+        childThreadId: REMOTE_CHILD,
+        ...override,
+      });
+      yield* eventually(
+        Effect.sync(() => computer.callsTo("peer.thread.wrap").length > 0),
+        "the wrap goes to that computer",
+      );
+      assert.deepEqual(computer.callsTo("peer.thread.wrap")[0]?.payload, {
+        threadId: REMOTE_CHILD,
+        override,
+      });
+      assert.deepEqual(
+        (yield* computer.stored).childRequests?.remoteChildren?.[0]?.override,
+        override,
+      );
+      // Later news of the child doesn't send it again.
+      yield* wallClockSleep(100);
+      assert.lengthOf(computer.callsTo("peer.thread.wrap"), 1);
     }),
   );
 

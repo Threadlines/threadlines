@@ -1160,10 +1160,19 @@ function FileViewerPreview({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {readAs === "text" && !isEditing ? (
+      {readAs === "text" ? (
         <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1">
           <span className="text-[11px] text-muted-foreground">SVG source</span>
-          <Button size="xs" variant="ghost" onClick={() => setSvgSourcePath(null)}>
+          {/* While editing, the source is all there is: going back to the
+              picture finishes editing too, saving like Done. */}
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => {
+              setSvgSourcePath(null);
+              if (editMode) setEditMode(false);
+            }}
+          >
             <ImageIcon aria-hidden className="size-3" />
             Show picture
           </Button>
@@ -1613,6 +1622,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
   );
   const editBlocked =
     activeFileQuery.data?.kind === "text" ? editBlockReason(activeFileQuery.data.editBlock) : null;
+  const editLocked = editBlocked !== null && !editMode;
 
   // Below the `sm` breakpoint the tree and preview share the screen one at a
   // time (a 256px tree beside code is unusable on a phone); every file-open
@@ -1644,14 +1654,21 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
         <FileViewerTabs context={context} onTabSelected={showPreviewPane} />
         {activePath ? <FileViewerOpenInControl context={context} activePath={activePath} /> : null}
         {activePath && !isCoarsePointer ? (
+          // `aria-disabled` rather than `disabled` while editing is blocked:
+          // a disabled toggle drops pointer events, so the tooltip saying why
+          // would never open.
           <Toggle
             aria-label={editMode ? "Done editing" : "Edit file"}
             tooltip={editBlocked ?? (editMode ? "Done editing" : "Edit file")}
             size="xs"
-            className="shrink-0 gap-1 px-1.5"
-            disabled={editBlocked !== null && !editMode}
+            className={cn(
+              "shrink-0 gap-1 px-1.5",
+              editLocked && "cursor-default opacity-64 hover:bg-transparent",
+            )}
+            aria-disabled={editLocked || undefined}
             pressed={editMode}
             onPressedChange={(pressed) => {
+              if (editLocked) return;
               setEditMode(Boolean(pressed));
             }}
           >

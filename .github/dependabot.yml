@@ -37,14 +37,8 @@ updates:
       # scripts/sync-effect-source.ts.
       - dependency-name: "effect"
       - dependency-name: "@effect/*"
-      # lexical is patched for spellcheck (patches/lexical@0.47.0.patch);
-      # bumping @lexical/react alone breaks typecheck against the pinned
-      # core (PR #85). Bump manually, re-cutting the patch, until the
-      # upstream lexical spellcheck PR lands.
-      - dependency-name: "lexical"
-      - dependency-name: "@lexical/*"
       # @legendapp/list is patched for chat scrolling
-      # (patches/@legendapp__list@3.3.9.patch) and pinned to that exact
+      # (patches/@legendapp__list@3.7.0.patch) and pinned to that exact
       # version. pnpm refuses to resolve a bump while the patch names the old
       # version (ERR_PNPM_UNUSED_PATCH), which failed the whole
       # production-dependencies job on every run. Bump manually, re-cutting
@@ -60,6 +54,13 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     groups:
+      # lexical and its @lexical/* packages ship in lockstep: bumping
+      # @lexical/react alone breaks typecheck against the core (PR #85). One
+      # group for every update type, majors too, listed first so it wins.
+      lexical:
+        patterns:
+          - "lexical"
+          - "@lexical/*"
       production-dependencies:
         dependency-type: production
         update-types:

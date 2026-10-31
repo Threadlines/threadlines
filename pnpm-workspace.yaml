@@ -75,9 +75,8 @@ packageExtensions:
       vite: "catalog:"
 
 patchedDependencies:
-  "@legendapp/list@3.3.9": patches/@legendapp__list@3.3.9.patch
+  "@legendapp/list@3.7.0": patches/@legendapp__list@3.7.0.patch
   brace-expansion@5.0.12: patches/brace-expansion@5.0.12.patch
-  lexical@0.49.0: patches/lexical@0.49.0.patch
 
 peerDependencyRules:
   allowAny:
@@ -85,6 +84,8 @@ peerDependencyRules:
     - vitest
   allowedVersions:
     "@opencode/client>effect": "*"
+    # plugin-react 6.1.2 predates plugin-babel 0.3, which only adds the opt-in `parallel` option.
+    "@vitejs/plugin-react>@rolldown/plugin-babel": "0.3"
     "@voidzero-dev/vite-plus-core>typescript": "7"
     vite: "*"
     vitest: "*"

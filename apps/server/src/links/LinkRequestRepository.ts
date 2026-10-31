@@ -128,6 +128,11 @@ export interface LinkRequestRepositoryShape {
   readonly listByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<LinkRequestRow>, LinkRequestRepositoryError>;
+  /** The request a report of a link's answers. */
+  readonly getByReport: (
+    linkDeviceId: string,
+    reportId: string,
+  ) => Effect.Effect<Option.Option<LinkRequestRow>, LinkRequestRepositoryError>;
   /** A link's open requests and its ended ones whose report it hasn't acked. */
   readonly listForWatch: (
     linkDeviceId: string,
@@ -307,6 +312,15 @@ const make = Effect.gen(function* () {
 
   const get: LinkRequestRepositoryShape["get"] = (linkDeviceId, requestId) =>
     findOne({ linkDeviceId, requestId }).pipe(wrap("get"));
+
+  const findByReport = SqlSchema.findOneOption({
+    Request: Schema.Struct({ linkDeviceId: Schema.String, reportId: Schema.String }),
+    Result: LinkRequestDbRow,
+    execute: ({ linkDeviceId, reportId }) =>
+      sql.unsafe(`${select} WHERE link_device_id = ? AND report_id = ?`, [linkDeviceId, reportId]),
+  });
+  const getByReport: LinkRequestRepositoryShape["getByReport"] = (linkDeviceId, reportId) =>
+    findByReport({ linkDeviceId, reportId }).pipe(wrap("getByReport"));
 
   const insert: LinkRequestRepositoryShape["insert"] = (input) =>
     Effect.gen(function* () {
@@ -554,6 +568,7 @@ const make = Effect.gen(function* () {
     get,
     listOpen,
     listByThread,
+    getByReport,
     listForWatch,
     progress,
     settle,

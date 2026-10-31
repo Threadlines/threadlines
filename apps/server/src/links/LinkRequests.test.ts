@@ -497,14 +497,14 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.isUndefined(yield* computer.thread(linkThreadId(DEVICE, "request-1")));
         assert.isFalse(yield* computer.firstTurnCommitted("request-1"));
 
-        const reports = yield* replay(restarted.watch(link()));
+        const reports = yield* replay(restarted.watch(link(), {}));
         const denied = reports.find((event) => event.type === "report");
         assert.equal(denied?.type === "report" ? denied.outcome : null, "denied");
         // It never got a thread, so the report names none.
         assert.equal(denied?.type === "report" ? denied.threadId : "missing", null);
         // Acked reports are not offered again.
-        if (denied?.type === "report") yield* restarted.ack(link(), denied.reportId);
-        const after = yield* replay(restarted.watch(link()));
+        if (denied?.type === "report") yield* restarted.ack(link(), { reportId: denied.reportId });
+        const after = yield* replay(restarted.watch(link(), {}));
         assert.deepEqual(
           after.map((event) => event.type),
           ["synced"],
@@ -582,6 +582,56 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.equal(cancelled.status, "cancelled");
         assert.equal((yield* computer.request("request-1")).status, "cancelled");
         assert.isTrue(stopRequestedFor(yield* computer.events, threadId));
+      }),
+  );
+
+  it.effect(
+    "tells the asking computer how a thread it started stands on connect, and takes its Wrap up",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const service = yield* computer.boot();
+        yield* service.start(link(), { ...startInput("request-1"), reportBack: false });
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "answered"),
+          "it is answered once set up",
+        );
+        const threadId = linkThreadId(DEVICE, "request-1");
+
+        // Asked about on connect: its state now, filing included, after the
+        // reports. A thread this link didn't start is never described.
+        const replayed = yield* replay(
+          service.watch(link(), { threads: [threadId, ThreadId.make("not-the-links")] }),
+        );
+        const states = replayed.filter((event) => event.type === "thread");
+        assert.deepEqual(
+          states.map((event) => (event.type === "thread" ? event.threadId : null)),
+          [threadId],
+        );
+        const state = states[0];
+        assert.equal(state?.type === "thread" ? state.filing?.archived : null, false);
+        assert.equal(state?.type === "thread" ? state.filing?.handedBackAt : "missing", null);
+
+        // Wrapped up from there: the word is kept with its stamp, and counts
+        // as seeing the thread.
+        const override = { state: "done" as const, at: "2026-10-20T12:00:00.000Z" };
+        assert.deepEqual(yield* service.wrapThread(link(), { threadId, override }), {
+          status: "ok",
+        });
+        const wrapped = yield* computer.thread(threadId);
+        assert.deepEqual(wrapped?.doneOverride, override);
+        assert.equal(wrapped?.lastSeenAt, override.at);
+        // An older word than the one it has changes nothing.
+        yield* service.wrapThread(link(), {
+          threadId,
+          override: { state: "active", at: "2026-10-20T11:00:00.000Z" },
+        });
+        assert.deepEqual((yield* computer.thread(threadId))?.doneOverride, override);
+        assert.deepEqual(
+          yield* service.wrapThread(link(), { threadId: ThreadId.make("not-the-links"), override }),
+          { status: "not_yours" },
+        );
       }),
   );
 
@@ -738,7 +788,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
 
         const restarted = yield* computer.boot();
         yield* restarted.startReactor();
-        const reports = yield* replay(restarted.watch(link()));
+        const reports = yield* replay(restarted.watch(link(), {}));
         const report = reports.find((event) => event.type === "report");
         assert.equal(report?.type === "report" ? report.outcome : null, "failed");
         assert.include(
