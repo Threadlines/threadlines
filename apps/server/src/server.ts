@@ -115,6 +115,7 @@ import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
 import { AcpRegistryAgentsLive } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
+import { OutsideWorkLookupLive } from "./orchestration/Layers/OutsideWorkLookupLive.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
@@ -358,7 +359,11 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(RuntimeReceiptBusLive),
   Layer.provideMerge(AutomaticGitFetchSupervisorLive),
   Layer.provideMerge(PullRequestAutomationWatcherLive),
-  Layer.provideMerge(ThreadPullRequestLinkerLive),
+  Layer.provideMerge(
+    // Adapters ask it before the provider's own scheduling tools (step 3 of
+    // docs/design/assistants.md).
+    Layer.mergeAll(ThreadPullRequestLinkerLive, OutsideWorkLookupLive),
+  ),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(

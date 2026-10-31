@@ -1426,6 +1426,7 @@ export function projectEvent(
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
+            ...(payload.fromOutside !== undefined ? { fromOutside: payload.fromOutside } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,

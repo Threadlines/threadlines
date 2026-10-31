@@ -3884,6 +3884,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** An outside agent's answer steered into the turn (server only). */
+  fromOutside: Schema.optional(OutsideAgentRef),
   createdAt: IsoDateTime,
 });
 
@@ -5019,6 +5021,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
+  /** See OrchestrationMessage.fromOutside: an outside agent's answer steered into the turn. */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /**
    * The user's message that overtook a continue (OrchestrationQueuedFollowUp
    * .overtakes), steered into that continue's turn: a steer that fails puts

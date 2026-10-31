@@ -4455,6 +4455,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+          ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
           ...(isNewMessage(acceptingThread, command.message.messageId)
             ? {
                 agentModels: messageAgentModels(acceptingThread, [
