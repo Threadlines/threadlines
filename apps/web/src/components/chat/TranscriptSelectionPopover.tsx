@@ -252,9 +252,40 @@ function TranscriptSelectionPopover({
       range: Range;
       clips: ReadonlyArray<ClippingAncestor>;
     } | null = null;
+    // The message body the observers watch. Kept apart from `anchor`, which
+    // an edit inside the message drops before the next frame finds it again.
+    let observedBody: HTMLElement | null = null;
     const bodyObserver = new MutationObserver(() => {
       anchor = null;
       reshapeHighlight = true;
+      scheduleUpdate();
+    });
+    // The list keeps its rows' elements in order by moving them, and a scroll
+    // can set that off. A move collapses every live range inside the row, this
+    // one and the page's selection, to the spot the row was taken from, and no
+    // event says so. Seen here as the row's element leaving its parent: the
+    // text is found again, and the reader gets back the selection the move
+    // took. Only while it is still a caret in the rows' parent, where the move
+    // left it (its offset shifts as the list moves other rows): a caret in any
+    // text is the reader's. A note keeps its own highlight and its box's focus.
+    let collapsedInto: Node | null = null;
+    const moveObserver = new MutationObserver((records) => {
+      const body = observedBody;
+      const moves =
+        body === null
+          ? []
+          : records.filter((record) =>
+              [...record.removedNodes].some((node) => node.contains(body)),
+            );
+      if (moves.length === 0) {
+        return;
+      }
+      anchor = null;
+      reshapeHighlight = true;
+      const page = document.getSelection();
+      const caret = page?.isCollapsed ? page.anchorNode : null;
+      collapsedInto =
+        !noting && caret && moves.some((record) => record.target === caret) ? caret : null;
       scheduleUpdate();
     });
     const resolveAnchor = () => {
@@ -263,10 +294,12 @@ function TranscriptSelectionPopover({
       }
       anchor = null;
       bodyObserver.disconnect();
+      observedBody = null;
       const body = findTranscriptMessageBodyById(container, sourceMessageId);
       const range = body ? rangeAtTextOffsets(body, textStart, textEnd) : null;
       if (body && range) {
         bodyObserver.observe(body, { childList: true, characterData: true, subtree: true });
+        observedBody = body;
         anchor = { body, range, clips: findClippingAncestors(range, container) };
       }
       return anchor;
@@ -275,6 +308,15 @@ function TranscriptSelectionPopover({
       frameId = null;
       const resolved = resolveAnchor();
       const range = resolved?.range ?? null;
+      if (collapsedInto !== null) {
+        const left = collapsedInto;
+        collapsedInto = null;
+        const page = document.getSelection();
+        if (range && page?.isCollapsed && page.anchorNode === left) {
+          page.removeAllRanges();
+          page.addRange(range.cloneRange());
+        }
+      }
       const containerRect = container.getBoundingClientRect();
       const toContainerBox = (rect: DOMRect) => ({
         top: rect.top - containerRect.top,
@@ -347,10 +389,12 @@ function TranscriptSelectionPopover({
     });
     resizeObserver.observe(container);
     resizeObserver.observe(popover);
+    moveObserver.observe(container, { childList: true, subtree: true });
     return () => {
       container.removeEventListener("scroll", scheduleUpdate, { capture: true });
       resizeObserver.disconnect();
       bodyObserver.disconnect();
+      moveObserver.disconnect();
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
