@@ -65,15 +65,10 @@ import {
   mergeProviderInstanceEnvironment,
   refreshProviderInstanceEnvironment,
 } from "../ProviderInstanceEnvironment.ts";
-import {
-  enrichProviderSnapshotWithVersionAdvisory,
-  makePackageManagedProviderMaintenanceResolver,
-  makeWindowsNativeInstaller,
-  normalizeCommandPath,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { enrichProviderSnapshotWithVersionAdvisory } from "../providerMaintenance.ts";
 import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
 import { materializeClaudeAccountFolder } from "./ClaudeAccountFolder.ts";
+import { resolveClaudeMaintenanceCapabilities } from "./ClaudeMaintenance.ts";
 import {
   claudeInstanceBaseEnvironment,
   makeClaudeCapabilitiesCacheKey,
@@ -168,147 +163,6 @@ export function patchClaudeChatAuthState(
     ...(state === "unauthenticated" ? { message: CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE } : {}),
   };
 }
-const WINDOWS_NATIVE_UPDATE_SCRIPT = String.raw`
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-
-if (-not [Environment]::Is64BitProcess) {
-    Write-Error "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
-    exit 1
-}
-
-function Test-NativeClaudePath([string]$Path) {
-    $normalized = $Path.Replace("\", "/").ToLowerInvariant()
-    return $normalized.EndsWith("/.local/bin/claude.exe") -or $normalized.Contains("/.local/share/claude/")
-}
-
-$downloadBaseUrl = "https://downloads.claude.ai/claude-code-releases"
-$downloadDir = Join-Path $env:USERPROFILE ".claude\downloads"
-$defaultInstallPath = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
-$platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
-
-New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-
-$version = Invoke-RestMethod -Uri "$downloadBaseUrl/latest" -ErrorAction Stop
-if ($version -notmatch "^\d+\.\d+\.\d+") {
-    Write-Error "Failed to get a valid Claude Code version from downloads.claude.ai."
-    exit 1
-}
-
-$manifest = Invoke-RestMethod -Uri "$downloadBaseUrl/$version/manifest.json" -ErrorAction Stop
-$platformManifest = $manifest.platforms.$platform
-if (-not $platformManifest -or -not $platformManifest.checksum) {
-    Write-Error "Platform $platform not found in Claude Code manifest."
-    exit 1
-}
-
-$downloadPath = Join-Path $downloadDir "claude-$version-$platform.exe"
-try {
-    Invoke-WebRequest -Uri "$downloadBaseUrl/$version/$platform/claude.exe" -OutFile $downloadPath -ErrorAction Stop
-    $actualChecksum = (Get-FileHash -Path $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualChecksum -ne $platformManifest.checksum) {
-        Write-Error "Claude Code checksum verification failed."
-        exit 1
-    }
-
-    $command = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    $installPath = if ($command -and $command.Source -and (Test-NativeClaudePath $command.Source)) {
-        $command.Source
-    } else {
-        $defaultInstallPath
-    }
-
-    $installDir = Split-Path -Parent $installPath
-    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-    $backupPath = Join-Path $downloadDir "claude-backup-$PID-$([guid]::NewGuid().ToString('N')).exe"
-    $preservedExistingExecutable = Test-Path -LiteralPath $installPath
-    if ($preservedExistingExecutable) {
-        Copy-Item -LiteralPath $installPath -Destination $backupPath -Force
-    }
-
-    try {
-        Move-Item -LiteralPath $downloadPath -Destination $installPath -Force
-
-        $installedVersion = & $installPath --version
-        if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
-            throw "Claude Code was replaced, but version verification failed: $installedVersion"
-        }
-
-        if (Test-Path -LiteralPath $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-        }
-        Write-Output "Installed Claude Code $installedVersion at $installPath"
-    } catch {
-        $updateFailure = $_
-        if ($preservedExistingExecutable -and (Test-Path -LiteralPath $backupPath)) {
-            try {
-                Copy-Item -LiteralPath $backupPath -Destination $installPath -Force
-                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-                Write-Warning "Claude update failed; restored the previous executable at $installPath."
-            } catch {
-                Write-Error "Claude update failed and Threadlines could not restore the previous executable. The backup remains at $backupPath."
-                throw
-            }
-        } elseif (Test-Path -LiteralPath $installPath) {
-            Remove-Item -LiteralPath $installPath -Force -ErrorAction SilentlyContinue
-        }
-        throw $updateFailure
-    }
-} finally {
-    if (Test-Path -LiteralPath $downloadPath) {
-        Remove-Item -LiteralPath $downloadPath -Force
-    }
-}
-`;
-const WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED = Buffer.from(
-  WINDOWS_NATIVE_UPDATE_SCRIPT,
-  "utf16le",
-).toString("base64");
-const WINDOWS_NATIVE_UPDATE_COMMAND = `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED}`;
-
-function isClaudeNativeCommandPath(commandPath: string): boolean {
-  const normalized = normalizeCommandPath(commandPath);
-  return (
-    normalized.endsWith("/.local/bin/claude") ||
-    normalized.endsWith("/.local/bin/claude.exe") ||
-    normalized.includes("/.local/share/claude/")
-  );
-}
-
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
-  provider: DRIVER_KIND,
-  npmPackageName: "@anthropic-ai/claude-code",
-  homebrewFormula: "claude-code",
-  nativeInstall: {
-    win32: makeWindowsNativeInstaller({
-      url: "https://claude.ai/install.ps1",
-      lockKey: "claude-native-verified-win32",
-    }),
-  },
-  nativeUpdate: {
-    executable: "claude",
-    args: ["update"],
-    lockKey: "claude-native",
-    isCommandPath: isClaudeNativeCommandPath,
-    platformUpdateOverrides: {
-      win32: {
-        executable: "powershell.exe",
-        args: [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-EncodedCommand",
-          WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED,
-        ],
-        lockKey: "claude-native-verified-win32",
-        displayCommand: WINDOWS_NATIVE_UPDATE_COMMAND,
-        advisoryMessage:
-          "Threadlines will run a checksum-verified Windows native Claude updater because `claude update` and Anthropic's installer can report success without replacing the active binary.",
-      },
-    },
-  },
-});
 
 export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -394,11 +248,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               ),
             )
           : undefined;
-      let maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-        platform: process.platform,
-      });
+      const resolveMaintenanceCapabilities = Effect.gen(function* () {
+        return yield* resolveClaudeMaintenanceCapabilities(
+          yield* resolveClaudeMainConfigDir(config, processEnv),
+          { binaryPath: effectiveConfig.binaryPath, env: processEnv, platform: process.platform },
+        );
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      let maintenanceCapabilities = yield* resolveMaintenanceCapabilities;
       const continuationGroupKey = yield* makeClaudeContinuationGroupKey(
         effectiveConfig,
         processEnv,
@@ -514,10 +373,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             processEnv,
             claudeInstanceBaseEnvironment(config),
           );
-          maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-            binaryPath: effectiveConfig.binaryPath,
-            env: processEnv,
-          }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+          maintenanceCapabilities = yield* resolveMaintenanceCapabilities;
           return effectiveConfig;
         }),
         streamSettings: Stream.never,
