@@ -101,6 +101,18 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import {
+  BROWSER_PAGE_SIZE_PRESETS,
+  RESPONSIVE_PAGE_SIZE_ID,
+  RESPONSIVE_PAGE_SIZE_LABEL,
+  RESPONSIVE_VIEWPORT,
+  fixedPageSize,
+  formatPageDimensions,
+  pageSizeChoiceId,
+  pageSizeName,
+  viewportForPageSizeChoice,
+} from "../browser/pageSizes";
+import { PageSizeLabel } from "../browser/PageSizeLabel";
+import {
   SettingsSurfaceContext,
   ShownPlace,
   type SettingsRowPlaceId,
@@ -497,6 +509,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
       ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
+      ...(settings.browserNewTabSize !== null ? ["Browser page size"] : []),
       ...(settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize
         ? ["Terminal text size"]
         : []),
@@ -558,6 +571,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.openLinksIn,
+      settings.browserNewTabSize,
       settings.terminalFontSize,
       settings.terminalScreenReaderMode,
       settings.agentBrowserSitePolicy,
@@ -612,6 +626,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
       openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
+      browserNewTabSize: DEFAULT_UNIFIED_SETTINGS.browserNewTabSize,
       terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize,
       terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
@@ -817,6 +832,73 @@ export function OpenLinksRow() {
           <SelectPopup align="end" alignItemWithTrigger={false}>
             <SelectItem value="browser-panel">{OPEN_LINKS_IN_LABELS["browser-panel"]}</SelectItem>
             <SelectItem value="external">{OPEN_LINKS_IN_LABELS.external}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * The size new tabs in the built-in browser open at. Kept on this computer
+ * with the browser; the browser's size menu sets it too, including to a size
+ * typed by hand, which shows here by its dimensions.
+ */
+export function BrowserPageSizeRow() {
+  const newTabSize = useSettings((current) => current.browserNewTabSize);
+  const { updateSettings } = useUpdateSettings();
+  const viewport = newTabSize ?? RESPONSIVE_VIEWPORT;
+  const choiceId = pageSizeChoiceId(viewport);
+  return (
+    <SettingsRow
+      place="general.browserPageSize"
+      resetAction={
+        newTabSize !== null ? (
+          <SettingResetButton
+            label="browser page size"
+            onClick={() => updateSettings({ browserNewTabSize: null })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={choiceId ?? "custom"}
+          onValueChange={(value) => {
+            const next = typeof value === "string" ? viewportForPageSizeChoice(value) : null;
+            if (next !== null) updateSettings({ browserNewTabSize: fixedPageSize(next) });
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Browser page size">
+            <SelectValue>{pageSizeName(viewport)}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup
+            align="end"
+            alignItemWithTrigger={false}
+            className="[&_[data-slot=select-item-text]]:flex-1"
+          >
+            <SelectItem value={RESPONSIVE_PAGE_SIZE_ID}>
+              <PageSizeLabel
+                label={RESPONSIVE_PAGE_SIZE_LABEL}
+                detail="Fills the panel"
+                mono={false}
+              />
+            </SelectItem>
+            {choiceId === null && newTabSize !== null ? (
+              <SelectItem value="custom">
+                <PageSizeLabel
+                  label="Custom"
+                  detail={formatPageDimensions(newTabSize.width, newTabSize.height)}
+                />
+              </SelectItem>
+            ) : null}
+            {BROWSER_PAGE_SIZE_PRESETS.map((size) => (
+              <SelectItem key={size.id} value={size.id}>
+                <PageSizeLabel
+                  label={size.label}
+                  detail={formatPageDimensions(size.width, size.height)}
+                />
+              </SelectItem>
+            ))}
           </SelectPopup>
         </Select>
       }
@@ -1234,6 +1316,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           {isPhoneSurface ? <UsageAnalyticsRow /> : null}
           <ShownPlace place="general.openLinksIn">
             <OpenLinksRow />
+          </ShownPlace>
+          <ShownPlace place="general.browserPageSize">
+            <BrowserPageSizeRow />
           </ShownPlace>
           <ShownPlace place="general.sitesAgentsCanVisit">
             <AgentBrowserSitesRow />

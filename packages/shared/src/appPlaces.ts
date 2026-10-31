@@ -284,7 +284,7 @@ const SECTIONS = [
     parent: "settings.general",
     title: "This computer",
     about:
-      "Keeping this computer awake, where new projects start, which browser opens links, and which sites agents can visit.",
+      "Keeping this computer awake, where new projects start, which browser opens links, the size its pages open at, and which sites agents can visit.",
   },
   {
     id: "general.about",
@@ -764,6 +764,17 @@ const ROWS = [
     title: "Open links in",
     about: "Where chat and terminal links open. Right-click a link for the other choice.",
     keywords: ["browser", "built-in browser", "external browser"],
+    scope: "device",
+    appliesWhen: "desktop",
+  },
+  {
+    id: "general.browserPageSize",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Browser page size",
+    about:
+      "The size new tabs in the browser panel open at. Responsive fills the panel; a set size shrinks to fit it.",
+    keywords: ["browser", "viewport", "device", "responsive", "laptop", "desktop", "phone"],
     scope: "device",
     appliesWhen: "desktop",
   },

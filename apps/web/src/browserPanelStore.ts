@@ -13,28 +13,11 @@ import { type ScopedThreadRef } from "@threadlines/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { RESPONSIVE_VIEWPORT, type BrowserViewport } from "./components/browser/pageSizes";
 import { rememberVisit, type VisitedUrl } from "./components/browser/urlCompletion";
+import { getClientSettings } from "./hooks/useSettings";
 
 import { resolveStorage } from "./lib/storage";
-
-/**
- * Named sizes, as shortcuts for filling in a width and height rather than as
- * the only way to choose one. Any size is reachable by typing it.
- */
-export const BROWSER_VIEWPORT_PRESETS = [
-  { label: "Responsive", width: null, height: null },
-  { label: "iPhone 15", width: 393, height: 852 },
-  { label: "iPad", width: 834, height: 1112 },
-  { label: "Laptop", width: 1280, height: 800 },
-] as const;
-
-/** null dimensions mean the page fills the panel and reflows with it. */
-export interface BrowserViewport {
-  width: number | null;
-  height: number | null;
-}
-
-export const RESPONSIVE_VIEWPORT: BrowserViewport = Object.freeze({ width: null, height: null });
 
 /** Follows the app unless deliberately overridden for the page under test. */
 export type BrowserAppearance = "system" | "light" | "dark";
@@ -86,13 +69,21 @@ function nextTabId(): string {
   return `tab-${Date.now().toString(36)}-${tabSequence}`;
 }
 
+/**
+ * The size a new tab opens at: the one chosen in Settings or the size menu.
+ * Read when the tab is made, so changing it leaves open tabs as they are.
+ */
+function newTabViewport(): BrowserViewport {
+  return getClientSettings().browserNewTabSize ?? RESPONSIVE_VIEWPORT;
+}
+
 export function makeBrowserTab(): BrowserTab {
   return {
     id: nextTabId(),
     url: null,
     title: null,
     faviconUrl: null,
-    viewport: RESPONSIVE_VIEWPORT,
+    viewport: newTabViewport(),
     zoomFactor: 1,
   };
 }
@@ -120,6 +111,18 @@ const DEFAULT_THREAD_STATE: ThreadBrowserState = Object.freeze({
   tabs: [DEFAULT_TAB],
   activeTabId: DEFAULT_TAB.id,
 });
+
+/**
+ * What a thread's browser is the first time it is written down: the default
+ * state, its blank tab at the size new tabs open at. Keeps the default tab's
+ * id, so the tab a selector has been showing is the same one.
+ */
+function initialThreadState(): ThreadBrowserState {
+  const viewport = newTabViewport();
+  return viewport === RESPONSIVE_VIEWPORT
+    ? DEFAULT_THREAD_STATE
+    : { ...DEFAULT_THREAD_STATE, tabs: [{ ...DEFAULT_TAB, viewport }] };
+}
 
 const EMPTY_THREAD_STATE: ThreadBrowserState = Object.freeze({
   open: false,
@@ -511,7 +514,7 @@ function updateThread(
   update: (current: ThreadBrowserState) => ThreadBrowserState,
 ): Pick<BrowserPanelStoreState, "browserStateByThreadKey"> {
   const key = scopedThreadKey(threadRef);
-  const current = state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE;
+  const current = state.browserStateByThreadKey[key] ?? initialThreadState();
   return {
     browserStateByThreadKey: { ...state.browserStateByThreadKey, [key]: update(current) },
   };
@@ -678,7 +681,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
       toggleBrowserOpen: (threadRef) =>
         set((state) => {
           const key = scopedThreadKey(threadRef);
-          const current = state.browserStateByThreadKey[key] ?? DEFAULT_THREAD_STATE;
+          const current = state.browserStateByThreadKey[key] ?? initialThreadState();
           const nextOpen = !current.open;
           return {
             ...updateThread(state, threadRef, () => ({ ...current, open: nextOpen })),
@@ -826,7 +829,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
             Object.keys(nextOwnership.agentOwnerByTabId).length === 0;
           const threadUpdate = updateThread(state, threadRef, (current) => {
             if (shouldClosePanel) {
-              return { ...DEFAULT_THREAD_STATE, open: false };
+              return { ...initialThreadState(), open: false };
             }
             const nextActive = nextActiveTabId(current.tabs, tabId, current.activeTabId);
             if (nextActive === null) {
