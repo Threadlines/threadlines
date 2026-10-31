@@ -2268,9 +2268,7 @@ export const OrchestrationThread = Schema.Struct({
   /** See OrchestrationThreadShell.outsideOrigin. */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
   /** See OrchestrationThreadShell.outsideWork. */
-  outsideWork: Schema.Array(OrchestrationOutsideWork).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /** See OrchestrationThreadShell.move. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
   /** See OrchestrationThreadShell.movedFrom. */
@@ -2500,10 +2498,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    * Absent or null: started in Threadlines.
    */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
-  /** The agents outside text reached whose tools are limited: see OrchestrationOutsideWork. */
-  outsideWork: Schema.Array(OrchestrationOutsideWork).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
+  /**
+   * The agents outside text reached whose tools are limited: see
+   * OrchestrationOutsideWork. Absent or empty: none.
+   */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /**
    * On a parent: its children on linked computers with their last known
    * status (OrchestrationChildRequestState.remoteChildren), so its family
