@@ -245,22 +245,50 @@ describe("decider outside agents", () => {
       fromOutside: work,
     } as OrchestrationCommand);
     expect(threadOf(sent.model).outsideWork).toEqual([
-      { participantId: null, connections: [AGENT], since: at(2) },
+      { participantId: null, connections: [AGENT], since: at(2), version: 1 },
     ]);
 
-    const clear: OrchestrationCommand = {
+    const clear = (version: number): OrchestrationCommand => ({
       type: "thread.outside-work.clear",
-      commandId: CommandId.make("clear"),
+      commandId: CommandId.make(`clear-${version}`),
       threadId: THREAD,
       participantId: null,
+      version,
       createdAt: at(9),
-    };
-    const cleared = await run(sent.model, clear);
+    });
+    // Its turn failed: Retry would send its words again without its mark or ceiling.
+    const failed = await run(sent.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("failed"),
+      threadId: THREAD,
+      session: {
+        threadId: THREAD,
+        status: "error",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: "The model is overloaded.",
+        updatedAt: at(3),
+      },
+      createdAt: at(3),
+    });
+    expect(
+      (
+        await refusal(failed.model, {
+          type: "thread.turn.retry",
+          commandId: CommandId.make("retry"),
+          threadId: THREAD,
+          createdAt: at(4),
+        } as OrchestrationCommand)
+      ).detail,
+    ).toContain("came from Claude Code");
+
+    // Outside text that reached it after the fresh start began keeps the mark.
+    expect((await run(sent.model, clear(0))).events).toEqual([]);
+    const cleared = await run(sent.model, clear(1));
     expect(threadOf(cleared.model).outsideWork).toEqual([]);
     // Nothing left to clear: no event.
-    expect(
-      (await run(cleared.model, { ...clear, commandId: CommandId.make("again") })).events,
-    ).toEqual([]);
+    expect((await run(cleared.model, clear(1))).events).toEqual([]);
   });
 
   it("answers only an open question, at Work, asked by the agent holding the thread, never an approval", async () => {

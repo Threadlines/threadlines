@@ -46,7 +46,7 @@ import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSe
 import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
-import { isOutsideMarked, outsideCeilingDetail } from "../outsideTurns.ts";
+import { isOutsideMarked, outsideCeilingDetail, outsideWorkOf } from "../outsideTurns.ts";
 import { OutsideAgentConnections } from "../../outsideAgents/OutsideAgentConnections.ts";
 import {
   hasAgentRecords,
@@ -647,55 +647,63 @@ const make = Effect.gen(function* () {
 
   /**
    * An agent outside text reached started fresh for a turn that isn't from
-   * outside (docs/design/assistants.md, step 3): its mark clears. A goal set
-   * since the mark is cleared with it, since goals come back on resume and
-   * the agent may have set it from the outside text; the chat says so.
+   * outside (docs/design/assistants.md, step 3): the mark it had when this
+   * began clears (outside text that reached it since keeps a newer one). A
+   * goal set since the mark is cleared at the provider first, since goals
+   * come back on resume and the agent may have set it from the outside text;
+   * if that fails, the agent stays marked. The chat says either way.
    */
   const shedOutsideWork = Effect.fnUntraced(function* (
     thread: OrchestrationThread,
     participantId: ThreadParticipantId | null,
     createdAt: string,
   ) {
-    const entry = (thread.outsideWork ?? []).find(
-      (candidate) => candidate.participantId === participantId,
-    );
+    const entry = outsideWorkOf(thread, participantId);
     if (entry === undefined) return;
+    const names = entry.connections.map((connection) => connection.name).join(" and ");
     const goal = thread.goal;
-    if (goal !== null && goal.createdAt >= entry.since) {
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.goal.clear",
-          commandId: serverCommandId("outside-work-goal-clear"),
-          threadId: thread.id,
-          createdAt,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
-      const names = entry.connections.map((connection) => connection.name).join(" and ");
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.activity.append",
-          commandId: serverCommandId("outside-work-goal-cleared"),
-          threadId: thread.id,
-          activity: {
-            id: EventId.make(crypto.randomUUID()),
-            tone: "info",
-            kind: "outside-work.goal-cleared",
-            summary: "Goal cleared",
-            payload: {
-              detail: `The goal "${goal.objective}" was set while ${names}'s work ran here, so it was cleared when the agent started fresh. Set it again if you want it.`,
+    if (
+      goal !== null &&
+      goal.createdAt >= entry.since &&
+      sessionSlotParticipantId(thread.session) === participantId
+    ) {
+      const cleared = yield* providerService
+        .clearThreadGoal({ threadId: participantSessionKey(thread.id, participantId) })
+        .pipe(Effect.result);
+      const note = (detail: string) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("outside-work-goal"),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(crypto.randomUUID()),
+              tone: cleared._tag === "Success" ? "info" : "error",
+              kind: "outside-work.goal-cleared",
+              summary: cleared._tag === "Success" ? "Goal cleared" : "Goal not cleared",
+              payload: { detail },
+              turnId: null,
+              createdAt,
             },
-            turnId: null,
             createdAt,
-          },
-          createdAt,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      if (cleared._tag === "Failure") {
+        yield* note(
+          `The goal "${goal.objective}" was set while ${names}'s work ran here, and it couldn't be cleared, so this agent's tools stay limited. Clear the goal, then start it fresh.`,
+        );
+        return;
+      }
+      yield* note(
+        `The goal "${goal.objective}" was set while ${names}'s work ran here, so it was cleared when the agent started fresh. Set it again if you want it.`,
+      );
     }
     yield* orchestrationEngine.dispatch({
       type: "thread.outside-work.clear",
       commandId: serverCommandId("outside-work-clear"),
       threadId: thread.id,
       participantId,
+      version: entry.version,
       createdAt,
     });
   });
@@ -4061,7 +4069,12 @@ const make = Effect.gen(function* () {
                 runtimeMode: thread.runtimeMode,
                 interactionMode: thread.interactionMode,
                 ...(fromOutside !== undefined
-                  ? { fromOutside, answering: event.payload.requestId }
+                  ? {
+                      fromOutside,
+                      answering: event.payload.requestId,
+                      // The agent that asked, which the decider checked holds the thread.
+                      participantId: event.payload.participantId ?? null,
+                    }
                   : event.payload.sentFrom !== undefined
                     ? { sentFrom: event.payload.sentFrom }
                     : {}),
@@ -4332,8 +4345,17 @@ const make = Effect.gen(function* () {
     // Every runtime of the thread is gone, and with it whatever outside work
     // left running: the agents it marked start fresh next time, unless their
     // provider keeps queued work past the runtime (they clear at that start).
+    // Only an agent whose runtime is confirmed gone: a stop that failed
+    // leaves its runtime, and its mark.
+    const stillRunning = new Set(
+      (yield* providerService.listSessions().pipe(Effect.orElseSucceed(() => [] as const)))
+        .filter((session) => session.status !== "closed")
+        .map((session) => session.threadId),
+    );
     yield* Effect.forEach(
-      thread.outsideWork ?? [],
+      (thread.outsideWork ?? []).filter(
+        (entry) => !stillRunning.has(participantSessionKey(thread.id, entry.participantId)),
+      ),
       (entry) =>
         Effect.gen(function* () {
           const instanceId =

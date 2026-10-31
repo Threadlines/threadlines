@@ -1581,3 +1581,15 @@ agent, the live lookup for the hook plus goals refused or cleared, and the
 A last focused pass found one more: OpenCode's restart keeps the native
 session, so a report queued by outside work could wake the fresh runtime.
 Answered by `freshStart` and OpenCode's interrupt-and-silence step.
+
+Sol's review of the built branch (Oct 31) found seven more, all fixed: a
+fresh start could clear a mark that outside text renewed while it ran (marks
+now carry a version, and a clear names the one it saw); Retry replayed an
+outside message without its mark or ceiling (Retry refuses it now); the goal
+clear was only queued before the mark lifted (the provider clears it first,
+or the agent stays marked); a stop that failed for one room agent still
+cleared its mark (only agents whose runtime is gone clear); OpenCode's quiet
+start ignored a failed interrupt (the start fails instead); an answer's own
+turn went to the thread's own agent instead of the room agent that asked;
+and an archived thread read as unmarked while its runtimes were still
+stopping (the lookups read archived threads too).

@@ -114,8 +114,8 @@ import {
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import {
-  isOutsideMarked,
   outsideAnswerDecision,
+  outsideWorkOf,
   outsideStopRefusal,
   outsideTurnRefusal,
 } from "./outsideTurns.ts";
@@ -3002,6 +3002,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' has no user message to retry.`,
         });
       }
+      // An outside agent's words would run again without its mark or its
+      // ceiling (docs/design/assistants.md, step 3): it sends them again.
+      if (lastUserMessage.fromOutside !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `This message came from ${lastUserMessage.fromOutside.name}, outside Threadlines. Ask it to send it again, or write it yourself.`,
+        });
+      }
       // A failed turn is retried with the agent that failed it: the slot
       // still holds that agent's session.
       const retryParticipantId = sessionSlotParticipantId(session);
@@ -3733,7 +3741,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (!isOutsideMarked(thread, command.participantId)) {
+      // Only the mark the fresh start saw: outside text that reached the
+      // agent since (a newer version) keeps it.
+      if (outsideWorkOf(thread, command.participantId)?.version !== command.version) {
         return [];
       }
       return {

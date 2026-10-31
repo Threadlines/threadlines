@@ -1186,6 +1186,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
                       },
                     ],
                     since: NOW_ISO,
+                    version: 1,
                   },
                 ],
               }

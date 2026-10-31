@@ -170,7 +170,7 @@ export function markOutsideWork(
   const existing = entries.find((entry) => entry.participantId === participantId);
   const connection = { connectionId: ref.connectionId, name: ref.name };
   if (existing === undefined) {
-    return [...entries, { participantId, connections: [connection], since: at }];
+    return [...entries, { participantId, connections: [connection], since: at, version: 1 }];
   }
   const connections = existing.connections.some((entry) => entry.connectionId === ref.connectionId)
     ? existing.connections.map((entry) =>
@@ -178,7 +178,9 @@ export function markOutsideWork(
       )
     : [...existing.connections, connection];
   return entries.map((entry) =>
-    entry.participantId === participantId ? { ...entry, connections } : entry,
+    entry.participantId === participantId
+      ? { ...entry, connections, version: entry.version + 1 }
+      : entry,
   );
 }
 
@@ -188,6 +190,14 @@ export function clearOutsideWork(
   participantId: ThreadParticipantId | null,
 ): ReadonlyArray<OrchestrationOutsideWork> {
   return (current ?? []).filter((entry) => entry.participantId !== participantId);
+}
+
+/** The mark on `participantId`, if outside text reached it and it hasn't started fresh since. */
+export function outsideWorkOf(
+  thread: Pick<OrchestrationThread, "outsideWork">,
+  participantId: ThreadParticipantId | null,
+): OrchestrationOutsideWork | undefined {
+  return (thread.outsideWork ?? []).find((entry) => entry.participantId === participantId);
 }
 
 /** Whether outside text reached `participantId` and it hasn't started fresh since. */

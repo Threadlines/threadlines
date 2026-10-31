@@ -2319,10 +2319,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           );
           // The native session outlives the runtime: end anything it was
           // still running for the one before (outside work's fresh start).
+          // A start that can't is no fresh start: it fails, and the agent
+          // stays marked.
           if (ctx.quietUntilTurn && resumed) {
             yield* runOpenCode("session.interrupt", (signal) =>
               ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
-            ).pipe(Effect.ignore);
+            ).pipe(Effect.mapError(toRequestError("session.interrupt")));
           }
 
           yield* applyRules(ctx, rootSessionId, yield* rulesFor(ctx, BUILD_AGENT)).pipe(

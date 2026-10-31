@@ -526,6 +526,7 @@ describe("MCP endpoints", () => {
               Layer.provide(
                 Layer.succeed(ProjectionSnapshotQuery, {
                   getThreadShellById: () => Effect.succeed(Option.none()),
+                  getThreadDetailById: () => Effect.succeed(Option.none()),
                 } as never),
               ),
             ),

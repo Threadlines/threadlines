@@ -17,10 +17,15 @@ export const OutsideWorkLookupLive = Layer.effectDiscard(
     const snapshots = yield* ProjectionSnapshotQuery;
     yield* outsideWorkLookup.provide((sessionKey) => {
       const target = parseSessionKey(sessionKey);
-      return snapshots.getThreadShellById(target.threadId).pipe(
-        Effect.map((shell) =>
-          Option.isSome(shell) ? isOutsideMarked(shell.value, target.participantId) : false,
-        ),
+      return Effect.gen(function* () {
+        // An archived thread still counts: its runtimes stop after it's archived.
+        const shell = yield* snapshots.getThreadShellById(target.threadId);
+        if (Option.isSome(shell)) return isOutsideMarked(shell.value, target.participantId);
+        const detail = yield* snapshots.getThreadDetailById(target.threadId, {
+          includeArchived: true,
+        });
+        return Option.isSome(detail) ? isOutsideMarked(detail.value, target.participantId) : false;
+      }).pipe(
         // Can't tell: refuse, rather than let outside work schedule itself.
         Effect.orElseSucceed(() => true),
       );

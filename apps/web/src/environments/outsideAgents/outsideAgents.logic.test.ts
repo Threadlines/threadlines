@@ -157,6 +157,7 @@ describe("describeOutsideWork", () => {
     participantId,
     connections,
     since: "2026-10-30T12:00:00.000Z",
+    version: 1,
   });
   const roomNames = (participantId: ThreadParticipantId | null) =>
     participantId === null ? "Opus 5.5" : "GPT-6.1 Sol (Reviewer)";

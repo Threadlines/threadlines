@@ -35,6 +35,10 @@ const shells = new Map<string, object>([
   ],
   [QUIET, { id: QUIET }],
 ]);
+const ARCHIVED = ThreadId.make("thread-archived");
+const archived = new Map<string, object>([
+  [ARCHIVED, { id: ARCHIVED, outsideWork: shells.get(MARKED)!["outsideWork" as never] }],
+]);
 
 const limitsWith = (grants: Map<string, { projectIds: ReadonlyArray<ProjectId> | null } | null>) =>
   makeOutsideToolLimits.pipe(
@@ -43,6 +47,9 @@ const limitsWith = (grants: Map<string, { projectIds: ReadonlyArray<ProjectId> |
         Layer.succeed(ProjectionSnapshotQuery, {
           getThreadShellById: (threadId: string) =>
             Effect.succeed(Option.fromNullishOr(shells.get(threadId))),
+          // Archived threads: ARCHIVED only.
+          getThreadDetailById: (threadId: string) =>
+            Effect.succeed(Option.fromNullishOr(archived.get(threadId))),
         } as never),
         Layer.succeed(OutsideAgentConnections, {
           grant: (connectionId: string) => {
@@ -76,6 +83,7 @@ describe("outside tool limits", () => {
       Effect.gen(function* () {
         const marked = yield* scopeOf(MARKED);
         const quiet = yield* scopeOf(QUIET);
+        const archivedScope = yield* scopeOf(ARCHIVED);
         const both = yield* limitsWith(
           new Map([
             [GROK, { projectIds: [WEB, API] }],
@@ -87,9 +95,12 @@ describe("outside tool limits", () => {
           both: yield* both.forScope(marked.scope),
           removed: yield* removed.forScope(marked.scope),
           quiet: yield* both.forScope(quiet.scope),
+          // Archived: its runtimes stop after, so it still counts until then.
+          archived: yield* both.forScope(archivedScope.scope),
         };
         yield* marked.revoke;
         yield* quiet.revoke;
+        yield* archivedScope.revoke;
         return out;
       }),
     );
@@ -97,6 +108,7 @@ describe("outside tool limits", () => {
     expect([...(result.both?.projectIds ?? [])]).toEqual([WEB]);
     expect([...(result.removed?.projectIds ?? ["(all)"])]).toEqual([]);
     expect(result.quiet).toBeNull();
+    expect(result.archived?.names).toEqual(["Grok Bot", "dots"]);
   });
 
   it("limits every session sharing an OpenCode folder with a marked agent", async () => {

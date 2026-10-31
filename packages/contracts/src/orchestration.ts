@@ -680,6 +680,12 @@ export const OrchestrationOutsideWork = Schema.Struct({
   participantId: Schema.NullOr(ThreadParticipantId),
   connections: Schema.Array(OutsideAgentRef),
   since: IsoDateTime,
+  /**
+   * Bumped each time outside text reaches the agent. A clear names the
+   * version it saw, so outside text that arrived while the agent was being
+   * started fresh keeps its mark.
+   */
+  version: NonNegativeInt,
 });
 export type OrchestrationOutsideWork = typeof OrchestrationOutsideWork.Type;
 /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
@@ -3820,6 +3826,8 @@ const ThreadOutsideWorkClearCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   participantId: Schema.NullOr(ThreadParticipantId),
+  /** The mark's version the fresh start saw (OrchestrationOutsideWork.version); a newer one stays. */
+  version: NonNegativeInt,
   createdAt: IsoDateTime,
 });
 

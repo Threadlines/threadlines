@@ -3106,6 +3106,49 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => (await marks()).length === 0);
   });
 
+  it("clears an outside mark on Start fresh only once the agent's runtime is gone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const marks = async () =>
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)?.outsideWork ??
+      [];
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-outside"),
+      threadId,
+      message: { messageId: asMessageId("outside"), role: "user", text: "work", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      fromOutside: {
+        connectionId: OutsideAgentConnectionId.make("connection-1"),
+        name: "Grok Bot",
+        access: "work",
+        maxRuntimeMode: "approval-required",
+      },
+      createdAt: now,
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const stop = (id: string) =>
+      dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make(`cmd-stop-${id}`),
+        threadId,
+        createdAt: now,
+      });
+    // A stop that leaves the runtime running leaves the mark.
+    harness.stopSession.mockImplementationOnce(() => Effect.void);
+    await stop("kept");
+    await harness.drain();
+    expect(await marks()).toHaveLength(1);
+    // Once that runtime is gone, Start fresh clears it.
+    harness.runtimeSessions.splice(0);
+    await stop("gone");
+    await waitFor(async () => (await marks()).length === 0);
+  });
+
   it("gives a scheduled run's thread its tools on its own, and a linked computer's thread none", async () => {
     // Agents may neither invite nor start threads.
     const harness = await createHarness({

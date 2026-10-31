@@ -16,6 +16,7 @@ import type {
   OrchestrationOutsideWork,
   OutsideAgentConnectionId,
   ProjectId,
+  ThreadId,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -65,19 +66,28 @@ export const makeOutsideToolLimits = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery;
   const connections = yield* Effect.serviceOption(OutsideAgentConnections);
 
-  /** The connections that marked `scope`'s agent, or null when its thread couldn't be read. */
+  /**
+   * The connections that marked `scope`'s agent, or null when its thread
+   * couldn't be read. An archived thread still counts: its runtimes stop
+   * after it's archived, not before.
+   */
   const markOf = (scope: Pick<McpInvocationScope, "threadId" | "participantId">) =>
-    snapshots.getThreadShellById(scope.threadId).pipe(
-      Effect.map((shell) =>
-        Option.match(shell, {
-          onNone: (): OrchestrationOutsideWork["connections"] => [],
-          onSome: (thread) =>
-            (thread.outsideWork ?? []).find((entry) => entry.participantId === scope.participantId)
-              ?.connections ?? [],
-        }),
-      ),
-      Effect.orElseSucceed(() => null),
-    );
+    Effect.gen(function* () {
+      const work = yield* outsideWorkFor(scope.threadId);
+      return (
+        work.find((entry) => entry.participantId === scope.participantId)?.connections ??
+        ([] as OrchestrationOutsideWork["connections"])
+      );
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  /** The thread's outside work, archived threads included; none for a thread that isn't there. */
+  const outsideWorkFor = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const shell = yield* snapshots.getThreadShellById(threadId);
+      if (Option.isSome(shell)) return shell.value.outsideWork ?? [];
+      const detail = yield* snapshots.getThreadDetailById(threadId, { includeArchived: true });
+      return Option.isSome(detail) ? (detail.value.outsideWork ?? []) : [];
+    });
 
   const forScope = (scope: McpInvocationScope): Effect.Effect<OutsideToolLimit | null> =>
     Effect.gen(function* () {
