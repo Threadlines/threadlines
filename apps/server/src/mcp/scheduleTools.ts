@@ -17,6 +17,8 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import { reasoningParameter, ROOM_REASONING } from "./threadTools.ts";
+
 export const AgentScheduledTask = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -39,6 +41,12 @@ export const AgentScheduledTask = Schema.Struct({
   /** `this_thread`: each run continues the thread that set it up. */
   eachRun: Schema.Literals(["new_thread", "this_thread", "another_thread"]),
   runsIn: Schema.Literals(["local", "worktree"]),
+  /** What each run runs on; `reasoning` absent: its provider's default. */
+  agent: Schema.Struct({
+    instanceId: Schema.String,
+    model: Schema.String,
+    reasoning: Schema.optional(Schema.String),
+  }),
   prompt: Schema.String,
 });
 export type AgentScheduledTask = typeof AgentScheduledTask.Type;
@@ -124,7 +132,7 @@ export const ScheduleListTool = Tool.make("schedule_list", {
 export const ScheduleCreateTool = changesSchedules(
   Tool.make("schedule_create", {
     description:
-      "Create a scheduled task in this project. Use it whenever the user wants work done later or on a schedule: the task shows on Threadlines' Scheduled page, where the user manages it. At each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model unless `agent` names another, and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
+      "Create a scheduled task in this project. Use it whenever the user wants work done later or on a schedule: the task shows on Threadlines' Scheduled page, where the user manages it. At each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model and reasoning unless `agent` names another (a model already in this room runs at the reasoning the user set for it there), and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
     parameters: Schema.Struct({
       name: Schema.String.annotate({ description: "A short name for the task." }),
       prompt: Schema.String.annotate({ description: "What each run should do." }),
@@ -145,6 +153,7 @@ export const ScheduleCreateTool = changesSchedules(
         Schema.Struct({
           instanceId: Schema.String.annotate({ description: "From thread_agents." }),
           model: Schema.String.annotate({ description: "From thread_agents." }),
+          reasoning: Schema.optional(reasoningParameter("thread_agents", ROOM_REASONING)),
         }),
       ),
     }),

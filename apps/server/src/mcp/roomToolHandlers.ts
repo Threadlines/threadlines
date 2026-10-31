@@ -57,6 +57,7 @@ import {
   isInvitableProvider,
 } from "../orchestration/agentInvites.ts";
 import { clipSideAnswer } from "../orchestration/agentRequestDecisions.ts";
+import { matchReasoningLevel } from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
@@ -949,19 +950,13 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     if (trimmed.length === 0) {
       return undefined;
     }
-    const wanted = normalizeAgentName(trimmed);
     const levels = candidate.reasoning?.options ?? [];
     if (candidate.reasoning === undefined || levels.length === 0) {
       return {
         refused: `${candidate.name} has no reasoning levels to choose from. Leave \`reasoning\` out.`,
       };
     }
-    const level =
-      wanted.length === 0
-        ? undefined
-        : levels.find((option) =>
-            [option.id, option.label].some((name) => normalizeAgentName(name) === wanted),
-          );
+    const level = matchReasoningLevel({ option: candidate.reasoning.id, levels }, trimmed);
     return level !== undefined
       ? { id: candidate.reasoning.id, value: level.id }
       : {

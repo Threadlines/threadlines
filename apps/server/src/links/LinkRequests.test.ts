@@ -372,6 +372,21 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     }),
   );
 
+  it.effect("refuses a start at a reasoning level its model doesn't offer here", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const service = yield* computer.boot();
+      const input = startInput("request-1");
+      const answer = yield* service.start(link(), {
+        ...input,
+        agent: { ...input.agent, options: [{ id: "reasoningEffort", value: "xhigh" }] },
+      });
+      assert.equal(answer.status, "refused");
+      assert.include(answer.reason, `GPT-6 Astra doesn't offer reasoning "xhigh".`);
+    }),
+  );
+
   it.effect(
     "a link made for one computer refuses a start that says it comes from another, and keeps its id",
     () =>

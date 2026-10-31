@@ -9,6 +9,7 @@
  */
 import type {
   AgentThreadsMode,
+  ModelSelection,
   OrchestrationThread,
   ScheduledTask,
   ScheduledTaskUpdateInput,
@@ -23,10 +24,16 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
+import {
+  providerModelReasoning,
+  reasoningLevel,
+  settleChildReasoning,
+} from "../orchestration/childThreadAgents.ts";
+import { modelLabel } from "../threads/threadOperations.ts";
 import type { ScheduledTasksShape } from "../scheduled/ScheduledTasks.ts";
 import type { ScheduledTaskChange } from "../scheduled/ScheduledTaskRepository.ts";
 import { latchCallerTurn } from "./callerTurn.ts";
-import { callerModelSelection } from "./threadToolHandlers.ts";
+import { callerModelSelection, reasoningSources } from "./threadToolHandlers.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
 import type {
@@ -43,6 +50,8 @@ export interface ScheduleToolDeps {
   /** "Agents can start threads", read afresh on every call. */
   readonly threadsMode: Effect.Effect<AgentThreadsMode>;
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
+  /** The user's default for new threads (Settings): the last reasoning a task follows. */
+  readonly userDefaultModel: Effect.Effect<ModelSelection | null>;
   /** This computer's time zone, for a task created without one. */
   readonly localTimeZone: string;
 }
@@ -83,6 +92,13 @@ const forAgent = (task: ScheduledTask, callerThreadId: ThreadId): AgentScheduled
         ? "this_thread"
         : "another_thread",
   runsIn: task.checkout,
+  agent: {
+    instanceId: task.modelSelection.instanceId,
+    model: task.modelSelection.model,
+    ...(reasoningLevel(task.modelSelection) !== undefined
+      ? { reasoning: reasoningLevel(task.modelSelection) }
+      : {}),
+  },
   prompt: task.prompt,
 });
 
@@ -220,7 +236,13 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       readonly time_zone?: string | undefined;
       readonly each_run?: "new_thread" | "this_thread" | undefined;
       readonly runs_in?: "local" | "worktree" | undefined;
-      readonly agent?: { readonly instanceId: string; readonly model: string } | undefined;
+      readonly agent?:
+        | {
+            readonly instanceId: string;
+            readonly model: string;
+            readonly reasoning?: string | undefined;
+          }
+        | undefined;
     },
   ): Effect.Effect<ScheduleChangeResult> =>
     Effect.gen(function* () {
@@ -232,6 +254,8 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       if (name.length === 0 || prompt.length === 0) {
         return { outcome: "refused" as const, detail: "A task needs a name and a prompt." };
       }
+      // In a room, the calling agent's own model, not the thread's.
+      let modelSelection = callerModelSelection(thread, scope.participantId);
       if (input.agent !== undefined) {
         const all = yield* deps.providers;
         const provider = all.find((entry) => entry.instanceId === input.agent?.instanceId);
@@ -244,6 +268,24 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
             detail: "That agent or model isn't on this computer. thread_agents lists them.",
           };
         }
+        // Each run follows the reasoning the user set for that model here,
+        // like a thread an agent starts (settleChildReasoning).
+        const named: ModelSelection = {
+          instanceId: ProviderInstanceId.make(input.agent.instanceId),
+          model: input.agent.model,
+        };
+        const settled = settleChildReasoning({
+          selection: named,
+          reasoning: input.agent.reasoning,
+          driver: provider.driver,
+          setting: providerModelReasoning(provider, named.model),
+          sources: reasoningSources(thread, scope.participantId, all, yield* deps.userDefaultModel),
+          name: modelLabel(named, all),
+        });
+        if ("refused" in settled) {
+          return { outcome: "refused" as const, detail: settled.refused };
+        }
+        modelSelection = settled;
       }
       return yield* proposeChange(scope, gated, "schedule_create", input, {
         kind: "create",
@@ -252,14 +294,7 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
           prompt,
           projectId: thread.projectId,
           checkout: input.runs_in ?? "local",
-          // In a room, the calling agent's own model, not the thread's.
-          modelSelection:
-            input.agent !== undefined
-              ? {
-                  instanceId: ProviderInstanceId.make(input.agent.instanceId),
-                  model: input.agent.model,
-                }
-              : callerModelSelection(thread, scope.participantId),
+          modelSelection,
           // Never more access than the thread asking for it has.
           runtimeMode: thread.runtimeMode,
           interactionMode: "default",

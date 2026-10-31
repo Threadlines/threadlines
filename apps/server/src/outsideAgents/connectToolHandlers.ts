@@ -93,7 +93,11 @@ import {
   decodeEventCursor,
   encodeEventCursor,
 } from "../assistants/AssistantEvents.ts";
-import { childModelRefusal } from "../orchestration/childThreadAgents.ts";
+import {
+  childModelRefusal,
+  providerModelReasoning,
+  settleChildReasoning,
+} from "../orchestration/childThreadAgents.ts";
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { outsideCeilingDetail, outsideTurnBusy } from "../orchestration/outsideTurns.ts";
@@ -103,6 +107,7 @@ import type {
   ThreadTurnStartCommand,
 } from "../orchestration/Services/ThreadBootstrap.ts";
 import {
+  agentForCaller,
   clipText,
   defaultThreadAgent,
   listThreadAgents,
@@ -629,7 +634,7 @@ export const makeConnectToolHandlers = (
         });
         return {
           outcome: "ok",
-          agents: listed.agents.map(({ driver: _driver, ...agent }) => agent),
+          agents: listed.agents.map(agentForCaller),
           unavailable: listed.unavailable,
           default:
             fallback === null ? null : { instanceId: fallback.instanceId, model: fallback.model },
@@ -1487,7 +1492,30 @@ export const makeConnectToolHandlers = (
           if (refusal !== null || "refused" in named) {
             return { outcome: "unavailable_agent", detail: refusal ?? "" };
           }
-          modelSelection = named;
+          // No room here: an unnamed level follows the user's default for new threads.
+          const userDefault = yield* deps.userDefaultModel;
+          const provider = providers.find((entry) => entry.instanceId === named.instanceId);
+          const settled = settleChildReasoning({
+            selection: named,
+            reasoning: input.agent.reasoning,
+            driver: provider?.driver,
+            setting: providerModelReasoning(provider, named.model),
+            sources:
+              userDefault === null
+                ? []
+                : [
+                    {
+                      driver: providers.find((entry) => entry.instanceId === userDefault.instanceId)
+                        ?.driver,
+                      selection: userDefault,
+                    },
+                  ],
+            name: modelLabel(named, providers),
+          });
+          if ("refused" in settled) {
+            return { outcome: "unavailable_agent", detail: settled.refused };
+          }
+          modelSelection = settled;
         } else {
           const fallback = defaultThreadAgent(providers, {
             userDefault: yield* deps.userDefaultModel,

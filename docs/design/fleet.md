@@ -327,6 +327,7 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
   - Unknown names are refused with the list of linked computers.
   - The agent must name one of that computer's `instanceId`s. The default is the computer's default instance for the caller's provider kind, or else its default agent.
   - The caller's own instance id is never sent: it means nothing on B (ProviderCommandReactor.ts:1048-1059).
+  - A settles the reasoning before it records the launch (child-threads.md, Reasoning), from B's descriptor: `peer.describe` lists each model's `reasoningSetting` (the option id and its levels). A model B didn't list (past the first 12) borrows the same model's setting from A's own provider of that kind; with none, an explicit level is refused and a followed one is sent as is. B checks the level again when it starts the thread and refuses one its model doesn't offer, rather than letting the provider swap in another. Moves keep the thread's options and skip that check.
 - `thread_list` includes remote children with their computer.
 - `thread_read`, `thread_send` and `thread_stop` work on remote children through the link. `thread_read` fails with a plain message when the computer is offline.
 - **Workspace on B.** B finds the project by A's `canonicalKey`, or refuses with "Mac mini doesn't have this project". For a worktree, B fetches and starts from `branch` when A's HEAD is pushed (A checks its upstream). Otherwise it starts from B's default branch, and the tool result says the caller's unpushed changes are not there.
@@ -729,6 +730,8 @@ Schedules are configuration, not thread history, so they live in their own table
   - auto applies them.
 
   Threads with `remoteOrigin` never get them.
+
+  A task an agent creates runs on the agent's own model and reasoning unless `schedule_create` names an `agent`. A named agent's reasoning is settled when the task is proposed and saved in it, by the same rule as a thread an agent starts (child-threads.md, Reasoning): a level the agent names, else the one the user set for an agent in the room on that model, else the user's default for new threads on it. `schedule_list` shows each task's agent and reasoning.
 
 ### UI
 

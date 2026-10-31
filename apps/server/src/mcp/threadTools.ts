@@ -25,13 +25,27 @@ export type ThreadStatusWord = typeof ThreadStatusWord.Type;
 const ThreadSummary = AgentThreadSummary;
 export type ThreadSummary = typeof ThreadSummary.Type;
 
+/** An agent's model as thread_agents shows it; `reasoning` absent: its provider's default. */
+const RoomAgentModel = Schema.Struct({
+  instanceId: Schema.String,
+  model: Schema.String,
+  reasoning: Schema.optional(Schema.String),
+});
+
 export const ThreadAgentsResult = Schema.Struct({
   outcome: Schema.Literals(["ok", "off", "not_allowed", "refused"]),
   detail: Schema.optional(Schema.String),
   /** `ask`: the user approves each start; `auto`: threads start at once. */
   approval: Schema.optional(Schema.Literals(["ask", "auto"])),
-  /** What a thread runs on when `agent` is left out: your own model. */
-  yours: Schema.optional(Schema.Struct({ instanceId: Schema.String, model: Schema.String })),
+  /** What a thread runs on when `agent` is left out: your own model and reasoning. */
+  yours: Schema.optional(RoomAgentModel),
+  /**
+   * The other agents in this room, each with the reasoning the user set for
+   * it. A thread you start on one of their models runs at that reasoning.
+   */
+  room: Schema.optional(
+    Schema.Array(Schema.Struct({ name: Schema.String, ...RoomAgentModel.fields })),
+  ),
   agents: Schema.Array(AgentThreadAgent),
   /** Providers that are set up but can't take a thread now, and why. */
   unavailable: Schema.Array(
@@ -79,6 +93,8 @@ export const ThreadStartResult = Schema.Struct({
         threadId: Schema.String,
         title: Schema.String,
         model: Schema.String,
+        /** The reasoning level it runs at; absent: its provider's default. */
+        reasoning: Schema.optional(Schema.String),
         /**
          * `worktree`: its own new worktree. `project_folder`: shares the
          * project folder. `remote`: on a linked computer, in its own checkout.
@@ -138,22 +154,40 @@ const ThreadIdParameter = Schema.String.annotate({
   description: "The thread's id, from thread_start or thread_list.",
 });
 
-/** The `agent` parameter of a tool that starts threads; `listTool` is where its values come from. */
-export const agentParameter = (listTool: string) =>
+/** What a thread runs at when an agent in a room names a model but no reasoning. */
+export const ROOM_REASONING =
+  "the reasoning the user set for an agent in this room on the same model (you first), else their default for new threads on it, else the provider's";
+
+/**
+ * The `agent.reasoning` parameter: `listTool` lists the levels,
+ * `unnamedReasoning` is what a thread runs at when the call names none.
+ */
+export const reasoningParameter = (listTool: string, unnamedReasoning: string) =>
+  Schema.String.annotate({
+    description: `A level from the model's \`reasoning\` in ${listTool} ("xhigh"), or "default" for the provider's own. Left out: ${unnamedReasoning}.`,
+  });
+
+/**
+ * The `agent` parameter of a tool that starts threads: `listTool` is where
+ * its values come from, `unnamedReasoning` what a thread runs at when the
+ * call names no reasoning.
+ */
+export const agentParameter = (listTool: string, unnamedReasoning: string) =>
   Schema.Struct({
     instanceId: Schema.String.annotate({ description: `From ${listTool}.` }),
     model: Schema.String.annotate({ description: `From ${listTool}.` }),
+    reasoning: Schema.optional(reasoningParameter(listTool, unnamedReasoning)),
     options: Schema.optional(
       Schema.Array(
         Schema.Struct({
           id: Schema.String,
           value: Schema.Union([Schema.String, Schema.Boolean]),
         }),
-      ).annotate({ description: "Model options such as reasoning effort; usually left out." }),
+      ).annotate({ description: "Other model options; usually left out." }),
     ),
   });
 
-const AgentParameter = agentParameter("thread_agents");
+const AgentParameter = agentParameter("thread_agents", ROOM_REASONING);
 
 export const readsThreads = <T extends Tool.Any>(tool: T): T =>
   tool
@@ -170,7 +204,7 @@ export const drivesThreads = <T extends Tool.Any>(tool: T): T =>
 export const ThreadAgentsTool = readsThreads(
   Tool.make("thread_agents", {
     description:
-      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models, plus your own model, which threads use when you don't pick one. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all. `computers` lists other computers linked to this one, each with its own agents: pass a computer's name as thread_start's `computer` and one of its agents as `agent`.",
+      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models with their reasoning levels. `yours` is your own model and reasoning, which threads use when you don't pick one; `room` lists the other agents in this room, each with the reasoning the user set for it. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all. `computers` lists other computers linked to this one, each with its own agents: pass a computer's name as thread_start's `computer` and one of its agents as `agent`.",
     parameters: Schema.Struct({
       instanceId: Schema.optional(
         Schema.String.annotate({ description: "List only this provider, with every model." }),
@@ -183,7 +217,7 @@ export const ThreadAgentsTool = readsThreads(
 export const ThreadStartTool = drivesThreads(
   Tool.make("thread_start", {
     description:
-      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own. Threads get your current access and interaction modes, never more. `runSetup: false` skips the project's setup script, for quick research. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
+      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more. `runSetup: false` skips the project's setup script, for quick research. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
     parameters: Schema.Struct({
       threads: Schema.Array(
         Schema.Struct({

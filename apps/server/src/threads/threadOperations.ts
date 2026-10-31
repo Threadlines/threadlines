@@ -14,11 +14,13 @@
  *   `dispatchOutcome` (a refused or failed dispatch, as a tool outcome).
  */
 import type {
+  AgentThreadAgent,
   OutsideAgentConnectionId,
   OrchestrationEvent,
   OrchestrationThread,
   OrchestrationThreadShell,
   ModelSelection,
+  PeerAgent,
   ProviderInteractionMode,
   ProviderOptionSelection,
   ServerProvider,
@@ -35,6 +37,7 @@ import {
   childAgentProviderName,
   childAgentRefusal,
   childModelRefusal,
+  modelReasoningSetting,
 } from "../orchestration/childThreadAgents.ts";
 import { coalesceLatestAggregateEvents } from "../orchestration/shellStreamCoalescing.ts";
 import { roomAgentEntries, roomAgentName } from "../mcp/roomAgents.ts";
@@ -302,6 +305,7 @@ export const relatedThreadTitles = (
  * The agents a thread here can run on, as thread_agents and a linked
  * computer's peer.describe list them: ready providers that can honor the
  * caller's interaction mode, and the set-up ones that can't take a thread now.
+ * An agent is shown to a caller through `agentForCaller`.
  */
 export function listThreadAgents(
   providers: ReadonlyArray<ServerProvider>,
@@ -311,10 +315,10 @@ export function listThreadAgents(
     readonly only?: string | undefined;
   },
 ): {
-  readonly agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }>;
+  readonly agents: Array<PeerAgent>;
   readonly unavailable: Array<ThreadAgentsResult["unavailable"][number]>;
 } {
-  const agents: Array<ThreadAgentsResult["agents"][number] & { readonly driver: string }> = [];
+  const agents: Array<PeerAgent> = [];
   const unavailable: Array<ThreadAgentsResult["unavailable"][number]> = [];
   for (const provider of providers) {
     // Providers the user never turned on are not worth a line.
@@ -328,7 +332,14 @@ export function listThreadAgents(
     }
     const models = provider.models
       .filter((model) => model.isHidden !== true)
-      .map((model) => ({ model: model.slug, name: model.shortName ?? model.name }));
+      .map((model) => {
+        const reasoningSetting = modelReasoningSetting(model.capabilities);
+        return {
+          model: model.slug,
+          name: model.shortName ?? model.name,
+          ...(reasoningSetting !== null ? { reasoningSetting } : {}),
+        };
+      });
     // A gateway can list a hundred models; the first ones, in the
     // provider's own order, are enough to choose from unless asked.
     const listed = input.only === undefined ? models.slice(0, MODELS_LISTED_PER_PROVIDER) : models;
@@ -343,6 +354,21 @@ export function listThreadAgents(
   }
   return { agents, unavailable };
 }
+
+/** A listed agent as a calling agent reads it: its models' reasoning as level ids. */
+export const agentForCaller = ({
+  driver: _driver,
+  models,
+  ...agent
+}: PeerAgent): AgentThreadAgent => ({
+  ...agent,
+  models: models.map(({ reasoningSetting, ...model }) => ({
+    ...model,
+    ...(reasoningSetting !== undefined
+      ? { reasoning: reasoningSetting.levels.map((level) => level.id) }
+      : {}),
+  })),
+});
 
 /**
  * A page of a thread's messages, oldest first, as thread_read returns it

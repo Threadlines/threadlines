@@ -15,7 +15,7 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
  * An agent asks to start threads of its own (child threads, "Ask me first").
  * Docked above the message box like an invite: the box stays usable, so the
  * user can answer or write something else first. Each line names the thread,
- * the agent it runs on, and where it works.
+ * the agent it runs on and at what reasoning, and where it works.
  */
 export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel(props: {
   threadRef: ScopedThreadRef;
@@ -87,6 +87,12 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
                   />
                 ) : null}
                 <span className="max-w-40 truncate">{thread.modelName}</span>
+                {thread.reasoning !== null ? (
+                  <>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span data-child-thread-reasoning>{thread.reasoning}</span>
+                  </>
+                ) : null}
                 <span className="text-muted-foreground/50">·</span>
                 <span>
                   {thread.computer !== null

@@ -76,7 +76,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { childRequestCommandId } from "../orchestration/childRequestIds.ts";
-import { childAgentProviderName, childAgentRefusal } from "../orchestration/childThreadAgents.ts";
+import {
+  childAgentProviderName,
+  childAgentRefusal,
+  childReasoningRefusal,
+} from "../orchestration/childThreadAgents.ts";
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
 import {
   type ChildDelivery,
@@ -749,8 +753,15 @@ const make = Effect.gen(function* () {
       return { kind: "worktree", projectCwd, baseRef: base } satisfies ChildThreadWorkspace;
     });
 
-  /** The agent the asking computer named, with a model: this computer's own instance ids. */
-  const resolveAgent = (input: AgentAsked): Effect.Effect<AgentResolution> =>
+  /**
+   * The agent the asking computer named, with a model: this computer's own
+   * instance ids. A start (`checkReasoning`) also needs the reasoning level
+   * it settled to still be offered here; a move keeps the thread's as it is.
+   */
+  const resolveAgent = (
+    input: AgentAsked,
+    { checkReasoning }: { readonly checkReasoning: boolean } = { checkReasoning: false },
+  ): Effect.Effect<AgentResolution> =>
     Effect.gen(function* () {
       const all = yield* providers.getProviders;
       const provider = all.find((entry) => entry.instanceId === input.agent.instanceId);
@@ -788,6 +799,12 @@ const make = Effect.gen(function* () {
           ? { options: [...input.agent.options] }
           : {}),
       };
+      const reasoningRefusal = checkReasoning
+        ? childReasoningRefusal(provider, selection, ownLabel())
+        : null;
+      if (reasoningRefusal !== null) {
+        return { refused: reasoningRefusal };
+      }
       return { selection };
     });
 
@@ -855,7 +872,7 @@ const make = Effect.gen(function* () {
           if (project === undefined) {
             return yield* fail(`${ownLabel()} doesn't have this project.`);
           }
-          const agent = yield* resolveAgent(input);
+          const agent = yield* resolveAgent(input, { checkReasoning: true });
           if ("refused" in agent) {
             return yield* fail(agent.refused);
           }
@@ -993,7 +1010,7 @@ const make = Effect.gen(function* () {
         yield* settle(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
       }
-      const agent = yield* resolveAgent(input);
+      const agent = yield* resolveAgent(input, { checkReasoning: true });
       if ("refused" in agent) {
         yield* settle(row, "failed", agent.refused, { error: agent.refused });
         return { status: "refused", reason: agent.refused } as const;
@@ -2299,7 +2316,7 @@ const make = Effect.gen(function* () {
     startReactor,
     authority: linkAuthority,
     projectForKey,
-    resolveAgentFor: resolveAgent,
+    resolveAgentFor: (input) => resolveAgent(input),
   });
 });
 

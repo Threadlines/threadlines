@@ -836,6 +836,41 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     const parentThread = base.threads.find((thread) => thread.id === THREAD_ID)!;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
+      // The thread for the linked computer runs on a model with reasoning levels.
+      configureFixture: (nextFixture) => {
+        const [codexProvider] = nextFixture.serverConfig.providers;
+        if (!codexProvider) return;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...codexProvider,
+              models: [
+                ...codexProvider.models,
+                {
+                  slug: "gpt-6.1-sol",
+                  name: "GPT-6.1 Sol",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select" as const,
+                        options: [
+                          { id: "low", label: "Low", isDefault: true },
+                          { id: "xhigh", label: "Extra High" },
+                        ],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+            ...nextFixture.serverConfig.providers.slice(1),
+          ],
+        };
+      },
       snapshot: {
         ...base,
         threads: [
@@ -947,7 +982,8 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                           prompt: "Run the installer tests on Windows.",
                           modelSelection: {
                             instanceId: ProviderInstanceId.make("codex"),
-                            model: "gpt-5",
+                            model: "gpt-6.1-sol",
+                            options: [{ id: "reasoningEffort", value: "xhigh" }],
                           },
                           runtimeMode: "full-access" as const,
                           interactionMode: "default" as const,
@@ -991,8 +1027,13 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       expect(panel.textContent).toContain("Fix the flaky cleanup test");
       // No git to isolate it in: the card says it shares the folder.
       expect(panel.textContent).toContain("shares this folder");
-      // One for a linked computer says where it would run.
+      // One for a linked computer says where it would run, and at the
+      // reasoning the agent settled for it there.
       expect(panel.textContent).toContain("on Windows PC");
+      const rows = [...panel.querySelectorAll('[data-testid="child-threads-panel-thread"]')];
+      expect(rows.at(-1)?.querySelector("[data-child-thread-reasoning]")?.textContent).toBe(
+        "Extra High",
+      );
       // The answer that came back is the child's, never the user's.
       const reportOf = (text: string) =>
         [...document.querySelectorAll('[data-thread-message="report"]')].find((report) =>
