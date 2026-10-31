@@ -542,7 +542,7 @@ describe("Keybindings update toast", () => {
   beforeAll(async () => {
     fixture = buildFixture();
     await worker.start({
-      onUnhandledRequest: "bypass",
+      onUnhandledFrame: "bypass",
       quiet: true,
       serviceWorker: { url: "/mockServiceWorker.js" },
     });

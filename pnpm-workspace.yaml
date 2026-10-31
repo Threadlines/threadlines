@@ -84,6 +84,8 @@ peerDependencyRules:
     - vitest
   allowedVersions:
     "@opencode/client>effect": "*"
+    # plugin-react 6.1.2 predates plugin-babel 0.3, which only adds the opt-in `parallel` option.
+    "@vitejs/plugin-react>@rolldown/plugin-babel": "0.3"
     "@voidzero-dev/vite-plus-core>typescript": "7"
     vite: "*"
     vitest: "*"
