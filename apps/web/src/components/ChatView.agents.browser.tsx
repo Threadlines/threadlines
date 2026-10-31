@@ -20,7 +20,7 @@ import {
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -505,6 +505,79 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         viewport!.getBoundingClientRect().top + 1,
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("picks who a room message goes to from the agent pills, by click or arrow keys", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-pills" as MessageId,
+      targetText: "room pills target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+
+      // "+" starts adding; picking an agent instead means not a new one after
+      // all, and the list below is that agent's again.
+      document
+        .querySelector<HTMLButtonElement>('[data-room-agents-bar] [data-room-add-agent="true"]')!
+        .click();
+      await waitForElement(() => pill("new"), "Adding an agent should show a new pill.");
+      pill(astraId)!.click();
+      await vi.waitFor(() => {
+        expect(pill("new")).toBeNull();
+        expect(pill(astraId)?.getAttribute("aria-checked")).toBe("true");
+        expect(document.querySelector('[data-model-row-action="switch"]')).not.toBeNull();
+      });
+
+      // One tab stop for the group; the arrow keys move along it and pick.
+      expect(pill(astraId)?.tabIndex).toBe(0);
+      expect(pill("primary")?.tabIndex).toBe(-1);
+      pill(astraId)!.focus();
+      await userEvent.keyboard("{ArrowLeft}");
+      await vi.waitFor(() => {
+        expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+        expect(document.activeElement).toBe(pill("primary"));
+      });
+      // Still open: picking an agent doesn't close the picker.
+      expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
     }
   });
@@ -1081,7 +1154,8 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find the composer's model picker.",
       );
-      const pickedName = modelPicker.textContent?.trim() ?? "";
+      // The name alone: the button also shows settings beside it.
+      const pickedName = modelPicker.querySelector("span.truncate")?.textContent?.trim() ?? "";
       expect(pickedName).not.toBe("");
       expect(pickedName).not.toContain("gpt-5 ");
       modelPicker.click();
@@ -1170,7 +1244,6 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       const nameWidth = () =>
         modelButton.querySelector<HTMLElement>("span.truncate")?.getBoundingClientRect().width ?? 0;
       const expectRowFits = () => {
-        expect(footer.dataset.chatComposerFooterCompact).toBe("true");
         expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
         expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
       };
@@ -1198,7 +1271,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
 
       // Narrower: the idle agent drops before the name gets short; the one at
       // work stays.
-      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 390 });
+      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 345 });
       await vi.waitFor(
         () => {
           expectRowFits();
@@ -1208,7 +1281,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 375 });
+      await mounted.setViewport({ ...PHONE_VIEWPORT, width: 335 });
       await vi.waitFor(
         () => {
           expectRowFits();

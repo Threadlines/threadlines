@@ -1,7 +1,6 @@
 import { BookmarkIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 
-import { cn } from "~/lib/utils";
 import { stripInlineTerminalContextPlaceholders } from "../../lib/terminalContext";
 import { stashEntryChipCount, type PromptStashEntry } from "../../promptStashStore";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -15,15 +14,14 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "../ui/menu";
+import { MenuItem } from "../ui/menu";
 
 const SNIPPET_MAX_CHARS = 90;
 const MAX_ROW_THUMBNAILS = 3;
 
-export interface ComposerStashControlProps {
+/** The composer's stash: parked prompts, shown in the "+" menu. */
+export interface ComposerStashProps {
   entries: ReadonlyArray<PromptStashEntry>;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   /** The composer has something worth stashing right now. */
   canStash: boolean;
   /** Rendered right-aligned on the stash action row; null when unbound. */
@@ -34,7 +32,7 @@ export interface ComposerStashControlProps {
   onDelete: (entry: PromptStashEntry) => void;
 }
 
-export function useComposerStashDelete(onDelete: ComposerStashControlProps["onDelete"]) {
+export function useComposerStashDelete(onDelete: ComposerStashProps["onDelete"]) {
   // The entry survives past close so the dialog text stays put while the
   // popup animates out; only the open flag drives visibility.
   const [pendingDelete, setPendingDelete] = useState<PromptStashEntry | null>(null);
@@ -64,7 +62,7 @@ function missingAttachmentCount(entry: PromptStashEntry): number {
   return entry.droppedAttachmentNames.length + (entry.unreadableAttachmentNames?.length ?? 0);
 }
 
-function stashEntrySnippet(entry: PromptStashEntry): string {
+export function stashEntrySnippet(entry: PromptStashEntry): string {
   // Inline terminal placeholders are invisible object-replacement characters
   // in the live composer; left in they would render as tofu in the list.
   const trimmed = stripInlineTerminalContextPlaceholders(entry.prompt).trim().replace(/\s+/g, " ");
@@ -157,41 +155,23 @@ const StashEntryRow = memo(function StashEntryRow(props: {
 });
 
 /**
- * Popover body: the queue as a dense divided list, with the stash action for
- * the current prompt pinned at the bottom. The popup opens above the trigger,
- * so the bottom row is what a straight upward hover from the trigger lands
- * on; keeping the harmless action there means that path never crosses an
- * entry's delete button.
+ * The stashed prompts as a dense divided list, newest first: the "+" menu's
+ * Stashed prompts submenu. Clicking a row restores it; its X asks first.
  */
 export const ComposerStashMenuItems = memo(function ComposerStashMenuItems(
-  props: ComposerStashControlProps,
+  props: Pick<ComposerStashProps, "entries" | "stashShortcutLabel" | "onRestore" | "onDelete">,
 ) {
-  const { entries, canStash, stashShortcutLabel, onStash, onRestore, onDelete } = props;
-
-  return (
+  const { entries, stashShortcutLabel, onRestore, onDelete } = props;
+  return entries.length === 0 ? (
+    <p className="px-2 py-1.5 text-muted-foreground text-xs">
+      Nothing stashed yet. Press {stashShortcutLabel ?? "the stash shortcut"} with a prompt typed to
+      stash it.
+    </p>
+  ) : (
     <>
-      {entries.length === 0 ? (
-        <p className="px-2 py-1.5 text-muted-foreground text-xs">
-          Nothing stashed yet. Press {stashShortcutLabel ?? "the stash shortcut"} with a prompt
-          typed to stash it.
-        </p>
-      ) : (
-        entries.map((entry) => (
-          <StashEntryRow key={entry.id} entry={entry} onRestore={onRestore} onDelete={onDelete} />
-        ))
-      )}
-      {canStash ? (
-        <>
-          {/* Entry rows carry their own bottom hairline, so a separator is
-              only needed after the borderless empty-state text. */}
-          {entries.length === 0 ? <MenuSeparator /> : null}
-          <MenuItem onClick={onStash}>
-            <BookmarkIcon aria-hidden="true" />
-            Stash this prompt
-            {stashShortcutLabel ? <MenuShortcut>{stashShortcutLabel}</MenuShortcut> : null}
-          </MenuItem>
-        </>
-      ) : null}
+      {entries.map((entry) => (
+        <StashEntryRow key={entry.id} entry={entry} onRestore={onRestore} onDelete={onDelete} />
+      ))}
     </>
   );
 });
@@ -224,75 +204,3 @@ export const ComposerStashDeleteConfirmation = memo(
     );
   },
 );
-
-/**
- * Composer footer stash control: a bookmark button carrying the queue depth,
- * opening the stashed prompts above it. Always visible, so the queue is never
- * something the user has to remember a shortcut to find.
- */
-export const ComposerStashControl = memo(function ComposerStashControl(
-  props: ComposerStashControlProps,
-) {
-  const { entries, open, onOpenChange, onDelete } = props;
-  const stashDelete = useComposerStashDelete(onDelete);
-
-  // The confirm dialog steals focus from the menu; without this guard the
-  // menu would close underneath it and the stash list would be gone once
-  // the dialog resolves.
-  const handleMenuOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen && stashDelete.deleteConfirmOpen) {
-        return;
-      }
-      onOpenChange(nextOpen);
-    },
-    [onOpenChange, stashDelete.deleteConfirmOpen],
-  );
-
-  return (
-    <>
-      <Menu open={open} onOpenChange={handleMenuOpenChange}>
-        <MenuTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size={entries.length > 0 ? "sm" : "icon-sm"}
-              className={cn(
-                "rounded-full text-muted-foreground/70 hover:text-foreground/80",
-                entries.length > 0 && "gap-1 px-2",
-              )}
-              aria-label={
-                entries.length > 0 ? `Stashed prompts (${entries.length})` : "Stashed prompts"
-              }
-            />
-          }
-        >
-          <BookmarkIcon className="size-4" aria-hidden="true" />
-          {entries.length > 0 ? (
-            <span className="text-xs tabular-nums">{entries.length}</span>
-          ) : null}
-        </MenuTrigger>
-        <MenuPopup
-          align="end"
-          // Negative = rightward for end alignment. Nudges the popup so the
-          // straight-up hover path from the trigger meets a row's timestamp,
-          // not the delete button that sits flush-right above an end-aligned
-          // trigger. Collision handling still pulls it back near the viewport
-          // edge.
-          alignOffset={-32}
-          side="top"
-          className="w-96 max-w-[min(24rem,calc(100vw-2rem))]"
-        >
-          <ComposerStashMenuItems {...props} onDelete={stashDelete.requestDelete} />
-        </MenuPopup>
-      </Menu>
-      <ComposerStashDeleteConfirmation
-        pendingDelete={stashDelete.pendingDelete}
-        open={stashDelete.deleteConfirmOpen}
-        onOpenChange={stashDelete.setDeleteConfirmOpen}
-        onConfirm={stashDelete.confirmPendingDelete}
-      />
-    </>
-  );
-});

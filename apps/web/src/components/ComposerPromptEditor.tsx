@@ -1999,7 +1999,11 @@ function ComposerPromptEditorInner({
           contentEditable={
             <ContentEditable
               className={cn(
-                "block max-h-50 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
+                "block max-h-50 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
+                // On a phone the empty box is one line tall and grows as you
+                // type; the agent's suggestion (two lines and a hint) keeps
+                // the taller box it is drawn over.
+                suggestion ? "min-h-17.5" : "min-h-6.5 sm:min-h-17.5",
                 className,
               )}
               data-testid="composer-editor"
@@ -2028,7 +2032,7 @@ function ComposerPromptEditorInner({
           }
           placeholder={
             terminalContexts.length > 0 || suggestion ? null : (
-              <div className="pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/35 sm:text-[14px]">
+              <div className="pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/35 max-sm:truncate sm:text-[14px]">
                 {placeholder}
               </div>
             )

@@ -24,7 +24,7 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
 
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
 
-The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent in the composer at any time.
+The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort, Build or Plan mode, and the access level.
 
 When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. Old threads can be archived for you: {place:archived.cleanup}.`,
   },
@@ -32,7 +32,7 @@ When a thread is done it wraps up and moves to the Wrapped shelf at the bottom o
     id: "access-levels",
     title: "Access levels",
     keywords: ["access", "permissions", "approval", "sandbox", "full access", "auto", "supervised"],
-    body: `Each thread runs at an access level, picked in the composer:
+    body: `Each thread runs at an access level, picked under the model button in the composer:
 
 - Supervised: asks before commands and file changes.
 - Auto-accept edits: edits run without asking; other actions ask.
@@ -46,6 +46,8 @@ Some agents lack a level; they run at the next safer one they have, and the comp
     title: "Rooms: more than one agent in a thread",
     keywords: ["room", "multiple agents", "reviewer", "second opinion", "hand off", "teammate"],
     body: `A room is a thread with more than one agent: for example one agent doing the work and another reviewing it. Rooms are turned on with {place:threads.enableRooms}; {place:threads.room} sets which agents new threads start with.
+
+You add and remove agents at the top of the model button's panel in the composer: one pill per agent, the picked one being who your next message goes to (typing @ and picking an agent does the same). The model and effort under the pills are that agent's.
 
 Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent.
 

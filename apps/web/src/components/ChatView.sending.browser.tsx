@@ -63,7 +63,7 @@ import {
   waitForDraftBranchPicker,
   clickSelectItemContainingText,
   clickComboboxItemContainingText,
-  waitForInteractionModeButton,
+  waitForComposerInteractionMode,
   mountChatView,
   registerChatViewSuiteHooks,
 } from "./ChatView.browser-harness";
@@ -1739,7 +1739,7 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     });
 
     try {
-      await waitForInteractionModeButton("Build");
+      await waitForComposerInteractionMode("Build");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -1751,7 +1751,7 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       );
       await waitForLayout();
 
-      await waitForInteractionModeButton("Build");
+      await waitForComposerInteractionMode("Build");
 
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
@@ -1764,7 +1764,7 @@ describe("ChatView (full app): first sends and worktree setup", () => {
         }),
       );
 
-      await waitForInteractionModeButton("Plan");
+      await waitForComposerInteractionMode("Plan");
 
       composerEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -1775,7 +1775,7 @@ describe("ChatView (full app): first sends and worktree setup", () => {
         }),
       );
 
-      await waitForInteractionModeButton("Build");
+      await waitForComposerInteractionMode("Build");
     } finally {
       await mounted.cleanup();
     }

@@ -49,6 +49,10 @@ function DrawerViewport({ className, ...props }: Omit<DrawerPrimitive.Viewport.P
  * While a finger drags, the drawer writes the panel's transform itself; at
  * rest the panel sits at the drag's last offset, so opening, closing and a
  * spring back all animate that one property from wherever the finger left it.
+ *
+ * `side="bottom"` is a phone sheet: full width, as tall as its content up to
+ * most of the screen, rounded on top, swiped down to close (the Drawer's
+ * default swipe direction).
  */
 function DrawerPopup({
   className,
@@ -59,7 +63,7 @@ function DrawerPopup({
   viewportClassName,
   ...props
 }: DrawerPrimitive.Popup.Props & {
-  side?: "left" | "right";
+  side?: "left" | "right" | "bottom";
   /** Keeps the panel in the page while closed, so what it holds keeps its state. */
   keepMounted?: boolean;
   backdropProps?: DrawerPrimitive.Backdrop.Props | undefined;
@@ -77,14 +81,23 @@ function DrawerPopup({
         render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
       />
       <DrawerViewport
-        className={cn(side === "left" ? "justify-start" : "justify-end", viewportClassName)}
+        className={cn(
+          side === "left"
+            ? "justify-start"
+            : side === "right"
+              ? "justify-end"
+              : "flex-col justify-end",
+          viewportClassName,
+        )}
       >
         <DrawerPrimitive.Popup
           className={cn(
-            "relative flex h-full min-h-0 flex-col bg-popover text-popover-foreground elevate-overlay outline-none [transform:translateX(var(--drawer-swipe-movement-x))] transition-transform duration-200 ease-out",
+            "relative flex min-h-0 flex-col bg-popover text-popover-foreground elevate-overlay outline-none transition-transform duration-200 ease-out",
             side === "left"
-              ? "border-e data-ending-style:[transform:translateX(-100%)] data-starting-style:[transform:translateX(-100%)]"
-              : "border-s data-ending-style:[transform:translateX(100%)] data-starting-style:[transform:translateX(100%)]",
+              ? "h-full border-e [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(-100%)] data-starting-style:[transform:translateX(-100%)]"
+              : side === "right"
+                ? "h-full border-s [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(100%)] data-starting-style:[transform:translateX(100%)]"
+                : "max-h-[88dvh] w-full rounded-t-2xl border-t pb-[env(safe-area-inset-bottom)] [transform:translateY(var(--drawer-swipe-movement-y))] data-ending-style:[transform:translateY(100%)] data-starting-style:[transform:translateY(100%)]",
             className,
           )}
           data-slot="drawer-popup"
