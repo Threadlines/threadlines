@@ -172,7 +172,16 @@ describe("FileViewerOverlay", () => {
 
     try {
       const edit = page.getByRole("button", { name: "Edit file" });
-      await expect.element(edit).toBeDisabled();
+      await expect.element(edit).toHaveAttribute("aria-disabled", "true");
+      // The reason shows on hover, and a click doesn't start editing.
+      await edit.hover();
+      await expect
+        .element(page.getByText("This file is read-only on disk"), { timeout: 3_000 })
+        .toBeInTheDocument();
+      // Forced: the test browser won't click what says it is unavailable,
+      // but a person's mouse can.
+      await edit.click({ force: true });
+      expect(useFileViewerStore.getState().editMode).toBe(false);
     } finally {
       await screen.unmount();
     }

@@ -1613,6 +1613,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
   );
   const editBlocked =
     activeFileQuery.data?.kind === "text" ? editBlockReason(activeFileQuery.data.editBlock) : null;
+  const editLocked = editBlocked !== null && !editMode;
 
   // Below the `sm` breakpoint the tree and preview share the screen one at a
   // time (a 256px tree beside code is unusable on a phone); every file-open
@@ -1644,14 +1645,21 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
         <FileViewerTabs context={context} onTabSelected={showPreviewPane} />
         {activePath ? <FileViewerOpenInControl context={context} activePath={activePath} /> : null}
         {activePath && !isCoarsePointer ? (
+          // `aria-disabled` rather than `disabled` while editing is blocked:
+          // a disabled toggle drops pointer events, so the tooltip saying why
+          // would never open.
           <Toggle
             aria-label={editMode ? "Done editing" : "Edit file"}
             tooltip={editBlocked ?? (editMode ? "Done editing" : "Edit file")}
             size="xs"
-            className="shrink-0 gap-1 px-1.5"
-            disabled={editBlocked !== null && !editMode}
+            className={cn(
+              "shrink-0 gap-1 px-1.5",
+              editLocked && "cursor-default opacity-64 hover:bg-transparent",
+            )}
+            aria-disabled={editLocked || undefined}
             pressed={editMode}
             onPressedChange={(pressed) => {
+              if (editLocked) return;
               setEditMode(Boolean(pressed));
             }}
           >
