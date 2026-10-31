@@ -462,6 +462,13 @@ export interface WsRpcClient {
       typeof WS_METHODS.outsideAgentsAssistantCodeCancel
     >;
     readonly createKey: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsCreateKey>;
+    /** Web addresses assistants' alerts go to (docs/design/assistants.md, step 4). */
+    readonly alertTargetCreate: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetCreate>;
+    readonly alertTargetUpdate: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetUpdate>;
+    readonly alertTargetSetOn: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetSetOn>;
+    readonly alertTargetRemove: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetRemove>;
+    readonly alertTargetTest: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetTest>;
+    readonly alertTargetSecret: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsAlertTargetSecret>;
   };
   /**
    * Computer links (docs/design/fleet.md): owner and client sessions alike,
@@ -1284,6 +1291,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.outsideAgentsAssistantCodeCancel]({})),
       createKey: (input) =>
         transport.request((client) => client[WS_METHODS.outsideAgentsCreateKey](input)),
+      alertTargetCreate: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetCreate](input)),
+      alertTargetUpdate: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetUpdate](input)),
+      alertTargetSetOn: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetSetOn](input)),
+      alertTargetRemove: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetRemove](input)),
+      alertTargetTest: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetTest](input)),
+      alertTargetSecret: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsAlertTargetSecret](input)),
     },
     // Never replayed on a new socket: a start that may have landed is told by
     // the thread's own `move`, and a second one would only be refused.

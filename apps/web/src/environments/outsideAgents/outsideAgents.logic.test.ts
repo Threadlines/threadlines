@@ -236,6 +236,7 @@ describe("waitingOutsideAgentSignIns", () => {
         address: "https://connect.threadlines.dev/mcp",
         code: null,
         signIns: [assistant("grok", "2026-10-23T11:59:00.000Z")],
+        alertTargets: [],
       },
     });
     expect(waiting.map((signIn) => [signIn.kind, signIn.requestId])).toEqual([

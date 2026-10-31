@@ -124,6 +124,7 @@ describe("ChatView (full app): command palette and search", () => {
         address: "https://connect.threadlines.dev/mcp",
         code: null,
         signIns: [],
+        alertTargets: [],
       },
     };
     setPrimaryOutsideAgentsSnapshot(outsideAgents);

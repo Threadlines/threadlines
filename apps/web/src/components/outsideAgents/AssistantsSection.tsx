@@ -5,10 +5,11 @@
  * assistant while the door is open (or why it isn't), Connect an assistant
  * (a sign-in code to type into the page the assistant opened, with how long
  * it lasts; once that page signs in, the approval dialog takes over), and
- * Create a key for assistants that take a key instead. Below it, in a group
- * of their own, the assistants connected (OutsideAgentConnectionList). Owner
- * only, never on a phone: ConnectionsSettings shows it beside the Agents
- * group, under the same gate.
+ * Create a key for assistants that take a key instead. Below it, in groups
+ * of their own, the assistants connected (OutsideAgentConnectionList) and
+ * the web addresses their alerts go to (AssistantAlertsSection). Owner only,
+ * never on a phone: ConnectionsSettings shows it beside the Agents group,
+ * under the same gate.
  */
 import { displayAssistantSignInCode } from "@threadlines/shared/assistantCredentials";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -31,6 +32,7 @@ import { SETTINGS_GROUP_ROW_CLASS, SettingsRow, SettingsSection } from "../setti
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Skeleton } from "../ui/skeleton";
+import { AssistantAlertsSection } from "./AssistantAlertsSection";
 import { OutsideAgentConnectionList } from "./OutsideAgentConnectionList";
 import { OutsideAgentsQuietRow } from "./OutsideAgentsQuietRow";
 import { OutsideAgentDialog } from "./outsideAgentDialog";
@@ -194,6 +196,8 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
         place="connections.assistantsUsingThis"
         testId="assistants-connections"
       />
+
+      {assistants !== null ? <AssistantAlertsSection targets={assistants.alertTargets} /> : null}
 
       {/* A stray click mustn't close it: its last view is a key shown once. */}
       <Dialog

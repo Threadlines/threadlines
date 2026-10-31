@@ -1743,8 +1743,7 @@ Nine findings, all taken:
   100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4), fc00::/7,
   fe80::/10, fec0::/10, ff00::/8. Honest limit: a network-specific NAT64
   prefix looks public and can't be told apart.
-- **Turning back on never replays.** A target turned on again (after Off or a
-  410) starts at the record's last `seq`; what it missed isn't sent. A
+- **Turning back on never replays.** A target turned on again (after Off or a 410) starts at the record's last `seq`; what it missed isn't sent. A
   `refused_streak` column counts 401 and 403 in a row (three set
   `refused_since`); a 2xx, a successful test or new credentials reset it.
   `failed` deliveries are never retried.

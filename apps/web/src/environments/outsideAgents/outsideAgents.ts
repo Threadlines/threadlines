@@ -6,13 +6,19 @@
  * the server on the computer it runs on, and the user approves it there.
  * Assistants (docs/design/assistants.md) come in through the relay but are
  * approved here the same way: the same stream carries their door's state,
- * the sign-in code showing and their sign-ins waiting.
+ * the sign-in code showing, their sign-ins waiting and the web addresses
+ * their alerts go to (without secrets).
  *
  * The stream stays open while anything holds it (useOutsideAgentsSync): the
  * app-wide host that shows the approval dialog, and Settings' Agents and
  * Assistants groups. The last one to let go closes it and forgets what it said.
  */
 import type {
+  AssistantAlertTarget,
+  AssistantAlertTargetCreateInput,
+  AssistantAlertTargetId,
+  AssistantAlertTargetTestResult,
+  AssistantAlertTargetUpdateInput,
   OutsideAgentApproveInput,
   OutsideAgentConnection,
   OutsideAgentConnectionId,
@@ -292,4 +298,78 @@ export async function createAssistantKey(
     ],
   }));
   return result;
+}
+
+/** Changes one web address in the snapshot ahead of the stream; null removes it. */
+function patchAlertTarget(
+  targetId: AssistantAlertTargetId,
+  change: (target: AssistantAlertTarget) => AssistantAlertTarget | null,
+): void {
+  patchSnapshot((snapshot) => ({
+    ...snapshot,
+    assistants: {
+      ...snapshot.assistants,
+      alertTargets: snapshot.assistants.alertTargets.flatMap((target) => {
+        if (target.targetId !== targetId) return [target];
+        const changed = change(target);
+        return changed === null ? [] : [changed];
+      }),
+    },
+  }));
+}
+
+/**
+ * Adds a web address for assistants' alerts (docs/design/assistants.md,
+ * step 4). The server checks the address first and says why it refuses
+ * one; the stream then brings the new row, without its secrets.
+ */
+export async function createAssistantAlertTarget(
+  input: AssistantAlertTargetCreateInput,
+): Promise<AssistantAlertTargetId> {
+  const { targetId } = await readClient().alertTargetCreate(input);
+  return targetId;
+}
+
+/** Changes a web address's choices; the Authorization header is kept, replaced or cleared. */
+export async function updateAssistantAlertTarget(
+  input: AssistantAlertTargetUpdateInput,
+): Promise<void> {
+  await readClient().alertTargetUpdate(input);
+  const { targetId, authorization, ...fields } = input;
+  patchAlertTarget(targetId, (target) => ({
+    ...target,
+    ...fields,
+    hasAuthorization:
+      authorization.kind === "keep" ? target.hasAuthorization : authorization.kind === "set",
+  }));
+}
+
+/** Turns sending on or off. On again starts from now: nothing it missed is sent. */
+export async function setAssistantAlertTargetOn(
+  targetId: AssistantAlertTargetId,
+  on: boolean,
+): Promise<void> {
+  await readClient().alertTargetSetOn({ targetId, on });
+  patchAlertTarget(targetId, (target) => ({ ...target, state: on ? "on" : "off" }));
+}
+
+/** Removes a web address, with its signing secret and Authorization header. */
+export async function removeAssistantAlertTarget(targetId: AssistantAlertTargetId): Promise<void> {
+  await readClient().alertTargetRemove({ targetId });
+  patchAlertTarget(targetId, () => null);
+}
+
+/** Sends a test alert now, and says how the receiver took it. */
+export function testAssistantAlertTarget(
+  targetId: AssistantAlertTargetId,
+): Promise<AssistantAlertTargetTestResult> {
+  return readClient().alertTargetTest({ targetId });
+}
+
+/** A web address's signing secret, asked for each time; nothing here keeps it. */
+export async function readAssistantAlertTargetSecret(
+  targetId: AssistantAlertTargetId,
+): Promise<string> {
+  const { secret } = await readClient().alertTargetSecret({ targetId });
+  return secret;
 }

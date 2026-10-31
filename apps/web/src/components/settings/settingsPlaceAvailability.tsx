@@ -113,6 +113,7 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "connections.assistantsUsingThis": (s) => !s.phone && s.owner && s.outsideAgents,
   "connections.assistantAddress": (s) => !s.phone && s.owner && s.outsideAgents,
   "connections.addAssistant": (s) => !s.phone && s.owner && s.outsideAgents,
+  "connections.assistantAlerts": (s) => !s.phone && s.owner && s.outsideAgents,
   "connections.options": (s) => !s.phone && s.owner,
   "connections.sameNetwork": (s) => !s.phone && s.owner,
   "connections.tailscale": (s) => !s.phone && s.owner,
