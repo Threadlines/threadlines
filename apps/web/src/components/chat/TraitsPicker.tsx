@@ -2,18 +2,13 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
-  type ScopedThreadRef,
   type ServerProviderModel,
 } from "@threadlines/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
-  getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
-  getPromotedChoiceReplacement,
 } from "@threadlines/shared/model";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { SlidersHorizontalIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
@@ -29,322 +24,19 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { SectionLabel } from "../ui/threadline";
-import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
-import { getProviderModelCapabilities } from "../../providerModels";
 import { cn } from "~/lib/utils";
-
-type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
-type SelectProviderOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
-type BooleanProviderOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "boolean" }>;
-
-type BinaryServiceTierToggle = {
-  descriptor: SelectProviderOptionDescriptor;
-  standardValue: string;
-  fastValue: string;
-  fastDescription?: string;
-  checked: boolean;
-};
-
-type TraitSwitchControl =
-  | {
-      type: "boolean";
-      descriptor: BooleanProviderOptionDescriptor;
-      label: string;
-      description?: string;
-      checked: boolean;
-      nextValue: (checked: boolean) => boolean;
-    }
-  | {
-      type: "serviceTier";
-      descriptor: SelectProviderOptionDescriptor;
-      label: string;
-      description?: string;
-      checked: boolean;
-      nextValue: (checked: boolean) => string;
-    };
-
-type TraitsPersistence =
-  | {
-      threadRef?: ScopedThreadRef;
-      draftId?: DraftId;
-      onModelOptionsChange?: never;
-    }
-  | {
-      threadRef?: undefined;
-      onModelOptionsChange: (nextOptions: ProviderOptions | undefined) => void;
-    };
-
-function replaceDescriptorCurrentValue(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-  descriptorId: string,
-  currentValue: string | boolean | undefined,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  return descriptors.map((descriptor) =>
-    descriptor.id !== descriptorId
-      ? descriptor
-      : descriptor.type === "boolean"
-        ? {
-            ...descriptor,
-            ...(typeof currentValue === "boolean" ? { currentValue } : {}),
-          }
-        : {
-            ...descriptor,
-            ...(typeof currentValue === "string" ? { currentValue } : {}),
-          },
-  );
-}
-
-function getDescriptorStringValue(
-  descriptor: SelectProviderOptionDescriptor | null,
-): string | null {
-  if (!descriptor) {
-    return null;
-  }
-  const value = getProviderOptionCurrentValue(descriptor);
-  return typeof value === "string" ? value : null;
-}
-
-function optionLooksLikeFastTier(option: SelectProviderOptionDescriptor["options"][number]) {
-  const searchable = `${option.id} ${option.label}`.toLowerCase();
-  return /\bfast\b/u.test(searchable) || /\bpriority\b/u.test(searchable);
-}
-
-function getBinaryServiceTierToggle(
-  descriptor: SelectProviderOptionDescriptor,
-): BinaryServiceTierToggle | null {
-  if (descriptor.id !== "serviceTier" || descriptor.options.length !== 2) {
-    return null;
-  }
-
-  const standardOption =
-    descriptor.options.find((option) => option.id === "default") ??
-    descriptor.options.find((option) => option.label.toLowerCase() === "standard") ??
-    descriptor.options.find((option) => option.isDefault);
-  if (!standardOption) {
-    return null;
-  }
-
-  const fastOption = descriptor.options.find((option) => option.id !== standardOption.id);
-  if (!fastOption || !optionLooksLikeFastTier(fastOption)) {
-    return null;
-  }
-
-  return {
-    descriptor,
-    standardValue: standardOption.id,
-    fastValue: fastOption.id,
-    ...(fastOption.description ? { fastDescription: fastOption.description } : {}),
-    checked: getDescriptorStringValue(descriptor) === fastOption.id,
-  };
-}
-
-function getRenderedSelectDescriptors(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-): ReadonlyArray<SelectProviderOptionDescriptor> {
-  return descriptors.filter(
-    (descriptor): descriptor is SelectProviderOptionDescriptor =>
-      descriptor.type === "select" && getBinaryServiceTierToggle(descriptor) === null,
-  );
-}
-
-function getTraitSwitchControls(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-): ReadonlyArray<TraitSwitchControl> {
-  return descriptors.flatMap((descriptor): ReadonlyArray<TraitSwitchControl> => {
-    if (descriptor.type === "boolean") {
-      return [
-        {
-          type: "boolean",
-          descriptor,
-          label: descriptor.label,
-          ...(descriptor.description ? { description: descriptor.description } : {}),
-          checked: descriptor.currentValue === true,
-          nextValue: (checked) => checked,
-        },
-      ];
-    }
-
-    const serviceTierToggle = getBinaryServiceTierToggle(descriptor);
-    if (!serviceTierToggle) {
-      return [];
-    }
-    const description = descriptor.description ?? serviceTierToggle.fastDescription;
-
-    return [
-      {
-        type: "serviceTier",
-        descriptor,
-        label: "Fast Mode",
-        ...(description ? { description } : {}),
-        checked: serviceTierToggle.checked,
-        nextValue: (checked) =>
-          checked ? serviceTierToggle.fastValue : serviceTierToggle.standardValue,
-      },
-    ];
-  });
-}
-
-function getSwitchControlLabel(control: TraitSwitchControl): string {
-  if (control.type === "serviceTier" || control.descriptor.id === "fastMode") {
-    return control.checked ? "Fast" : "Normal";
-  }
-  return `${control.label} ${control.checked ? "on" : "off"}`;
-}
-
-function isFastModeControl(control: TraitSwitchControl): boolean {
-  return control.type === "serviceTier" || control.descriptor.id === "fastMode";
-}
-
-/**
- * Leaves out options by id, whether they are their own control or a choice
- * inside a select. Older Claude CLIs offer Ultracode as an effort choice, so
- * omitting "ultracode" has to cover both shapes.
- */
-function omitOptions(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-  omitOptionIds: ReadonlyArray<string> | undefined,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  if (!omitOptionIds || omitOptionIds.length === 0) {
-    return descriptors;
-  }
-  return descriptors.flatMap((descriptor): ReadonlyArray<ProviderOptionDescriptor> => {
-    if (omitOptionIds.includes(descriptor.id)) {
-      return [];
-    }
-    if (descriptor.type !== "select") {
-      return [descriptor];
-    }
-    const { currentValue, ...rest } = descriptor;
-    const options = descriptor.options.filter((option) => !omitOptionIds.includes(option.id));
-    // A saved "ultracode" effort keeps the Extra High it stood for.
-    const keptValue =
-      currentValue && omitOptionIds.includes(currentValue)
-        ? getPromotedChoiceReplacement(descriptor.id, currentValue)
-        : currentValue;
-    return [
-      {
-        ...rest,
-        options,
-        ...(keptValue && options.some((option) => option.id === keptValue)
-          ? { currentValue: keptValue }
-          : {}),
-      },
-    ];
-  });
-}
-
-function getSelectedTraits(
-  provider: ProviderDriverKind,
-  models: ReadonlyArray<ServerProviderModel>,
-  model: string | null | undefined,
-  modelOptions: ProviderOptions | null | undefined,
-  omitOptionIds?: ReadonlyArray<string>,
-) {
-  const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = omitOptions(
-    getProviderOptionDescriptors({
-      caps,
-      selections: modelOptions,
-    }),
-    omitOptionIds,
-  );
-  const selectDescriptors = getRenderedSelectDescriptors(descriptors);
-  const booleanDescriptors = descriptors.filter(
-    (descriptor): descriptor is BooleanProviderOptionDescriptor => descriptor.type === "boolean",
-  );
-  const primarySelectDescriptor = selectDescriptors[0] ?? null;
-  const contextWindowDescriptor =
-    selectDescriptors.find((descriptor) => descriptor.id === "contextWindow") ?? null;
-  const agentDescriptor = selectDescriptors.find((descriptor) => descriptor.id === "agent") ?? null;
-  const fastModeDescriptor =
-    booleanDescriptors.find((descriptor) => descriptor.id === "fastMode") ?? null;
-  const serviceTierToggle =
-    descriptors
-      .filter(
-        (descriptor): descriptor is SelectProviderOptionDescriptor => descriptor.type === "select",
-      )
-      .map(getBinaryServiceTierToggle)
-      .find((toggle) => toggle !== null) ?? null;
-  const thinkingDescriptor =
-    booleanDescriptors.find((descriptor) => descriptor.id === "thinking") ?? null;
-  const ultracodeDescriptor =
-    booleanDescriptors.find((descriptor) => descriptor.id === "ultracode") ?? null;
-
-  const effort = getDescriptorStringValue(primarySelectDescriptor);
-  // Older Claude CLIs offer Ultracode as the last effort level instead.
-  const ultracodeEnabled = effort === "ultracode" || ultracodeDescriptor?.currentValue === true;
-  const thinkingEnabled =
-    typeof thinkingDescriptor?.currentValue === "boolean" ? thinkingDescriptor.currentValue : null;
-  const fastModeEnabled =
-    typeof fastModeDescriptor?.currentValue === "boolean" ? fastModeDescriptor.currentValue : false;
-  const contextWindow = getDescriptorStringValue(contextWindowDescriptor);
-  const selectedAgent = getDescriptorStringValue(agentDescriptor);
-  const selectedAgentLabel = agentDescriptor
-    ? getProviderOptionCurrentLabel(agentDescriptor)
-    : null;
-
-  return {
-    caps,
-    descriptors,
-    selectDescriptors,
-    booleanDescriptors,
-    primarySelectDescriptor,
-    contextWindowDescriptor,
-    agentDescriptor,
-    fastModeDescriptor,
-    serviceTierToggle,
-    thinkingDescriptor,
-    effort,
-    ultracodeEnabled,
-    thinkingEnabled,
-    fastModeEnabled,
-    contextWindow,
-    selectedAgent,
-    selectedAgentLabel,
-  };
-}
-
-function getTraitsSectionVisibility(input: {
-  provider: ProviderDriverKind;
-  models: ReadonlyArray<ServerProviderModel>;
-  model: string | null | undefined;
-  modelOptions: ProviderOptions | null | undefined;
-  omitOptionIds?: ReadonlyArray<string> | undefined;
-}) {
-  const selected = getSelectedTraits(
-    input.provider,
-    input.models,
-    input.model,
-    input.modelOptions,
-    input.omitOptionIds,
-  );
-
-  const showEffort = selected.primarySelectDescriptor !== null;
-  const showThinking = selected.thinkingDescriptor !== null;
-  const showFastMode = selected.fastModeDescriptor !== null || selected.serviceTierToggle !== null;
-  const showContextWindow = selected.contextWindowDescriptor !== null;
-  const showAgent = selected.agentDescriptor !== null;
-
-  return {
-    ...selected,
-    showEffort,
-    showThinking,
-    showFastMode,
-    showContextWindow,
-    showAgent,
-    hasAnyControls: showEffort || showThinking || showFastMode || showContextWindow || showAgent,
-  };
-}
-
-export function shouldRenderTraitsControls(input: {
-  provider: ProviderDriverKind;
-  models: ReadonlyArray<ServerProviderModel>;
-  model: string | null | undefined;
-  modelOptions: ProviderOptions | null | undefined;
-  omitOptionIds?: ReadonlyArray<string> | undefined;
-}): boolean {
-  return getTraitsSectionVisibility(input).hasAnyControls;
-}
+import {
+  getDescriptorStringValue,
+  getRenderedSelectDescriptors,
+  getSwitchControlLabel,
+  getTraitSwitchControls,
+  getTraitsSectionVisibility,
+  isFastModeControl,
+  replaceDescriptorCurrentValue,
+  type ProviderOptions,
+  type TraitsPersistence,
+  useTraitsUpdater,
+} from "./traitControls";
 
 export interface TraitsMenuContentProps {
   provider: ProviderDriverKind;
@@ -370,25 +62,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   omitOptionIds,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
-  const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
-  const updateModelOptions = useCallback(
-    (nextOptions: ProviderOptions | undefined) => {
-      if ("onModelOptionsChange" in persistence) {
-        persistence.onModelOptionsChange(nextOptions);
-        return;
-      }
-      const threadTarget = persistence.threadRef ?? persistence.draftId;
-      if (!threadTarget) {
-        return;
-      }
-      setProviderModelOptions(threadTarget, provider, nextOptions, {
-        ...(instanceId ? { instanceId } : {}),
-        model,
-        persistSticky: true,
-      });
-    },
-    [instanceId, model, persistence, provider, setProviderModelOptions],
-  );
+  const updateModelOptions = useTraitsUpdater({ provider, instanceId, model, persistence });
   const { descriptors, selectDescriptors, hasAnyControls } = getTraitsSectionVisibility({
     provider,
     models,
@@ -523,7 +197,7 @@ const ULTRACODE_GLINT_TIMING: KeyframeAnimationOptions = {
  * the trigger is still between passes and nothing moves while Claude is
  * idle, the window is hidden, or the system asks for less motion.
  */
-function useUltracodeGlint(active: boolean, working: boolean) {
+export function useUltracodeGlint(active: boolean, working: boolean) {
   const bandRef = useRef<HTMLSpanElement>(null);
   const wasActive = useRef(active);
   useEffect(() => {

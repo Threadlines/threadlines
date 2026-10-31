@@ -53,7 +53,6 @@ import {
   waitForSendButton,
   findComposerProviderModelPicker,
   findVisibleComposerFooter,
-  waitForButtonByText,
   waitForSelectItemContainingText,
   clickSelectItemContainingText,
   waitForServerConfigToApply,
@@ -74,6 +73,20 @@ vi.mock("../lib/gitStatusState", () => ({
   refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
+
+/** Opens the settings under the composer's model button (effort, mode, access). */
+async function openComposerSettings(): Promise<HTMLElement> {
+  const footer = await waitForElement(findVisibleComposerFooter, "Unable to find composer footer.");
+  const trigger = await waitForElement(
+    () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+    "Unable to find the composer's model button.",
+  );
+  trigger.click();
+  return waitForElement(
+    () => document.querySelector<HTMLElement>('[data-model-picker-settings="true"]'),
+    "Unable to find the composer settings.",
+  );
+}
 
 describe("ChatView (full app): composer", () => {
   registerChatViewSuiteHooks();
@@ -458,6 +471,32 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
+  it("types the @ for a project file at the caret, after a file chip", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "hi @package.json there");
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-project-file-after-mention" as MessageId,
+        targetText: "project file after mention",
+      }),
+    });
+
+    try {
+      await waitForComposerText("hi @package.json there");
+      // The caret after "there": the chip counts as one character on screen.
+      await setComposerSelectionByTextOffsets({
+        start: "hi package.json there".length,
+        end: "hi package.json there".length,
+      });
+      await page.getByRole("button", { name: "Add to message" }).click();
+      await page.getByRole("menuitem", { name: /Project file/ }).click();
+      await waitForComposerText("hi @package.json there @");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("falls back to normal replacement when the selection includes a mention token", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "hi @package.json there ");
 
@@ -493,7 +532,15 @@ describe("ChatView (full app): composer", () => {
     });
 
     try {
-      const runtimeModeSelect = await waitForButtonByText("Full access");
+      // Access lives in the settings under the model button.
+      const settings = await openComposerSettings();
+      const runtimeModeSelect = await waitForElement(
+        () =>
+          settings.querySelector<HTMLButtonElement>(
+            'button[aria-label="Access level: Full access"]',
+          ),
+        "Unable to find the access level select.",
+      );
       runtimeModeSelect.click();
 
       expect((await waitForSelectItemContainingText("Supervised")).textContent).toContain(
@@ -544,9 +591,11 @@ describe("ChatView (full app): composer", () => {
         findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
+      expect(footer).toBeTruthy();
+      const settings = await openComposerSettings();
       await vi.waitFor(() => {
         expect(
-          footer.querySelector('button[aria-label="Access level: Auto-accept edits"]'),
+          settings.querySelector('button[aria-label="Access level: Auto-accept edits"]'),
         ).not.toBeNull();
       });
       // The chat keeps its choice, for an agent that has Auto.
@@ -555,7 +604,7 @@ describe("ChatView (full app): composer", () => {
       expect(chosen()).toBe("auto");
 
       // Picking the level shown pins it.
-      footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]')!.click();
+      settings.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]')!.click();
       await clickSelectItemContainingText("Auto-accept edits");
       await vi.waitFor(() => {
         expect(chosen()).toBe("auto-accept-edits");

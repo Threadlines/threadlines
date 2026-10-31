@@ -67,6 +67,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlugIcon,
+  CameraIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -82,6 +83,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRoomRecipientStore } from "../rooms";
 import { useChatFindStore } from "../chatFindStore";
+import { useComposerCommandsStore } from "../composerCommands";
 import { type TerminalCommandKind, useTerminalCommandsStore } from "../terminalCommands";
 import { derivePendingApprovals } from "../session-logic";
 import { readEnvironmentApi } from "../environmentApi";
@@ -1927,6 +1929,28 @@ export function OpenCommandPaletteDialog() {
         // After the palette has closed and handed focus back, so the bar's
         // field keeps it.
         window.requestAnimationFrame(() => useChatFindStore.getState().requestOpen(null));
+      },
+    });
+  }
+
+  // A screenshot of a window or part of the screen, added to the message being
+  // written. The desktop app only; it used to sit in the composer's "+" menu.
+  if (
+    (activeThread || activeDraftThread) &&
+    typeof window.desktopBridge?.captureScreenshot === "function"
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:capture-screenshot",
+      searchTerms: ["screenshot", "capture", "screen", "image", "attach", "picture"],
+      title: "Capture screenshot",
+      description: "Add a screenshot to the message you're writing",
+      icon: <CameraIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        // After the palette has closed and handed focus back to the composer.
+        window.requestAnimationFrame(() =>
+          useComposerCommandsStore.getState().requestComposerCommand("captureScreenshot"),
+        );
       },
     });
   }

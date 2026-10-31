@@ -4577,14 +4577,16 @@ export default function ChatView(props: ChatViewProps) {
     [activeProject, persistProjectScripts],
   );
 
+  // The composer's settings panel passes `focusComposer: false`: it stays open
+  // for more changes, and focus moving to the prompt would close it.
   const handleRuntimeModeChange = useCallback(
-    (mode: RuntimeMode) => {
+    (mode: RuntimeMode, options?: { focusComposer?: boolean }) => {
       if (mode === runtimeMode) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
       }
-      scheduleComposerFocus();
+      if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
       isLocalDraftThread,
@@ -4597,13 +4599,13 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
+    (mode: ProviderInteractionMode, options?: { focusComposer?: boolean }) => {
       if (mode === interactionMode) return;
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
       }
-      scheduleComposerFocus();
+      if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
       interactionMode,
