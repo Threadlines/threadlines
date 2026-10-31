@@ -75,7 +75,7 @@ packageExtensions:
       vite: "catalog:"
 
 patchedDependencies:
-  "@legendapp/list@3.3.9": patches/@legendapp__list@3.3.9.patch
+  "@legendapp/list@3.7.0": patches/@legendapp__list@3.7.0.patch
   brace-expansion@5.0.12: patches/brace-expansion@5.0.12.patch
 
 peerDependencyRules:
