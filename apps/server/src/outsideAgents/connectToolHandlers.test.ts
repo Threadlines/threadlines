@@ -385,21 +385,17 @@ const makeWorld = (
         git: {
           execute: (input) =>
             Effect.succeed({
-              // No branch has a recorded merge base.
-              exitCode: (input.args[0] === "config" ? 1 : 0) as never,
+              exitCode: 0 as never,
               stdout: input.args.includes("--is-inside-work-tree")
                 ? "true\n"
-                : input.args[0] === "config"
-                  ? ""
-                  : input.args.includes("refs/remotes/origin/HEAD")
-                    ? "origin/main\n"
-                    : input.args.includes("symbolic-ref")
-                      ? "main\n"
-                      : `${HEAD}\n`,
+                : input.args.includes("symbolic-ref")
+                  ? "main\n"
+                  : `${HEAD}\n`,
               stderr: "",
               stdoutTruncated: false,
               stderrTruncated: false,
             }).pipe(Effect.delay(options.slowGit ? "20 seconds" : 0)),
+          resolveBaseBranchName: () => Effect.succeed("main"),
         },
         requests: requests.store,
         limits: makeConnectLimits(),

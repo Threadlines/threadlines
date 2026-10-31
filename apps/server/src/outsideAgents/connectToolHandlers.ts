@@ -196,7 +196,6 @@ const INBOX_WAITING_THREADS = 50;
 const THREAD_CHANGES_FILES = 200;
 /** All of `thread_changes`' asking the host and git, well under the relay's 30 s. */
 const THREAD_CHANGES_DEADLINE = "6 seconds";
-const BASE_BRANCH_GIT_TIMEOUT_MS = 3_000;
 const RECORD_NOT_KEPT =
   "No assistant is connected to this computer, so it keeps no record of what finished or failed. needsYou is live.";
 /** Recorded events the user dealt with in Threadlines: opened the thread, marked it done or archived it. */
@@ -247,7 +246,7 @@ export interface ConnectToolDeps {
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
   /** The user's default model for new threads (Settings); null: none set. */
   readonly userDefaultModel: Effect.Effect<ModelSelection | null>;
-  readonly git: Pick<GitVcsDriverShape, "execute">;
+  readonly git: Pick<GitVcsDriverShape, "execute" | "resolveBaseBranchName">;
   /** Threads whose messages match `query` (ThreadSearch); absent: titles only. */
   readonly searchThreads?: (
     input: OrchestrationThreadSearchInput,
@@ -985,40 +984,9 @@ export const makeConnectToolHandlers = (
         } satisfies InboxResult;
       });
 
-    /** The branch a thread's checkout would merge into, by git alone: its recorded merge base, else the remote's default. */
+    /** The branch a thread's checkout would merge into, by git alone, as the app judges it. */
     const defaultBaseBranch = (cwd: string, branch: string | null) =>
-      Effect.gen(function* () {
-        const git = (args: ReadonlyArray<string>) =>
-          deps.git
-            .execute({
-              operation: "ConnectTools.threadChanges",
-              cwd,
-              args,
-              allowNonZeroExit: true,
-              timeoutMs: BASE_BRANCH_GIT_TIMEOUT_MS,
-              maxOutputBytes: 4_096,
-            })
-            .pipe(
-              Effect.map((result) =>
-                result.exitCode === 0 && result.stdout.trim().length > 0
-                  ? result.stdout.trim()
-                  : null,
-              ),
-              Effect.orElseSucceed(() => null),
-            );
-        const recorded =
-          branch === null
-            ? null
-            : yield* git(["config", "--get", `branch.${branch}.gh-merge-base`]);
-        if (recorded !== null) return recorded;
-        const remoteHead = yield* git([
-          "symbolic-ref",
-          "--quiet",
-          "--short",
-          "refs/remotes/origin/HEAD",
-        ]);
-        return remoteHead === null ? null : remoteHead.replace(/^origin\//u, "");
-      });
+      deps.git.resolveBaseBranchName(cwd, branch ?? "HEAD").pipe(Effect.orElseSucceed(() => null));
 
     /**
      * The thread's pull request from the records the app keeps
