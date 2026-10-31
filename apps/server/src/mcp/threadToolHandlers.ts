@@ -416,8 +416,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const room = roomAgentEntries(thread, modelLabel(thread.modelSelection, providers)).filter(
         (entry) => entry.present && entry.participantId !== scope.participantId,
       );
+      // Outside work never reaches past this computer (outsideToolLimit.ts).
       const computers =
-        deps.links === undefined || only !== undefined ? [] : yield* deps.links.computers;
+        deps.links === undefined || only !== undefined || scope.outsideLimit !== undefined
+          ? []
+          : yield* deps.links.computers;
       return {
         outcome: "ok",
         approval: mode,
@@ -441,7 +444,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 agents: (computer.descriptor?.agents ?? []).map(agentForCaller),
               })),
             }
-          : only === undefined && deps.links !== undefined
+          : only === undefined && deps.links !== undefined && scope.outsideLimit === undefined
             ? {
                 computersNote: `No other computer is linked to this one. The user links one in ${placeMarkdownLink("fleet")}, with + at the top of its Computers list.`,
               }
@@ -1188,9 +1191,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           : shells
               .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
               .slice(0, THREAD_LIST_PROJECT_LIMIT);
-      // Threads it started on linked computers, as last heard from them.
+      // Threads it started on linked computers, as last heard from them;
+      // none while outside work limits it (outsideToolLimit.ts).
       const remote =
-        (input.scope ?? "mine") === "mine"
+        (input.scope ?? "mine") === "mine" && scope.outsideLimit === undefined
           ? (thread.childRequests.remoteChildren ?? []).map((child): ThreadSummary => ({
               threadId: child.threadId,
               title: child.title,
@@ -1262,8 +1266,9 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const { thread: caller } = gated;
       const targetId = input.threadId.trim();
+      // Outside work never reads past this computer (outsideToolLimit.ts).
       const remoteChild =
-        targetId.length > 0
+        targetId.length > 0 && scope.outsideLimit === undefined
           ? remoteChildOf(caller.childRequests, ThreadId.make(targetId))
           : undefined;
       if (remoteChild !== undefined) {

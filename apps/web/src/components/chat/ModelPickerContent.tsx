@@ -211,10 +211,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   openOnFavorites?: boolean;
   /**
-   * Below the model list, inside the card: the thread's agents in a room
-   * (RoomAgentsSection).
+   * Below the model list, inside the card: the composer's settings for the
+   * agent and the chat (ModelPickerSettings). Kept outside the inline
+   * combobox, so its controls never take the list's keyboard navigation.
    */
   footer?: ReactNode;
+  /**
+   * "popover" is the floating card; "sheet" fills a phone's bottom sheet
+   * (no card frame of its own, a taller list).
+   */
+  variant?: "popover" | "sheet";
   /**
    * What picking a model does, when it is not "use this model": "Add" while
    * adding an agent, "Switch GPT-6 Astra to this" for an added agent. The
@@ -497,6 +503,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
   const compactTabs = tabs.length > 4;
   const activeTabRef = useRef<HTMLButtonElement>(null);
+  // State, not a ref: search swaps the strip out, and its watchers follow.
+  const [tabStripElement, setTabStripElement] = useState<HTMLDivElement | null>(null);
+  const tabStrip = useTabStripOverflow(tabStripElement);
   useEffect(() => {
     activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTab?.id]);
@@ -715,6 +724,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         return;
       }
 
+      // A dropdown open over the settings rows, or an agent's name being
+      // typed, owns the keys: a jump would change the model underneath it.
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-slot='select-popup'], [data-room-agents-bar] input")
+      ) {
+        return;
+      }
       const command = resolveShortcutCommand(event, keybindings, {
         platform: navigator.platform,
         context: modelJumpShortcutContext,
@@ -775,7 +792,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           them unreachable. --keyboard-inset (set by ProviderModelPicker
           while an overlay keyboard is up) shrinks the cap so the lifted
           popup's top edge stays on screen. */}
-      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[26rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      <div
+        data-model-picker-variant={props.variant ?? "popover"}
+        className={cn(
+          "relative flex flex-col overflow-hidden text-popover-foreground",
+          props.variant === "sheet"
+            ? "min-h-0 w-full flex-1"
+            : "max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[26rem] rounded-lg border bg-popover not-dark:bg-clip-padding shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+        )}
+      >
         {props.notice}
         <Combobox
           inline
@@ -800,13 +825,22 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             {/* Header: provider tabs (or the locked-provider label — the
                 turn's driver cannot change) share one row with the search
                 control; the search field expands over the tabs while active. */}
-            <div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-b px-2">
+            <div className="group/tabs relative flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-b px-2">
               {!searchActive &&
                 (showTabList ? (
                   <div
+                    ref={setTabStripElement}
                     role="tablist"
                     aria-label="Model tabs"
-                    className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+                    // The strip scrolls without a native scrollbar, which took
+                    // its height from the row and pushed the tabs up; a thin
+                    // line on the divider below shows the position instead.
+                    className={cn(
+                      "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                      tabStrip.overflowing &&
+                        !tabStrip.atEnd &&
+                        "[mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]",
+                    )}
                   >
                     {tabs.map((tab) => {
                       const isActive = activeTab?.id === tab.id;
@@ -833,7 +867,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                                 : []),
                           ].join(" · ")}
                           className={cn(
-                            "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",
+                            "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md text-left text-xs font-medium transition-colors",
+                            // Icon-only tabs are 28px wide, so all of a full
+                            // set of agents fits beside Favorites and search.
+                            iconOnly ? "size-7 justify-center px-0" : "px-2.5 py-1",
                             "focus-ring",
                             isActive
                               ? "bg-accent text-foreground"
@@ -947,6 +984,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   <XIcon className="size-4" />
                 </button>
               </div>
+              {tabStrip.overflowing && !searchActive ? (
+                <span
+                  aria-hidden="true"
+                  data-model-picker-tab-scroll="true"
+                  className="pointer-events-none absolute -bottom-px h-0.5 rounded-full bg-foreground/35 opacity-0 transition-opacity duration-150 group-hover/tabs:opacity-100"
+                  style={{ left: tabStrip.thumbLeft, width: tabStrip.thumbWidth }}
+                />
+              ) : null}
             </div>
 
             {/* Fixed pane height of ~3 two-line favorite rows (160px) so tab
@@ -954,7 +999,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 models, broad searches) scroll behind it. It still shrinks
                 with the card's --available-height clamp on short windows. */}
             <div
-              className="model-picker-list flex h-40 min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain"
+              className={cn(
+                "model-picker-list thin-scrollbar flex min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain",
+                props.variant === "sheet" ? "h-56" : "h-40",
+              )}
               title={props.rowsDisabledReason ?? undefined}
             >
               <ComboboxListVirtualized className="w-full px-1.5 py-1">
@@ -1016,3 +1064,66 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     </TooltipProvider>
   );
 });
+
+/**
+ * Whether the provider tab strip overflows, and where its scroll position
+ * line sits on the header's divider (px, relative to the header).
+ */
+function useTabStripOverflow(strip: HTMLDivElement | null): {
+  overflowing: boolean;
+  atEnd: boolean;
+  thumbLeft: number;
+  thumbWidth: number;
+} {
+  const [state, setState] = useState({
+    overflowing: false,
+    atEnd: true,
+    thumbLeft: 0,
+    thumbWidth: 0,
+  });
+  useLayoutEffect(() => {
+    if (!strip) return;
+    const measure = () => {
+      const { scrollWidth, clientWidth, scrollLeft, offsetLeft } = strip;
+      const overflowing = scrollWidth > clientWidth + 1;
+      const next = overflowing
+        ? {
+            overflowing,
+            atEnd: scrollLeft + clientWidth >= scrollWidth - 1,
+            thumbLeft: Math.round(offsetLeft + (scrollLeft / scrollWidth) * clientWidth),
+            thumbWidth: Math.round((clientWidth / scrollWidth) * clientWidth),
+          }
+        : { overflowing: false, atEnd: true, thumbLeft: 0, thumbWidth: 0 };
+      setState((current) =>
+        current.overflowing === next.overflowing &&
+        current.atEnd === next.atEnd &&
+        current.thumbLeft === next.thumbLeft &&
+        current.thumbWidth === next.thumbWidth
+          ? current
+          : next,
+      );
+    };
+    strip.addEventListener("scroll", measure, { passive: true });
+    if (typeof ResizeObserver === "undefined") {
+      return () => strip.removeEventListener("scroll", measure);
+    }
+    // The strip and each tab: a tab coming, going, or widening with its label
+    // changes how far the strip scrolls. Observing reports sizes right away,
+    // which takes the first measurement.
+    const resizes = new ResizeObserver(measure);
+    const observeTabs = () => {
+      resizes.disconnect();
+      resizes.observe(strip);
+      for (const tab of strip.children) resizes.observe(tab);
+    };
+    observeTabs();
+    const tabChanges = new MutationObserver(observeTabs);
+    tabChanges.observe(strip, { childList: true });
+    return () => {
+      strip.removeEventListener("scroll", measure);
+      resizes.disconnect();
+      tabChanges.disconnect();
+    };
+  }, [strip]);
+  return state;
+}

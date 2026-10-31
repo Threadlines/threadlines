@@ -437,6 +437,102 @@ const start = (patch: Record<string, unknown> = {}) => ({
 });
 
 describe("connect tools: access", () => {
+  it.effect(
+    "reaches the user's threads at Work, answers questions by order, never approvals or forms",
+    () =>
+      Effect.gen(function* () {
+        const activity = (id: string, kind: string, payload: object) => ({
+          id,
+          kind,
+          tone: kind === "approval.requested" ? "approval" : "info",
+          summary: kind,
+          payload,
+          turnId: "turn-1",
+          createdAt: AT,
+        });
+        const thread = makeThread({
+          activities: [
+            activity("question", "user-input.requested", {
+              requestId: "q-1",
+              questions: [
+                {
+                  id: "Which colour?",
+                  header: "Colour",
+                  question: "Which colour?",
+                  options: [{ label: "Red" }, { label: "Blue" }],
+                  multiSelect: false,
+                },
+                {
+                  id: "Extras?",
+                  header: "Extras",
+                  question: "Extras?",
+                  options: [{ label: "Fries" }, { label: "Soda" }],
+                  multiSelect: true,
+                },
+              ],
+            }),
+            activity("approval", "approval.requested", {
+              requestId: "a-1",
+              requestType: "command_execution_approval",
+            }),
+            activity("form", "user-input.requested", {
+              requestId: "f-1",
+              questions: [],
+              elicitation: { mode: "form" },
+            }),
+          ] as never,
+        });
+        const start = yield* makeWorld({ threads: [thread] });
+        expect(
+          (yield* start.handlers.thread_answer(CALLER, {
+            threadId: USER_THREAD,
+            waitingId: "q-1",
+            answers: ["Red", ["Fries"]],
+          })).outcome,
+        ).toBe("not_allowed");
+        expect(
+          (yield* start.handlers.thread_send(CALLER, { threadId: USER_THREAD, message: "more" }))
+            .outcome,
+        ).toBe("not_yours");
+
+        const world = yield* makeWorld({ grant: { access: "work" }, threads: [thread] });
+        const answer = (
+          waitingId: string,
+          answers: ReadonlyArray<string | ReadonlyArray<string>>,
+        ) => world.handlers.thread_answer(CALLER, { threadId: USER_THREAD, waitingId, answers });
+        expect((yield* answer("a-1", ["yes"])).outcome).toBe("not_allowed");
+        expect(yield* answer("f-1", ["x"])).toMatchObject({
+          outcome: "invalid",
+          detail: expect.stringContaining("form"),
+        });
+        expect((yield* answer("q-1", ["Red"])).detail).toContain("one answer per question");
+        expect((yield* answer("q-1", ["Red", ["Burger"]])).detail).toContain(
+          "isn't one of the options",
+        );
+        expect((yield* answer("q-1", [["Red", "Blue"], "Fries"])).detail).toContain("Pick one");
+        expect(world.dispatched).toHaveLength(0);
+
+        // Free text where one option is picked, labels where several may be.
+        expect((yield* answer("q-1", ["Green, actually", ["Fries", "Soda"]])).outcome).toBe(
+          "answered",
+        );
+        expect(world.dispatched).toEqual([
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            threadId: USER_THREAD,
+            requestId: "q-1",
+            answers: { "Which colour?": "Green, actually", "Extras?": ["Fries", "Soda"] },
+            fromOutside: expect.objectContaining({ connectionId: CONNECTION, access: "work" }),
+          }),
+        ]);
+        // Work reaches the thread the user started: it's busy with its question, not someone else's.
+        expect(
+          (yield* world.handlers.thread_send(CALLER, { threadId: USER_THREAD, message: "more" }))
+            .outcome,
+        ).toBe("busy");
+      }),
+  );
+
   it.effect("refuses a See connection's start, send and stop, whatever its tool list showed", () =>
     Effect.gen(function* () {
       const world = yield* makeWorld({

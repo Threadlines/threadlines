@@ -62,7 +62,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
     >
       <SettingsSection
         place="connections.agents"
-        description="Agents you run outside Threadlines, like Claude Code in a terminal, can start and follow threads here once you allow them."
+        description="Agents you run outside Threadlines, like Claude Code in a terminal, can follow, start and work with threads here, as far as you allow them."
       >
         {snapshot === null ? (
           <div className={ROW_CLASS} role="status" aria-label="Loading agents">

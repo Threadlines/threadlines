@@ -115,7 +115,12 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
-import { outsideStopRefusal, outsideTurnRefusal } from "./outsideTurns.ts";
+import {
+  outsideAnswerDecision,
+  outsideWorkOf,
+  outsideStopRefusal,
+  outsideTurnRefusal,
+} from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -2655,10 +2660,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       // An outside agent's turn (docs/design/outside-agents.md): only in a
-      // thread it started, never above its ceiling, never into a busy thread.
-      // Checked here, in order with the user's own sends and access changes.
+      // thread it started (any thread at Work), never above its ceiling,
+      // never into a busy thread (an answer's own turn passes over its
+      // question). Checked here, in order with the user's own sends and
+      // access changes.
       if (command.fromOutside !== undefined) {
-        const outsideRefusal = outsideTurnRefusal(targetThread, command.fromOutside);
+        const outsideRefusal = outsideTurnRefusal(
+          targetThread,
+          command.fromOutside,
+          command.answering,
+        );
         if (outsideRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
@@ -3022,6 +3033,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no user message to retry.`,
+        });
+      }
+      // An outside agent's words would run again without its mark or its
+      // ceiling (docs/design/assistants.md, step 3): it sends them again.
+      if (lastUserMessage.fromOutside !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `This message came from ${lastUserMessage.fromOutside.name}, outside Threadlines. Ask it to send it again, or write it yourself.`,
         });
       }
       // A failed turn is retried with the agent that failed it: the slot
@@ -3521,8 +3540,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // An outside agent's Stop: only in a thread it started, and only while
-      // the thread's access is within its ceiling (docs/design/outside-agents.md).
+      // An outside agent's Stop: only in a thread it started (any thread at
+      // Work), and only while the thread's access is within its ceiling
+      // (docs/design/outside-agents.md).
       if (command.fromOutside !== undefined) {
         const refusal = outsideStopRefusal(thread, command.fromOutside);
         if (refusal !== null) {
@@ -3704,11 +3724,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.user-input.respond": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // An outside agent's answer (docs/design/assistants.md, step 3): Work,
+      // a question that's open and asked by the agent holding the thread,
+      // never above the ceiling. It marks that agent (the projector reads
+      // `fromOutside` with `participantId`).
+      const outside =
+        command.fromOutside === undefined
+          ? undefined
+          : outsideAnswerDecision(thread, command.fromOutside, command.requestId);
+      if (outside?.type === "refused") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: outside.refusal.detail,
+          ...(outside.refusal.refusal !== undefined ? { refusal: outside.refusal.refusal } : {}),
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -3725,7 +3760,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           requestId: command.requestId,
           answers: command.answers,
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+          ...(command.fromOutside !== undefined && outside?.type === "allowed"
+            ? { fromOutside: command.fromOutside, participantId: outside.participantId }
+            : {}),
           createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.outside-work.clear": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Only the mark the fresh start saw: outside text that reached the
+      // agent since (a newer version) keeps it.
+      if (outsideWorkOf(thread, command.participantId)?.version !== command.version) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.outside-work-cleared",
+        payload: {
+          threadId: command.threadId,
+          participantId: command.participantId,
+          clearedAt: command.createdAt,
         },
       };
     }
@@ -4433,6 +4498,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
+          ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
           ...(isNewMessage(acceptingThread, command.message.messageId)
             ? {
                 agentModels: messageAgentModels(acceptingThread, [

@@ -775,6 +775,18 @@ code {
   background: transparent;
 }
 
+/* A slimmer scrollbar for small lists inside popups (the model picker): a 4px
+   thumb in a 6px lane, always there while the list has more to scroll. */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  border-width: 1px;
+}
+
 .turn-chip-strip {
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -1405,6 +1417,38 @@ label:has(> select#reasoning-effort) select {
   to {
     opacity: 0;
     transform: translateY(-70%);
+  }
+}
+
+/* The effort meter's level name rolls down for a lower level (up reuses the
+   update card's roll). */
+@keyframes effort-roll-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-70%);
+  }
+}
+
+@keyframes effort-roll-out-down {
+  to {
+    opacity: 0;
+    transform: translateY(70%);
+  }
+}
+
+/* A model with fewer or more effort levels folds segments away or grows them in. */
+@keyframes effort-segment-in {
+  from {
+    flex-grow: 0;
+    opacity: 0;
+  }
+}
+
+@keyframes effort-segment-out {
+  to {
+    flex-grow: 0;
+    opacity: 0;
+    margin-inline-start: -3px;
   }
 }
 

@@ -172,6 +172,7 @@ describe("decider thread.start", () => {
           fromOutside: {
             connectionId: connection,
             name: "Codex",
+            access: "start",
             maxRuntimeMode: "approval-required",
           },
         }),

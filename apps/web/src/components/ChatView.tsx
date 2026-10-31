@@ -329,6 +329,7 @@ import {
 } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import { useThreadMoveNotice } from "./chat/threadMoveNotice";
+import { useOutsideWorkNotice } from "./chat/outsideWorkNotice";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useComputerLabel } from "./sidebar/linkedComputers";
@@ -4576,14 +4577,16 @@ export default function ChatView(props: ChatViewProps) {
     [activeProject, persistProjectScripts],
   );
 
+  // The composer's settings panel passes `focusComposer: false`: it stays open
+  // for more changes, and focus moving to the prompt would close it.
   const handleRuntimeModeChange = useCallback(
-    (mode: RuntimeMode) => {
+    (mode: RuntimeMode, options?: { focusComposer?: boolean }) => {
       if (mode === runtimeMode) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
       }
-      scheduleComposerFocus();
+      if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
       isLocalDraftThread,
@@ -4596,13 +4599,13 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
+    (mode: ProviderInteractionMode, options?: { focusComposer?: boolean }) => {
       if (mode === interactionMode) return;
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
       }
-      scheduleComposerFocus();
+      if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
       interactionMode,
@@ -7092,6 +7095,21 @@ export default function ChatView(props: ChatViewProps) {
         "Your next message continues it on the agent picked below, which picks up from a recap of the conversation.",
     };
   }, [activeThread, providerStatuses]);
+  // An assistant's or outside agent's work reached this thread: the agents
+  // it reached keep read-only Threadlines tools until they start fresh. A
+  // room names them; a thread with only its own agent says "this agent".
+  const outsideWorkAgentName = useMemo(
+    () =>
+      roomAgentLabels === null
+        ? null
+        : (participantId: ThreadParticipantId | null) =>
+            roomAgentLabels.get(roomAgentKey(participantId))?.name ?? "this agent",
+    [roomAgentLabels],
+  );
+  const outsideWorkNotice = useOutsideWorkNotice({
+    thread: activeThread,
+    agentName: outsideWorkAgentName,
+  });
   const composerNotices = useMemo(
     () =>
       selectComposerNotices([
@@ -7101,11 +7119,13 @@ export default function ChatView(props: ChatViewProps) {
         providerStatusNotice,
         sessionStartupNotice,
         removedAccountNotice,
+        outsideWorkNotice,
         ...infrastructureComposerNotices,
       ]),
     [
       checkoutMissingNotice,
       infrastructureComposerNotices,
+      outsideWorkNotice,
       providerStatusNotice,
       removedAccountNotice,
       sendPreflightNotice,

@@ -39,6 +39,7 @@ import {
   OutsideThreadReadTool,
   OutsideThreadSendTool,
   OutsideThreadStartTool,
+  OutsideThreadAnswerTool,
   OutsideThreadStopTool,
   ProjectsTool,
   THREAD_WAIT_MAX_SECONDS,
@@ -701,14 +702,52 @@ const threadStopCommand = Command.make("stop", {
   ),
 );
 
+const threadAnswerCommand = Command.make("answer", {
+  ...sharedFlags,
+  thread: threadIdArgument,
+  waitingId: Argument.String("waiting-id").pipe(
+    Argument.withDescription("The question's request id, from `thread read`'s waiting list."),
+  ),
+  answers: Argument.String("answer").pipe(
+    Argument.withDescription(
+      "One per question, in order: an option's label or your own words. For a question that takes several options, separate them with ` | `.",
+    ),
+    Argument.atLeast(1),
+  ),
+  requestId: requestIdFlag,
+  wait: waitFlag,
+  timeout: timeoutFlag,
+}).pipe(
+  Command.withDescription(
+    "Answer an agent's question in a thread. Needs Work with all threads; never approvals.",
+  ),
+  Command.withHandler((flags) =>
+    withClient(flags, (client, target) =>
+      Effect.gen(function* () {
+        const result = yield* client.call(OutsideThreadAnswerTool, {
+          threadId: flags.thread,
+          waitingId: flags.waitingId,
+          answers: flags.answers.map((entry) =>
+            entry.includes(" | ") ? entry.split(" | ").map((label) => label.trim()) : entry,
+          ),
+          ...requestIdFor(flags.requestId, target),
+        });
+        yield* answer(flags, result, () => "Answered.");
+        if (flags.wait) yield* waitForThread(client, flags, flags.thread, flags.timeout);
+      }),
+    ),
+  ),
+);
+
 export const threadCommand = Command.make("thread").pipe(
-  Command.withDescription("Start, follow, message and stop Threadlines threads."),
+  Command.withDescription("Start, follow, message, answer and stop Threadlines threads."),
   Command.withSubcommands([
     threadListCommand,
     threadStartCommand,
     threadSendCommand,
     threadReadCommand,
     threadWaitCommand,
+    threadAnswerCommand,
     threadStopCommand,
   ]),
 );

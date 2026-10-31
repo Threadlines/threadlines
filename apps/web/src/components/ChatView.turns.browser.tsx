@@ -2,6 +2,7 @@ import {
   EventId,
   ORCHESTRATION_WS_METHODS,
   MessageId,
+  OutsideAgentConnectionId,
   ProviderInstanceId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -38,6 +39,7 @@ import {
   waitForElement,
   waitForComposerEditor,
   waitForComposerText,
+  type TestFixture,
   findComposerProviderModelPicker,
   findVisibleComposerFooter,
   setVisibleComposerFormWidth,
@@ -51,6 +53,7 @@ import {
   waitForServerConfigToApply,
   mountChatView,
   registerChatViewSuiteHooks,
+  sendShellThreadUpsert,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -65,6 +68,41 @@ vi.mock("../lib/gitStatusState", () => ({
   refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
+
+/** A Codex model whose reasoning goes Low, Medium (its default), High. */
+function withEffortModel(nextFixture: TestFixture): void {
+  const [codexProvider] = nextFixture.serverConfig.providers;
+  if (!codexProvider) return;
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    providers: [
+      {
+        ...codexProvider,
+        models: [
+          {
+            slug: "gpt-5",
+            name: "GPT-5",
+            isCustom: false,
+            capabilities: createModelCapabilities({
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select" as const,
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium", isDefault: true },
+                    { id: "high", label: "High" },
+                  ],
+                },
+              ],
+            }),
+          },
+        ],
+      },
+    ],
+  };
+}
 
 describe("ChatView (full app): plans, questions and turn controls", () => {
   registerChatViewSuiteHooks();
@@ -256,19 +294,18 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
   });
 
   // Real phone viewports (touch-size buttons) and desktop composers squeezed
-  // by panels beside the chat. The stash bookmark used to hide in the
-  // overflow menu below the compact breakpoint; now it stays in the row, so
-  // the row must still fit without the bookmark shoving the overflow trigger
-  // off-screen or squeezing the model picker down to nothing. 300px is about
-  // the narrowest desktop composer the row supports. One test per viewport:
-  // the full app only mounts cleanly once per test.
+  // by panels beside the chat. The row is the "+" menu and the settings
+  // button on the left, dictation, the context ring and send on the right; it
+  // must stay one row without squeezing the model name down to nothing. 300px
+  // is about the narrowest desktop composer the row supports. One test per
+  // viewport: the full app only mounts cleanly once per test.
   it.each([
     { name: "phone", viewport: PHONE_VIEWPORT, composerWidth: null },
     { name: "small phone", viewport: { ...PHONE_VIEWPORT, width: 360 }, composerWidth: null },
     { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 320 },
     { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 300 },
   ])(
-    "keeps one composer row with the stash bookmark and overflow menu both visible ($name)",
+    "keeps one composer row with the add menu and the settings button ($name)",
     async ({ viewport, composerWidth }) => {
       const mounted = await mountChatView({
         viewport,
@@ -300,15 +337,9 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
           () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
           "Unable to find right composer actions.",
         );
-        const moreControlsButton = await waitForElement(
-          () =>
-            footer.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
-          "Unable to find compact composer controls.",
-        );
-        const stashButton = await waitForElement(
-          () =>
-            rightActions.querySelector<HTMLButtonElement>('button[aria-label^="Stashed prompts"]'),
-          "Unable to find the stash bookmark in the composer row.",
+        const addButton = await waitForElement(
+          () => leftActions.querySelector<HTMLButtonElement>('button[aria-label="Add to message"]'),
+          "Unable to find the add menu in the composer row.",
         );
         const modelButton = await waitForElement(
           () =>
@@ -323,21 +354,17 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
             const footerRect = footer.getBoundingClientRect();
             const leftRect = leftActions.getBoundingClientRect();
             const rightRect = rightActions.getBoundingClientRect();
-            const moreRect = moreControlsButton.getBoundingClientRect();
-            const stashRect = stashButton.getBoundingClientRect();
+            const addRect = addButton.getBoundingClientRect();
 
             const leftCenter = (leftRect.top + leftRect.bottom) / 2;
             const rightCenter = (rightRect.top + rightRect.bottom) / 2;
             expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
-            expect(moreRect.left).toBeGreaterThanOrEqual(leftRect.left - 0.5);
-            expect(moreRect.right).toBeLessThanOrEqual(leftRect.right + 0.5);
+            expect(addRect.left).toBeGreaterThanOrEqual(leftRect.left - 0.5);
+            expect(addRect.right).toBeLessThanOrEqual(leftRect.right + 0.5);
             expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
-            expect(stashRect.left).toBeGreaterThanOrEqual(rightRect.left - 0.5);
-            expect(stashRect.right).toBeLessThanOrEqual(rightRect.right + 0.5);
             expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
             expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
             expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
-            expect(footer.dataset.chatComposerFooterCompact).toBe("true");
             // The provider icon plus at least a few characters of model name.
             expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(48);
           },
@@ -349,43 +376,11 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     },
   );
 
-  it("drops traits, mode, and access to icons together when the labels stop fitting, and restores them", async () => {
+  it("drops the settings button's effort before the model name when the row narrows, and brings it back", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
-      configureFixture: (nextFixture) => {
-        const [codexProvider] = nextFixture.serverConfig.providers;
-        if (!codexProvider) return;
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          providers: [
-            {
-              ...codexProvider,
-              models: [
-                {
-                  slug: "gpt-5",
-                  name: "GPT-5",
-                  isCustom: false,
-                  capabilities: createModelCapabilities({
-                    optionDescriptors: [
-                      {
-                        id: "reasoningEffort",
-                        label: "Reasoning",
-                        type: "select" as const,
-                        options: [
-                          { id: "low", label: "Low" },
-                          { id: "medium", label: "Medium", isDefault: true },
-                          { id: "high", label: "High" },
-                        ],
-                      },
-                    ],
-                  }),
-                },
-              ],
-            },
-          ],
-        };
-      },
+      configureFixture: withEffortModel,
     });
 
     try {
@@ -398,46 +393,78 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find provider model picker.",
       );
-      await waitForButtonByTextWithin(footer, "Medium");
-      await waitForButtonByText("Full access");
-
-      await setVisibleComposerFormWidth(560);
-      await vi.waitFor(() => {
-        expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
-        expect(footer.dataset.chatComposerFooterCompact).toBe("false");
-      });
-      const iconButtons = await Promise.all(
-        [
-          'button[aria-label^="Reasoning settings:"]',
-          'button[aria-label^="Interaction mode:"]',
-          'button[aria-label^="Access level:"]',
-        ].map((selector) =>
-          waitForElement(
-            () => footer.querySelector<HTMLButtonElement>(selector),
-            `Unable to find icon-only control ${selector}.`,
-          ),
-        ),
+      const effort = await waitForElement(
+        () => modelButton.querySelector<HTMLElement>('[data-model-picker-trigger-effort="true"]'),
+        "Unable to find the settings button's effort.",
       );
-      const visibleSeparators = Array.from(
-        footer.querySelectorAll<HTMLElement>('[data-slot="separator"]'),
-      ).filter((separator) => getComputedStyle(separator).display !== "none");
+      await vi.waitFor(() => {
+        expect(effort.textContent).toContain("Medium");
+        expect(getComputedStyle(effort).display).not.toBe("none");
+      });
 
-      expect(document.querySelector('button[aria-label="More composer controls"]')).toBeNull();
-      expect(visibleSeparators.length).toBeGreaterThanOrEqual(2);
-      expect(modelButton.textContent).toContain("GPT-5");
-      expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(32);
-      for (const button of iconButtons) {
-        expect(button.getBoundingClientRect().width).toBeLessThanOrEqual(32);
-      }
-      expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+      await setVisibleComposerFormWidth(380);
+      await vi.waitFor(() => {
+        expect(getComputedStyle(effort).display).toBe("none");
+        expect(modelButton.textContent).toContain("GPT-5");
+        expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+      });
 
-      // The way back: room returns, so do the labels.
+      // The way back: room returns, so does the effort.
       await setVisibleComposerFormWidth(900);
       await vi.waitFor(() => {
-        expect(footer.dataset.chatComposerFooterIconOnly).toBe("false");
+        expect(getComputedStyle(effort).display).not.toBe("none");
       });
-      await waitForButtonByTextWithin(footer, "Medium");
-      await waitForButtonByText("Full access");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("changes effort from the meter in the settings and stays open for more changes", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+      configureFixture: withEffortModel,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const modelButton = await waitForElement(
+        () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find provider model picker.",
+      );
+      const buttonEffort = () =>
+        modelButton.querySelector<HTMLElement>('[data-model-picker-trigger-effort="true"]')
+          ?.textContent;
+      await vi.waitFor(() => expect(buttonEffort()).toContain("Medium"));
+
+      modelButton.click();
+      const meter = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-effort-meter="true"]'),
+        "Unable to find the effort meter.",
+      );
+      const level = (id: string) =>
+        meter.querySelector<HTMLButtonElement>(`[data-effort-level="${id}"]`)!;
+      expect(level("medium").getAttribute("aria-checked")).toBe("true");
+
+      level("high").click();
+      await vi.waitFor(() => {
+        expect(buttonEffort()).toContain("High");
+        expect(level("high").getAttribute("aria-checked")).toBe("true");
+      });
+      // Still open: the model list and the rest of the settings are right there.
+      expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
+
+      // The arrow keys step one level at a time.
+      level("high").focus();
+      await userEvent.keyboard("{ArrowLeft}");
+      await vi.waitFor(() => {
+        expect(buttonEffort()).toContain("Medium");
+        expect(document.activeElement).toBe(level("medium"));
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -1154,6 +1181,82 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
+  it("says whose outside work limits the agent's tools until Start fresh stops it", async () => {
+    // Assistants worked in this thread, so its agent's Threadlines tools only
+    // read. Start fresh stops the session; the server clears the mark once
+    // the agent is gone, and the notice goes with it.
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-outside-work" as MessageId,
+      targetText: "outside work target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                outsideWork: [
+                  {
+                    participantId: null,
+                    connections: [
+                      {
+                        connectionId: OutsideAgentConnectionId.make("connection-grok"),
+                        name: "Grok Bot",
+                      },
+                      {
+                        connectionId: OutsideAgentConnectionId.make("connection-dots"),
+                        name: "dots",
+                      },
+                    ],
+                    since: NOW_ISO,
+                    version: 1,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.session.stop"
+        ) {
+          return undefined;
+        }
+        fixture.snapshot = {
+          ...fixture.snapshot,
+          snapshotSequence: fixture.snapshot.snapshotSequence + 1,
+          threads: fixture.snapshot.threads.map((thread) =>
+            thread.id === THREAD_ID ? { ...thread, outsideWork: [] } : thread,
+          ),
+        };
+        queueMicrotask(() => sendShellThreadUpsert(THREAD_ID));
+        return { sequence: fixture.snapshot.snapshotSequence };
+      },
+    });
+    try {
+      await expect.element(page.getByText("Grok Bot and dots worked here.")).toBeVisible();
+      await expect.element(page.getByText("Tools are limited until a fresh start.")).toBeVisible();
+      await page.getByRole("button", { name: "Start fresh" }).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.session.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID });
+      });
+      await expect
+        .element(page.getByText("Grok Bot and dots worked here."))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("queues a message for after the turn, and Stop puts queued messages back in the box", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-queue-test" as MessageId,
@@ -1344,7 +1447,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
             '[data-chat-composer-actions="right"]',
           );
 
-          expect(footer?.dataset.chatComposerFooterCompact).toBe("false");
+          expect(footer).toBeTruthy();
           expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("false");
         },
         { timeout: 8_000, interval: 16 },

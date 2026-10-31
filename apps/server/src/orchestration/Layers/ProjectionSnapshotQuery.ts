@@ -65,6 +65,7 @@ import {
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
+  OrchestrationOutsideWork,
   OutsideAgentRef,
   RoomReviewInput,
   TrimmedNonEmptyString,
@@ -165,6 +166,7 @@ type ThreadLineageRow = Pick<
   | "remoteOrigin"
   | "scheduledRun"
   | "outsideOrigin"
+  | "outsideWork"
   | "move"
   | "movedFrom"
   | "historySeedOwed"
@@ -184,6 +186,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
   ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
+  ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
   ...threadMoveFields(row),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
@@ -217,6 +220,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
     ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
+    ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
     ...threadMoveFields(row),
     ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
     ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
@@ -283,6 +287,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
     outsideOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(OutsideAgentRef))),
+    outsideWork: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationOutsideWork))),
+    ),
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
@@ -918,6 +925,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
+          outside_work_json AS "outsideWork",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -983,6 +991,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
+          outside_work_json AS "outsideWork",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1050,6 +1059,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
+          outside_work_json AS "outsideWork",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1859,6 +1869,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
+          outside_work_json AS "outsideWork",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -3616,6 +3627,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     remote_origin_json AS "remoteOrigin",
     scheduled_run_json AS "scheduledRun",
     outside_origin_json AS "outsideOrigin",
+    outside_work_json AS "outsideWork",
     move_json AS "move",
     moved_from_json AS "movedFrom",
     history_seed_owed AS "historySeedOwed",

@@ -161,6 +161,13 @@ export const ProviderSessionStartInput = Schema.Struct({
   // when the fork cannot be honored.
   forkFrom: Schema.optional(ProviderSessionForkFrom),
   /**
+   * Start fresh from outside work (docs/design/assistants.md, step 3):
+   * nothing the previous runtime left queued may wake this one by itself. A
+   * driver whose native session outlives its runtime (OpenCode) interrupts it
+   * and silences its next self-wake; one process per runtime ends it anyway.
+   */
+  quietResume: Schema.optional(Schema.Boolean),
+  /**
    * Start locked down, for a room's side answer: read-only tools, no
    * approvals or questions, and nothing loaded from the user's or the
    * project's settings (no hooks, plugins, or MCP servers). The runtime stays

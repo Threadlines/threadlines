@@ -11,7 +11,8 @@ import type { ProviderInstanceEntry } from "~/providerInstances";
 import { getComposerProviderState } from "../chat/composerProviderState";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import type { ModelEsque } from "../chat/providerIconUtils";
-import { shouldRenderTraitsControls, TraitsPicker } from "../chat/TraitsPicker";
+import { shouldRenderTraitsControls } from "../chat/traitControls";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import { Button } from "../ui/button";
 import {
   Dialog,

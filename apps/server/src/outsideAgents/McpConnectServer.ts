@@ -190,6 +190,11 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
           "thread_stop",
           Effect.flatMap(caller, (connection) => handlers.thread_stop(connection, input)),
         ),
+      thread_answer: (input) =>
+        counted(
+          "thread_answer",
+          Effect.flatMap(caller, (connection) => handlers.thread_answer(connection, input)),
+        ),
     };
   }),
 );

@@ -531,7 +531,7 @@ describe("ThreadBootstrap.runTurnStart", () => {
     ...patch,
   });
   const outsideStart = firstSend({
-    fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+    fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
     bootstrap: { createThread: { ...createThread, branch: null, outsideOrigin: AGENT } },
   });
   const runTurnStart = (command: ThreadTurnStartCommand) =>
@@ -614,7 +614,7 @@ describe("ThreadBootstrap.runTurnStart", () => {
       const [start] = world.starts();
       expect(start?.create).toMatchObject({ outsideOrigin: AGENT });
       expect(start?.first).toMatchObject({
-        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+        fromOutside: { ...AGENT, access: "start", maxRuntimeMode: "approval-required" },
       });
       expect(world.threads.get(NEW_THREAD)?.outsideOrigin).toEqual(AGENT);
     }).pipe(Effect.provide(world.layer));

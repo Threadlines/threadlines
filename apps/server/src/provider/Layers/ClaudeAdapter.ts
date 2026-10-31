@@ -160,6 +160,7 @@ import {
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
+import { outsideWorkLookup } from "../outsideWorkLookup.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import {
@@ -2654,6 +2655,11 @@ const CLAUDE_MCP_TOOLS_READ_TIMEOUT = Duration.millis(1500);
 const CLAUDE_MCP_APP_REQUEST_TIMEOUT = Duration.seconds(30);
 /** The tool the model sets a goal of its own with. */
 const CLAUDE_PROPOSE_GOAL_TOOL_NAME = "ProposeGoal";
+
+/** Claude's tools that make its own later turns: refused while outside work marks the agent. */
+const CLAUDE_SELF_SCHEDULING_TOOL_MATCHER = `CronCreate|ScheduleWakeup|${CLAUDE_PROPOSE_GOAL_TOOL_NAME}`;
+const CLAUDE_OUTSIDE_WORK_SCHEDULE_REASON =
+  "An outside agent's work ran in this session, so you can't set check-backs or goals here until it starts fresh. The outside agent can check back itself.";
 /** Unanswered goal commands remembered past their wait. */
 const MAX_LATE_GOAL_COMMANDS = 8;
 /**
@@ -8523,6 +8529,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }),
         );
 
+      // Outside work leaves nothing that runs after its mark clears
+      // (docs/design/assistants.md, step 3): while this agent is marked, it
+      // can't set itself a check-back or a goal. Asked live, so it holds
+      // whichever way the outside text arrived (a turn, a steer, an answer).
+      const outsideWorkGuard: HookCallback = () =>
+        runPromise(outsideWorkLookup.isMarked(input.threadId)).then((marked) =>
+          marked
+            ? {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse" as const,
+                  permissionDecision: "deny" as const,
+                  permissionDecisionReason: CLAUDE_OUTSIDE_WORK_SCHEDULE_REASON,
+                },
+              }
+            : {},
+        );
+
       // A session that started with artifacts on keeps the tool for its
       // whole life; this is what makes turning the setting off take effect
       // on its next publish rather than on the next session.
@@ -9271,13 +9294,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ],
           Stop: [{ hooks: [reportCheckBacks] }],
           UserPromptSubmit: [{ hooks: [noticeCheckBackFire] }],
-          ...(artifacts
-            ? {
-                PreToolUse: [
-                  { matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"), hooks: [artifactSwitchGuard] },
-                ],
-              }
-            : {}),
+          PreToolUse: [
+            { matcher: CLAUDE_SELF_SCHEDULING_TOOL_MATCHER, hooks: [outsideWorkGuard] },
+            ...(artifacts
+              ? [{ matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"), hooks: [artifactSwitchGuard] }]
+              : []),
+          ],
         },
         // The setting decides, whatever the environment Threadlines was
         // started in says: on asks for the tool, off refuses it.

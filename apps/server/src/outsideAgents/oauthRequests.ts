@@ -158,9 +158,9 @@ export const readRegistration = (
 const accessForScopes = (scopes: ReadonlyArray<string>): OutsideAgentAccess =>
   scopes.includes("threads:start") ? "start" : "see";
 
-/** The scope string a grant answers with. */
+/** The scope string a grant answers with. Work has no scope of its own: only the user grants it. */
 export const scopeForAccess = (access: OutsideAgentAccess): string =>
-  access === "start" ? "threads:read threads:start" : "threads:read";
+  access === "see" ? "threads:read" : "threads:read threads:start";
 
 /** An authorization request that passed every check, ready to wait for the user. */
 export interface AuthorizeRequest {

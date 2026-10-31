@@ -58,7 +58,10 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadShell,
   type OrchestrationThreadSearchInput,
+  ApprovalRequestId,
+  type OutsideAgentAccess,
   type OutsideAgentConnectionId,
+  type OutsideTurnOrigin,
   type ProjectId,
   PULL_REQUEST_LOOKUP_LIMIT,
   type PullRequestListEntry,
@@ -67,6 +70,11 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@threadlines/contracts";
+import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  USER_INPUT_ACTIVITY_KINDS,
+} from "@threadlines/shared/pendingRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { changeRequestRepositoryName } from "@threadlines/shared/sourceControl";
 import { truncate } from "@threadlines/shared/String";
@@ -116,7 +124,11 @@ import {
   type ThreadStatusFeed,
   watchThreadStatus,
 } from "../threads/threadOperations.ts";
-import { threadWaitingItems } from "../threads/threadWaiting.ts";
+import {
+  type OutsideQuestionAnswer,
+  outsideQuestionAnswers,
+  threadWaitingItems,
+} from "../threads/threadWaiting.ts";
 import type { PullRequestServiceShape } from "../pullRequest/PullRequestService.ts";
 import { alertReasonText } from "../pushAlerts/pushAlertRules.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
@@ -141,6 +153,8 @@ import {
   type OutsideThreadStartResult,
   type OutsideThreadStartTool,
   type OutsideStartingThread,
+  type OutsideThreadAnswerResult,
+  type OutsideThreadAnswerTool,
   type OutsideThreadStopResult,
   type OutsideThreadStopTool,
   type OutsideThreadSummary,
@@ -181,7 +195,10 @@ const REMOVED =
 const SEE_ONLY =
   "This connection can only see threads. The user can change that in Threadlines → Settings → Connections.";
 const THREAD_NOT_FOUND = "No thread with that id is in your projects. threads_list shows them.";
-const NOT_YOURS = "You can only send to or stop threads you started.";
+const NOT_YOURS =
+  "You can only send to or stop threads you started. With Work with all threads, the user lets you reach any thread in your projects.";
+const NOT_WORK =
+  "Only a connection with Work with all threads can answer questions. The user can change that in Threadlines → Settings → Connections.";
 const NO_STORE = "Threadlines couldn't keep track of this call. Try again.";
 const CONFLICT = {
   outcome: "conflict" as const,
@@ -283,6 +300,7 @@ type Refusal = {
 type StartInput = Tool.Parameters<typeof OutsideThreadStartTool>;
 type SendInput = Tool.Parameters<typeof OutsideThreadSendTool>;
 type StopInput = Tool.Parameters<typeof OutsideThreadStopTool>;
+type AnswerInput = Tool.Parameters<typeof OutsideThreadAnswerTool>;
 
 const nowMillis = Clock.currentTimeMillis;
 const isoOf = (millis: number) => new Date(millis).toISOString();
@@ -407,7 +425,7 @@ export const makeConnectToolHandlers = (
     /** Steps 1 and 2 of every call: the limit, then the live grant. */
     const gate = (
       caller: OutsideAgentCaller,
-      needs: "see" | "start",
+      needs: OutsideAgentAccess,
     ): Effect.Effect<{ readonly refusal: Refusal } | { readonly grant: OutsideAgentLiveGrant }> =>
       Effect.gen(function* () {
         const retryAfterSeconds = yield* deps.limits.call(caller.connectionId);
@@ -424,11 +442,25 @@ export const makeConnectToolHandlers = (
         if (grant === null) {
           return { refusal: { outcome: "not_allowed" as const, detail: REMOVED } };
         }
-        if (needs === "start" && grant.access !== "start") {
+        if (needs !== "see" && grant.access === "see") {
           return { refusal: { outcome: "not_allowed" as const, detail: SEE_ONLY } };
+        }
+        if (needs === "work" && grant.access !== "work") {
+          return { refusal: { outcome: "not_allowed" as const, detail: NOT_WORK } };
         }
         return { grant };
       });
+
+    /** Who a command from this call comes from, its level, and its ceiling, as the decider checks them. */
+    const outsideOrigin = (
+      caller: OutsideAgentCaller,
+      grant: OutsideAgentLiveGrant,
+    ): OutsideTurnOrigin => ({
+      connectionId: caller.connectionId,
+      name: caller.name,
+      access: grant.access,
+      maxRuntimeMode: grant.maxRuntimeMode,
+    });
 
     /** A thread the connection sees, or undefined: archived, deleted, or outside its projects. */
     const visibleThread = (grant: OutsideAgentLiveGrant, threadId: string) =>
@@ -1535,11 +1567,7 @@ export const makeConnectToolHandlers = (
           ...(input.title.length === 0 ? { titleSeed: title } : {}),
           runtimeMode: access,
           interactionMode: "default",
-          fromOutside: {
-            connectionId: caller.connectionId,
-            name: caller.name,
-            maxRuntimeMode: grant.maxRuntimeMode,
-          },
+          fromOutside: outsideOrigin(caller, grant),
           bootstrap: {
             createThread: {
               projectId: project.id,
@@ -1748,11 +1776,14 @@ export const makeConnectToolHandlers = (
       });
 
     // -------------------------------------------------------------------------
-    // thread_send, thread_stop
+    // thread_send, thread_stop, thread_answer
     // -------------------------------------------------------------------------
 
-    /** A thread this connection started, or why the call can't use it. */
-    const ownThread = (
+    /**
+     * A thread this connection may drive, or why the call can't use it: one
+     * it started, or at Work any thread it sees.
+     */
+    const reachableThread = (
       caller: OutsideAgentCaller,
       grant: OutsideAgentLiveGrant,
       threadId: string,
@@ -1771,7 +1802,7 @@ export const makeConnectToolHandlers = (
         if (thread === undefined) {
           return { refusal: { outcome: "not_found", detail: THREAD_NOT_FOUND } };
         }
-        if (thread.outsideOrigin?.connectionId !== caller.connectionId) {
+        if (grant.access !== "work" && thread.outsideOrigin?.connectionId !== caller.connectionId) {
           return { refusal: { outcome: "not_yours", detail: NOT_YOURS } };
         }
         return { thread };
@@ -1825,7 +1856,7 @@ export const makeConnectToolHandlers = (
             inputHash,
           )) as OutsideThreadSendResult;
         }
-        const owned = yield* ownThread(caller, grant, input.threadId);
+        const owned = yield* reachableThread(caller, grant, input.threadId);
         if ("refusal" in owned) {
           const pending = yield* pendingStart(caller, grant, input.threadId);
           if (pending?.outcome === "starting") {
@@ -1869,11 +1900,7 @@ export const makeConnectToolHandlers = (
           message: { messageId: ids.messageId, role: "user", text: input.text, attachments: [] },
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
-          fromOutside: {
-            connectionId: caller.connectionId,
-            name: caller.name,
-            maxRuntimeMode: grant.maxRuntimeMode,
-          },
+          fromOutside: outsideOrigin(caller, grant),
           createdAt,
         };
         const admitted = yield* deps.limits.admit({
@@ -1982,7 +2009,7 @@ export const makeConnectToolHandlers = (
       request: { readonly requestId: string; readonly inputHash: string } | null,
     ): Effect.Effect<OutsideThreadStopResult> =>
       Effect.gen(function* () {
-        const owned = yield* ownThread(caller, grant, threadId);
+        const owned = yield* reachableThread(caller, grant, threadId);
         if ("refusal" in owned) {
           const pending = yield* pendingStart(caller, grant, threadId);
           if (pending?.outcome === "starting") {
@@ -2038,11 +2065,7 @@ export const makeConnectToolHandlers = (
             commandId,
             threadId: thread.id,
             ...(turnId !== undefined ? { turnId } : {}),
-            fromOutside: {
-              connectionId: caller.connectionId,
-              name: caller.name,
-              maxRuntimeMode: gated.grant.maxRuntimeMode,
-            },
+            fromOutside: outsideOrigin(caller, gated.grant),
             createdAt: isoOf(yield* nowMillis),
           })
           .pipe(Effect.result);
@@ -2065,6 +2088,131 @@ export const makeConnectToolHandlers = (
         );
       });
 
+    const threadAnswer = (
+      caller: OutsideAgentCaller,
+      input: AnswerInput,
+    ): Effect.Effect<OutsideThreadAnswerResult> =>
+      Effect.gen(function* () {
+        const gated = yield* gate(caller, "work");
+        if ("refusal" in gated) return gated.refusal;
+        const id = requestIdOf(input.requestId);
+        if ("detail" in id) return { outcome: "failed", detail: id.detail };
+        const normalized = {
+          threadId: input.threadId.trim(),
+          waitingId: input.waitingId.trim(),
+          answers: input.answers,
+        };
+        const inputHash = inputHashOf("thread_answer", normalized);
+        return yield* once({
+          key: `${caller.connectionId}\u0000${id.requestId}`,
+          signature: inputHash,
+          run: answerOnce(caller, gated.grant, id.requestId, normalized, inputHash),
+          conflict: CONFLICT,
+        });
+      });
+
+    const answerOnce = (
+      caller: OutsideAgentCaller,
+      grant: OutsideAgentLiveGrant,
+      requestId: string,
+      input: {
+        readonly threadId: string;
+        readonly waitingId: string;
+        readonly answers: ReadonlyArray<OutsideQuestionAnswer>;
+      },
+      inputHash: string,
+    ): Effect.Effect<OutsideThreadAnswerResult> =>
+      Effect.gen(function* () {
+        const earlier = yield* deps.requests
+          .get({ connectionId: caller.connectionId, requestId })
+          .pipe(Effect.result);
+        if (earlier._tag === "Failure") return { outcome: "failed", detail: NO_STORE };
+        if (Option.isSome(earlier.success)) {
+          return (yield* earlierAnswer(
+            grant,
+            earlier.success.value,
+            inputHash,
+          )) as OutsideThreadAnswerResult;
+        }
+        const reached = yield* reachableThread(caller, grant, input.threadId);
+        if ("refusal" in reached) return reached.refusal;
+        const { thread } = reached;
+        if (exceedsRuntimeMode(thread.runtimeMode, grant.maxRuntimeMode)) {
+          return {
+            outcome: "not_allowed",
+            detail: outsideCeilingDetail(caller.name),
+            threadId: thread.id,
+          };
+        }
+        const open = collectOpenPendingRequests(thread.activities, USER_INPUT_ACTIVITY_KINDS).find(
+          (entry) => entry.requestId === input.waitingId,
+        );
+        if (open === undefined) {
+          const approval = collectOpenPendingRequests(
+            thread.activities,
+            APPROVAL_ACTIVITY_KINDS,
+          ).some((entry) => entry.requestId === input.waitingId);
+          return approval
+            ? {
+                outcome: "not_allowed",
+                detail: "That's an approval. Only the user answers those, in Threadlines.",
+                threadId: thread.id,
+              }
+            : {
+                outcome: "not_open",
+                detail: "That question isn't open anymore. thread_read shows what's waiting.",
+                threadId: thread.id,
+              };
+        }
+        const built = outsideQuestionAnswers(open.activity.payload, input.answers);
+        if ("detail" in built) {
+          return { outcome: "invalid", detail: built.detail, threadId: thread.id };
+        }
+
+        const commandId = CommandId.make(`server:outside-answer:${crypto.randomUUID()}`);
+        const createdAt = isoOf(yield* nowMillis);
+        const refused = yield* claim(caller, {
+          connectionId: caller.connectionId,
+          requestId,
+          tool: "thread_answer",
+          inputHash,
+          threadId: thread.id,
+          commandId,
+          createdAt,
+        });
+        if (refused !== null) return refused;
+        const answered = yield* deps.engine
+          .dispatch({
+            type: "thread.user-input.respond",
+            commandId,
+            threadId: thread.id,
+            requestId: ApprovalRequestId.make(input.waitingId),
+            answers: built.answers,
+            fromOutside: outsideOrigin(caller, grant),
+            createdAt,
+          })
+          .pipe(Effect.result);
+        if (answered._tag === "Success") {
+          return yield* remember(caller, requestId, {
+            outcome: "answered" as const,
+            detail: "Answered. The agent carries on; use thread_wait to follow it.",
+            threadId: thread.id,
+          });
+        }
+        const error = answered.failure;
+        return yield* forget(caller, requestId).pipe(
+          Effect.as(
+            "refusal" in error && error.refusal === "above_ceiling"
+              ? { outcome: "not_allowed" as const, detail: error.detail, threadId: thread.id }
+              : {
+                  outcome: "failed" as const,
+                  detail: `It couldn't be answered: ${"detail" in error && typeof error.detail === "string" ? error.detail : error.message}`,
+                  threadId: thread.id,
+                },
+          ),
+        );
+      });
+
     return {
       projects,
       agents,
@@ -2076,6 +2224,7 @@ export const makeConnectToolHandlers = (
       thread_start: threadStart,
       thread_send: threadSend,
       thread_stop: threadStop,
+      thread_answer: threadAnswer,
     };
   });
 

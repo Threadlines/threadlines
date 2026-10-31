@@ -27,6 +27,8 @@ const REFUSED_OUTCOMES: ReadonlySet<string> = new Set([
   "busy",
   "conflict",
   "unavailable_agent",
+  "not_open",
+  "invalid",
 ]);
 
 /** The exit code for a call's outcome alone: worked, refused or failed. */
@@ -65,7 +67,11 @@ export function describeRefusal(result: {
     case "not_found":
       return "Threadlines has no such thread or project that this command can see.";
     case "not_yours":
-      return "This command can only send to or stop threads it started.";
+      return "This command can only send to or stop threads it started, unless you give it Work with all threads in Threadlines > Settings > Connections > Agents.";
+    case "not_open":
+      return "That question isn't open anymore. Read the thread to see what's waiting.";
+    case "invalid":
+      return "Those answers don't fit the question. Give one per question, in order.";
     case "limit":
       return result.retryAfterSeconds === undefined
         ? "Too many calls for now. Try again later."

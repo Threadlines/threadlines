@@ -16,10 +16,11 @@ import {
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import { codexModelRetirementNotice } from "@threadlines/shared/model";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, LockOpenIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import { DropdownChevron } from "../ui/select";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Drawer, DrawerPopup, DrawerTitle } from "../ui/drawer";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent } from "./ModelPickerContent";
@@ -32,15 +33,32 @@ import {
 } from "./providerIconUtils";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
 import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { type ProviderInstanceEntry, providerInstanceShowsBadge } from "../../providerInstances";
 import { useRoomRecipientStore } from "../../rooms";
 import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
 import { failureNotice, toastManager } from "../ui/toast";
-import { RoomAgentsSection } from "./RoomAgentsSection";
+import { RoomAgentsBar } from "./RoomAgentsBar";
+import { useUltracodeGlint } from "./TraitsPicker";
 import type { RoomAgentRow, RoomAgents } from "./useRoomAgents";
 
 /** How long a palette's "Add agent" waits for the picker to be there. */
 const ADD_AGENT_REQUEST_LAPSE_MS = 2_000;
+
+/**
+ * What the composer's settings button says besides the model: the effort
+ * level, and the settings that are worth seeing because they are not the
+ * usual (Plan mode, Full access). Ultracode keeps its own look and glint.
+ */
+export interface ModelPickerTriggerSummary {
+  readonly effort: string | null;
+  readonly ultracode: boolean;
+  readonly fastMode: boolean;
+  readonly plan: boolean;
+  readonly fullAccess: boolean;
+  /** The agent the summary describes is working; an active Ultracode glints. */
+  readonly working: boolean;
+}
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /**
@@ -87,6 +105,15 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   notice?: ReactNode;
   /** What the button shows instead of the model, e.g. "Last used" or "Add agent". */
   triggerContent?: ReactNode;
+  /** The composer's settings beside the model name (effort, Plan, Full access). */
+  summary?: ModelPickerTriggerSummary | null;
+  /**
+   * Rows under the model list: the agent's effort and other options, the
+   * chat's mode and access level.
+   */
+  settings?: ReactNode;
+  /** The rows while an agent is being added, which has no options of its own yet. */
+  settingsWhileAdding?: ReactNode;
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -101,7 +128,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   // input slides the keyboard over the bottom-anchored popup. Lift the popup
   // by the covered height; ModelPickerContent shrinks its max-height by the
   // same amount (via --keyboard-inset) so the top stays on screen.
-  const keyboardInset = useOnScreenKeyboardInset(isMenuOpen);
+  // Phones get the picker as a sheet from the bottom, with thumb-sized rows.
+  const asSheet = useMediaQuery("max-sm");
+  const keyboardInset = useOnScreenKeyboardInset(isMenuOpen && !asSheet);
+  const summary = props.summary ?? null;
+  const ultracodeGlintRef = useUltracodeGlint(
+    summary?.ultracode === true,
+    summary?.working === true,
+  );
 
   // An added agent keeps its own model; the list shows and changes that one.
   const addressedAgent: RoomAgentRow | null =
@@ -236,91 +270,199 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           : null;
   const inRoom = room !== null && room.inRoom;
 
+  const triggerClassName = cn(
+    "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
+    // A room's narrow button is wider by the faded icons, so the name
+    // keeps the room it has outside a room whenever the row allows.
+    props.compact
+      ? inRoom
+        ? "max-w-48 shrink"
+        : "max-w-42 shrink"
+      : summary
+        ? "max-w-full shrink sm:px-3"
+        : "max-w-48 shrink-0 sm:max-w-56 sm:px-3",
+    summary?.ultracode && "ultracode-trait-trigger",
+    props.triggerClassName,
+  );
+  const triggerChildren = (
+    <>
+      {summary?.ultracode ? (
+        <span aria-hidden="true" className="ultracode-glint">
+          <span ref={ultracodeGlintRef} className="ultracode-glint-band" />
+        </span>
+      ) : null}
+      {props.triggerContent !== undefined ? (
+        props.triggerContent
+      ) : inRoom && room !== null ? (
+        <RoomPickerTriggerContent room={room} compact={props.compact === true} summary={summary} />
+      ) : (
+        <span
+          className={cn(
+            "relative z-[1] flex min-w-0 w-full box-border items-center gap-2 overflow-hidden",
+            props.compact ? "max-w-36 sm:pl-1" : undefined,
+          )}
+        >
+          {activeEntry ? (
+            <ProviderInstanceIcon
+              instanceId={activeEntry.instanceId}
+              driverKind={activeEntry.driverKind}
+              displayName={activeEntry.displayName}
+              accentColor={activeEntry.accentColor}
+              showBadge={showInstanceBadge}
+              className={showInstanceBadge ? "size-5" : "size-4"}
+              iconClassName={cn("size-4", props.activeProviderIconClassName)}
+              badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 text-[7px]"
+            />
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className={cn(
+                    "min-w-0 overflow-hidden",
+                    summary ? "shrink" : "flex-1",
+                    triggerSubtitle
+                      ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1"
+                      : "truncate",
+                  )}
+                />
+              }
+            >
+              {triggerSubtitle ? (
+                <>
+                  <span className="min-w-0 truncate">{triggerSubtitle}</span>
+                  <span aria-hidden="true" className="shrink-0 opacity-60">
+                    ·
+                  </span>
+                  <span className="min-w-0 truncate">{triggerTitle}</span>
+                </>
+              ) : (
+                triggerTitle
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+          </Tooltip>
+          {summary ? <TriggerSummary summary={summary} /> : null}
+          <DropdownChevron solid={props.triggerVariant === "outline"} />
+        </span>
+      )}
+    </>
+  );
+
+  const pickerBody = (
+    <ModelPickerContent
+      variant={asSheet ? "sheet" : "popover"}
+      notice={
+        <>
+          {room !== null ? (
+            <RoomAgentsBar
+              agents={room}
+              adding={adding}
+              onStartAdding={() => setAdding(true)}
+              onCancelAdding={() => setAdding(false)}
+            />
+          ) : null}
+          {adding ? (
+            <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+              Pick a model for the new agent. It reads the recent messages first. Rooms have no
+              revert.
+            </div>
+          ) : retirement ? (
+            <div
+              className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground"
+              role="status"
+            >
+              <p>{retirement.message}</p>
+              {selectedInstanceOptions.some((option) => option.slug === retirement.replacement) ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="mt-1"
+                  onClick={() =>
+                    handleInstanceModelChange(activeInstanceId, retirement.replacement)
+                  }
+                >
+                  Use GPT-5.6 Sol
+                </Button>
+              ) : null}
+            </div>
+          ) : (
+            (props.notice ?? null)
+          )}
+        </>
+      }
+      activeInstanceId={adding ? props.activeInstanceId : activeInstanceId}
+      model={adding ? "" : activeModel}
+      lockedProvider={lockedProvider}
+      lockedContinuationGroupKey={
+        lockedProvider === null ? null : (props.lockedContinuationGroupKey ?? null)
+      }
+      {...(adding ? { openOnFavorites: true } : {})}
+      {...(props.providerSettingsShown === false ? { providerSettingsShown: false } : {})}
+      rowAction={rowAction}
+      rowsDisabledReason={rowsDisabledReason}
+      footer={(adding ? props.settingsWhileAdding : props.settings) ?? null}
+      instanceEntries={props.instanceEntries}
+      {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+      modelOptionsByInstance={props.modelOptionsByInstance}
+      terminalOpen={props.terminalOpen ?? false}
+      onRequestClose={() => setIsMenuOpen(false)}
+      onInstanceModelChange={handleInstanceModelChange}
+    />
+  );
+
+  const onOpenChange = (open: boolean) => {
+    if (props.disabled) {
+      setIsMenuOpen(false);
+      return;
+    }
+    setIsMenuOpen(open);
+  };
+
+  if (asSheet) {
+    return (
+      <>
+        <Button
+          size="sm"
+          variant={props.triggerVariant ?? "ghost"}
+          data-chat-provider-model-picker="true"
+          aria-haspopup="dialog"
+          aria-expanded={isMenuOpen}
+          className={triggerClassName}
+          disabled={props.disabled}
+          onClick={() => onOpenChange(!isMenuOpen)}
+        >
+          {triggerChildren}
+        </Button>
+        <Drawer open={isMenuOpen} onOpenChange={onOpenChange}>
+          <DrawerPopup side="bottom" data-model-picker-sheet="true">
+            <DrawerTitle className="sr-only">Model and settings</DrawerTitle>
+            <div
+              aria-hidden="true"
+              className="mx-auto mt-2 mb-1 h-1 w-9 shrink-0 rounded-full bg-border"
+            />
+            {pickerBody}
+          </DrawerPopup>
+        </Drawer>
+      </>
+    );
+  }
+
   return (
-    <Popover
-      open={isMenuOpen}
-      onOpenChange={(open) => {
-        if (props.disabled) {
-          setIsMenuOpen(false);
-          return;
-        }
-        setIsMenuOpen(open);
-      }}
-    >
+    <Popover open={isMenuOpen} onOpenChange={onOpenChange}>
       <PopoverTrigger
         render={
           <Button
             size="sm"
             variant={props.triggerVariant ?? "ghost"}
             data-chat-provider-model-picker="true"
-            className={cn(
-              "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
-              // A room's narrow button is wider by the faded icons, so the name
-              // keeps the room it has outside a room whenever the row allows.
-              props.compact
-                ? inRoom
-                  ? "max-w-48 shrink"
-                  : "max-w-42 shrink"
-                : "max-w-48 shrink-0 sm:max-w-56 sm:px-3",
-              props.triggerClassName,
-            )}
+            className={triggerClassName}
             disabled={props.disabled}
           />
         }
       >
-        {props.triggerContent !== undefined ? (
-          props.triggerContent
-        ) : inRoom && room !== null ? (
-          <RoomPickerTriggerContent room={room} compact={props.compact === true} />
-        ) : (
-          <span
-            className={cn(
-              "flex min-w-0 w-full box-border items-center gap-2 overflow-hidden",
-              props.compact ? "max-w-36 sm:pl-1" : undefined,
-            )}
-          >
-            {activeEntry ? (
-              <ProviderInstanceIcon
-                instanceId={activeEntry.instanceId}
-                driverKind={activeEntry.driverKind}
-                displayName={activeEntry.displayName}
-                accentColor={activeEntry.accentColor}
-                showBadge={showInstanceBadge}
-                className={showInstanceBadge ? "size-5" : "size-4"}
-                iconClassName={cn("size-4", props.activeProviderIconClassName)}
-                badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 text-[7px]"
-              />
-            ) : null}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 overflow-hidden",
-                      triggerSubtitle
-                        ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1"
-                        : "truncate",
-                    )}
-                  />
-                }
-              >
-                {triggerSubtitle ? (
-                  <>
-                    <span className="min-w-0 truncate">{triggerSubtitle}</span>
-                    <span aria-hidden="true" className="shrink-0 opacity-60">
-                      ·
-                    </span>
-                    <span className="min-w-0 truncate">{triggerTitle}</span>
-                  </>
-                ) : (
-                  triggerTitle
-                )}
-              </TooltipTrigger>
-              <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-            </Tooltip>
-            <DropdownChevron solid={props.triggerVariant === "outline"} />
-          </span>
-        )}
+        {triggerChildren}
       </PopoverTrigger>
       <PopoverPopup
         align="start"
@@ -335,71 +477,67 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             : undefined
         }
       >
-        <ModelPickerContent
-          notice={
-            adding ? (
-              <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-                Pick a model for the new agent. It reads the recent messages first. Rooms have no
-                revert.
-              </div>
-            ) : retirement ? (
-              <div
-                className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground"
-                role="status"
-              >
-                <p>{retirement.message}</p>
-                {selectedInstanceOptions.some(
-                  (option) => option.slug === retirement.replacement,
-                ) ? (
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    className="mt-1"
-                    onClick={() =>
-                      handleInstanceModelChange(activeInstanceId, retirement.replacement)
-                    }
-                  >
-                    Use GPT-5.6 Sol
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
-              (props.notice ?? null)
-            )
-          }
-          activeInstanceId={adding ? props.activeInstanceId : activeInstanceId}
-          model={adding ? "" : activeModel}
-          lockedProvider={lockedProvider}
-          lockedContinuationGroupKey={
-            lockedProvider === null ? null : (props.lockedContinuationGroupKey ?? null)
-          }
-          {...(adding ? { openOnFavorites: true } : {})}
-          {...(props.providerSettingsShown === false ? { providerSettingsShown: false } : {})}
-          rowAction={rowAction}
-          rowsDisabledReason={rowsDisabledReason}
-          footer={
-            room !== null ? (
-              <RoomAgentsSection
-                agents={room}
-                adding={adding}
-                onStartAdding={() => setAdding(true)}
-                onCancelAdding={() => setAdding(false)}
-                onChosen={() => setIsMenuOpen(false)}
-              />
-            ) : null
-          }
-          instanceEntries={props.instanceEntries}
-          {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-          modelOptionsByInstance={props.modelOptionsByInstance}
-          terminalOpen={props.terminalOpen ?? false}
-          onRequestClose={() => setIsMenuOpen(false)}
-          onInstanceModelChange={handleInstanceModelChange}
-        />
+        {pickerBody}
       </PopoverPopup>
     </Popover>
   );
 });
+
+/**
+ * The settings beside the model name on the composer's button. The effort
+ * drops out where the row gets narrow (and on phones), before the name has
+ * to truncate; Plan and Full access stay, since the controls that set them
+ * are now behind the button.
+ */
+function TriggerSummary(props: { summary: ModelPickerTriggerSummary }) {
+  const { effort, ultracode, fastMode, plan, fullAccess } = props.summary;
+  const effortText =
+    ultracode && effort && effort !== "Ultracode" ? `${effort}, Ultracode` : effort;
+  return (
+    <>
+      {effortText ? (
+        <span
+          data-model-picker-trigger-effort="true"
+          className="flex min-w-0 shrink-[2] items-center gap-1 overflow-hidden max-sm:hidden @max-[300px]/composer-left:hidden"
+        >
+          <span aria-hidden="true" className="shrink-0 opacity-50">
+            ·
+          </span>
+          <span className={cn("min-w-0 truncate", ultracode && "ultracode-trait-label")}>
+            {effortText}
+          </span>
+        </span>
+      ) : null}
+      {fastMode ? (
+        <>
+          <ZapIcon aria-hidden="true" className="size-3 shrink-0 text-primary-readable" />
+          <span className="sr-only">Fast Mode on</span>
+        </>
+      ) : null}
+      {plan ? (
+        <span data-model-picker-trigger-plan="true" className="flex shrink-0 items-center gap-1">
+          <span aria-hidden="true" className="opacity-50">
+            ·
+          </span>
+          <span className="font-medium text-primary-readable">Plan</span>
+        </span>
+      ) : null}
+      {fullAccess ? (
+        <span
+          data-model-picker-trigger-full-access="true"
+          className="flex shrink-0 items-center gap-1 text-warning-foreground"
+        >
+          <span aria-hidden="true" className="text-muted-foreground opacity-50 max-sm:hidden">
+            ·
+          </span>
+          {/* A phone's row has no room for the words: the open lock says it. */}
+          <LockOpenIcon aria-hidden="true" className="size-3.5 sm:hidden" />
+          <span className="max-sm:sr-only">Full access</span>
+        </span>
+      ) : null}
+    </>
+  );
+}
 
 /**
  * The model button in a room: who the next message goes to, in front, with
@@ -412,7 +550,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
  * all at once beside the model fallback chip). On a narrow composer a named
  * agent goes by its name alone, like the sidebar.
  */
-function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean }) {
+function RoomPickerTriggerContent(props: {
+  room: RoomAgents;
+  compact: boolean;
+  summary: ModelPickerTriggerSummary | null;
+}) {
   const { recipient, rows } = props.room;
   const others = rows.filter((row) => row !== recipient);
   const icons = [
@@ -427,7 +569,7 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
   return (
     <span
       className={cn(
-        "flex min-w-0 w-full box-border items-center gap-2 overflow-hidden",
+        "relative z-[1] flex min-w-0 w-full box-border items-center gap-2 overflow-hidden",
         props.compact ? "max-w-42 sm:pl-1" : undefined,
       )}
     >
@@ -441,10 +583,10 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
               "relative flex size-4 shrink-0 items-center justify-center",
               index > 0 && "-ms-[5px]",
               // Each faded icon costs the name 11px; these widths (inside the
-              // row's padding) keep about seven characters of it: three icons
-              // on a 402px phone, two at 390px, one at 375px.
-              index === 1 && "@max-[163px]/composer-left:hidden",
-              index === 2 && "@max-[174px]/composer-left:hidden",
+              // row's padding, beside the "+") keep about seven characters of
+              // it: three icons down to a 350px phone, two to 339px, then one.
+              index === 1 && "@max-[181px]/composer-left:hidden",
+              index === 2 && "@max-[192px]/composer-left:hidden",
               // The fallback chip takes that room on a narrow composer.
               index > 0 &&
                 props.compact &&
@@ -484,7 +626,9 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
         ))}
       </span>
       <Tooltip>
-        <TooltipTrigger render={<span className="min-w-0 flex-1 truncate" />}>
+        <TooltipTrigger
+          render={<span className={cn("min-w-0 truncate", props.summary ? "shrink" : "flex-1")} />}
+        >
           {name}
         </TooltipTrigger>
         <TooltipPopup side="top">
@@ -496,6 +640,7 @@ function RoomPickerTriggerContent(props: { room: RoomAgents; compact: boolean })
           ))}
         </TooltipPopup>
       </Tooltip>
+      {props.summary ? <TriggerSummary summary={props.summary} /> : null}
       <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
     </span>
   );

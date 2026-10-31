@@ -34,6 +34,7 @@ import {
 } from "./browserToolHandlers.ts";
 import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { makeOutsideToolLimits } from "./outsideToolLimit.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 
 /** How the tools are namespaced to a provider, so `browser_click` arrives as
@@ -194,8 +195,9 @@ export function listOnlyGrantedTools(
   );
 }
 
-const authenticate = Effect.succeed(
-  Effect.fn("McpHttpServer.authenticate")(function* (
+const authenticate = Effect.gen(function* () {
+  const limits = yield* makeOutsideToolLimits;
+  return Effect.fn("McpHttpServer.authenticate")(function* (
     handler: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
       Types.unhandled,
@@ -209,15 +211,17 @@ const authenticate = Effect.succeed(
     if (scope === null || !scope.browser) {
       return unauthorizedMcpResponse;
     }
+    const outsideLimit = yield* limits.forScope(scope);
     return yield* handler.pipe(
       Effect.provideService(McpInvocationContext, {
         threadId: scope.threadId,
         agentId: scope.agentId,
+        ...(outsideLimit !== null ? { outsideLimit } : {}),
       }),
       Effect.map(normalizeMcpHttpResponse),
     );
-  }),
-);
+  });
+});
 
 const AuthenticationLive = HttpRouter.middleware<{
   provides: McpInvocationContext;

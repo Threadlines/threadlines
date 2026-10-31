@@ -1337,3 +1337,266 @@ approved in the app), `thread_changes` with a file and its base branch, and
 
 Not done here: `threadlines inbox` and `threadlines thread changes` commands;
 a run against a real hosted assistant.
+
+## Build plan: step 3 (Work with all threads)
+
+Written Oct 30 from a map of the code on main (`e237b8c52`), then rewritten
+after Sol's review of the first draft (10 findings, all taken; see the end).
+Where the code differs from the sections above, this wins.
+
+### What the code does today (and why it matters)
+
+- **Agent tools are fixed per runtime.** Every provider gets Threadlines'
+  tools once, at session start, with a bearer token minted per runtime
+  (`McpSessionRegistry.credentialFor`). None can be handed a new list
+  mid-session, and subagents and background agents call with the parent's
+  token. So the gate is per call, and only a new runtime gets a clean token.
+  The room endpoint authenticates every request (`McpRoomServer.authenticate`)
+  and sends every tool through one table (`McpRoomServer.ts` 314-357).
+- **The fence is per thread, at session start.** `fencedOff` (outside or
+  remote origin) leaves out the room and guide tools
+  (`ProviderCommandReactor.ts` 1250-1262, 1434-1439). No handler checks
+  `outsideOrigin` per call. Threads the user started keep every tool, and
+  the browser panel stays on for every thread.
+- **Nothing says when outside work ends.** Session counts and the subagent
+  roster say what's alive, not which turn started it, and describe only the
+  room's slot holder. Claude and ACP open a turn only when output arrives
+  (`ensureSyntheticTurn`), so a quiet runtime can still be working. Claude
+  check-backs carry no origin, durable ones survive restarts, and a fired
+  one starts a provider turn with no Threadlines command.
+- **Outside access is ownership.** `outsideStopRefusal` refuses any thread
+  whose `outsideOrigin` isn't the caller's; `OutsideTurnOrigin` has no level.
+- **Answers lose their origin.** `thread.user-input.respond` has no
+  `fromOutside`; the decider only checks that the thread exists; `message`
+  mode (Codex) steers or starts its own turn without an origin;
+  `respondToUserInput` delivers whatever the runtime's mode.
+- **A runtime can already be restarted to change what it was given.**
+  Missing room tools and a waiting access raise restart it with resume, and
+  wait while background tasks run (`ProviderCommandReactor.ts` 1700-1760,
+  the runtime's own `pendingBackgroundTaskCount`; the adapter refuses to
+  cycle a runtime with tasks).
+
+### What the gate promises
+
+While outside work can still act on its own (the outside turn, its
+background tasks and subagents, anything it left to run later), it can't use
+Threadlines' agent tools past the connection's grant, and it can't leave
+anything that runs after the gate lifts. Once that agent's runtime has
+stopped and the user sends the next turn, the user is driving.
+
+Not promised: outside text read later as data. Another agent can read an
+assistant's message through `thread_read` or `room_history`, or get it in a
+room's catch-up at a turn the user started, and be swayed by it, as by any
+text it reads. That's the existing limit for threads an outside agent
+starts ("Thread titles and messages are agent-written").
+
+### Outside work marks the agent's session, until it starts fresh
+
+A thread gets `outsideWork: Array<{ participantId, connectionId, name,
+since }>`, one entry per agent session (room participant) that outside text
+reached, with every connection that reached it (projection column, durable,
+on the thread shell for the UI).
+
+- **Marked by the decider,** in the same command that lets outside text
+  reach an agent: an outside `thread.turn.start`, and an outside
+  `thread.user-input.respond`. It names the agent the text goes to. Being
+  in the event, it's on before the reactor delivers anything, and it
+  survives restarts. The mark belongs to the agent (thread and
+  participant), not to a token: a runtime that recovery respawns for a
+  marked agent is still marked.
+- **Cleared only by starting that agent fresh.** At the next turn that isn't
+  from outside, the reactor treats a marked agent like one missing its room
+  tools: it restarts the runtime with resume (a new runtime gets a new,
+  clean token; the old one is revoked as it stops), and dispatches
+  `thread.outside-work.clear { participantId }` before sending the turn.
+  - It waits while the runtime reports background tasks or a turn in flight,
+    as the existing restart reasons do; that turn runs marked.
+  - An agent with no runtime alive starts fresh anyway, so it clears then.
+  - The old runtime must be gone (its token revoked) before the clear. An
+    early session started while the user typed only counts if it started
+    after the mark.
+  - A fresh start has to end what the old runtime left queued, not just its
+    process. Each adapter says whether its restart did (`freshStart:
+    "clean"`), and the mark stays if not. Claude, Codex, Pi and the ACP
+    agents run one process per runtime, so stopping it ends everything.
+    OpenCode keeps its native session in its own server across a restart,
+    so its fresh start interrupts that session and silences its next
+    self-wake (the existing `silenceNextWake` path) before it reports
+    clean. Muse is checked in the build.
+  - A provider that can't report background work (Pi, Codex's collab
+    agents block the turn instead) still restarts when its runtime reports
+    no turn; any work it hid ends with the runtime. The notice says so.
+  - The user can also start it fresh from the thread's notice.
+    No timers and no reading of what looks idle.
+- **While marked, every call with that agent's token is gated** (its
+  subagents, background agents and side answers use it or inherit the mark):
+  - **Room endpoint:** every tool that changes something refuses with one
+    sentence ("An assistant's work ran in this agent's session, so
+    Threadlines' agent tools can only read until it starts fresh"):
+    `thread_start`, `thread_send`, `thread_stop`, `room_ask`, `room_review`,
+    `room_hand_off`, `room_invite`, `schedule_create`, `schedule_update`
+    (`scheduled_run_finish` only records the caller's own run, so it stays).
+    `app_guide` refuses (app-wide settings, linked
+    computers, connection names). Reads stay inside every marking
+    connection's live grant: `thread_list` and `thread_read` drop linked
+    computers' children; `thread_agents` drops computers; a thread whose
+    project left a grant reads nothing; a removed connection leaves only
+    the caller's own thread. One exhaustive `Record<RoomEndpointToolName,
+    "changes" | "reads">` decides, so a new tool can't skip it.
+  - **The browser panel refuses every tool.** Its sign-ins and private
+    addresses aren't the connection's to use. (This also applies to threads
+    an outside agent started, which keep the browser today.)
+  - **Pages and `ask_user_to_run` stay.** They only show the user things,
+    and a command still waits for the user's click.
+  - **Nothing it leaves runs later.** Claude's `CronCreate`,
+    `ScheduleWakeup` and `ProposeGoal` are refused by the adapter's
+    `PreToolUse` hook (it runs in every access mode, unlike `canUseTool`).
+    The hook asks a live lookup (`OutsideWorkLookup`, a service the server
+    provides to adapters) rather than a flag passed in, so every way text
+    reaches the runtime is covered: turns, steers, answers, recovery. A
+    Codex goal that appears while the agent is marked and that Threadlines
+    didn't set is cleared (`thread/goal/clear`), with a line in the chat.
+    The always-on assistant checks back itself.
+  - **OpenCode registers tools per directory,** so a session sees every
+    other session's servers in the same folder. For OpenCode the mark
+    gates every token registered for a marked agent's directory (the
+    registry records it at minting). That also closes the same gap for
+    threads an outside agent starts today.
+- **Several connections can mark the same agent.** Reads stay inside all of
+  their grants; changes refuse either way.
+- **The thread shows a notice** while any agent is marked: "An assistant's
+  work ran here, so this agent's Threadlines tools are limited until it
+  starts fresh." Button: Start fresh.
+
+### The Work level
+
+- `OutsideAgentAccess` gains `"work"`. `OutsideTurnOrigin` gains `access`
+  (decoding default `"start"`, so old events keep today's rule).
+- **Stored so an older build fails closed:** the `access` column keeps
+  `"start"` and new columns say Work (`work_level INTEGER NOT NULL DEFAULT
+  0`, `grant_writes INTEGER NOT NULL DEFAULT 0`). An older build reads the
+  connection as Start. A trigger (`AFTER UPDATE OF access, max_runtime_mode,
+  project_ids_json ... WHEN NEW.grant_writes IS OLD.grant_writes`) sets
+  `work_level = 0`. New builds bump `grant_writes` on every grant change, so
+  only an older build's change trips it: Change in an older build (See,
+  then Start) can't bring Work back after an upgrade.
+- **Never asked for, only granted.** No new OAuth scope and no relay change:
+  the user picks Work in the dialog or in Change. A sign-in that asked for
+  See only still caps at See (`grantRefusal`); Start may be raised to Work.
+  `scopeForAccess` gives Work the Start scopes.
+- **Decider:** `outsideStopRefusal` keeps ownership for Start and drops it
+  for Work. The ceiling rule stays for both.
+- **`thread_send` and `thread_stop`** reach any visible thread at Work
+  (projects, no General Chats, ceiling). Sends still never queue or steer:
+  a busy thread answers `busy`. `runningThreads` counts threads this
+  connection marked, not only threads it started.
+- **`thread_answer` (Work):** `{ threadId, requestId, waitingId, answers }`.
+  `requestId` is the retry key; `waitingId` is the `requestId` of a
+  `question` item in `waiting`. `answers` has one entry per question, in
+  order: an option's label or free text, or a list of labels where several
+  may be picked. The handler checks them against the open request's own
+  questions and builds the provider's keyed answers. Refused: forms
+  (elicitations), approvals, and a question with parts `waiting` doesn't
+  show whole (over its caps, or a clipped label): "Answer this one in
+  Threadlines."
+  - It dispatches `thread.user-input.respond` with `fromOutside` (origin
+    with access). The decider refuses no open question with that id, an
+    approval, a thread the level doesn't reach, a thread above the ceiling,
+    and a question whose asking agent no longer holds the thread (a room
+    handed over since); it marks the asking agent in the same event. The
+    reactor delivers only to that agent's runtime.
+  - The reactor checks again right before delivery: the connection, its
+    grant, and the live runtime's mode against the ceiling. Failing that,
+    nothing is sent, the question stays open, and a
+    `provider.user-input.respond.failed` activity says why.
+  - `message` mode keeps the origin all the way: the steer is checked in the
+    reactor, and the follow-up turn is a real outside `thread.turn.start`
+    with `answering: <requestId>`, so the decider's busy rule passes over
+    that one open question and the launch-time ceiling checks run.
+  - The resolved card in the chat says who answered ("Answered by Grok Bot").
+- **Waiting items** gain each question's `id` (additive).
+- **Both doors** list `thread_answer` at Work (`listedToolsFor`, the
+  assistants door's tool list with `requestId` required,
+  `OutsideAgentRequestTool`). Tool texts stop saying "threads you started"
+  where Work reaches further.
+
+### Surfaces
+
+- **Settings:** the access dialog's third level with one line ("Can also
+  message, stop and answer questions in any thread in its projects. Never
+  approvals."), the ceiling for Start and Work, rows describe Work.
+- **The thread:** the notice with Start fresh, and "Answered by" on question
+  cards.
+- **The command:** `threadlines thread answer <thread> <waitingId> <answer>...`.
+- **Guide and docs:** the outside agents and assistants topics, the places'
+  words, `docs/outside-agents.md`.
+
+### Tests
+
+- Decider: Work reaches others' threads, Start doesn't; ceiling; respond
+  with `fromOutside` refuses approvals, closed questions and threads out of
+  reach; an outside turn or answer marks the agent it reaches; the answer's
+  follow-up turn passes the busy rule only for its own question.
+- The gate: a marked agent's changing room tools refuse, reads stay inside
+  every marking grant, the browser refuses, pages work; another room
+  agent's token isn't gated.
+- Clearing: the next user turn restarts a marked runtime and clears it;
+  background tasks keep it marked through that turn; Start fresh clears it.
+- Claude: `CronCreate`, `ScheduleWakeup` and `ProposeGoal` refused while
+  marked, including after an answer and after recovery; a Codex goal set
+  while marked is cleared.
+- OpenCode: a token sharing a marked agent's directory is gated.
+- Answer delivery: a runtime above the ceiling leaves the answer unsent;
+  message mode keeps the origin through the steer and the turn.
+- `thread_answer` by order, multi-select, free text, a form refused.
+- Old builds: a Work row reads as Start; an old build's grant change clears
+  Work (the trigger), a new build's doesn't.
+- Web: the dialog's third level, the notice.
+- Live: a throwaway install with a stand-in agent that calls room tools
+  during an outside turn and asks a question.
+
+### Sol's review of the first draft (Oct 30)
+
+The first draft lifted the gate after 15 s of a thread looking idle, kept
+one origin per thread, stamped check-backs, and left the browser open. Sol
+found that a quiet runtime can still be working (Claude and ACP open turns
+on first output), that projections describe only the slot holder, that a
+clear could race a new turn, that a second connection would take over the
+first's work, that durable check-backs lose their origin across a crash,
+that a labelled answer turn skips the ceiling checks, that the browser can
+reach signed-in pages, that `waiting` can't always be answered from, and
+that an older build can't read a Work row. The mark-until-fresh design, the
+refused check-back tools, the gated browser, the `answering` turn, the
+refusal for partly shown questions and the `work_level` column answer them.
+
+Sol's second pass (same day) found six more: OpenCode's per-directory
+tools, outside text reaching other agents as history, an answer steered
+into a different room agent, the scheduling hook missing answers and
+recovery, model-set goals re-armed on resume, and an older build's Change
+reviving Work. Answered by: the promise stated above (history is data, as
+today), per-directory gating for OpenCode, answers bound to the asking
+agent, the live lookup for the hook plus goals refused or cleared, and the
+`grant_writes` trigger.
+
+A last focused pass found one more: OpenCode's restart keeps the native
+session, so a report queued by outside work could wake the fresh runtime.
+Answered by `freshStart` and OpenCode's interrupt-and-silence step.
+
+Sol's review of the built branch (Oct 31) found seven more, all fixed: a
+fresh start could clear a mark that outside text renewed while it ran (marks
+now carry a version, and a clear names the one it saw); Retry replayed an
+outside message without its mark or ceiling (Retry refuses it now); the goal
+clear was only queued before the mark lifted (the provider clears it first,
+or the agent stays marked); a stop that failed for one room agent still
+cleared its mark (only agents whose runtime is gone clear); OpenCode's quiet
+start ignored a failed interrupt (the start fails instead); an answer's own
+turn went to the thread's own agent instead of the room agent that asked;
+and an archived thread read as unmarked while its runtimes were still
+stopping (the lookups read archived threads too).
+
+Its re-check of those fixes found three more, fixed: a mark saved before
+versions existed wouldn't load (it reads as version 1); Start fresh could
+restart the runtime it had just stopped to clear a goal (a stop leaves an
+agent with such a goal marked for its next fresh start, which has a runtime);
+and an agent moved to a provider without goals stayed marked for good (a
+provider without goals skips that step).

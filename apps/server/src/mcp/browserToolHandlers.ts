@@ -11,9 +11,14 @@ import * as Effect from "effect/Effect";
 
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
 import { McpInvocationContext } from "./McpInvocationContext.ts";
+import { outsideBrowserDetail } from "./outsideToolLimit.ts";
 import { requestService } from "./requestService.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
-import type { PreviewAutomationError, PreviewAutomationOperation } from "@threadlines/contracts";
+import {
+  type PreviewAutomationError,
+  PreviewAutomationExecutionError,
+  type PreviewAutomationOperation,
+} from "@threadlines/contracts";
 
 /**
  * The broker answers with whatever the page sent; each tool's success schema
@@ -23,7 +28,14 @@ const forward =
   (operation: PreviewAutomationOperation) =>
   (input: unknown): Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker> =>
     Effect.gen(function* () {
-      const { threadId, agentId } = yield* requestService(McpInvocationContext);
+      const { threadId, agentId, outsideLimit } = yield* requestService(McpInvocationContext);
+      // Its sign-ins and private addresses aren't an outside connection's to use.
+      if (outsideLimit !== undefined) {
+        return yield* new PreviewAutomationExecutionError({
+          operation,
+          detail: outsideBrowserDetail(outsideLimit),
+        });
+      }
       const broker = yield* PreviewAutomationBroker;
       return yield* broker.invoke({ threadId, agentId, operation, input });
     }) as Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker>;

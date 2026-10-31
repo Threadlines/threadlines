@@ -870,6 +870,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     hasActionableProposedPlan: false,
     ...(thread.move ? { move: thread.move } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
+    ...(thread.outsideWork ? { outsideWork: thread.outsideWork } : {}),
   };
 }
 
@@ -2949,15 +2950,22 @@ export async function dragRightPanelFarWider(): Promise<void> {
   expect(panel.getBoundingClientRect().width).toBeGreaterThan(startWidth + 100);
 }
 
-export async function waitForInteractionModeButton(
-  expectedLabel: "Build" | "Plan",
-): Promise<HTMLButtonElement> {
-  return waitForElement(
-    () =>
-      Array.from(document.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === expectedLabel,
-      ) as HTMLButtonElement | null,
-    `Unable to find ${expectedLabel} interaction mode button.`,
+/**
+ * Waits for the composer's mode: Plan shows on its settings button, Build
+ * (the usual) does not.
+ */
+export async function waitForComposerInteractionMode(expected: "Build" | "Plan"): Promise<void> {
+  await vi.waitFor(
+    () => {
+      const button = document.querySelector<HTMLButtonElement>(
+        '[data-chat-provider-model-picker="true"]',
+      );
+      expect(button).not.toBeNull();
+      expect(button!.querySelector('[data-model-picker-trigger-plan="true"]') !== null).toBe(
+        expected === "Plan",
+      );
+    },
+    { timeout: 8_000, interval: 16 },
   );
 }
 

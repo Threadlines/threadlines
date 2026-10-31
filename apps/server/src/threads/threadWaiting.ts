@@ -34,6 +34,8 @@ export type ThreadApprovalAsk =
   | "other";
 
 export interface ThreadWaitingQuestion {
+  /** The provider's id for it, which its answer is keyed by. */
+  readonly id: string;
   readonly header: string;
   readonly question: string;
   readonly options: ReadonlyArray<{ readonly label: string; readonly description: string }>;
@@ -94,6 +96,76 @@ const titleOf = (planMarkdown: string) => {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
+/** One outside answer per question, in order: a label or free text, or labels where several may be picked. */
+export type OutsideQuestionAnswer = string | ReadonlyArray<string>;
+
+/**
+ * An outside agent's answers (`thread_answer`) as the provider takes them,
+ * keyed by each question's id, checked against the question as asked
+ * (`requested`, the `user-input.requested` payload), or why they can't be:
+ * a form, a question with parts `waiting` doesn't show whole (so the agent
+ * couldn't have read it all), or answers that don't fit.
+ */
+export function outsideQuestionAnswers(
+  requested: unknown,
+  answers: ReadonlyArray<OutsideQuestionAnswer>,
+):
+  | { readonly answers: Readonly<Record<string, string | ReadonlyArray<string>>> }
+  | { readonly detail: string } {
+  const payload = record(requested);
+  const raw = Array.isArray(payload.questions) ? payload.questions : [];
+  if (payload.elicitation !== undefined || raw.length === 0) {
+    return { detail: "This one is a form. Answer it in Threadlines." };
+  }
+  const partly = { detail: "Part of this question doesn't show to you. Answer it in Threadlines." };
+  if (raw.length > QUESTIONS_LISTED) return partly;
+  if (answers.length !== raw.length) {
+    return {
+      detail: `Give one answer per question, in order: this one has ${plural(raw.length, "question")}.`,
+    };
+  }
+  const keyed: Record<string, string | ReadonlyArray<string>> = {};
+  for (const [index, entry] of raw.entries()) {
+    const question = record(entry);
+    const asked = text(question.question);
+    const id = typeof question.id === "string" ? question.id : undefined;
+    const options = Array.isArray(question.options) ? question.options : [];
+    const labels = options.flatMap((option) => {
+      const label = text(record(option).label);
+      return label === undefined ? [] : [label];
+    });
+    if (
+      asked === undefined ||
+      id === undefined ||
+      asked.length > QUESTION_CHAR_LIMIT ||
+      options.length > OPTIONS_LISTED ||
+      labels.length !== options.length ||
+      labels.some((label) => label.length > OPTION_CHAR_LIMIT)
+    ) {
+      return partly;
+    }
+    const answer = answers[index]!;
+    const which = `question ${index + 1}`;
+    if (typeof answer === "string") {
+      const said = answer.trim();
+      if (said.length === 0) return { detail: `Answer ${which}.` };
+      keyed[id] = said;
+      continue;
+    }
+    if (question.multiSelect !== true) {
+      return { detail: `Pick one answer for ${which}, or say it in your own words.` };
+    }
+    const picked = [...new Set(answer.map((label) => label.trim()))];
+    if (picked.length === 0) return { detail: `Pick at least one option for ${which}.` };
+    const unknown = picked.find((label) => !labels.includes(label));
+    if (unknown !== undefined) {
+      return { detail: `"${clip(unknown, 80)}" isn't one of the options for ${which}.` };
+    }
+    keyed[id] = picked;
+  }
+  return { answers: keyed };
+}
+
 function questionsOf(payload: Readonly<Record<string, unknown>>) {
   const raw = Array.isArray(payload.questions) ? payload.questions : [];
   return raw.slice(0, QUESTIONS_LISTED).flatMap((entry): ReadonlyArray<ThreadWaitingQuestion> => {
@@ -103,6 +175,7 @@ function questionsOf(payload: Readonly<Record<string, unknown>>) {
     const options = Array.isArray(question.options) ? question.options : [];
     return [
       {
+        id: typeof question.id === "string" ? question.id : asked,
         header: clip(text(question.header) ?? "", OPTION_CHAR_LIMIT),
         question: clip(asked, QUESTION_CHAR_LIMIT),
         options: options.slice(0, OPTIONS_LISTED).flatMap((option) => {

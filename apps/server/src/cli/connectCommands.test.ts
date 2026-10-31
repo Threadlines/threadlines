@@ -226,6 +226,10 @@ const standIn = (script: Script, seen: Seen) => {
       outcome: "stopped" as const,
       threadId: "thread-1",
     })),
+    thread_answer: record("thread_answer", () => ({
+      outcome: "answered" as const,
+      threadId: "thread-1",
+    })),
   });
   const mcp = McpServer.toolkit(ConnectToolkit).pipe(
     Layer.provide(handlers),

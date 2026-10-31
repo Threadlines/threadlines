@@ -50,6 +50,7 @@ import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
+import { clearOutsideWork, markOutsideWork } from "./outsideTurns.ts";
 import {
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
@@ -123,6 +124,8 @@ import {
   ThreadFollowUpUnqueuedPayload,
   ThreadTurnDiffCompletedPayload,
   ThreadTurnCompletedPayload,
+  ThreadOutsideWorkClearedPayload,
+  ThreadUserInputResponseRequestedPayload,
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
   ThreadWorkflowRunRecordedPayload,
@@ -1153,6 +1156,66 @@ export function projectEvent(
                 participantId,
                 modelSelection,
               ),
+              // Outside text reaches this agent: its tools are limited until
+              // it starts fresh (docs/design/assistants.md, step 3).
+              ...(payload.fromOutside !== undefined
+                ? {
+                    outsideWork: markOutsideWork(
+                      thread.outsideWork,
+                      participantId,
+                      payload.fromOutside,
+                      payload.createdAt,
+                    ),
+                  }
+                : {}),
+            }),
+          };
+        }),
+      );
+
+    // An outside answer reaches the agent that asked: see turn-start-requested.
+    case "thread.user-input-response-requested":
+      return decodeForEvent(
+        ThreadUserInputResponseRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined || payload.fromOutside === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              outsideWork: markOutsideWork(
+                thread.outsideWork,
+                payload.participantId ?? null,
+                payload.fromOutside,
+                payload.createdAt,
+              ),
+            }),
+          };
+        }),
+      );
+
+    case "thread.outside-work-cleared":
+      return decodeForEvent(
+        ThreadOutsideWorkClearedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              outsideWork: clearOutsideWork(thread.outsideWork, payload.participantId),
             }),
           };
         }),
@@ -1363,6 +1426,7 @@ export function projectEvent(
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
+            ...(payload.fromOutside !== undefined ? { fromOutside: payload.fromOutside } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,

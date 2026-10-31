@@ -265,6 +265,12 @@ interface SessionContext {
    * would cause.
    */
   silenceNextWake: boolean;
+  /**
+   * Started fresh from outside work (`quietResume`): until Threadlines sends
+   * this runtime a turn, nothing the previous runtime left queued in the
+   * native session (a report, a shell's exit) may wake it.
+   */
+  quietUntilTurn: boolean;
   silencedExecution: boolean;
   /** Reports from subagents the user stopped, withdrawn before they wake the agent. */
   readonly withdrawnReports: Set<string>;
@@ -1040,6 +1046,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       },
     ) =>
       Effect.gen(function* () {
+        if (input.origin === "user") ctx.quietUntilTurn = false;
         const turn: ActiveTurn = {
           turnId: input.turnId,
           origin: input.origin,
@@ -1103,7 +1110,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           }
           return;
         }
-        if (ctx.silenceNextWake || ctx.withdrawnReports.size > 0) {
+        if (ctx.silenceNextWake || ctx.quietUntilTurn || ctx.withdrawnReports.size > 0) {
           ctx.silenceNextWake = false;
           ctx.silencedExecution = true;
           yield* runOpenCode("session.interrupt", (signal) =>
@@ -2267,6 +2274,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 : undefined,
             activeTurn: undefined,
             silenceNextWake: false,
+            quietUntilTurn: input.quietResume === true,
             silencedExecution: false,
             withdrawnReports: new Set(),
             turns: [],
@@ -2298,6 +2306,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             commands: input.commandRequests === true,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
+            // OpenCode registers tool servers per folder: every session in
+            // `directory` can call these, so a limit on one limits all.
+            toolDirectory: directory,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -2306,6 +2317,15 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           yield* registerToolServers(ctx, credential).pipe(
             Effect.mapError(toRequestError("mcp.add")),
           );
+          // The native session outlives the runtime: end anything it was
+          // still running for the one before (outside work's fresh start).
+          // A start that can't is no fresh start: it fails, and the agent
+          // stays marked.
+          if (ctx.quietUntilTurn && resumed) {
+            yield* runOpenCode("session.interrupt", (signal) =>
+              ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
+            ).pipe(Effect.mapError(toRequestError("session.interrupt")));
+          }
 
           yield* applyRules(ctx, rootSessionId, yield* rulesFor(ctx, BUILD_AGENT)).pipe(
             Effect.mapError(toRequestError("session.update")),
@@ -3120,6 +3140,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         manualContextCompaction: "supported",
         activeTurnSteering: "supported",
         nativeThreadFork: "supported",
+        sessionOutlivesRuntime: true,
       },
       startSession,
       sendTurn,
