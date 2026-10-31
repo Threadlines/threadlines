@@ -1707,3 +1707,49 @@ Written Oct 31 on main (`035ae18eb`), from "2. Targets" and "Webhooks" above.
   viewed thread is skipped; no title or agent text in any body; a new target
   sends no history; a restart carries on from the rows.
 - Web: the group, the dialog, the row states.
+
+### Sol's review of the step 4 plan (Oct 31), and what changed
+
+Nine findings, all taken:
+
+- **Proxies.** Node can route the default agent through `HTTPS_PROXY`
+  (`NODE_USE_ENV_PROXY`), which would resolve and connect on its own. Every
+  call gets its own direct `https.Agent`, never the global one.
+- **At most once when the outcome is unknown.** A receiver may start a paid
+  run and then lose the answer. So the attempt is written (attempts + 1,
+  `in_flight`) before the call. A send is retried only when it plainly didn't
+  arrive: the address was refused, DNS or the connection or TLS failed, or
+  the receiver answered 429 or 5xx. A timeout after the body went out, or a
+  row still `in_flight` after a restart, ends `failed` ("may have arrived; not
+  sent again"). The stable `webhook-id` lets a receiver that keeps ids drop a
+  repeat.
+- **Live checks before a needs-you goes out.** The record can lag (after a
+  restart) or be stale (an answer given while the record was off isn't read).
+  So a needs-you event is judged again by the shared alert checks
+  (`alertChecks.ts`, as phones do) right before each send; one that no longer
+  holds is dropped.
+- **No gap when the first target turns on.** Creating or turning on a target
+  starts the record at once (`AssistantEvents.keep`, which begins it if off),
+  then sets the target's watermark to the record's last `seq`.
+- **Missing events and lifetimes.** A delivery whose event was pruned is
+  dropped. A delivery's 24 hours count from when it was queued
+  (`queued_at`), not from its first attempt.
+- **Presence is shared.** `PushAlerts` exposes `isViewed`, so the sender asks
+  the same leases the app reports to.
+- **Address rules are concrete.** IPv4: 0/8, 10/8, 100.64/10, 127/8,
+  169.254/16, 172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16,
+  198.18/15, 198.51.100/24, 203.0.113/24, 224/4, 240/4. IPv6: ::/128, ::1/128,
+  IPv4-mapped (checked as IPv4), 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64),
+  100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4), fc00::/7,
+  fe80::/10, fec0::/10, ff00::/8. Honest limit: a network-specific NAT64
+  prefix looks public and can't be told apart.
+- **Turning back on never replays.** A target turned on again (after Off or a
+  410) starts at the record's last `seq`; what it missed isn't sent. A
+  `refused_streak` column counts 401 and 403 in a row (three set
+  `refused_since`); a 2xx, a successful test or new credentials reset it.
+  `failed` deliveries are never retried.
+- **Remove is coordinated.** Sends and Remove take the target's lock. Remove
+  marks the target `deleting`, then deletes its secrets, then its rows; a
+  start finishes any `deleting` target. A target whose signing secret is
+  missing doesn't send (it shows an error), and the secret is made only at
+  create.
