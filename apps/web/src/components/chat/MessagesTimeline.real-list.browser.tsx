@@ -66,6 +66,46 @@ function nextFrame() {
 }
 
 /**
+ * Waits for the list to finish its first layout: its scroll position and
+ * content height unchanged for 300 ms. A fixed pause can end before a busy CI
+ * runner has finished it, and a test that scrolls or measures then races the
+ * list's own catch-up.
+ */
+async function waitForListToSettle(list: HTMLElement) {
+  await vi.waitFor(
+    async () => {
+      const before = [list.scrollTop, list.scrollHeight];
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await nextFrame();
+      expect([list.scrollTop, list.scrollHeight]).toEqual(before);
+    },
+    { timeout: 10_000 },
+  );
+}
+
+/**
+ * Waits until the list has stopped adding and removing elements for 600 ms.
+ * Rows it builds again after a scroll replace the text a test is about to
+ * select, and a selection made in the old text is gone before the actions
+ * open.
+ */
+async function waitForRowsToSettle(list: HTMLElement) {
+  let lastChange = performance.now();
+  const observer = new MutationObserver(() => {
+    lastChange = performance.now();
+  });
+  observer.observe(list, { childList: true, subtree: true });
+  try {
+    await vi.waitFor(() => expect(performance.now() - lastChange).toBeGreaterThanOrEqual(600), {
+      timeout: 10_000,
+      interval: 50,
+    });
+  } finally {
+    observer.disconnect();
+  }
+}
+
+/**
  * Calls `read` once per frame, after that frame is drawn: a task posted from a
  * frame's callbacks runs after the frame paints and, in Chromium, before work
  * queued while painting it. Sampling in the frame callback itself would miss a
@@ -547,17 +587,23 @@ describe("MessagesTimeline with the real virtual list", () => {
         }),
       );
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
       const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
       const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
+      await waitForListToSettle(list);
 
       // Reading up the thread: following stops.
+      const scrolled: number[] = [];
       list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -150 }));
       list.scrollTop -= 150;
+      scrolled.push(Math.round(distanceFromEnd()));
       await new Promise((resolve) => setTimeout(resolve, 600));
+      scrolled.push(Math.round(distanceFromEnd()));
       await streamChunk();
-      expect(distanceFromEnd()).toBeGreaterThan(100);
+      expect(
+        distanceFromEnd(),
+        `distance from the end after the scroll, the pause and the chunk: ${[...scrolled, Math.round(distanceFromEnd())].join(", ")}`,
+      ).toBeGreaterThan(100);
 
       // A selection drag carries the list to the bottom, and more streams in
       // while the button is still down.
@@ -1101,8 +1147,8 @@ describe("MessagesTimeline with the real virtual list", () => {
     const pinnedRuns: number[][] = [[]];
     let stopReading = () => {};
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
       stopReading = readAfterEachPaint(() => {
         const top = assistantBodyTop(reply.id);
         const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 1;
@@ -1953,6 +1999,7 @@ describe("text selection popover with the real virtual list", () => {
       expect(document.querySelector('[data-message-id="message-59"]')).not.toBeNull();
     });
     await scrollPelicanIntoView(list, -200);
+    await waitForRowsToSettle(list);
     return { screen, list };
   }
 
@@ -2055,7 +2102,14 @@ describe("text selection popover with the real virtual list", () => {
       // The actions show before the clock stops: with it stopped, nothing that
       // waits on a timer could bring them back, and the click below would wait
       // out its whole timeout for a button that never shows.
-      await vi.waitFor(() => expect(isShown(selectionPopover())).toBe(true), { timeout: 5_000 });
+      await vi.waitFor(
+        () =>
+          expect(
+            isShown(selectionPopover()),
+            `selection "${window.getSelection()?.toString()}", actions ${selectionPopover() ? "hidden" : "absent"}`,
+          ).toBe(true),
+        { timeout: 5_000 },
+      );
       // A copy closes the actions a moment later; a note opened in that
       // moment must outlive it. The clock holds still until the note is open:
       // each click is a round trip to the browser driver, which on a busy
