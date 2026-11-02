@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopQuitConfirmationRequest } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -303,6 +304,7 @@ function makeTestLayer(input: {
           focus: Effect.void,
           cancelDockBounce: () => Effect.void,
           appendCommandLineSwitch: () => Effect.void,
+          setAsDefaultProtocolClient: () => Effect.succeed(true),
           on: () => Effect.void,
         } satisfies ElectronApp.ElectronAppShape),
         input.electronMenu
@@ -1506,6 +1508,98 @@ describe("DesktopWindow", () => {
 
         assert.equal(openScreenClip.mock.calls.length, 1);
         assert.equal(fakeWindow.send.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("holds menu actions until the page's app shell listens, and drops stale ones", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+      const menuActions = () =>
+        fakeWindow.send.mock.calls.filter((call) => call[0] === IpcChannels.MENU_ACTION_CHANNEL);
+      const thread = { environmentId: "env-1", threadId: "thread-1" };
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        // A link that launched the app: the backend isn't up, so no window yet.
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_THREAD_MENU_ACTION, thread);
+        assert.equal(yield* Ref.get(createCount), 0);
+
+        // The window opens and loads, but its shell hasn't subscribed.
+        yield* desktopWindow.handleBackendReady;
+        assert.equal(yield* Ref.get(createCount), 1);
+        assert.deepEqual(menuActions(), []);
+
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.deepEqual(menuActions(), [
+          [IpcChannels.MENU_ACTION_CHANNEL, DesktopWindow.OPEN_THREAD_MENU_ACTION, thread],
+        ]);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        assert.equal(menuActions().length, 2);
+
+        // A reload starts a page without the shell; what comes meanwhile waits,
+        // and a click from minutes ago doesn't fire once it finally listens.
+        fakeWindow.emitWebContents("did-navigate");
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        yield* TestClock.adjust(Duration.minutes(3));
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.equal(menuActions().length, 2);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("holds menu actions from the moment a new page starts loading until it listens", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+      const loading = vi.mocked(fakeWindow.window.webContents.isLoadingMainFrame);
+      const lastMenuAction = () =>
+        fakeWindow.send.mock.calls
+          .filter((call) => call[0] === IpcChannels.MENU_ACTION_CHANNEL)
+          .map((call) => call[1])
+          .at(-1);
+      const startNavigation = (isSameDocument: boolean) =>
+        fakeWindow.emitWebContents("did-start-navigation", { isMainFrame: true, isSameDocument });
+      const stopLoading = Effect.gen(function* () {
+        loading.mockReturnValue(false);
+        fakeWindow.emitWebContents("did-stop-loading");
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        yield* desktopWindow.setMenuActionsListening(true);
+
+        // The app's own route changes keep its page.
+        startNavigation(true);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_FLEET_MENU_ACTION);
+
+        // A reload starts. The outgoing page still listens, but would drop it.
+        loading.mockReturnValue(true);
+        startNavigation(false);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        fakeWindow.emitWebContents("did-navigate");
+        yield* stopLoading;
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        // The new page's shell takes it.
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_USAGE_MENU_ACTION);
+
+        // A navigation that never commits (a download, say) keeps the page,
+        // which gets what waited once loading stops.
+        loading.mockReturnValue(true);
+        startNavigation(false);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_SCHEDULED_MENU_ACTION);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        yield* stopLoading;
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_SCHEDULED_MENU_ACTION);
       }).pipe(Effect.provide(layer));
     }),
   );

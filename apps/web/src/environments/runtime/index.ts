@@ -4,6 +4,7 @@ export {
   getSavedEnvironmentRecord,
   getSavedEnvironmentRuntimeState,
   hasSavedEnvironmentRegistryHydrated,
+  isKnownEnvironment,
   listSavedEnvironmentRecords,
   readEnvironmentDescriptor,
   readSavedEnvironmentBearerToken,

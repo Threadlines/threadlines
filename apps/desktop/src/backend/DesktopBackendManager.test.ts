@@ -162,6 +162,7 @@ function makeManagerLayer(input: {
           resolveQuitConfirmation: () => Effect.void,
           repeatQuitConfirmation: Effect.succeed(false),
           dispatchMenuAction: () => Effect.void,
+          setMenuActionsListening: () => Effect.void,
           syncAppearance: Effect.void,
           ...input.desktopWindow,
         } satisfies DesktopWindow.DesktopWindowShape),

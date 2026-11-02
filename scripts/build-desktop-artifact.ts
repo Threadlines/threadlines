@@ -19,6 +19,7 @@ import {
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { parseUpdateManifest, serializeUpdateManifest } from "./lib/update-manifest.ts";
 import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
+import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
 import {
   DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD,
   DESKTOP_RELEASE_APP_ID,
@@ -592,6 +593,9 @@ export function retryTransientElectronPackaging<A, E, R>(
  */
 const MAC_MINIMUM_SYSTEM_VERSION = { macOS: "13.0", darwin: "22.0.0" } as const;
 
+/** NSIS script in apps/desktop/resources that the Windows installer includes. */
+export const WINDOWS_INSTALLER_INCLUDE_FILE_NAME = "installer.nsh";
+
 /** Why the packaged app's minimum macOS differs from ours, or null when it matches. */
 export function checkMacMinimumSystemVersion(infoPlist: string): string | null {
   const found = /<key>LSMinimumSystemVersion<\/key>\s*<string>([^<]*)<\/string>/.exec(
@@ -907,6 +911,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     },
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
+  // Links that open a thread in the app, one scheme per channel so a nightly
+  // link never opens the stable app. macOS reads them as the bundle's URL
+  // types, Linux as the desktop file's MimeType. The Windows installer writes
+  // none, so the app claims its scheme itself at startup (DesktopThreadLinks).
+  buildConfig.protocols = [
+    { name: "Threadlines thread link", schemes: [APP_THREAD_LINK_SCHEMES[updateChannel]] },
+  ];
   const publishConfig = resolveGitHubPublishConfig(updateChannel);
   if (publishConfig) {
     buildConfig.publish = [publishConfig];
@@ -1002,6 +1013,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     }
     buildConfig.win = winConfig;
+    // Uninstalling takes back the link scheme the app claimed for the user,
+    // when it still points at this install (see installer.nsh).
+    buildConfig.nsis = { include: stageResourcePath(WINDOWS_INSTALLER_INCLUDE_FILE_NAME) };
   }
 
   return buildConfig;

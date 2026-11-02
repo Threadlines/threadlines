@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -24,10 +25,12 @@ import {
   requestDesktopShutdownAndWaitWithFailsafe,
 } from "./DesktopLifecycle.ts";
 import * as DesktopState from "./DesktopState.ts";
+import * as DesktopThreadLinks from "./DesktopThreadLinks.ts";
 
 const makeElectronAppLayer = (
   exitCodes: Array<number>,
   on: ElectronApp.ElectronAppShape["on"] = () => Effect.void,
+  relaunch: ElectronApp.ElectronAppShape["relaunch"] = () => Effect.void,
 ) =>
   Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
@@ -38,7 +41,7 @@ const makeElectronAppLayer = (
       Effect.sync(() => {
         exitCodes.push(code);
       }),
-    relaunch: () => Effect.void,
+    relaunch,
     setPath: () => Effect.void,
     setName: () => Effect.void,
     setAboutPanelOptions: () => Effect.void,
@@ -50,6 +53,7 @@ const makeElectronAppLayer = (
     focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
+    setAsDefaultProtocolClient: () => Effect.succeed(true),
     on,
   } satisfies ElectronApp.ElectronAppShape);
 
@@ -141,6 +145,7 @@ const runConfirmHarness = (input: {
           resolveQuitConfirmation: () => Effect.void,
           repeatQuitConfirmation: Effect.succeed(false),
           dispatchMenuAction: () => Effect.void,
+          setMenuActionsListening: () => Effect.void,
           syncAppearance: Effect.void,
         } satisfies DesktopWindow.DesktopWindowShape),
       ),
@@ -349,6 +354,10 @@ describe("register", () => {
         platform: "linux",
       } as DesktopEnvironment.DesktopEnvironmentShape),
       Layer.succeed(DesktopWindow.DesktopWindow, {} as DesktopWindow.DesktopWindowShape),
+      Layer.succeed(
+        DesktopThreadLinks.DesktopThreadLinks,
+        {} as DesktopThreadLinks.DesktopThreadLinksShape,
+      ),
       makeElectronDialogLayer({ calls: [], response: 0 }),
       makeElectronAppLayer([], (eventName) => track(appListeners, eventName)),
       Layer.succeed(ElectronTheme.ElectronTheme, {
@@ -371,4 +380,55 @@ describe("register", () => {
       assert.strictEqual(process.listenerCount("SIGTERM"), sigterm);
     }).pipe(Effect.provide(lifecycleLayer.pipe(Layer.provide(services))));
   });
+});
+
+describe("relaunch", () => {
+  it.effect("starts again without the thread link that launched the app", () =>
+    Effect.gen(function* () {
+      const relaunched = yield* Deferred.make<Electron.RelaunchOptions>();
+      const services = Layer.mergeAll(
+        layerShutdown,
+        DesktopState.layer,
+        Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
+          isDevelopment: false,
+          platform: "win32",
+        } as DesktopEnvironment.DesktopEnvironmentShape),
+        Layer.succeed(DesktopWindow.DesktopWindow, {} as DesktopWindow.DesktopWindowShape),
+        Layer.succeed(
+          DesktopThreadLinks.DesktopThreadLinks,
+          {} as DesktopThreadLinks.DesktopThreadLinksShape,
+        ),
+        makeElectronDialogLayer({ calls: [], response: 0 }),
+        makeElectronAppLayer([], undefined, (options) =>
+          Deferred.succeed(relaunched, options).pipe(Effect.asVoid),
+        ),
+        Layer.succeed(ElectronTheme.ElectronTheme, {} as ElectronTheme.ElectronThemeShape),
+      );
+      // Windows starts the app with the link as an argument.
+      const launchArgv = process.argv;
+      process.argv = [
+        "C:\\Threadlines\\Threadlines.exe",
+        "--allow-file-access-from-files",
+        "THREADLINES://open/env-1/thread-1",
+        "threadlines-nightly://open/env-1/thread-2",
+      ];
+
+      yield* Effect.gen(function* () {
+        const lifecycle = yield* DesktopLifecycle;
+        const shutdown = yield* DesktopShutdown;
+        yield* lifecycle.relaunch("server exposure changed");
+        yield* shutdown.awaitRequest;
+        yield* shutdown.markComplete;
+        const options = yield* Deferred.await(relaunched);
+        assert.deepStrictEqual(options.args, ["--allow-file-access-from-files"]);
+      }).pipe(
+        Effect.provide(lifecycleLayer.pipe(Layer.provideMerge(services))),
+        Effect.ensuring(
+          Effect.sync(() => {
+            process.argv = launchArgv;
+          }),
+        ),
+      );
+    }),
+  );
 });

@@ -5,6 +5,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
 import {
   DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD,
   DESKTOP_RELEASE_APP_ID,
@@ -26,6 +27,7 @@ import {
   retryTransientElectronPackaging,
   createDesktopArtifactBuildEnv,
   withMacMinimumSystemVersion,
+  WINDOWS_INSTALLER_INCLUDE_FILE_NAME,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
@@ -175,6 +177,78 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(buildConfig.artifactName, "Threadlines-${version}-${os}-${arch}.${ext}");
       }
     }),
+  );
+
+  it.effect("declares each channel's own thread link scheme", () =>
+    Effect.gen(function* () {
+      for (const [version, scheme] of [
+        ["0.9.0", "threadlines"],
+        ["0.9.0-nightly.20261102.4", "threadlines-nightly"],
+      ] as const) {
+        for (const [platform, target] of [
+          ["mac", "dmg"],
+          ["win", "nsis"],
+          ["linux", "AppImage"],
+        ] as const) {
+          const buildConfig = yield* createBuildConfig(
+            platform,
+            target,
+            version,
+            false,
+            false,
+            undefined,
+          );
+          assert.deepStrictEqual(buildConfig.protocols, [
+            { name: "Threadlines thread link", schemes: [scheme] },
+          ]);
+        }
+      }
+    }),
+  );
+
+  it.effect(
+    "has the Windows uninstaller take back only the link schemes this install claimed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const stageResourcesDir = yield* fs.makeTempDirectoryScoped({
+          prefix: "threadlines-nsis-include-stage-",
+        });
+        const buildConfig = yield* createBuildConfig(
+          "win",
+          "nsis",
+          "0.9.0",
+          false,
+          false,
+          undefined,
+          stageResourcesDir,
+        );
+        const include = String((buildConfig.nsis as Record<string, unknown>).include);
+        assert.equal(
+          include.replaceAll("\\", "/"),
+          `${stageResourcesDir.replaceAll("\\", "/")}/${WINDOWS_INSTALLER_INCLUDE_FILE_NAME}`,
+        );
+        const macConfig = yield* createBuildConfig("mac", "dmg", "0.9.0", false, false, undefined);
+        assert.equal(macConfig.nsis, undefined);
+
+        // The script the staged include is copied from: every channel's scheme,
+        // removed only when it still starts this install's exe, never on update.
+        const script = yield* fs.readFileString(
+          new URL(
+            `../apps/desktop/resources/${WINDOWS_INSTALLER_INCLUDE_FILE_NAME}`,
+            import.meta.url,
+          ).pathname,
+        );
+        assert.include(script, "!macro customUnInstall");
+        assert.include(script, "${IfNot} ${isUpdated}");
+        assert.include(
+          script,
+          `\${If} $0 == '"$INSTDIR\\\${APP_EXECUTABLE_FILENAME}" "%1"'\n    DeleteRegKey HKCU "Software\\Classes\\\${SCHEME}"`,
+        );
+        for (const scheme of Object.values(APP_THREAD_LINK_SCHEMES)) {
+          assert.include(script, `!insertmacro threadlinesRemoveLinkScheme "${scheme}"`);
+        }
+      }),
   );
 
   it.effect("tells a Mac too old for this Electron that no update is waiting", () =>

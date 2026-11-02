@@ -14,6 +14,7 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKnownEnvironment } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -33,6 +34,7 @@ import {
   useSelectedDestination,
 } from "./sidebar/NavigationRail";
 import { Sidebar, SidebarProvider, SidebarRail, useSidebar } from "./ui/sidebar";
+import { toastManager } from "./ui/toast";
 import { openWhatsNewDialog } from "./WhatsNewDialog";
 import {
   clearShortcutModifierState,
@@ -163,11 +165,22 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           if (!environmentId || !threadId) {
             return;
           }
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: buildThreadRouteParams(
-              scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId),
-            ),
+          const threadRef = scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId);
+          // A link from outside can name any computer. One this app doesn't
+          // connect to would open a page that never loads.
+          void isKnownEnvironment(threadRef.environmentId).then((known) => {
+            if (!known) {
+              toastManager.add({
+                type: "warning",
+                title: "Can't open that thread",
+                description: "It's on a computer this app isn't connected to.",
+              });
+              return;
+            }
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(threadRef),
+            });
           });
           return;
         }

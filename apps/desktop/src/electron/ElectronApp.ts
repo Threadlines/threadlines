@@ -38,6 +38,15 @@ export interface ElectronAppShape {
   readonly bounceDock: (type: "critical" | "informational") => Effect.Effect<Option.Option<number>>;
   readonly cancelDockBounce: (id: number) => Effect.Effect<void>;
   readonly appendCommandLineSwitch: (switchName: string, value?: string) => Effect.Effect<void>;
+  /**
+   * Makes this app the system's handler for `scheme://` links. `launch` is how
+   * the system starts an unpackaged app (Windows only; macOS reads the bundle
+   * and Linux the desktop file). False when the system refused.
+   */
+  readonly setAsDefaultProtocolClient: (
+    scheme: string,
+    launch?: { readonly path: string; readonly args: ReadonlyArray<string> },
+  ) => Effect.Effect<boolean>;
   readonly on: <Args extends ReadonlyArray<unknown>>(
     eventName: string,
     listener: (...args: Args) => void,
@@ -131,6 +140,12 @@ const make = ElectronApp.of({
       }
       Electron.app.commandLine.appendSwitch(switchName, value);
     }),
+  setAsDefaultProtocolClient: (scheme, launch) =>
+    Effect.sync(() =>
+      launch === undefined
+        ? Electron.app.setAsDefaultProtocolClient(scheme)
+        : Electron.app.setAsDefaultProtocolClient(scheme, launch.path, [...launch.args]),
+    ),
   on: addScopedAppListener,
 });
 
