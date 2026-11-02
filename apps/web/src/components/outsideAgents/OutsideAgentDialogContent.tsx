@@ -26,6 +26,7 @@ import {
   RUNTIME_MODES,
   type RuntimeMode,
 } from "@threadlines/contracts";
+import { KNOWN_ASSISTANT_NAMES, KNOWN_ASSISTANTS } from "@threadlines/shared/knownAssistants";
 import { TriangleAlertIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
@@ -39,6 +40,8 @@ import {
   useThisComputerProjects,
 } from "../../environments/outsideAgents/outsideAgents";
 import {
+  type AssistantChoice,
+  choiceDisplayName,
   describeAssistantIdentity,
   describeOutsideAgentsWaiting,
   initialOutsideAgentDraft,
@@ -46,6 +49,7 @@ import {
   outsideAgentAccessAllowed,
   outsideAgentGrantFromDraft,
   type OutsideAgentGrantDraft,
+  pickedAssistant,
 } from "../../environments/outsideAgents/outsideAgents.logic";
 import { cn } from "../../lib/utils";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
@@ -62,6 +66,7 @@ import {
 import { Input } from "../ui/input";
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { AssistantMark } from "./AssistantMark";
 import {
   OUTSIDE_AGENT_FIELD_LABEL_CLASS as FIELD_LABEL_CLASS,
   OUTSIDE_AGENT_HINT_CLASS as HINT_CLASS,
@@ -125,13 +130,35 @@ export function OutsideAgentDialogContent({
 }
 
 /** What it says about a connection being changed: whose word its name is, and when the change lands. */
-function describeChange(connection: OutsideAgentConnection): string {
+function describeChange(connection: OutsideAgentConnection, givenName: string | null): string {
   const lands = "It gets the change on its next call.";
   if (connection.kind === "local") return `Name given by the agent. ${lands}`;
-  if (connection.signIn === "key") return lands;
-  return connection.identity?.verified === true
-    ? `Signs in from ${connection.identity.host}. ${lands}`
-    : `Name given by the assistant. ${lands}`;
+  if (connection.signIn === "key" || connection.identity === null) return lands;
+  return `${describeAssistantIdentity(connection.identity, givenName)} ${lands}`;
+}
+
+/**
+ * The assistant a sign-in or connection is about, for its picker: the name
+ * it gave, and Threadlines' guess (or the user's earlier pick). Null for a
+ * local agent's.
+ */
+function assistantOf(subject: GrantSubject) {
+  if (subject.kind === "assistant") {
+    return {
+      givenName: subject.signIn.givenName ?? subject.signIn.name,
+      initial: subject.signIn.assistant,
+      keepsLabel: false,
+    };
+  }
+  if (subject.kind === "change" && subject.connection.kind === "assistant") {
+    return {
+      givenName: subject.connection.givenName ?? subject.connection.name,
+      initial: subject.connection.assistant,
+      // A key keeps the label the user typed ("Muse work"); the pick only sets its mark.
+      keepsLabel: subject.connection.signIn === "key",
+    };
+  }
+  return null;
 }
 
 /** A sign-in to answer, or a connection to change. */
@@ -149,7 +176,15 @@ function GrantContent({
       : subject.kind === "assistant"
         ? subject.signIn
         : null;
-  const name = signIn?.name ?? (subject.kind === "change" ? subject.connection.name : "");
+  const assistant = assistantOf(subject);
+  const [choice, setChoice] = useState<AssistantChoice>(() => assistant?.initial ?? "none");
+  // An assistant is named as the picker says: "Grok Bot", or the name it gave.
+  const name =
+    assistant !== null && !assistant.keepsLabel
+      ? choiceDisplayName(choice, assistant.givenName)
+      : (signIn?.name ?? (subject.kind === "change" ? subject.connection.name : ""));
+  const givenName = assistant !== null && assistant.givenName !== name ? assistant.givenName : null;
+  const assistantInput = assistant !== null ? { assistant: pickedAssistant(choice) } : {};
   const requestedAccess: OutsideAgentAccess = signIn?.requestedAccess ?? "start";
   const [draft, setDraft] = useState<OutsideAgentGrantDraft>(() =>
     initialOutsideAgentDraft(subject.kind === "change" ? subject.connection : null),
@@ -191,8 +226,13 @@ function GrantContent({
       <DialogHeader>
         <div ref={focusRef} tabIndex={-1} className="flex flex-col gap-2 outline-none">
           <div className="flex items-start justify-between gap-3">
-            <DialogTitle>
-              {signIn !== null ? `${name} wants to use Threadlines` : `Change what ${name} can do`}
+            <DialogTitle className="flex items-center gap-2">
+              <AssistantMark assistant={pickedAssistant(choice)} className="size-4" />
+              <span>
+                {signIn !== null
+                  ? `${name} wants to use Threadlines`
+                  : `Change what ${name} can do`}
+              </span>
             </DialogTitle>
             {subject.kind === "request" ? (
               <span
@@ -211,8 +251,8 @@ function GrantContent({
             {subject.kind === "request"
               ? `Name given by the agent. It signs in on this computer (port ${subject.request.callbackPort}).`
               : subject.kind === "assistant"
-                ? describeAssistantIdentity(subject.signIn.identity)
-                : describeChange(subject.connection)}
+                ? describeAssistantIdentity(subject.signIn.identity, givenName)
+                : describeChange(subject.connection, givenName)}
           </DialogDescription>
           {subject.kind === "assistant" && !subject.signIn.identity.known ? (
             <p
@@ -236,6 +276,17 @@ function GrantContent({
         </div>
       </DialogHeader>
       <DialogPanel className="space-y-4">
+        {assistant !== null ? (
+          <AssistantField
+            choice={choice}
+            givenName={assistant.givenName}
+            disabled={disabled}
+            onChange={(next) => {
+              setChoice(next);
+              setError(null);
+            }}
+          />
+        ) : null}
         <GrantFields
           projects={projects}
           draft={draft}
@@ -279,7 +330,7 @@ function GrantContent({
               onClick={() => {
                 if (grant === null) return;
                 void run("allow", () =>
-                  approveOutsideAgent({ requestId: signIn.requestId, ...grant }),
+                  approveOutsideAgent({ requestId: signIn.requestId, ...grant, ...assistantInput }),
                 );
               }}
               data-testid="outside-agent-allow"
@@ -301,6 +352,7 @@ function GrantContent({
                   await updateOutsideAgent({
                     connectionId: subject.connection.connectionId,
                     ...grant,
+                    ...assistantInput,
                   });
                   onClose();
                 });
@@ -313,6 +365,66 @@ function GrantContent({
         ) : null}
       </DialogFooter>
     </DialogPopup>
+  );
+}
+
+/**
+ * Which assistant this is. Several sign in through someone else's service
+ * (Grok Bot signs in as Cursor), so Threadlines can only guess; the user
+ * picks, and Settings names it and shows its mark by that.
+ */
+function AssistantField({
+  choice,
+  givenName,
+  disabled,
+  onChange,
+}: {
+  readonly choice: AssistantChoice;
+  readonly givenName: string;
+  readonly disabled: boolean;
+  readonly onChange: (choice: AssistantChoice) => void;
+}) {
+  const labelId = useId();
+  const otherLabel = `Its own name (${givenName})`;
+  return (
+    <div className="grid gap-1.5">
+      <span className={FIELD_LABEL_CLASS} id={labelId}>
+        Assistant
+      </span>
+      <Select
+        value={choice}
+        disabled={disabled}
+        onValueChange={(value) => onChange(value as AssistantChoice)}
+      >
+        <SelectTrigger
+          size="sm"
+          className="w-56"
+          aria-labelledby={labelId}
+          data-testid="outside-agent-assistant"
+        >
+          <SelectValue>
+            <span className="flex items-center gap-1.5">
+              <AssistantMark assistant={pickedAssistant(choice)} />
+              {choice === "none" ? otherLabel : KNOWN_ASSISTANT_NAMES[choice]}
+            </span>
+          </SelectValue>
+        </SelectTrigger>
+        <SelectPopup alignItemWithTrigger={false}>
+          {KNOWN_ASSISTANTS.map((known) => (
+            <SelectItem key={known} value={known}>
+              <span className="flex items-center gap-1.5">
+                <AssistantMark assistant={known} />
+                {KNOWN_ASSISTANT_NAMES[known]}
+              </span>
+            </SelectItem>
+          ))}
+          <SelectItem value="none">{otherLabel}</SelectItem>
+        </SelectPopup>
+      </Select>
+      <p className={HINT_CLASS} data-testid="outside-agent-assistant-hint">
+        Threadlines guesses from how it signs in. Pick another if it&apos;s wrong.
+      </p>
+    </div>
   );
 }
 

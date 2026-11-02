@@ -82,7 +82,8 @@ import { distillPageErrors, type PageErrorItem } from "./pageErrors";
 import { isElectron } from "../../env";
 import { readEnvironmentApi } from "../../environmentApi";
 import { readEnvironmentDescriptor } from "../../environments/runtime/catalog";
-import { useBrowserProfilePartition } from "../../lib/browserProfiles";
+import { useBrowserProfile } from "../../lib/browserProfiles";
+import { ensureLocalApi } from "../../localApi";
 import { useTheme } from "../../hooks/useTheme";
 import { cn, isMacPlatform } from "../../lib/utils";
 import { resolveFindShortcutOwner } from "../../lib/findShortcutOwner";
@@ -198,10 +199,12 @@ export function BrowserPanel({
     projectId: approvalsProjectId,
   } = useBrowserApprovals(threadRef, projectId);
   const { resolvedTheme } = useTheme();
-  // Each project browses in its own profile. Tabs are not rendered until it is
-  // known: a webview's partition is fixed when it attaches.
-  const profile = useBrowserProfilePartition(threadRef.environmentId, projectId);
+  // The project's profile, or the one its computer's projects share. Tabs are
+  // not rendered until it is known: a webview's partition is fixed when it
+  // attaches.
+  const profile = useBrowserProfile(threadRef.environmentId, projectId);
   const partition = profile.status === "ready" ? profile.partition : null;
+  const sharedProfile = profile.status === "ready" && profile.shared;
 
   const guestColorScheme = appearance === "system" ? resolvedTheme : appearance;
 
@@ -1226,7 +1229,8 @@ export function BrowserPanel({
               Open developer tools
             </MenuItem>
             <MenuSeparator />
-            {/* Both act on this project's profile only. */}
+            {/* Both act on this tab's profile: this project's own, or the one
+                every project on its computer shares. */}
             <MenuItem
               data-testid="browser-clear-cache"
               disabled={partition === null}
@@ -1254,11 +1258,27 @@ export function BrowserPanel({
                   return;
                 }
                 // Signing out of the preview is the point, so the desktop
-                // reloads every open tab of this project after clearing: a page
+                // reloads every open tab of the profile after clearing: a page
                 // would otherwise keep looking signed in from memory.
-                void window.desktopBridge?.previewClearBrowsingData?.({ partition }).catch(() => {
-                  toastManager.add(failureNotice({ title: "Couldn't clear cookies and storage" }));
-                });
+                const clear = () =>
+                  window.desktopBridge?.previewClearBrowsingData?.({ partition }).catch(() => {
+                    toastManager.add(
+                      failureNotice({ title: "Couldn't clear cookies and storage" }),
+                    );
+                  });
+                if (!sharedProfile) {
+                  void clear();
+                  return;
+                }
+                // Shared, it reaches past this project, so it asks first.
+                void ensureLocalApi()
+                  .dialogs.confirm(
+                    [
+                      "Clear cookies and storage for every project?",
+                      "Sign-ins are shared, so you'll be signed out of every site in the built-in browser, in every project on this computer.",
+                    ].join("\n"),
+                  )
+                  .then((confirmed) => (confirmed ? clear() : undefined));
               }}
             >
               Clear cookies and storage

@@ -35,6 +35,7 @@ import {
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { failureNotice, toastManager } from "../ui/toast";
+import { AssistantMark } from "./AssistantMark";
 import { OutsideAgentDialog } from "./outsideAgentDialog";
 
 const ROW_CLASS = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
@@ -97,8 +98,9 @@ export function OutsideAgentConnectionList({
             >
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
                 <div className="min-w-0 flex-1 space-y-0.5">
-                  <h3 className="truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-                    {connection.name}
+                  <h3 className="flex min-w-0 items-center gap-1.5 text-[13.5px] leading-[19px] font-medium text-foreground">
+                    <AssistantMark assistant={connection.assistant} />
+                    <span className="truncate">{connection.name}</span>
                   </h3>
                   <p className="text-[12.5px] leading-[18px] text-muted-foreground">
                     {[

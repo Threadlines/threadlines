@@ -21,7 +21,7 @@ import { usePrimaryEnvironmentDescriptor } from "../../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime/catalog";
 import { useSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
-import { useBrowserProfilePartition } from "../../lib/browserProfiles";
+import { useBrowserProfile } from "../../lib/browserProfiles";
 import { useStore } from "../../store";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { resolveBrowserSiteAccess } from "@threadlines/shared/preview";
@@ -576,7 +576,7 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
   const appearance = useBrowserPanelStore((store) => store.appearance);
   const { resolvedTheme } = useTheme();
   const colorScheme = appearance === "system" ? resolvedTheme : appearance;
-  const profile = useBrowserProfilePartition(threadRef.environmentId, projectId);
+  const profile = useBrowserProfile(threadRef.environmentId, projectId);
 
   const activeTab = selectActiveTab(browserState);
   const activeTabId = activeTab?.id ?? "";
@@ -632,10 +632,11 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
           tab.id === visibleTabId ? "visible" : page.drawn ? "drawn" : "hidden";
         return (
           <PreviewTabFrame
-            key={`${profile.partition}:${tab.id}`}
+            key={`${profile.partition}:${profile.scope}:${tab.id}`}
             tab={tab}
             threadRef={threadRef}
             partition={profile.partition}
+            scope={profile.scope}
             isActive={tab.id === activeTabId}
             mode={mode}
             viewport={tab.viewport}

@@ -698,12 +698,15 @@ export const DesktopPreviewSiteAllowedSchema = Schema.Struct({
 export type DesktopPreviewSiteAllowed = typeof DesktopPreviewSiteAllowedSchema.Type;
 
 /**
- * The in-app browser keeps one profile per project: its own cookies, storage
- * and cache. The desktop names the partition; the renderer only asks for it.
+ * The in-app browser profile a project's tabs run in: the one its
+ * environment's projects share, or the project's own (cookies, storage and
+ * cache). The desktop names the partition; the renderer only asks for it.
  */
 export const DesktopPreviewProfileInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
   projectId: ProjectId,
+  /** Sign-ins are shared: the environment's shared profile rather than the project's own. */
+  shared: Schema.optionalKey(Schema.Boolean),
   /**
    * The environment runs on another computer whose server carries loopback
    * tunnels: the profile's `localhost` traffic goes there, so the agent's
@@ -719,11 +722,23 @@ export const DesktopPreviewPartitionSchema = Schema.Struct({
 });
 export type DesktopPreviewPartition = typeof DesktopPreviewPartitionSchema.Type;
 
-/** One project's browser profile, as remembered by the desktop. */
+/**
+ * Where a project's tabs run: the partition, and the scope its pages carry so
+ * the desktop knows their project inside a shared one (set on the <webview>
+ * under `PREVIEW_PROFILE_SCOPE_PREFERENCE`).
+ */
+export const DesktopPreviewProfileAssignmentSchema = Schema.Struct({
+  partition: Schema.String,
+  scope: Schema.String,
+});
+export type DesktopPreviewProfileAssignment = typeof DesktopPreviewProfileAssignmentSchema.Type;
+
+/** A browser profile, as remembered by the desktop. */
 export const DesktopPreviewProfileSchema = Schema.Struct({
   partition: Schema.String,
   environmentId: EnvironmentId,
-  projectId: ProjectId,
+  /** The project whose own profile this is; absent for an environment's shared one. */
+  projectId: Schema.optionalKey(ProjectId),
   /** When a tab last asked for this profile. */
   lastUsedAt: IsoDateTime,
 });
@@ -1503,7 +1518,9 @@ export interface DesktopBridge {
   /** Milliseconds since the last key or pointer input anywhere on this computer. */
   getSystemIdleMs?: () => Promise<number>;
   /** The browser partition for a project's tabs. Remembers the profile so it can be cleared later. */
-  previewProfilePartition?: (input: DesktopPreviewProfileInput) => Promise<DesktopPreviewPartition>;
+  previewProfilePartition?: (
+    input: DesktopPreviewProfileInput,
+  ) => Promise<DesktopPreviewProfileAssignment>;
   previewListProfiles?: () => Promise<readonly DesktopPreviewProfile[]>;
   /** Clears everything a profile holds and stops remembering it. */
   previewForgetProfile?: (input: DesktopPreviewPartition) => Promise<void>;

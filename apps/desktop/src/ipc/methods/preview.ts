@@ -10,6 +10,7 @@ import {
   DesktopPreviewMoveInputSchema,
   DesktopPreviewNavigationPolicyInputSchema,
   DesktopPreviewPartitionSchema,
+  DesktopPreviewProfileAssignmentSchema,
   DesktopPreviewProfileInputSchema,
   DesktopPreviewProfileSchema,
   DesktopPreviewScreenshotInputSchema,
@@ -36,6 +37,7 @@ import { powerMonitor } from "electron";
 import * as PreviewAutomation from "../../preview/PreviewAutomation.ts";
 import * as PreviewLoopbackProxy from "../../preview/PreviewLoopbackProxy.ts";
 import * as PreviewProfiles from "../../preview/PreviewProfiles.ts";
+import * as PreviewScopes from "../../preview/PreviewScopes.ts";
 import * as PreviewSession from "../../preview/PreviewSession.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod } from "../DesktopIpc.ts";
@@ -293,19 +295,24 @@ export const previewClearAllBrowsingData = makeIpcMethod({
 export const previewProfilePartition = makeIpcMethod({
   channel: IpcChannels.PREVIEW_PROFILE_PARTITION_CHANNEL,
   payload: DesktopPreviewProfileInputSchema,
-  result: DesktopPreviewPartitionSchema,
+  result: DesktopPreviewProfileAssignmentSchema,
   handler: Effect.fn("desktop.ipc.preview.profilePartition")(function* (input) {
     const profiles = yield* PreviewProfiles.PreviewProfiles;
     const sessions = yield* PreviewSession.PreviewSession;
+    const scopes = yield* PreviewScopes.PreviewScopes;
     const loopback = yield* PreviewLoopbackProxy.PreviewLoopbackProxy;
-    const partition = yield* profiles.partitionFor(input);
+    const assignment = yield* profiles.profileFor(input);
     // Before the partition is handed out, so no page in it ever loads with
-    // `localhost` pointing at the wrong computer.
+    // `localhost` pointing at the wrong computer. A shared partition is one
+    // environment's, so every project in it agrees where that is.
     yield* loopback.route(
-      yield* sessions.getSession(partition),
+      yield* sessions.getSession(assignment.partition),
       input.loopbackTunnel === true ? input.environmentId : null,
     );
-    return { partition };
+    if (assignment.partition !== assignment.scope) {
+      scopes.issue(assignment.partition, assignment.scope);
+    }
+    return assignment;
   }),
 });
 

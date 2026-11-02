@@ -4,6 +4,7 @@ import type {
   DesktopPreviewPopup,
   DesktopPreviewSiteAllowed,
 } from "@threadlines/contracts";
+import { PREVIEW_PROFILE_SCOPE_PREFERENCE } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Clock from "effect/Clock";
@@ -41,6 +42,7 @@ import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { isPreviewPartition } from "../preview/previewPartitions.ts";
 import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
+import * as PreviewScopes from "../preview/PreviewScopes.ts";
 import {
   isSignInPopupRequest,
   MAX_SIGN_IN_POPUPS,
@@ -532,6 +534,7 @@ const make = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const previewSession = yield* PreviewSession.PreviewSession;
   const previewAutomation = yield* PreviewAutomation.PreviewAutomation;
+  const previewScopes = yield* PreviewScopes.PreviewScopes;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
@@ -629,8 +632,8 @@ const make = Effect.gen(function* () {
     }
 
     // Preview content is untrusted: no Node, no custom preload, and it must run
-    // in a preview partition (one per project) rather than the app's own
-    // session.
+    // in a preview partition (its project's own, or the one its environment's
+    // projects share) rather than the app's own session.
     //
     // The partition is enforced, not assigned. Electron resolves the guest's
     // session from the element's `partition` attribute before this fires, so
@@ -643,11 +646,19 @@ const make = Effect.gen(function* () {
     // from it as soon as this returns, and a session nobody configured yet
     // would grant every permission. If it cannot be configured, the guest
     // does not attach.
+    //
+    // Last, the page's project (see `PreviewScopes.ts`): named by the renderer
+    // in `webpreferences`, it must be one the desktop handed out with this
+    // partition, or the guest does not attach. It is bound to the guest as
+    // Electron creates it, right after this returns.
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       delete webPreferences.preload;
       webPreferences.nodeIntegration = false;
       webPreferences.contextIsolation = true;
       webPreferences.sandbox = true;
+      // Not one of Electron's own keys, so read and taken out as a plain one.
+      const named: unknown = Reflect.get(webPreferences, PREVIEW_PROFILE_SCOPE_PREFERENCE);
+      Reflect.deleteProperty(webPreferences, PREVIEW_PROFILE_SCOPE_PREFERENCE);
       // The guest is created from the merged preferences, where a
       // `webpreferences` attribute can name a partition of its own; the one
       // checked must be the one used.
@@ -663,6 +674,17 @@ const make = Effect.gen(function* () {
           logWindowWarning("refused a preview tab whose session could not be configured", {
             partition,
             cause: String(configured.cause),
+          }),
+        );
+        return;
+      }
+      if (
+        previewScopes.expectGuest(partition, typeof named === "string" ? named : undefined) === null
+      ) {
+        event.preventDefault();
+        void runPromise(
+          logWindowWarning("refused a preview tab whose project was not handed out with it", {
+            partition,
           }),
         );
       }
@@ -915,6 +937,11 @@ const make = Effect.gen(function* () {
     });
 
     const windowOpenBudget = makeWindowOpenBudget();
+    // Pages and pop-ups are counted by project, not session: with sign-ins
+    // shared, one project's burst must not spend another's allowance. A page
+    // without a project (never expected) counts alone.
+    const projectOf = (contents: Electron.WebContents) =>
+      previewScopes.scopeOf(contents) ?? `page:${contents.id}`;
 
     // The question a sign-in pop-up asks before it opens a site the project has
     // not allowed. A sheet on the pop-up, where the user is looking; the panel's
@@ -1005,7 +1032,7 @@ const make = Effect.gen(function* () {
       const openInTabWithinBudget = (url: string, background: boolean) => {
         if (
           Option.isSome(ElectronShell.parseSafeExternalUrl(url)) &&
-          windowOpenBudget.take(guest.session)
+          windowOpenBudget.take(projectOf(guest))
         ) {
           openInTab(url, background);
         }
@@ -1068,13 +1095,11 @@ const make = Effect.gen(function* () {
 
       guest.setWindowOpenHandler((details) => {
         if (isSignInPopupRequest(details)) {
-          const openForProfile = window
+          const project = projectOf(guest);
+          const openForProject = window
             .getChildWindows()
-            .filter((child) => !child.isDestroyed() && child.webContents.session === guest.session);
-          if (
-            openForProfile.length >= MAX_SIGN_IN_POPUPS ||
-            !windowOpenBudget.take(guest.session)
-          ) {
+            .filter((child) => !child.isDestroyed() && projectOf(child.webContents) === project);
+          if (openForProject.length >= MAX_SIGN_IN_POPUPS || !windowOpenBudget.take(project)) {
             return { action: "deny" };
           }
           return {

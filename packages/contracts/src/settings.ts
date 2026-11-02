@@ -80,6 +80,15 @@ export type AgentBrowserSitePolicy = typeof AgentBrowserSitePolicy.Type;
 export const DEFAULT_AGENT_BROWSER_SITE_POLICY: AgentBrowserSitePolicy = "ask";
 
 /**
+ * Whether the browser panel's sign-ins carry across projects. Shared: every
+ * project on a computer uses one browser profile. Separate: each project has
+ * its own.
+ */
+export const BrowserSignIns = Schema.Literals(["shared", "separate"]);
+export type BrowserSignIns = typeof BrowserSignIns.Type;
+export const DEFAULT_BROWSER_SIGN_INS: BrowserSignIns = "shared";
+
+/**
  * Where a plain click on a web link in a thread opens: the thread's browser
  * panel or the computer's own browser. Cmd or Ctrl on the click opens the
  * other one. Desktop only; the web app has no browser panel.
@@ -140,6 +149,11 @@ export const ClientSettingsSchema = Schema.Struct({
   // the browser itself.
   browserNewTabSize: Schema.NullOr(BrowserPageSize).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  // Whether the browser panel's projects share one profile (and so their
+  // sign-ins) or each keep their own. Kept on this computer, like the browser.
+  browserSignIns: BrowserSignIns.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_SIGN_INS)),
   ),
   // Whether a thread's first subagent opens the right panel on its Agents tab.
   // Off, only the user opens the panel. Per device: it is a choice about how
@@ -1230,6 +1244,7 @@ export const ClientSettingsPatch = Schema.Struct({
     Schema.Record(ProjectId, Schema.Array(BrowserTrustedCertificate)),
   ),
   browserNewTabSize: Schema.optionalKey(Schema.NullOr(BrowserPageSize)),
+  browserSignIns: Schema.optionalKey(BrowserSignIns),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),

@@ -58,7 +58,6 @@ import {
   session,
   webContents,
   type NativeImage,
-  type Session,
   type WebContents,
 } from "electron";
 
@@ -98,6 +97,7 @@ import {
   DRAW_OVERLAY_STASH,
   DRAW_OVERLAY_TEARDOWN_SCRIPT,
 } from "./drawOverlayScript.ts";
+import * as PreviewScopes from "./PreviewScopes.ts";
 import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
   buildPickOverlayScript,
@@ -491,7 +491,8 @@ const encodeForAgent = (
   };
 };
 
-export const make = Effect.sync(function PreviewAutomationMake() {
+export const make = Effect.gen(function* PreviewAutomationMake() {
+  const scopes = yield* PreviewScopes.PreviewScopes;
   const attached = new Map<number, AttachedTab>();
   /**
    * The pick a page is currently waiting on, if any.
@@ -606,18 +607,30 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   };
 
   /**
-   * The sites each browser profile was last allowed, by its session.
+   * The sites each project was last allowed, by its scope (`PreviewScopes.ts`).
    *
-   * A project's pages share one profile and one policy, but the renderer hands
-   * the policy to each page only once it has attached, and a new page starts
-   * loading before that. A page could open a tab at an allowed address that
-   * redirects at once, and the redirect would land before anything guarded
-   * the new page. So a page born into a profile that already has a policy is
-   * guarded with it from the start. The first page of a profile has nothing
-   * to inherit and waits for its own, as before: holding it to private sites
-   * meanwhile would ask about sites the project already allows.
+   * A project's pages share one policy, but the renderer hands the policy to
+   * each page only once it has attached, and a new page starts loading before
+   * that. A page could open a tab at an allowed address that redirects at
+   * once, and the redirect would land before anything guarded the new page.
+   * So a page born into a project that already has a policy is guarded with
+   * it from the start. The first page of a project has nothing to inherit and
+   * waits for its own, as before: holding it to private sites meanwhile would
+   * ask about sites the project already allows.
+   *
+   * By project rather than by session: with sign-ins shared, one session holds
+   * every project's pages, and one project's "any site" must not reach
+   * another's new tab.
    */
-  const accessBySession = new WeakMap<Session, BrowserSiteAccess>();
+  const accessByScope = new Map<string, BrowserSiteAccess>();
+  const scopeAccessOf = (contents: WebContents): BrowserSiteAccess | undefined => {
+    const scope = scopes.scopeOf(contents);
+    return scope === null ? undefined : accessByScope.get(scope);
+  };
+  const recordScopeAccess = (contents: WebContents, access: BrowserSiteAccess) => {
+    const scope = scopes.scopeOf(contents);
+    if (scope !== null) accessByScope.set(scope, access);
+  };
 
   /**
    * Holds a page's own navigations to a guard's sites: a refused one is
@@ -678,7 +691,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return existing;
     }
     const guard: NavigationGuard = {
-      access: accessBySession.get(contents.session) ?? { allowAll: false, approvedHosts: [] },
+      access: scopeAccessOf(contents) ?? { allowAll: false, approvedHosts: [] },
     };
     armNavigationGuard(
       contents,
@@ -692,7 +705,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   };
 
   app.on("web-contents-created", (_event, contents) => {
-    if (contents.getType() === "webview" && accessBySession.has(contents.session)) {
+    if (contents.getType() === "webview" && scopeAccessOf(contents) !== undefined) {
       ensureNavigationGuard(contents);
     }
   });
@@ -747,11 +760,15 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    */
   app.on("certificate-error", (event, contents, url, error, certificate, callback, isMainFrame) => {
     if (contents.isDestroyed() || contents.session === session.defaultSession) return;
-    // The profile's latest policy rather than this page's copy: trust taken
-    // back reaches the profile with the first page told, and a page told a
+    // The project's latest policy rather than this page's copy: trust taken
+    // back reaches the project with the first page told, and a page told a
     // moment later must not let the certificate back in meanwhile.
-    const access =
-      accessBySession.get(contents.session) ?? navigationGuards.get(contents.id)?.access;
+    //
+    // Per project even in a shared session, though the session pools its
+    // connections: a page of another project can ride one opened under this
+    // trust without being asked. Only to the same host with the same
+    // certificate, which the user trusted for their own server.
+    const access = scopeAccessOf(contents) ?? navigationGuards.get(contents.id)?.access;
     const host = certificateHost(url);
     if (
       host !== null &&
@@ -2254,11 +2271,11 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       access: BrowserSiteAccess,
     ) {
       const contents = yield* resolve(webContentsId);
-      const before = accessBySession.get(contents.session)?.trustedCertificates ?? [];
+      const before = scopeAccessOf(contents)?.trustedCertificates ?? [];
       ensureNavigationGuard(contents).access = access;
-      accessBySession.set(contents.session, access);
+      recordScopeAccess(contents, access);
       // Trust taken back. Connections made under it stay open and Chromium
-      // reuses them without asking again, so the profile's connections close
+      // reuses them without asking again, so the session's connections close
       // and the next load is asked about afresh.
       if (
         before.some((entry) => !isBrowserCertificateTrusted(entry.host, entry.fingerprint, access))
@@ -2272,6 +2289,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       onRefused: (url: string, host: string) => void,
     ) {
       const opener = yield* resolve(openerWebContentsId);
+      // Its opener's project, for its certificates and for counting the
+      // project's pop-ups.
+      scopes.adopt(popup, opener);
       // The opener's own guard object, not a copy: a policy pushed to the page
       // later is the pop-up's policy too.
       armNavigationGuard(popup, ensureNavigationGuard(opener), onRefused, true);
@@ -2287,7 +2307,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         ? { ...guard.access, allowAll: true }
         : { ...guard.access, approvedHosts: withBrowserApproval(guard.access.approvedHosts, host) };
       guard.access = access;
-      accessBySession.set(contents.session, access);
+      recordScopeAccess(contents, access);
     }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);

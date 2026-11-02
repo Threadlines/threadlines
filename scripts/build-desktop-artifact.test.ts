@@ -6,7 +6,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
-import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
+import {
+  DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD,
+  DESKTOP_RELEASE_APP_ID,
+} from "@threadlines/shared/desktopIdentity";
 
 import {
   checkMacMinimumSystemVersion,
@@ -426,6 +429,52 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
       assert.equal(macConfig.notarize, false);
       assert.equal(buildConfig.afterSign, "apps/desktop/resources/notarize-after-sign.cjs");
+    }),
+  );
+
+  it.effect("signs only the main app with passkey entitlements and embeds their profile", () =>
+    Effect.gen(function* () {
+      const stageResourcesDir = "/tmp/threadlines-stage/apps/desktop/resources";
+      const buildConfig = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.19",
+        true,
+        false,
+        undefined,
+        stageResourcesDir,
+        {
+          provisioningProfile: "/tmp/threadlines.provisionprofile",
+          entitlementsFileName: "entitlements.mac.passkeys.plist",
+        },
+      );
+      const macConfig = buildConfig.mac as Record<string, unknown>;
+      const normalizePath = (value: unknown) => String(value).replaceAll("\\", "/");
+
+      assert.equal(macConfig.provisioningProfile, "/tmp/threadlines.provisionprofile");
+      assert.equal(macConfig.forceCodeSigning, true);
+      assert.equal(
+        normalizePath(macConfig.entitlements),
+        "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.passkeys.plist",
+      );
+      assert.equal(
+        normalizePath(macConfig.entitlementsInherit),
+        "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.inherit.plist",
+      );
+      // The app finds its keychain group where the build wrote it.
+      const stagePackageJson = createStagePackageJson({
+        appVersion: "0.0.19",
+        commitHash: "abcdef123456",
+        build: buildConfig,
+        dependencies: {},
+        electronVersion: "45.1.0",
+        overrides: {},
+        passkeyKeychainGroup: "ABCDE12345.dev.threadlines.app.webauthn",
+      });
+      assert.equal(
+        stagePackageJson[DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD],
+        "ABCDE12345.dev.threadlines.app.webauthn",
+      );
     }),
   );
 

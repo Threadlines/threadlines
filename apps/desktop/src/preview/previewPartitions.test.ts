@@ -2,8 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isPreviewPartition,
+  isSharedPreviewPartition,
   LEGACY_PREVIEW_PARTITION,
   previewProfilePartition,
+  previewSharedPartition,
 } from "./previewPartitions.ts";
 
 describe("previewProfilePartition", () => {
@@ -25,10 +27,25 @@ describe("previewProfilePartition", () => {
   });
 });
 
+describe("previewSharedPartition", () => {
+  it("names an environment's shared partition apart from any project's", () => {
+    // sha256('["shared","environment-1"]'), first 32 hex characters, pinned for
+    // the same reason as a project's.
+    const shared = previewSharedPartition("environment-1");
+    expect(shared).toBe("persist:threadlines-preview-shared-2d20f3b1e891bfa7ac827e27bfe64df5");
+    expect(isSharedPreviewPartition(shared)).toBe(true);
+    expect(isSharedPreviewPartition(previewProfilePartition("environment-1", "project-1"))).toBe(
+      false,
+    );
+    expect(previewSharedPartition("environment-2")).not.toBe(shared);
+  });
+});
+
 describe("isPreviewPartition", () => {
-  it("accepts the legacy shared partition and per-project partitions", () => {
+  it("accepts the legacy shared partition, per-project and shared partitions", () => {
     expect(isPreviewPartition(LEGACY_PREVIEW_PARTITION)).toBe(true);
     expect(isPreviewPartition(`persist:threadlines-preview-${"a".repeat(32)}`)).toBe(true);
+    expect(isPreviewPartition(`persist:threadlines-preview-shared-${"a".repeat(32)}`)).toBe(true);
   });
 
   it("refuses every other session", () => {
@@ -45,6 +62,8 @@ describe("isPreviewPartition", () => {
       `persist:threadlines-preview-${"a".repeat(33)}`,
       `persist:threadlines-preview-${"g".repeat(32)}`,
       `persist:threadlines-preview-${"a".repeat(32)}\n`,
+      `persist:threadlines-preview-shared-${"a".repeat(31)}`,
+      `threadlines-preview-shared-${"a".repeat(32)}`,
     ]) {
       expect(isPreviewPartition(partition), String(partition)).toBe(false);
     }

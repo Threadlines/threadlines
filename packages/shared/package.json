@@ -394,6 +394,10 @@
     "./assistantCredentials": {
       "types": "./src/assistantCredentials.ts",
       "import": "./src/assistantCredentials.ts"
+    },
+    "./knownAssistants": {
+      "types": "./src/knownAssistants.ts",
+      "import": "./src/knownAssistants.ts"
     }
   },
   "scripts": {
