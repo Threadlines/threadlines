@@ -92,11 +92,14 @@ async function hydrateClientSettings(): Promise<void> {
     try {
       const persistedSettings = await ensureLocalApi().persistence.getClientSettings();
       if (persistedSettings) {
-        replaceClientSettingsSnapshot({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings });
+        savedClientSettings = { ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings };
+        replaceClientSettingsSnapshot(savedClientSettings);
       }
     } catch (error) {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate failed`, error);
     } finally {
+      // Nothing stored yet: what a failed write goes back to is where it started.
+      savedClientSettings ??= getClientSettingsSnapshot();
       setClientSettingsHydrated(true);
     }
   })();
@@ -113,6 +116,11 @@ async function hydrateClientSettings(): Promise<void> {
 
 /** The save in flight, so the next one starts only after it. */
 let clientSettingsSaveChain: Promise<void> = Promise.resolve();
+/** The settings as last stored: what a failed write's setting goes back to. */
+let savedClientSettings: ClientSettings | null = null;
+/** Numbers writes in the order they were made, and which one last set each setting. */
+let clientSettingsWriteCount = 0;
+const clientSettingsLastWrite = new Map<string, number>();
 
 /**
  * Saves this device's settings as they are when the save runs, after every
@@ -122,15 +130,27 @@ let clientSettingsSaveChain: Promise<void> = Promise.resolve();
  */
 function saveClientSettingsInOrder(): Promise<void> {
   const { persistence } = ensureLocalApi();
-  const save = clientSettingsSaveChain.then(() =>
-    persistence.setClientSettings(getClientSettingsSnapshot()),
-  );
+  const save = clientSettingsSaveChain.then(async () => {
+    const settings = getClientSettingsSnapshot();
+    await persistence.setClientSettings(settings);
+    savedClientSettings = settings;
+  });
   clientSettingsSaveChain = save.catch(() => undefined);
   return save;
 }
 
-function persistClientSettings(settings: ClientSettings): void {
-  replaceClientSettingsSnapshot(settings);
+/** Changes memory at once, so the last write made is the one that stands. Returns its number. */
+function applyClientPatch(patch: ClientSettingsPatch): number {
+  clientSettingsWriteCount += 1;
+  for (const key of Object.keys(patch)) {
+    clientSettingsLastWrite.set(key, clientSettingsWriteCount);
+  }
+  replaceClientSettingsSnapshot({ ...getClientSettingsSnapshot(), ...patch });
+  return clientSettingsWriteCount;
+}
+
+function persistClientPatch(patch: ClientSettingsPatch): void {
+  applyClientPatch(patch);
   void saveClientSettingsInOrder().catch((error) => {
     console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, error);
   });
@@ -228,35 +248,30 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
 
 /**
  * Writes this device's settings and resolves only once they are saved,
- * rejecting (and putting back what it changed) when the save fails, where
- * `updateSettings` only logs it. For callers that must say truthfully whether
- * a change landed: an agent's settings change reports each device setting it
- * made. Waits for the saved settings to load first, so the write never puts
- * defaults over them. The change, its save and any put-back run as one step
- * of the in-order save chain, so a later write's change is never undone by an
- * earlier one's failure and every later save carries the put-back.
+ * rejecting when the save fails, where `updateSettings` only logs it. For
+ * callers that must say truthfully whether a change landed: an agent's
+ * settings change reports each device setting it made. Waits for the saved
+ * settings to load first, so the write never puts defaults over them.
+ *
+ * A failed save puts back only the settings no later write has set, to what
+ * was last stored, before the next save runs, so that save stores them too.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
-  await hydrateClientSettings();
-  const write = clientSettingsSaveChain.then(async () => {
-    const before = getClientSettingsSnapshot();
-    const next: ClientSettings = { ...before, ...patch };
-    replaceClientSettingsSnapshot(next);
-    try {
-      await ensureLocalApi().persistence.setClientSettings(next);
-    } catch (error) {
-      // Put back only what this write set and nothing has changed since.
-      const current = getClientSettingsSnapshot();
-      const restored: Record<string, unknown> = { ...current };
-      for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
-        if (current[key] === next[key]) restored[key] = before[key];
-      }
-      replaceClientSettingsSnapshot(restored as ClientSettings);
-      throw error;
+  // Only when it has to wait, so a write made right after this one still follows it.
+  if (!clientSettingsHydrated) await hydrateClientSettings();
+  const before = getClientSettingsSnapshot();
+  const write = applyClientPatch(patch);
+  try {
+    await saveClientSettingsInOrder();
+  } catch (error) {
+    const stored = savedClientSettings ?? before;
+    const restored: Record<string, unknown> = { ...getClientSettingsSnapshot() };
+    for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
+      if (clientSettingsLastWrite.get(key) === write) restored[key] = stored[key];
     }
-  });
-  clientSettingsSaveChain = write.catch(() => undefined);
-  return write;
+    replaceClientSettingsSnapshot(restored as ClientSettings);
+    throw error;
+  }
 }
 
 function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
@@ -272,10 +287,7 @@ function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
   }
 
   if (Object.keys(clientPatch).length > 0) {
-    persistClientSettings({
-      ...getClientSettingsSnapshot(),
-      ...clientPatch,
-    });
+    persistClientPatch(clientPatch);
   }
 
   return serverWrite.then(() => undefined);
@@ -300,6 +312,9 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
   clientSettingsSaveChain = Promise.resolve();
+  savedClientSettings = null;
+  clientSettingsWriteCount = 0;
+  clientSettingsLastWrite.clear();
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }

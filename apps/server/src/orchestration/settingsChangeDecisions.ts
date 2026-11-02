@@ -16,8 +16,8 @@ import type {
   SettingsChangeEnding,
   SettingsChangeRequestId,
   ThreadId,
-  TurnId,
 } from "@threadlines/contracts";
+import { TurnId } from "@threadlines/contracts";
 import { isOpenSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { checkEdits } from "@threadlines/shared/settingsEdits";
 import { revertMessages } from "@threadlines/shared/transcriptRevert";
@@ -272,22 +272,18 @@ export function cancelWaitingSettingsChanges(
 }
 
 /**
- * The turns a revert to the first `turnCount` turns takes away that have
- * settings cards, for `thread.revert.complete`'s `revertedTurnIds`. Read from
- * the thread as the revert loaded it (checkpoints and messages): a turn with a
- * checkpoint past `turnCount`, or one the transcript cut drops (a turn whose
- * checkpoint was never captured has none). The decider can't work this out
- * itself: the engine doesn't load checkpoints after a restart.
+ * `thread.revert.complete`'s `keptTurnIds`, read from the thread as the revert
+ * loaded it (the engine's own read model has no checkpoints after a restart):
+ * the turns with a checkpoint it keeps and any a kept message is stamped with.
+ * Naming what stays means a card from a turn this read never saw (asked for
+ * while the revert ran, or a turn with no checkpoint) goes with what is
+ * removed; a card wrongly cancelled can simply be asked for again. Empty when
+ * the revert removes nothing: no card goes.
  */
-export function settingsChangeTurnsRevertTakes(
-  thread: Pick<OrchestrationThread, "checkpoints" | "messages" | "settingsRequests">,
+export function settingsChangeTurnsRevertKeeps(
+  thread: Pick<OrchestrationThread, "checkpoints" | "messages">,
   turnCount: number,
-): ReadonlyArray<TurnId> {
-  const taken = new Set(
-    thread.checkpoints
-      .filter((checkpoint) => checkpoint.checkpointTurnCount > turnCount)
-      .map((checkpoint) => checkpoint.turnId),
-  );
+): { readonly keptTurnIds?: ReadonlyArray<TurnId> } {
   const { cut, keptTurnIds } = revertMessages({
     messages: thread.messages,
     idOf: (message) => message.id,
@@ -298,14 +294,8 @@ export function settingsChangeTurnsRevertTakes(
     ),
     turnCount,
   });
-  for (const request of thread.settingsRequests ?? []) {
-    if (
-      cut !== undefined &&
-      !keptTurnIds.has(request.turnId) &&
-      request.createdAt >= cut.createdAt
-    ) {
-      taken.add(request.turnId);
-    }
-  }
-  return [...taken];
+  const removesAny =
+    cut !== undefined ||
+    thread.checkpoints.some((checkpoint) => checkpoint.checkpointTurnCount > turnCount);
+  return removesAny ? { keptTurnIds: [...keptTurnIds].map((turnId) => TurnId.make(turnId)) } : {};
 }
