@@ -743,7 +743,7 @@ const ROWS = [
     kind: "row",
     parent: "general.alerts",
     title: "Needs you",
-    about: "An approval, a question or a plan to review.",
+    about: "An approval, a question, a plan to review or a settings change.",
     keywords: ["approval", "question", "notifications"],
     scope: "device",
   },

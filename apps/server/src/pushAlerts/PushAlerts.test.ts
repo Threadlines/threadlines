@@ -490,6 +490,62 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
     ),
   );
 
+  it.effect("alerts for a settings card still waiting, and not for one already answered", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const pushAlerts = yield* PushAlerts.pipe(Effect.provide(harness.context));
+        yield* TestClock.adjust("1 hour");
+        yield* pushAlerts.start();
+        yield* settle();
+        yield* pushAlerts.register(PHONE_SESSION, {
+          registrationId: "registration-1",
+          p256dh: harness.receiver.getPublicKey().toString("base64url"),
+          auth: harness.auth.toString("base64url"),
+          keyId: "key-nightly",
+          appOrigin: "https://nightly.app.threadlines.dev",
+        });
+        const card = (requestId: string, status: string) => ({
+          requestId,
+          participantId: null,
+          turnId: "turn-1",
+          changes: [{ place: "general.theme", value: "light" }],
+          status,
+          createdAt: "2026-10-23T12:00:00.000Z",
+          noted: false,
+        });
+
+        // Answered by the time the sender looks at it: nothing to say.
+        harness.state.thread = makeThread({
+          settingsRequests: [card("answered", "declined")] as never,
+        });
+        yield* appended(harness, "thread.settings-change-requested", {
+          threadId: THREAD,
+          request: card("answered", "waiting"),
+        });
+        yield* settle();
+        assert.strictEqual(harness.sent.length, 0);
+
+        harness.state.thread = makeThread({
+          settingsRequests: [card("waiting", "waiting")] as never,
+        });
+        yield* appended(harness, "thread.settings-change-requested", {
+          threadId: THREAD,
+          request: card("waiting", "waiting"),
+        });
+        yield* settle();
+        assert.strictEqual(harness.sent.length, 1);
+        const [alert] = harness.sent;
+        assert.strictEqual(alert!.kind, "needs_you");
+        assert.strictEqual(
+          openAlert(alert!.payload, harness.receiver.getPrivateKey(), harness.auth).notification
+            .body,
+          "Wants to change your settings · Studio Mac",
+        );
+      }),
+    ),
+  );
+
   it.effect("waits on a finished turn and sends nothing when more work followed", () =>
     Effect.scoped(
       Effect.gen(function* () {

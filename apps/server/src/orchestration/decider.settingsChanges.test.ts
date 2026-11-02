@@ -181,12 +181,15 @@ describe("agents' settings changes", () => {
   it("puts a request on the card, replaces the agent's waiting one, and caps an agent at 5 a turn", async () => {
     let { model } = await apply(await seeded(), ask("a"));
     ({ model } = await apply(model, ask("r", { participantId: REVIEWER })));
-    ({ model } = await apply(model, ask("b")));
+    const replacing = await apply(model, ask("b"));
+    ({ model } = replacing);
     expect(statuses(model)).toEqual([
       ["a", "replaced", undefined],
       ["r", "waiting", undefined],
       ["b", "waiting", undefined],
     ]);
+    // It names the one it replaced, so that card's phone alert ends too.
+    expect(replacing.events[0]?.payload).toMatchObject({ replaces: ["a"] });
     // The same request id is one request, never a second card.
     expect((await apply(model, ask("b"))).refusal).toContain("already asked for");
     for (const id of ["c", "d", "e"]) ({ model } = await apply(model, ask(id)));
@@ -338,25 +341,16 @@ describe("agents' settings changes", () => {
     ]);
   });
 
-  it("cancels no card when a revert removes nothing, and says so only when it does", async () => {
-    let model = await seeded();
-    ({ model } = await apply(model, ask("ask-1", { turnId: TurnId.make("turn-1") })));
-    ({ model } = await apply(model, {
-      type: "thread.revert.complete",
-      commandId: nextCommandId(),
-      threadId: THREAD,
-      turnCount: 1,
-      createdAt: at(40),
-    }));
-    expect(statuses(model)).toEqual([["ask-1", "waiting", undefined]]);
+  it("names the turns a revert keeps, also when it first looks like it removes nothing", () => {
     const turn = (turnId: string, checkpointTurnCount: number) => ({
       turnId: TurnId.make(turnId),
       checkpointTurnCount,
     });
     const checkpoints = [turn("turn-1", 1), turn("turn-2", 2)] as never;
-    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 2)).toEqual({});
-    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 1)).toEqual({
-      keptTurnIds: ["turn-1"],
-    });
+    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 2)).toEqual([
+      "turn-1",
+      "turn-2",
+    ]);
+    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 1)).toEqual(["turn-1"]);
   });
 });

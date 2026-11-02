@@ -20,6 +20,7 @@ export type PushAlertReason =
   | "question"
   | "plan"
   | "schedule"
+  | "settings"
   | "finished"
   | "error"
   | "restart"
@@ -73,6 +74,7 @@ const DONE_KINDS: ReadonlyArray<PushAlertKind> = ["finished", "failed"];
 export const turnAlertId = (turnId: string) => `turn:${turnId}`;
 export const sideTurnAlertId = (sideTurnId: string) => `side:${sideTurnId}`;
 export const scheduleRequestAlertId = (requestId: string) => `schedule:${requestId}`;
+export const settingsRequestAlertId = (requestId: string) => `settings:${requestId}`;
 
 const add = (intent: PushAlertIntent): PushAlertAction => ({ type: "add", intent });
 
@@ -212,6 +214,28 @@ export function pushAlertActionsForEvent(
         }),
       ];
     }
+    case "thread.settings-change-requested": {
+      const { threadId, request, replaces } = event.payload;
+      return [
+        ...(replaces ?? []).map((requestId): PushAlertAction => ({
+          type: "cancel",
+          alertId: settingsRequestAlertId(requestId),
+        })),
+        add({
+          occurredAt: event.occurredAt,
+          alertId: settingsRequestAlertId(request.requestId),
+          threadId,
+          kind: "needs_you",
+          reason: "settings",
+          subjectId: request.requestId,
+          detail: null,
+          holdMs: 0,
+        }),
+      ];
+    }
+    case "thread.settings-change-claimed":
+    case "thread.settings-change-settled":
+      return [{ type: "cancel", alertId: settingsRequestAlertId(event.payload.requestId) }];
     case "thread.child-request-settled":
       // The child's result went to the parent thread, whose agent carries on
       // with it: the parent's own alert is the one that counts.
@@ -239,6 +263,7 @@ const REASON_TEXT: Record<PushAlertReason, string> = {
   question: "Asked you a question",
   plan: "Has a plan for you to review",
   schedule: "Wants to change a scheduled task",
+  settings: "Wants to change your settings",
   finished: "Finished",
   error: "Stopped with an error",
   restart: "Stopped when Threadlines restarted",
