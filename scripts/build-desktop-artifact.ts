@@ -19,7 +19,11 @@ import {
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { parseUpdateManifest, serializeUpdateManifest } from "./lib/update-manifest.ts";
 import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
-import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
+import {
+  DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD,
+  DESKTOP_RELEASE_APP_ID,
+} from "@threadlines/shared/desktopIdentity";
+import { prepareMacPasskeySigning, type MacPasskeySigning } from "./lib/mac-passkey-signing.ts";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -256,6 +260,8 @@ interface ResolvedBuildOptions {
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
+  /** A Developer ID provisioning profile that turns on the browser panel's passkeys. */
+  readonly macProvisioningProfile: string | undefined;
 }
 
 interface StagePackageJson {
@@ -274,6 +280,7 @@ interface StagePackageJson {
     readonly electron: string;
   };
   readonly overrides: Record<string, unknown>;
+  readonly [DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD]?: string;
 }
 
 interface StagePackageJsonInput {
@@ -283,6 +290,8 @@ interface StagePackageJsonInput {
   readonly dependencies: Record<string, unknown>;
   readonly electronVersion: string;
   readonly overrides: Record<string, unknown>;
+  /** The keychain group the app may keep passkeys in, when signed for it. */
+  readonly passkeyKeychainGroup?: string;
 }
 
 interface EnvAlias<A> {
@@ -381,6 +390,9 @@ const BuildEnvConfig = Config.all({
     Config.String("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
     Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
   ),
+  macProvisioningProfile: Config.String("THREADLINES_DESKTOP_MAC_PROVISIONING_PROFILE").pipe(
+    Config.option,
+  ),
 });
 
 const MockUpdateServerPortSchema = Schema.NumberFromString.check(
@@ -471,6 +483,8 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
       ),
     ));
 
+  const macProvisioningProfile = Option.getOrUndefined(env.macProvisioningProfile)?.trim();
+
   return {
     platform,
     target,
@@ -483,6 +497,10 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     verbose,
     mockUpdates,
     mockUpdateServerPort,
+    macProvisioningProfile:
+      macProvisioningProfile === undefined || macProvisioningProfile === ""
+        ? undefined
+        : path.resolve(repoRoot, macProvisioningProfile),
   } satisfies ResolvedBuildOptions;
 });
 
@@ -868,6 +886,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
   stageResourcesDir?: string,
+  /** Signs the main app with passkey entitlements and embeds the profile that allows them. */
+  macPasskeys?: { readonly provisioningProfile: string; readonly entitlementsFileName: string },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -930,8 +950,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
-      macConfig.entitlements = stageResourcePath("entitlements.mac.plist");
+      macConfig.entitlements = stageResourcePath(
+        macPasskeys?.entitlementsFileName ?? "entitlements.mac.plist",
+      );
       macConfig.entitlementsInherit = stageResourcePath("entitlements.mac.inherit.plist");
+      if (macPasskeys !== undefined) {
+        macConfig.provisioningProfile = macPasskeys.provisioningProfile;
+        // An app that claims the keychain group must be signed, or the
+        // after-sign launch check never runs and the claim ships unchecked.
+        macConfig.forceCodeSigning = true;
+      }
       macConfig.notarize = false;
       buildConfig.afterSign = stageResourcePath("notarize-after-sign.cjs");
     } else {
@@ -979,6 +1007,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   return buildConfig;
 });
 
+/** Written into the staged resources when a build signs with passkeys. */
+const MAC_PASSKEY_ENTITLEMENTS_FILE_NAME = "entitlements.mac.passkeys.plist";
+
 export function createStagePackageJson(input: StagePackageJsonInput): StagePackageJson {
   return {
     name: "threadlines",
@@ -996,6 +1027,9 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
       electron: input.electronVersion,
     },
     overrides: input.overrides,
+    ...(input.passkeyKeychainGroup === undefined
+      ? {}
+      : { [DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD]: input.passkeyKeychainGroup }),
   };
 }
 
@@ -1206,6 +1240,39 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     "electron",
   ]);
 
+  // Only a signed macOS build can carry the profile: an unsigned one has no
+  // team for it to vouch for.
+  let passkeySigning: MacPasskeySigning | undefined;
+  if (options.macProvisioningProfile !== undefined) {
+    if (options.platform !== "mac" || !options.signed) {
+      yield* Effect.logWarning(
+        "[desktop-artifact] Ignoring THREADLINES_DESKTOP_MAC_PROVISIONING_PROFILE: only signed macOS builds use it.",
+      );
+    } else {
+      const profilePath = options.macProvisioningProfile;
+      passkeySigning = yield* Effect.try({
+        try: () =>
+          prepareMacPasskeySigning({
+            profilePath,
+            appId: DESKTOP_RELEASE_APP_ID,
+            baseEntitlementsPath: path.join(stageResourcesDir, "entitlements.mac.plist"),
+            outputEntitlementsPath: path.join(
+              stageResourcesDir,
+              MAC_PASSKEY_ENTITLEMENTS_FILE_NAME,
+            ),
+          }),
+        catch: (cause) =>
+          new BuildScriptError({
+            message: `The macOS provisioning profile at ${profilePath} cannot turn on passkeys: ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
+      });
+      yield* Effect.log(
+        `[desktop-artifact] Signing with passkeys (keychain group ${passkeySigning.keychainAccessGroup}).`,
+      );
+    }
+  }
+
   const stagePackageJson = createStagePackageJson({
     appVersion,
     commitHash,
@@ -1217,7 +1284,16 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.mockUpdates,
       options.mockUpdateServerPort,
       stageResourcesDir,
+      passkeySigning === undefined || options.macProvisioningProfile === undefined
+        ? undefined
+        : {
+            provisioningProfile: options.macProvisioningProfile,
+            entitlementsFileName: MAC_PASSKEY_ENTITLEMENTS_FILE_NAME,
+          },
     ),
+    ...(passkeySigning === undefined
+      ? {}
+      : { passkeyKeychainGroup: passkeySigning.keychainAccessGroup }),
     dependencies: stageDependencies,
     electronVersion,
     overrides: resolvedOverrides,

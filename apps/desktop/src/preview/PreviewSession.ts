@@ -29,6 +29,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { isAppWindow } from "../electron/ElectronWindow.ts";
+import { choosePasskeyAccount } from "./previewPasskeys.ts";
 import { isPreviewPartition } from "./previewPartitions.ts";
 import { isPreviewPermissionAllowed } from "./previewPermissions.ts";
 
@@ -108,6 +109,11 @@ function configurePreviewSession(previewSession: Electron.Session): void {
     .filter((language) => dictionaries.has(language));
   previewSession.setSpellCheckerLanguages(
     preferred.length > 0 ? preferred : dictionaries.has("en-US") ? ["en-US"] : [],
+  );
+  // Without a listener Electron cancels every passkey sign-in that finds the
+  // user's passkeys, even just one (see `previewPasskeys.ts`).
+  previewSession.on("select-webauthn-account", (_event, details, callback) =>
+    choosePasskeyAccount(details, callback),
   );
 }
 

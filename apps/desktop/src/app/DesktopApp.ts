@@ -24,6 +24,7 @@ import * as DesktopBackground from "./DesktopBackground.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopStatusIndicator from "../window/DesktopStatusIndicator.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import { configurePreviewPasskeys } from "../preview/previewPasskeys.ts";
 import {
   DEFAULT_DESKTOP_BACKEND_PORT,
   desktopBackendPortProbeHosts,
@@ -59,8 +60,11 @@ class DesktopBackendPortDiscoveryTimeoutError extends Data.TaggedError(
 const { logInfo: logBootstrapInfo, logWarning: logBootstrapWarning } =
   DesktopObservability.makeComponentLogger("desktop-bootstrap");
 
-const { logInfo: logStartupInfo, logError: logStartupError } =
-  DesktopObservability.makeComponentLogger("desktop-startup");
+const {
+  logInfo: logStartupInfo,
+  logWarning: logStartupWarning,
+  logError: logStartupError,
+} = DesktopObservability.makeComponentLogger("desktop-startup");
 
 const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupError")(function* (
   stage: string,
@@ -199,6 +203,15 @@ const startup = Effect.gen(function* () {
   );
   yield* logStartupInfo("app ready");
   yield* appIdentity.configure;
+  // Before any window: a passkey prompt must never meet an unconfigured app.
+  yield* Effect.try(() => configurePreviewPasskeys(environment)).pipe(
+    Effect.flatMap((enabled) =>
+      enabled ? logStartupInfo("browser passkeys enabled") : Effect.void,
+    ),
+    Effect.catch((cause) =>
+      logStartupWarning("browser passkeys could not be enabled", { cause: String(cause) }),
+    ),
+  );
   yield* startBackend.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
   yield* applicationMenu.configure;
   yield* statusIndicator.configure;
