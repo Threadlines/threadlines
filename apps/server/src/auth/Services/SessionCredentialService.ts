@@ -13,6 +13,13 @@ import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
+/**
+ * Paired computers and devices keep their sign-in while they use it, whether
+ * they reach this computer directly or through the relay. One idle this long
+ * must pair again.
+ */
+export const PAIRED_DEVICE_SESSION_TTL = Duration.days(90);
+
 /** `peer`: another computer's server, linked to this one (docs/design/fleet.md). */
 export type SessionRole = "owner" | "client" | "peer";
 /** The roles a client app's session (and so a pairing credential) can have. */

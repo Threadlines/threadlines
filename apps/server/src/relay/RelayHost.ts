@@ -56,7 +56,10 @@ import {
 } from "@threadlines/shared/relaySecure";
 import { resolveTailscaleHttpsBaseUrl } from "@threadlines/tailscale";
 
-import { SessionCredentialService } from "../auth/Services/SessionCredentialService.ts";
+import {
+  PAIRED_DEVICE_SESSION_TTL,
+  SessionCredentialService,
+} from "../auth/Services/SessionCredentialService.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { DESKTOP_BOOTSTRAP_SUBJECT } from "../auth/utils.ts";
 import { ServerConfig } from "../config.ts";
@@ -90,8 +93,6 @@ const isRelayAccessError = Schema.is(RelayAccessError);
 
 /** Sessions issued to relay devices carry this subject, so device lists can tell them apart. */
 export const RELAY_DEVICE_SUBJECT = RELAY_DEVICE_SESSION_SUBJECT;
-/** Relay devices keep access while used; one idle this long must pair again. */
-export const RELAY_DEVICE_SESSION_TTL = Duration.days(90);
 
 const HOST_SECRET_NAME = "relay-host-secret";
 const HOST_KEY_NAME = "relay-host-e2e-key";
@@ -998,7 +999,7 @@ const make = Effect.gen(function* () {
         // The role comes from the row only: what this server granted when it
         // checked the invite, never what the joiner said it was.
         const issued = yield* sessions.issue({
-          ttl: RELAY_DEVICE_SESSION_TTL,
+          ttl: PAIRED_DEVICE_SESSION_TTL,
           subject: RELAY_DEVICE_SUBJECT,
           method: "bearer-session-token",
           role: row.grant,
@@ -1100,7 +1101,7 @@ const make = Effect.gen(function* () {
           (row.state === "active" || row.state === "approving") &&
           row.sessionId !== null &&
           (yield* sessions
-            .extendExpiry(row.sessionId, RELAY_DEVICE_SESSION_TTL)
+            .extendExpiry(row.sessionId, PAIRED_DEVICE_SESSION_TTL)
             .pipe(Effect.orElseSucceed(() => false)));
         settled.add(relayDevice.deviceId);
         if (!usable) {
@@ -1150,7 +1151,7 @@ const make = Effect.gen(function* () {
       const usable =
         sessionId !== null &&
         (yield* sessions
-          .extendExpiry(sessionId, RELAY_DEVICE_SESSION_TTL)
+          .extendExpiry(sessionId, PAIRED_DEVICE_SESSION_TTL)
           .pipe(Effect.orElseSucceed(() => false)));
       const devicePublicKey =
         usable && Option.isSome(row)
@@ -1219,7 +1220,7 @@ const make = Effect.gen(function* () {
   const openDeviceSession = (sessionId: AuthSessionId, grant: RelayDeviceGrant) =>
     Effect.gen(function* () {
       const usable = yield* sessions
-        .extendExpiry(sessionId, RELAY_DEVICE_SESSION_TTL)
+        .extendExpiry(sessionId, PAIRED_DEVICE_SESSION_TTL)
         .pipe(Effect.orElseSucceed(() => false));
       if (!usable || !localOrigin) {
         return yield* Effect.fail(new RelayAccessError({ detail: "This device's access ended." }));
@@ -1556,7 +1557,7 @@ const make = Effect.gen(function* () {
       // pairing transcripts are dropped once their invites are long gone.
       sessionRefresh ??= setInterval(() => {
         for (const pipe of pipes.values()) {
-          void runPromise(sessions.extendExpiry(pipe.sessionId, RELAY_DEVICE_SESSION_TTL)).catch(
+          void runPromise(sessions.extendExpiry(pipe.sessionId, PAIRED_DEVICE_SESSION_TTL)).catch(
             () => undefined,
           );
         }

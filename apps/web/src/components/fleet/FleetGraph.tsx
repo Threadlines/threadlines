@@ -70,6 +70,7 @@ export const FLEET_CONNECTION_DOT_CLASS = {
   connected: "bg-success",
   reconnecting: "bg-warning",
   offline: "bg-muted-foreground",
+  "needs-code": "bg-destructive",
 } as const;
 
 /** Where a menu opens: the pointer, in the window. */
@@ -188,8 +189,8 @@ function ComputerNode({
   readonly onMenu: ((computer: FleetComputer, position: MenuPosition) => void) | null;
 }) {
   const Glyph = FLEET_GLYPH_ICONS[computer.glyph];
-  // Offline: quiet text, but the node stays opaque so lines never show through it.
-  const quiet = computer.connection === "offline";
+  // Not reachable: quiet text, but the node stays opaque so lines never show through it.
+  const quiet = computer.connection === "offline" || computer.connection === "needs-code";
   const location = describeComputerLocation(computer, nowMs);
   // A node near a side keeps its name and status inside the graph: they wrap
   // (two lines at most) and slide toward the middle by what would stick out,

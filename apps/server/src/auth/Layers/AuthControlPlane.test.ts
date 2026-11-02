@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -69,6 +70,12 @@ it.layer(NodeServices.layer)("AuthControlPlane", (it) => {
     Effect.gen(function* () {
       const authControlPlane = yield* AuthControlPlane;
       const sessionCredentials = yield* SessionCredentialService;
+
+      // A pairing subject would make the session renew past the time asked for.
+      const refused = yield* Effect.flip(
+        authControlPlane.issueSession({ subject: "one-time-token", ttl: Duration.hours(1) }),
+      );
+      expect(refused.message).toContain("pairing code");
 
       const issued = yield* authControlPlane.issueSession({
         label: "deploy-bot",

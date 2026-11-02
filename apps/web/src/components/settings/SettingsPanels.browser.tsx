@@ -2305,6 +2305,24 @@ describe("GeneralSettingsPanel observability", () => {
       expect(savedComputersHarness.reconnect).toHaveBeenCalledWith(environmentId);
     });
 
+    // Its sign-in ended: it says so, and a new code is the way back.
+    await showGroup(
+      {},
+      {
+        authState: "requires-auth",
+        lastError: "Your sign-in to Remote has ended. Connect again with a new code.",
+      },
+    );
+    await expect.element(page.getByText("Sign-in ended", { exact: true })).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Your sign-in to Remote has ended.", { exact: false }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Connect again with a new code", exact: true }).click();
+    await expect
+      .element(page.getByRole("dialog", { name: "Connect to a computer" }))
+      .toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
     // It removed this app's access: a retry can't fix that, a new code can.
     const relay = {
       version: 2 as const,

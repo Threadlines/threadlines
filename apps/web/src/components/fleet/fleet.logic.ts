@@ -31,7 +31,11 @@ import { formatElapsedDurationLabel } from "../../timestampFormat";
 import type { ThreadAttention, ThreadStatusPill } from "../Sidebar.logic";
 
 /** How this app reaches a computer right now. */
-export type FleetConnection = "connected" | "reconnecting" | "offline";
+/**
+ * `needs-code`: the computer may well be on, but it no longer accepts this
+ * app's sign-in, so only a new code from it connects this app again.
+ */
+export type FleetConnection = "connected" | "reconnecting" | "offline" | "needs-code";
 
 /** What a computer, a provider or a line has going: the strongest wins. */
 export type FleetWork = "needs-you" | "working" | "idle";
@@ -147,6 +151,24 @@ export function glyphForPlatform(descriptor: ExecutionEnvironmentDescriptor | nu
 }
 
 /**
+ * Whether this app's sign-in to a saved computer has ended, so connecting it
+ * again takes a new code from it. An SSH computer signs itself in again, and
+ * one still being added is waiting to be allowed.
+ */
+export function savedComputerNeedsNewCode(
+  record: SavedEnvironmentRecord,
+  runtime: SavedEnvironmentRuntimeState | null | undefined,
+): boolean {
+  const relayLink = record.relay && "version" in record.relay ? record.relay : null;
+  return (
+    !record.desktopSsh &&
+    !relayLink?.pendingRequest &&
+    runtime?.connectionState !== "connected" &&
+    runtime?.authState === "requires-auth"
+  );
+}
+
+/**
  * A computer saved under Settings › Connections, with its live connection.
  * It goes by the name the user gave it there, as everywhere else in the app:
  * two computers can share a system name ("Denys's MacBook Pro"). The name it
@@ -163,7 +185,9 @@ export function savedComputerInput(
       ? "connected"
       : connectionState === "connecting" || runtime?.waitingToReconnect === true
         ? "reconnecting"
-        : "offline";
+        : savedComputerNeedsNewCode(record, runtime)
+          ? "needs-code"
+          : "offline";
   return {
     id: record.environmentId,
     environmentId: record.environmentId,
@@ -366,6 +390,8 @@ function describeComputerPlace(computer: FleetComputerInput, nowMs: number): str
       return computer.lastSeenAt === null
         ? "Offline"
         : `Offline · ${lastSeenPhrase(computer.lastSeenAt, nowMs)}`;
+    case "needs-code":
+      return "Needs a new code";
     case "connected":
       switch (computer.route) {
         case "network":
@@ -399,8 +425,20 @@ export function describeFleetSummary(model: FleetModel): string {
   const offline = model.others
     .filter((computer) => computer.kind === "computer" && computer.connection === "offline")
     .map((computer) => computer.label);
-  if (offline.length === 0) return work;
-  return `${work} ${joinNames(offline)} ${offline.length === 1 ? "is" : "are"} offline.`;
+  const needsCode = model.others
+    .filter((computer) => computer.kind === "computer" && computer.connection === "needs-code")
+    .map((computer) => computer.label);
+  return [
+    work,
+    offline.length > 0
+      ? `${joinNames(offline)} ${offline.length === 1 ? "is" : "are"} offline.`
+      : null,
+    needsCode.length > 0
+      ? `${joinNames(needsCode)} ${needsCode.length === 1 ? "needs" : "need"} a new code.`
+      : null,
+  ]
+    .filter((sentence) => sentence !== null)
+    .join(" ");
 }
 
 /**
@@ -458,6 +496,7 @@ export function lineWork(counts: {
  * work.
  */
 export function resolveConnectionLineState(computer: FleetComputer): FleetLineState {
+  if (computer.connection === "needs-code") return "offline";
   if (computer.connection !== "connected") return computer.connection;
   return lineWork(computer);
 }

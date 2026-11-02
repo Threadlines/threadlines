@@ -44,6 +44,7 @@ import {
   type FleetPair,
   isFleetDeviceEntry,
   resolveFleetPair,
+  unreachableNote,
 } from "./fleetLinks.logic";
 import { useFleetData } from "./FleetLayout";
 import { FleetThreadList } from "./FleetThreadList";
@@ -231,9 +232,7 @@ function WaitingLinkGroup({
             </p>
             {editable ? null : (
               <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-                {holder.known
-                  ? `${holder.label} is offline.`
-                  : `Connect to ${holder.label} to change this.`}
+                {unreachableNote(holder)}
               </p>
             )}
           </div>
@@ -414,7 +413,9 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   } else if (computer && computer.connection !== "connected" && entry.kind === "saved") {
     workingNow = (
       <p className="px-1 text-[12.5px] text-muted-foreground">
-        {entry.displayLabel} is offline. Its work shows here when it&apos;s back.
+        {computer.connection === "needs-code"
+          ? `Connect to ${entry.displayLabel} again to see its work here.`
+          : `${entry.displayLabel} is offline. Its work shows here when it's back.`}
       </p>
     );
   } else if (computer && computer.threads.length > 0) {

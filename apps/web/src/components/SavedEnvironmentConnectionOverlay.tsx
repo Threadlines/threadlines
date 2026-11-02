@@ -8,6 +8,7 @@ import {
   readRelayDeviceCredentials,
   readSavedEnvironmentBearerToken,
   reconnectSavedEnvironment,
+  savedEnvironmentSignInEndedMessage,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
   type SavedEnvironmentRecord,
@@ -203,10 +204,10 @@ export function describeSavedEnvironmentOverlay(
       };
     case "link-expired":
       return {
-        title: input.isRelay ? "This link doesn't work anymore" : "Pairing expired",
+        title: input.isRelay ? "This link doesn't work anymore" : "Sign-in ended",
         description: input.isRelay
           ? "On your computer, open Threadlines, go to Settings › Connections › Connect a device, and scan the new QR code."
-          : "The saved credential for this backend is no longer valid. Pair it again.",
+          : savedEnvironmentSignInEndedMessage({ label: input.label }),
         showSpinner: false,
         showRetry: false,
       };

@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { ServerConfigShape } from "../../config.ts";
 import { ServerConfig } from "../../config.ts";
@@ -135,6 +137,54 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(verified.role).toBe("owner");
       expect(verified.subject).toBe("owner-bootstrap");
     }).pipe(Effect.provide(makeServerAuthLayer())),
+  );
+
+  it.effect("keeps a paired computer signed in while it connects, and only then", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const sessions = yield* SessionCredentialService;
+      const pairBearerSession = Effect.gen(function* () {
+        const pairing = yield* serverAuth.issuePairingCredential();
+        const paired = yield* serverAuth.exchangeBootstrapCredentialForBearerSession(
+          pairing.credential,
+          requestMetadata,
+        );
+        return makeAuthRequest({ headers: { authorization: `Bearer ${paired.sessionToken}` } });
+      });
+      const connect = (request: ServerAuthRequest) =>
+        serverAuth
+          .authenticateHttpRequest(request)
+          .pipe(Effect.flatMap((session) => serverAuth.issueWebSocketToken(session)));
+
+      const inUse = yield* pairBearerSession;
+      const idle = yield* pairBearerSession;
+      // A session issued for a set time keeps that time, however often it connects.
+      const cliIssued = yield* sessions.issue({
+        method: "bearer-session-token",
+        subject: "cli-issued-session",
+        role: "client",
+        ttl: Duration.days(30),
+      });
+      const cliRequest = makeAuthRequest({
+        headers: { authorization: `Bearer ${cliIssued.token}` },
+      });
+
+      yield* connect(inUse);
+      yield* connect(cliRequest);
+      yield* TestClock.adjust(Duration.days(31));
+
+      // Past the 30 days a token is issued with: what connected still works.
+      const renewed = yield* connect(inUse);
+      expect(renewed.token.length).toBeGreaterThan(0);
+      expect((yield* Effect.flip(connect(idle))).status).toBe(401);
+      expect((yield* Effect.flip(connect(cliRequest))).status).toBe(401);
+
+      // Every connection restarts the clock, and a long silence still ends it.
+      yield* TestClock.adjust(Duration.days(89));
+      yield* connect(inUse);
+      yield* TestClock.adjust(Duration.days(91));
+      expect((yield* Effect.flip(connect(inUse))).status).toBe(401);
+    }).pipe(Effect.provide(Layer.merge(makeServerAuthLayer(), TestClock.layer()))),
   );
 
   it.effect("trusts local dev loopback browser requests without pairing", () =>

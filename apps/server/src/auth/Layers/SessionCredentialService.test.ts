@@ -132,6 +132,9 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
       yield* TestClock.adjust(Duration.seconds(4));
       const token = yield* sessions.issueWebSocketToken(inUse.sessionId);
       expect((yield* sessions.verifyWebSocketToken(token.token)).sessionId).toBe(inUse.sessionId);
+      const verified = yield* sessions.verify(inUse.token);
+      expect(verified.sessionId).toBe(inUse.sessionId);
+      expect((yield* Effect.flip(sessions.verify(idle.token))).message).toContain("expired");
       expect(yield* sessions.extendExpiry(idle.sessionId, Duration.seconds(10))).toBe(false);
     }).pipe(Effect.provide(Layer.merge(makeSessionCredentialLayer(), TestClock.layer()))),
   );

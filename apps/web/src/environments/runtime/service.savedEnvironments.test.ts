@@ -14,8 +14,17 @@ const mockSavedEnvironmentRegistrySubscribe = vi.fn();
 const mockReadSavedEnvironmentBearerToken = vi.fn();
 const mockGetSavedEnvironmentRecord = vi.fn();
 
-function MockWsTransport() {
-  return undefined;
+const mockResolveRemoteWebSocketConnectionUrl = vi.fn();
+const mockRemoveSavedEnvironmentBearerToken = vi.fn();
+
+interface CapturedTransport {
+  readonly url: () => Promise<string>;
+  readonly handlers: { readonly onError: (message: string) => void };
+}
+const transports: CapturedTransport[] = [];
+
+function MockWsTransport(url: CapturedTransport["url"], handlers: CapturedTransport["handlers"]) {
+  transports.push({ url, handlers });
 }
 
 const savedEnvironmentRuntimeById: Record<string, Record<string, unknown>> = {};
@@ -41,7 +50,7 @@ vi.mock("../remote/api", () => ({
   fetchRemoteSessionState: mockFetchRemoteSessionState,
   isRemoteEnvironmentAuthHttpError: mockIsRemoteEnvironmentAuthHttpError,
   isRemoteEnvironmentUnreachableError: mockIsRemoteEnvironmentUnreachableError,
-  resolveRemoteWebSocketConnectionUrl: vi.fn(() => "ws://remote.example.test"),
+  resolveRemoteWebSocketConnectionUrl: mockResolveRemoteWebSocketConnectionUrl,
 }));
 
 vi.mock("./catalog", () => ({
@@ -50,7 +59,7 @@ vi.mock("./catalog", () => ({
   listSavedEnvironmentRecords: mockListSavedEnvironmentRecords,
   persistSavedEnvironmentRecord: vi.fn(),
   readSavedEnvironmentBearerToken: mockReadSavedEnvironmentBearerToken,
-  removeSavedEnvironmentBearerToken: vi.fn(),
+  removeSavedEnvironmentBearerToken: mockRemoveSavedEnvironmentBearerToken,
   useSavedEnvironmentRegistryStore: {
     subscribe: mockSavedEnvironmentRegistrySubscribe,
     getState: () => ({
@@ -255,6 +264,9 @@ describe("saved environment startup", () => {
     }
     activeEnvironmentId = null;
 
+    transports.length = 0;
+    mockResolveRemoteWebSocketConnectionUrl.mockReturnValue("ws://remote.example.test");
+    mockRemoveSavedEnvironmentBearerToken.mockResolvedValue(undefined);
     mockFetchRemoteSessionState.mockResolvedValue({
       authenticated: true,
       role: "owner",
@@ -451,6 +463,97 @@ describe("saved environment startup", () => {
     expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
     expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
     expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+    stop();
+  });
+
+  it("says the sign-in ended, not a socket error, when a computer refuses it at startup", async () => {
+    // What the transport does with a refused sign-in: it reports the refusal,
+    // then every request on the dead session fails with this.
+    const defect = new Error("RpcClientDefect: Unknown socket error");
+    mockResolveRemoteWebSocketConnectionUrl.mockRejectedValue(REFUSED);
+    mockCreateWsRpcClient.mockImplementation(() => {
+      const client = createClient();
+      client.server.getConfig.mockRejectedValue(defect);
+      return client;
+    });
+    mockCreateEnvironmentConnection.mockImplementationOnce((input) => {
+      const transport = transports.at(-1)!;
+      void transport.url().catch((error: Error) => transport.handlers.onError(error.message));
+      return {
+        kind: input.kind,
+        environmentId: input.knownEnvironment.environmentId,
+        knownEnvironment: input.knownEnvironment,
+        client: input.client,
+        ensureBootstrapped: vi.fn(async () => undefined),
+        reconnect: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      };
+    });
+    const { startEnvironmentConnectionService, readEnvironmentConnection } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]).toMatchObject({
+      authState: "requires-auth",
+      connectionState: "disconnected",
+      role: null,
+      lastError: "Your sign-in to Remote environment has ended. Connect again with a new code.",
+    });
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+    // It waits for the user: nothing keeps asking a computer that said no.
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    expect(mockResolveRemoteWebSocketConnectionUrl).toHaveBeenCalledTimes(1);
+    // A refusal can also mean that computer couldn't check it just then.
+    expect(mockRemoveSavedEnvironmentBearerToken).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("drops the connection and says why when a sign-in ends while connected", async () => {
+    const { startEnvironmentConnectionService, readEnvironmentConnection } =
+      await import("./service");
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(readEnvironmentConnection(savedRecord.environmentId)).not.toBeNull();
+
+    // The socket dropped, and asking for a new one is refused.
+    mockResolveRemoteWebSocketConnectionUrl.mockRejectedValue(REFUSED);
+    const transport = transports.at(-1)!;
+    await expect(transport.url()).rejects.toBe(REFUSED);
+    transport.handlers.onError("Unauthorized request.");
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(readEnvironmentConnection(savedRecord.environmentId)).toBeNull();
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]).toMatchObject({
+      authState: "requires-auth",
+      connectionState: "disconnected",
+      lastError: "Your sign-in to Remote environment has ended. Connect again with a new code.",
+    });
+    stop();
+  });
+
+  it("ignores a refusal of the old sign-in once the computer was paired again", async () => {
+    const { startEnvironmentConnectionService, readEnvironmentConnection } =
+      await import("./service");
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // The old request is still out when the new pairing lands, over the relay.
+    mockResolveRemoteWebSocketConnectionUrl.mockImplementation(async () => {
+      mockGetSavedEnvironmentRecord.mockReturnValue({
+        ...savedRecord,
+        relay: { version: 2, relayOrigin: "https://relay.test", hostId: "h", deviceId: "d" },
+      });
+      throw REFUSED;
+    });
+    await expect(transports.at(-1)!.url()).rejects.toBe(REFUSED);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(readEnvironmentConnection(savedRecord.environmentId)).not.toBeNull();
+    expect(savedEnvironmentRuntimeById[savedRecord.environmentId]?.authState).not.toBe(
+      "requires-auth",
+    );
     stop();
   });
 

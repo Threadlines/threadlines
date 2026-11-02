@@ -32,6 +32,7 @@ export {
   readLocalEnvironmentId,
   reconnectSavedEnvironment,
   RELAY_LINK_EXPIRED_MESSAGE,
+  savedEnvironmentSignInEndedMessage,
   removeSavedEnvironment,
   requireEnvironmentConnection,
   resetEnvironmentServiceForTests,

@@ -3,9 +3,10 @@ import { useCallback, useMemo } from "react";
 
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { cn } from "../../lib/utils";
 import { PageTitlebar } from "../PageTitlebar";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
-import { SettingsGroup } from "../settings/settingsLayout";
+import { SETTINGS_GROUP_ROW_CLASS, SettingsGroup } from "../settings/settingsLayout";
 import { usePendingLinkRequests } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
 import {
@@ -31,9 +32,9 @@ const GRAPH_HEIGHT_ONE_COMPUTER = 210;
 /**
  * Fleet's All computers page: every computer in the fleet and the phones and
  * tablets using this one, drawn as a graph with what runs where and the
- * links and work between computers; then threads that wait on another
- * computer's Allow, and the threads that are working or need the user, by
- * computer. Clicking a computer opens its page; a phone opens Settings ›
+ * links and work between computers; the computers whose sign-in ended, each
+ * with its way back; then threads that wait on another computer's Allow, and
+ * the threads that are working or need the user, by computer. Clicking a computer opens its page; a phone opens Settings ›
  * Connections, where phones are managed.
  */
 export function FleetView() {
@@ -65,6 +66,7 @@ export function FleetView() {
     [labelOfEnvironment, pendingRequests],
   );
 
+  const needsCode = model.others.filter((computer) => computer.connection === "needs-code");
   const listed = computers.filter((computer) => computer.threads.length > 0);
   const quietLine = describeQuietComputers(
     computers.filter((computer) => computer.kind !== "this"),
@@ -120,6 +122,38 @@ export function FleetView() {
               {describeFleetSummary(model)}
             </p>
           </header>
+
+          {needsCode.length > 0 ? (
+            <section className="mt-7 flex flex-col gap-2" data-testid="fleet-needs-code">
+              <h2 className="px-1 text-[15px] leading-5 font-semibold text-foreground">
+                Sign-in ended
+              </h2>
+              <SettingsGroup>
+                {needsCode.map((computer) => (
+                  <div
+                    key={computer.id}
+                    className={cn(
+                      SETTINGS_GROUP_ROW_CLASS,
+                      "flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5",
+                    )}
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="truncate text-[13px] leading-[18px] text-foreground">
+                        {computer.label}
+                      </p>
+                      <p className="text-[12.5px] leading-[18px] text-muted-foreground">
+                        It no longer takes this app&apos;s sign-in. Get a new code from it to
+                        connect again.
+                      </p>
+                    </div>
+                    <Button size="xs" variant="outline" onClick={openConnectComputerDialog}>
+                      Connect again
+                    </Button>
+                  </div>
+                ))}
+              </SettingsGroup>
+            </section>
+          ) : null}
 
           {pending.length > 0 ? (
             <section className="mt-7 flex flex-col gap-2" data-testid="fleet-pending-requests">

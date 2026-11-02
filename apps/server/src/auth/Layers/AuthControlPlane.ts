@@ -8,6 +8,7 @@ import { ServerSecretStoreLive } from "./ServerSecretStore.ts";
 import { SessionCredentialServiceLive } from "./SessionCredentialService.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
 import { SessionCredentialService } from "../Services/SessionCredentialService.ts";
+import { PAIRING_SESSION_SUBJECTS } from "../utils.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "../../persistence/Layers/Sqlite.ts";
 import {
   AuthControlPlane,
@@ -101,39 +102,45 @@ export const makeAuthControlPlane = Effect.gen(function* () {
       .pipe(Effect.mapError(toAuthControlPlaneError("Failed to revoke pairing link.")));
 
   const issueSession: AuthControlPlaneShape["issueSession"] = (input) =>
-    sessions
-      .issue({
-        subject: input?.subject ?? DEFAULT_SESSION_SUBJECT,
-        method: "bearer-session-token",
-        role: input?.role ?? "owner",
-        client: {
-          ...(input?.label ? { label: input.label } : {}),
-          deviceType: "bot",
-        },
-        ...(input?.ttl ? { ttl: input.ttl } : {}),
-      })
-      .pipe(
-        Effect.flatMap((issued) => {
-          if (issued.method !== "bearer-session-token") {
-            return Effect.fail(
-              new AuthControlPlaneError({
-                message: "CLI session issuance produced an unexpected session method.",
-              }),
-            );
-          }
-
-          return Effect.succeed({
-            sessionId: issued.sessionId,
-            token: issued.token,
-            method: "bearer-session-token" as const,
-            role: issued.role,
+    input?.subject !== undefined && PAIRING_SESSION_SUBJECTS.has(input.subject)
+      ? Effect.fail(
+          new AuthControlPlaneError({
+            message: `The subject "${input.subject}" is kept for sessions made from a pairing code.`,
+          }),
+        )
+      : sessions
+          .issue({
             subject: input?.subject ?? DEFAULT_SESSION_SUBJECT,
-            client: issued.client,
-            expiresAt: DateTime.toUtc(issued.expiresAt),
-          } satisfies IssuedBearerSession);
-        }),
-        Effect.mapError(toAuthControlPlaneError("Failed to issue session token.")),
-      );
+            method: "bearer-session-token",
+            role: input?.role ?? "owner",
+            client: {
+              ...(input?.label ? { label: input.label } : {}),
+              deviceType: "bot",
+            },
+            ...(input?.ttl ? { ttl: input.ttl } : {}),
+          })
+          .pipe(
+            Effect.flatMap((issued) => {
+              if (issued.method !== "bearer-session-token") {
+                return Effect.fail(
+                  new AuthControlPlaneError({
+                    message: "CLI session issuance produced an unexpected session method.",
+                  }),
+                );
+              }
+
+              return Effect.succeed({
+                sessionId: issued.sessionId,
+                token: issued.token,
+                method: "bearer-session-token" as const,
+                role: issued.role,
+                subject: input?.subject ?? DEFAULT_SESSION_SUBJECT,
+                client: issued.client,
+                expiresAt: DateTime.toUtc(issued.expiresAt),
+              } satisfies IssuedBearerSession);
+            }),
+            Effect.mapError(toAuthControlPlaneError("Failed to issue session token.")),
+          );
 
   const listSessions: AuthControlPlaneShape["listSessions"] = () =>
     sessions.listActive().pipe(
