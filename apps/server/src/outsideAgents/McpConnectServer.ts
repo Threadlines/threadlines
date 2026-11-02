@@ -208,6 +208,11 @@ export const layer = Layer.fresh(
         version: "1",
         path: OUTSIDE_AGENT_MCP_PATH,
         protocols: [McpProtocol.v2025_06_18],
+        // A client finished with its session may say so (DELETE), which frees
+        // it. Otherwise a session lasts until the server restarts; see
+        // docs/design/outside-agents.md, Honest limits, for why they don't
+        // expire on their own.
+        allowSessionTermination: true,
       }).pipe(Layer.provide(AuthenticationLive)),
     ),
   ),
