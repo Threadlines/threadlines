@@ -43,6 +43,7 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
   PreviewCard,
   PreviewCardPopup,
+  HOVER_CARD_DELAY_MS,
   PreviewCardTrigger,
   createPreviewCardHandle,
 } from "../ui/previewCard";
@@ -239,6 +240,7 @@ export function PullRequestHoverCard({
   return (
     <PreviewCardTrigger
       handle={surface.handle}
+      delay={HOVER_CARD_DELAY_MS}
       closeDelay={120}
       payload={payload}
       render={children as never}

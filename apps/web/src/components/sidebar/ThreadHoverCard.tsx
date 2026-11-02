@@ -39,6 +39,7 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import {
   PreviewCard,
   PreviewCardPopup,
+  HOVER_CARD_DELAY_MS,
   PreviewCardTrigger,
   createPreviewCardHandle,
 } from "../ui/previewCard";
@@ -115,6 +116,7 @@ export function ThreadHoverCard({
   return (
     <PreviewCardTrigger
       handle={handle}
+      delay={HOVER_CARD_DELAY_MS}
       closeDelay={120}
       payload={{ thread, status, lineage } satisfies ThreadHoverCardPayload}
       render={children as never}

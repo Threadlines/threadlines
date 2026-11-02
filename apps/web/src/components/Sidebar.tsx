@@ -2070,6 +2070,7 @@ export default function Sidebar() {
                         )}
                         <Tooltip>
                           <TooltipTrigger
+                            delay={0}
                             render={
                               <CommandDialogTrigger
                                 data-testid="inbox-live-search"
@@ -2085,6 +2086,7 @@ export default function Sidebar() {
                         {revealedLiveCount > 0 ? (
                           <Tooltip>
                             <TooltipTrigger
+                              delay={0}
                               render={
                                 <button
                                   type="button"
@@ -2149,6 +2151,7 @@ export default function Sidebar() {
                           {revealedDoneCount > 0 ? (
                             <Tooltip>
                               <TooltipTrigger
+                                delay={0}
                                 render={
                                   <button
                                     type="button"

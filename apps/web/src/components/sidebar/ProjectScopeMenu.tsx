@@ -809,6 +809,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           />
           <Tooltip>
             <TooltipTrigger
+              delay={0}
               render={
                 <button
                   type="button"
@@ -826,6 +827,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           {onNewThread ? (
             <Tooltip>
               <TooltipTrigger
+                delay={0}
                 render={
                   <button
                     type="button"

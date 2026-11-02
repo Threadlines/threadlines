@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
 import "@fontsource-variable/schibsted-grotesk/index.css";
@@ -36,7 +37,12 @@ document.title = APP_DISPLAY_NAME;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <RouterProvider router={router} />
-    <StatusBarEdge />
+    {/* Small hover labels open at once across the app: they only add a name or a
+        detail. A surface that would flash them too often sets its own (the chat's
+        message actions, the sidebar's rows). */}
+    <TooltipProvider delay={0}>
+      <RouterProvider router={router} />
+      <StatusBarEdge />
+    </TooltipProvider>
   </React.StrictMode>,
 );
