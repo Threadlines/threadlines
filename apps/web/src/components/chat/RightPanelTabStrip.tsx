@@ -21,6 +21,12 @@
 import { BotIcon, FileDiffIcon, GitPullRequestIcon, PlusIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import {
+  dragReorderVisual,
+  usePointerDragReorder,
+  type DragReorderVisual,
+} from "../../hooks/usePointerDragReorder";
+
 import { cn } from "~/lib/utils";
 import type { Icon } from "../Icons";
 import { SourceControlIcon } from "../Icons";
@@ -74,317 +80,14 @@ const REVEAL_ON_TAB_HOVER_OR_FOCUS =
 const HIDE_ON_TAB_HOVER_OR_FOCUS =
   "group-hover/rail-tab:opacity-0 group-has-[:focus-visible]/rail-tab:opacity-0";
 
-/** How far a press must travel before it becomes a drag: below this it is a
- *  click, and the tab must not so much as twitch. */
-const TAB_DRAG_THRESHOLD_PX = 4;
-
 /** The tablist's `gap-px`, folded into every shift so tabs land on layout. */
 const TAB_GAP_PX = 1;
-
-/** Must match the `duration-150` on the shift/settle transitions below. */
-const TAB_DRAG_SETTLE_MS = 150;
-
-interface TabDragBox {
-  readonly left: number;
-  readonly width: number;
-}
-
-interface TabDragState {
-  readonly tab: RightPanelTab;
-  /** The strip's order when the drag started; `bounds` is indexed by it. */
-  readonly order: ReadonlyArray<RightPanelTab>;
-  readonly bounds: ReadonlyArray<TabDragBox>;
-  readonly from: number;
-  /** The slot the tab would land in if released right now. */
-  readonly to: number;
-  readonly startX: number;
-  /** Pointer travel, clamped to the strip's own run of tabs. */
-  readonly dx: number;
-  /** Released: the tab is gliding from the pointer to its new slot. */
-  readonly settling: boolean;
-}
-
-/** What a drag asks one tab to look like this frame. */
-type TabDragVisual =
-  | { readonly kind: "dragged"; readonly offsetX: number; readonly settling: boolean }
-  | { readonly kind: "shifted"; readonly offsetX: number };
-
-/**
- * The slot the dragged tab has earned, measured against where the other tabs
- * STARTED — reading their shifted positions back into this decision is what
- * makes strips like this flicker at the crossover point.
- *
- * A swap happens when the dragged tab's LEADING edge crosses a neighbour's
- * midpoint, not its centre: the drag is clamped to the strip's run of tabs,
- * and a dragged tab at least as wide as the end tab could never carry its
- * centre past that tab's midpoint — the far slot was unreachable. Its edge
- * always reaches the strip's edge, so the edge is what earns the slot.
- */
-function dragTargetIndex(bounds: ReadonlyArray<TabDragBox>, from: number, dx: number): number {
-  const own = bounds[from];
-  if (own === undefined) {
-    return from;
-  }
-  if (dx < 0) {
-    const edge = own.left + dx;
-    for (let index = 0; index < from; index += 1) {
-      const box = bounds[index];
-      if (box !== undefined && edge < box.left + box.width / 2) {
-        return index;
-      }
-    }
-    return from;
-  }
-  const edge = own.left + own.width + dx;
-  for (let index = bounds.length - 1; index > from; index -= 1) {
-    const box = bounds[index];
-    if (box !== undefined && edge > box.left + box.width / 2) {
-      return index;
-    }
-  }
-  return from;
-}
-
-/** Where the dragged tab's new slot lies relative to its old one: the width of
- *  everything it passed, so the settle animation ends exactly on layout. */
-function dragSettleOffset(bounds: ReadonlyArray<TabDragBox>, from: number, to: number): number {
-  let offset = 0;
-  if (to > from) {
-    for (let index = from + 1; index <= to; index += 1) {
-      offset += (bounds[index]?.width ?? 0) + TAB_GAP_PX;
-    }
-  } else {
-    for (let index = to; index < from; index += 1) {
-      offset -= (bounds[index]?.width ?? 0) + TAB_GAP_PX;
-    }
-  }
-  return offset;
-}
-
-function tabDragVisual(drag: TabDragState | null, tab: RightPanelTab): TabDragVisual | null {
-  if (drag === null) {
-    return null;
-  }
-  const index = drag.order.indexOf(tab);
-  if (index === -1) {
-    return null;
-  }
-  if (index === drag.from) {
-    return { kind: "dragged", offsetX: drag.dx, settling: drag.settling };
-  }
-  const span = (drag.bounds[drag.from]?.width ?? 0) + TAB_GAP_PX;
-  const offsetX =
-    drag.from < index && index <= drag.to
-      ? -span
-      : drag.to <= index && index < drag.from
-        ? span
-        : 0;
-  return { kind: "shifted", offsetX };
-}
 
 /** What the strip hands each tab when reordering is on. */
 interface TabReorderProps {
   readonly onPointerDown: (event: React.PointerEvent) => void;
   readonly onClickCapture: (event: React.MouseEvent) => void;
-  readonly visual: TabDragVisual | null;
-}
-
-/**
- * Pointer-drag reorder, in the browser-tab idiom: the held tab rides the
- * pointer, its neighbours slide out of the way as it crosses their midpoints,
- * and on release it glides into the slot it was over BEFORE the order commits
- * — committing first would snap it there with no journey. Positions are
- * measured once, on the press becoming a drag; a strip whose tabs change under
- * the drag (an auto-opened Agents tab, a middle-click close) cancels it.
- *
- * Window-level listeners rather than pointer capture: the drag must survive
- * the pointer leaving the strip, and capture of untrusted pointers is exactly
- * the part that cannot be exercised in tests.
- */
-function useTabDragReorder(input: {
-  stripRef: React.RefObject<HTMLDivElement | null>;
-  openTabs: ReadonlyArray<RightPanelTab>;
-  onReorderTab: ((tab: RightPanelTab, toIndex: number) => void) | undefined;
-}): {
-  drag: TabDragState | null;
-  beginTabDrag: (tab: RightPanelTab) => (event: React.PointerEvent) => void;
-  suppressDragClick: (event: React.MouseEvent) => void;
-} {
-  const [drag, setDrag] = useState<TabDragState | null>(null);
-  const dragRef = useRef<TabDragState | null>(null);
-  const onReorderTabRef = useRef(input.onReorderTab);
-  onReorderTabRef.current = input.onReorderTab;
-  const suppressClickRef = useRef(false);
-
-  // One closure holds the whole listener machine, built once: its handlers
-  // read refs, so they never go stale and never need re-attaching.
-  const machineRef = useRef<{
-    begin: (tab: RightPanelTab, event: React.PointerEvent) => void;
-    cancel: () => void;
-  } | null>(null);
-  if (machineRef.current === null) {
-    const { stripRef } = input;
-    let pending: { tab: RightPanelTab; startX: number } | null = null;
-    let settleTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const commit = (state: TabDragState | null) => {
-      dragRef.current = state;
-      setDrag(state);
-    };
-    const detach = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      window.removeEventListener("pointercancel", onPointerCancel);
-    };
-    const cancel = () => {
-      pending = null;
-      if (settleTimer !== null) {
-        clearTimeout(settleTimer);
-        settleTimer = null;
-      }
-      detach();
-      if (dragRef.current !== null) {
-        commit(null);
-      }
-    };
-    // The click after a drag's pointerup dispatches synchronously; the flag
-    // outlives exactly that and nothing else.
-    const dropSuppressionAfterClick = () => {
-      setTimeout(() => {
-        suppressClickRef.current = false;
-      }, 0);
-    };
-
-    function onPointerMove(event: PointerEvent) {
-      if (dragRef.current === null) {
-        if (pending === null || Math.abs(event.clientX - pending.startX) < TAB_DRAG_THRESHOLD_PX) {
-          return;
-        }
-        const tablist =
-          stripRef.current?.querySelector<HTMLElement>('[data-right-panel-tablist="true"]') ?? null;
-        const elements =
-          tablist === null
-            ? []
-            : Array.from(tablist.querySelectorAll<HTMLElement>("[data-right-panel-tab]"));
-        const order = elements.map(
-          (element) => element.getAttribute("data-right-panel-tab") as RightPanelTab,
-        );
-        const from = order.indexOf(pending.tab);
-        if (from === -1 || order.length < 2) {
-          pending = null;
-          detach();
-          return;
-        }
-        suppressClickRef.current = true;
-        commit({
-          tab: pending.tab,
-          order,
-          bounds: elements.map((element) => ({
-            left: element.offsetLeft,
-            width: element.offsetWidth,
-          })),
-          from,
-          to: from,
-          startX: pending.startX,
-          dx: 0,
-          settling: false,
-        });
-        pending = null;
-      }
-      const state = dragRef.current;
-      if (state === null || state.settling) {
-        return;
-      }
-      const first = state.bounds[0];
-      const last = state.bounds[state.bounds.length - 1];
-      const own = state.bounds[state.from];
-      if (first === undefined || last === undefined || own === undefined) {
-        return;
-      }
-      const dx = Math.max(
-        first.left - own.left,
-        Math.min(last.left + last.width - (own.left + own.width), event.clientX - state.startX),
-      );
-      commit({ ...state, dx, to: dragTargetIndex(state.bounds, state.from, dx) });
-    }
-
-    function onPointerUp() {
-      pending = null;
-      detach();
-      const state = dragRef.current;
-      if (state === null || state.settling) {
-        return;
-      }
-      dropSuppressionAfterClick();
-      const settled: TabDragState = {
-        ...state,
-        dx: dragSettleOffset(state.bounds, state.from, state.to),
-        settling: true,
-      };
-      commit(settled);
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        // Reorder and release in one commit, so the new order never renders
-        // under the old transforms.
-        if (settled.to !== settled.from) {
-          onReorderTabRef.current?.(settled.tab, settled.to);
-        }
-        commit(null);
-      }, TAB_DRAG_SETTLE_MS);
-    }
-
-    function onPointerCancel() {
-      dropSuppressionAfterClick();
-      cancel();
-    }
-
-    machineRef.current = {
-      begin: (tab, event) => {
-        if (onReorderTabRef.current === undefined) {
-          return;
-        }
-        if (event.button !== 0 || dragRef.current !== null) {
-          return;
-        }
-        // The ✕ is deliberately NOT excluded: in icon mode it covers the whole
-        // active tab, so refusing to drag from it made that tab undraggable.
-        // The travel threshold is what separates the two gestures — a still
-        // press stays a close, and a real drag swallows the trailing click.
-        pending = { tab, startX: event.clientX };
-        window.addEventListener("pointermove", onPointerMove);
-        window.addEventListener("pointerup", onPointerUp);
-        window.addEventListener("pointercancel", onPointerCancel);
-      },
-      cancel,
-    };
-  }
-  const machine = machineRef.current;
-
-  useEffect(() => () => machine.cancel(), [machine]);
-
-  // A strip mutated mid-drag invalidates the measured order; drop the drag
-  // rather than reorder a list that no longer matches it.
-  const openTabsKey = input.openTabs.join(",");
-  useEffect(() => {
-    const state = dragRef.current;
-    if (state !== null && state.order.join(",") !== openTabsKey) {
-      machine.cancel();
-    }
-  }, [machine, openTabsKey]);
-
-  const beginTabDrag = useCallback(
-    (tab: RightPanelTab) => (event: React.PointerEvent) => machine.begin(tab, event),
-    [machine],
-  );
-  const suppressDragClick = useCallback((event: React.MouseEvent) => {
-    if (!suppressClickRef.current) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }, []);
-
-  return { drag, beginTabDrag, suppressDragClick };
+  readonly visual: DragReorderVisual | null;
 }
 
 function TabStripItem({
@@ -500,7 +203,7 @@ function TabStripItem({
           "transition-transform duration-150 ease-out",
       )}
       {...(reorder?.visual
-        ? { style: { transform: `translateX(${reorder.visual.offsetX}px)` } }
+        ? { style: { transform: `translateX(${reorder.visual.offset}px)` } }
         : {})}
       {...(measuring
         ? {}
@@ -709,10 +412,29 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
   const { mode, rowRef, measureRef, actionsRef, trailingRef } = useTabStripMode(openTabs.join(","));
   const iconOnly = mode === "icons";
   const reorderable = onReorderTab !== undefined && openTabs.length > 1;
-  const { drag, beginTabDrag, suppressDragClick } = useTabDragReorder({
-    stripRef,
-    openTabs,
-    onReorderTab: reorderable ? onReorderTab : undefined,
+  const { drag, beginDrag, suppressDragClick } = usePointerDragReorder<RightPanelTab>({
+    axis: "x",
+    gapPx: TAB_GAP_PX,
+    measure: () => {
+      const tablist =
+        stripRef.current?.querySelector<HTMLElement>('[data-right-panel-tablist="true"]') ?? null;
+      const elements =
+        tablist === null
+          ? []
+          : Array.from(tablist.querySelectorAll<HTMLElement>("[data-right-panel-tab]"));
+      return {
+        order: elements.map(
+          (element) => element.getAttribute("data-right-panel-tab") as RightPanelTab,
+        ),
+        bounds: elements.map((element) => ({
+          start: element.offsetLeft,
+          size: element.offsetWidth,
+        })),
+      };
+    },
+    onReorder: reorderable ? onReorderTab : undefined,
+    // A tab auto-opened or middle-click closed under the drag cancels it.
+    layoutKey: openTabs.join(","),
   });
 
   // Selecting or opening a tab brings it into view, by the smallest scroll that
@@ -831,9 +553,14 @@ export const RightPanelTabStrip = memo(function RightPanelTabStrip({
                   {...(reorderable
                     ? {
                         reorder: {
-                          onPointerDown: beginTabDrag(tab),
+                          // The ✕ is deliberately NOT excluded: in icon mode it
+                          // covers the whole active tab, so refusing to drag from
+                          // it made that tab undraggable. The travel threshold is
+                          // what separates the two gestures: a still press stays a
+                          // close, and a real drag swallows the trailing click.
+                          onPointerDown: (event) => beginDrag(tab, event),
                           onClickCapture: suppressDragClick,
-                          visual: tabDragVisual(drag, tab),
+                          visual: dragReorderVisual(drag, tab, TAB_GAP_PX),
                         },
                       }
                     : {})}

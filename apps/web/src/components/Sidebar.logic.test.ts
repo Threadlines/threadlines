@@ -43,6 +43,14 @@ import {
   resolveScopedComposeTarget,
   resolveScopedProjectKeys,
   sortInboxThreads,
+  sortInboxThreadsBy,
+  seedInboxCustomOrder,
+  moveInInboxCustomOrder,
+  trimInboxCustomOrder,
+  orderInboxLiveRowsByGroup,
+  countInboxPinDividers,
+  moveInInboxGroupOrder,
+  inboxCustomOrderPeers,
   summarizeChildThreads,
   windowInboxDoneRows,
   labelWrappedRowsByDay,
@@ -1491,6 +1499,196 @@ describe("resolveScopedComposeTarget", () => {
     expect(
       target({ scopedProjectKeys: ["grouped"], openProjectKey: null, scopedEnvironmentId: "pc" }),
     ).toEqual({ kind: "member", member: { environmentId: "pc", id: "grouped-pc" } });
+  });
+});
+
+describe("the inbox's sorts", () => {
+  const environmentId = EnvironmentId.make("environment-local");
+  const thread = (
+    id: string,
+    day: number,
+    overrides: { title?: string; pinned?: boolean; lastMessageDay?: number } = {},
+  ) => {
+    const createdAt = `2026-07-${String(day).padStart(2, "0")}T00:00:00.000Z`;
+    return {
+      environmentId,
+      id: ThreadId.make(id),
+      title: overrides.title ?? id,
+      createdAt,
+      updatedAt: createdAt,
+      latestUserMessageAt:
+        overrides.lastMessageDay === undefined
+          ? createdAt
+          : `2026-07-${String(overrides.lastMessageDay).padStart(2, "0")}T00:00:00.000Z`,
+      pinnedAt: overrides.pinned ? "2026-07-30T00:00:00.000Z" : null,
+    };
+  };
+  const key = (id: string) => scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+  const ids = (threads: readonly { readonly id: string }[]) => threads.map(({ id }) => id);
+
+  it("orders by date or title, and pins lead in every sort", () => {
+    const threads = [
+      thread("banana", 2),
+      thread("Apple 10", 1),
+      thread("Apple 9", 4),
+      thread("pinned-zebra", 3, { pinned: true }),
+    ];
+    expect(ids(sortInboxThreadsBy(threads, "created_desc", []))).toEqual([
+      "pinned-zebra",
+      "Apple 9",
+      "banana",
+      "Apple 10",
+    ]);
+    expect(ids(sortInboxThreadsBy(threads, "created_asc", []))).toEqual([
+      "pinned-zebra",
+      "Apple 10",
+      "banana",
+      "Apple 9",
+    ]);
+    // Numbers in a title read as numbers, and case doesn't split the list.
+    expect(ids(sortInboxThreadsBy(threads, "title_asc", []))).toEqual([
+      "pinned-zebra",
+      "Apple 9",
+      "Apple 10",
+      "banana",
+    ]);
+  });
+
+  it("keeps a custom order through activity, with threads it hasn't placed at the bottom", () => {
+    const threads = [
+      thread("second", 1, { lastMessageDay: 29 }),
+      thread("first", 2),
+      thread("newer-unplaced", 6),
+      thread("older-unplaced", 5),
+      thread("pinned", 3, { pinned: true }),
+    ];
+    expect(
+      ids(sortInboxThreadsBy(threads, "custom", [key("first"), key("second"), key("pinned")])),
+    ).toEqual(["pinned", "first", "second", "older-unplaced", "newer-unplaced"]);
+  });
+
+  it("starts a custom order from what's on screen, so nothing jumps", () => {
+    const threads = [
+      thread("old-but-busy", 1, { lastMessageDay: 29 }),
+      thread("pinned", 2, { pinned: true }),
+      thread("quiet", 3),
+    ];
+    const onScreen = ids(sortInboxThreadsBy(threads, "recent", []));
+    expect(onScreen).toEqual(["pinned", "old-but-busy", "quiet"]);
+    const seeded = seedInboxCustomOrder(threads, "recent");
+    expect(ids(sortInboxThreadsBy(threads, "custom", seeded))).toEqual(onScreen);
+  });
+
+  it("moves a row among its peers and leaves every other thread's place alone", () => {
+    const threads = ["a1", "hidden", "b1", "a2", "a3"].map((id, index) => thread(id, index + 1));
+    const customOrder = threads.map((row) => key(row.id));
+    // a3 to the top of group A: B stays second, and the filtered-out thread stays put.
+    expect(
+      moveInInboxCustomOrder({
+        customOrder,
+        threads,
+        peers: [key("a1"), key("a2"), key("a3")],
+        threadKey: key("a3"),
+        toIndex: 0,
+      }),
+    ).toEqual([key("a3"), key("hidden"), key("b1"), key("a1"), key("a2")]);
+  });
+
+  it("places threads the order hadn't named when a move saves it, as they were drawn", () => {
+    const threads = [thread("listed", 1), thread("older", 2), thread("newer", 3)];
+    expect(
+      moveInInboxCustomOrder({
+        customOrder: [key("listed")],
+        threads,
+        peers: [key("listed"), key("older"), key("newer")],
+        threadKey: key("newer"),
+        toIndex: 1,
+      }),
+    ).toEqual([key("listed"), key("newer"), key("older")]);
+  });
+
+  it("only gives up the place of a thread it can't see once the list is long", () => {
+    const seen = thread("seen", 1);
+    const unseen = (index: number) => key(`unseen-${index}`);
+    const short = [key("seen"), unseen(0)];
+    // Archived, or on a computer that's offline: it comes back to its place.
+    expect(trimInboxCustomOrder(short, [seen])).toEqual(short);
+
+    const long = [unseen(0), key("seen"), ...Array.from({ length: 1000 }, (_, i) => unseen(i + 1))];
+    const trimmed = trimInboxCustomOrder(long, [seen]);
+    expect(trimmed).toHaveLength(1000);
+    expect(trimmed).toContain(key("seen"));
+    expect(trimmed).not.toContain(unseen(0));
+    expect(trimmed.at(-1)).toBe(unseen(1000));
+  });
+
+  it("puts groups in the dragged order, with new ones after and nothing saved leaving rows alone", () => {
+    const rows = [
+      { key: "a1", group: "project:a" },
+      { key: "b1", group: "project:b" },
+      { key: "a2", group: "project:a" },
+      { key: "c1", group: "project:c" },
+    ];
+    const groupOf = (row: (typeof rows)[number]) => row.group;
+    expect(orderInboxLiveRowsByGroup(rows, groupOf, [])).toBe(rows);
+    // The other grouping's saved order says nothing about these.
+    expect(orderInboxLiveRowsByGroup(rows, groupOf, ["computer:x"])).toBe(rows);
+    expect(orderInboxLiveRowsByGroup(rows, groupOf, ["project:b"]).map((row) => row.key)).toEqual([
+      "b1",
+      "a1",
+      "a2",
+      "c1",
+    ]);
+  });
+
+  it("counts one line for each group that has pinned and unpinned rows", () => {
+    const row = (group: string, pinned: boolean) => ({
+      group,
+      entry: { thread: { pinnedAt: pinned ? "2026-07-30T00:00:00.000Z" : null } },
+    });
+    const rows = [row("a", true), row("a", false), row("b", true), row("c", false)];
+    expect(countInboxPinDividers(rows, (entry) => entry.group)).toBe(1);
+    expect(countInboxPinDividers(rows, () => null)).toBe(1);
+    expect(countInboxPinDividers([row("a", false)], () => null)).toBe(0);
+  });
+
+  it("moves a group among those on screen, placing them all and leaving hidden ones alone", () => {
+    // Nothing saved yet: every group on screen gets a place, so none jumps.
+    expect(
+      moveInInboxGroupOrder({
+        groupOrder: [],
+        shownGroups: ["project:a", "project:b", "project:c"],
+        groupKey: "project:c",
+        toIndex: 0,
+      }),
+    ).toEqual(["project:c", "project:a", "project:b"]);
+    // A filtered-out project and the other grouping's order keep their places.
+    expect(
+      moveInInboxGroupOrder({
+        groupOrder: ["computer:x", "project:a", "project:hidden", "project:b"],
+        shownGroups: ["project:a", "project:b"],
+        groupKey: "project:b",
+        toIndex: 0,
+      }),
+    ).toEqual(["computer:x", "project:b", "project:hidden", "project:a"]);
+  });
+
+  it("lets a row swap only under its own header and on its own side of the pins", () => {
+    const rows = [
+      {
+        group: "a",
+        entry: { threadKey: key("pinned-a"), thread: thread("pinned-a", 1, { pinned: true }) },
+      },
+      { group: "a", entry: { threadKey: key("a1"), thread: thread("a1", 2) } },
+      { group: "b", entry: { threadKey: key("b1"), thread: thread("b1", 3) } },
+      { group: "a", entry: { threadKey: key("a2"), thread: thread("a2", 4) } },
+    ];
+    expect(inboxCustomOrderPeers(rows, key("a2"), (row) => row.group)).toEqual([
+      key("a1"),
+      key("a2"),
+    ]);
+    // A child thread under its parent isn't a row of the list.
+    expect(inboxCustomOrderPeers(rows, key("a-child"), (row) => row.group)).toEqual([]);
   });
 });
 

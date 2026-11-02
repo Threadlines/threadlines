@@ -43,6 +43,9 @@ const clientSettings: ClientSettings = {
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,
   sidebarGrouping: "none",
+  inboxSort: "recent",
+  inboxCustomOrder: [],
+  inboxGroupOrder: [],
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",

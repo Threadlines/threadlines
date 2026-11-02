@@ -516,6 +516,9 @@ describe("wsApi", () => {
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
       sidebarGrouping: "none" as const,
+      inboxSort: "recent" as const,
+      inboxCustomOrder: [],
+      inboxGroupOrder: [],
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -915,6 +918,9 @@ describe("wsApi", () => {
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
       sidebarGrouping: "none" as const,
+      inboxSort: "recent" as const,
+      inboxCustomOrder: [],
+      inboxGroupOrder: [],
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,

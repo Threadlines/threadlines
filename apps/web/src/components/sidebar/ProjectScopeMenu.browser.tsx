@@ -68,6 +68,9 @@ async function renderMenu(
         roomsOnly={null}
         onRoomsOnlyChange={vi.fn()}
         grouping="none"
+        sort="recent"
+        onSortChange={vi.fn()}
+        onResetCustomOrder={vi.fn()}
         onGroupingChange={vi.fn()}
         onAddProject={vi.fn()}
         onNewThread={vi.fn()}
@@ -264,6 +267,32 @@ describe("ProjectScopeMenu", () => {
       expect(triggerText()).toBe("3 projects");
     } finally {
       await threeMounted.unmount();
+    }
+  });
+
+  it("picks how the list is sorted", async () => {
+    const onSortChange = vi.fn();
+    const { mounted } = await renderMenu({ sort: "recent", onSortChange });
+    try {
+      await page.getByTestId("inbox-view-trigger").click();
+      await expect.element(page.getByText("Sort", { exact: true })).toBeVisible();
+      expect(document.querySelector("[data-testid='inbox-sort-reset']")).toBeNull();
+      await page.getByTestId("inbox-sort-custom").click();
+      expect(onSortChange).toHaveBeenCalledWith("custom");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("offers to reset the custom order only while it's the sort in use", async () => {
+    const onResetCustomOrder = vi.fn();
+    const { mounted } = await renderMenu({ sort: "custom", onResetCustomOrder });
+    try {
+      await page.getByTestId("inbox-view-trigger").click();
+      await page.getByTestId("inbox-sort-reset").click();
+      expect(onResetCustomOrder).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.unmount();
     }
   });
 

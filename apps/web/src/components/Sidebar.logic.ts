@@ -1,6 +1,7 @@
 import * as React from "react";
 import type {
   AgentThreadStatusWord,
+  ContextMenuItem,
   EnvironmentId,
   RemoteChildRequestStatus,
   FamilyRemoteChild,
@@ -8,7 +9,7 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@threadlines/contracts";
-import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
+import type { InboxSort, SidebarProjectSortOrder } from "@threadlines/contracts/settings";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   getThreadInFlightStatus,
@@ -1133,6 +1134,162 @@ export function sortInboxThreads<
   const unpinned = sortThreads(threads.filter((thread) => thread.pinnedAt === null));
 
   return [...pinned, ...unpinned];
+}
+
+type InboxSortInput = Pick<
+  SidebarThreadSummary,
+  "environmentId" | "id" | "title" | "createdAt" | "updatedAt" | "latestUserMessageAt" | "pinnedAt"
+>;
+
+const TITLE_COLLATOR = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+const createdMs = (thread: Pick<SidebarThreadSummary, "createdAt">) =>
+  toSortableTimestamp(thread.createdAt) ?? 0;
+const inboxThreadKey = (thread: Pick<SidebarThreadSummary, "environmentId" | "id">) =>
+  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+
+/** Threads the custom order hasn't placed: below the rest, oldest first. */
+function compareUnplacedThreads(left: InboxSortInput, right: InboxSortInput): number {
+  return createdMs(left) - createdMs(right) || left.id.localeCompare(right.id);
+}
+
+/**
+ * The inbox's live order for the user's sort. Pins lead in every sort; `recent`
+ * is {@link sortInboxThreads}. In `custom`, a thread the saved order doesn't
+ * name (a new one, or one that just became a row of its own) goes to the
+ * bottom, so nothing but the user ever moves a row.
+ */
+export function sortInboxThreadsBy<T extends InboxSortInput>(
+  threads: readonly T[],
+  sort: InboxSort,
+  customOrder: readonly string[],
+): T[] {
+  if (sort === "recent") {
+    return sortInboxThreads(threads);
+  }
+  let compare: (left: T, right: T) => number;
+  switch (sort) {
+    case "created_desc":
+      compare = (left, right) =>
+        createdMs(right) - createdMs(left) || left.id.localeCompare(right.id);
+      break;
+    case "created_asc":
+      compare = compareUnplacedThreads;
+      break;
+    case "title_asc":
+      compare = (left, right) =>
+        TITLE_COLLATOR.compare(left.title, right.title) || compareUnplacedThreads(left, right);
+      break;
+    case "custom": {
+      const rankByKey = new Map(customOrder.map((key, index) => [key, index] as const));
+      const rankOf = (thread: T) =>
+        rankByKey.get(inboxThreadKey(thread)) ?? Number.POSITIVE_INFINITY;
+      compare = (left, right) => {
+        const leftRank = rankOf(left);
+        const rightRank = rankOf(right);
+        return leftRank === rightRank ? compareUnplacedThreads(left, right) : leftRank - rightRank;
+      };
+      break;
+    }
+  }
+  const sorted = threads.toSorted(compare);
+  return [
+    ...sorted.filter((thread) => thread.pinnedAt !== null),
+    ...sorted.filter((thread) => thread.pinnedAt === null),
+  ];
+}
+
+/**
+ * The custom order to start from the first time the user picks it: every open
+ * thread as the current sort has them, so nothing on screen moves. Child threads
+ * count too: a filter can stand one on its own, and it needs a place then.
+ */
+export function seedInboxCustomOrder(
+  threads: readonly InboxSortInput[],
+  sort: InboxSort,
+): string[] {
+  return sortInboxThreadsBy(threads, sort, []).map(inboxThreadKey);
+}
+
+/**
+ * The saved order with one row moved among its peers: the rows it can swap with,
+ * in the order they're drawn. The peers trade the places they already hold in
+ * the list, so nothing else moves: not a thread a filter hides, one that's
+ * wrapped up or on an offline computer, nor another group, whose place in the
+ * inbox comes from where its first row stands.
+ */
+export function moveInInboxCustomOrder(input: {
+  readonly customOrder: readonly string[];
+  /** Every thread the app knows, including ones its sort would put below the saved list. */
+  readonly threads: readonly InboxSortInput[];
+  readonly peers: readonly string[];
+  readonly threadKey: string;
+  readonly toIndex: number;
+}): string[] {
+  const placed = new Set(input.customOrder);
+  const order = [
+    ...placed,
+    ...input.threads
+      .filter((thread) => !placed.has(inboxThreadKey(thread)))
+      .toSorted(compareUnplacedThreads)
+      .map(inboxThreadKey),
+  ];
+  return tradeSavedPlaces(order, input.peers, input.threadKey, input.toIndex);
+}
+
+/** One key moved among its peers, who swap the places they hold in `order`; the rest stay put. */
+function tradeSavedPlaces(
+  order: readonly string[],
+  peers: readonly string[],
+  key: string,
+  toIndex: number,
+): string[] {
+  const fromIndex = peers.indexOf(key);
+  if (fromIndex === -1) {
+    return [...order];
+  }
+  const moved = peers.toSpliced(fromIndex, 1).toSpliced(toIndex, 0, key);
+  const peerSet = new Set(peers);
+  let nextPeer = 0;
+  return order.map((entry) => (peerSet.has(entry) ? (moved[nextPeer++] ?? entry) : entry));
+}
+
+const MAX_INBOX_CUSTOM_ORDER_LENGTH = 1000;
+
+/**
+ * Keeps the saved order from growing without end. A thread this app can't see
+ * isn't gone: it may be archived, or on a computer that's offline or still
+ * loading, and it gets its place back when it returns. So those places only go
+ * once the list is long, the ones nearest the top first, and never a thread the
+ * app can see.
+ */
+export function trimInboxCustomOrder(
+  customOrder: readonly string[],
+  threads: readonly Pick<SidebarThreadSummary, "environmentId" | "id">[],
+): string[] {
+  let excess = customOrder.length - MAX_INBOX_CUSTOM_ORDER_LENGTH;
+  if (excess <= 0) return [...customOrder];
+  const known = new Set(threads.map(inboxThreadKey));
+  return customOrder.filter((key) => {
+    if (excess <= 0 || known.has(key)) return true;
+    excess -= 1;
+    return false;
+  });
+}
+
+/** The rows a live row can swap with: under the same group header, on the same side of the pins. */
+export function inboxCustomOrderPeers<
+  R extends { readonly entry: { readonly threadKey: string; readonly thread: InboxSortInput } },
+>(rows: readonly R[], threadKey: string, groupKeyOf: (row: R) => string | null): string[] {
+  const row = rows.find((candidate) => candidate.entry.threadKey === threadKey);
+  if (row === undefined) return [];
+  const group = groupKeyOf(row);
+  const pinned = row.entry.thread.pinnedAt !== null;
+  return rows
+    .filter(
+      (candidate) =>
+        (candidate.entry.thread.pinnedAt !== null) === pinned && groupKeyOf(candidate) === group,
+    )
+    .map((candidate) => candidate.entry.threadKey);
 }
 
 type DoneSortInput = Pick<
@@ -2315,6 +2472,80 @@ export function groupInboxLiveRows<R>(
   }
   return [...rowsByKey].map(([key, groupRows]) => ({ key, rows: groupRows }));
 }
+
+/** How many lines between pinned and unpinned rows the list draws: one per group with both. */
+export function countInboxPinDividers<
+  R extends { readonly entry: { readonly thread: { readonly pinnedAt: string | null } } },
+>(rows: readonly R[], groupKeyOf: (row: R) => string | null): number {
+  const pinned = new Set<string | null>();
+  const unpinned = new Set<string | null>();
+  for (const row of rows) {
+    (row.entry.thread.pinnedAt === null ? unpinned : pinned).add(groupKeyOf(row));
+  }
+  return [...pinned].filter((group) => unpinned.has(group)).length;
+}
+
+/**
+ * The rows with their groups in the order the user dragged them into. A group
+ * that has no saved place goes after the ones that do, where its first row
+ * stood. With nothing saved the rows come back untouched.
+ */
+export function orderInboxLiveRowsByGroup<R>(
+  rows: readonly R[],
+  groupKeyOf: (row: R) => string,
+  groupOrder: readonly string[],
+): readonly R[] {
+  const rankByKey = new Map(groupOrder.map((key, index) => [key, index] as const));
+  const groups = groupInboxLiveRows(rows, groupKeyOf);
+  if (!groups.some((group) => rankByKey.has(group.key))) {
+    return rows;
+  }
+  const rankOf = (key: string) => rankByKey.get(key) ?? Number.POSITIVE_INFINITY;
+  return groups
+    .toSorted((left, right) => {
+      const leftRank = rankOf(left.key);
+      const rightRank = rankOf(right.key);
+      return leftRank === rightRank ? 0 : leftRank - rightRank;
+    })
+    .flatMap((group) => group.rows);
+}
+
+/**
+ * The saved group order with one header moved among the ones on screen. Every
+ * group on screen gets a place, so moving one never makes another jump, and a
+ * group a filter hides, or one of the other grouping's, keeps its own.
+ */
+export function moveInInboxGroupOrder(input: {
+  readonly groupOrder: readonly string[];
+  /** The groups on screen, in the order they're drawn. */
+  readonly shownGroups: readonly string[];
+  readonly groupKey: string;
+  readonly toIndex: number;
+}): string[] {
+  const placed = new Set(input.groupOrder);
+  const order = [...placed, ...input.shownGroups.filter((key) => !placed.has(key))];
+  return tradeSavedPlaces(order, input.shownGroups, input.groupKey, input.toIndex);
+}
+
+/**
+ * What a group header's menu offers: moving it, and giving the current grouping
+ * its automatic order back once it has a saved one.
+ */
+export function describeInboxGroupMenu(input: {
+  readonly canMoveUp: boolean;
+  readonly canMoveDown: boolean;
+  readonly hasSavedOrder: boolean;
+}): ContextMenuItem<InboxGroupMenuAction>[] {
+  return [
+    { id: "move-up", label: "Move up", disabled: !input.canMoveUp },
+    { id: "move-down", label: "Move down", disabled: !input.canMoveDown },
+    ...(input.hasSavedOrder
+      ? [{ id: "reset" as const, label: "Use automatic order", separatorBefore: true }]
+      : []),
+  ];
+}
+
+export type InboxGroupMenuAction = "move-up" | "move-down" | "reset";
 
 /**
  * What a group's header counts: live threads blocked on the user, and live

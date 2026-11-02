@@ -22,6 +22,8 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
     keywords: ["thread", "worktree", "branch", "checkout", "setup script", "wrap", "archive"],
     body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there.
 
+The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, and the same button can reset the order. Pinned threads stay above a thin line in every sort. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
+
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
 
 The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort, Build or Plan mode, and the access level.
