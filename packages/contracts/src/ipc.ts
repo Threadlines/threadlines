@@ -259,7 +259,12 @@ import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { PreviewAutomationTargetSchema } from "./previewAutomation.ts";
-import type { ClientSettings, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import type {
+  ClientSettings,
+  ClientSettingsPatch,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
 import type {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -1397,7 +1402,13 @@ export interface DesktopBridge {
    */
   claimUpdateNotice?: () => Promise<boolean>;
   getClientSettings: () => Promise<ClientSettings | null>;
-  setClientSettings: (settings: ClientSettings) => Promise<void>;
+  /**
+   * Stores the settings in the patch over what is stored now, one save at a
+   * time across every window, and returns the stored settings.
+   */
+  updateClientSettings: (patch: ClientSettingsPatch) => Promise<ClientSettings>;
+  /** Calls the listener with the stored settings after each save, from any window. */
+  onClientSettingsChanged: (listener: (settings: ClientSettings) => void) => () => void;
   getSavedEnvironmentRegistry: () => Promise<readonly PersistedSavedEnvironmentRecord[]>;
   setSavedEnvironmentRegistry: (
     records: readonly PersistedSavedEnvironmentRecord[],
@@ -1595,7 +1606,13 @@ export interface LocalApi {
   };
   persistence: {
     getClientSettings: () => Promise<ClientSettings | null>;
-    setClientSettings: (settings: ClientSettings) => Promise<void>;
+    /**
+     * Whoever owns the storage merges the patch over what is stored now, so
+     * another window's change survives, and returns the stored settings.
+     */
+    updateClientSettings: (patch: ClientSettingsPatch) => Promise<ClientSettings>;
+    /** Calls the listener with the stored settings when another window has changed them. */
+    subscribeClientSettings: (listener: (settings: ClientSettings) => void) => () => void;
     getSavedEnvironmentRegistry: () => Promise<readonly PersistedSavedEnvironmentRecord[]>;
     setSavedEnvironmentRegistry: (
       records: readonly PersistedSavedEnvironmentRecord[],

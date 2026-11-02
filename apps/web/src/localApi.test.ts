@@ -1,4 +1,7 @@
 import {
+  type ClientSettings,
+  type ClientSettingsPatch,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   type DesktopBridge,
   EnvironmentId,
@@ -218,7 +221,8 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     getAppBranding: () => null,
     getLocalEnvironmentBootstrap: () => null,
     getClientSettings: async () => null,
-    setClientSettings: async () => undefined,
+    updateClientSettings: async (patch) => ({ ...DEFAULT_CLIENT_SETTINGS, ...patch }),
+    onClientSettingsChanged: () => () => undefined,
     getSavedEnvironmentRegistry: async () => [],
     setSavedEnvironmentRegistry: async () => undefined,
     getSavedEnvironmentSecret: async () => null,
@@ -524,7 +528,7 @@ describe("wsApi", () => {
     const getClientSettings = vi.fn().mockResolvedValue({
       ...clientSettings,
     });
-    const setClientSettings = vi.fn().mockResolvedValue(undefined);
+    const updateClientSettings = vi.fn().mockResolvedValue(clientSettings);
     const getSavedEnvironmentRegistry = vi.fn().mockResolvedValue([]);
     const setSavedEnvironmentRegistry = vi.fn().mockResolvedValue(undefined);
     const getSavedEnvironmentSecret = vi.fn().mockResolvedValue("bearer-token");
@@ -532,7 +536,7 @@ describe("wsApi", () => {
     const removeSavedEnvironmentSecret = vi.fn().mockResolvedValue(undefined);
     getWindowForTest().desktopBridge = makeDesktopBridge({
       getClientSettings,
-      setClientSettings,
+      updateClientSettings,
       getSavedEnvironmentRegistry,
       setSavedEnvironmentRegistry,
       getSavedEnvironmentSecret,
@@ -544,7 +548,9 @@ describe("wsApi", () => {
     const api = createLocalApi(rpcClientMock as never);
 
     await api.persistence.getClientSettings();
-    await api.persistence.setClientSettings(clientSettings);
+    await expect(api.persistence.updateClientSettings(clientSettings)).resolves.toBe(
+      clientSettings,
+    );
     await api.persistence.getSavedEnvironmentRegistry();
     await api.persistence.setSavedEnvironmentRegistry([]);
     await api.persistence.getSavedEnvironmentSecret(EnvironmentId.make("environment-local"));
@@ -555,7 +561,7 @@ describe("wsApi", () => {
     await api.persistence.removeSavedEnvironmentSecret(EnvironmentId.make("environment-local"));
 
     expect(getClientSettings).toHaveBeenCalledWith();
-    expect(setClientSettings).toHaveBeenCalledWith(clientSettings);
+    expect(updateClientSettings).toHaveBeenCalledWith(clientSettings);
     expect(getSavedEnvironmentRegistry).toHaveBeenCalledWith();
     expect(setSavedEnvironmentRegistry).toHaveBeenCalledWith([]);
     expect(getSavedEnvironmentSecret).toHaveBeenCalledWith("environment-local");
@@ -563,23 +569,53 @@ describe("wsApi", () => {
     expect(removeSavedEnvironmentSecret).toHaveBeenCalledWith("environment-local");
   });
 
-  it("saves device settings in order, and a failed save's put-back reaches the next save", async () => {
-    const saves: Array<{ readonly timestampFormat: string; readonly diffWordWrap: boolean }> = [];
+  /** A bridge whose saves wait for the test to answer them, against one shared store. */
+  function makeAnsweredSaves() {
+    const saves: Array<ClientSettingsPatch> = [];
     const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
-    getWindowForTest().desktopBridge = makeDesktopBridge({
-      setClientSettings: (settings) =>
-        new Promise<void>((resolve, reject) => {
-          saves.push(settings);
-          answers.push({ resolve, reject });
+    let stored: ClientSettings = DEFAULT_CLIENT_SETTINGS;
+    let announce: (settings: ClientSettings) => void = () => undefined;
+    const bridge = makeDesktopBridge({
+      updateClientSettings: (patch) =>
+        new Promise<ClientSettings>((resolve, reject) => {
+          saves.push(patch);
+          answers.push({
+            resolve: () => {
+              stored = { ...stored, ...patch };
+              resolve(stored);
+            },
+            reject,
+          });
         }),
+      onClientSettingsChanged: (listener) => {
+        announce = listener;
+        return () => undefined;
+      },
     });
-    const { updateClientSettingsAndPersist } = await import("./hooks/useSettings");
-    const until = async (done: () => boolean) => {
-      for (let tries = 0; tries < 100 && !done(); tries += 1) await Promise.resolve();
+    return {
+      bridge,
+      saves,
+      answers,
+      changeFromAnotherWindow: (patch: ClientSettingsPatch) => {
+        stored = { ...stored, ...patch };
+        announce(stored);
+      },
     };
+  }
+
+  const until = async (done: () => boolean) => {
+    for (let tries = 0; tries < 100 && !done(); tries += 1) await Promise.resolve();
+  };
+
+  it("saves device settings in order, and a failed save's put-back stays out of the next save", async () => {
+    const { bridge, saves, answers } = makeAnsweredSaves();
+    getWindowForTest().desktopBridge = bridge;
+    const { getClientSettings, updateClientSettingsAndPersist } =
+      await import("./hooks/useSettings");
 
     const first = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
     await until(() => saves.length === 1);
+    expect(saves[0]).toEqual({ timestampFormat: "24-hour" });
     const second = updateClientSettingsAndPersist({ diffWordWrap: false });
     await until(() => saves.length === 2);
     // The second save waits for the first, whatever order they'd finish in.
@@ -588,8 +624,9 @@ describe("wsApi", () => {
     answers[0]!.reject(new Error("disk full"));
     await expect(first).rejects.toThrow("disk full");
     await until(() => saves.length === 2);
-    // It saves the settings as they are now: the failed change put back, its own kept.
-    expect(saves[1]).toMatchObject({ timestampFormat: "locale", diffWordWrap: false });
+    // It saves what's owed: the failed change was put back, its own is kept.
+    expect(saves[1]).toEqual({ diffWordWrap: false });
+    expect(getClientSettings().timestampFormat).toBe("locale");
     answers[1]!.resolve();
     await expect(second).resolves.toBeUndefined();
 
@@ -600,26 +637,37 @@ describe("wsApi", () => {
     answers[2]!.reject(new Error("disk full"));
     await expect(third).rejects.toThrow("disk full");
     await until(() => saves.length === 4);
-    expect(saves[3]).toMatchObject({ timestampFormat: "12-hour" });
+    expect(saves[3]).toEqual({ timestampFormat: "12-hour" });
     answers[3]!.resolve();
     await expect(fourth).resolves.toBeUndefined();
   });
 
-  it("keeps a newer choice made in Settings over a device write and its failure", async () => {
-    const saves: Array<{ readonly timestampFormat: string }> = [];
-    const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
-    getWindowForTest().desktopBridge = makeDesktopBridge({
-      setClientSettings: (settings) =>
-        new Promise<void>((resolve, reject) => {
-          saves.push(settings);
-          answers.push({ resolve, reject });
-        }),
-    });
+  it("keeps a failed plain write owed, so the next save still carries it", async () => {
+    const { bridge, saves, answers } = makeAnsweredSaves();
+    getWindowForTest().desktopBridge = bridge;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
       await import("./hooks/useSettings");
-    const until = async (done: () => boolean) => {
-      for (let tries = 0; tries < 100 && !done(); tries += 1) await Promise.resolve();
-    };
+    await updateClientSettingsAndPersist({});
+
+    updateSettings({ diffWordWrap: false });
+    await until(() => saves.length === 1);
+    answers[0]!.reject(new Error("disk full"));
+    await vi.waitFor(() => expect(consoleError).toHaveBeenCalled());
+    expect(getClientSettings().diffWordWrap).toBe(false);
+
+    const next = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await until(() => saves.length === 2);
+    expect(saves[1]).toEqual({ diffWordWrap: false, timestampFormat: "24-hour" });
+    answers[1]!.resolve();
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("keeps a newer choice made in Settings over a device write and its failure", async () => {
+    const { bridge, saves, answers } = makeAnsweredSaves();
+    getWindowForTest().desktopBridge = bridge;
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
 
     // The agent's change waits behind a save in flight; a choice made after it stands.
     updateSettings({ diffWordWrap: false });
@@ -629,41 +677,34 @@ describe("wsApi", () => {
     updateSettings({ timestampFormat: "12-hour" });
     answers[0]!.resolve();
     await until(() => saves.length === 2);
-    expect(saves[1]).toMatchObject({ timestampFormat: "12-hour" });
+    expect(saves[1]).toEqual({ timestampFormat: "12-hour" });
     answers[1]!.resolve();
     await expect(queued).resolves.toBeUndefined();
+    // That save held the choice too, so the one behind it has nothing to send.
+    await vi.waitFor(() => expect(saves).toHaveLength(2));
 
     // The same value written by hand while a device write's save fails: it stays.
-    await until(() => saves.length === 3);
-    answers[2]!.resolve();
     const failing = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
-    await until(() => saves.length === 4);
+    await until(() => saves.length === 3);
     updateSettings({ timestampFormat: "24-hour" });
-    answers[3]!.reject(new Error("disk full"));
+    answers[2]!.reject(new Error("disk full"));
     await expect(failing).rejects.toThrow("disk full");
-    await until(() => saves.length === 5);
-    expect(saves[4]).toMatchObject({ timestampFormat: "24-hour" });
-    answers[4]!.resolve();
+    await until(() => saves.length === 4);
+    expect(saves[3]).toEqual({ timestampFormat: "24-hour" });
+    answers[3]!.resolve();
   });
 
   it("puts overlapping failed device writes back to where they started", async () => {
-    const answers: Array<{ reject: (error: Error) => void; resolve: () => void }> = [];
-    const saved: string[] = [];
-    getWindowForTest().desktopBridge = makeDesktopBridge({
-      setClientSettings: (settings) =>
-        new Promise<void>((resolve, reject) => {
-          saved.push(settings.timestampFormat);
-          answers.push({ resolve, reject });
-        }),
-    });
+    const { bridge, saves, answers } = makeAnsweredSaves();
+    getWindowForTest().desktopBridge = bridge;
     const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
       await import("./hooks/useSettings");
     const first = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
-    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    await vi.waitFor(() => expect(saves).toHaveLength(1));
     const second = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
     answers[0]!.reject(new Error("disk full"));
     await expect(first).rejects.toThrow("disk full");
-    await vi.waitFor(() => expect(saved).toHaveLength(2));
+    await vi.waitFor(() => expect(saves).toHaveLength(2));
     answers[1]!.reject(new Error("disk full"));
     await expect(second).rejects.toThrow("disk full");
     expect(getClientSettings().timestampFormat).toBe("locale");
@@ -672,12 +713,121 @@ describe("wsApi", () => {
     const third = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
     updateSettings({ timestampFormat: "12-hour" });
     expect(getClientSettings().timestampFormat).toBe("12-hour");
-    await vi.waitFor(() => expect(saved).toHaveLength(3));
+    await vi.waitFor(() => expect(saves).toHaveLength(3));
+    expect(saves[2]).toEqual({ timestampFormat: "12-hour" });
     answers[2]!.resolve();
     await third;
-    await vi.waitFor(() => expect(saved).toHaveLength(4));
-    answers[3]!.resolve();
-    expect(saved[3]).toBe("12-hour");
+  });
+
+  it("follows another window's change but keeps its own unsaved setting", async () => {
+    const { bridge, saves, answers, changeFromAnotherWindow } = makeAnsweredSaves();
+    getWindowForTest().desktopBridge = bridge;
+    const { getClientSettings, updateClientSettingsAndPersist } =
+      await import("./hooks/useSettings");
+    await updateClientSettingsAndPersist({});
+
+    const unchanged = getClientSettings();
+    changeFromAnotherWindow({});
+    // Nothing changed for this window, so nothing here re-renders.
+    expect(getClientSettings()).toBe(unchanged);
+
+    const own = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await until(() => saves.length === 1);
+    changeFromAnotherWindow({ timestampFormat: "12-hour", diffWordWrap: false });
+    expect(getClientSettings()).toMatchObject({
+      timestampFormat: "24-hour",
+      diffWordWrap: false,
+    });
+
+    // Its save names only its own setting, and once stored the setting follows again.
+    expect(saves[0]).toEqual({ timestampFormat: "24-hour" });
+    answers[0]!.resolve();
+    await own;
+    changeFromAnotherWindow({ timestampFormat: "12-hour" });
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+
+    // A failed write goes back to what the other window last stored.
+    const failing = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await until(() => saves.length === 2);
+    answers[1]!.reject(new Error("disk full"));
+    await expect(failing).rejects.toThrow("disk full");
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+  });
+
+  it("doesn't let hydration undo a write made while settings were loading", async () => {
+    const { bridge, saves, answers } = makeAnsweredSaves();
+    let answerRead: (settings: ClientSettings) => void = () => undefined;
+    bridge.getClientSettings = () =>
+      new Promise((resolve) => {
+        answerRead = resolve;
+      });
+    getWindowForTest().desktopBridge = bridge;
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
+
+    const loaded = updateClientSettingsAndPersist({});
+    updateSettings({ diffWordWrap: false });
+    await until(() => saves.length === 1);
+    // Only the write goes to storage, not the defaults this window still holds.
+    expect(saves[0]).toEqual({ diffWordWrap: false });
+
+    answerRead({ ...DEFAULT_CLIENT_SETTINGS, timestampFormat: "12-hour", diffWordWrap: true });
+    await until(() => getClientSettings().timestampFormat === "12-hour");
+    expect(getClientSettings()).toMatchObject({
+      timestampFormat: "12-hour",
+      diffWordWrap: false,
+    });
+    answers[0]!.resolve();
+    await loaded;
+  });
+
+  it("keeps two browser tabs' changes apart, and a tab follows the other's change", async () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const testWindow = getWindowForTest() as unknown as {
+      addEventListener: (type: string, listener: (event: unknown) => void) => void;
+      removeEventListener: () => void;
+    };
+    testWindow.addEventListener = (type, listener) => listeners.set(type, listener);
+    testWindow.removeEventListener = () => undefined;
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: (type: string, listener: (event: unknown) => void) =>
+        listeners.set(type, listener),
+      removeEventListener: () => undefined,
+    });
+    const { CLIENT_SETTINGS_STORAGE_KEY } = await import("./clientPersistenceStorage");
+    const { getClientSettings, updateClientSettingsAndPersist } =
+      await import("./hooks/useSettings");
+    await updateClientSettingsAndPersist({});
+
+    // Tab B stores its change. This tab's copy is stale until it hears about it...
+    const stored = () =>
+      JSON.parse(
+        window.localStorage.getItem(CLIENT_SETTINGS_STORAGE_KEY) ?? "{}",
+      ) as ClientSettings;
+    window.localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...stored(), diffWordWrap: false }),
+    );
+    expect(getClientSettings().diffWordWrap).toBe(true);
+
+    // ...and its own save doesn't overwrite B's change from that stale copy.
+    await updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    expect(stored()).toMatchObject({ diffWordWrap: false, timestampFormat: "24-hour" });
+
+    listeners.get("storage")?.({ key: "threadlines:unrelated" });
+    expect(getClientSettings().diffWordWrap).toBe(true);
+    listeners.get("storage")?.({ key: CLIENT_SETTINGS_STORAGE_KEY });
+    expect(getClientSettings().diffWordWrap).toBe(false);
+
+    // A tab that missed the event, frozen on a phone, looks again when it's back in view.
+    window.localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...stored(), diffWordWrap: true }),
+    );
+    listeners.get("visibilitychange")?.({});
+    expect(getClientSettings().diffWordWrap).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it("falls back to browser storage for persistence when the desktop bridge is missing", async () => {
@@ -723,7 +873,9 @@ describe("wsApi", () => {
       timestampFormat: "24-hour" as const,
     };
 
-    await api.persistence.setClientSettings(clientSettings);
+    await expect(api.persistence.updateClientSettings(clientSettings)).resolves.toEqual(
+      clientSettings,
+    );
     await api.persistence.setSavedEnvironmentRegistry([
       {
         environmentId: EnvironmentId.make("environment-local"),

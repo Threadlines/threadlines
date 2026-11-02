@@ -54,7 +54,8 @@ const {
       shell: { openInEditor: openInEditorMock },
       persistence: {
         getClientSettings: vi.fn(async () => null),
-        setClientSettings: vi.fn(async () => undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
     })),
   };

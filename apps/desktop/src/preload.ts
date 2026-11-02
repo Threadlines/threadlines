@@ -99,8 +99,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       .invoke(IpcChannels.CLAIM_UPDATE_NOTICE_CHANNEL)
       .then((claimed: unknown) => claimed === true),
   getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
-  setClientSettings: (settings) =>
-    ipcRenderer.invoke(IpcChannels.SET_CLIENT_SETTINGS_CHANNEL, settings),
+  updateClientSettings: (patch) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_CLIENT_SETTINGS_CHANNEL, patch),
+  onClientSettingsChanged: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, settings: unknown) => {
+      if (typeof settings !== "object" || settings === null) return;
+      listener(settings as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.CLIENT_SETTINGS_CHANGED_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.CLIENT_SETTINGS_CHANGED_CHANNEL, wrappedListener);
+    };
+  },
   getSavedEnvironmentRegistry: () =>
     ipcRenderer.invoke(IpcChannels.GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL),
   setSavedEnvironmentRegistry: (records) =>

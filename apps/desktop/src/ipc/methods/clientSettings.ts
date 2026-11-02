@@ -1,4 +1,4 @@
-import { ClientSettingsSchema } from "@threadlines/contracts";
+import { ClientSettingsPatch, ClientSettingsSchema } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -17,12 +17,12 @@ export const getClientSettings = makeIpcMethod({
   }),
 });
 
-export const setClientSettings = makeIpcMethod({
-  channel: IpcChannels.SET_CLIENT_SETTINGS_CHANNEL,
-  payload: ClientSettingsSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.clientSettings.set")(function* (settings) {
+export const updateClientSettings = makeIpcMethod({
+  channel: IpcChannels.UPDATE_CLIENT_SETTINGS_CHANNEL,
+  payload: ClientSettingsPatch,
+  result: ClientSettingsSchema,
+  handler: Effect.fn("desktop.ipc.clientSettings.update")(function* (patch) {
     const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
-    yield* clientSettings.set(settings);
+    return yield* clientSettings.update(patch);
   }),
 });

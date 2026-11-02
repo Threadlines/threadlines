@@ -128,7 +128,8 @@ describe("ComposerDictationControl", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
     } as unknown as LocalApi;
     await __resetLocalApiForTests();

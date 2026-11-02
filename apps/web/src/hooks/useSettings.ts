@@ -19,6 +19,7 @@ import {
   UnifiedSettings,
 } from "@threadlines/contracts/settings";
 import { ensureLocalApi } from "~/localApi";
+import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
 import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";
 import { applySettingsUpdated, getServerConfig, useServerSettings } from "~/rpc/serverState";
@@ -90,16 +91,17 @@ async function hydrateClientSettings(): Promise<void> {
 
   const nextHydration = (async () => {
     try {
-      const persistedSettings = await ensureLocalApi().persistence.getClientSettings();
+      const { persistence } = ensureLocalApi();
+      // Before the read, so a change made while it runs isn't missed.
+      stopFollowingStoredClientSettings ??=
+        persistence.subscribeClientSettings(takeStoredClientSettings);
+      const persistedSettings = await persistence.getClientSettings();
       if (persistedSettings) {
-        savedClientSettings = { ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings };
-        replaceClientSettingsSnapshot(savedClientSettings);
+        takeStoredClientSettings(persistedSettings);
       }
     } catch (error) {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate failed`, error);
     } finally {
-      // Nothing stored yet: what a failed write goes back to is where it started.
-      savedClientSettings ??= getClientSettingsSnapshot();
       setClientSettingsHydrated(true);
     }
   })();
@@ -116,24 +118,61 @@ async function hydrateClientSettings(): Promise<void> {
 
 /** The save in flight, so the next one starts only after it. */
 let clientSettingsSaveChain: Promise<void> = Promise.resolve();
-/** The settings as last stored: what a failed write's setting goes back to. */
-let savedClientSettings: ClientSettings | null = null;
+/**
+ * The settings as storage last gave them, with every window's changes in them:
+ * what a failed write's setting goes back to.
+ */
+let savedClientSettings = DEFAULT_CLIENT_SETTINGS;
 /** Numbers writes in the order they were made, and which one last set each setting. */
 let clientSettingsWriteCount = 0;
-const clientSettingsLastWrite = new Map<string, number>();
+const clientSettingsLastWrite = new Map<keyof ClientSettings, number>();
+/**
+ * The settings changed here since a save last stored them. The next save carries
+ * them, a failed save's included, and a change from another window leaves them be.
+ */
+const unsavedClientSettings = new Set<keyof ClientSettings>();
+let stopFollowingStoredClientSettings: (() => void) | null = null;
 
 /**
- * Saves this device's settings as they are when the save runs, after every
- * save before it: saves land in order, and each holds every change made
- * before it ran (including a failed one's put-back), so an older snapshot
- * never lands over a newer one.
+ * Takes in the settings as storage holds them: this window's copy follows for
+ * every setting it has no unsaved write for. A value that already matches keeps
+ * its object, so nothing re-renders for a change that changes nothing here.
+ */
+function takeStoredClientSettings(stored: ClientSettings): void {
+  savedClientSettings = stored;
+  const current = getClientSettingsSnapshot();
+  const changes: Record<string, unknown> = {};
+  for (const key of Object.keys(stored) as Array<keyof ClientSettings>) {
+    if (!unsavedClientSettings.has(key) && !Equal.equals(current[key], stored[key])) {
+      changes[key] = stored[key];
+    }
+  }
+  if (Object.keys(changes).length > 0) {
+    replaceClientSettingsSnapshot({ ...current, ...changes });
+  }
+}
+
+/**
+ * Saves what changed here, after every save before it. Saves land in order, and
+ * each carries every setting changed since the last one that stored it, at its
+ * value when the save runs, so nothing is dropped and an older value never lands
+ * over a newer one. Settings it doesn't name stay as storage has them, so a stale
+ * copy here can't overwrite another window's change.
  */
 function saveClientSettingsInOrder(): Promise<void> {
   const { persistence } = ensureLocalApi();
   const save = clientSettingsSaveChain.then(async () => {
+    if (unsavedClientSettings.size === 0) return;
+    const savedThroughWrite = clientSettingsWriteCount;
     const settings = getClientSettingsSnapshot();
-    await persistence.setClientSettings(settings);
-    savedClientSettings = settings;
+    const keys = [...unsavedClientSettings];
+    const patch = Object.fromEntries(keys.map((key) => [key, settings[key]]));
+    savedClientSettings = await persistence.updateClientSettings(patch as ClientSettingsPatch);
+    for (const key of keys) {
+      if ((clientSettingsLastWrite.get(key) ?? 0) <= savedThroughWrite) {
+        unsavedClientSettings.delete(key);
+      }
+    }
   });
   clientSettingsSaveChain = save.catch(() => undefined);
   return save;
@@ -142,8 +181,9 @@ function saveClientSettingsInOrder(): Promise<void> {
 /** Changes memory at once, so the last write made is the one that stands. Returns its number. */
 function applyClientPatch(patch: ClientSettingsPatch): number {
   clientSettingsWriteCount += 1;
-  for (const key of Object.keys(patch)) {
+  for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
     clientSettingsLastWrite.set(key, clientSettingsWriteCount);
+    unsavedClientSettings.add(key);
   }
   replaceClientSettingsSnapshot({ ...getClientSettingsSnapshot(), ...patch });
   return clientSettingsWriteCount;
@@ -254,20 +294,22 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
  * settings to load first, so the write never puts defaults over them.
  *
  * A failed save puts back only the settings no later write has set, to what
- * was last stored, before the next save runs, so that save stores them too.
+ * was last stored, before the next save runs. Those match storage again, so no
+ * save owes them; the rest stay owed and the next save carries them.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
   // Only when it has to wait, so a write made right after this one still follows it.
   if (!clientSettingsHydrated) await hydrateClientSettings();
-  const before = getClientSettingsSnapshot();
   const write = applyClientPatch(patch);
   try {
     await saveClientSettingsInOrder();
   } catch (error) {
-    const stored = savedClientSettings ?? before;
     const restored: Record<string, unknown> = { ...getClientSettingsSnapshot() };
     for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
-      if (clientSettingsLastWrite.get(key) === write) restored[key] = stored[key];
+      if (clientSettingsLastWrite.get(key) === write) {
+        restored[key] = savedClientSettings[key];
+        unsavedClientSettings.delete(key);
+      }
     }
     replaceClientSettingsSnapshot(restored as ClientSettings);
     throw error;
@@ -312,9 +354,12 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
   clientSettingsSaveChain = Promise.resolve();
-  savedClientSettings = null;
+  savedClientSettings = DEFAULT_CLIENT_SETTINGS;
   clientSettingsWriteCount = 0;
   clientSettingsLastWrite.clear();
+  unsavedClientSettings.clear();
+  stopFollowingStoredClientSettings?.();
+  stopFollowingStoredClientSettings = null;
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }
