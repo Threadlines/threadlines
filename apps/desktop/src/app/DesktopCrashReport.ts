@@ -12,6 +12,7 @@
  * machine.
  */
 
+import { scrubUserPaths } from "@threadlines/shared/scrubUserPaths";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -75,28 +76,6 @@ export class DesktopCrashReport extends Context.Service<
   DesktopCrashReport,
   DesktopCrashReportShape
 >()("threadlines/desktop/CrashReport") {}
-
-/**
- * Replaces every occurrence of the user's home directory (either separator
- * style, any casing) with `~` so crash reports carry no usernames or absolute
- * personal paths.
- */
-export function scrubUserPaths(text: string, homeDirectory: string): string {
-  if (homeDirectory.length === 0) {
-    return text;
-  }
-  const variants = new Set([
-    homeDirectory,
-    homeDirectory.replaceAll("\\", "/"),
-    homeDirectory.replaceAll("/", "\\"),
-  ]);
-  let scrubbed = text;
-  for (const variant of variants) {
-    const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    scrubbed = scrubbed.replace(new RegExp(escaped, "gi"), "~");
-  }
-  return scrubbed;
-}
 
 /** Keeps the end of the captured stderr, where the fatal error lands. */
 export function truncateTail(text: string, maxChars: number = OUTPUT_TAIL_MAX_CHARS): string {
@@ -228,3 +207,5 @@ const makeDesktopCrashReport = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(DesktopCrashReport, makeDesktopCrashReport);
+
+export { scrubUserPaths };

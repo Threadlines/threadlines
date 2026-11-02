@@ -1013,6 +1013,19 @@ describe("connect tools: the assistants door", () => {
       }),
   );
 
+  it.effect("gives an assistant a project's folder name, never the path to it", () =>
+    Effect.gen(function* () {
+      const local = yield* makeWorld();
+      const assistant = yield* makeWorld({ door: "assistant" });
+      const folders = (world: typeof local) =>
+        world.handlers
+          .projects(CALLER)
+          .pipe(Effect.map((result) => result.projects.map((project) => project.folder)));
+      expect(yield* folders(local)).toEqual(["/repos/app"]);
+      expect(yield* folders(assistant)).toEqual(["app"]);
+    }),
+  );
+
   it.effect("records a setup that failed before its thread, for reads and waits", () =>
     Effect.gen(function* () {
       const world = yield* makeWorld({ door: "assistant", failSetup: true });

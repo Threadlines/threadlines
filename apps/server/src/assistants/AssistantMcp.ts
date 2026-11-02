@@ -72,6 +72,8 @@ export interface AssistantMcpTool {
   readonly description?: string;
   /** Parameters this door requires beyond the tool's own required ones. */
   readonly required?: ReadonlyArray<string>;
+  /** What this door says about the tool's effects, where it differs from the tool's own. */
+  readonly hints?: { readonly destructive?: boolean; readonly openWorld?: boolean };
   /** Runs it for `caller` with its decoded parameters: its success value. */
   readonly run: (caller: OutsideAgentCaller, parameters: unknown) => Effect.Effect<unknown>;
 }
@@ -112,6 +114,8 @@ export interface AssistantMcpOptions {
   readonly instructions?: string;
   /** Whether an answer fits the relay's frame. */
   readonly fits: (response: AssistantHttpResponse) => boolean;
+  /** Applied to every string in a tool's answer, so the user's home folder stays on the computer. */
+  readonly scrubText?: (text: string) => string;
 }
 
 export type JsonObject = Record<string, unknown>;
@@ -172,11 +176,21 @@ const listingOf = (entry: AssistantMcpTool): JsonObject => {
     annotations: {
       ...(title !== undefined ? { title } : {}),
       readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-      destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+      destructiveHint: entry.hints?.destructive ?? Context.get(tool.annotations, Tool.Destructive),
       idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-      openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+      openWorldHint: entry.hints?.openWorld ?? Context.get(tool.annotations, Tool.OpenWorld),
     },
   };
+};
+
+/** The same value with `scrub` applied to every string inside it. */
+const mapStrings = (value: unknown, scrub: (text: string) => string): unknown => {
+  if (typeof value === "string") return scrub(value);
+  if (Array.isArray(value)) return value.map((item) => mapStrings(item, scrub));
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, mapStrings(item, scrub)]),
+  );
 };
 
 const toolError = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
@@ -234,7 +248,8 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
         };
       }
       const value = yield* tool.entry.run(caller, decoded.success);
-      const encoded = yield* tool.encode(value);
+      const raw = yield* tool.encode(value);
+      const encoded = options.scrubText === undefined ? raw : mapStrings(raw, options.scrubText);
       return {
         result: {
           isError: false,
