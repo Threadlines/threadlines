@@ -2093,5 +2093,23 @@ address off, and both kinds' envelope `timestamp`.
   `token_endpoint_auth_methods_supported`. The singular field is only a
   preference, and ChatGPT picks from what both sides support, so the relay now
   accepts a client that lists `none`. It refused ChatGPT before the code step.
-- **Not checked yet:** a real client. Everything above ran against a fake
-  receiver and a fake door; the live test on the dot is still to do.
+- **Live test (Nov 2), real ChatGPT over the production relay, against a
+  throwaway computer with a stand-in agent:** sign-in through the code page; the
+  events on the plugin page; a dot and a Work chat each subscribing (the callback
+  check passed); the row in Settings; deliveries answered 2xx on the first try;
+  both replying on their own with the right project and link; a dot's "stop
+  monitoring" reaching `events/unsubscribe`, with the row and its key gone in
+  under 20 s. Four things we learned:
+  - **Runs start well after the 2xx.** Replies came roughly 10 to 25 minutes
+    after delivery, for both the dot and Work chat. The guide says processing is
+    asynchronous and promises no delay; the task showed no run in the meantime,
+    which looks like a failure until it isn't. This may differ once a plugin is
+    out of development status.
+  - **Three alerts gave a dot two replies.** The guide allows grouping events
+    into one run. We can't see which happened; every delivery was answered 2xx.
+  - **ChatGPT makes one subscription per event** with its own callback URL, and
+    asked for a lifetime that came out at our 7-day ceiling.
+  - **`Allow` showed "ChatGPT"**, correctly, from the sign-in host.
+
+  Not exercised live: `thread.needs_you`, `thread.failed`, a refresh or expiry,
+  a key change, and Remove in Settings against a live client.
