@@ -80,6 +80,8 @@ import {
   bindThreadRowIntentPrewarm as bindThreadRowIntentPrewarmTo,
   createThreadDetailSubscriptions,
   THREAD_INTENT_GRACE_MS,
+  THREAD_ROW_HOVER_DWELL_MS,
+  THREAD_ROW_TAP_HOLD_MS,
 } from "./threadDetailSubscriptions";
 import {
   deferStoreNotifications,
@@ -204,22 +206,47 @@ export function refreshThreadDetailSubscription(
 }
 
 /**
- * Prewarms the threads behind the jump-hint numbers once they have been on
- * screen a moment (the first few only). The release lets loaded ones go
- * after a grace period and cancels the rest.
+ * Holds intent on `refs` once `dwellMs` has passed. The release lets loaded
+ * ones go after a grace period and cancels the rest.
  */
-export function prewarmThreadJumpTargets(refs: ReadonlyArray<ScopedThreadRef>): () => void {
+function holdIntentAfterDwell(refs: ReadonlyArray<ScopedThreadRef>, dwellMs: number): () => void {
   let endIntent: (() => void) | null = null;
   const timeoutId = setTimeout(() => {
-    endIntent = threadDetails.holdIntent(refs.slice(0, THREAD_JUMP_PREWARM_LIMIT), {
-      graceMs: THREAD_INTENT_GRACE_MS,
-    });
-  }, THREAD_JUMP_PREWARM_DWELL_MS);
+    endIntent = threadDetails.holdIntent(refs, { graceMs: THREAD_INTENT_GRACE_MS });
+  }, dwellMs);
   return () => {
     clearTimeout(timeoutId);
     endIntent?.();
     endIntent = null;
   };
+}
+
+/**
+ * Prewarms the threads behind the jump-hint numbers once they have been on
+ * screen a moment (the first few only).
+ */
+export function prewarmThreadJumpTargets(refs: ReadonlyArray<ScopedThreadRef>): () => void {
+  return holdIntentAfterDwell(
+    refs.slice(0, THREAD_JUMP_PREWARM_LIMIT),
+    THREAD_JUMP_PREWARM_DWELL_MS,
+  );
+}
+
+/**
+ * Prewarms the thread a list highlights (a search result under the keyboard
+ * or the pointer) once the highlight rests on it as long as a pointer rests
+ * on a sidebar row, so arrowing past results starts nothing.
+ */
+export function prewarmHighlightedThread(ref: ScopedThreadRef): () => void {
+  return holdIntentAfterDwell([ref], THREAD_ROW_HOVER_DWELL_MS);
+}
+
+/**
+ * Starts loading a thread the user just chose to open, ahead of its chat
+ * mounting, as a tapped sidebar row does. Call it before navigating there.
+ */
+export function holdThreadDetailForOpen(ref: ScopedThreadRef): void {
+  threadDetails.holdForOpen(ref.environmentId, ref.threadId, THREAD_ROW_TAP_HOLD_MS);
 }
 
 /**

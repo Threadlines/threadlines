@@ -1318,6 +1318,46 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("prewarms a highlighted search result and keeps its load going into the chat it opens", async () => {
+    const {
+      holdThreadDetailForOpen,
+      prewarmHighlightedThread,
+      resetEnvironmentServiceForTests,
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const environmentId = EnvironmentId.make("env-1");
+    const highlighted = ThreadId.make("thread-highlighted");
+    const chosenCold = ThreadId.make("thread-chosen-cold");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+
+    // Arrowing past a result starts nothing.
+    prewarmHighlightedThread(scopeThreadRef(environmentId, highlighted))();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    // Resting on it starts the load; choosing it closes the palette, which
+    // ends the highlight, and the load carries on into the chat that mounts.
+    const endHighlight = prewarmHighlightedThread(scopeThreadRef(environmentId, highlighted));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(subscribedThreadIds()).toEqual([highlighted]);
+    holdThreadDetailForOpen(scopeThreadRef(environmentId, highlighted));
+    endHighlight();
+    const releaseChat = retainThreadDetailSubscription(environmentId, highlighted);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(subscribedThreadIds()).toEqual([highlighted]);
+    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+
+    // A result chosen before any prewarm starts loading at the choice.
+    holdThreadDetailForOpen(scopeThreadRef(environmentId, chosenCold));
+    expect(subscribedThreadIds()).toEqual([highlighted, chosenCold]);
+
+    releaseChat();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("does not warm threads whose session is merely open", async () => {
     const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
       await import("./service");

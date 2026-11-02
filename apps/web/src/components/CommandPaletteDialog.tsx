@@ -2,6 +2,7 @@
 
 import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
 import {
+  parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
@@ -94,6 +95,7 @@ import {
   useSavedEnvironmentRuntimeStore,
   requireEnvironmentConnection,
 } from "../environments/runtime";
+import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environments/runtime/service";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
@@ -161,6 +163,7 @@ import {
   filterCommandPaletteGroups,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
+  highlightedThreadKeyOf,
   ITEM_ICON_CLASS,
   normalizeSearchText,
   RECENT_THREAD_LIMIT,
@@ -2566,6 +2569,15 @@ export function OpenCommandPaletteDialog() {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
 
+  // The thread a highlighted result opens starts loading once the highlight
+  // rests on it, as a pointer resting on a sidebar row does, so choosing it
+  // opens a chat that is ready or already on its way.
+  const highlightedThreadKey = highlightedThreadKeyOf(displayedGroups, highlightedItemValue);
+  useEffect(() => {
+    const ref = highlightedThreadKey ? parseScopedThreadKey(highlightedThreadKey) : null;
+    return ref ? prewarmHighlightedThread(ref) : undefined;
+  }, [highlightedThreadKey]);
+
   const inputPlaceholder =
     remoteProjectInputPlaceholder(addProjectCloneFlow) ??
     currentView?.inputPlaceholder ??
@@ -2699,6 +2711,11 @@ export function OpenCommandPaletteDialog() {
 
     if (!item.keepOpen) {
       setOpen(false);
+    }
+    // Every result naming a thread opens it: start its load now, so closing
+    // the palette (which ends the highlight's prewarm) does not drop it.
+    if (item.threadRef) {
+      holdThreadDetailForOpen(scopeThreadRef(item.threadRef.environmentId, item.threadRef.id));
     }
 
     const execution =

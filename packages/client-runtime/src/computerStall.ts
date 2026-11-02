@@ -63,18 +63,24 @@ export function describeComputerStall(
 ): ComputerStallNotice {
   const duration = formatStallDuration(stall.durationMs);
   const threadlines = computer.thisComputer ? "Threadlines" : `Threadlines on ${computer.name}`;
+  const loadDetail = stall.load
+    ? ` (load ${formatLoad(stall.load.average1m)} on ${stall.load.cpuCount} cores)`
+    : "";
   switch (stall.cause) {
     case "busy":
       return {
         title: `${threadlines} froze for ${duration}`,
-        description: "It was busy with its own work, so it couldn't answer.",
+        description:
+          stall.databaseMs === undefined
+            ? "It was busy with its own work, so it couldn't answer."
+            : stall.load
+              ? `It was busy with its database, so it couldn't answer. The computer was under heavy load too${loadDetail}.`
+              : "It was busy with its database, so it couldn't answer.",
       };
     case "overloaded":
       return {
         title: `${computer.thisComputer ? "This computer" : computer.name} froze for ${duration}`,
-        description: stall.load
-          ? `Its CPU was overloaded (load ${formatLoad(stall.load.average1m)} on ${stall.load.cpuCount} cores).`
-          : "Its CPU was overloaded.",
+        description: `Its CPU was overloaded${loadDetail}.`,
       };
     case "unknown":
       return {

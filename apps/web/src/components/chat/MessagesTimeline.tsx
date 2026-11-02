@@ -2178,22 +2178,61 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 });
 
 /**
- * What a chat whose detail has not landed says in place of its messages:
- * loading while its connection is up, and while it is down (the connection
- * notices say why) that it loads once the connection is back, so it never
- * claims to be loading forever. Held back a beat so a fast load never
- * flashes it.
+ * The shape of a conversation, newest at the bottom like the chat it stands
+ * in for: replies as lines of text, the user's messages as bubbles. Widths are
+ * representative, not a prediction of the thread's content. They hold still,
+ * unlike the shimmering `Skeleton`: a slow load can last seconds, and a
+ * shimmer repaints every frame for all of them.
+ */
+const PENDING_THREAD_SHAPE = [
+  { id: "reply-1", kind: "reply", lines: ["w-[92%]", "w-[86%]", "w-[58%]"] },
+  { id: "bubble-1", kind: "bubble", width: "w-[38%]" },
+  { id: "reply-2", kind: "reply", lines: ["w-full", "w-[94%]", "w-[88%]", "w-[46%]"] },
+  { id: "bubble-2", kind: "bubble", width: "w-[26%]" },
+  { id: "reply-3", kind: "reply", lines: ["w-[90%]", "w-[64%]"] },
+] as const;
+
+/**
+ * What a chat whose detail has not landed shows in place of its messages:
+ * the outline of a conversation while its connection is up, and while it is
+ * down (the connection notices say why) that it loads once the connection is
+ * back, so it never claims to be loading forever. Held back a beat so a fast
+ * load never flashes it.
  */
 function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | undefined }) {
   const appConnection = useWsConnectionStatus();
   const connected = props.savedEnvironmentConnected ?? appConnection.phase === "connected";
+  if (!connected) {
+    return (
+      <div className="flex h-full items-center justify-center px-4">
+        <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
+          This conversation loads when the connection is back.
+        </p>
+      </div>
+    );
+  }
   return (
-    <div className="flex h-full items-center justify-center px-4">
-      <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
-        {connected
-          ? "Loading conversation…"
-          : "This conversation loads when the connection is back."}
-      </p>
+    <div
+      className="loading-reveal h-full overflow-hidden px-3 sm:px-5"
+      role="status"
+      aria-label="Loading conversation"
+      data-testid="thread-loading-skeleton"
+    >
+      <div className="mx-auto flex h-full w-full max-w-4xl flex-col justify-end gap-6 px-2 pb-5">
+        {PENDING_THREAD_SHAPE.map((block) =>
+          block.kind === "bubble" ? (
+            <div key={block.id} className="flex justify-end">
+              <div className={cn("h-10 rounded-4xl bg-muted", block.width)} />
+            </div>
+          ) : (
+            <div key={block.id} className="flex flex-col gap-2.5">
+              {block.lines.map((width) => (
+                <div key={width} className={cn("h-3 rounded-full bg-muted", width)} />
+              ))}
+            </div>
+          ),
+        )}
+      </div>
     </div>
   );
 }

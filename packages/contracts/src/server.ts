@@ -747,7 +747,17 @@ export const ServerStall = Schema.Struct({
   durationMs: NonNegativeInt,
   /** How long ago it ended when the server sent it, so clients need no clock of its. */
   agoMs: NonNegativeInt,
-  /** The computer's 1-minute load and core count, for an overloaded CPU (not on Windows). */
+  /**
+   * How long of it Threadlines spent inside database calls, when those held it
+   * up (cause `busy`). A new field rather than a new cause, so older clients
+   * still read the freeze, as Threadlines' own work.
+   */
+  databaseMs: Schema.optionalKey(NonNegativeInt),
+  /**
+   * The computer's 1-minute load and core count, when it was at or above its
+   * cores: the reason for `overloaded`, and noted beside `databaseMs` (not on
+   * Windows).
+   */
   load: Schema.optionalKey(
     Schema.Struct({
       average1m: Schema.Number,

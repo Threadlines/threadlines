@@ -36,6 +36,32 @@ describe("describeComputerStall", () => {
       description: "It was busy with its own work, so it couldn't answer.",
     });
     expect(
+      describeComputerStall(
+        { id: "a-4", cause: "busy", durationMs: 8_300, agoMs: 0, databaseMs: 7_700 },
+        here,
+      ),
+    ).toEqual({
+      title: "Threadlines froze for 8s",
+      description: "It was busy with its database, so it couldn't answer.",
+    });
+    expect(
+      describeComputerStall(
+        {
+          id: "a-5",
+          cause: "busy",
+          durationMs: 8_300,
+          agoMs: 0,
+          databaseMs: 7_700,
+          load: { average1m: 27.7, cpuCount: 14 },
+        },
+        macMini,
+      ),
+    ).toEqual({
+      title: "Threadlines on Mac mini froze for 8s",
+      description:
+        "It was busy with its database, so it couldn't answer. The computer was under heavy load too (load 27.7 on 14 cores).",
+    });
+    expect(
       describeComputerStall({ id: "a-3", cause: "unknown", durationMs: 95_000, agoMs: 0 }, macMini),
     ).toEqual({
       title: "Threadlines on Mac mini stopped answering for 2 min",

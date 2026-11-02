@@ -6,10 +6,12 @@
  * five seconds or more late, the server couldn't answer for that long:
  *
  * - its event loop was occupied the whole time: Threadlines was busy with its
- *   own work when its CPU time covers the gap, the computer was overloaded
- *   when its load average exceeds its cores, and otherwise the cause is
- *   unknown (a slow disk, memory pressure: "stopped answering", which stays
- *   true even for the rare sleep that slips through);
+ *   own work when its database calls or its CPU time cover the gap (the
+ *   database first: the SQLite driver is synchronous, and a slow read waiting
+ *   on the disk holds the loop without using the CPU), the computer was
+ *   overloaded when its load average exceeds its cores, and otherwise the
+ *   cause is unknown (a slow disk, memory pressure: "stopped answering", which
+ *   stays true even for the rare sleep that slips through);
  * - the loop sat idle while its timer ran late: reported only when the
  *   computer was overloaded (starved of CPU). On an idle computer that is
  *   timer throttling (macOS App Nap), not a freeze anyone felt.
@@ -43,6 +45,8 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import { readDatabaseCallMs } from "./databaseCallTime.ts";
+
 /** How often the clocks are read. */
 export const STALL_SAMPLE_INTERVAL_MS = 500;
 /** A gap this long is a freeze: about where a client's heartbeat gives up. */
@@ -60,6 +64,8 @@ export interface StallSample {
   readonly loopActiveMs: number;
   /** This process's CPU time, user and system. */
   readonly cpuMs: number;
+  /** Time spent inside synchronous database calls (`databaseCallTime.ts`). */
+  readonly databaseMs: number;
 }
 
 /** The computer's load, read once a gap is found. */
@@ -73,6 +79,8 @@ export interface MachineLoad {
 export interface ClassifiedStall {
   readonly cause: ServerStallCause;
   readonly durationMs: number;
+  /** Set when database calls held the server up (cause `busy`). */
+  readonly databaseMs?: number;
   readonly load?: { readonly average1m: number; readonly cpuCount: number };
 }
 
@@ -80,6 +88,8 @@ export interface ClassifiedStall {
 const OCCUPIED_SHARE = 0.5;
 /** Of a frozen stretch, the share of CPU this process used for it to be its own work. */
 const OWN_WORK_SHARE = 0.6;
+/** Of a frozen stretch, the share spent inside database calls for them to be what froze it. */
+const DATABASE_SHARE = 0.5;
 
 /** What froze the server between two samples, or null when nothing did. See the module comment. */
 export function classifyStall(
@@ -97,19 +107,36 @@ export function classifyStall(
   const occupied = next.loopActiveMs - previous.loopActiveMs >= OCCUPIED_SHARE * monoGap;
   // The process's CPU time counts its other threads too; only with the loop
   // itself occupied is it the loop's own work.
-  if (occupied && next.cpuMs - previous.cpuMs >= OWN_WORK_SHARE * monoGap) {
+  const ownWork = occupied && next.cpuMs - previous.cpuMs >= OWN_WORK_SHARE * monoGap;
+  // Database time runs on the monotonic clock like the gap itself, so past
+  // the cap it explains a freeze only when the CPU time does too.
+  const databaseMs = next.databaseMs - previous.databaseMs;
+  const heldByDatabase =
+    occupied &&
+    databaseMs >= DATABASE_SHARE * monoGap &&
+    (ownWork || monoGap <= STALL_UNEXPLAINED_MAX_MS);
+  if (ownWork && !heldByDatabase) {
     return { cause: "busy", durationMs };
   }
-  if (monoGap > STALL_UNEXPLAINED_MAX_MS) return null;
+  if (!heldByDatabase && monoGap > STALL_UNEXPLAINED_MAX_MS) return null;
 
   const machine = readMachineLoad();
-  const overloaded = machine.reported && machine.average1m >= machine.cpuCount;
-  if (overloaded) {
+  const load =
+    machine.reported && machine.average1m >= machine.cpuCount
+      ? { average1m: Math.round(machine.average1m * 10) / 10, cpuCount: machine.cpuCount }
+      : null;
+  // Under heavy load too, it says both: the load is what the computer reported,
+  // not proof the CPU slowed the database (disk waits count in it on Linux).
+  if (heldByDatabase) {
     return {
-      cause: "overloaded",
+      cause: "busy",
       durationMs,
-      load: { average1m: Math.round(machine.average1m * 10) / 10, cpuCount: machine.cpuCount },
+      databaseMs: Math.round(databaseMs),
+      ...(load ? { load } : {}),
     };
+  }
+  if (load) {
+    return { cause: "overloaded", durationMs, load };
   }
   return occupied ? { cause: "unknown", durationMs } : null;
 }
@@ -121,6 +148,7 @@ function readSample(): StallSample {
     monoMs: performance.now(),
     loopActiveMs: performance.eventLoopUtilization().active,
     cpuMs: (cpu.user + cpu.system) / 1000,
+    databaseMs: readDatabaseCallMs(),
   };
 }
 
@@ -159,6 +187,7 @@ export function reportableStall(
     cause: recorded.cause,
     durationMs: recorded.durationMs,
     agoMs,
+    ...(recorded.databaseMs !== undefined ? { databaseMs: recorded.databaseMs } : {}),
     ...(recorded.load ? { load: recorded.load } : {}),
   };
 }
@@ -205,6 +234,9 @@ const make = Effect.gen(function* () {
         ? Effect.logWarning("server froze", {
             cause: recorded.value.cause,
             durationMs: recorded.value.durationMs,
+            ...(recorded.value.databaseMs !== undefined
+              ? { databaseMs: recorded.value.databaseMs }
+              : {}),
             ...(recorded.value.load ? { load: recorded.value.load } : {}),
           }).pipe(Effect.andThen(SubscriptionRef.set(latest, recorded)))
         : expireOld,
