@@ -1,6 +1,8 @@
 # Agents change settings
 
-Status: plan, rev 4 (Nov 2 2026). Rev 4 takes Sol's four on rev 3: device
+Status: built (Nov 2 2026), from plan rev 4. Sol's diff reviews added what
+"Answering" and "Lifetime" now say about a dropped connection, save order and
+reverts. Rev 4 takes Sol's four on rev 3: device
 changes are no longer made before the answer (a losing window could undo the
 winner, a retry could misreport, two stores can't be one write). The app
 whose claim won makes them once, prompted by the answer or by seeing its own
@@ -241,7 +243,11 @@ answered, or one on a thread put away.
 Lifetime:
 
 - Archive, the start of a move, and revert (for requests from reverted turns)
-  settle waiting requests `cancelled` in the same decision.
+  settle waiting requests `cancelled` in the same decision. For a revert the
+  checkpoint reactor names the turns it took (`revertedTurnIds`, from the
+  checkpoints and transcript cut it loaded; the engine's read model has no
+  checkpoints after a restart) and when it was asked for (`revertRequestedAt`:
+  a card asked for since then came from a turn it takes too).
 - A claimed request always finishes: its settle and its device report are
   allowed on an archived thread and through the move freeze (both join the
   frozen thread's allowed commands, as the server's own bookkeeping). A
@@ -288,10 +294,14 @@ Lifetime:
 **Not now** sends `allow: false` and changes nothing anywhere.
 
 Device changes follow the claim even when the computer part failed: the
-user saw them as they are, and accepted them.
+user saw them as they are, and accepted them. Client-settings saves run one
+after another (every writer shares the chain in `useSettings.ts`), so an older
+snapshot never lands over a newer one, and an agent's write makes its change,
+saves and puts back on failure as one step.
 
 **On the thread's computer**, one answer at a time (a semaphore in the answer
-service; answers are rare):
+service; answers are rare), each run to its end in the service's own scope, so
+an app that disconnects after its claim landed can't leave a card stuck:
 
 1. Read the request. Settled with the same `claimId`: return its stored
    result (a retry). Settled otherwise, or claimed by another claim:
