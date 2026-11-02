@@ -13,12 +13,16 @@ const START: StallSample = {
   monoMs: 50_000,
   loopActiveMs: 10_000,
   cpuMs: 9_000,
+  databaseMs: 4_000,
 };
 
-/** The next sample after `monoMs` of server time, with the loop and CPU busy for the given parts of it. */
+/**
+ * The next sample after `monoMs` of server time, with the loop, the CPU and
+ * database calls busy for the given parts of it.
+ */
 function after(
   monoMs: number,
-  busy: { readonly loop: number; readonly cpu: number },
+  busy: { readonly loop: number; readonly cpu: number; readonly database?: number },
   sleptMs = 0,
 ): StallSample {
   return {
@@ -26,6 +30,7 @@ function after(
     monoMs: START.monoMs + monoMs,
     loopActiveMs: START.loopActiveMs + monoMs * busy.loop,
     cpuMs: START.cpuMs + monoMs * busy.cpu,
+    databaseMs: START.databaseMs + monoMs * (busy.database ?? 0),
   };
 }
 
@@ -35,11 +40,32 @@ const windowsMachine = (): MachineLoad => ({ average1m: 0, cpuCount: 8, reported
 
 describe("classifyStall", () => {
   it("names what stopped the server", () => {
-    // Its own synchronous work (a slow query): the loop and its CPU both busy.
+    // Its own synchronous work: the loop and its CPU both busy.
     expect(classifyStall(START, after(7_000, { loop: 0.98, cpu: 0.95 }), idleMachine)).toEqual({
       cause: "busy",
       durationMs: 7_000,
     });
+    // A slow database read waiting on the disk: the loop held, little CPU.
+    // On an overloaded computer it says both, rather than blaming the CPU.
+    expect(
+      classifyStall(START, after(8_000, { loop: 0.99, cpu: 0.1, database: 0.93 }), idleMachine),
+    ).toEqual({ cause: "busy", durationMs: 8_000, databaseMs: 7_440 });
+    expect(
+      classifyStall(
+        START,
+        after(8_000, { loop: 0.99, cpu: 0.1, database: 0.93 }),
+        overloadedMachine,
+      ),
+    ).toEqual({
+      cause: "busy",
+      durationMs: 8_000,
+      databaseMs: 7_440,
+      load: { average1m: 219.4, cpuCount: 18 },
+    });
+    // A query working the CPU is still the database's.
+    expect(
+      classifyStall(START, after(7_000, { loop: 0.98, cpu: 0.95, database: 0.9 }), idleMachine),
+    ).toEqual({ cause: "busy", durationMs: 7_000, databaseMs: 6_300 });
     // Stuck mid-callback on a computer whose CPU others took.
     expect(classifyStall(START, after(12_000, { loop: 0.9, cpu: 0.1 }), overloadedMachine)).toEqual(
       {
@@ -69,8 +95,12 @@ describe("classifyStall", () => {
       classifyStall(START, after(500, { loop: 0, cpu: 0 }, 3_600_000), idleMachine),
     ).toBeNull();
     // An hour unexplained by its own CPU time is a sleep (macOS from Node 24 and
-    // Windows keep the monotonic clock running), even mid-callback or under load.
+    // Windows keep the monotonic clock running), even mid-callback or under load,
+    // or mid database call: that call's time ran on the same clock.
     expect(classifyStall(START, after(3_600_000, { loop: 1, cpu: 0 }), idleMachine)).toBeNull();
+    expect(
+      classifyStall(START, after(3_600_000, { loop: 1, cpu: 0, database: 1 }), idleMachine),
+    ).toBeNull();
     expect(
       classifyStall(START, after(3_600_000, { loop: 0, cpu: 0 }), overloadedMachine),
     ).toBeNull();
