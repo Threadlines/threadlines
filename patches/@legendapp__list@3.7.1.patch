@@ -15,7 +15,7 @@ index 358fcd7faa598af8a4382719b7e7198b3ce04588..f85c83909ec8a9a9c664828255170301
       * Returns a stable item type used for pooling and size estimation.
       */
 diff --git a/react.js b/react.js
-index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a28aee6379 100644
+index 4500177b44094138489d1581f6ece97e719dc4de..e701602bd73ca39788cd8a642b0c986b9c299560 100644
 --- a/react.js
 +++ b/react.js
 @@ -800,6 +800,40 @@ function finishMaintainScrollAtEnd(ctx) {
@@ -121,16 +121,21 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
      finishMaintainScrollAtEnd(ctx);
      return false;
    }
-@@ -5504,7 +5559,7 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
+@@ -5504,7 +5559,12 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
      if (itemKey !== void 0 && element && isContainerItemCurrent(ctx, containerId, itemKey)) {
        const generation = (_b = ctx.state.containerItemGenerations[containerId]) != null ? _b : 0;
        const rect = element.getBoundingClientRect();
 -      setContainerLayoutBaseline(element, rect);
++      // 0x0 is a row with nothing laid out (a hidden ancestor), not a row with
++      // no height, which still has a width. Recorded, every row would collapse,
++      // more rows would "fit", and each round is a nested commit until React
++      // gives up. The resize observer reports the real size when it shows again.
++      if (rect.width === 0 && rect.height === 0) continue;
 +      recordContainerMeasurement(element, rect);
        measurements.push({
          containerId,
          generation,
-@@ -5889,6 +5944,25 @@ function getGlobalResizeObserver() {
+@@ -5889,6 +5949,25 @@ function getGlobalResizeObserver() {
    return globalResizeObserver;
  }
  var callbackMap = /* @__PURE__ */ new WeakMap();
@@ -156,7 +161,7 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
  function createResizeObserver(element, callback) {
    var _a3;
    if (typeof ResizeObserver === "undefined" || !element) {
-@@ -5966,9 +6040,13 @@ function useOnLayoutSync({
+@@ -5966,9 +6045,13 @@ function useOnLayoutSync({
          top: entry.contentRect.top,
          width: borderBoxSize.inlineSize
        } : (_a4 = target == null ? void 0 : target.getBoundingClientRect()) != null ? _a4 : entry.contentRect;
@@ -171,15 +176,18 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
        const shouldResyncLayout = !!((_c = (_b2 = callbacks.current).webLayoutResync) == null ? void 0 : _c.call(_b2));
        if (didSizeChange || shouldResyncLayout) {
          emit(toLayout(rectObserved), false);
-@@ -6037,6 +6115,7 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+@@ -6035,8 +6118,9 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+       if (state.itemKey === currentItemKey) {
+         const element = ref.current;
          const rect = (_a4 = element == null ? void 0 : element.getBoundingClientRect) == null ? void 0 : _a4.call(element);
-         if (rect) {
+-        if (rect) {
++        if (rect && (rect.width !== 0 || rect.height !== 0)) {
            layout = { height: rect.height, width: rect.width };
 +          recordContainerMeasurement(element, rect);
          }
          applyLayout();
        }
-@@ -6952,7 +7031,51 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -6952,7 +7036,51 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if (!target) return;
      target.addEventListener("scroll", handleScroll, { passive: true });
      if ("onscrollend" in target) target.addEventListener("scrollend", emitScrollEnd);
@@ -231,7 +239,7 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
        target.removeEventListener("scroll", handleScroll);
        target.removeEventListener("scrollend", emitScrollEnd);
        const timeout = scrollEndFallbackRef.current;
-@@ -8365,6 +8488,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -8365,6 +8493,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
      if (pendingScroll) {
        state.pendingScrollToEnd = void 0;
        if (scrollRequestTracker.isCurrent(pendingScroll.token)) {
@@ -241,7 +249,7 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
          runScrollRequest(
            pendingScroll.token,
            state.pendingScrollResolve,
-@@ -8846,6 +8972,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8846,6 +8977,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -249,7 +257,7 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
      getItemType,
      horizontal,
      rtl,
-@@ -9140,6 +9267,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -9140,6 +9272,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -258,7 +266,7 @@ index 4500177b44094138489d1581f6ece97e719dc4de..8172dc780fbc935062b289297d33d7a2
      hasExternalScroll,
      hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
 diff --git a/react.mjs b/react.mjs
-index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918b0cce1c5 100644
+index 1dab5e5a279a58ba07deb490aa87231415d37210..36e4f18312c913578c8313efc509a3638e75a2f5 100644
 --- a/react.mjs
 +++ b/react.mjs
 @@ -779,6 +779,40 @@ function finishMaintainScrollAtEnd(ctx) {
@@ -364,16 +372,21 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
      finishMaintainScrollAtEnd(ctx);
      return false;
    }
-@@ -5483,7 +5538,7 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
+@@ -5483,7 +5538,12 @@ function measureContainersInLayoutEffect(ctx, targetContainerIds = null) {
      if (itemKey !== void 0 && element && isContainerItemCurrent(ctx, containerId, itemKey)) {
        const generation = (_b = ctx.state.containerItemGenerations[containerId]) != null ? _b : 0;
        const rect = element.getBoundingClientRect();
 -      setContainerLayoutBaseline(element, rect);
++      // 0x0 is a row with nothing laid out (a hidden ancestor), not a row with
++      // no height, which still has a width. Recorded, every row would collapse,
++      // more rows would "fit", and each round is a nested commit until React
++      // gives up. The resize observer reports the real size when it shows again.
++      if (rect.width === 0 && rect.height === 0) continue;
 +      recordContainerMeasurement(element, rect);
        measurements.push({
          containerId,
          generation,
-@@ -5868,6 +5923,25 @@ function getGlobalResizeObserver() {
+@@ -5868,6 +5928,25 @@ function getGlobalResizeObserver() {
    return globalResizeObserver;
  }
  var callbackMap = /* @__PURE__ */ new WeakMap();
@@ -399,7 +412,7 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
  function createResizeObserver(element, callback) {
    var _a3;
    if (typeof ResizeObserver === "undefined" || !element) {
-@@ -5945,9 +6019,13 @@ function useOnLayoutSync({
+@@ -5945,9 +6024,13 @@ function useOnLayoutSync({
          top: entry.contentRect.top,
          width: borderBoxSize.inlineSize
        } : (_a4 = target == null ? void 0 : target.getBoundingClientRect()) != null ? _a4 : entry.contentRect;
@@ -414,15 +427,18 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
        const shouldResyncLayout = !!((_c = (_b2 = callbacks.current).webLayoutResync) == null ? void 0 : _c.call(_b2));
        if (didSizeChange || shouldResyncLayout) {
          emit(toLayout(rectObserved), false);
-@@ -6016,6 +6094,7 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+@@ -6014,8 +6097,9 @@ function processContainerLayout({ containerId, ctx, rectangle, ref, state }) {
+       if (state.itemKey === currentItemKey) {
+         const element = ref.current;
          const rect = (_a4 = element == null ? void 0 : element.getBoundingClientRect) == null ? void 0 : _a4.call(element);
-         if (rect) {
+-        if (rect) {
++        if (rect && (rect.width !== 0 || rect.height !== 0)) {
            layout = { height: rect.height, width: rect.width };
 +          recordContainerMeasurement(element, rect);
          }
          applyLayout();
        }
-@@ -6931,7 +7010,51 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6931,7 +7015,51 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if (!target) return;
      target.addEventListener("scroll", handleScroll, { passive: true });
      if ("onscrollend" in target) target.addEventListener("scrollend", emitScrollEnd);
@@ -474,7 +490,7 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
        target.removeEventListener("scroll", handleScroll);
        target.removeEventListener("scrollend", emitScrollEnd);
        const timeout = scrollEndFallbackRef.current;
-@@ -8344,6 +8467,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -8344,6 +8472,9 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
      if (pendingScroll) {
        state.pendingScrollToEnd = void 0;
        if (scrollRequestTracker.isCurrent(pendingScroll.token)) {
@@ -484,7 +500,7 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
          runScrollRequest(
            pendingScroll.token,
            state.pendingScrollResolve,
-@@ -8825,6 +8951,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8825,6 +8956,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -492,7 +508,7 @@ index 1dab5e5a279a58ba07deb490aa87231415d37210..5f62058846aaec36647978d778769918
      getItemType,
      horizontal,
      rtl,
-@@ -9119,6 +9246,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -9119,6 +9251,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),

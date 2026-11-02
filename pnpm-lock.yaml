@@ -74,7 +74,7 @@ packageExtensionsChecksum: sha256-q5WdBF7BCWKzly/tgcivWtVAQ00t1e/WaEGl0+mhjaI=
 
 patchedDependencies:
   '@legendapp/list@3.7.1':
-    hash: d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3
+    hash: d5065639242da42fa2815e2c646f53ef0b1dc9a7ba296cb22776ed9ba1fcb820
     path: patches/@legendapp__list@3.7.1.patch
   brace-expansion@5.0.12:
     hash: 0e03496f6903d2d5279ca778c42ee3a5195a2d1f8f522bb39e87db16857f3674
@@ -321,7 +321,7 @@ importers:
         version: 5.3.0
       '@legendapp/list':
         specifier: 3.7.1
-        version: 3.7.1(patch_hash=d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 3.7.1(patch_hash=d5065639242da42fa2815e2c646f53ef0b1dc9a7ba296cb22776ed9ba1fcb820)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@lexical/react':
         specifier: ^0.53.0
         version: 0.53.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yjs@13.6.31)
@@ -8105,7 +8105,7 @@ snapshots:
   '@koromix/koffi-win32-x64@3.2.1':
     optional: true
 
-  '@legendapp/list@3.7.1(patch_hash=d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@legendapp/list@3.7.1(patch_hash=d5065639242da42fa2815e2c646f53ef0b1dc9a7ba296cb22776ed9ba1fcb820)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
