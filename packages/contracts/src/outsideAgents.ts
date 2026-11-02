@@ -140,8 +140,9 @@ export const AssistantAlertKind = Schema.Literals(["needs_you", "finished", "fai
 export type AssistantAlertKind = typeof AssistantAlertKind.Type;
 
 /**
- * A web address the computer sends signed alerts to (a Grok routine's
- * webhook, say). `on` sends; `off` the user turned it off; `gone` the
+ * A web address the computer sends signed alerts to: one the user added (a
+ * Grok routine's webhook, say), or one an assistant subscribed through MCP
+ * Events (`addedBy`). `on` sends; `off` the user turned it off; `gone` the
  * receiver answered 410. Turning it on again never sends what it missed.
  */
 export const AssistantAlertTarget = Schema.Struct({
@@ -163,6 +164,14 @@ export const AssistantAlertTarget = Schema.Struct({
   /** Alerts waiting for another try. */
   retrying: NonNegativeInt,
   createdAt: IsoDateTime,
+  /**
+   * The assistant that subscribed it through MCP Events (dots, ChatGPT Work);
+   * null: the user added it. A subscription's only action is Remove, and its
+   * secret is the assistant's, never shown.
+   */
+  addedBy: Schema.NullOr(OutsideAgentRef).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** When a subscription stops unless its assistant renews it; null for an address the user added. */
+  expiresAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type AssistantAlertTarget = typeof AssistantAlertTarget.Type;
 
