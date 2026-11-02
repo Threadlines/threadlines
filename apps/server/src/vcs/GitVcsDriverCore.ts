@@ -5115,11 +5115,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         if (
           !cutOff ||
           input.folderExisted ||
-          onBranch.lockReason !== GitVcsDriver.GIT_ADDING_LOCK_REASON ||
-          path.basename(onBranch.path) !== path.basename(input.worktreePath)
+          onBranch.lockReason !== GitVcsDriver.GIT_ADDING_LOCK_REASON
         ) {
           return;
         }
+        // The very folder this add was making, not another with the same name.
+        // Compared as the filesystem resolves them (git reports /private/var for
+        // /var); either one unreadable means leave it.
+        const sameFolder = yield* Effect.all([
+          fileSystem.realPath(onBranch.path),
+          fileSystem.realPath(input.worktreePath),
+        ]).pipe(
+          Effect.map(([registered, target]) => registered === target),
+          Effect.orElseSucceed(() => false),
+        );
+        if (!sameFolder) return;
         yield* removeWorktree({ cwd, path: onBranch.path, force: true, unlock: true });
       }
       if (
@@ -5128,10 +5138,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ) {
         return;
       }
+      // Still where it was cut from, so it holds no work. `branch -D` and not
+      // `update-ref -d`: git itself refuses it if another add has checked it out
+      // since the listing above.
+      const tip = yield* resolveCommit(cwd, `refs/heads/${branch}`).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (tip !== input.madeBranchFrom) return;
       yield* executeGit(
         "GitVcsDriver.createWorktree.undoFailedAdd.branch",
         cwd,
-        ["update-ref", "-d", `refs/heads/${branch}`, input.madeBranchFrom],
+        ["branch", "-D", branch],
         { timeoutMs: 5_000, allowNonZeroExit: true },
       );
     },
@@ -5167,8 +5184,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
     // What's here already, so a failed add takes back only what it made. Anything
     // that can't be read counts as already here.
+    // Against the repository, where git resolves a relative path.
+    const resolvedWorktreePath = path.resolve(input.cwd, worktreePath);
     const folderExisted = yield* fileSystem
-      .exists(worktreePath)
+      .exists(resolvedWorktreePath)
       .pipe(Effect.catch(() => Effect.succeed(true)));
     const branchWasFree =
       input.newRefName !== undefined &&
@@ -5194,7 +5213,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.tapError((failure) =>
         undoFailedWorktreeAdd({
           cwd: input.cwd,
-          worktreePath,
+          worktreePath: resolvedWorktreePath,
           branch: targetBranch,
           folderExisted,
           madeBranchFrom,

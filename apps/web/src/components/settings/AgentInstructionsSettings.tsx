@@ -287,6 +287,12 @@ export function AgentInstructionsSettingsPanel() {
     }
   }, [picked, projectOptions]);
 
+  // A save that finishes after a switch must not land in the new project's editor.
+  const pickedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    pickedKeyRef.current = picked?.key ?? null;
+  }, [picked]);
+
   // Another project's files start clean: its drafts are for the files shown here.
   const pickProject = (project: ExtensionScopeProjectEntry) => {
     if (project.key === picked?.key) return;
@@ -427,6 +433,7 @@ export function AgentInstructionsSettingsPanel() {
       const key = instructionFileKey(file);
       const draft = instructionDrafts[key];
       const contents = draft?.contents ?? file.contents ?? "";
+      const savingProjectKey = pickedKeyRef.current;
       setSavingFileKey(key);
       try {
         const providersApi = readProjectProvidersApi();
@@ -440,6 +447,16 @@ export function AgentInstructionsSettingsPanel() {
         });
         const resultKey = instructionFileKey(result.file);
         const savedContents = result.file.contents ?? contents;
+        if (pickedKeyRef.current !== savingProjectKey) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: "Instruction file saved",
+              description: result.file.relativePath ?? result.file.path,
+            }),
+          );
+          return;
+        }
         setInstructionDrafts((current) => {
           const next = { ...current };
           if (resultKey !== key) {

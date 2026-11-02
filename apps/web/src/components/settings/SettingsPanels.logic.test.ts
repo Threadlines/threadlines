@@ -36,7 +36,7 @@ describe("buildRestoreDefaultsConfirmationMessage", () => {
           ...DEFAULT_SERVER_SETTINGS,
           enableRooms: false,
           agentThreads: "off",
-          // Going back to asking first takes reach away, so this one just resets.
+          // Off while Rooms is off, whatever its own choice: restoring Rooms brings it back.
           agentInvites: "auto",
         },
       }),
@@ -46,10 +46,24 @@ describe("buildRestoreDefaultsConfirmationMessage", () => {
         "",
         "Agents get these abilities back:",
         "Rooms: On",
+        "Agents bringing in other agents: Ask me first",
         "Agents can start threads: Ask me first",
         "",
-        "This will also reset: Theme, Agents bringing in other agents.",
+        "This will also reset: Theme.",
       ].join("\n"),
+    );
+  });
+
+  it("doesn't call a change that takes reach away an ability back", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: ["Agents bringing in other agents"],
+        settings: { ...DEFAULT_SERVER_SETTINGS, agentInvites: "auto" },
+      }),
+    ).toBe(
+      ["Restore default settings?", "", "This will reset: Agents bringing in other agents."].join(
+        "\n",
+      ),
     );
   });
 

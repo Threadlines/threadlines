@@ -75,7 +75,6 @@ const request = (
   port: number,
   headers: Record<string, string>,
   body: unknown,
-  method = "POST",
 ): Promise<{
   readonly status: number;
   readonly headers: NodeHttp.IncomingHttpHeaders;
@@ -88,7 +87,7 @@ const request = (
         host: "127.0.0.1",
         port,
         path: "/mcp/connect",
-        method,
+        method: "POST",
         headers: {
           host: `127.0.0.1:${port}`,
           "content-type": "application/json",
@@ -204,25 +203,6 @@ describe("/mcp/connect", () => {
       browser: 403,
       good: 200,
     });
-  });
-
-  it("lets a client end its session, and only with a live token", async () => {
-    const statuses = await withServer(async (port) => {
-      const auth = { authorization: "Bearer tlc1.see" };
-      const opened = await request(port, auth, initialize);
-      const session = {
-        "mcp-session-id": String(opened.headers["mcp-session-id"] ?? ""),
-        "mcp-protocol-version": "2025-06-18",
-      };
-      const list = { jsonrpc: "2.0", id: 2, method: "tools/list" };
-      return {
-        noToken: (await request(port, session, {}, "DELETE")).status,
-        stillOpen: (await request(port, { ...auth, ...session }, list)).status,
-        ended: (await request(port, { ...auth, ...session }, {}, "DELETE")).status,
-        afterwards: (await request(port, { ...auth, ...session }, list)).status,
-      };
-    });
-    expect(statuses).toEqual({ noToken: 401, stillOpen: 200, ended: 204, afterwards: 404 });
   });
 
   it("lists what the live grant allows, and refuses a start from a See connection anyway", async () => {

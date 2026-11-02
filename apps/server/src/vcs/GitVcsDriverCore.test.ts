@@ -1494,6 +1494,46 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
             assert.equal(yield* git(cwd, ["branch", "--list", "feature/killed"]), "");
           }),
       );
+
+      it.effect.skipIf(process.platform === "win32")(
+        "leaves an empty folder that was there before, given as a relative path",
+        () =>
+          Effect.gen(function* () {
+            const cwd = yield* makeTmpDir();
+            const { initialBranch } = yield* initRepoWithCommit(cwd);
+            const pathService = yield* Path.Path;
+            const fileSystem = yield* FileSystem.FileSystem;
+            const taken = pathService.join(cwd, "taken");
+            yield* fileSystem.makeDirectory(taken);
+            yield* filterCheckouts(
+              cwd,
+              [
+                "pid=$$",
+                'while [ "$pid" != "1" ]; do',
+                '  pid=$(ps -o ppid= -p "$pid" | tr -d " ")',
+                '  case "$(ps -o command= -p "$pid")" in',
+                '    *"git worktree add"*) kill -9 "$pid"; break ;;',
+                "  esac",
+                "done",
+                "sleep 30",
+                "",
+              ].join("\n"),
+            );
+            const driver = yield* GitVcsDriver.GitVcsDriver;
+
+            const failed = yield* Effect.exit(
+              driver.createWorktree({
+                cwd,
+                path: "taken",
+                refName: initialBranch,
+                newRefName: "feature/taken",
+              }),
+            );
+
+            assert.isTrue(Exit.isFailure(failed));
+            assert.equal(yield* fileSystem.exists(taken), true);
+          }),
+      );
     });
 
     // A removal that died halfway (a long-path failure, a kill mid-delete)

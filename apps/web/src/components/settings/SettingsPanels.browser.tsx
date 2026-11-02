@@ -4250,6 +4250,53 @@ describe("Agent Instructions", () => {
     });
     expect(here.writeInstructionFile).not.toHaveBeenCalled();
   });
+
+  it("keeps a save that finishes after a switch out of the new project's editor", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_MAC,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    savedComputersHarness.registryById[STUDIO] = { environmentId: STUDIO, label: "Studio" };
+    seedComputer(THIS_MAC, "the Mac's instructions");
+    const studio = seedComputer(STUDIO, "the Studio's instructions");
+    const saveAsSent = studio.writeInstructionFile.getMockImplementation()!;
+    let finishSave = () => {};
+    studio.writeInstructionFile.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => {
+        finishSave = resolve;
+      });
+      return saveAsSent(input);
+    });
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <AgentInstructionsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const contents = page.getByLabelText("Claude instruction file contents");
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page.getByRole("group", { name: "Studio" }).getByRole("option", { name: "app" }).click();
+    await expect.element(contents).toHaveValue("the Studio's instructions");
+    await contents.fill("edited on the Studio");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await vi.waitFor(() => expect(studio.writeInstructionFile).toHaveBeenCalled());
+
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page
+      .getByRole("group", { name: "This device" })
+      .getByRole("option", { name: "app" })
+      .click();
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+
+    finishSave();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+  });
 });
 
 describe("SourceControlSettingsPanel discovery states", () => {

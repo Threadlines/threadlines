@@ -625,22 +625,20 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
   (docs/design/thread-setup-state.md). Built after this design as its
   follow-up.
 
-- **MCP sessions live until the server restarts, or until the client ends
-  them.** Effect's HTTP transport keeps every session it opened, with no idle
-  expiry; `/mcp/connect` lets a client end its own with a DELETE. The
-  `threadlines` command keeps and reuses one session, so polling with it
-  doesn't grow memory, but an agent that opens a new session per call and
-  never ends it adds one each time. Measured on Effect 4.1.2, a session costs
-  about 630 bytes: one new session every 30 seconds is under 2 MB a day, and
-  an app update clears them.
+- **MCP sessions live until the server restarts.** Effect's HTTP transport
+  keeps every session it opened, with no idle expiry. The `threadlines` command
+  keeps and reuses one session, so polling with it doesn't grow memory, but an
+  agent that opens a new session per call adds one each time. Measured on
+  Effect 4.1.2, a session costs about 630 bytes: one new session every 30
+  seconds is under 2 MB a day, and an app update clears them.
 
-  Idle expiry isn't built, because it costs more than that. The transport has
-  no way to end a session from inside the server, only the DELETE route, so
-  expiry needs either a patch to Effect or a request sent to our own router
-  that skips the sign-in check. It would also add a failure a client doesn't
-  see today: a session gone after a quiet weekend, for any client that doesn't
-  start again on a 404. Worth revisiting if Effect adds expiry, or if a real
-  client turns out to loop on `initialize`.
+  That's cheaper than either way out. Expiry needs a patch to Effect or a
+  request to our own router that skips the sign-in check, and adds a failure
+  for any client that doesn't start again on a 404. Effect's
+  `allowSessionTermination` lets a client end a session with a DELETE, but it
+  doesn't check the session is the caller's, so one credential could end
+  another's. Worth revisiting if Effect adds expiry, or if a real client turns
+  out to loop on `initialize`.
 
 - **Phones** can't see, approve or remove connections.
 - **One long-lived token per connection** (see Spec status).

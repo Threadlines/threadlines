@@ -12,6 +12,7 @@ import {
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { placeById, type PlaceId } from "@threadlines/shared/appPlaces";
+import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
 
 export const ARCHIVED_THREAD_DELETE_AGE_OPTIONS = [30, 90, 180, 365] as const;
@@ -46,7 +47,11 @@ function agentAbilitiesBackOn(
     }
     if (value?.kind === "choice") {
       const restored = value.read(DEFAULT_UNIFIED_SETTINGS);
-      return value.read(settings) === "off" && restored !== "off"
+      // What agents can do now: invites are off while Rooms is, whatever their
+      // own choice says, and restoring Rooms brings them back.
+      const current =
+        id === "threads.agentInvites" ? agentInvitesMode(settings) : value.read(settings);
+      return current === "off" && restored !== "off"
         ? [{ title, restoredTo: value.options[restored] ?? restored }]
         : [];
     }
