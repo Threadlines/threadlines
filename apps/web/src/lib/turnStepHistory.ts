@@ -51,8 +51,13 @@ export function turnsWithCutSteps(input: {
     return new Set();
   }
   const cut = new Set<TurnId>();
-  if (windowStart.turnId) {
-    cut.add(windowStart.turnId);
+  // Rows outside any turn (a side answer, a rate limit reading) can start the
+  // window, so the turn it cut through is the first one named after them.
+  const firstTurnId = input.activities
+    .slice(-MAX_THREAD_ACTIVITIES)
+    .find((activity) => activity.turnId)?.turnId;
+  if (firstTurnId) {
+    cut.add(firstTurnId);
   }
   for (const message of input.messages) {
     if (

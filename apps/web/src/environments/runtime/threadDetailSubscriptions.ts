@@ -336,6 +336,14 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
             entry.resumeInput.fromSequenceExclusive ?? 0,
             item.event.sequence,
           );
+          // A revert empties part of the window here, which only the server
+          // can refill, and a short window reads as nothing cut from older
+          // turns (turnsWithCutSteps). The server applies an event before
+          // sending it, so the fresh snapshot has the revert in it. After this
+          // delivery: the restart closes the stream delivering it.
+          if (item.event.type === "thread.reverted") {
+            queueMicrotask(() => refresh(entry.environmentId, entry.threadId));
+          }
         }
         evaluateScheduling();
       },

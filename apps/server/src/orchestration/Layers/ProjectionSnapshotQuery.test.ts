@@ -1334,7 +1334,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("caps timeline rows and drops superseded context-window snapshots", () =>
+  it.effect("caps timeline rows, and the full snapshot drops superseded context readings", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -1708,10 +1708,60 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       );
       assert.equal(compactedThreadDetail._tag, "Some");
       if (compactedThreadDetail._tag === "Some") {
+        // A thread's detail keeps the superseded reading: its window stays full.
         assert.deepEqual(
           compactedThreadDetail.value.activities.map((activity) => activity.id),
-          expectedActivityIds,
+          [asEventId("context-old-a"), ...expectedActivityIds],
         );
+      }
+    }),
+  );
+
+  it.effect("sends a thread's detail its full window, superseded context readings included", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, branch, worktree_path,
+          latest_turn_id, created_at, updated_at, archived_at, deleted_at
+        )
+        VALUES (
+          'thread-full-window', 'project-1', 'Long thread',
+          '{"instanceId":"codex","model":"gpt-5-codex"}', NULL, NULL, NULL,
+          '2026-04-01T00:00:00.000Z', '2026-04-01T00:00:00.000Z', NULL, NULL
+        )
+      `;
+
+      // An older turn's steps fall outside the window. Every fifth row of the
+      // newer turn is a reading that a later one supersedes.
+      const total = MAX_THREAD_ACTIVITIES + 3;
+      for (let index = 1; index <= total; index += 1) {
+        const isReading = index > 3 && index % 5 === 0;
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${`row-${index}`}, 'thread-full-window', ${index <= 3 ? "turn-old" : "turn-new"},
+            ${isReading ? "info" : "tool"},
+            ${isReading ? "context-window.updated" : "tool.completed"},
+            ${`row ${index}`},
+            ${isReading ? '{"usedTokens":100,"maxTokens":1000}' : "{}"},
+            ${index}, '2026-04-01T00:00:02.000Z'
+          )
+        `;
+      }
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-full-window"));
+
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        // Full, so the chat knows turn-old's steps were cut and fetches them.
+        assert.equal(detail.value.activities.length, MAX_THREAD_ACTIVITIES);
+        assert.equal(detail.value.activities[0]?.id, asEventId("row-4"));
       }
     }),
   );

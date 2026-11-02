@@ -694,8 +694,9 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 
 /**
  * Context-window activities are state snapshots rather than timeline entries.
- * Keep the latest usable value per turn, and per agent in a room, so initial
- * thread snapshots do not repeatedly send superseded token telemetry.
+ * Keep the latest usable value per turn, and per agent in a room, so the full
+ * snapshot does not repeat superseded token telemetry. Not for a thread's
+ * detail: that feed's size says whether its window is full.
  * Retaining one value per turn preserves the meter when a later turn is
  * reverted; keeping one per agent keeps each room agent's meter when their
  * readings share no turn. Malformed rows remain visible and cannot shadow the
@@ -4035,8 +4036,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           .slice(-MAX_THREAD_COMMAND_REQUESTS),
         commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
         settingsRequests: threadRow.value.settingsRequests ?? [],
-        activities: dropStaleContextWindowActivities(
-          retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
+        // The whole window, superseded context-window readings included: it is
+        // what the live feed holds, and the chat tells that older turns' steps
+        // were cut from it being full (turnsWithCutSteps in the web app).
+        activities: retainThreadActivities(
+          activityRows.map(mapThreadActivityRow),
+          MAX_THREAD_ACTIVITIES,
         ),
         subagents: subagentRows.map(mapThreadSubagentRow),
         workflowRuns: workflowRunsByThreadOf(workflowRunRows).get(threadId) ?? [],

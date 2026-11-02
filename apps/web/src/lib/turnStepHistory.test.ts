@@ -9,7 +9,10 @@ const turn = (value: string) => TurnId.make(value);
 const at = (second: number) => `2026-09-27T10:00:${String(second).padStart(2, "0")}.000Z`;
 
 function activities(count: number, turnId: string, second: number) {
-  return Array.from({ length: count }, () => ({ turnId: turn(turnId), createdAt: at(second) }));
+  return Array.from({ length: count }, () => ({
+    turnId: turn(turnId) as TurnId | null,
+    createdAt: at(second),
+  }));
 }
 
 function reply(turnId: string, second: number) {
@@ -58,6 +61,19 @@ describe("turnsWithCutSteps", () => {
       activeTurnId: turn("turn-4"),
     });
     expect([...cut].toSorted()).toEqual([turn("turn-1"), turn("turn-2")]);
+  });
+
+  it("finds the turn the feed cut through when the feed starts outside any turn", () => {
+    const cut = turnsWithCutSteps({
+      // turn-1's first reply comes after the window starts, on a side answer's row.
+      activities: [
+        { turnId: null, createdAt: at(20) },
+        ...activities(MAX_THREAD_ACTIVITIES - 1, "turn-1", 25),
+      ],
+      messages: [reply("turn-1", 30)],
+      activeTurnId: null,
+    });
+    expect([...cut]).toEqual([turn("turn-1")]);
   });
 
   it("leaves the running turn to the live feed", () => {

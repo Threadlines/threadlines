@@ -486,6 +486,51 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("asks for a fresh snapshot after a revert, which can refill the activity window", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-reverted");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    deliverThreadSnapshot(threadId);
+    const [, listener] = mockSubscribeThread.mock.calls[0] ?? [];
+    listener({
+      kind: "event",
+      event: {
+        sequence: 43,
+        eventId: EventId.make("event-reverted"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T00:00:00.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.reverted",
+        payload: { threadId, turnCount: 1 },
+      },
+    });
+    await Promise.resolve();
+
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+    expect(mockSubscribeThread).toHaveBeenLastCalledWith(
+      { threadId, acceptsPayloadRefs: true },
+      expect.any(Function),
+      expect.objectContaining({ onRetry: expect.any(Function) }),
+    );
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("does not create an unretained subscription during a targeted refresh", async () => {
     const {
       refreshThreadDetailSubscription,
