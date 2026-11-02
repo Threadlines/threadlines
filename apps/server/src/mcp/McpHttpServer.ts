@@ -35,7 +35,6 @@ import {
 import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { makeOutsideToolLimits } from "./outsideToolLimit.ts";
-import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
 
 /** How the tools are namespaced to a provider, so `browser_click` arrives as
  *  something the user can recognise in the transcript. */
@@ -243,7 +242,6 @@ const AuthenticationLive = HttpRouter.middleware<{
  */
 const registerScreenshot = Effect.fn("McpHttpServer.registerScreenshot")(function* () {
   const server = yield* McpServer.McpServer;
-  const broker = yield* PreviewAutomationBroker;
   const built = yield* BrowserScreenshotToolkit;
   const tool = BrowserScreenshotTool;
 
@@ -275,7 +273,6 @@ const registerScreenshot = Effect.fn("McpHttpServer.registerScreenshot")(functio
           Stream.unwrap,
           Stream.run(Sink.last()),
           Effect.flatMap(Effect.fromOption),
-          Effect.provideService(PreviewAutomationBroker, broker),
           Effect.provideService(McpInvocationContext, invocation),
           Effect.matchCauseEffect({
             onFailure: screenshotFailure,

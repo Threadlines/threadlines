@@ -220,9 +220,9 @@ describe("DesktopScreenCapture", () => {
             if (command._tag === "StandardCommand") {
               spawnedCommands.push({
                 command: command.command,
-                args: command.args,
+                args: command.args.map(String),
               });
-              const outputPath = command.args.at(-1);
+              const outputPath = command.args.map(String).at(-1);
               if (outputPath) {
                 yield* fileSystem.writeFile(outputPath, PNG_BYTES);
               }
@@ -467,7 +467,7 @@ describe("DesktopScreenCapture", () => {
         ChildProcessSpawner.make((command) =>
           Effect.gen(function* () {
             if (command._tag === "StandardCommand") {
-              const outputPath = command.args.at(-1);
+              const outputPath = command.args.map(String).at(-1);
               if (outputPath) {
                 yield* fileSystem.writeFile(outputPath, PNG_BYTES);
               }

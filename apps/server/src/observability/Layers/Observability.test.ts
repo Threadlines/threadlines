@@ -11,6 +11,7 @@ const span = (
   index: number,
   events: EffectTraceRecord["events"] = [],
   name = "handleSdkMessage",
+  attributes: EffectTraceRecord["attributes"] = {},
 ): EffectTraceRecord => ({
   type: "effect-span",
   name,
@@ -21,7 +22,7 @@ const span = (
   startTimeUnixNano: "0",
   endTimeUnixNano: "1000",
   durationMs: 0.4,
-  attributes: {},
+  attributes,
   events,
   links: [],
   exit: { _tag: "Success" },
@@ -46,24 +47,28 @@ describe("shouldRecordServerLocalTrace", () => {
     assert.strictEqual(logged.filter(shouldRecordServerLocalTrace).length, 1_000);
   });
 
-  it.effect("writes few of the spans our SQLite client opens for statements", () =>
+  it.effect("writes few of the spans our SQLite client opens for statements and transactions", () =>
     Effect.gen(function* () {
-      const names: Array<string> = [];
+      const opened: Array<Tracer.NativeSpan> = [];
       const tracer = Tracer.make({
         span: (options) => {
-          names.push(options.name);
-          return new Tracer.NativeSpan(options);
+          const native = new Tracer.NativeSpan(options);
+          opened.push(native);
+          return native;
         },
       });
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`SELECT 1`.pipe(Effect.withTracer(tracer));
-      const statementName = names.at(-1);
-      assert.isDefined(statementName);
+      yield* sql.withTransaction(sql`SELECT 1`).pipe(Effect.withTracer(tracer));
+      // The transaction, its statement, and its BEGIN and COMMIT.
+      assert.isAtLeast(opened.length, 4);
 
-      const statements = Array.from({ length: 1_000 }, (_, index) =>
-        span(index, [], statementName),
-      );
-      assert.isBelow(statements.filter(shouldRecordServerLocalTrace).length, 50);
+      for (const native of opened) {
+        const attributes = Object.fromEntries(native.attributes);
+        const records = Array.from({ length: 1_000 }, (_, index) =>
+          span(index, [], native.name, attributes),
+        );
+        assert.isBelow(records.filter(shouldRecordServerLocalTrace).length, 50, native.name);
+      }
     }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
   );
 });

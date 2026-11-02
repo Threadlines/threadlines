@@ -17,6 +17,7 @@ import { constVoid, type LazyArg } from "../Function.ts"
 import { hasBody, type HttpMethod } from "../http/HttpMethod.ts"
 import * as HttpStatus from "../http/HttpStatus.ts"
 import type * as Multipart_ from "../http/Multipart.ts"
+import * as ProblemDetails from "../http/ProblemDetails.ts"
 import * as Predicate from "../Predicate.ts"
 import * as Schema from "../Schema.ts"
 import * as SchemaAST from "../SchemaAST.ts"
@@ -264,6 +265,85 @@ export function asNoContent<S extends Schema.Constraint>(options: {
   }
 }
 
+/**
+ * Schema type returned by `asProblem`, encoding as a problem details body
+ * while decoding to the original schema type.
+ *
+ * @stability unstable
+ * @category schemas
+ * @since 4.0.6
+ */
+export interface asProblem<S extends Schema.Constraint> extends
+  Schema.decodeTo<
+    Schema.toType<S>,
+    Schema.Struct<{
+      readonly type: Schema.tag<string>
+      readonly status: Schema.middlewareDecoding<Schema.withDecodingDefaultKey<Schema.tag<number>>, never>
+      readonly title: Schema.middlewareDecoding<Schema.withDecodingDefaultKey<Schema.tag<string>>, never>
+    }>
+  >
+{}
+
+/**
+ * Renders an error class as an RFC 9457 problem.
+ *
+ * **Details**
+ *
+ * The server encodes the error as an `application/problem+json` body carrying
+ * `type`, `title` and the status of the class. Generated clients decode a body
+ * with the same `type` back into an instance by calling `decode`, which
+ * defaults to constructing the class without arguments; a body with a
+ * different `type` is rejected.
+ *
+ * **Example** (A built-in error as a problem)
+ *
+ * ```ts
+ * import { HttpApiEndpoint, HttpApiError, HttpApiSchema } from "effect/http-api"
+ *
+ * const user = HttpApiEndpoint.get("user", "/user", {
+ *   error: HttpApiError.NotFound.pipe(HttpApiSchema.asProblem({ title: "Not Found" }))
+ * })
+ * // A NotFound failure responds with 404 and
+ * // { "type": "about:blank", "title": "Not Found", "status": 404 }
+ * ```
+ *
+ * @see {@link asNoContent} for the empty-body equivalent.
+ *
+ * @stability unstable
+ * @category encoding
+ * @since 4.0.6
+ */
+export function asProblem<S extends Schema.Constraint & (new() => S["Type"])>(options: {
+  /**
+   * The problem type URI. Defaults to `about:blank`.
+   */
+  readonly type?: string | undefined
+  readonly title: string
+  readonly decode?: LazyArg<S["Type"]> | undefined
+}) {
+  return (self: S): asProblem<S> => {
+    const status = getStatusError(self.ast)
+    const type = options.type ?? ProblemDetails.blankType
+    const body = { type, status, title: options.title }
+    const decode = options.decode ?? (() => new self())
+    const problem = Schema.Struct({
+      type: Schema.tag(type),
+      status: ProblemDetails.fixedMember(status),
+      title: ProblemDetails.fixedMember(options.title)
+    })
+    return problem.pipe(
+      Schema.decodeTo(
+        Schema.toType(self),
+        SchemaTransformation.transform({
+          decode,
+          encode: () => body
+        })
+      ),
+      asJson({ contentType: ProblemDetails.contentType })
+    )
+  }
+}
+
 type StreamMode = "sse" | "uint8array" | "ndjson"
 
 /**
@@ -494,7 +574,7 @@ export const StreamSse: {
 }): StreamSse<Sse.EventCodec, Schema.Top, unknown> => {
   const events = options.events ?? (options.data === undefined ? undefined : Schema.Struct({
     ...Sse.EventEncoded.fields,
-    data: Schema.fromJsonString(options.data)
+    data: Schema.fromJsonString(Schema.toCodecJson(options.data))
   }))
   if (events === undefined) {
     throw new Error("StreamSse requires either an events schema or a data schema")
@@ -652,10 +732,9 @@ const upgradeSchema = Schema.declare(Socket.isSocket).pipe(status(101))
  *
  * **When to use**
  *
- * Use as the only success schema of an endpoint that hands over its
- * connection as a raw byte stream after `101 Switching Protocols`. For
- * WebSocket, upgrade the request with `HttpServerRequest.upgrade` and
- * connect with `Socket.makeWebSocket` instead.
+ * Use when an endpoint hands over its connection as a raw byte stream after
+ * `101 Switching Protocols`. For WebSocket, upgrade the request with
+ * `HttpServerRequest.upgrade` and connect with `Socket.makeWebSocket` instead.
  *
  * **Details**
  *
@@ -672,9 +751,17 @@ const upgradeSchema = Schema.declare(Socket.isSocket).pipe(status(101))
  * The endpoint may declare a buffered payload, which is decoded before the
  * handler runs. Streaming payloads are rejected.
  *
+ * The endpoint may also declare buffered or no-content successes at statuses
+ * other than `101`, for a server that declines the upgrade (RFC 9110 §7.8).
+ * The handler then either calls `upgrade` and returns nothing, or returns one
+ * of those successes without calling it. An endpoint declares at most one
+ * upgrade, and streaming successes cannot be combined with it.
+ *
  * The client sends `Connection: Upgrade` and `Upgrade: protocol`, and returns
  * the response headers with the connection, decoded with `headers` when
- * declared. Other responses are decoded as the endpoint's errors.
+ * declared. Ordinary success responses are decoded as usual, and
+ * `HttpApiClient.isUpgraded` tells the two apart. Other responses are decoded
+ * as the endpoint's errors.
  *
  * **Example** (Declaring an exec start endpoint)
  *
@@ -685,15 +772,19 @@ const upgradeSchema = Schema.declare(Socket.isSocket).pipe(status(101))
  * const start = HttpApiEndpoint.post("start", "/exec/:id/start", {
  *   params: { id: Schema.String },
  *   payload: Schema.Struct({ Detach: Schema.Boolean, Tty: Schema.Boolean }),
- *   success: HttpApiSchema.Upgrade({
- *     protocol: "tcp",
- *     headers: {
- *       "content-type": Schema.Literals([
- *         "application/vnd.docker.raw-stream",
- *         "application/vnd.docker.multiplexed-stream"
- *       ])
- *     }
- *   })
+ *   success: [
+ *     HttpApiSchema.Upgrade({
+ *       protocol: "tcp",
+ *       headers: {
+ *         "content-type": Schema.Literals([
+ *           "application/vnd.docker.raw-stream",
+ *           "application/vnd.docker.multiplexed-stream"
+ *         ])
+ *       }
+ *     }),
+ *     // a detached exec answers with an empty 200 instead
+ *     HttpApiSchema.Empty(200)
+ *   ]
  * })
  * ```
  *

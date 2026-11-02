@@ -36,6 +36,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
@@ -1131,13 +1132,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (!options.skipBuild) {
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
     yield* runCommand(
-      ChildProcess.make({
+      makeCommandWithShell(vpBinary, ["run", "build:desktop"], {
         cwd: repoRoot,
         env: createDesktopArtifactBuildEnv(appVersion),
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims.
         shell: process.platform === "win32",
-      })`${vpBinary} run build:desktop`,
+      }),
     );
   }
 
@@ -1237,12 +1238,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* runCommand(
-    ChildProcess.make({
+    makeCommandWithShell(vpBinary, ["install", "--prod", "--no-optional"], {
       cwd: stageAppDir,
       ...commandOutputOptions(options.verbose),
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",
-    })`${vpBinary} install --prod --no-optional`,
+    }),
   );
 
   const buildEnv: NodeJS.ProcessEnv = {
@@ -1286,13 +1287,29 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
   );
   const electronBuilderCommand = runCommand(
-    ChildProcess.make({
-      cwd: repoRoot,
-      env: buildEnv,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
-    })`${vpBinary} exec --filter @threadlines/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+    makeCommandWithShell(
+      vpBinary,
+      [
+        "exec",
+        "--filter",
+        "@threadlines/desktop",
+        "--",
+        "electron-builder",
+        "--projectDir",
+        stageAppDir,
+        platformConfig.cliFlag,
+        `--${options.arch}`,
+        "--publish",
+        "never",
+      ],
+      {
+        cwd: repoRoot,
+        env: buildEnv,
+        ...commandOutputOptions(options.verbose),
+        // Windows needs shell mode to resolve .cmd shims.
+        shell: process.platform === "win32",
+      },
+    ),
   );
   yield* retryTransientElectronPackaging(electronBuilderCommand);
 

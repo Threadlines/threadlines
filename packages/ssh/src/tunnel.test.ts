@@ -86,7 +86,7 @@ const testNetService = NetService.NetService.of({
 });
 
 function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
-  return command._tag === "StandardCommand" ? command.args : [];
+  return command._tag === "StandardCommand" ? command.args.map(String) : [];
 }
 
 describe("ssh tunnel scripts", () => {

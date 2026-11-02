@@ -1,7 +1,7 @@
 import { restoreSharedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
@@ -1166,7 +1166,7 @@ const wsRpcProtocolLayer = (wsUrl: string) => {
   return RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
       Socket.layerWebSocket(url, cookie ? { headers: { cookie } } : undefined).pipe(
-        Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+        Layer.provide(NodeWS.layerWebSocketConstructor),
       ),
     ),
     Layer.provide(RpcSerialization.layerJson),
@@ -1392,10 +1392,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const server = yield* HttpServer.HttpServer;
       const address = server.address as NetAddress.InetAddress;
-      const socket = yield* Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
-        const socket = new NodeSocket.NodeWS.WebSocket(
-          `ws://127.0.0.1:${address.port}/relay/direct/device-1`,
-        );
+      const socket = yield* Effect.callback<NodeWS.WebSocket, Error>((resume) => {
+        const socket = new NodeWS.WebSocket(`ws://127.0.0.1:${address.port}/relay/direct/device-1`);
         socket.once("open", () => resume(Effect.succeed(socket)));
         socket.once("error", (error) => resume(Effect.fail(error)));
       });
@@ -1438,11 +1436,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const server = yield* HttpServer.HttpServer;
       const address = server.address as NetAddress.InetAddress;
       const socket = yield* Effect.acquireRelease(
-        Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
-          const socket = new NodeSocket.NodeWS.WebSocket(
-            `ws://127.0.0.1:${address.port}/compressed-ws`,
-            { perMessageDeflate: true },
-          );
+        Effect.callback<NodeWS.WebSocket, Error>((resume) => {
+          const socket = new NodeWS.WebSocket(`ws://127.0.0.1:${address.port}/compressed-ws`, {
+            perMessageDeflate: true,
+          });
           socket.once("open", () => resume(Effect.succeed(socket)));
           socket.once("error", (error) => resume(Effect.fail(error)));
         }),

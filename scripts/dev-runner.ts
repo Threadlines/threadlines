@@ -19,7 +19,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/cli";
-import { ChildProcess } from "effect/process";
+import { makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 const BASE_SERVER_PORT = 13773;
 const BASE_WEB_PORT = 5733;
@@ -555,7 +555,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       return;
     }
 
-    const child = yield* ChildProcess.make("vp", [...MODE_ARGS[input.mode], ...input.runArgs], {
+    const child = yield* makeCommandWithShell("vp", [...MODE_ARGS[input.mode], ...input.runArgs], {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",

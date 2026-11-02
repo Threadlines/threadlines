@@ -24,8 +24,12 @@ const PROJECTION_TRACE_SAMPLE_MODULO = 20;
 const PROVIDER_MESSAGE_TRACE_SAMPLE_MODULO = 100;
 
 // Statement spans are named after the database (`db.system.name`, "sqlite"
-// for ours) since effect 4.0.1; older trace files say "sql.execute".
+// for ours) since effect 4.0.1; older trace files say "sql.execute". Since
+// 4.1.2 a transaction's BEGIN, COMMIT and the like are spans of their own, so
+// any span the SQL client tags with its database is sampled too.
 const sampledSqlSpanNames = new Set(["sqlite", "sql.execute", "sql.transaction"]);
+const isSqlSpan = (record: TraceRecord): boolean =>
+  sampledSqlSpanNames.has(record.name) || record.attributes["db.system.name"] !== undefined;
 const sampledProjectionSpanNames = new Set([
   "applyPendingApprovalsProjection",
   "applyProjectsProjection",
@@ -95,7 +99,7 @@ export function shouldRecordServerLocalTrace(record: TraceRecord): boolean {
     return true;
   }
 
-  if (sampledSqlSpanNames.has(record.name)) {
+  if (isSqlSpan(record)) {
     return shouldKeepSampledTraceRecord(record, SQL_TRACE_SAMPLE_MODULO);
   }
 

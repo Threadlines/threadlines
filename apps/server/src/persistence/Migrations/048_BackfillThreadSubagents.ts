@@ -1,4 +1,5 @@
 import type { OrchestrationSubagent, OrchestrationThreadActivity } from "@threadlines/contracts";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -106,10 +107,10 @@ const backfillThread = (sql: SqlClient.SqlClient, threadId: string) =>
     }
 
     yield* sql`DELETE FROM projection_thread_subagents WHERE thread_id = ${threadId}`;
-    if (subagents.length === 0) return;
+    if (!Arr.isReadonlyArrayNonEmpty(subagents)) return;
     yield* sql`
       INSERT INTO projection_thread_subagents ${sql.insert(
-        subagents.map((row) => ({
+        Arr.map(subagents, (row) => ({
           thread_id: threadId,
           subagent_id: row.id,
           agent_thread_id: row.agentThreadId,

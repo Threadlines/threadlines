@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { ChildProcessSpawner } from "effect/process";
+import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 import {
   buildWindowsEnvironmentCaptureCommand,
   resolveCommandPath,
@@ -175,7 +175,7 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   return yield* spawner
     .string(
-      ChildProcess.make(
+      makeCommandWithShell(
         input.command,
         input.args,
         hideWindowsConsole({
