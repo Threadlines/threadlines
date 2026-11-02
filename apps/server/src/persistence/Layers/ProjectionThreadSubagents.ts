@@ -4,6 +4,7 @@ import {
   isProviderInstanceId,
   type OrchestrationSubagent,
 } from "@threadlines/contracts";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -103,10 +104,10 @@ const makeProjectionThreadSubagentRepository = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       yield* sql`DELETE FROM projection_thread_subagents WHERE thread_id = ${threadId}`;
-      if (rows.length === 0) return;
+      if (!Arr.isReadonlyArrayNonEmpty(rows)) return;
       yield* sql`
         INSERT INTO projection_thread_subagents ${sql.insert(
-          rows.map((row: OrchestrationSubagent) => ({
+          Arr.map(rows, (row: OrchestrationSubagent) => ({
             thread_id: threadId,
             subagent_id: row.id,
             agent_thread_id: row.agentThreadId,

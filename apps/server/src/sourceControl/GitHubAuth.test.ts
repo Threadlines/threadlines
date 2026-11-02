@@ -56,7 +56,7 @@ for (const prompt of [
         const spawner = ChildProcessSpawner.make((command) => {
           assert.strictEqual(command._tag, "StandardCommand");
           const standard = command as ChildProcess.StandardCommand;
-          calls.push(standard.args);
+          calls.push(standard.args.map(String));
           return Effect.succeed(
             calls.length === 1
               ? handle({

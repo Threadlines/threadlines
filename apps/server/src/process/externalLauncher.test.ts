@@ -915,7 +915,7 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
               if (!ChildProcess.isStandardCommand(command)) {
                 throw new Error("Expected a standard command");
               }
-              spawned.push(command.args);
+              spawned.push(command.args.map(String));
               return makeMockDetachedHandle(undefined, spawned.length === 1 ? firstExitCode : 0);
             }),
         });

@@ -21,47 +21,52 @@ import {
 } from "@threadlines/contracts";
 
 /**
- * The broker answers with whatever the page sent; each tool's success schema
- * checks it on the way out, so only the success type is cast here.
+ * The broker is the server's, taken once when the handlers are built; only the
+ * caller comes with each request (`requestService`). The broker answers with
+ * whatever the page sent; each tool's success schema checks it on the way out,
+ * so only the success type is cast here.
  */
-const forward =
-  (operation: PreviewAutomationOperation) =>
-  (input: unknown): Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker> =>
-    Effect.gen(function* () {
-      const { threadId, agentId, outsideLimit } = yield* requestService(McpInvocationContext);
-      // Its sign-ins and private addresses aren't an outside connection's to use.
-      if (outsideLimit !== undefined) {
-        return yield* new PreviewAutomationExecutionError({
-          operation,
-          detail: outsideBrowserDetail(outsideLimit),
-        });
-      }
-      const broker = yield* PreviewAutomationBroker;
-      return yield* broker.invoke({ threadId, agentId, operation, input });
-    }) as Effect.Effect<never, PreviewAutomationError, PreviewAutomationBroker>;
-
-export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
-  browser_snapshot: forward("snapshot"),
-  browser_status: forward("status"),
-  browser_tabs: forward("tabs"),
-  browser_open_tab: forward("openTab"),
-  browser_close_tab: forward("closeTab"),
-  browser_select_tab: forward("selectTab"),
-  browser_navigate: forward("navigate"),
-  browser_click: forward("click"),
-  browser_move: forward("move"),
-  browser_drag: forward("drag"),
-  browser_type: forward("type"),
-  browser_press: forward("press"),
-  browser_scroll: forward("scroll"),
-  browser_wait_for: forward("waitFor"),
-  browser_evaluate: forward("evaluate"),
-  browser_resize: forward("resize"),
-  browser_set_appearance: forward("setAppearance"),
+const forwarder = Effect.gen(function* () {
+  const broker = yield* PreviewAutomationBroker;
+  return (operation: PreviewAutomationOperation) =>
+    (input: unknown): Effect.Effect<never, PreviewAutomationError> =>
+      Effect.gen(function* () {
+        const { threadId, agentId, outsideLimit } = yield* requestService(McpInvocationContext);
+        // Its sign-ins and private addresses aren't an outside connection's to use.
+        if (outsideLimit !== undefined) {
+          return yield* new PreviewAutomationExecutionError({
+            operation,
+            detail: outsideBrowserDetail(outsideLimit),
+          });
+        }
+        return yield* broker.invoke({ threadId, agentId, operation, input });
+      }) as Effect.Effect<never, PreviewAutomationError>;
 });
+
+export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer(
+  Effect.map(forwarder, (forward) => ({
+    browser_snapshot: forward("snapshot"),
+    browser_status: forward("status"),
+    browser_tabs: forward("tabs"),
+    browser_open_tab: forward("openTab"),
+    browser_close_tab: forward("closeTab"),
+    browser_select_tab: forward("selectTab"),
+    browser_navigate: forward("navigate"),
+    browser_click: forward("click"),
+    browser_move: forward("move"),
+    browser_drag: forward("drag"),
+    browser_type: forward("type"),
+    browser_press: forward("press"),
+    browser_scroll: forward("scroll"),
+    browser_wait_for: forward("waitFor"),
+    browser_evaluate: forward("evaluate"),
+    browser_resize: forward("resize"),
+    browser_set_appearance: forward("setAppearance"),
+  })),
+);
 
 /** The screenshot's handler, built separately so the manual registration in
  *  McpHttpServer can wrap its result in an image block. */
-export const BrowserScreenshotHandlersLive = BrowserScreenshotToolkit.toLayer({
-  browser_screenshot: forward("screenshot"),
-});
+export const BrowserScreenshotHandlersLive = BrowserScreenshotToolkit.toLayer(
+  Effect.map(forwarder, (forward) => ({ browser_screenshot: forward("screenshot") })),
+);

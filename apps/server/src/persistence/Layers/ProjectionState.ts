@@ -1,4 +1,5 @@
 import { NonNegativeInt } from "@threadlines/contracts";
+import * as Arr from "effect/Array";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -22,11 +23,11 @@ const makeProjectionStateRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const upsertProjectionStateRows = SqlSchema.void({
-    Request: Schema.Array(ProjectionState),
+    Request: Schema.NonEmptyArray(ProjectionState),
     execute: (rows) =>
       sql`
         INSERT INTO projection_state ${sql.insert(
-          rows.map((row) => ({
+          Arr.map(rows, (row) => ({
             projector: row.projector,
             last_applied_sequence: row.lastAppliedSequence,
             updated_at: row.updatedAt,
@@ -79,11 +80,11 @@ const makeProjectionStateRepository = Effect.gen(function* () {
   });
 
   const upsertMany: ProjectionStateRepositoryShape["upsertMany"] = (rows) =>
-    rows.length === 0
-      ? Effect.void
-      : upsertProjectionStateRows(rows).pipe(
+    Arr.isReadonlyArrayNonEmpty(rows)
+      ? upsertProjectionStateRows(rows).pipe(
           Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.upsertMany:query")),
-        );
+        )
+      : Effect.void;
 
   const upsert: ProjectionStateRepositoryShape["upsert"] = (row) => upsertMany([row]);
 
