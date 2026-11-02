@@ -95,6 +95,7 @@ describe("threadLinkRegistration", () => {
   const base = {
     execPath: "C:\\repo\\node_modules\\electron\\dist\\electron.exe",
     entryScriptPath: "C:\\repo\\apps\\desktop\\dist-electron\\main.cjs",
+    isAppImage: false,
   };
 
   it("claims the scheme the way each kind of run is started", () => {
@@ -104,6 +105,17 @@ describe("threadLinkRegistration", () => {
         { kind: "register" },
       );
     }
+    // Linux finds a link's app by its desktop entry, which only the .deb installs.
+    assert.equal(
+      threadLinkRegistration({
+        ...base,
+        platform: "linux",
+        isPackaged: true,
+        isDevelopment: false,
+        isAppImage: true,
+      }).kind,
+      "skip",
+    );
     // On Windows an unpackaged run is Electron plus its entry script; elsewhere
     // nothing of its own declares the scheme.
     assert.deepStrictEqual(
@@ -196,6 +208,7 @@ describe("DesktopThreadLinks", () => {
             inbox,
             execPath: "/opt/Threadlines/threadlines",
             entryScriptPath: undefined,
+            isAppImage: false,
           }).pipe(Layer.provide(services)),
         ),
       );

@@ -575,6 +575,9 @@ export function retryTransientElectronPackaging<A, E, R>(
  */
 const MAC_MINIMUM_SYSTEM_VERSION = { macOS: "13.0", darwin: "22.0.0" } as const;
 
+/** NSIS script in apps/desktop/resources that the Windows installer includes. */
+export const WINDOWS_INSTALLER_INCLUDE_FILE_NAME = "installer.nsh";
+
 /** Why the packaged app's minimum macOS differs from ours, or null when it matches. */
 export function checkMacMinimumSystemVersion(infoPlist: string): string | null {
   const found = /<key>LSMinimumSystemVersion<\/key>\s*<string>([^<]*)<\/string>/.exec(
@@ -982,6 +985,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     }
     buildConfig.win = winConfig;
+    // Uninstalling takes back the link scheme the app claimed for the user,
+    // when it still points at this install (see installer.nsh).
+    buildConfig.nsis = { include: stageResourcePath(WINDOWS_INSTALLER_INCLUDE_FILE_NAME) };
   }
 
   return buildConfig;

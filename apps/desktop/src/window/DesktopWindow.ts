@@ -163,6 +163,9 @@ const HELD_MENU_ACTION_LIMIT = 8;
  */
 export const HELD_MENU_ACTION_TTL = Duration.minutes(2);
 
+/** Chromium's net::ERR_ABORTED: the navigation stopped and the page stayed. */
+const NAVIGATION_ABORTED_ERROR_CODE = -3;
+
 interface HeldMenuAction {
   readonly action: string;
   readonly payload: DesktopMenuActionPayload | undefined;
@@ -542,12 +545,18 @@ const make = Effect.gen(function* () {
     Option.none(),
   );
   // Whether the window's page has its app shell listening for menu actions.
-  // The app keeps one window, so this is that window's page. A new document
-  // starts without the shell, so a navigation, a crash or a close resets it.
+  // The app keeps one window, so this is that window's page. A navigation to
+  // a new document stops it as soon as it starts (what is sent meanwhile
+  // reaches the outgoing page, which drops it), and a crash or a close does
+  // too. While a navigation is under way, `listeningBeforeNavigation` keeps
+  // the outgoing page's state: a navigation that ends without a new document
+  // (a download, say) leaves that page and its shell as they were.
   let menuActionsListening = false;
+  let listeningBeforeNavigation: boolean | null = null;
   let heldMenuActions: ReadonlyArray<HeldMenuAction> = [];
   const windowCreationLock = yield* Semaphore.make(1);
   const stopMenuActionsListening = () => {
+    listeningBeforeNavigation = null;
     menuActionsListening = false;
   };
 
@@ -1212,6 +1221,11 @@ const make = Effect.gen(function* () {
         if (!isMainFrame) {
           return;
         }
+        // An aborted navigation leaves the page in place; any other failure
+        // replaces it with an error page, which has no app shell.
+        if (errorCode !== NAVIGATION_ABORTED_ERROR_CODE) {
+          stopMenuActionsListening();
+        }
         void runPromise(
           logWindowWarning("main window failed to load", {
             errorCode,
@@ -1221,8 +1235,22 @@ const make = Effect.gen(function* () {
         );
       },
     );
-    // Fires once a new document commits, never for the app's own route changes.
+    // The app's own route changes stay in one document and don't count.
+    window.webContents.on("did-start-navigation", (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      listeningBeforeNavigation ??= menuActionsListening;
+      menuActionsListening = false;
+    });
+    // A new document committed.
     window.webContents.on("did-navigate", stopMenuActionsListening);
+    window.webContents.on("did-stop-loading", () => {
+      // A navigation that never committed: the page and its shell stayed.
+      if (listeningBeforeNavigation !== null) {
+        menuActionsListening = listeningBeforeNavigation;
+        listeningBeforeNavigation = null;
+      }
+      void runPromise(flushHeldMenuActions);
+    });
     window.webContents.on("render-process-gone", (_event, details) => {
       stopMenuActionsListening();
       void runPromise(
@@ -1337,11 +1365,9 @@ const make = Effect.gen(function* () {
       yield* electronWindow.reveal(window);
     });
 
-  const setMenuActionsListening = Effect.fn("desktop.window.setMenuActionsListening")(function* (
-    listening: boolean,
-  ) {
-    menuActionsListening = listening;
-    if (!listening || heldMenuActions.length === 0) return;
+  /** Delivers the actions that waited, once the page's shell listens. */
+  const flushHeldMenuActions = Effect.gen(function* () {
+    if (!menuActionsListening || heldMenuActions.length === 0) return;
     const window = yield* electronWindow.currentMainOrFirst;
     if (Option.isNone(window)) return;
     const held = heldMenuActions;
@@ -1352,6 +1378,19 @@ const make = Effect.gen(function* () {
       if (now - entry.heldAtMillis > ttlMillis) continue;
       yield* sendMenuAction(window.value, entry.action, entry.payload);
     }
+  }).pipe(Effect.withSpan("desktop.window.flushHeldMenuActions"));
+
+  const setMenuActionsListening = Effect.fn("desktop.window.setMenuActionsListening")(function* (
+    listening: boolean,
+  ) {
+    // Mid-navigation, only the outgoing page can be talking: the new one has
+    // no scripts until it commits. Its word counts if the navigation fails.
+    if (listeningBeforeNavigation !== null) {
+      listeningBeforeNavigation = listening;
+      return;
+    }
+    menuActionsListening = listening;
+    yield* flushHeldMenuActions;
   });
 
   const resolveQuitConfirmation = (confirmed: boolean) =>
@@ -1503,13 +1542,18 @@ const make = Effect.gen(function* () {
 
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* electronWindow.focusedMainOrFirst;
-      if (Option.isSome(existingWindow) && menuActionsListening) {
+      if (
+        Option.isSome(existingWindow) &&
+        menuActionsListening &&
+        !existingWindow.value.webContents.isLoadingMainFrame()
+      ) {
         yield* sendMenuAction(existingWindow.value, action, payload);
         return;
       }
 
       // Sent now, it would reach a page that drops it: one still loading (the
-      // shell subscribes well after the load event), or none at all.
+      // shell subscribes well after the load event), one being replaced, or
+      // none at all. A listening page that is loading gets it when it stops.
       const heldAtMillis = yield* Clock.currentTimeMillis;
       heldMenuActions = [...heldMenuActions, { action, payload, heldAtMillis }].slice(
         -HELD_MENU_ACTION_LIMIT,

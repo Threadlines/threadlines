@@ -322,6 +322,7 @@ const desktopThreadLinksLayer = DesktopThreadLinks.layer({
   inbox: threadLinkInbox,
   execPath: process.execPath,
   entryScriptPath: process.argv[1] === undefined ? undefined : NodePath.resolve(process.argv[1]),
+  isAppImage: (process.env.APPIMAGE?.trim() ?? "") !== "",
 });
 
 const desktopApplicationLayer = Layer.mergeAll(

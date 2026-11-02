@@ -353,7 +353,8 @@ const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (reason: stri
     }
     yield* electronApp.relaunch({
       execPath: process.execPath,
-      args: process.argv.slice(1),
+      // A link that launched the app was opened already.
+      args: DesktopThreadLinks.withoutThreadLinks(process.argv.slice(1)),
     });
     yield* electronApp.exit(0);
   }).pipe(

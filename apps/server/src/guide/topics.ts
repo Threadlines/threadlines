@@ -93,7 +93,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
 
 {place:connections.computersFromHere} are other computers this app opens, so their threads show here too. {place:connections.options} sets how devices reach this computer: the same network, Tailscale, or a one-time link. A phone away from home connects through Threadlines' relay, end to end encrypted.
 
-A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed.
+A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed. On Linux only the .deb install opens these links; with the AppImage, pair the browser instead.
 
 {place:connections.thisComputer} is this computer's name as the others see it.`,
   },

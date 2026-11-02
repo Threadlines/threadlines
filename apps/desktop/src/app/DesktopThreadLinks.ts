@@ -52,6 +52,19 @@ export function threadLinkFromCandidates(
   return null;
 }
 
+const LINK_ARGUMENT_PREFIXES = Object.values(APP_THREAD_LINK_SCHEMES).map((scheme) => `${scheme}:`);
+
+/**
+ * A launch's arguments without the thread links in them. A restart (after a
+ * setting that needs one) reuses the arguments, and must not open again the
+ * thread a link launched the app into, perhaps hours before.
+ */
+export function withoutThreadLinks(argv: ReadonlyArray<string>): Array<string> {
+  return argv.filter(
+    (arg) => !LINK_ARGUMENT_PREFIXES.some((prefix) => arg.toLowerCase().startsWith(prefix)),
+  );
+}
+
 export type ThreadLinkRegistration =
   | { readonly kind: "skip"; readonly reason: string }
   | {
@@ -74,16 +87,23 @@ export type ThreadLinkRegistration =
  * which Windows can be told to start. Its macOS launcher bundle declares no
  * scheme and it has no desktop file on Linux, so there it would only take the
  * scheme from the installed app.
+ *
+ * Linux finds a link's app through its desktop entry, which the .deb installs
+ * and an AppImage doesn't (nor do we write one into the user's home), so an
+ * AppImage can't take links: its users pair the browser instead.
  */
 export function threadLinkRegistration(input: {
   readonly platform: NodeJS.Platform;
   readonly isPackaged: boolean;
   readonly isDevelopment: boolean;
+  readonly isAppImage: boolean;
   readonly execPath: string;
   readonly entryScriptPath: string | undefined;
 }): ThreadLinkRegistration {
   if (input.isPackaged) {
-    return { kind: "register" };
+    return input.platform === "linux" && input.isAppImage
+      ? { kind: "skip", reason: "an AppImage has no desktop entry for links to reach" }
+      : { kind: "register" };
   }
   if (input.isDevelopment) {
     return input.platform === "darwin"
@@ -156,6 +176,8 @@ export const layer = (input: {
   readonly inbox: ThreadLinkInbox;
   readonly execPath: string;
   readonly entryScriptPath: string | undefined;
+  /** Whether this run is an AppImage (its `APPIMAGE` path is set). */
+  readonly isAppImage: boolean;
 }) =>
   Layer.effect(
     DesktopThreadLinks,
@@ -194,6 +216,7 @@ export const layer = (input: {
           platform: environment.platform,
           isPackaged: environment.isPackaged,
           isDevelopment: environment.isDevelopment,
+          isAppImage: input.isAppImage,
           execPath: input.execPath,
           entryScriptPath: input.entryScriptPath,
         });

@@ -24,22 +24,29 @@ export function desktopAppThreadLink(threadRef: ScopedThreadRef): string | null 
 const triedLinks = new Set<string>();
 
 /**
- * Asks the browser to open `link` once per page load, unprompted. Only
- * Chromium browsers (Chrome, Edge, Arc, Brave): they ask before opening an
- * app and stay quiet when none answers the link, where Safari and Firefox
- * put up an error. Elsewhere the button is the way in.
+ * Asks the browser to open `link` once per page load, unprompted, only where
+ * a computer without the app shows nothing for it: Chromium browsers (Chrome,
+ * Edge, Arc, Brave) on macOS and Windows ask before opening an app and stay
+ * quiet when none answers. Safari and Firefox put up an error, and Linux
+ * hands every link to xdg-open, so Chrome there asks to open that even when
+ * nothing would answer (an AppImage install, which claims no scheme).
+ * Elsewhere the button is the way in.
  */
 export function tryDesktopAppLinkOnce(link: string): void {
-  if (triedLinks.has(link) || !isChromiumBrowser()) return;
+  if (triedLinks.has(link) || !opensUnansweredLinksQuietly()) return;
   triedLinks.add(link);
   window.location.href = link;
 }
 
-function isChromiumBrowser(): boolean {
+function opensUnansweredLinksQuietly(): boolean {
   const userAgentData = (
     navigator as Navigator & {
-      readonly userAgentData?: { readonly brands?: ReadonlyArray<{ readonly brand: string }> };
+      readonly userAgentData?: {
+        readonly brands?: ReadonlyArray<{ readonly brand: string }>;
+        readonly platform?: string;
+      };
     }
   ).userAgentData;
-  return userAgentData?.brands?.some((entry) => entry.brand === "Chromium") ?? false;
+  const chromium = userAgentData?.brands?.some((entry) => entry.brand === "Chromium") ?? false;
+  return chromium && (userAgentData?.platform === "macOS" || userAgentData?.platform === "Windows");
 }
