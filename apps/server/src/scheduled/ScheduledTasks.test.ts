@@ -694,7 +694,20 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       if (request.type === "thread.turn-start-requested") {
         assert.equal(request.payload.runtimeMode, "approval-required");
         assert.equal(request.payload.interactionMode, "plan");
+        // Usage analytics names both runs' messages as the tasks' own.
+        assert.equal(request.payload.scheduledTaskId, follow.id);
       }
+      const openerRequest = (yield* computer.events).find(
+        (event) =>
+          event.type === "thread.turn-start-requested" &&
+          event.payload.messageId === scheduledRunMessageId(opener.id, opened.slotUtc),
+      );
+      assert.equal(
+        openerRequest?.type === "thread.turn-start-requested"
+          ? openerRequest.payload.scheduledTaskId
+          : undefined,
+        opener.id,
+      );
       // The tool's word is taken only from a thread a run started for itself.
       const turnId = TurnId.make("follow-turn");
       assert.equal(
