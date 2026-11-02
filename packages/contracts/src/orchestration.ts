@@ -1830,8 +1830,8 @@ export const OrchestrationAgentRequest = Schema.Struct({
   sideTurnId: Schema.optional(SideTurnId),
   /**
    * An ask or review whose caller stopped waiting for it (the call ran out of
-   * time): its answer comes back to the caller as a reply message, like an
-   * invite's review.
+   * time, or the user wrote to the caller): its answer comes back to the caller
+   * as a reply message, like an invite's review.
    */
   replyAsMessage: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,

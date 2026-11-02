@@ -100,7 +100,11 @@ import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
-import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
+import {
+  formatUserInputReply,
+  questionAnswerMessageId,
+  readRequestedUserInput,
+} from "../userInput.ts";
 import {
   increment,
   orchestrationEventsProcessedTotal,
@@ -3998,7 +4002,7 @@ const make = Effect.gen(function* () {
 
         // A stable message id lets a replay finish projection without sending
         // the same answer twice after it has already reached the transcript.
-        const messageId = MessageId.make(`question-answer:${event.payload.requestId}`);
+        const messageId = questionAnswerMessageId(event.payload.requestId);
         yield* Effect.gen(function* () {
           if (!thread.messages.some((message) => message.id === messageId)) {
             const activeTurnId = thread.session?.activeTurnId;
