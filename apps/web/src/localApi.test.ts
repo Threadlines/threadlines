@@ -646,6 +646,40 @@ describe("wsApi", () => {
     answers[4]!.resolve();
   });
 
+  it("puts overlapping failed device writes back to where they started", async () => {
+    const answers: Array<{ reject: (error: Error) => void; resolve: () => void }> = [];
+    const saved: string[] = [];
+    getWindowForTest().desktopBridge = makeDesktopBridge({
+      setClientSettings: (settings) =>
+        new Promise<void>((resolve, reject) => {
+          saved.push(settings.timestampFormat);
+          answers.push({ resolve, reject });
+        }),
+    });
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
+    const first = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    const second = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
+    answers[0]!.reject(new Error("disk full"));
+    await expect(first).rejects.toThrow("disk full");
+    await vi.waitFor(() => expect(saved).toHaveLength(2));
+    answers[1]!.reject(new Error("disk full"));
+    await expect(second).rejects.toThrow("disk full");
+    expect(getClientSettings().timestampFormat).toBe("locale");
+
+    // Once loaded, a write made right after an agent's write follows it.
+    const third = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    updateSettings({ timestampFormat: "12-hour" });
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+    await vi.waitFor(() => expect(saved).toHaveLength(3));
+    answers[2]!.resolve();
+    await third;
+    await vi.waitFor(() => expect(saved).toHaveLength(4));
+    answers[3]!.resolve();
+    expect(saved[3]).toBe("12-hour");
+  });
+
   it("falls back to browser storage for persistence when the desktop bridge is missing", async () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);

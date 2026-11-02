@@ -98,6 +98,8 @@ async function hydrateClientSettings(): Promise<void> {
     } catch (error) {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate failed`, error);
     } finally {
+      // Nothing stored yet: what a failed write goes back to is where it started.
+      savedClientSettings ??= getClientSettingsSnapshot();
       setClientSettingsHydrated(true);
     }
   })();
@@ -255,7 +257,8 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
  * was last stored, before the next save runs, so that save stores them too.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
-  await hydrateClientSettings();
+  // Only when it has to wait, so a write made right after this one still follows it.
+  if (!clientSettingsHydrated) await hydrateClientSettings();
   const before = getClientSettingsSnapshot();
   const write = applyClientPatch(patch);
   try {
