@@ -116,6 +116,42 @@ export function reduceDesktopUpdateStateOnDownloadStart(
   };
 }
 
+/**
+ * Why a download failed, by what the updater's error says: `server` answered
+ * "not now" (5xx, 408, 429), `network` got no answer at all, and `other` is
+ * anything a second try won't change, like a missing file or a bad checksum.
+ */
+export type UpdateDownloadFailureKind = "server" | "network" | "other";
+
+export function classifyUpdateDownloadFailure(cause: unknown): UpdateDownloadFailureKind {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const statusCode =
+    typeof cause === "object" && cause !== null && "statusCode" in cause
+      ? Number(cause.statusCode)
+      : Number(/\bstatus (\d{3})\b/u.exec(message)?.[1]);
+  if (Number.isInteger(statusCode)) {
+    return statusCode >= 500 || statusCode === 408 || statusCode === 429 ? "server" : "other";
+  }
+  if (/ERR_ABORTED|cancel/iu.test(message)) return "other";
+  return /net::ERR_|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|socket hang up|timed? ?out/iu.test(
+    message,
+  )
+    ? "network"
+    : "other";
+}
+
+/** What the user reads for a download that failed for good, or `fallback` when there's nothing plainer to say. */
+export function describeUpdateDownloadFailure(cause: unknown, fallback: string): string {
+  switch (classifyUpdateDownloadFailure(cause)) {
+    case "server":
+      return "GitHub's download server had a problem. Try again in a minute.";
+    case "network":
+      return "Couldn't reach GitHub. Check your connection and try again.";
+    case "other":
+      return fallback;
+  }
+}
+
 export function reduceDesktopUpdateStateOnDownloadFailure(
   state: DesktopUpdateState,
   message: string,

@@ -31,6 +31,10 @@ interface UpdatesHarnessOptions {
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
   >;
+  /** What the updater's download does; `attempt` counts from 1. */
+  readonly downloadUpdate?: (
+    attempt: number,
+  ) => Effect.Effect<void, ElectronUpdater.ElectronUpdaterDownloadUpdateError>;
   readonly env?: Record<string, string | undefined>;
   readonly resourcesPath?: string;
 }
@@ -83,6 +87,7 @@ function withProcessEnvPatch<A, E, R>(
 
 function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
+  let downloadCount = 0;
   let allowDowngrade = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
@@ -124,7 +129,10 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     checkForUpdates: Effect.sync(() => {
       checkCount += 1;
     }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
-    downloadUpdate: Effect.void,
+    downloadUpdate: Effect.suspend(() => {
+      downloadCount += 1;
+      return options.downloadUpdate?.(downloadCount) ?? Effect.void;
+    }),
     quitAndInstall: () => Effect.void,
     on: (eventName, listener) =>
       Effect.acquireRelease(
@@ -214,6 +222,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   return {
     layer,
     checkCount: () => checkCount,
+    downloadCount: () => downloadCount,
     feedUrls: () => feedUrls,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
@@ -479,6 +488,74 @@ describe("DesktopUpdates", () => {
         assert.equal(harness.sentStates.at(-1)?.status, "available");
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  describe("downloading", () => {
+    const failed = (message: string) =>
+      Effect.fail(
+        new ElectronUpdater.ElectronUpdaterDownloadUpdateError({ cause: new Error(message) }),
+      );
+    const download504 = 'Cannot download "https://github.com/a.exe", status 504: ';
+
+    const run = (harness: ReturnType<typeof makeHarness>) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-available", { version: "1.2.4" });
+          yield* flushCallbacks;
+          const fiber = yield* updates.download.pipe(Effect.forkScoped);
+          // Let it reach its wait before the clock moves past it.
+          for (let turn = 0; turn < 50; turn += 1) yield* flushCallbacks;
+          yield* TestClock.adjust("10 seconds");
+          return yield* Fiber.join(fiber);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+
+    it.effect("tries once more after a server hiccup, and that can be the end of it", () => {
+      const harness = makeHarness({
+        downloadUpdate: (attempt) => (attempt === 1 ? failed(download504) : Effect.void),
+      });
+      return run(harness).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            assert.equal(harness.downloadCount(), 2);
+            assert.isTrue(result.completed);
+          }),
+        ),
+      );
+    });
+
+    it.effect("says what happened when the second try fails too", () => {
+      const harness = makeHarness({ downloadUpdate: () => failed(download504) });
+      return run(harness).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            assert.equal(harness.downloadCount(), 2);
+            assert.isFalse(result.completed);
+            assert.equal(result.state.status, "available");
+            assert.equal(
+              result.state.message,
+              "GitHub's download server had a problem. Try again in a minute.",
+            );
+          }),
+        ),
+      );
+    });
+
+    it.effect("does not try again when another try can't help", () => {
+      const harness = makeHarness({
+        downloadUpdate: () => failed("sha512 checksum mismatch"),
+      });
+      return run(harness).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            assert.equal(harness.downloadCount(), 1);
+            assert.equal(result.state.message, "Electron updater failed to download the update.");
+          }),
+        ),
+      );
+    });
   });
 
   it.effect("replaces a downloaded update when a newer release supersedes it", () => {
