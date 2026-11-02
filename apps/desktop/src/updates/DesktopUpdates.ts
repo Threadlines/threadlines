@@ -41,6 +41,8 @@ import {
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
   reduceDesktopUpdateStateOnDownloadFailure,
+  classifyUpdateDownloadFailure,
+  describeUpdateDownloadFailure,
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnDownloadStart,
   reduceDesktopUpdateStateOnInstallFailure,
@@ -50,6 +52,7 @@ import {
 
 const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
 const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
+const UPDATE_DOWNLOAD_RETRY_DELAY = "5 seconds";
 const GITHUB_CLI_AUTH_TIMEOUT = Duration.seconds(3);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 const GITHUB_AUTH_TOKEN_ENV_NAMES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -693,15 +696,30 @@ const make = Effect.gen(function* () {
         yield* markPrivateGitHubAuthMissingForDownload;
         return { accepted: true, completed: false };
       }
-      yield* electronUpdater.downloadUpdate;
+      // A release file's server hiccups now and then; one more try usually gets it.
+      yield* electronUpdater.downloadUpdate.pipe(
+        Effect.catch((error) =>
+          classifyUpdateDownloadFailure(error.cause) === "other"
+            ? Effect.fail(error)
+            : logUpdaterInfo("download failed, trying once more").pipe(
+                Effect.andThen(Effect.sleep(UPDATE_DOWNLOAD_RETRY_DELAY)),
+                // The app may have started quitting during the wait.
+                Effect.andThen(Ref.get(desktopState.quitting)),
+                Effect.flatMap((quitting) =>
+                  quitting ? Effect.fail(error) : electronUpdater.downloadUpdate,
+                ),
+              ),
+        ),
+      );
       return { accepted: true, completed: true };
     }).pipe(
       Effect.catch(
         Effect.fn("desktop.updates.handleDownloadFailure")(function* (error) {
+          const message = describeUpdateDownloadFailure(error.cause, error.message);
           yield* updateState((current) =>
-            reduceDesktopUpdateStateOnDownloadFailure(current, error.message),
+            reduceDesktopUpdateStateOnDownloadFailure(current, message),
           );
-          yield* logUpdaterError("failed to download update", { message: error.message });
+          yield* logUpdaterError("failed to download update", { message });
           return { accepted: true, completed: false };
         }),
       ),

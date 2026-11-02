@@ -315,10 +315,67 @@ function staple(appPath) {
   validateStapledTicket(appPath, { attempts });
 }
 
+function readSignedEntitlements(appPath) {
+  return execFileSync("codesign", ["-d", "--entitlements", ":-", appPath], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
+function launchAsNode(appPath) {
+  const executable = execFileSync(
+    "plutil",
+    [
+      "-extract",
+      "CFBundleExecutable",
+      "raw",
+      "-o",
+      "-",
+      path.join(appPath, "Contents", "Info.plist"),
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  return spawnSync(path.join(appPath, "Contents", "MacOS", executable), ["-e", "process.exit(0)"], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+}
+
+/**
+ * Restricted entitlements (the browser panel's passkey keychain group) count
+ * only when the embedded provisioning profile authorizes them, and one it does
+ * not makes macOS refuse to start the app at all. So an app signed with them is
+ * started here, before it is notarized or published: as Node, with no window
+ * and no state, which still makes macOS check its signature. An app without
+ * them is left alone.
+ */
+function verifyRestrictedEntitlements(appPath, options = {}) {
+  const { readEntitlements = readSignedEntitlements, launch = launchAsNode } = options;
+  if (!readEntitlements(appPath).includes("<key>keychain-access-groups</key>")) return;
+  if (!fs.existsSync(path.join(appPath, "Contents", "embedded.provisionprofile"))) {
+    throw new Error(
+      `${appPath} claims a keychain access group but embeds no provisioning profile, so macOS would refuse to start it.`,
+    );
+  }
+  const result = launch(appPath);
+  if (result.error || result.status !== 0) {
+    const reason = result.error
+      ? String(result.error)
+      : `exit ${result.status}, signal ${result.signal ?? "none"}`;
+    const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+    throw new Error(
+      `${appPath} did not start with its restricted entitlements (${reason}). Check that the provisioning profile matches the signing certificate and authorizes the keychain group.${output ? `\n\n${output}` : ""}`,
+    );
+  }
+  console.log(`[threadlines-notary] ${appPath} starts with its restricted entitlements.`);
+}
+
 module.exports = async function notarizeAfterSign(context) {
   if (process.platform !== "darwin") return;
 
   const appPath = findAppPath(context.appOutDir);
+  verifyRestrictedEntitlements(appPath);
   console.log(`[threadlines-notary] Preparing ${appPath} for notarization.`);
 
   const { tempDir, zipPath } = createNotarizationZip(appPath);
@@ -338,3 +395,4 @@ module.exports.redactNotarySecrets = redactNotarySecrets;
 module.exports.runStaplerWithRetries = runStaplerWithRetries;
 module.exports.validateStapledTicket = validateStapledTicket;
 module.exports.isStaplerNetworkFailure = isStaplerNetworkFailure;
+module.exports.verifyRestrictedEntitlements = verifyRestrictedEntitlements;

@@ -920,7 +920,10 @@ function ChatThreadRouteView() {
     // surface the index route uses until the bootstrap resolves the thread.
     if (authGateState.status === "hosted-static" && !bootstrapComplete) {
       return hostedRouteState?.kind === "link-not-paired" ? (
-        <HostedStaticLinkNotPairedState pairedElsewhere={hostedRouteState.pairedElsewhere} />
+        <HostedStaticLinkNotPairedState
+          pairedElsewhere={hostedRouteState.pairedElsewhere}
+          threadRef={threadRef}
+        />
       ) : (
         <HostedStaticLoadingState label={hostedRouteState?.label ?? null} />
       );

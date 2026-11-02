@@ -940,6 +940,51 @@ export function AgentBrowserSitesRow() {
   );
 }
 
+/**
+ * Whether the built-in browser's projects share one profile, so a site signed
+ * in to once is signed in everywhere, or each keep their own. Changing it
+ * reopens open tabs in the other profile; neither profile loses anything.
+ */
+export function BrowserSignInsRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.browserSignIns"
+      resetAction={
+        settings.browserSignIns !== DEFAULT_UNIFIED_SETTINGS.browserSignIns ? (
+          <SettingResetButton
+            label="browser sign-ins"
+            onClick={() =>
+              updateSettings({ browserSignIns: DEFAULT_UNIFIED_SETTINGS.browserSignIns })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={settings.browserSignIns}
+          onValueChange={(value) => {
+            if (value === "shared" || value === "separate") {
+              updateSettings({ browserSignIns: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Browser sign-ins">
+            <SelectValue>
+              {settings.browserSignIns === "shared" ? "Shared" : "Per project"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="shared">Shared</SelectItem>
+            <SelectItem value="separate">Per project</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 export function UsageAnalyticsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -1308,6 +1353,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           </ShownPlace>
           <ShownPlace place="general.sitesAgentsCanVisit">
             <AgentBrowserSitesRow />
+          </ShownPlace>
+          <ShownPlace place="general.browserSignIns">
+            <BrowserSignInsRow />
           </ShownPlace>
           <ShownPlace place="general.clearBrowserData">
             <ClearBrowserDataRow />

@@ -12,7 +12,7 @@ import {
   type EditorId,
   type LaunchEditorInput,
 } from "@threadlines/contracts";
-import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 import { areFilesystemPathsEqual, isFilesystemPathWithin } from "@threadlines/shared/path";
 import {
   isCommandAvailable,
@@ -558,7 +558,7 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   errorMessage: string,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const command = ChildProcess.make(
+  const command = makeCommandWithShell(
     launch.command,
     launch.args,
     launch.windowsHide === false ? launch.options : hideWindowsConsole(launch.options),

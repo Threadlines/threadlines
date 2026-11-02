@@ -9,12 +9,12 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
-import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import {
@@ -425,9 +425,9 @@ const makeAcpSessionRuntime = (
           };
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(
+        makeCommandWithShell(
           plan.command,
-          [...plan.args],
+          plan.args,
           hideWindowsConsole({
             ...plan.options,
             ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),

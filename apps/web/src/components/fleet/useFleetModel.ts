@@ -45,6 +45,7 @@ import {
   linkedDeviceInputs,
   primaryConnectionFrom,
   savedComputerInput,
+  savedComputerNeedsNewCode,
 } from "./fleet.logic";
 import {
   buildFleetDirectory,
@@ -217,12 +218,16 @@ export function useFleetModel(): FleetData {
             ? primaryConnection === "connected"
             : entry.kind === "saved" && runtime?.connectionState === "connected",
         known: entry.kind === "this" || entry.kind === "saved",
+        needsNewCode:
+          entry.kind === "saved" &&
+          savedRecords[environmentId] !== undefined &&
+          savedComputerNeedsNewCode(savedRecords[environmentId], runtime),
         supportsLinks: descriptor === null ? null : descriptor.capabilities.computerLinks === true,
         links: links[environmentId] ?? null,
       });
     }
     return byEnvironment;
-  }, [directory, links, primaryConnection, primaryDescriptor, savedRuntime]);
+  }, [directory, links, primaryConnection, primaryDescriptor, savedRecords, savedRuntime]);
 
   const model = useMemo(() => {
     const projectByKey = new Map(

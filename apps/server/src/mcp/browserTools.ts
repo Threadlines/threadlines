@@ -37,11 +37,6 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
-import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
-
-// The caller comes with each request (`requestService`), not from the layer.
-const dependencies = [PreviewAutomationBroker];
-
 /** Everything here reaches out of the machine and into a live page. */
 const pageTool = <T extends Tool.Any>(tool: T): T => tool.annotate(Tool.OpenWorld, true) as T;
 
@@ -58,7 +53,6 @@ export const BrowserSnapshotTool = readsOnly(
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationSnapshotSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Read the page"),
 );
 
@@ -69,7 +63,6 @@ export const BrowserScreenshotTool = readsOnly(
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationScreenshotSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Look at the page"),
 );
 
@@ -80,7 +73,6 @@ export const BrowserStatusTool = readsOnly(
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Check the browser"),
 );
 
@@ -90,7 +82,6 @@ export const BrowserTabsTool = readsOnly(
       "Every page open in the Threadlines browser panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
     success: PreviewAutomationTabsSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "List tabs"),
 );
 
@@ -101,7 +92,6 @@ export const BrowserOpenTabTool = changesThePage(
     parameters: PreviewAutomationOpenTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Open a tab"),
 );
 
@@ -112,7 +102,6 @@ export const BrowserCloseTabTool = changesThePage(
     parameters: PreviewAutomationCloseTabInputSchema,
     success: PreviewAutomationTabsSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Close a tab"),
 );
 
@@ -123,7 +112,6 @@ export const BrowserSelectTabTool = changesThePage(
     parameters: PreviewAutomationSelectTabInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Switch tab"),
 );
 
@@ -134,7 +122,6 @@ export const BrowserNavigateTool = changesThePage(
     parameters: PreviewAutomationNavigateInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Go to a page"),
 );
 
@@ -145,7 +132,6 @@ export const BrowserClickTool = changesThePage(
     parameters: PreviewAutomationClickInputSchema,
     success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Click"),
 );
 
@@ -156,7 +142,6 @@ export const BrowserMoveTool = changesThePage(
     parameters: PreviewAutomationMoveInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Move"),
 );
 
@@ -167,7 +152,6 @@ export const BrowserDragTool = changesThePage(
     parameters: PreviewAutomationDragInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Drag"),
 );
 
@@ -178,7 +162,6 @@ export const BrowserTypeTool = changesThePage(
     parameters: PreviewAutomationTypeInputSchema,
     success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Type"),
 );
 
@@ -189,7 +172,6 @@ export const BrowserPressTool = changesThePage(
     parameters: PreviewAutomationPressInputSchema,
     success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Press a key"),
 );
 
@@ -200,7 +182,6 @@ export const BrowserScrollTool = changesThePage(
     parameters: PreviewAutomationScrollInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   })
     .annotate(Tool.Title, "Scroll")
     .annotate(Tool.Destructive, false),
@@ -213,7 +194,6 @@ export const BrowserWaitForTool = readsOnly(
     parameters: PreviewAutomationWaitForInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Wait for the page"),
 );
 
@@ -224,7 +204,6 @@ export const BrowserEvaluateTool = changesThePage(
     parameters: PreviewAutomationEvaluateInputSchema,
     success: Schema.Struct({ result: Schema.Unknown }),
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   }).annotate(Tool.Title, "Run JavaScript"),
 );
 
@@ -235,7 +214,6 @@ export const BrowserResizeTool = changesThePage(
     parameters: PreviewAutomationResizeInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   })
     .annotate(Tool.Title, "Resize the page")
     .annotate(Tool.Destructive, false),
@@ -248,7 +226,6 @@ export const BrowserSetAppearanceTool = changesThePage(
     parameters: PreviewAutomationSetAppearanceInputSchema,
     success: PreviewAutomationStatusSchema,
     failure: PreviewAutomationErrorSchema,
-    dependencies,
   })
     .annotate(Tool.Title, "Set page appearance")
     .annotate(Tool.Destructive, false),

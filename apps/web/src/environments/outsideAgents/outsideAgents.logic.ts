@@ -17,6 +17,7 @@ import {
   type AssistantAlertTargetUpdateInput,
 } from "@threadlines/contracts";
 import type {
+  KnownAssistant,
   OutsideAgentAccess,
   OutsideAgentAssistantSignIn,
   OutsideAgentConnection,
@@ -30,6 +31,7 @@ import type {
   RuntimeMode,
   ThreadParticipantId,
 } from "@threadlines/contracts";
+import { assistantDisplayName } from "@threadlines/shared/knownAssistants";
 
 import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -104,28 +106,51 @@ export function describeOutsideAgentLastUse(lastUsedAt: string | null, nowMs: nu
  * How an assistant connection signs in, on its row: "Signs in from cursor.sh"
  * when the relay checked who it is, "Sign-in returns to cursor.sh" when only
  * where its sign-in goes back to is known, "Key" for a key made in Settings.
- * Null for local agents, which all sign in the same way.
+ * When Threadlines shows it as another name than the one it gave (Grok Bot,
+ * which signs in as Cursor), it says so: "Signs in as Cursor through
+ * www.cursor.com". Null for local agents, which all sign in the same way.
  */
 export function describeOutsideAgentSignIn(
-  connection: Pick<OutsideAgentConnection, "kind" | "signIn" | "identity">,
+  connection: Pick<OutsideAgentConnection, "kind" | "signIn" | "identity" | "givenName">,
 ): string | null {
   if (connection.kind !== "assistant") return null;
   if (connection.signIn === "key") return "Key";
   if (connection.identity === null) return null;
-  return connection.identity.verified
-    ? `Signs in from ${connection.identity.host}`
-    : `Sign-in returns to ${connection.identity.host}`;
+  const { host, verified } = connection.identity;
+  if (connection.givenName !== null) {
+    return `Signs in as ${connection.givenName} ${verified ? "from" : "through"} ${host}`;
+  }
+  return verified ? `Signs in from ${host}` : `Sign-in returns to ${host}`;
 }
 
 /**
  * Who an assistant signing in is, as its approval dialog says it: checked by
  * the relay, or only the name it gave and where its sign-in returns to.
  */
-export function describeAssistantIdentity(identity: OutsideAgentIdentity): string {
+export function describeAssistantIdentity(
+  identity: OutsideAgentIdentity,
+  givenName: string | null,
+): string {
+  if (givenName !== null) {
+    return identity.verified
+      ? `Signs in as ${givenName} from ${identity.host}.`
+      : `Signs in as ${givenName} (the name it gave) through ${identity.host}.`;
+  }
   return identity.verified
     ? `Signs in from ${identity.host}.`
     : `Name given by the assistant. Sign-in returns to ${identity.host}.`;
 }
+
+/** The assistant picker's choice: a known assistant, or none of them. */
+export type AssistantChoice = KnownAssistant | "none";
+
+/** What the picker sends: null for none of them. */
+export const pickedAssistant = (choice: AssistantChoice): KnownAssistant | null =>
+  choice === "none" ? null : choice;
+
+/** What Threadlines calls an assistant for a choice: the known one's name, else the name it gave. */
+export const choiceDisplayName = (choice: AssistantChoice, givenName: string) =>
+  assistantDisplayName(pickedAssistant(choice), givenName);
 
 /** A sign-in waiting for the user: a local agent's, or an assistant's. */
 export type OutsideAgentWaitingSignIn =

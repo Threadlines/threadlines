@@ -83,7 +83,7 @@ describe("childEnvironment", () => {
   });
 
   it.effect("applies to both sides of a pipe started through the spawner", () => {
-    const spawned: Array<Record<string, string | undefined> | undefined> = [];
+    const spawned: Array<ChildProcess.StandardCommand["options"]["env"]> = [];
     const collect = (command: ChildProcess.Command): void => {
       if (command._tag === "PipedCommand") {
         collect(command.left);

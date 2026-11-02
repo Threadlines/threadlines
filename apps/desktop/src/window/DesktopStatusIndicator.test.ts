@@ -91,6 +91,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
         calls.cancelDockBounce.push(id);
       }),
     appendCommandLineSwitch: () => Effect.void,
+    setAsDefaultProtocolClient: () => Effect.succeed(true),
     on: () => Effect.void,
   } satisfies ElectronApp.ElectronAppShape);
 
@@ -164,6 +165,7 @@ const makeDesktopWindowLayer = (input: {
       Effect.sync(() => {
         input.dispatchedActions.push(payload === undefined ? { action } : { action, payload });
       }),
+    setMenuActionsListening: () => Effect.void,
     syncAppearance: Effect.void,
   } satisfies DesktopWindow.DesktopWindowShape);
 

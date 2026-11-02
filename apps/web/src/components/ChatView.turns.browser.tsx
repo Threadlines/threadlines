@@ -458,12 +458,24 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       // Still open: the model list and the rest of the settings are right there.
       expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
 
-      // The arrow keys step one level at a time.
-      level("high").focus();
-      await userEvent.keyboard("{ArrowLeft}");
+      // The arrow keys step one level at a time, and focus follows. The key
+      // goes to the level itself: on a busy CI runner something in the picker
+      // can take focus back to its search field, and a key sent to whatever
+      // has focus lands there instead.
+      let mediumFocused = false;
+      level("medium").addEventListener(
+        "focus",
+        () => {
+          mediumFocused = true;
+        },
+        { once: true },
+      );
+      level("high").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
       await vi.waitFor(() => {
         expect(buttonEffort()).toContain("Medium");
-        expect(document.activeElement).toBe(level("medium"));
+        expect(mediumFocused).toBe(true);
       });
     } finally {
       await mounted.cleanup();

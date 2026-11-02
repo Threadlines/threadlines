@@ -424,7 +424,9 @@ describe("addSavedEnvironment", () => {
         host: "remote.example.com",
         pairingCode: "123456",
       }),
-    ).rejects.toThrow("Saved environment credential expired. Pair it again.");
+    ).rejects.toThrow(
+      "Your sign-in to Remote environment has ended. Connect again with a new code.",
+    );
 
     expect(mockEnsureSshEnvironment).not.toHaveBeenCalled();
     expect(mockBootstrapSshBearerSession).not.toHaveBeenCalled();

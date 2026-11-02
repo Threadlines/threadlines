@@ -23,6 +23,7 @@ import { formatDesktopSshTarget } from "../settings/connections/sshTarget";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { failureNotice, toastManager } from "../ui/toast";
+import { savedComputerNeedsNewCode } from "./fleet.logic";
 
 /** "Connected for 3m", or "Connected just now" in its first seconds. */
 function connectedForLabel(since: string, nowMs: number): string {
@@ -72,8 +73,8 @@ async function runConnectionAction(
  * was last connected and the last problem in plain words; a version warning;
  * Disconnect, or Stop trying while the app waits for a computer that didn't
  * answer, both keeping it saved; Reconnect; "Connect again with a new code"
- * once that computer removed this app's access; and while it is still being
- * added, the number to compare and Cancel.
+ * once that computer removed this app's access or its sign-in ended; and while
+ * it is still being added, the number to compare and Cancel.
  */
 export function ComputerConnectionGroup({
   environmentId,
@@ -96,8 +97,8 @@ export function ComputerConnectionGroup({
   const canDisconnect = isConnected || isWaitingToReconnect;
   const displayLabel = record.label.trim() || runtime?.descriptor?.label || "this computer";
   const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
-  // A code-joined computer that removed this app needs a new code, not a retry.
-  const needsNewCode = relayLink !== null && !pending && runtime?.authState === "requires-auth";
+  // A computer that no longer takes this app's sign-in needs a new code, not a retry.
+  const needsNewCode = savedComputerNeedsNewCode(record, runtime);
 
   const dotClassName = pending
     ? "bg-amber-400"
@@ -112,7 +113,9 @@ export function ComputerConnectionGroup({
   const title = pending
     ? "Waiting for approval"
     : needsNewCode
-      ? "Access removed"
+      ? relayLink
+        ? "Access removed"
+        : "Sign-in ended"
       : isConnected
         ? "Connected"
         : isConnecting
@@ -137,7 +140,7 @@ export function ComputerConnectionGroup({
     ? pending.matchNumber
       ? `Waiting for ${displayLabel} to allow this app. Check it shows ${pending.matchNumber}.`
       : `Waiting for ${displayLabel} to allow this app.`
-    : needsNewCode
+    : needsNewCode && relayLink
       ? `${displayLabel} removed this app's access. Connect again with a new code from ${displayLabel}.`
       : [
           isConnected

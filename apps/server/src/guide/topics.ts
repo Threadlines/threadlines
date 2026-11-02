@@ -73,15 +73,27 @@ A thread on another computer stays under its parent on both computers and shows 
 
 Linking is two-way, with a permission for each direction: "<A>'s agents can start work on <B>" is Allowed, Ask first or Off, with the most access those threads get ("Up to Auto"). Each direction is stored on the computer the work would run on, so the Mac's setting decides what the PC's agents may do on the Mac, and the other way round. Unlink from the same group.
 
-With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across.`,
+With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.`,
   },
   {
     id: "devices",
     title: "Phones and other devices",
-    keywords: ["phone", "tablet", "pair", "qr", "remote access", "tailscale", "network"],
+    keywords: [
+      "phone",
+      "tablet",
+      "pair",
+      "qr",
+      "remote access",
+      "tailscale",
+      "network",
+      "browser",
+      "open in the app",
+    ],
     body: `{place:settings.connections} is where other devices use this computer. {place:connections.devices} lists every phone, tablet, browser and linked computer paired with it; Connect a phone, tablet, or computer there to pair a new one.
 
 {place:connections.computersFromHere} are other computers this app opens, so their threads show here too. {place:connections.options} sets how devices reach this computer: the same network, Tailscale, or a one-time link. A phone away from home connects through Threadlines' relay, end to end encrypted.
+
+A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed. On Linux only the .deb install opens these links; with the AppImage, pair the browser instead.
 
 {place:connections.thisComputer} is this computer's name as the others see it.`,
   },
@@ -137,7 +149,7 @@ What it can do is up to you: See threads, Start threads (and message or stop the
 
 To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant, type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and its highest access. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
 
-{place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Assistants never answer approvals or plans; those wait for you. Once an assistant's work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
+{place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Each shows by what it is, with its mark: Grok Bot signs in as Cursor, so Threadlines guesses from how an assistant signs in, and you pick another in the approval dialog or with Change. Assistants never answer approvals or plans; those wait for you. Once an assistant's work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
 
 With {place:connections.assistantAlerts}, this computer wakes an assistant instead of waiting for it to check in: it sends a signed alert to a web address when a thread needs you, finishes or fails. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote. For a Grok routine, add its webhook URL with its key (\`Bearer crsr_…\`) as the Authorization header, so the routine runs and checks in to see what happened. Skip threads I'm looking at, on by default, holds back alerts for threads you have open, since the routine runs a model for each one.
 
@@ -197,10 +209,15 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
       "sites",
       "page size",
       "viewport",
+      "sign in",
+      "cookies",
+      "passwords",
     ],
     body: `In the desktop app a browser panel sits beside the chat. Agents use it to open your dev server, check a layout, reproduce a bug or fill in a form, and you watch every step; you can also mark up the page and send the marks to the agent.
 
 {place:general.sitesAgentsCanVisit} decides which sites agents may open without asking you first. Local addresses always work.
+
+{place:general.browserSignIns} is Shared by default: every project on a computer uses one browser, so you sign in to a site once and every project's agents can use that sign-in. Local sites are shared too, so two projects on localhost:3000 see each other's cookies and storage. Per project gives each project its own. Each project still has its own allowed sites. The browser can't use Chrome's saved passwords or your Chrome sign-ins.
 
 Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.`,
   },

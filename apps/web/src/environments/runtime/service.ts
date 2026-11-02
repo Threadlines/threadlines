@@ -682,6 +682,73 @@ export async function markRelaySavedEnvironmentLinkExpired(
   });
 }
 
+/**
+ * What this app says once a computer stops accepting its sign-in, because it
+ * ran out or the computer removed it. An SSH computer signs in again by itself
+ * on the next connect; any other needs a new code from that computer.
+ */
+export function savedEnvironmentSignInEndedMessage(input: {
+  readonly label: string;
+  readonly viaSsh?: boolean;
+}): string {
+  return input.viaSsh
+    ? `Your sign-in to ${input.label} has ended. Reconnect to sign in again.`
+    : `Your sign-in to ${input.label} has ended. Connect again with a new code.`;
+}
+
+function signInEndedFields(record: SavedEnvironmentRecord) {
+  return {
+    authState: "requires-auth",
+    connectionState: "disconnected",
+    role: null,
+    lastError: savedEnvironmentSignInEndedMessage({
+      label: record.label,
+      viaSsh: Boolean(record.desktopSsh),
+    }),
+    lastErrorAt: isoNow(),
+  } as const;
+}
+
+/**
+ * A computer answered and refused the saved sign-in while this app was asking
+ * for a connection. Trying again can't help, and the transport's own report of
+ * it reads as an unknown socket error. So this says what happened and tears the
+ * connection down. The sign-in stays saved: a refusal can also mean that computer
+ * couldn't check it just then, and Reconnect or the next launch asks again. An
+ * SSH computer's disconnect drops it, so that connect signs in again.
+ */
+function markSavedEnvironmentSignInEnded(
+  record: SavedEnvironmentRecord,
+  client: WsRpcClient,
+): void {
+  const { environmentId } = record;
+  // Now, so the transport's report that follows this refusal finds it said.
+  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, signInEndedFields(record));
+  void disconnectSavedEnvironment(environmentId)
+    .catch(() => undefined)
+    .then(() => {
+      // Disconnecting says it was disconnected; what ended it still stands,
+      // unless the computer was paired again in the meantime.
+      if (isCurrentSavedEnvironmentClient(environmentId, client)) {
+        useSavedEnvironmentRuntimeStore.getState().patch(environmentId, signInEndedFields(record));
+      }
+    });
+}
+
+/**
+ * The newest client made for each saved computer. A ticket request can answer
+ * after the computer was paired again or removed, and a refusal of that old
+ * sign-in says nothing about the one replacing it.
+ */
+const currentSavedEnvironmentClients = new Map<EnvironmentId, WsRpcClient>();
+
+function isCurrentSavedEnvironmentClient(environmentId: EnvironmentId, client: WsRpcClient) {
+  const record = getSavedEnvironmentRecord(environmentId);
+  return record
+    ? !record.relay && currentSavedEnvironmentClients.get(environmentId) === client
+    : false;
+}
+
 function setRuntimeConnecting(environmentId: EnvironmentId) {
   useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
     connectionState: "connecting",
@@ -1465,7 +1532,7 @@ function createSavedEnvironmentClient(
   const isRelay = Boolean(getSavedEnvironmentRecord(environmentId)?.relay);
   const isSecureRelay = isRelayV2Record(getSavedEnvironmentRecord(environmentId));
 
-  return createWsRpcClient(
+  const client: WsRpcClient = createWsRpcClient(
     new WsTransport(
       async () => {
         const record = getSavedEnvironmentRecord(environmentId);
@@ -1475,17 +1542,37 @@ function createSavedEnvironmentClient(
         if (record.relay) {
           return record.wsBaseUrl;
         }
-        return record.desktopSsh
-          ? await resolveDesktopSshWebSocketConnectionUrl(
-              record.wsBaseUrl,
-              record.httpBaseUrl,
-              bearerToken,
-            )
-          : await resolveRemoteWebSocketConnectionUrl({
-              wsBaseUrl: record.wsBaseUrl,
-              httpBaseUrl: record.httpBaseUrl,
-              bearerToken,
-            });
+        try {
+          const url = record.desktopSsh
+            ? await resolveDesktopSshWebSocketConnectionUrl(
+                record.wsBaseUrl,
+                record.httpBaseUrl,
+                bearerToken,
+              )
+            : await resolveRemoteWebSocketConnectionUrl({
+                wsBaseUrl: record.wsBaseUrl,
+                httpBaseUrl: record.httpBaseUrl,
+                bearerToken,
+              });
+          // It took the sign-in, so an earlier refusal no longer holds, whatever
+          // becomes of this socket.
+          const runtime = useSavedEnvironmentRuntimeStore.getState();
+          if (
+            runtime.byId[environmentId]?.authState === "requires-auth" &&
+            isCurrentSavedEnvironmentClient(environmentId, client)
+          ) {
+            runtime.patch(environmentId, { authState: "unknown" });
+          }
+          return url;
+        } catch (error) {
+          const refused = record.desktopSsh
+            ? isSshHttpAuthError(error, 401)
+            : isRemoteEnvironmentAuthHttpError(error) && error.status === 401;
+          if (refused && isCurrentSavedEnvironmentClient(environmentId, client)) {
+            markSavedEnvironmentSignInEnded(record, client);
+          }
+          throw error;
+        }
       },
       {
         // Its state lives in the saved environment runtime, not the app's own link.
@@ -1523,9 +1610,12 @@ function createSavedEnvironmentClient(
           }
         },
         onError: (message: string) => {
-          const mismatch = resolveServerConfigVersionMismatch(
-            useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.serverConfig,
-          );
+          const runtime = useSavedEnvironmentRuntimeStore.getState().byId[environmentId];
+          // Already told why: the connection is ending because the sign-in did.
+          if (runtime?.authState === "requires-auth" && runtime.lastError) {
+            return;
+          }
+          const mismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
           useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
             connectionState: "error",
             lastError: appendVersionMismatchHint(message, mismatch),
@@ -1598,6 +1688,8 @@ function createSavedEnvironmentClient(
           : undefined,
     ),
   );
+  currentSavedEnvironmentClients.set(environmentId, client);
+  return client;
 }
 
 /**
@@ -1778,10 +1870,10 @@ async function ensureSavedEnvironmentConnection(
             authState: "requires-auth",
             role: null,
             connectionState: "disconnected",
-            lastError: "Saved environment is missing its saved credential. Pair it again.",
+            lastError: savedEnvironmentSignInEndedMessage(record),
             lastErrorAt: isoNow(),
           });
-          throw new Error("Saved environment is missing its saved credential.");
+          throw new Error(savedEnvironmentSignInEndedMessage(record));
         }
       } else {
         const prepared = await prepareSavedEnvironmentRecordForConnection(record);
@@ -1878,9 +1970,11 @@ async function ensureSavedEnvironmentConnection(
           }
           if (!activeRecord.desktopSsh) {
             await removeSavedEnvironmentBearerToken(activeRecord.environmentId);
-            throw new Error("Saved environment credential expired. Pair it again.", {
-              cause: error,
+            useSavedEnvironmentRuntimeStore.getState().patch(activeRecord.environmentId, {
+              authState: "requires-auth",
+              role: null,
             });
+            throw new Error(savedEnvironmentSignInEndedMessage(activeRecord), { cause: error });
           }
 
           const issued = await issueDesktopSshBearerSession(activeRecord);
@@ -2174,6 +2268,7 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
 export async function removeSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
   clearRelayHold(environmentId);
   relayOfflineAttempts.delete(environmentId);
+  currentSavedEnvironmentClients.delete(environmentId);
   await disconnectSavedEnvironment(environmentId);
   threadDetails.disposeForEnvironment(environmentId);
   useSavedEnvironmentRegistryStore.getState().remove(environmentId);

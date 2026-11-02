@@ -1,4 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vite-plus/test";
 
 const require = createRequire(import.meta.url);
@@ -24,6 +27,19 @@ const notarizeAfterSign = require("../apps/desktop/resources/notarize-after-sign
     },
   ): void;
   isStaplerNetworkFailure(error: unknown): boolean;
+  verifyRestrictedEntitlements(
+    appPath: string,
+    options: {
+      readEntitlements: (appPath: string) => string;
+      launch: (appPath: string) => {
+        status: number | null;
+        signal: string | null;
+        error?: Error;
+        stdout?: string;
+        stderr?: string;
+      };
+    },
+  ): void;
 };
 
 const staplerDrop = () => new Error("Command failed: xcrun stapler validate (Error 68)");
@@ -200,5 +216,46 @@ it("redacts Apple credentials from notarytool output", () => {
     else process.env.APPLE_API_KEY_ID = previousKeyId;
     if (previousIssuer === undefined) delete process.env.APPLE_API_ISSUER;
     else process.env.APPLE_API_ISSUER = previousIssuer;
+  }
+});
+
+it("starts an app signed with restricted entitlements before notarizing it", () => {
+  const appPath = join(mkdtempSync(join(tmpdir(), "threadlines-notary-")), "Threadlines.app");
+  mkdirSync(join(appPath, "Contents"), { recursive: true });
+  const passkeys = () => "<dict><key>keychain-access-groups</key><array/></dict>";
+  const launched: string[] = [];
+  const launch = (status: number | null, signal: string | null) => (path: string) => {
+    launched.push(path);
+    return { status, signal };
+  };
+  try {
+    // Without restricted entitlements nothing is started.
+    notarizeAfterSign.verifyRestrictedEntitlements(appPath, {
+      readEntitlements: () => "<dict/>",
+      launch: launch(0, null),
+    });
+    expect(launched).toEqual([]);
+    // Claimed without the profile that authorizes them, the app could never start.
+    expect(() =>
+      notarizeAfterSign.verifyRestrictedEntitlements(appPath, {
+        readEntitlements: passkeys,
+        launch: launch(0, null),
+      }),
+    ).toThrow(/embeds no provisioning profile/u);
+    writeFileSync(join(appPath, "Contents", "embedded.provisionprofile"), "");
+    // macOS kills an app whose profile does not cover what it claims.
+    expect(() =>
+      notarizeAfterSign.verifyRestrictedEntitlements(appPath, {
+        readEntitlements: passkeys,
+        launch: launch(null, "SIGKILL"),
+      }),
+    ).toThrow(/did not start .*signal SIGKILL/u);
+    notarizeAfterSign.verifyRestrictedEntitlements(appPath, {
+      readEntitlements: passkeys,
+      launch: launch(0, null),
+    });
+    expect(launched).toEqual([appPath, appPath]);
+  } finally {
+    rmSync(join(appPath, ".."), { recursive: true, force: true });
   }
 });

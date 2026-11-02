@@ -642,6 +642,7 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
           THREADLINES_NOTARY_TIMEOUT_SECONDS: "900"
           THREADLINES_NOTARY_POLL_SECONDS: "30"
           THREADLINES_NOTARY_SUBMIT_ATTEMPTS: "3"
@@ -660,6 +661,17 @@ jobs:
           printf "%s" "$APPLE_API_KEY_CONTENT" > "$apple_api_key_path"
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
+
+          # A Developer ID provisioning profile (base64) turns on Touch ID
+          # passkeys in the browser panel. The build checks it before signing
+          # and starts the signed app before notarizing. Without it the app is
+          # signed as before, with passkeys off.
+          if [[ -n "${MACOS_PROVISIONING_PROFILE:-}" ]]; then
+            profile_path="$RUNNER_TEMP/threadlines.provisionprofile"
+            printf "%s" "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$profile_path"
+            export THREADLINES_DESKTOP_MAC_PROVISIONING_PROFILE="$profile_path"
+          fi
+          unset MACOS_PROVISIONING_PROFILE
 
           APPLE_API_KEY="$apple_api_key_path" vp exec vp run dist:desktop:artifact \
             --platform mac \

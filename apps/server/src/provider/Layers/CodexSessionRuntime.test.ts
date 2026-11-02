@@ -1824,8 +1824,9 @@ describe("Codex room tools", () => {
           },
         }),
       );
-      const token = spawned?.options.env?.[CODEX_BROWSER_TOKEN_ENV_VAR] ?? "";
-      return { runtime, args: spawned?.args ?? [], token };
+      const tokenValue = spawned?.options.env?.[CODEX_BROWSER_TOKEN_ENV_VAR];
+      const token = typeof tokenValue === "string" ? tokenValue : "";
+      return { runtime, args: (spawned?.args ?? []).map(String), token };
     });
 
   it("attaches the room endpoint on the runtime's own credential, which ends with it", async () => {

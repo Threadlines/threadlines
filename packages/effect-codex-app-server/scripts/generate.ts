@@ -155,10 +155,13 @@ const runCommand = Effect.fn("runCommand")(function* (
   args: ReadonlyArray<string>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // Windows runs .cmd shims through cmd.exe, and Effect takes a shell command
+  // as one command line, joined as Node would join it.
+  const shell = process.platform === "win32";
   const handle = yield* spawner.spawn(
-    ChildProcess.make(command, args, {
-      shell: process.platform === "win32",
-    }),
+    shell
+      ? ChildProcess.make([command, ...args].join(" "), [], { shell })
+      : ChildProcess.make(command, args),
   );
   const [stdout, stderr, exitCode] = yield* Effect.all(
     [
@@ -854,9 +857,9 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   yield* Effect.service(ChildProcessSpawner.ChildProcessSpawner).pipe(
     Effect.flatMap((spawner) =>
       spawner.spawn(
-        ChildProcess.make("vp", ["fmt", generatedDir], {
-          shell: process.platform === "win32",
-        }),
+        process.platform === "win32"
+          ? ChildProcess.make(`vp fmt ${generatedDir}`, [], { shell: true })
+          : ChildProcess.make("vp", ["fmt", generatedDir]),
       ),
     ),
     Effect.flatMap((child) => child.exitCode),

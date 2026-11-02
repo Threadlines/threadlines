@@ -1910,8 +1910,8 @@ export const OrchestrationAgentRequest = Schema.Struct({
   sideTurnId: Schema.optional(SideTurnId),
   /**
    * An ask or review whose caller stopped waiting for it (the call ran out of
-   * time): its answer comes back to the caller as a reply message, like an
-   * invite's review.
+   * time, or the user wrote to the caller): its answer comes back to the caller
+   * as a reply message, like an invite's review.
    */
   replyAsMessage: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
@@ -3218,6 +3218,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   sentFrom: Schema.optional(MessageSentFrom),
   /** See MessageTrigger. A client can only name `accountSwitch`. */
   trigger: Schema.optional(MessageTrigger),
+  /** Server only: a scheduled or event task's run sent it (see ThreadTurnStartRequestedPayload). */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 
@@ -5255,6 +5257,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * mode this event carries, which the decider checked against the ceiling.
    */
   fromOutside: Schema.optional(OutsideTurnOrigin),
+  /**
+   * A scheduled or event task's run sent the message, into the thread it
+   * started or one it continues. Only usage analytics reads it; a retry of
+   * the message does not carry it.
+   */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 

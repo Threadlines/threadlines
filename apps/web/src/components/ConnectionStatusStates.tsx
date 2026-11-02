@@ -8,9 +8,11 @@ import {
   SmartphoneIcon,
   WifiOffIcon,
 } from "lucide-react";
-import { type ReactNode } from "react";
+import type { ScopedThreadRef } from "@threadlines/contracts";
+import { type ReactNode, useEffect } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "../branding";
+import { desktopAppThreadLink, tryDesktopAppLinkOnce } from "../desktopAppLinks";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
@@ -316,64 +318,117 @@ function PairingStepList({
   );
 }
 
-const LINK_PAIRING_STEPS = [
-  {
-    id: "connect-device",
-    body: (
-      <>
-        On your computer, open{" "}
-        <span className="font-medium text-foreground">
-          Settings → Connections → Connect a device
-        </span>
-      </>
-    ),
-  },
-  {
-    id: "enter-code",
-    body: (
-      <>
-        Here, tap <span className="font-medium text-foreground">Enter code</span> and type the code
-        it shows
-      </>
-    ),
-  },
-] as const;
+function linkPairingSteps(press: "tap" | "click") {
+  return [
+    {
+      id: "connect-device",
+      body: (
+        <>
+          On your computer, open{" "}
+          <span className="font-medium text-foreground">
+            Settings → Connections → Connect a device
+          </span>
+        </>
+      ),
+    },
+    {
+      id: "enter-code",
+      body: (
+        <>
+          Here, {press} <span className="font-medium text-foreground">Enter code</span> and type the
+          code it shows
+        </>
+      ),
+    },
+  ] as const;
+}
+
+const PHONE_LINK_PAIRING_STEPS = linkPairingSteps("tap");
+const DESKTOP_LINK_PAIRING_STEPS = linkPairingSteps("click");
+
+/** A browser driven by a mouse or trackpad: one on a computer, where the desktop app can be. */
+const DESKTOP_POINTER_QUERY = "(hover: hover) and (pointer: fine)";
+
+/**
+ * The link that opens this thread in the desktop app, on a computer's browser
+ * only (a phone has no desktop app to open). The first time the screen shows
+ * for a thread, the browser is asked to open it straight away.
+ */
+function useDesktopAppThreadLink(threadRef: ScopedThreadRef | null): string | null {
+  const desktopPointer = useMediaQuery(DESKTOP_POINTER_QUERY);
+  const link = desktopPointer && threadRef ? desktopAppThreadLink(threadRef) : null;
+  useEffect(() => {
+    if (link !== null) tryDesktopAppLinkOnce(link);
+  }, [link]);
+  return link;
+}
 
 /**
  * What the hosted app shows for a link to a computer this browser hasn't
- * paired with, typically a thread address copied from another browser.
+ * paired with: a thread address copied from another browser, or a link from
+ * an assistant or a phone alert opened on a computer.
  *
  * Pairings live in the browser's own storage, so Safari and Chrome on the same
  * phone each pair separately. The code is the step that pairs this browser in
  * particular: a QR code opens in the phone's default browser, which may be the
- * other one.
+ * other one. On a computer the thread is most likely on this very machine, so
+ * opening it in the desktop app comes first and pairing second.
  */
 export function HostedStaticLinkNotPairedState({
   pairedElsewhere,
+  threadRef,
 }: {
   /** Whether this browser is paired with some other computer. */
   pairedElsewhere: boolean;
+  /** The thread the address names, which the desktop app can open. */
+  threadRef: ScopedThreadRef | null;
 }) {
+  const appLink = useDesktopAppThreadLink(threadRef);
+  const title = pairedElsewhere
+    ? "This browser isn't paired with that computer"
+    : "This browser isn't paired yet";
+  const goToThreads = pairedElsewhere ? (
+    <Button size="sm" variant="outline" render={<Link to="/" />}>
+      Go to your threads
+    </Button>
+  ) : null;
+
+  if (appLink !== null) {
+    return (
+      <ConnectionStatusState
+        icon={<Link2OffIcon className="size-5" />}
+        title={title}
+        description={`Using ${APP_BASE_NAME} on this computer? Open the thread in the app.`}
+        body={
+          <>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <Button size="sm" render={<a href={appLink} />}>
+                Open in the {APP_BASE_NAME} app
+              </Button>
+              <Button size="sm" variant="outline" onClick={openConnectComputerDialog}>
+                Enter code
+              </Button>
+              {goToThreads}
+            </div>
+            <PairingStepList steps={DESKTOP_LINK_PAIRING_STEPS} />
+          </>
+        }
+      />
+    );
+  }
+
   return (
     <ConnectionStatusState
       icon={<Link2OffIcon className="size-5" />}
-      title={
-        pairedElsewhere
-          ? "This browser isn't paired with that computer"
-          : "This browser isn't paired yet"
-      }
+      title={title}
       description="Each browser keeps its own pairing, even on the same phone. Pair this one and the link opens here."
-      body={<PairingStepList steps={LINK_PAIRING_STEPS} />}
+      body={<PairingStepList steps={PHONE_LINK_PAIRING_STEPS} />}
       action={
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button size="sm" onClick={openConnectComputerDialog}>
             Enter code
           </Button>
-          {pairedElsewhere ? (
-            <Button size="sm" variant="outline" render={<Link to="/" />}>
-              Go to your threads
-            </Button>
-          ) : null}
+          {goToThreads}
         </div>
       }
     />

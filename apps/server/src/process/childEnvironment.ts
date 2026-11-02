@@ -29,7 +29,14 @@ export function withChildEnvironment(
   if (options.shell) return command;
   const env = options.extendEnv ? { ...process.env, ...options.env } : (options.env ?? process.env);
   const childEnv = withUsualCommandLookup(env);
-  const program = resolveCommandOutsideWorkingFolder(command.command, childEnv, platform);
+  // A variable given as a secret (Redacted) is never one the lookup reads.
+  const lookupEnv = Object.fromEntries(
+    Object.entries(childEnv).filter((entry): entry is [string, string | undefined] => {
+      const value = entry[1];
+      return value === undefined || typeof value === "string";
+    }),
+  );
+  const program = resolveCommandOutsideWorkingFolder(command.command, lookupEnv, platform);
   if (program === null) return null;
   if (childEnv === env && program === command.command) return command;
   return ChildProcess.make(program, command.args, { ...options, env: childEnv, extendEnv: false });

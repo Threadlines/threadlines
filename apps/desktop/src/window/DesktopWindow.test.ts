@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopQuitConfirmationRequest } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -28,9 +29,12 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as IpcChannels from "../ipc/channels.ts";
+import { PREVIEW_PROFILE_SCOPE_PREFERENCE } from "@threadlines/shared/preview";
+
 import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
+import * as PreviewScopes from "../preview/PreviewScopes.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
-import { previewProfilePartition } from "../preview/previewPartitions.ts";
+import { previewProfilePartition, previewSharedPartition } from "../preview/previewPartitions.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -224,6 +228,7 @@ function makeTestLayer(input: {
   readonly appQuitCalls?: Ref.Ref<number>;
   readonly initialRunningThreadCount?: number;
   readonly previewSession?: PreviewSession.PreviewSessionShape;
+  readonly previewScopes?: PreviewScopes.PreviewScopesShape;
   /** Leave the window gate shut, as if startup were still building menus and IPC. */
   readonly startupInProgress?: boolean;
   readonly guests?: ReadonlyArray<Electron.WebContents>;
@@ -299,6 +304,7 @@ function makeTestLayer(input: {
           focus: Effect.void,
           cancelDockBounce: () => Effect.void,
           appendCommandLineSwitch: () => Effect.void,
+          setAsDefaultProtocolClient: () => Effect.succeed(true),
           on: () => Effect.void,
         } satisfies ElectronApp.ElectronAppShape),
         input.electronMenu
@@ -330,6 +336,10 @@ function makeTestLayer(input: {
           showMessageBox: input.showMessageBox ?? (() => Effect.die("unexpected message box")),
           showErrorBox: () => Effect.void,
         } satisfies ElectronDialog.ElectronDialogShape),
+        Layer.succeed(
+          PreviewScopes.PreviewScopes,
+          input.previewScopes ?? PreviewScopes.makePreviewScopeRegistry(),
+        ),
         Layer.succeed(
           PreviewSession.PreviewSession,
           input.previewSession ?? {
@@ -1502,6 +1512,98 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  it.effect("holds menu actions until the page's app shell listens, and drops stale ones", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+      const menuActions = () =>
+        fakeWindow.send.mock.calls.filter((call) => call[0] === IpcChannels.MENU_ACTION_CHANNEL);
+      const thread = { environmentId: "env-1", threadId: "thread-1" };
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        // A link that launched the app: the backend isn't up, so no window yet.
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_THREAD_MENU_ACTION, thread);
+        assert.equal(yield* Ref.get(createCount), 0);
+
+        // The window opens and loads, but its shell hasn't subscribed.
+        yield* desktopWindow.handleBackendReady;
+        assert.equal(yield* Ref.get(createCount), 1);
+        assert.deepEqual(menuActions(), []);
+
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.deepEqual(menuActions(), [
+          [IpcChannels.MENU_ACTION_CHANNEL, DesktopWindow.OPEN_THREAD_MENU_ACTION, thread],
+        ]);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        assert.equal(menuActions().length, 2);
+
+        // A reload starts a page without the shell; what comes meanwhile waits,
+        // and a click from minutes ago doesn't fire once it finally listens.
+        fakeWindow.emitWebContents("did-navigate");
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        yield* TestClock.adjust(Duration.minutes(3));
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.equal(menuActions().length, 2);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("holds menu actions from the moment a new page starts loading until it listens", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+      const loading = vi.mocked(fakeWindow.window.webContents.isLoadingMainFrame);
+      const lastMenuAction = () =>
+        fakeWindow.send.mock.calls
+          .filter((call) => call[0] === IpcChannels.MENU_ACTION_CHANNEL)
+          .map((call) => call[1])
+          .at(-1);
+      const startNavigation = (isSameDocument: boolean) =>
+        fakeWindow.emitWebContents("did-start-navigation", { isMainFrame: true, isSameDocument });
+      const stopLoading = Effect.gen(function* () {
+        loading.mockReturnValue(false);
+        fakeWindow.emitWebContents("did-stop-loading");
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        yield* desktopWindow.setMenuActionsListening(true);
+
+        // The app's own route changes keep its page.
+        startNavigation(true);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_FLEET_MENU_ACTION);
+
+        // A reload starts. The outgoing page still listens, but would drop it.
+        loading.mockReturnValue(true);
+        startNavigation(false);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        fakeWindow.emitWebContents("did-navigate");
+        yield* stopLoading;
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_FLEET_MENU_ACTION);
+        // The new page's shell takes it.
+        yield* desktopWindow.setMenuActionsListening(true);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_USAGE_MENU_ACTION);
+
+        // A navigation that never commits (a download, say) keeps the page,
+        // which gets what waited once loading stops.
+        loading.mockReturnValue(true);
+        startNavigation(false);
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_SCHEDULED_MENU_ACTION);
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_USAGE_MENU_ACTION);
+        yield* stopLoading;
+        assert.equal(lastMenuAction(), DesktopWindow.OPEN_SCHEDULED_MENU_ACTION);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("does not override modified PrintScreen shortcuts", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
@@ -1554,6 +1656,7 @@ describe("DesktopWindow", () => {
           ? Effect.fail(new PreviewSession.PreviewSessionCreationError({ partition, cause: null }))
           : Effect.succeed({} as Electron.Session),
       );
+      const previewScopes = PreviewScopes.makePreviewScopeRegistry();
       const layer = makeTestLayer({
         window: fakeWindow.window,
         createCount,
@@ -1565,13 +1668,18 @@ describe("DesktopWindow", () => {
           clearAllData: () => Effect.void,
           storedPartitions: Effect.succeed([]),
         },
+        previewScopes,
       });
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
 
-        const attach = (partition: string | undefined, preferredPartition?: string) => {
+        const attach = (
+          partition: string | undefined,
+          preferredPartition?: string,
+          scope?: string,
+        ) => {
           const preventDefault = vi.fn();
           const webPreferences: Electron.WebPreferences = {
             preload: "/tmp/evil-preload.js",
@@ -1579,6 +1687,7 @@ describe("DesktopWindow", () => {
             contextIsolation: false,
             sandbox: false,
             ...(preferredPartition === undefined ? {} : { partition: preferredPartition }),
+            ...(scope === undefined ? {} : { [PREVIEW_PROFILE_SCOPE_PREFERENCE]: scope }),
           };
           fakeWindow.emitWebContents(
             "will-attach-webview",
@@ -1618,6 +1727,21 @@ describe("DesktopWindow", () => {
 
         // A session that cannot be configured would grant every permission.
         assert.isTrue(attach(brokenPartition).refused);
+
+        // A project's own partition has no other project's pages in it.
+        const otherProject = previewProfilePartition("environment-1", "project-2");
+        assert.isTrue(attach(projectPartition, undefined, otherProject).refused);
+
+        // A shared partition takes only the projects handed out with it, and
+        // the project's name never reaches the guest's preferences.
+        const sharedPartition = previewSharedPartition("environment-1");
+        assert.isTrue(attach(sharedPartition).refused);
+        assert.isTrue(attach(sharedPartition, undefined, projectPartition).refused);
+        previewScopes.issue(sharedPartition, projectPartition);
+        const shared = attach(sharedPartition, undefined, projectPartition);
+        assert.isFalse(shared.refused);
+        assert.notProperty(shared.webPreferences, PREVIEW_PROFILE_SCOPE_PREFERENCE);
+        assert.isTrue(attach(sharedPartition, undefined, otherProject).refused);
       }).pipe(Effect.provide(layer));
     }),
   );

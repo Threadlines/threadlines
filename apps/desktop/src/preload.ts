@@ -56,6 +56,21 @@ ipcRenderer.on(IpcChannels.WINDOW_FOCUS_CHANNEL, (_event, focused: unknown) => {
   for (const listener of windowFocusListeners) listener(focused);
 });
 
+// How many menu-action listeners the page has. The main process holds menu,
+// tray and link actions while there are none (the page still loading, or on
+// a screen without the app shell) and hands them over when one subscribes.
+// The shell re-subscribes whenever its effect re-runs, dropping to none for a
+// moment; telling the main process only once that moment has passed keeps
+// those re-runs from costing two messages each.
+let menuActionListenerCount = 0;
+let menuActionsStopPending = false;
+
+function reportMenuActionsListening(listening: boolean) {
+  void ipcRenderer
+    .invoke(IpcChannels.MENU_ACTION_LISTENING_CHANNEL, listening)
+    .catch(() => undefined);
+}
+
 contextBridge.exposeInMainWorld("desktopBridge", {
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
@@ -338,8 +353,24 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
 
     ipcRenderer.on(IpcChannels.MENU_ACTION_CHANNEL, wrappedListener);
+    menuActionListenerCount += 1;
+    if (menuActionListenerCount === 1) {
+      if (menuActionsStopPending) menuActionsStopPending = false;
+      else reportMenuActionsListening(true);
+    }
+    let subscribed = true;
     return () => {
+      if (!subscribed) return;
+      subscribed = false;
       ipcRenderer.removeListener(IpcChannels.MENU_ACTION_CHANNEL, wrappedListener);
+      menuActionListenerCount -= 1;
+      if (menuActionListenerCount > 0) return;
+      menuActionsStopPending = true;
+      queueMicrotask(() => {
+        if (!menuActionsStopPending) return;
+        menuActionsStopPending = false;
+        reportMenuActionsListening(false);
+      });
     };
   },
   getUpdateState: () => ipcRenderer.invoke(IpcChannels.UPDATE_GET_STATE_CHANNEL),

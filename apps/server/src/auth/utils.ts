@@ -26,6 +26,25 @@ export function isInternalClientSession(session: {
   return session.subject === DESKTOP_BOOTSTRAP_SUBJECT && session.method === "bearer-session-token";
 }
 
+/** The subjects of sessions made from a pairing code, and only those: `issueSession` refuses them. */
+export const PAIRING_SESSION_SUBJECTS: ReadonlySet<string> = new Set([
+  "one-time-token",
+  "owner-bootstrap",
+]);
+
+/**
+ * A computer or device the user signed in here with a pairing code, which keeps
+ * that bearer session for as long as they use it. Other bearer sessions are not
+ * this: a CLI-issued one has the lifetime its issuer asked for, and the desktop
+ * shell mints its own again whenever it needs one.
+ */
+export function isPairedDeviceSession(session: {
+  readonly subject: string;
+  readonly method: ServerAuthSessionMethod;
+}): boolean {
+  return session.method === "bearer-session-token" && PAIRING_SESSION_SUBJECTS.has(session.subject);
+}
+
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";
   readonly port: number;

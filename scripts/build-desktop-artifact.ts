@@ -19,7 +19,12 @@ import {
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { parseUpdateManifest, serializeUpdateManifest } from "./lib/update-manifest.ts";
 import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
-import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
+import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
+import {
+  DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD,
+  DESKTOP_RELEASE_APP_ID,
+} from "@threadlines/shared/desktopIdentity";
+import { prepareMacPasskeySigning, type MacPasskeySigning } from "./lib/mac-passkey-signing.ts";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -36,6 +41,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
@@ -255,6 +261,8 @@ interface ResolvedBuildOptions {
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
+  /** A Developer ID provisioning profile that turns on the browser panel's passkeys. */
+  readonly macProvisioningProfile: string | undefined;
 }
 
 interface StagePackageJson {
@@ -273,6 +281,7 @@ interface StagePackageJson {
     readonly electron: string;
   };
   readonly overrides: Record<string, unknown>;
+  readonly [DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD]?: string;
 }
 
 interface StagePackageJsonInput {
@@ -282,6 +291,8 @@ interface StagePackageJsonInput {
   readonly dependencies: Record<string, unknown>;
   readonly electronVersion: string;
   readonly overrides: Record<string, unknown>;
+  /** The keychain group the app may keep passkeys in, when signed for it. */
+  readonly passkeyKeychainGroup?: string;
 }
 
 interface EnvAlias<A> {
@@ -380,6 +391,9 @@ const BuildEnvConfig = Config.all({
     Config.String("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
     Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
   ),
+  macProvisioningProfile: Config.String("THREADLINES_DESKTOP_MAC_PROVISIONING_PROFILE").pipe(
+    Config.option,
+  ),
 });
 
 const MockUpdateServerPortSchema = Schema.NumberFromString.check(
@@ -470,6 +484,8 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
       ),
     ));
 
+  const macProvisioningProfile = Option.getOrUndefined(env.macProvisioningProfile)?.trim();
+
   return {
     platform,
     target,
@@ -482,6 +498,10 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     verbose,
     mockUpdates,
     mockUpdateServerPort,
+    macProvisioningProfile:
+      macProvisioningProfile === undefined || macProvisioningProfile === ""
+        ? undefined
+        : path.resolve(repoRoot, macProvisioningProfile),
   } satisfies ResolvedBuildOptions;
 });
 
@@ -572,6 +592,9 @@ export function retryTransientElectronPackaging<A, E, R>(
  * stops matching (checkMacMinimumSystemVersion).
  */
 const MAC_MINIMUM_SYSTEM_VERSION = { macOS: "13.0", darwin: "22.0.0" } as const;
+
+/** NSIS script in apps/desktop/resources that the Windows installer includes. */
+export const WINDOWS_INSTALLER_INCLUDE_FILE_NAME = "installer.nsh";
 
 /** Why the packaged app's minimum macOS differs from ours, or null when it matches. */
 export function checkMacMinimumSystemVersion(infoPlist: string): string | null {
@@ -867,6 +890,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
   stageResourcesDir?: string,
+  /** Signs the main app with passkey entitlements and embeds the profile that allows them. */
+  macPasskeys?: { readonly provisioningProfile: string; readonly entitlementsFileName: string },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -886,6 +911,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     },
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
+  // Links that open a thread in the app, one scheme per channel so a nightly
+  // link never opens the stable app. macOS reads them as the bundle's URL
+  // types, Linux as the desktop file's MimeType. The Windows installer writes
+  // none, so the app claims its scheme itself at startup (DesktopThreadLinks).
+  buildConfig.protocols = [
+    { name: "Threadlines thread link", schemes: [APP_THREAD_LINK_SCHEMES[updateChannel]] },
+  ];
   const publishConfig = resolveGitHubPublishConfig(updateChannel);
   if (publishConfig) {
     buildConfig.publish = [publishConfig];
@@ -929,8 +961,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
-      macConfig.entitlements = stageResourcePath("entitlements.mac.plist");
+      macConfig.entitlements = stageResourcePath(
+        macPasskeys?.entitlementsFileName ?? "entitlements.mac.plist",
+      );
       macConfig.entitlementsInherit = stageResourcePath("entitlements.mac.inherit.plist");
+      if (macPasskeys !== undefined) {
+        macConfig.provisioningProfile = macPasskeys.provisioningProfile;
+        // An app that claims the keychain group must be signed, or the
+        // after-sign launch check never runs and the claim ships unchecked.
+        macConfig.forceCodeSigning = true;
+      }
       macConfig.notarize = false;
       buildConfig.afterSign = stageResourcePath("notarize-after-sign.cjs");
     } else {
@@ -973,10 +1013,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     }
     buildConfig.win = winConfig;
+    // Uninstalling takes back the link scheme the app claimed for the user,
+    // when it still points at this install (see installer.nsh).
+    buildConfig.nsis = { include: stageResourcePath(WINDOWS_INSTALLER_INCLUDE_FILE_NAME) };
   }
 
   return buildConfig;
 });
+
+/** Written into the staged resources when a build signs with passkeys. */
+const MAC_PASSKEY_ENTITLEMENTS_FILE_NAME = "entitlements.mac.passkeys.plist";
 
 export function createStagePackageJson(input: StagePackageJsonInput): StagePackageJson {
   return {
@@ -995,6 +1041,9 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
       electron: input.electronVersion,
     },
     overrides: input.overrides,
+    ...(input.passkeyKeychainGroup === undefined
+      ? {}
+      : { [DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD]: input.passkeyKeychainGroup }),
   };
 }
 
@@ -1131,13 +1180,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (!options.skipBuild) {
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
     yield* runCommand(
-      ChildProcess.make({
+      makeCommandWithShell(vpBinary, ["run", "build:desktop"], {
         cwd: repoRoot,
         env: createDesktopArtifactBuildEnv(appVersion),
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims.
         shell: process.platform === "win32",
-      })`${vpBinary} run build:desktop`,
+      }),
     );
   }
 
@@ -1205,6 +1254,39 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     "electron",
   ]);
 
+  // Only a signed macOS build can carry the profile: an unsigned one has no
+  // team for it to vouch for.
+  let passkeySigning: MacPasskeySigning | undefined;
+  if (options.macProvisioningProfile !== undefined) {
+    if (options.platform !== "mac" || !options.signed) {
+      yield* Effect.logWarning(
+        "[desktop-artifact] Ignoring THREADLINES_DESKTOP_MAC_PROVISIONING_PROFILE: only signed macOS builds use it.",
+      );
+    } else {
+      const profilePath = options.macProvisioningProfile;
+      passkeySigning = yield* Effect.try({
+        try: () =>
+          prepareMacPasskeySigning({
+            profilePath,
+            appId: DESKTOP_RELEASE_APP_ID,
+            baseEntitlementsPath: path.join(stageResourcesDir, "entitlements.mac.plist"),
+            outputEntitlementsPath: path.join(
+              stageResourcesDir,
+              MAC_PASSKEY_ENTITLEMENTS_FILE_NAME,
+            ),
+          }),
+        catch: (cause) =>
+          new BuildScriptError({
+            message: `The macOS provisioning profile at ${profilePath} cannot turn on passkeys: ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
+      });
+      yield* Effect.log(
+        `[desktop-artifact] Signing with passkeys (keychain group ${passkeySigning.keychainAccessGroup}).`,
+      );
+    }
+  }
+
   const stagePackageJson = createStagePackageJson({
     appVersion,
     commitHash,
@@ -1216,7 +1298,16 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.mockUpdates,
       options.mockUpdateServerPort,
       stageResourcesDir,
+      passkeySigning === undefined || options.macProvisioningProfile === undefined
+        ? undefined
+        : {
+            provisioningProfile: options.macProvisioningProfile,
+            entitlementsFileName: MAC_PASSKEY_ENTITLEMENTS_FILE_NAME,
+          },
     ),
+    ...(passkeySigning === undefined
+      ? {}
+      : { passkeyKeychainGroup: passkeySigning.keychainAccessGroup }),
     dependencies: stageDependencies,
     electronVersion,
     overrides: resolvedOverrides,
@@ -1237,12 +1328,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* runCommand(
-    ChildProcess.make({
+    makeCommandWithShell(vpBinary, ["install", "--prod", "--no-optional"], {
       cwd: stageAppDir,
       ...commandOutputOptions(options.verbose),
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",
-    })`${vpBinary} install --prod --no-optional`,
+    }),
   );
 
   const buildEnv: NodeJS.ProcessEnv = {
@@ -1286,13 +1377,29 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
   );
   const electronBuilderCommand = runCommand(
-    ChildProcess.make({
-      cwd: repoRoot,
-      env: buildEnv,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
-    })`${vpBinary} exec --filter @threadlines/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+    makeCommandWithShell(
+      vpBinary,
+      [
+        "exec",
+        "--filter",
+        "@threadlines/desktop",
+        "--",
+        "electron-builder",
+        "--projectDir",
+        stageAppDir,
+        platformConfig.cliFlag,
+        `--${options.arch}`,
+        "--publish",
+        "never",
+      ],
+      {
+        cwd: repoRoot,
+        env: buildEnv,
+        ...commandOutputOptions(options.verbose),
+        // Windows needs shell mode to resolve .cmd shims.
+        shell: process.platform === "win32",
+      },
+    ),
   );
   yield* retryTransientElectronPackaging(electronBuilderCommand);
 

@@ -2305,6 +2305,24 @@ describe("GeneralSettingsPanel observability", () => {
       expect(savedComputersHarness.reconnect).toHaveBeenCalledWith(environmentId);
     });
 
+    // Its sign-in ended: it says so, and a new code is the way back.
+    await showGroup(
+      {},
+      {
+        authState: "requires-auth",
+        lastError: "Your sign-in to Remote has ended. Connect again with a new code.",
+      },
+    );
+    await expect.element(page.getByText("Sign-in ended", { exact: true })).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Your sign-in to Remote has ended.", { exact: false }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Connect again with a new code", exact: true }).click();
+    await expect
+      .element(page.getByRole("dialog", { name: "Connect to a computer" }))
+      .toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
     // It removed this app's access: a retry can't fix that, a new code can.
     const relay = {
       version: 2 as const,
@@ -5258,6 +5276,8 @@ describe("Agents outside Threadlines", () => {
     return {
       connectionId: OutsideAgentConnectionId.make("connection-claude"),
       name: "Claude Code",
+      givenName: null,
+      assistant: null,
       kind: "local",
       signIn: "oauth",
       identity: null,
@@ -5291,6 +5311,8 @@ describe("Agents outside Threadlines", () => {
     return {
       requestId: OutsideAgentRequestId.make(id),
       name: "Grok Bot",
+      givenName: null,
+      assistant: "grok-bot",
       identity: { host: "cursor.sh", verified: false, known: false },
       place: "Austin, US",
       requestedAccess: "start",
@@ -5308,6 +5330,7 @@ describe("Agents outside Threadlines", () => {
     return connection({
       connectionId: OutsideAgentConnectionId.make(id),
       name: "Grok Bot",
+      assistant: "grok-bot",
       kind: "assistant",
       identity: { host: "cursor.sh", verified: true, known: true },
       access: "see",
@@ -5696,6 +5719,56 @@ describe("Agents outside Threadlines", () => {
     await expect.element(assistants.getByTestId("assistants-connect")).toBeDisabled();
   });
 
+  it("names an assistant by what it is, with its mark, and lets Change say it's another", async () => {
+    // Grok Bot signs in as "Cursor" through Cursor's site.
+    const grok = assistantConnection("connection-grok", {
+      givenName: "Cursor",
+      identity: { host: "www.cursor.com", verified: false, known: true },
+    });
+    outsideAgentsHarness.emit(snapshot({ connections: [grok], assistants: assistantsState() }));
+    outsideAgentsHarness.client.update.mockResolvedValue({
+      ...grok,
+      name: "Cursor",
+      givenName: null,
+      assistant: "cursor",
+    });
+    await mountConnectionsWithHost();
+
+    const row = page.getByTestId(`outside-agent-row-${grok.connectionId}`);
+    await expect.element(row.getByRole("heading", { name: "Grok Bot" })).toBeVisible();
+    await expect.element(row.getByTestId("assistant-mark-grok-bot")).toBeInTheDocument();
+    await expect
+      .element(row)
+      .toMatchTextContent("Signs in as Cursor through www.cursor.com · Sees threads");
+
+    await row.getByRole("button", { name: "Change", exact: true }).click();
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByRole("heading", { name: "Change what Grok Bot can do" }))
+      .toBeVisible();
+    await expect
+      .element(dialog.getByTestId("outside-agent-assistant"))
+      .toHaveTextContent("Grok Bot");
+    await dialog.getByTestId("outside-agent-assistant").click();
+    await page.getByRole("option", { name: "Cursor", exact: true }).click();
+    // The dialog names it as picked before it's saved.
+    await expect
+      .element(dialog.getByRole("heading", { name: "Change what Cursor can do" }))
+      .toBeVisible();
+    await dialog.getByTestId("outside-agent-save").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.update).toHaveBeenCalledWith({
+        connectionId: grok.connectionId,
+        access: "see",
+        maxRuntimeMode: "approval-required",
+        projectIds: null,
+        assistant: "cursor",
+      });
+    });
+    await expect.element(row.getByRole("heading", { name: "Cursor" })).toBeVisible();
+    await expect.element(row.getByTestId("assistant-mark-cursor")).toBeInTheDocument();
+  });
+
   it("shows an assistant's sign-in code with its warning, cancels it, and offers a new one once it runs out", async () => {
     outsideAgentsHarness.emit(snapshot({ assistants: assistantsState() }));
     outsideAgentsHarness.client.assistantCode.mockImplementation(async () => ({
@@ -5792,6 +5865,7 @@ describe("Agents outside Threadlines", () => {
         access: "start",
         maxRuntimeMode: "approval-required",
         projectIds: null,
+        assistant: "grok-bot",
       });
     });
     await expect

@@ -180,6 +180,63 @@ describe("buildFleetModel", () => {
   });
 });
 
+describe("a saved computer whose sign-in ended", () => {
+  const record = {
+    environmentId: MACBOOK,
+    label: "Studio Mac",
+    wsBaseUrl: "ws://10.0.0.2:3773/",
+    httpBaseUrl: "http://10.0.0.2:3773/",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    lastConnectedAt: "2026-10-20T10:00:00.000Z",
+  };
+  const runtime = {
+    connectionState: "disconnected",
+    authState: "requires-auth",
+    lastError: "Your sign-in to Studio Mac has ended. Connect again with a new code.",
+    lastErrorAt: null,
+    role: null,
+    descriptor: null,
+    serverConfig: null,
+    connectedAt: null,
+    disconnectedAt: null,
+    route: null,
+    waitingToReconnect: false,
+    disconnectedByUser: false,
+  } as const;
+
+  it("reads as needing a new code, not as offline", () => {
+    const input = savedComputerInput(record, runtime);
+    expect(input.connection).toBe("needs-code");
+    expect(describeComputerLocation(input, NOW_MS)).toBe("Needs a new code");
+
+    const model = buildFleetModel({
+      center: computer({ id: "this", label: "This computer", kind: "this" }),
+      others: [input],
+      threads: [],
+    });
+    expect(describeFleetSummary(model)).toBe(
+      "Nothing is running right now. Studio Mac needs a new code.",
+    );
+    // Its own row on the page says what to do, so the quiet line leaves it out.
+    expect(describeQuietComputers(model.others, NOW_MS)).toBeNull();
+    expect(resolveConnectionLineState(model.others[0]!)).toBe("offline");
+  });
+
+  it("leaves an SSH computer to sign in again when it reconnects", () => {
+    const ssh = {
+      ...record,
+      desktopSsh: { alias: "mac", hostname: "mac", username: null, port: null },
+    };
+    expect(savedComputerInput(ssh, runtime).connection).toBe("offline");
+  });
+
+  it("stops needing one as soon as it connects", () => {
+    expect(
+      savedComputerInput(record, { ...runtime, connectionState: "connected" }).connection,
+    ).toBe("connected");
+  });
+});
+
 describe("savedComputerInput", () => {
   function savedComputer(environmentId: EnvironmentId, label: string, connected: boolean) {
     return savedComputerInput(

@@ -75,6 +75,10 @@
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"
     },
+    "./appThreadLinks": {
+      "types": "./src/appThreadLinks.ts",
+      "import": "./src/appThreadLinks.ts"
+    },
     "./fileAttachments": {
       "types": "./src/fileAttachments.ts",
       "import": "./src/fileAttachments.ts"
@@ -398,6 +402,10 @@
     "./assistantCredentials": {
       "types": "./src/assistantCredentials.ts",
       "import": "./src/assistantCredentials.ts"
+    },
+    "./knownAssistants": {
+      "types": "./src/knownAssistants.ts",
+      "import": "./src/knownAssistants.ts"
     }
   },
   "scripts": {

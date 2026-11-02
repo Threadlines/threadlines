@@ -41,6 +41,7 @@ import * as DesktopBackendManager from "./backend/DesktopBackendManager.ts";
 import * as DesktopDataMigration from "./app/DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./app/DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./app/DesktopLifecycle.ts";
+import * as DesktopThreadLinks from "./app/DesktopThreadLinks.ts";
 import * as DesktopObservability from "./app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
@@ -50,6 +51,7 @@ import * as DesktopScreenCapture from "./screenCapture/DesktopScreenCapture.ts";
 import * as PreviewAutomation from "./preview/PreviewAutomation.ts";
 import * as PreviewLoopbackProxy from "./preview/PreviewLoopbackProxy.ts";
 import * as PreviewProfiles from "./preview/PreviewProfiles.ts";
+import * as PreviewScopes from "./preview/PreviewScopes.ts";
 import * as PreviewSession from "./preview/PreviewSession.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
@@ -175,6 +177,19 @@ if (!isPrimaryInstance) {
   void exitAfterSecondaryInstanceHandoff();
 }
 
+// Links that open a thread (DesktopThreadLinks.ts). macOS hands over the link
+// that launched the app before "ready", long before the Effect runtime below
+// is up, so the listener goes on here and the inbox holds what arrives until
+// the window can open. Windows and Linux pass the link as an argument.
+const threadLinkInbox = DesktopThreadLinks.makeThreadLinkInbox();
+if (isPrimaryInstance) {
+  Electron.app.on("open-url", (event, url) => {
+    event.preventDefault();
+    threadLinkInbox.receive([url]);
+  });
+  threadLinkInbox.receive(process.argv.slice(1));
+}
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -288,6 +303,8 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
 const desktopWindowLayer = DesktopWindow.layer.pipe(
   Layer.provideMerge(PreviewSession.layer),
   Layer.provideMerge(PreviewAutomation.layer),
+  // Beneath the window and the automation, which both ask whose a page is.
+  Layer.provideMerge(PreviewScopes.layer),
   Layer.provideMerge(PreviewLoopbackProxy.layer),
   Layer.provideMerge(desktopServerExposureLayer),
 );
@@ -304,8 +321,17 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(desktopWindowLayer),
 );
 
+const desktopThreadLinksLayer = DesktopThreadLinks.layer({
+  inbox: threadLinkInbox,
+  execPath: process.execPath,
+  entryScriptPath: process.argv[1] === undefined ? undefined : NodePath.resolve(process.argv[1]),
+  isAppImage: (process.env.APPIMAGE?.trim() ?? "") !== "",
+});
+
 const desktopApplicationLayer = Layer.mergeAll(
-  DesktopLifecycle.layer,
+  // A second launch's arguments reach the app through the lifecycle's
+  // second-instance handler, and may carry a link.
+  DesktopLifecycle.layer.pipe(Layer.provideMerge(desktopThreadLinksLayer)),
   DesktopApplicationMenu.layer,
   DesktopBackground.layer.pipe(Layer.provideMerge(DesktopStatusIndicator.layer)),
   DesktopScreenCapture.layer,

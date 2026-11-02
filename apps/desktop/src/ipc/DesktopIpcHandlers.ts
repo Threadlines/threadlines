@@ -46,6 +46,7 @@ import {
   pickFolder,
   quitConfirmationShown,
   resolveQuitConfirmation,
+  setMenuActionsListening,
   setTaskbarStatus,
   setTheme,
   showContextMenu,
@@ -161,6 +162,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(removeCliCommand);
   yield* ipc.handle(quitConfirmationShown);
   yield* ipc.handle(resolveQuitConfirmation);
+  yield* ipc.handle(setMenuActionsListening);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
 

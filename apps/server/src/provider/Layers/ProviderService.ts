@@ -1638,6 +1638,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         interactionMode: input.interactionMode,
         attachmentCount: input.attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+        ...(input.origin !== undefined ? { origin: input.origin } : {}),
       });
       return turn;
     }).pipe(

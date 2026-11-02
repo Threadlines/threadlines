@@ -15,6 +15,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopState from "./DesktopState.ts";
+import * as DesktopThreadLinks from "./DesktopThreadLinks.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 
 export interface DesktopShutdownShape {
@@ -52,6 +53,7 @@ export type DesktopLifecycleRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
   | DesktopShutdown
   | DesktopState.DesktopState
+  | DesktopThreadLinks.DesktopThreadLinks
   | DesktopWindow.DesktopWindow
   | ElectronApp.ElectronApp
   | ElectronDialog.ElectronDialog
@@ -351,7 +353,8 @@ const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (reason: stri
     }
     yield* electronApp.relaunch({
       execPath: process.execPath,
-      args: process.argv.slice(1),
+      // A link that launched the app was opened already.
+      args: DesktopThreadLinks.withoutThreadLinks(process.argv.slice(1)),
     });
     yield* electronApp.exit(0);
   }).pipe(
@@ -399,10 +402,17 @@ const register = Effect.gen(function* () {
   // Only ever fires in the process holding the single-instance lock: a
   // second launch hands its argv over and exits, and we surface the window
   // it was asking for. `activate` is backend-ready-aware, so a launch
-  // during startup no-ops and the window arrives at readiness.
-  yield* electronApp.on("second-instance", () => {
+  // during startup no-ops and the window arrives at readiness. On Windows and
+  // Linux that argv carries the thread link the launch was started for.
+  yield* electronApp.on("second-instance", (_event: Electron.Event, argv: unknown) => {
     void runEffect(
-      desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+      Effect.gen(function* () {
+        if (Array.isArray(argv)) {
+          const threadLinks = yield* DesktopThreadLinks.DesktopThreadLinks;
+          yield* threadLinks.receive(argv.filter((arg) => typeof arg === "string"));
+        }
+        yield* desktopWindow.activate;
+      }).pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
     );
   });
   yield* electronApp.on("window-all-closed", () => {
@@ -440,6 +450,7 @@ export const layer = Layer.effect(
       DesktopEnvironment.DesktopEnvironment,
       DesktopShutdown,
       DesktopState.DesktopState,
+      DesktopThreadLinks.DesktopThreadLinks,
       DesktopWindow.DesktopWindow,
       ElectronApp.ElectronApp,
       ElectronDialog.ElectronDialog,

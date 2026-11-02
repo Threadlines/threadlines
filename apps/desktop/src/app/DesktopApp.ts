@@ -20,10 +20,12 @@ import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
+import * as DesktopThreadLinks from "./DesktopThreadLinks.ts";
 import * as DesktopBackground from "./DesktopBackground.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopStatusIndicator from "../window/DesktopStatusIndicator.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import { configurePreviewPasskeys } from "../preview/previewPasskeys.ts";
 import {
   DEFAULT_DESKTOP_BACKEND_PORT,
   desktopBackendPortProbeHosts,
@@ -59,8 +61,11 @@ class DesktopBackendPortDiscoveryTimeoutError extends Data.TaggedError(
 const { logInfo: logBootstrapInfo, logWarning: logBootstrapWarning } =
   DesktopObservability.makeComponentLogger("desktop-bootstrap");
 
-const { logInfo: logStartupInfo, logError: logStartupError } =
-  DesktopObservability.makeComponentLogger("desktop-startup");
+const {
+  logInfo: logStartupInfo,
+  logWarning: logStartupWarning,
+  logError: logStartupError,
+} = DesktopObservability.makeComponentLogger("desktop-startup");
 
 const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupError")(function* (
   stage: string,
@@ -181,6 +186,7 @@ const startup = Effect.gen(function* () {
   const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
   const background = yield* DesktopBackground.DesktopBackground;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const threadLinks = yield* DesktopThreadLinks.DesktopThreadLinks;
 
   yield* shellEnvironment.installIntoProcess;
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
@@ -199,6 +205,15 @@ const startup = Effect.gen(function* () {
   );
   yield* logStartupInfo("app ready");
   yield* appIdentity.configure;
+  // Before any window: a passkey prompt must never meet an unconfigured app.
+  yield* Effect.try(() => configurePreviewPasskeys(environment)).pipe(
+    Effect.flatMap((enabled) =>
+      enabled ? logStartupInfo("browser passkeys enabled") : Effect.void,
+    ),
+    Effect.catch((cause) =>
+      logStartupWarning("browser passkeys could not be enabled", { cause: String(cause) }),
+    ),
+  );
   yield* startBackend.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
   yield* applicationMenu.configure;
   yield* statusIndicator.configure;
@@ -212,6 +227,9 @@ const startup = Effect.gen(function* () {
   // Everything the window needs now exists; a backend that is already ready
   // opens it here, a later one when it answers.
   yield* desktopWindow.allowMainWindowOpen;
+  // A link that launched the app waited for the window; it opens its thread
+  // once the page's app shell listens.
+  yield* threadLinks.start;
 }).pipe(Effect.withSpan("desktop.startup"));
 
 const scopedProgram = Effect.scoped(

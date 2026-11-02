@@ -973,6 +973,18 @@ const ROWS = [
     widensAgents: true,
   },
   {
+    id: "general.browserSignIns",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Browser sign-ins",
+    about:
+      "Shared: sign in to a site once for every project and its agents. Per project: each keeps its own sign-ins and site data.",
+    keywords: ["browser", "sign in", "log in", "cookies", "profile", "passwords", "shared"],
+    scope: "device",
+    appliesWhen: "desktop",
+    widensAgents: true,
+  },
+  {
     id: "general.clearBrowserData",
     kind: "row",
     parent: "general.thisComputer",

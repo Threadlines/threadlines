@@ -43,7 +43,12 @@ import { Assistants } from "../assistants/Assistants.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
-import { connectionOfRow, grantRefusal, normalizedGrant } from "./connectionShapes.ts";
+import {
+  connectionNameOf,
+  connectionOfRow,
+  grantRefusal,
+  normalizedGrant,
+} from "./connectionShapes.ts";
 import {
   clientIdHash,
   makeOutsideAgentSigner,
@@ -53,6 +58,7 @@ import {
   secretsMatch,
 } from "./credentials.ts";
 import {
+  assistantPickOf,
   OutsideAgentConnectionRepository,
   OutsideAgentConnectionRepositoryLive,
 } from "./OutsideAgentConnectionRepository.ts";
@@ -329,6 +335,8 @@ const makeOutsideAgents = Effect.gen(function* () {
       return {
         connectionId,
         name: entry.request.client.name,
+        givenName: null,
+        assistant: null,
         kind: "local",
         signIn: "oauth",
         identity: null,
@@ -371,8 +379,22 @@ const makeOutsideAgents = Effect.gen(function* () {
     Effect.gen(function* () {
       const refusal = grantRefusal(input, null);
       if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
+      // Which assistant it is applies to assistants only; a local agent's pick is ignored.
+      const current = yield* repository
+        .get(input.connectionId)
+        .pipe(storeError("change a connection"));
+      const assistantPick =
+        input.assistant !== undefined &&
+        Option.isSome(current) &&
+        current.value.kind === "assistant"
+          ? { assistantPick: assistantPickOf(input.assistant) }
+          : {};
       const row = yield* repository
-        .setGrant({ connectionId: input.connectionId, grant: normalizedGrant(input) })
+        .setGrant({
+          connectionId: input.connectionId,
+          grant: normalizedGrant(input),
+          ...assistantPick,
+        })
         .pipe(
           // The change outranks any approval of the same agent still waiting for its exchange.
           Effect.tap((changed) =>
@@ -608,6 +630,7 @@ const makeOutsideAgents = Effect.gen(function* () {
             softwareId: request.client.softwareId,
             redirectUri: request.redirectUri,
             resource: request.resource,
+            assistantPick: null,
             ...grant,
             tokenGeneration: 1,
             identity: null,
@@ -705,7 +728,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         if (row === null || row.removedAt !== null) return null;
         return {
           connectionId: row.connectionId,
-          name: row.clientName,
+          name: connectionNameOf(row),
           access: row.access,
           maxRuntimeMode: row.maxRuntimeMode,
           projectIds: row.projectIds,

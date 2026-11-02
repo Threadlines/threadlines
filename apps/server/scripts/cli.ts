@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 import {
   DEVELOPMENT_ICON_OVERRIDES,
@@ -267,7 +268,7 @@ const publishCmd = Command.make(
 
             yield* Effect.log(`[cli] Running: npm ${args.join(" ")}`);
             yield* runCommand(
-              ChildProcess.make("npm", [...args], {
+              makeCommandWithShell("npm", args, {
                 cwd: serverDir,
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",

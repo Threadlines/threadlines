@@ -97,11 +97,16 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
+import { turnMessageOrigin } from "../turnOrigin.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
-import { formatUserInputReply, readRequestedUserInput } from "../userInput.ts";
+import {
+  formatUserInputReply,
+  questionAnswerMessageId,
+  readRequestedUserInput,
+} from "../userInput.ts";
 import {
   increment,
   orchestrationEventsProcessedTotal,
@@ -2801,6 +2806,12 @@ const make = Effect.gen(function* () {
 
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
+    const origin = turnMessageOrigin({
+      message,
+      fromThread: event.payload.fromThread,
+      fromOutside: event.payload.fromOutside,
+      scheduledTaskId: event.payload.scheduledTaskId,
+    });
     if (isFirstUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);
       // Title generation forks before the provider session creates the
@@ -3208,7 +3219,7 @@ const make = Effect.gen(function* () {
         );
       }
       yield* historyDebtClaimed;
-      yield* providerService.sendTurn({ ...turnRequest, requestedAt }).pipe(
+      yield* providerService.sendTurn({ ...turnRequest, requestedAt, origin }).pipe(
         // The provider has the history now, whatever the bookkeeping below does.
         Effect.tap(() => historyDebtPaid),
         Effect.onError(() => historyDebtReturned),
@@ -4038,7 +4049,7 @@ const make = Effect.gen(function* () {
 
         // A stable message id lets a replay finish projection without sending
         // the same answer twice after it has already reached the transcript.
-        const messageId = MessageId.make(`question-answer:${event.payload.requestId}`);
+        const messageId = questionAnswerMessageId(event.payload.requestId);
         yield* Effect.gen(function* () {
           if (!thread.messages.some((message) => message.id === messageId)) {
             const activeTurnId = thread.session?.activeTurnId;
@@ -5577,6 +5588,10 @@ const make = Effect.gen(function* () {
       ...(deviceNote !== undefined ? { deviceNote } : {}),
       modelSelection,
       interactionMode: "default",
+      origin: turnMessageOrigin({
+        message: question,
+        askedByAgent: sideTurn.askedBy !== undefined,
+      }),
     });
     yield* orchestrationEngine
       .dispatch({

@@ -49,7 +49,7 @@ export function stopWorkingFolderCommandLookup(
  * look up commands as they would outside Threadlines. Returns `env` itself
  * when there is nothing to remove and never changes it.
  */
-export function withUsualCommandLookup<Env extends Readonly<Record<string, string | undefined>>>(
+export function withUsualCommandLookup<Env extends Readonly<Record<string, unknown>>>(
   env: Env,
 ): Env {
   if (!Object.keys(env).some((name) => hasName(name, SERVER_ADDED_VARIABLE))) return env;
