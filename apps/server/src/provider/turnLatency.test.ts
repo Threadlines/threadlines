@@ -64,6 +64,17 @@ describe("makeTurnLatencyTracker", () => {
     expect(tracker.observe(assistantDelta("turn-2", "evt-second"), 3_100)).toBeUndefined();
   });
 
+  it("keeps where the hand-off's time went with the sample", () => {
+    const tracker = makeTurnLatencyTracker();
+    const handoffSteps = { queueMs: 300, prepareMs: 20, checkpointMs: 70 };
+    const { sendId } = tracker.sending(threadId, { ...turn, handoffSteps, nowMs: 1_400 });
+    tracker.sent(threadId, sendId, TurnId.make("turn-2"));
+    expect(tracker.observe(assistantDelta("turn-2", "evt-first"), 3_000)).toEqual({
+      ...sample(2_000),
+      handoffSteps,
+    });
+  });
+
   it("leaves a newer send's timing alone when an older send finishes", () => {
     const tracker = makeTurnLatencyTracker();
     const older = tracker.sending(threadId, { ...turn, nowMs: 1_400 });

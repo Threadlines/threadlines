@@ -72,6 +72,7 @@ import {
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -2783,6 +2784,7 @@ const make = Effect.gen(function* () {
     // On the server's clock, from when the event came in, before any wait
     // behind this thread's earlier work: the event's own time is the sender's.
     const requestedAt = receivedAt ?? (yield* nowIso);
+    const queueMs = Math.max(0, (yield* Clock.currentTimeMillis) - Date.parse(requestedAt));
     // A new turn is the user moving on after Stop, and supersedes a message
     // that was waiting on its own release or on a side answer: how this turn
     // ends decides whether the queue moves again.
@@ -3123,6 +3125,7 @@ const make = Effect.gen(function* () {
       if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld) || (yield* continueOvertaken)) {
         return;
       }
+      const prepareStartedAtMs = yield* Clock.currentTimeMillis;
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
@@ -3181,6 +3184,7 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      const checkpointStartedAtMs = yield* Clock.currentTimeMillis;
       yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
@@ -3189,6 +3193,8 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+      const checkpointEndedAtMs = yield* Clock.currentTimeMillis;
 
       const {
         carriesMore,
@@ -3239,6 +3245,11 @@ const make = Effect.gen(function* () {
           requestedAt,
           origin,
           ...(resend !== undefined ? { resend } : {}),
+          handoffSteps: {
+            queueMs,
+            prepareMs: checkpointStartedAtMs - prepareStartedAtMs,
+            checkpointMs: checkpointEndedAtMs - checkpointStartedAtMs,
+          },
         })
         .pipe(
           // The provider has the history now, whatever the bookkeeping below does.
