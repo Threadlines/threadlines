@@ -10,7 +10,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import { describe, expect } from "vite-plus/test";
 
-import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { checkpointPreTurnRefForThreadTurnCount, checkpointRefForThreadTurn } from "../Utils.ts";
 import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "../../vcs/checkpointRefs.ts";
 import { SCRATCH_INDEX_CACHE_PREFIX } from "../../vcs/scratchIndex.ts";
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
@@ -101,6 +101,28 @@ function buildLargeText(lineCount = 5_000): string {
 
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   describe("captureCheckpoint", () => {
+    it.effect("records one snapshot under every ref it is given", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* writeTextFile(path.join(tmp, "edited.txt"), "not committed\n");
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-one-capture");
+        const baselineRef = checkpointRefForThreadTurn(threadId, 0);
+        const preTurnRef = checkpointPreTurnRefForThreadTurnCount(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: baselineRef,
+          alsoCheckpointRefs: [preTurnRef],
+        });
+
+        const baselineCommit = yield* git(tmp, ["rev-parse", baselineRef]);
+        expect(yield* git(tmp, ["rev-parse", preTurnRef])).toBe(baselineCommit);
+        expect(yield* git(tmp, ["show", `${preTurnRef}:edited.txt`])).toBe("not committed");
+      }),
+    );
+
     it.effect("records the same snapshot from a cached scratch index as from a cold one", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;

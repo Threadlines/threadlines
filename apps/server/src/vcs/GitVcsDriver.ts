@@ -1254,7 +1254,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       yield* execute({
         operation,
         cwd: input.cwd,
-        args: ["update-ref", input.checkpointRef, commitOid],
+        args: ["update-ref", "--stdin"],
+        stdin: `${[input.checkpointRef, ...(input.alsoCheckpointRefs ?? [])]
+          .map((ref) => `update ${ref} ${commitOid}`)
+          .join("\n")}\n`,
       });
     }),
 

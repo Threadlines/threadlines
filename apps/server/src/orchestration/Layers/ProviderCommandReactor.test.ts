@@ -103,6 +103,10 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import {
+  checkpointPreTurnRefForThreadTurnCount,
+  checkpointRefForThreadTurn,
+} from "../../checkpointing/Utils.ts";
 import { makeCheckpointStoreStub } from "../../checkpointing/testing/CheckpointStoreStub.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 
@@ -185,6 +189,8 @@ describe("ProviderCommandReactor", () => {
 
   async function createHarness(input?: {
     readonly baseDir?: string;
+    /** The project is a git checkout: each snapshot capture is recorded here. */
+    readonly checkpointCaptures?: Array<ReadonlyArray<string>>;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly nativeThreadFork?: "supported" | "unsupported";
@@ -479,8 +485,12 @@ describe("ProviderCommandReactor", () => {
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
     const checkpointStore = makeCheckpointStoreStub({
-      isGitRepository: () => Effect.succeed(false),
+      isGitRepository: () => Effect.succeed(input?.checkpointCaptures !== undefined),
       restoreCheckpoint: () => Effect.succeed(false),
+      captureCheckpoint: ({ checkpointRef, alsoCheckpointRefs }) =>
+        Effect.sync(() => {
+          input?.checkpointCaptures?.push([checkpointRef, ...(alsoCheckpointRefs ?? [])]);
+        }),
     });
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
@@ -1764,6 +1774,20 @@ describe("ProviderCommandReactor", () => {
     expect(sent.typed?.context).not.toContain("ultracode the second question");
     // A resend wouldn't carry the history that went with this one.
     expect(sent.resend).toBeUndefined();
+  });
+
+  it("takes one snapshot before a thread's first message, for both of its points", async () => {
+    const checkpointCaptures: Array<ReadonlyArray<string>> = [];
+    const harness = await createHarness({ checkpointCaptures });
+    await startTurnAs(harness, "first", "first question", "typed");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const threadId = ThreadId.make("thread-1");
+    expect(checkpointCaptures).toEqual([
+      [
+        checkpointRefForThreadTurn(threadId, 0),
+        checkpointPreTurnRefForThreadTurnCount(threadId, 1),
+      ],
+    ]);
   });
 
   it("gives no leave to resend a message nobody sent from an app", async () => {
