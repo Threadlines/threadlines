@@ -7,6 +7,7 @@ import { assert, it, describe } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -1333,6 +1334,207 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/doomed");
       }),
     );
+
+    describe("when git worktree add fails", () => {
+      /** Makes every checkout in `cwd` run `script` as a smudge filter. */
+      const filterCheckouts = (cwd: string, script: string) =>
+        Effect.gen(function* () {
+          const scriptPath = yield* Path.Path.pipe(
+            Effect.map((pathService) => pathService.join(cwd, ".git", "checkout-filter.sh")),
+          );
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* fileSystem.writeFileString(scriptPath, script);
+          yield* git(cwd, ["config", "filter.cut.smudge", `sh '${scriptPath}'`]);
+          yield* git(cwd, ["config", "filter.cut.required", "true"]);
+          yield* writeTextFile(cwd, ".git/info/attributes", "* filter=cut\n");
+        });
+
+      const worktreePaths = (cwd: string) =>
+        git(cwd, ["worktree", "list", "--porcelain"]).pipe(
+          Effect.map((listing) =>
+            listing.split("\n").filter((line) => line.startsWith("worktree ")),
+          ),
+        );
+
+      it.effect("takes back the branch it cut", () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const pathService = yield* Path.Path;
+          const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "failed");
+          yield* filterCheckouts(cwd, "exit 1\n");
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+
+          const failed = yield* Effect.exit(
+            driver.createWorktree({
+              cwd,
+              path: worktreePath,
+              refName: initialBranch,
+              newRefName: "feature/failed",
+            }),
+          );
+
+          assert.isTrue(Exit.isFailure(failed));
+          assert.equal(yield* git(cwd, ["branch", "--list", "feature/failed"]), "");
+          assert.equal(yield* (yield* FileSystem.FileSystem).exists(worktreePath), false);
+          assert.equal((yield* worktreePaths(cwd)).length, 1);
+        }),
+      );
+
+      it.effect("leaves a folder that was already there, and a branch that was", () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const pathService = yield* Path.Path;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "taken");
+          yield* writeTextFile(worktreePath, "someones-work.txt", "keep me\n");
+          yield* git(cwd, ["branch", "feature/existing"]);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+
+          const intoTakenFolder = yield* Effect.exit(
+            driver.createWorktree({
+              cwd,
+              path: worktreePath,
+              refName: initialBranch,
+              newRefName: "feature/new",
+            }),
+          );
+          const onTakenBranch = yield* Effect.exit(
+            driver.createWorktree({
+              cwd,
+              path: pathService.join(yield* makeTmpDir("git-worktrees-"), "other"),
+              refName: initialBranch,
+              newRefName: "feature/existing",
+            }),
+          );
+
+          assert.isTrue(Exit.isFailure(intoTakenFolder));
+          assert.isTrue(Exit.isFailure(onTakenBranch));
+          assert.equal(
+            yield* fileSystem.readFileString(pathService.join(worktreePath, "someones-work.txt")),
+            "keep me\n",
+          );
+          assert.equal(yield* git(cwd, ["branch", "--list", "feature/new"]), "");
+          assert.include(yield* git(cwd, ["branch", "--list", "feature/existing"]), "existing");
+        }),
+      );
+
+      it.effect.skipIf(process.platform === "win32")("leaves nothing after it times out", () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const pathService = yield* Path.Path;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "slow");
+          const marker = pathService.join(yield* makeTmpDir("git-marker-"), "checking-out");
+          yield* filterCheckouts(cwd, `touch '${marker}'\nsleep 30\n`);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+
+          const fiber = yield* Effect.forkChild(
+            Effect.exit(
+              driver.createWorktree({
+                cwd,
+                path: worktreePath,
+                refName: initialBranch,
+                newRefName: "feature/slow",
+              }),
+            ),
+          );
+          while (!(yield* fileSystem.exists(marker))) {
+            yield* Effect.promise(() => sleepRealTime(20));
+          }
+          yield* TestClock.adjust("31 seconds");
+          const failed = yield* Fiber.join(fiber);
+
+          assert.include(String(Exit.isFailure(failed) ? failed.cause : ""), "timed out");
+          assert.equal(yield* fileSystem.exists(worktreePath), false);
+          assert.equal((yield* worktreePaths(cwd)).length, 1);
+          assert.equal(yield* git(cwd, ["branch", "--list", "feature/slow"]), "");
+        }),
+      );
+
+      // A kill git can't clean up after, as a timeout's taskkill is on Windows.
+      it.effect.skipIf(process.platform === "win32")(
+        "removes the folder and lock an add killed outright left",
+        () =>
+          Effect.gen(function* () {
+            const cwd = yield* makeTmpDir();
+            const { initialBranch } = yield* initRepoWithCommit(cwd);
+            const pathService = yield* Path.Path;
+            const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "killed");
+            yield* filterCheckouts(
+              cwd,
+              [
+                "pid=$$",
+                'while [ "$pid" != "1" ]; do',
+                '  pid=$(ps -o ppid= -p "$pid" | tr -d " ")',
+                '  case "$(ps -o command= -p "$pid")" in',
+                '    *"git worktree add"*) kill -9 "$pid"; break ;;',
+                "  esac",
+                "done",
+                "sleep 30",
+                "",
+              ].join("\n"),
+            );
+            const driver = yield* GitVcsDriver.GitVcsDriver;
+
+            const failed = yield* Effect.exit(
+              driver.createWorktree({
+                cwd,
+                path: worktreePath,
+                refName: initialBranch,
+                newRefName: "feature/killed",
+              }),
+            );
+
+            assert.isTrue(Exit.isFailure(failed));
+            assert.equal(yield* (yield* FileSystem.FileSystem).exists(worktreePath), false);
+            assert.equal((yield* worktreePaths(cwd)).length, 1);
+            assert.equal(yield* git(cwd, ["branch", "--list", "feature/killed"]), "");
+          }),
+      );
+
+      it.effect.skipIf(process.platform === "win32")(
+        "leaves an empty folder that was there before, given as a relative path",
+        () =>
+          Effect.gen(function* () {
+            const cwd = yield* makeTmpDir();
+            const { initialBranch } = yield* initRepoWithCommit(cwd);
+            const pathService = yield* Path.Path;
+            const fileSystem = yield* FileSystem.FileSystem;
+            const taken = pathService.join(cwd, "taken");
+            yield* fileSystem.makeDirectory(taken);
+            yield* filterCheckouts(
+              cwd,
+              [
+                "pid=$$",
+                'while [ "$pid" != "1" ]; do',
+                '  pid=$(ps -o ppid= -p "$pid" | tr -d " ")',
+                '  case "$(ps -o command= -p "$pid")" in',
+                '    *"git worktree add"*) kill -9 "$pid"; break ;;',
+                "  esac",
+                "done",
+                "sleep 30",
+                "",
+              ].join("\n"),
+            );
+            const driver = yield* GitVcsDriver.GitVcsDriver;
+
+            const failed = yield* Effect.exit(
+              driver.createWorktree({
+                cwd,
+                path: "taken",
+                refName: initialBranch,
+                newRefName: "feature/taken",
+              }),
+            );
+
+            assert.isTrue(Exit.isFailure(failed));
+            assert.equal(yield* fileSystem.exists(taken), true);
+          }),
+      );
+    });
 
     // A removal that died halfway (a long-path failure, a kill mid-delete)
     // leaves the folder without its `.git` file. Git lists the registration

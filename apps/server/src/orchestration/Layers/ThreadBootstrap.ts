@@ -51,6 +51,7 @@ import * as Schema from "effect/Schema";
 import { ServerConfig } from "../../config.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
+import { GIT_ADDING_LOCK_REASON } from "../../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import {
   childRequestCommandId,
@@ -95,12 +96,6 @@ const SETUP_DONE_KINDS: ReadonlySet<string> = new Set([
   "setup-script.skipped",
   "setup-script.failed",
 ]);
-
-/**
- * The reason git locks a worktree with while `git worktree add` makes it
- * (untranslated: GitVcsDriver runs the add with `LC_ALL=C`).
- */
-const GIT_ADDING_LOCK_REASON = "initializing";
 
 /** An error's own words: a decider's or git's detail, else its message. */
 const plainDetail = (error: unknown): string => {

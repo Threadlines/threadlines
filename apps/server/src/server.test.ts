@@ -124,7 +124,10 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine.ts";
-import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationListenerCallbackError,
+} from "./orchestration/Errors.ts";
 import { firstSendWorktreeBranch } from "./orchestration/childRequestIds.ts";
 import {
   ProjectionSnapshotQuery,
@@ -3433,6 +3436,47 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.isAtLeast(response.sequence, 0);
       assert.equal(stat.type, "Directory");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("says why the http dispatch route refused a first send that needs setup", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: command.type,
+                  detail: "Setting up a new thread needs the app's connection.",
+                }),
+              ),
+          },
+        },
+      });
+
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const url = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const response = yield* Effect.promise(() =>
+        fetch(url, {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "thread.turn.start",
+            commandId: "cmd-http-bootstrap",
+            threadId: "thread-http-bootstrap",
+            message: { messageId: "msg-http-bootstrap", role: "user", text: "hi", attachments: [] },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: { prepareWorktree: { projectCwd: "/repo", baseBranch: "main" } },
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        }),
+      );
+      const body = (yield* Effect.promise(() => response.json())) as { error: string };
+
+      assert.equal(response.status, 400);
+      assert.include(body.error, "needs the app's connection");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

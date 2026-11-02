@@ -155,6 +155,11 @@ harmless: the turn's session restarts in the new checkout
   draft and shows it. An outside agent gets `failed` or `not_allowed`, and
   its request id may try again (nothing was made). A child's owner reports to
   its parent as today.
+- A `git worktree add` that fails takes back what it made (GitVcsDriver): the
+  branch it cut (git keeps it even when the add fails), and, when it was cut off,
+  the folder and registration git couldn't clean up. A folder that was there
+  before the add is never touched, and the branch only goes if it still sits
+  where it was cut from.
 - A refusal of `thread.start` is final (its receipt is rejected). A worktree
   this run itself created (not one it adopted from an earlier run) is removed
   with its branch, without force, so anything with changes stays. Branches

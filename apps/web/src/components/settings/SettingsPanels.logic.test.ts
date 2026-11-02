@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
+  buildRestoreDefaultsConfirmationMessage,
   deriveProviderSettingsRows,
   filterArchivedThreads,
   formatArchivedThreadDeleteAgeLabel,
@@ -20,6 +21,61 @@ const MAINTAINED_DRIVER_KINDS = [
   ProviderDriverKind.make("codex"),
   ProviderDriverKind.make("claudeAgent"),
 ] as const;
+
+describe("buildRestoreDefaultsConfirmationMessage", () => {
+  it("names what it gives agents back apart from the rest", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: [
+          "Theme",
+          "Rooms",
+          "Agents bringing in other agents",
+          "Agents can start threads",
+        ],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          enableRooms: false,
+          agentThreads: "off",
+          // Off while Rooms is off, whatever its own choice: restoring Rooms brings it back.
+          agentInvites: "auto",
+        },
+      }),
+    ).toBe(
+      [
+        "Restore default settings?",
+        "",
+        "Agents get these abilities back:",
+        "Rooms: On",
+        "Agents bringing in other agents: Ask me first",
+        "Agents can start threads: Ask me first",
+        "",
+        "This will also reset: Theme.",
+      ].join("\n"),
+    );
+  });
+
+  it("doesn't call a change that takes reach away an ability back", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: ["Agents bringing in other agents"],
+        settings: { ...DEFAULT_SERVER_SETTINGS, agentInvites: "auto" },
+      }),
+    ).toBe(
+      ["Restore default settings?", "", "This will reset: Agents bringing in other agents."].join(
+        "\n",
+      ),
+    );
+  });
+
+  it("only lists what resets when agents get nothing back", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: ["Theme", "Time format"],
+        settings: DEFAULT_SERVER_SETTINGS,
+      }),
+    ).toBe("Restore default settings?\n\nThis will reset: Theme, Time format.");
+  });
+});
 
 describe("formatDiagnosticsDescription", () => {
   it("collapses trace and metric URLs that share the same OTEL base path", () => {

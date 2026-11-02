@@ -11,12 +11,84 @@ import {
   defaultInstanceIdForDriver,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
+import { placeById, type PlaceId } from "@threadlines/shared/appPlaces";
+import { agentInvitesMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
 
 export const ARCHIVED_THREAD_DELETE_AGE_OPTIONS = [30, 90, 180, 365] as const;
 export type ArchivedThreadDeleteAgeDays = (typeof ARCHIVED_THREAD_DELETE_AGE_OPTIONS)[number];
 
 const MS_PER_DAY = 24 * 60 * 60 * 1_000;
+
+/** The settings Restore defaults can turn back on for agents. Each one's default lets them. */
+const AGENT_ABILITY_PLACES = [
+  "threads.enableRooms",
+  "threads.agentPages",
+  "threads.commandRequests",
+  "threads.startWhileTyping",
+  "threads.agentInvites",
+  "threads.agentThreads",
+] as const satisfies ReadonlyArray<PlaceId>;
+
+/**
+ * What Restore defaults would turn back on for agents, in the words of each
+ * setting's row. A choice the user set to let agents do more (Without asking)
+ * isn't here: going back to its default takes reach away.
+ */
+function agentAbilitiesBackOn(
+  settings: ServerSettings,
+): ReadonlyArray<{ readonly title: string; readonly restoredTo: string }> {
+  return AGENT_ABILITY_PLACES.flatMap((id) => {
+    const { title, value } = placeById(id);
+    if (value?.kind === "switch") {
+      return !value.read(settings) && value.read(DEFAULT_UNIFIED_SETTINGS)
+        ? [{ title, restoredTo: "On" }]
+        : [];
+    }
+    if (value?.kind === "choice") {
+      const restored = value.read(DEFAULT_UNIFIED_SETTINGS);
+      // What agents can do now: invites are off while Rooms is, whatever their
+      // own choice says, and restoring Rooms brings them back.
+      const current =
+        id === "threads.agentInvites" ? agentInvitesMode(settings) : value.read(settings);
+      return current === "off" && restored !== "off"
+        ? [{ title, restoredTo: value.options[restored] ?? restored }]
+        : [];
+    }
+    return [];
+  });
+}
+
+/**
+ * What the Restore defaults dialog asks. What the restore gives agents back is
+ * listed on its own, because a setting turned off on purpose shouldn't come
+ * back on under a plain "reset".
+ */
+export function buildRestoreDefaultsConfirmationMessage(input: {
+  readonly changedSettingLabels: ReadonlyArray<string>;
+  readonly settings: ServerSettings;
+}): string {
+  const abilities = agentAbilitiesBackOn(input.settings);
+  const others = input.changedSettingLabels.filter(
+    (label) => !abilities.some((ability) => ability.title === label),
+  );
+  return [
+    "Restore default settings?",
+    ...(abilities.length > 0
+      ? [
+          "",
+          "Agents get these abilities back:",
+          ...abilities.map((ability) => `${ability.title}: ${ability.restoredTo}`),
+        ]
+      : []),
+    ...(others.length > 0
+      ? [
+          "",
+          `${abilities.length > 0 ? "This will also reset" : "This will reset"}: ${others.join(", ")}.`,
+        ]
+      : []),
+  ].join("\n");
+}
 
 function collapseOtelSignalsUrl(input: {
   readonly tracesUrl: string;
