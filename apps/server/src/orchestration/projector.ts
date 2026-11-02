@@ -47,6 +47,10 @@ import {
   revertOwesHistorySeed,
 } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
+import {
+  applySettingsChangeEvent,
+  type SettingsChangeEvent,
+} from "@threadlines/shared/settingsChangeState";
 import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -67,6 +71,11 @@ import {
   ThreadPagePublishedPayload,
   ThreadCommandRequestedPayload,
   ThreadCommandRequestDismissedPayload,
+  ThreadSettingsChangeRequestedPayload,
+  ThreadSettingsChangeClaimedPayload,
+  ThreadSettingsChangeSettledPayload,
+  ThreadSettingsChangeDeviceReportedPayload,
+  ThreadSettingsChangeNotesDeliveredPayload,
   ThreadErrorDismissedPayload,
   ThreadContinueAtResetSetPayload,
   ThreadContinueAtResetSkippedPayload,
@@ -190,6 +199,25 @@ function updateChildRequests(
   return next === thread.childRequests
     ? base
     : { ...base, threads: updateThread(base.threads, threadId, { childRequests: next }) };
+}
+
+/** Folds one settings-change event into its thread's requests (shared reducer). */
+function updateSettingsRequests(
+  base: OrchestrationReadModel,
+  event: SettingsChangeEvent,
+): OrchestrationReadModel {
+  const thread = base.threads.find((entry) => entry.id === event.payload.threadId);
+  if (thread === undefined) {
+    return base;
+  }
+  const requests = thread.settingsRequests ?? [];
+  const next = applySettingsChangeEvent(requests, event);
+  return next === requests
+    ? base
+    : {
+        ...base,
+        threads: updateThread(base.threads, event.payload.threadId, { settingsRequests: next }),
+      };
 }
 
 /** Apply a change to one thread's room request state. */
@@ -1775,6 +1803,47 @@ export function projectEvent(
           };
         }),
       );
+
+    // Agents' settings changes. No updatedAt bump: a card is not work on the thread.
+    case "thread.settings-change-requested":
+      return decodeForEvent(
+        ThreadSettingsChangeRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
+
+    case "thread.settings-change-claimed":
+      return decodeForEvent(
+        ThreadSettingsChangeClaimedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
+
+    case "thread.settings-change-settled":
+      return decodeForEvent(
+        ThreadSettingsChangeSettledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
+
+    case "thread.settings-change-device-reported":
+      return decodeForEvent(
+        ThreadSettingsChangeDeviceReportedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
+
+    case "thread.settings-change-notes-delivered":
+      return decodeForEvent(
+        ThreadSettingsChangeNotesDeliveredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
 
     // Suggested commands. Like pages, no updatedAt bump: they belong to a turn
     // whose messages already move the thread.

@@ -92,6 +92,7 @@ export const OutsideWaitingItem = Schema.Struct({
       "permissions",
       "terminal-input",
       "scheduled-task",
+      "settings",
       "start-threads",
       "other",
     ]),

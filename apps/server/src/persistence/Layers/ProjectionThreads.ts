@@ -26,6 +26,7 @@ import {
   OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSettingsChangeRequest,
   ThreadId,
   OrchestrationThreadMove,
   ThreadMovedFrom,
@@ -52,6 +53,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
     agentRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
+    settingsRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
+    ),
     remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
     scheduledRun: Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun)),
     outsideOrigin: Schema.NullOr(Schema.fromJsonString(OutsideAgentRef)),
@@ -112,6 +116,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id,
           archived_with_parent_at,
           child_requests,
+          settings_requests,
           remote_origin_json,
           scheduled_run_json,
           outside_origin_json,
@@ -173,6 +178,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.handedBackTurnId ?? null},
           ${row.archivedWithParentAt ?? null},
           ${row.childRequests ? JSON.stringify(row.childRequests) : null},
+          ${
+            row.settingsRequests && row.settingsRequests.length > 0
+              ? JSON.stringify(row.settingsRequests)
+              : null
+          },
           ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
           ${row.scheduledRun ? JSON.stringify(row.scheduledRun) : null},
           ${row.outsideOrigin ? JSON.stringify(row.outsideOrigin) : null},
@@ -230,6 +240,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id = excluded.handed_back_turn_id,
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
+          settings_requests = excluded.settings_requests,
           remote_origin_json = excluded.remote_origin_json,
           scheduled_run_json = excluded.scheduled_run_json,
           outside_origin_json = excluded.outside_origin_json,
@@ -294,6 +305,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
@@ -360,6 +372,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",

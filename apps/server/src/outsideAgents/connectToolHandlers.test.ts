@@ -31,6 +31,7 @@ import {
   collectOpenPendingRequests,
   USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
+import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
 
 import type { AssistantEvent, AssistantEventsShape } from "../assistants/AssistantEvents.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
@@ -116,6 +117,7 @@ const shellOf = (thread: OrchestrationThread): OrchestrationThreadShell =>
       idOf: (plan) => plan.id,
     }),
     pendingChildApproval: false,
+    pendingSettingsChange: hasPendingSettingsChange(thread.settingsRequests),
     awaitedChildThreadCount: 0,
     doneOverride: null,
   }) as unknown as OrchestrationThreadShell;
@@ -1496,6 +1498,40 @@ describe("what a thread waits on", () => {
         waitingOn: "plan",
         waiting: [{ kind: "plan", requestId: "plan-1", title: "Move the cache" }],
       });
+    }),
+  );
+
+  it.effect("names the settings an agent's waiting card would change", () =>
+    Effect.gen(function* () {
+      const asking = makeThread({
+        settingsRequests: [
+          {
+            requestId: "settings-1",
+            participantId: null,
+            turnId: TurnId.make("turn-1"),
+            changes: [
+              { place: "general.streamReplies", value: false, from: true },
+              { place: "general.theme", value: "light" },
+            ],
+            status: "waiting",
+            createdAt: AT,
+            noted: false,
+          },
+        ] as never,
+      });
+      const world = yield* makeWorld({ threads: [asking] });
+      const read = yield* world.handlers.thread_read(CALLER, { threadId: USER_THREAD });
+      expect(read.waitingOn).toBe("approval");
+      expect(read.waiting).toEqual([
+        {
+          kind: "approval",
+          requestId: "settings-1",
+          askedAt: AT,
+          summary: "Wants to change 2 settings",
+          asks: "settings",
+          detail: "Stream replies · Theme",
+        },
+      ]);
     }),
   );
 });

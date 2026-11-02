@@ -252,6 +252,11 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.remote-child-updated"
       | "thread.remote-cancel-queued"
       | "thread.remote-cancels-delivered"
+      | "thread.settings-change-requested"
+      | "thread.settings-change-claimed"
+      | "thread.settings-change-settled"
+      | "thread.settings-change-device-reported"
+      | "thread.settings-change-notes-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
       | "thread.pull-request-dismissed";
@@ -278,6 +283,13 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.remote-cancels-delivered" ||
     event.type === "thread.handed-back" ||
     event.type === "thread.parent-attachment-set" ||
+    // Agents' settings changes: the card an open chat shows (its shell only
+    // carries pendingSettingsChange).
+    event.type === "thread.settings-change-requested" ||
+    event.type === "thread.settings-change-claimed" ||
+    event.type === "thread.settings-change-settled" ||
+    event.type === "thread.settings-change-device-reported" ||
+    event.type === "thread.settings-change-notes-delivered" ||
     // Which pull request rows are closed lives on the shell, but a detail
     // snapshot writes the shell too: one read before a close and delivered
     // after it would undo the close, so the change follows the snapshot here.

@@ -111,6 +111,7 @@ function thread(overrides: Partial<OrchestrationThreadShell> = {}): Orchestratio
     handedBackTurnId: null,
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
+    pendingSettingsChange: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
