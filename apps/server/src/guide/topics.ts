@@ -256,6 +256,14 @@ Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
   },
   {
+    id: "changing-settings",
+    title: "Agents changing settings",
+    keywords: ["change setting", "turn on", "turn off", "switch", "theme", "dark mode", "card"],
+    body: `An agent can change some settings when you ask: the theme, streaming replies, diff wrapping, the terminal's text size and a few more (the guide says which, place by place). It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
+
+Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
+  },
+  {
     id: "updates",
     title: "Updates and release tracks",
     keywords: ["update", "version", "nightly", "stable", "release", "what's new"],

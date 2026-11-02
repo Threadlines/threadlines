@@ -20,6 +20,10 @@ import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPull
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
 import { childHasLiveWork } from "./childThreadDecisions.ts";
+import {
+  SETTINGS_CHANGE_CANCELLED,
+  cancelWaitingSettingsChanges,
+} from "./settingsChangeDecisions.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 type EventBase = (threadId: ThreadId) => Omit<OrchestrationEvent, "sequence" | "type" | "payload">;
@@ -128,7 +132,8 @@ export function threadMoveRefusal(
 /**
  * Commands a moving or moved thread still takes: filing it away (archive,
  * unarchive, delete, pin), the server's own bookkeeping that can't change
- * what moves, and the move's own steps. Everything else is refused
+ * what moves (a settings change the user already accepted finishing), and
+ * the move's own steps. Everything else is refused
  * (`threadMoveGuardRefusal`). A move under way runs on whether the thread
  * is archived or not; deleting it mid-move drops the move on the other
  * computer, unless it already arrived there.
@@ -148,6 +153,8 @@ const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Se
   "thread.pull-request.link",
   "thread.diffstat.rebase",
   "thread.realtime.state.set",
+  "thread.settings-change.settle",
+  "thread.settings-change.report-device",
   "thread.move.progress",
   "thread.move.cancel",
   "thread.move.abort",
@@ -215,8 +222,18 @@ export function decideMoveStart(
       startedAt: command.createdAt,
     },
   };
-  if (thread.session === null || thread.session.status === "stopped") return [started];
+  // Settings cards waiting for an answer don't move: they end here, with why.
+  const cancelled = cancelWaitingSettingsChanges(
+    thread,
+    SETTINGS_CHANGE_CANCELLED.moving(command.target.label),
+    command.createdAt,
+    baseFor,
+  );
+  if (thread.session === null || thread.session.status === "stopped") {
+    return [...cancelled, started];
+  }
   return [
+    ...cancelled,
     started,
     {
       ...baseFor(thread.id),

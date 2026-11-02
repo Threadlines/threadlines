@@ -98,8 +98,8 @@ const statusOf = (word: Exclude<ThreadStatusWord, "needs the user">): ThreadStat
 /**
  * How a thread is doing, in the words the sidebar uses: blocked on the user
  * first (an approval, including a card asking about its agent's
- * scheduled-task change, then a question), then running, then waiting on
- * background or child work, then how its last turn ended. `wrapped` is only
+ * scheduled-task or settings change, then a question), then running, then
+ * waiting on background or child work, then how its last turn ended. `wrapped` is only
  * the user's explicit Mark done; a plan its last turn left for the user to
  * act on comes after it (the user who filed the thread has decided). The
  * sidebar's automatic filing rules live in the client.
@@ -109,7 +109,12 @@ export function threadStatus(
   /** A card in it asks the user about its agent's scheduled-task change. */
   scheduleAnswerWaiting = false,
 ): ThreadStatus {
-  if (thread.hasPendingApprovals || thread.pendingChildApproval || scheduleAnswerWaiting) {
+  if (
+    thread.hasPendingApprovals ||
+    thread.pendingChildApproval ||
+    thread.pendingSettingsChange ||
+    scheduleAnswerWaiting
+  ) {
     return needsTheUser("approval");
   }
   if (thread.hasPendingUserInput) {

@@ -55,6 +55,8 @@ import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
 import { makeGuideToolHandler } from "./guideToolHandlers.ts";
 import { GuideToolkit } from "./guideTools.ts";
+import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
+import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
 import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
 import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
@@ -67,6 +69,7 @@ const RoomEndpointToolkit = Toolkit.merge(
   ThreadToolkit,
   ScheduleToolkit,
   GuideToolkit,
+  SettingsChangeToolkit,
 );
 
 type RoomEndpointToolName = keyof typeof RoomEndpointToolkit.tools;
@@ -98,6 +101,9 @@ const ROOM_TOOL_REACH = {
   schedule_update: "changes",
   // Records that the caller's own scheduled run is done: its own thread only.
   scheduled_run_finish: "own",
+  // Only shows a card on the caller's own thread, but asks to change app-wide
+  // settings: refused while outside work limits the caller.
+  settings_change: "changes",
 } as const satisfies Record<
   Exclude<RoomEndpointToolName, typeof GUIDE_TOOL_NAME>,
   "own" | "project" | "changes"
@@ -362,6 +368,11 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           )
         : Effect.succeed(undefined),
     });
+    const settingsChange = makeSettingsChangeToolHandler({
+      engine,
+      readThread,
+      settings: settings.readStored.pipe(Effect.orElseSucceed(() => undefined)),
+    });
     const caller = requestService(McpRoomInvocation);
     type Refused = { readonly outcome: "refused"; readonly detail: string };
     /**
@@ -445,6 +456,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         changes("schedule_update", (scope) => scheduleHandlers.schedule_update(scope, input)),
       scheduled_run_finish: (input) =>
         own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
+      settings_change: (input) =>
+        changes("settings_change", (scope) => settingsChange(scope, input)),
       // Listed only to runtimes granted it; a call from any other is refused
       // too (a review runtime reads the checkout and nothing else). Refused
       // while outside work limits the caller: it reads app-wide settings,

@@ -37,6 +37,12 @@ export const SCHEDULED_RUN_TOOL_NAME = "scheduled_run_finish";
 /** Agents' guide to Threadlines itself (guideTools.ts). */
 export const GUIDE_TOOL_NAME = "app_guide";
 
+/** Asking to change Threadlines settings, on a card the user answers (settingsChangeTools.ts). */
+export const SETTINGS_CHANGE_TOOL_NAME = "settings_change";
+
+/** The app's own tools: every local thread's own runtime gets them, room tools or not. */
+export const APP_TOOL_NAMES = [GUIDE_TOOL_NAME, SETTINGS_CHANGE_TOOL_NAME] as const;
+
 export const ROOM_TOOL_NAMES = [
   "room_agents",
   "room_ask",
@@ -48,7 +54,7 @@ export const ROOM_TOOL_NAMES = [
   "room_invite",
   ...THREAD_TOOL_NAMES,
   ...SCHEDULE_TOOL_NAMES,
-  GUIDE_TOOL_NAME,
+  ...APP_TOOL_NAMES,
 ] as const;
 export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number] | typeof SCHEDULED_RUN_TOOL_NAME;
 
@@ -59,9 +65,10 @@ export type RoomSideKind = "ask" | "review";
  * The room tools one runtime may use. A main runtime gets every tool (the
  * decider still decides who may make a request), and `scheduled_run_finish`
  * too when its thread is a scheduled run's; with `guideOnly` (rooms, invites
- * and agent-started threads all off) it gets only the app guide, so it can
- * still explain why. An answerer reads the room, the checkout and the guide;
- * an independent reviewer reads only the checkout, never the conversation.
+ * and agent-started threads all off) it gets only the app's own tools, so it
+ * can still explain why and still ask to change a setting. An answerer reads
+ * the room, the checkout and the guide, and changes nothing; an independent
+ * reviewer reads only the checkout, never the conversation.
  */
 export function roomToolsFor(
   side: RoomSideKind | undefined,
@@ -73,7 +80,7 @@ export function roomToolsFor(
   switch (side) {
     case undefined:
       return options?.guideOnly === true
-        ? [GUIDE_TOOL_NAME]
+        ? APP_TOOL_NAMES
         : options?.scheduledRun === true
           ? [...ROOM_TOOL_NAMES, SCHEDULED_RUN_TOOL_NAME]
           : ROOM_TOOL_NAMES;

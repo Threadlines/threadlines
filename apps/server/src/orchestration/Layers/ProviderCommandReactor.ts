@@ -44,9 +44,11 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
+import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { isOutsideMarked, outsideCeilingDetail, outsideWorkOf } from "../outsideTurns.ts";
+import { settingsChangeNote } from "../../settingsChanges/settingsChangeNotes.ts";
 import { OutsideAgentConnections } from "../../outsideAgents/OutsideAgentConnections.ts";
 import {
   hasAgentRecords,
@@ -2102,6 +2104,49 @@ const make = Effect.gen(function* () {
     };
   });
 
+  /**
+   * Agents' settings changes: how the cards this agent asked for ended since
+   * its last turn, carried once (docs/design/agent-settings-changes.md).
+   */
+  const settingsChangeContext = (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) => {
+    const settled = settingsChangeNotesFor(thread.settingsRequests, participantId);
+    const notes = settled.flatMap((request) => {
+      const text = settingsChangeNote(request);
+      return text === null ? [] : [text];
+    });
+    return {
+      text:
+        notes.length === 0
+          ? undefined
+          : [
+              "About the settings changes you asked for, since your last turn:",
+              ...notes.map((note) => `- ${note}`),
+            ].join("\n"),
+      delivered:
+        settled.length === 0
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.settings-change.deliver-notes",
+                commandId: serverCommandId("settings-change-notes"),
+                threadId: thread.id,
+                requestIds: settled.map((request) => request.requestId),
+                createdAt: yield* nowIso,
+              });
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("settings change notes were not marked delivered", {
+                  threadId: thread.id,
+                  detail: error.message,
+                }),
+              ),
+            ),
+    };
+  };
+
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
@@ -2309,6 +2354,7 @@ const make = Effect.gen(function* () {
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
     const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
+    const settingsContext = settingsChangeContext(thread, input.participantId);
     const sentMessage = thread.messages.find((message) => message.id === input.messageId);
     // Which device the user sent it from, when that matters (see
     // messageSentFromNote). A native fork carries on the source thread's
@@ -2350,6 +2396,7 @@ const make = Effect.gen(function* () {
       childContext.text,
       outsideAgentContext(thread, input.messageId),
       scheduleContext.text,
+      settingsContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -2479,11 +2526,11 @@ const make = Effect.gen(function* () {
           : Effect.sync(() => {
               owedSeed.claimed = false;
             }),
-      // Child threads' and scheduled tasks' notes this turn carries, cleared
+      // Child threads', scheduled tasks' and settings changes' notes this turn carries, cleared
       // once it is taken.
       notesDelivered: Effect.andThen(
         childContext.delivered(input.createdAt),
-        scheduleContext.delivered,
+        Effect.andThen(scheduleContext.delivered, settingsContext.delivered),
       ),
       // Recorded only once the provider has taken the turn.
       roomContext:

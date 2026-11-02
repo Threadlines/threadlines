@@ -93,6 +93,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
+import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -251,6 +252,11 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.remote-child-updated"
       | "thread.remote-cancel-queued"
       | "thread.remote-cancels-delivered"
+      | "thread.settings-change-requested"
+      | "thread.settings-change-claimed"
+      | "thread.settings-change-settled"
+      | "thread.settings-change-device-reported"
+      | "thread.settings-change-notes-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
       | "thread.pull-request-dismissed";
@@ -277,6 +283,13 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.remote-cancels-delivered" ||
     event.type === "thread.handed-back" ||
     event.type === "thread.parent-attachment-set" ||
+    // Agents' settings changes: the card an open chat shows (its shell only
+    // carries pendingSettingsChange).
+    event.type === "thread.settings-change-requested" ||
+    event.type === "thread.settings-change-claimed" ||
+    event.type === "thread.settings-change-settled" ||
+    event.type === "thread.settings-change-device-reported" ||
+    event.type === "thread.settings-change-notes-delivered" ||
     // Which pull request rows are closed lives on the shell, but a detail
     // snapshot writes the shell too: one read before a close and delivered
     // after it would undo the close, so the change follows the snapshot here.
@@ -640,6 +653,7 @@ const makeCoreRpcLayer = (
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
+      const agentSettingsChanges = yield* AgentSettingsChanges;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -3163,6 +3177,18 @@ const makeCoreRpcLayer = (
             WS_METHODS.scheduledTasksRespondRequest,
             scheduledTasks.respondRequest(input),
             { "rpc.aggregate": "scheduledTasks" },
+          ),
+        // Agents' settings changes, answered from their card by any app that
+        // can use this computer (docs/design/agent-settings-changes.md).
+        [WS_METHODS.settingsChangeRespond]: (input) =>
+          observeRpcEffect(WS_METHODS.settingsChangeRespond, agentSettingsChanges.respond(input), {
+            "rpc.aggregate": "settingsChange",
+          }),
+        [WS_METHODS.settingsChangeReportDevice]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.settingsChangeReportDevice,
+            agentSettingsChanges.reportDevice(input),
+            { "rpc.aggregate": "settingsChange" },
           ),
         // Event tasks (docs/design/event-tasks.md): the same callers as the
         // scheduled-task calls above, paired phones included.

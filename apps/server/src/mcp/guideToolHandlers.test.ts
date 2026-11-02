@@ -45,6 +45,16 @@ function readers(overrides: Partial<GuideToolDeps> = {}) {
 }
 
 describe("app_guide", () => {
+  it("says which settings an agent may change for the user, and which are the user's alone", async () => {
+    const { guide } = readers();
+    const theme = await Effect.runPromise(guide({ query: "dark mode" }));
+    expect(theme.answer).toContain(
+      'settings_change (place "general.theme", value one of "system" (System), "light" (Light), "dark" (Dark))',
+    );
+    const threads = await Effect.runPromise(guide({ query: "why can't you start threads" }));
+    expect(threads.answer).toContain("Only the user can change it");
+  });
+
   it("finds a setting from plain words, with where it is, its link and its value here", async () => {
     const { guide, reads } = readers();
     const result = await Effect.runPromise(guide({ query: "why can't you start threads" }));

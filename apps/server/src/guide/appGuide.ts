@@ -23,7 +23,9 @@ import {
 } from "@threadlines/shared/appPlaces";
 import { searchWords } from "@threadlines/shared/placeSearch";
 import { RUNTIME_MODE_LABELS } from "@threadlines/shared/runtimeMode";
+import { describeEditControl, describeEditValue } from "@threadlines/shared/settingsEdits";
 
+import { SETTINGS_CHANGE_TOOL_NAME } from "../mcp/roomToolAccess.ts";
 import { GUIDE_TOPICS, type GuideTopic } from "./topics.ts";
 
 /** The record-backed values a place can show (AppPlaceValue `state`). */
@@ -220,9 +222,25 @@ function valueWords(place: AppPlace, values: GuideValues): string | null {
       const current = value.read(values.settings);
       return (value.options as Readonly<Record<string, string>>)[current] ?? current;
     }
+    case "count": {
+      if (values.settings === undefined) return null;
+      const current = value.read(values.settings);
+      return "edit" in place ? describeEditValue(place.id, current) : `${current} ${value.unit}`;
+    }
     case "state":
       return stateWords(value.state, values);
   }
+}
+
+/** Who may change a place: an agent through `settings_change`, or only the user. */
+function changeWords(place: AppPlace): string | null {
+  if ("edit" in place && place.edit !== undefined) {
+    const where = place.edit.lands === "device" ? " It changes in the app they accept it in." : "";
+    return `You can change it for the user with ${SETTINGS_CHANGE_TOOL_NAME} (place "${place.id}", value ${describeEditControl(place.edit.control)}); they accept it on a card first.${where}`;
+  }
+  return "widensAgents" in place && place.widensAgents === true
+    ? "Only the user can change it: give them the link."
+    : null;
 }
 
 function stateWords(state: GuideState, values: GuideValues): string | null {
@@ -279,6 +297,7 @@ function placeLine(place: AppPlace, values: GuideValues): string {
             const now = valueWords(place, values);
             return now === null ? null : `Now on ${values.computerName}: ${now}`;
           })(),
+    changeWords(place),
   ].filter((fact): fact is string => fact !== null);
   return `- ${placeMarkdownLink(place.id)}: ${place.about}${facts.length > 0 ? ` ${facts.join(" ")}` : ""}`;
 }

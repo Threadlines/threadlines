@@ -11,6 +11,7 @@ import {
   MessageId,
   OutsideAgentConnectionId,
   ProjectId,
+  SettingsChangeRequestId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
@@ -27,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -42,6 +44,7 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -3981,6 +3984,101 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         assert.deepEqual(composersOf((yield* query.getSnapshot()).threads), expected);
         assert.deepEqual(composersOf((yield* query.getCommandReadModel()).threads), expected);
       }),
+  );
+
+  it.effect("reads agents' settings changes back as the live fold left them", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const threadId = yield* createClaudeThread(engine, "settings-change");
+      const turnId = TurnId.make("turn-settings");
+      const createdAt = "2026-05-01T00:00:01.000Z";
+      const request = (id: string, participantId: ThreadParticipantId | null) =>
+        engine.dispatch({
+          type: "thread.settings-change.request",
+          commandId: CommandId.make(`cmd-settings-${id}`),
+          threadId,
+          requestId: SettingsChangeRequestId.make(id),
+          participantId,
+          turnId,
+          changes: [
+            { place: "general.streamReplies", value: false, from: true },
+            { place: "general.theme", value: "light" },
+          ],
+          createdAt,
+        });
+      const settle = (id: string, ending: "changed" | "declined", claimId?: string) =>
+        engine.dispatch({
+          type: "thread.settings-change.settle",
+          commandId: CommandId.make(`cmd-settings-settle-${id}`),
+          threadId,
+          requestId: SettingsChangeRequestId.make(id),
+          ending,
+          ...(claimId !== undefined ? { claimId } : {}),
+          createdAt,
+        });
+      const shellOf = Effect.map(query.getShellSnapshot(), (shell) =>
+        shell.threads.find((thread) => thread.id === threadId),
+      );
+
+      yield* request("settings-own", null);
+      yield* request("settings-reviewer", ThreadParticipantId.make("reviewer"));
+      const waiting = yield* shellOf;
+      assert.isTrue(waiting?.pendingSettingsChange);
+      assert.isTrue(waiting?.hasPendingApprovals);
+
+      yield* engine.dispatch({
+        type: "thread.settings-change.claim",
+        commandId: CommandId.make("cmd-settings-claim"),
+        threadId,
+        requestId: SettingsChangeRequestId.make("settings-reviewer"),
+        claim: { claimId: "claim-1", deviceLabel: "iPhone" },
+        createdAt,
+      });
+      yield* settle("settings-reviewer", "changed", "claim-1");
+      yield* engine.dispatch({
+        type: "thread.settings-change.report-device",
+        commandId: CommandId.make("cmd-settings-report"),
+        threadId,
+        requestId: SettingsChangeRequestId.make("settings-reviewer"),
+        claimId: "claim-1",
+        device: { applied: ["general.theme"], failed: [] },
+        createdAt,
+      });
+      yield* settle("settings-own", "declined");
+      yield* engine.dispatch({
+        type: "thread.settings-change.deliver-notes",
+        commandId: CommandId.make("cmd-settings-notes"),
+        threadId,
+        requestIds: [SettingsChangeRequestId.make("settings-own")],
+        createdAt,
+      });
+      const answered = yield* shellOf;
+      assert.isFalse(answered?.pendingSettingsChange);
+      assert.isFalse(answered?.hasPendingApprovals);
+
+      // The in-memory projector over the stored events is what a live
+      // subscriber folds; every SQL read must decode the same requests.
+      const events = yield* Stream.runCollect(engine.readEvents(0));
+      let live = createEmptyReadModel(createdAt);
+      for (const event of events) live = yield* projectEvent(live, event);
+      const requestsOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+        threads.find((thread) => thread.id === threadId)?.settingsRequests;
+      const folded = requestsOf(live.threads);
+      assert.deepEqual(
+        folded?.map((entry) => [String(entry.requestId), entry.status, entry.noted, entry.device]),
+        [
+          ["settings-own", "declined", true, undefined],
+          ["settings-reviewer", "changed", false, { applied: ["general.theme"], failed: [] }],
+        ],
+      );
+      assert.deepEqual(
+        requestsOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
+        folded,
+      );
+      assert.deepEqual(requestsOf((yield* query.getSnapshot()).threads), folded);
+      assert.deepEqual(requestsOf((yield* query.getCommandReadModel()).threads), folded);
+    }),
   );
 });
 

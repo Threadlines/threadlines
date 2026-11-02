@@ -166,6 +166,7 @@ function makeThreadShellSnapshot(params: {
         handedBackTurnId: null,
         awaitedChildThreadCount: 0,
         pendingChildApproval: false,
+        pendingSettingsChange: false,
       },
     ],
   };

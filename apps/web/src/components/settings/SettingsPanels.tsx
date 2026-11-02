@@ -24,7 +24,7 @@ import {
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { placeById } from "@threadlines/shared/appPlaces";
+import { placeById, THEME_LABELS, TIMESTAMP_FORMAT_LABELS } from "@threadlines/shared/appPlaces";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   PROVIDER_ACCOUNT_DRIVER_KINDS,
@@ -172,26 +172,12 @@ import { useServerObservability, useServerProviders } from "../../rpc/serverStat
 import { newCommandId } from "../../lib/utils";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
 
-const THEME_OPTIONS = [
-  {
-    value: "system",
-    label: "System",
-  },
-  {
-    value: "light",
-    label: "Light",
-  },
-  {
-    value: "dark",
-    label: "Dark",
-  },
-] as const;
-
-const TIMESTAMP_FORMAT_LABELS = {
-  locale: "System default",
-  "12-hour": "12-hour",
-  "24-hour": "24-hour",
-} as const;
+// The catalog's labels (appPlaces), so an agent's settings change card words
+// each value the way these rows do.
+const THEME_OPTIONS = (["system", "light", "dark"] as const).map((value) => ({
+  value,
+  label: THEME_LABELS[value],
+}));
 
 const OPEN_LINKS_IN_LABELS = {
   "browser-panel": "Built-in browser",

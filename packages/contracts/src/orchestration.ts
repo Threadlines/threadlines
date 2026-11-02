@@ -16,6 +16,7 @@ import {
   ThreadMoveId,
   CommandId,
   CommandRequestId,
+  SettingsChangeRequestId,
   CommandRunId,
   EnvironmentId,
   EventId,
@@ -1098,6 +1099,85 @@ export const OrchestrationCommandRequest = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type OrchestrationCommandRequest = typeof OrchestrationCommandRequest.Type;
+
+/** A value an agent may set a setting to: a switch, a choice, or a whole number. */
+export const SettingsChangeValue = Schema.Union([Schema.Boolean, Schema.String, Schema.Number]);
+export type SettingsChangeValue = typeof SettingsChangeValue.Type;
+
+/** One setting on a card (docs/design/agent-settings-changes.md). */
+export const SettingsChangeItem = Schema.Struct({
+  /** A place id from the catalog (packages/shared/src/appPlaces.ts) agents may change. */
+  place: TrimmedNonEmptyString,
+  value: SettingsChangeValue,
+  /** Computer settings only: the value when the agent asked, checked again on Change. */
+  from: Schema.optional(SettingsChangeValue),
+});
+export type SettingsChangeItem = typeof SettingsChangeItem.Type;
+
+/**
+ * waiting: on the card. claimed: an app pressed Change and its computer is
+ * making the change. The rest are endings: changed, declined (Not now),
+ * failed, uncertain (Threadlines stopped mid-change and the settings are
+ * partly as asked), replaced (the agent asked again), cancelled (archived,
+ * moved or reverted away).
+ */
+export const SettingsChangeStatus = Schema.Literals([
+  "waiting",
+  "claimed",
+  "changed",
+  "declined",
+  "failed",
+  "uncertain",
+  "replaced",
+  "cancelled",
+]);
+export type SettingsChangeStatus = typeof SettingsChangeStatus.Type;
+
+/** What the app that pressed Change did with the device settings, each on its own. */
+export const SettingsChangeDeviceReport = Schema.Struct({
+  applied: Schema.Array(TrimmedNonEmptyString),
+  failed: Schema.Array(
+    Schema.Struct({ place: TrimmedNonEmptyString, detail: TrimmedNonEmptyString }),
+  ),
+});
+export type SettingsChangeDeviceReport = typeof SettingsChangeDeviceReport.Type;
+
+/** The app that pressed Change: only it makes the device changes, once its claim wins. */
+export const SettingsChangeClaim = Schema.Struct({
+  claimId: TrimmedNonEmptyString,
+  /** That app's device, read after "on" in the agent's note: "iPhone", "Chrome on macOS", a computer's name. */
+  deviceLabel: TrimmedNonEmptyString,
+});
+export type SettingsChangeClaim = typeof SettingsChangeClaim.Type;
+
+/** An agent's settings change on its thread, from the card to the note it gets back. */
+export const OrchestrationSettingsChangeRequest = Schema.Struct({
+  requestId: SettingsChangeRequestId,
+  /** The agent that asked, and that gets the note. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  changes: Schema.Array(SettingsChangeItem),
+  status: SettingsChangeStatus,
+  claim: Schema.optional(SettingsChangeClaim),
+  device: Schema.optional(SettingsChangeDeviceReport),
+  /** Why it ended as it did, for the note and the toast. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+  settledAt: Schema.optional(IsoDateTime),
+  /** The asking agent has been told how it ended. */
+  noted: Schema.Boolean,
+});
+export type OrchestrationSettingsChangeRequest = typeof OrchestrationSettingsChangeRequest.Type;
+
+/** How a card ends: by the answer, or by the thread moving on. */
+export const SettingsChangeEnding = Schema.Literals([
+  "changed",
+  "declined",
+  "failed",
+  "uncertain",
+  "cancelled",
+]);
+export type SettingsChangeEnding = typeof SettingsChangeEnding.Type;
 
 /**
  * `run`: started as its own process, tracked to the end with its exit code.
@@ -2370,6 +2450,11 @@ export const OrchestrationThread = Schema.Struct({
     Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Settings changes its agents asked for: see OrchestrationSettingsChangeRequest. */
+  settingsRequests: Schema.Array(OrchestrationSettingsChangeRequest).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   activities: Schema.Array(OrchestrationThreadActivity),
   subagents: Schema.Array(OrchestrationSubagent).pipe(
     Schema.optional,
@@ -2523,6 +2608,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   awaitedChildThreadCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   /** On a parent: threads its agent asked to start are waiting for the user's yes. */
   pendingChildApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** A settings change its agent asked for is on its card, or being made. */
+  pendingSettingsChange: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * Started by an agent on a linked computer (ThreadRemoteOrigin): "Started
    * by <thread> on <computer>". Absent or null: started here.
@@ -3801,6 +3888,63 @@ const ThreadCommandRequestCreateCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Server only: an agent asked to change settings (`settings_change`); a card shows it. */
+const ThreadSettingsChangeRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.settings-change.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  changes: Schema.Array(SettingsChangeItem),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: an app pressed Change; it alone answers from here on. */
+const ThreadSettingsChangeClaimCommand = Schema.Struct({
+  type: Schema.Literal("thread.settings-change.claim"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  claim: SettingsChangeClaim,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server only: how a card ended. `declined` from waiting; `changed`,
+ * `failed` and `uncertain` from claimed, by the claim that holds it.
+ */
+const ThreadSettingsChangeSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.settings-change.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  ending: Schema.Literals(["changed", "declined", "failed", "uncertain"]),
+  claimId: Schema.optional(TrimmedNonEmptyString),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: the claiming app made its device changes; what each did. */
+const ThreadSettingsChangeReportDeviceCommand = Schema.Struct({
+  type: Schema.Literal("thread.settings-change.report-device"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  claimId: TrimmedNonEmptyString,
+  device: SettingsChangeDeviceReport,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: the asking agents have been told how these ended. */
+const ThreadSettingsChangeNotesDeliverCommand = Schema.Struct({
+  type: Schema.Literal("thread.settings-change.deliver-notes"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestIds: Schema.Array(SettingsChangeRequestId),
+  createdAt: IsoDateTime,
+});
+
 /** Server only: the user started a suggested command. */
 const ThreadCommandRunStartCommand = Schema.Struct({
   type: Schema.Literal("thread.command-run.start"),
@@ -3967,6 +4111,18 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnCount: NonNegativeInt,
+  /**
+   * The turns the revert took away, from the checkpoints that recorded them:
+   * settings cards those turns' agents left waiting are cancelled with them.
+   * Absent: none are.
+   */
+  revertedTurnIds: Schema.optional(Schema.Array(TurnId)),
+  /**
+   * When the revert was asked for: a settings card left waiting since then
+   * came from a turn the revert takes too (it started after the turns it
+   * keeps), so it is cancelled with them. Absent: only `revertedTurnIds` count.
+   */
+  revertRequestedAt: Schema.optional(IsoDateTime),
   createdAt: IsoDateTime,
 });
 
@@ -4492,6 +4648,11 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadPagePublishCommand,
   ThreadCommandRequestCreateCommand,
+  ThreadSettingsChangeRequestCommand,
+  ThreadSettingsChangeClaimCommand,
+  ThreadSettingsChangeSettleCommand,
+  ThreadSettingsChangeReportDeviceCommand,
+  ThreadSettingsChangeNotesDeliverCommand,
   ThreadCommandRunStartCommand,
   ThreadCommandRunUpdateCommand,
   ThreadCommandRunDeliverOutputCommand,
@@ -4603,6 +4764,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.page-published",
   "thread.command-requested",
   "thread.command-request-dismissed",
+  "thread.settings-change-requested",
+  "thread.settings-change-claimed",
+  "thread.settings-change-settled",
+  "thread.settings-change-device-reported",
+  "thread.settings-change-notes-delivered",
   "thread.command-run-started",
   "thread.command-run-updated",
   "thread.command-run-output-recorded",
@@ -5313,6 +5479,40 @@ export const ThreadCommandRequestDismissedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** The new request is waiting; the same agent's waiting one is replaced. */
+export const ThreadSettingsChangeRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: OrchestrationSettingsChangeRequest,
+});
+
+export const ThreadSettingsChangeClaimedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  claim: SettingsChangeClaim,
+  claimedAt: IsoDateTime,
+});
+
+export const ThreadSettingsChangeSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  ending: SettingsChangeEnding,
+  detail: Schema.optional(TrimmedNonEmptyString),
+  settledAt: IsoDateTime,
+});
+
+export const ThreadSettingsChangeDeviceReportedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SettingsChangeRequestId,
+  device: SettingsChangeDeviceReport,
+  reportedAt: IsoDateTime,
+});
+
+export const ThreadSettingsChangeNotesDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(SettingsChangeRequestId),
+  deliveredAt: IsoDateTime,
+});
+
 export const ThreadCommandRunStartedPayload = Schema.Struct({
   threadId: ThreadId,
   run: CommandRunStart,
@@ -5796,6 +5996,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.command-request-dismissed"),
     payload: ThreadCommandRequestDismissedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.settings-change-requested"),
+    payload: ThreadSettingsChangeRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.settings-change-claimed"),
+    payload: ThreadSettingsChangeClaimedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.settings-change-settled"),
+    payload: ThreadSettingsChangeSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.settings-change-device-reported"),
+    payload: ThreadSettingsChangeDeviceReportedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.settings-change-notes-delivered"),
+    payload: ThreadSettingsChangeNotesDeliveredPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
