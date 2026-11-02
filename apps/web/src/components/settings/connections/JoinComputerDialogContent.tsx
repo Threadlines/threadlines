@@ -4,7 +4,7 @@
  */
 import type { EnvironmentId } from "@threadlines/contracts";
 import { ChevronRightIcon, CircleCheckIcon, ClockIcon, TriangleAlertIcon } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type SyntheticEvent, useEffect, useRef, useState } from "react";
 
 import type { ComputerLinkTarget } from "~/environments/links/computerLinks";
 import { usePrimaryEnvironmentId } from "~/environments/primary";
@@ -40,7 +40,9 @@ const CODE_LENGTH = 6;
 
 /**
  * One real input drawn as six boxes, so typing, pasting, and screen readers
- * all treat it as a single code field.
+ * all treat it as a single code field. The input itself is invisible, so the
+ * boxes draw its focus: the box the next digit goes into, or every box a
+ * selection covers (typing replaces them).
  */
 function CodeInput(props: {
   readonly value: string;
@@ -50,7 +52,36 @@ function CodeInput(props: {
   readonly invalid: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  /** The input's selection while it has focus, else null. */
+  const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  // Reads the event's input, not the ref: autoFocus focuses it before React
+  // attaches the ref.
+  const syncSelection = (event: SyntheticEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    if (document.activeElement !== input) {
+      setSelection(null);
+      return;
+    }
+    const length = input.value.length;
+    const start = input.selectionStart ?? length;
+    const end = input.selectionEnd ?? length;
+    // The boxes can't draw a caret between two digits, so a click or arrow
+    // key that leaves it mid-code moves it to the end, where the boxes show it.
+    if (start === end && end !== length) {
+      input.setSelectionRange(length, length);
+      setSelection({ start: length, end: length });
+      return;
+    }
+    setSelection({ start, end });
+  };
   const digits = props.value.padEnd(CODE_LENGTH, " ").slice(0, CODE_LENGTH).split("");
+  const focused = selection !== null && !props.disabled;
+  const caretIndex = Math.min(props.value.length, CODE_LENGTH - 1);
+  const isActive = (index: number) =>
+    focused &&
+    (selection.start === selection.end
+      ? index === caretIndex
+      : index >= selection.start && index < selection.end);
   return (
     <div
       className="relative inline-flex items-center gap-1.5"
@@ -66,9 +97,13 @@ function CodeInput(props: {
             index === 3 && "ms-2",
             props.invalid && "border-destructive/60",
             props.disabled && "opacity-64",
+            isActive(index) && "ring-1 ring-focus-ring",
           )}
         >
-          {digit.trim()}
+          {digit.trim() ||
+            (focused && index === caretIndex && selection.start === selection.end ? (
+              <span className="h-5 w-px bg-foreground" />
+            ) : null)}
         </span>
       ))}
       <input
@@ -86,6 +121,9 @@ function CodeInput(props: {
         onKeyDown={(event) => {
           if (event.key === "Enter") props.onSubmit();
         }}
+        onFocus={syncSelection}
+        onSelect={syncSelection}
+        onBlur={() => setSelection(null)}
       />
     </div>
   );
