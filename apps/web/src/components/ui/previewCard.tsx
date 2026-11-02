@@ -14,6 +14,12 @@ import { cn } from "~/lib/utils";
  * popup.
  */
 export const PreviewCard = PreviewCardPrimitive.Root;
+/**
+ * How long the pointer rests before a card opens: short, but not instant,
+ * because crossing a list of rows would otherwise open a card on every one.
+ * Once one is open, neighbouring rows swap at once.
+ */
+export const HOVER_CARD_DELAY_MS = 150;
 export const PreviewCardTrigger = PreviewCardPrimitive.Trigger;
 export const createPreviewCardHandle = PreviewCardPrimitive.createHandle;
 

@@ -196,7 +196,7 @@ import {
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
-import { TooltipWrapper } from "../ui/tooltip";
+import { TooltipProvider, TooltipWrapper } from "../ui/tooltip";
 import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
@@ -884,6 +884,12 @@ interface MessagesTimelineProps {
 // ---------------------------------------------------------------------------
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
+
+/**
+ * Hover labels in the conversation wait a moment. The pointer crosses message
+ * actions on its way down a long chat, and instant ones would flash the whole way.
+ */
+const CHAT_TOOLTIP_DELAY_MS = 400;
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
@@ -2095,85 +2101,87 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }
 
   return (
-    <TimelineRowCtx value={sharedState}>
-      <TimelineAgentLabelCtx value={resolveAgentLabel}>
-        <TimelineRowActivityCtx value={activityState}>
-          <TimelineTurnAgentsCtx value={turnAgents}>
-            <div className="relative h-full">
-              <div ref={timelineContainerRef} className="relative h-full">
-                <LegendList<MessagesTimelineRow>
-                  key={`${routeThreadKey}:${legendListEpoch}`}
-                  ref={assignLegendListRef}
-                  data={rows}
-                  keyExtractor={keyExtractor}
-                  renderItem={renderItem}
-                  estimatedItemSize={90}
-                  getEstimatedItemSize={getEstimatedItemSize}
-                  initialScrollAtEnd={searchTargetRowIndex < 0}
-                  {...(searchTargetRowIndex >= 0
-                    ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                    : {})}
-                  maintainScrollAtEnd={
-                    searchTargetRowIndex < 0 &&
-                    ((autoStickToBottom && !listHeld) || stickToBottomRequestPending)
-                      ? MAINTAIN_SCROLL_AT_END
-                      : false
-                  }
-                  maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-                  // Anchoring and bottom-following both adjust for streamed line wraps.
-                  // Use anchoring only while reading above the tail to avoid overshoot.
-                  maintainVisibleContentPosition={
-                    !autoStickToBottom && !stickToBottomRequestPending
-                      ? HOLD_READING_POSITION
-                      : false
-                  }
-                  onScroll={handleScroll}
-                  {...(onVisibleTurnIdsChange
-                    ? { onViewableItemsChanged: handleViewableItemsChanged }
-                    : {})}
-                  onWheelCapture={handleWheelCapture}
-                  onPointerDownCapture={handlePointerDownCapture}
-                  onTouchStartCapture={handleTouchStartCapture}
-                  onTouchMoveCapture={handleTouchMoveCapture}
-                  onTouchEndCapture={handleTouchEndCapture}
-                  onTouchCancelCapture={handleTouchEndCapture}
-                  onKeyDownCapture={handleKeyDownCapture}
-                  data-chat-messages-list="true"
-                  className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
-                  ListHeaderComponent={TIMELINE_LIST_HEADER}
-                  ListFooterComponent={TIMELINE_LIST_FOOTER}
-                />
-                {/* Dissolve rows into the background at the viewport's bottom edge so
+    <TooltipProvider delay={CHAT_TOOLTIP_DELAY_MS}>
+      <TimelineRowCtx value={sharedState}>
+        <TimelineAgentLabelCtx value={resolveAgentLabel}>
+          <TimelineRowActivityCtx value={activityState}>
+            <TimelineTurnAgentsCtx value={turnAgents}>
+              <div className="relative h-full">
+                <div ref={timelineContainerRef} className="relative h-full">
+                  <LegendList<MessagesTimelineRow>
+                    key={`${routeThreadKey}:${legendListEpoch}`}
+                    ref={assignLegendListRef}
+                    data={rows}
+                    keyExtractor={keyExtractor}
+                    renderItem={renderItem}
+                    estimatedItemSize={90}
+                    getEstimatedItemSize={getEstimatedItemSize}
+                    initialScrollAtEnd={searchTargetRowIndex < 0}
+                    {...(searchTargetRowIndex >= 0
+                      ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
+                      : {})}
+                    maintainScrollAtEnd={
+                      searchTargetRowIndex < 0 &&
+                      ((autoStickToBottom && !listHeld) || stickToBottomRequestPending)
+                        ? MAINTAIN_SCROLL_AT_END
+                        : false
+                    }
+                    maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+                    // Anchoring and bottom-following both adjust for streamed line wraps.
+                    // Use anchoring only while reading above the tail to avoid overshoot.
+                    maintainVisibleContentPosition={
+                      !autoStickToBottom && !stickToBottomRequestPending
+                        ? HOLD_READING_POSITION
+                        : false
+                    }
+                    onScroll={handleScroll}
+                    {...(onVisibleTurnIdsChange
+                      ? { onViewableItemsChanged: handleViewableItemsChanged }
+                      : {})}
+                    onWheelCapture={handleWheelCapture}
+                    onPointerDownCapture={handlePointerDownCapture}
+                    onTouchStartCapture={handleTouchStartCapture}
+                    onTouchMoveCapture={handleTouchMoveCapture}
+                    onTouchEndCapture={handleTouchEndCapture}
+                    onTouchCancelCapture={handleTouchEndCapture}
+                    onKeyDownCapture={handleKeyDownCapture}
+                    data-chat-messages-list="true"
+                    className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+                    ListHeaderComponent={TIMELINE_LIST_HEADER}
+                    ListFooterComponent={TIMELINE_LIST_FOOTER}
+                  />
+                  {/* Dissolve rows into the background at the viewport's bottom edge so
               scrolled-under content fades out instead of hard-clipping right
               above the composer. */}
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
-                />
-                {onAddTranscriptHighlightContext ? (
-                  <TranscriptSelectionLayer
-                    containerRef={timelineContainerRef}
-                    onAddHighlight={onAddTranscriptHighlightContext}
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
                   />
-                ) : null}
-              </div>
-              {/* Beside the list rather than in it: the bar's own keys and its count
+                  {onAddTranscriptHighlightContext ? (
+                    <TranscriptSelectionLayer
+                      containerRef={timelineContainerRef}
+                      onAddHighlight={onAddTranscriptHighlightContext}
+                    />
+                  ) : null}
+                </div>
+                {/* Beside the list rather than in it: the bar's own keys and its count
               changing are not the transcript's. */}
-              <ChatFind
-                rows={rows}
-                findRows={findRows}
-                rowContext={findRowContext}
-                listRef={listRef}
-                containerRef={timelineContainerRef}
-                onOpenRow={onFindOpenRow}
-                onOpenSideExchange={onFindOpenSideExchange}
-                onStopFollowing={onFindStopFollowing}
-              />
-            </div>
-          </TimelineTurnAgentsCtx>
-        </TimelineRowActivityCtx>
-      </TimelineAgentLabelCtx>
-    </TimelineRowCtx>
+                <ChatFind
+                  rows={rows}
+                  findRows={findRows}
+                  rowContext={findRowContext}
+                  listRef={listRef}
+                  containerRef={timelineContainerRef}
+                  onOpenRow={onFindOpenRow}
+                  onOpenSideExchange={onFindOpenSideExchange}
+                  onStopFollowing={onFindStopFollowing}
+                />
+              </div>
+            </TimelineTurnAgentsCtx>
+          </TimelineRowActivityCtx>
+        </TimelineAgentLabelCtx>
+      </TimelineRowCtx>
+    </TooltipProvider>
   );
 });
 

@@ -252,6 +252,7 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
     <Menu>
       <Tooltip>
         <TooltipTrigger
+          delay={0}
           render={
             <MenuTrigger
               render={

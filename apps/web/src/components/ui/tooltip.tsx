@@ -99,9 +99,10 @@ function TooltipWrapper({
   align?: TooltipPrimitive.Positioner.Props["align"];
   sideOffset?: TooltipPrimitive.Positioner.Props["sideOffset"];
   /**
-   * Hover dwell before the tooltip opens. Omit for the app's default; pass `0`
+   * Hover dwell before the tooltip opens. Omit for the surface's default, which
+   * is instant unless a `TooltipProvider` around it says otherwise; pass `0`
    * where the tooltip is the only thing naming its control (an icon-only tab,
-   * say), because there the wait reads as the control being unlabelled.
+   * say) and must stay instant on every surface.
    */
   delay?: number;
   children: ReactElement;
