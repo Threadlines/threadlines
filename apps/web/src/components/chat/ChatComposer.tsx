@@ -123,6 +123,7 @@ import { ComposerAddMenu } from "./ComposerAddMenu";
 import { type ComposerCommandKind, useComposerCommandsStore } from "../../composerCommands";
 import {
   type ComposerRoomDelivery,
+  type ComposerSendOptions,
   ComposerDeclineAndSendButton,
   ComposerPrimaryActions,
   ComposerRoomSendButton,
@@ -572,7 +573,7 @@ export interface ChatComposerProps {
   scheduleStickToBottom: () => void;
 
   // Callbacks
-  onSend: (e?: { preventDefault: () => void }) => void;
+  onSend: (e?: { preventDefault: () => void }, options?: ComposerSendOptions) => void;
   onInterrupt: () => void;
   /** The user chose to send a message holding "ultracode" as plain text. */
   workflowKeywordSuppressed?: boolean | undefined;
@@ -3038,7 +3039,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const submitComposer = useCallback(
-    (event?: { preventDefault: () => void }) => {
+    (event?: { preventDefault: () => void }, options?: ComposerSendOptions) => {
       if (hasBlockingQuestion) {
         event?.preventDefault();
         return;
@@ -3057,7 +3058,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (composerSendState.hasSendableContent && latestTurn?.state === "completed") {
         setDismissedSuggestionTurnId(latestTurn.turnId);
       }
-      onSend(event);
+      onSend(event, options);
       if (shouldBlurMobileComposerOnSubmit()) {
         blurMobileComposerAfterSend();
       }
@@ -3155,8 +3156,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setDismissedSuggestionTurnId(activeThread?.latestTurn?.turnId ?? null);
       return true;
     }
+    // Cmd/Ctrl+Enter sends this one message the other way from the send
+    // button's menu, without changing the menu.
     if (key === "Enter" && !event.shiftKey) {
-      submitComposer();
+      submitComposer(undefined, { oppositeDelivery: event.metaKey || event.ctrlKey });
       return true;
     }
     return false;

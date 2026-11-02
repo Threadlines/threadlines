@@ -440,6 +440,16 @@ const SECTIONS = [
     about: "The app's version and update track, usage analytics, and diagnostics.",
     keywords: ["version", "update", "nightly", "stable"],
   },
+  // Keybindings
+  {
+    id: "keybindings.messageBox",
+    kind: "section",
+    parent: "settings.keybindings",
+    title: "In the message box",
+    about:
+      "The message box's own keys, which can't be changed: send, new line, and sending the other way while an agent works.",
+    keywords: ["enter", "steer", "send when done", "newline"],
+  },
   // Threads
   {
     id: "threads.newThreads",

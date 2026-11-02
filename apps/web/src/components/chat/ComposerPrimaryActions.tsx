@@ -1,4 +1,4 @@
-import { memo, type PointerEventHandler, type ReactNode } from "react";
+import { Fragment, memo, useState, type PointerEventHandler, type ReactNode } from "react";
 import type { FollowUpDelivery, RuntimeMode } from "@threadlines/contracts";
 import {
   ChevronDownIcon,
@@ -16,8 +16,11 @@ import {
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
+  MenuShortcut,
   MenuTrigger,
 } from "../ui/menu";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { formatShortcutLabel } from "../../keybindings";
 import type { RuntimeModeOption } from "../../runtimeModeOptions";
 
 interface ComposerPrimaryActionsProps {
@@ -51,16 +54,32 @@ interface ComposerPrimaryActionsProps {
 }
 
 /** What the send button says it will do with a message typed mid-turn. */
+/** How one send differs from what the send button's menu says. */
+export interface ComposerSendOptions {
+  /** Cmd/Ctrl+Enter: this message goes the other way, and the menu stays as it is. */
+  readonly oppositeDelivery?: boolean;
+}
+
+export const oppositeFollowUpDelivery = (delivery: FollowUpDelivery): FollowUpDelivery =>
+  delivery === "steer" ? "queue" : "steer";
+
+const SEND_SHORTCUT = {
+  key: "enter",
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  modKey: false,
+} as const;
+/** Cmd/Ctrl+Enter, shown beside the way it would send. */
+const OPPOSITE_DELIVERY_SHORTCUT = { ...SEND_SHORTCUT, modKey: true } as const;
+
 export const FOLLOW_UP_DELIVERY_LABELS: Record<
   FollowUpDelivery,
-  { readonly action: string; readonly tooltip: string; readonly menuLabel: string }
+  { readonly action: string; readonly menuLabel: string }
 > = {
-  steer: { action: "Steer active turn", tooltip: "Steer", menuLabel: "Steer now" },
-  queue: {
-    action: "Send when this reply finishes",
-    tooltip: "Send when done",
-    menuLabel: "Send when done",
-  },
+  steer: { action: "Steer active turn", menuLabel: "Steer now" },
+  queue: { action: "Send when this reply finishes", menuLabel: "Send when done" },
 };
 
 /**
@@ -79,11 +98,8 @@ export interface ComposerRoomDelivery {
 
 export const roomDeliveryLabels = (delivery: ComposerRoomDelivery) =>
   delivery.mode === "ask"
-    ? { action: `Ask ${delivery.recipientName} now`, tooltip: "Ask now" }
-    : {
-        action: `Send to ${delivery.recipientName} when ${delivery.holderName} finishes`,
-        tooltip: "Send when done",
-      };
+    ? { action: `Ask ${delivery.recipientName} now` }
+    : { action: `Send to ${delivery.recipientName} when ${delivery.holderName} finishes` };
 
 export const formatPendingPrimaryActionLabel = (input: {
   compact: boolean;
@@ -139,7 +155,6 @@ function FollowUpSplitButton(props: {
   /** Which way the button sends now, for tests and styling. */
   mode: string;
   action: string;
-  tooltip: string;
   icon: ReactNode;
   value: FollowUpDelivery;
   options: ReadonlyArray<{
@@ -152,61 +167,99 @@ function FollowUpSplitButton(props: {
   disabled: boolean;
   pointerFocusProps: { onPointerDown: PointerEventHandler<HTMLElement> } | undefined;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <div
-      className="flex items-center"
-      data-chat-composer-follow-up-actions="true"
-      data-follow-up-mode={props.mode}
-    >
-      <Button
-        type="submit"
-        size="icon"
-        className="rounded-l-full rounded-r-none"
-        {...props.pointerFocusProps}
-        disabled={props.disabled}
-        aria-label={props.action}
-        tooltip={props.tooltip}
+    // One hover for the send button and its arrow, so it doesn't flicker or
+    // move between them. Instant: it's what tells you which key does what.
+    <Tooltip disabled={menuOpen}>
+      <TooltipTrigger
+        delay={0}
+        render={
+          <div
+            className="flex items-center"
+            data-chat-composer-follow-up-actions="true"
+            data-follow-up-mode={props.mode}
+          />
+        }
       >
-        {props.icon}
-      </Button>
-      <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              size="icon"
-              variant="default"
-              className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
-              aria-label="Choose how this message is sent"
-              {...props.pointerFocusProps}
-              disabled={props.disabled}
-            />
-          }
+        <Button
+          type="submit"
+          size="icon"
+          className="rounded-l-full rounded-r-none"
+          {...props.pointerFocusProps}
+          disabled={props.disabled}
+          aria-label={props.action}
         >
-          <ChevronDownIcon className="size-3" />
-        </MenuTrigger>
-        <MenuPopup align="end" side="top">
-          <MenuRadioGroup
-            value={props.value}
-            onValueChange={(value) => {
-              if (value === "steer" || value === "queue") {
-                props.onChange(value);
-              }
-            }}
+          {props.icon}
+        </Button>
+        <Menu onOpenChange={setMenuOpen}>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon"
+                variant="default"
+                className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
+                aria-label="Choose how this message is sent"
+                {...props.pointerFocusProps}
+                disabled={props.disabled}
+              />
+            }
           >
-            {props.options.map((option) => (
-              <MenuRadioItem
-                key={option.value}
-                value={option.value}
-                disabled={option.disabled === true}
-                title={option.title}
-              >
-                {option.label}
-              </MenuRadioItem>
-            ))}
-          </MenuRadioGroup>
-        </MenuPopup>
-      </Menu>
-    </div>
+            <ChevronDownIcon className="size-3" />
+          </MenuTrigger>
+          <MenuPopup align="end" side="top">
+            <MenuRadioGroup
+              value={props.value}
+              onValueChange={(value) => {
+                if (value === "steer" || value === "queue") {
+                  props.onChange(value);
+                }
+              }}
+            >
+              {props.options.map((option) => (
+                <MenuRadioItem
+                  key={option.value}
+                  value={option.value}
+                  disabled={option.disabled === true}
+                  title={option.title}
+                >
+                  <span className="min-w-0 flex-1">{option.label}</span>
+                  {option.value !== props.value && option.disabled !== true ? (
+                    <MenuShortcut className="ps-3 tracking-normal max-sm:hidden">
+                      {formatShortcutLabel(OPPOSITE_DELIVERY_SHORTCUT)}
+                    </MenuShortcut>
+                  ) : null}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </MenuPopup>
+        </Menu>
+      </TooltipTrigger>
+      <TooltipPopup align="end" side="top">
+        {/* Both ways it can go, by the keys that send them: what Enter does
+            first, then the way the other key sends this one message. */}
+        <span className="grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5">
+          {props.options
+            .filter((option) => option.disabled !== true)
+            .toSorted((left, right) =>
+              left.value === props.value ? -1 : right.value === props.value ? 1 : 0,
+            )
+            .map((option) => {
+              const isCurrent = option.value === props.value;
+              return (
+                <Fragment key={option.value}>
+                  <span className={isCurrent ? undefined : "text-muted-foreground"}>
+                    {option.label}
+                  </span>
+                  <kbd className="text-right font-sans text-muted-foreground">
+                    {formatShortcutLabel(isCurrent ? SEND_SHORTCUT : OPPOSITE_DELIVERY_SHORTCUT)}
+                  </kbd>
+                </Fragment>
+              );
+            })}
+        </span>
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -231,7 +284,6 @@ export const ComposerRoomSendButton = memo(function ComposerRoomSendButton({
     <FollowUpSplitButton
       mode={roomDelivery.mode}
       action={labels.action}
-      tooltip={labels.tooltip}
       icon={
         roomDelivery.mode === "queue" ? (
           <ListEndIcon className="size-3.5" />
@@ -338,7 +390,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           <FollowUpSplitButton
             mode={followUpDelivery}
             action={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].action}
-            tooltip={FOLLOW_UP_DELIVERY_LABELS[followUpDelivery].tooltip}
             icon={
               followUpDelivery === "queue" ? (
                 <ListEndIcon className="size-3.5" />

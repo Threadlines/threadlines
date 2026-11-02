@@ -8,6 +8,7 @@ import {
   commandLabel,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
+  messageBoxShortcuts,
   parseWhenExpressionDraft,
   shortcutToKeybindingInput,
   unknownWhenVariables,
@@ -15,6 +16,18 @@ import {
 } from "./KeybindingsSettings.logic";
 
 describe("KeybindingsSettings.logic", () => {
+  it("lists the message box's keys, narrowed by the page's search", () => {
+    expect(messageBoxShortcuts("").map((shortcut) => shortcut.keys)).toEqual([
+      "Enter",
+      "shift+Enter",
+      "mod+Enter",
+    ]);
+    expect(messageBoxShortcuts("new line").map((shortcut) => shortcut.keys)).toEqual([
+      "shift+Enter",
+    ]);
+    expect(messageBoxShortcuts("terminal")).toEqual([]);
+  });
+
   it("builds searchable rows with readable key and when values", () => {
     const rows = buildKeybindingRows(
       [

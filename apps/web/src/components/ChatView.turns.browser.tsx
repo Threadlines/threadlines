@@ -10,7 +10,7 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { updateSettings } from "../hooks/useSettings";
+import { getClientSettings, updateSettings } from "../hooks/useSettings";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX } from "../rightPanelLayout";
 import {
@@ -1328,6 +1328,58 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         expect(dispatched("thread.turn.interrupt")).toBeDefined();
       });
       await waitForComposerText("then run the tests");
+    } finally {
+      updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
+
+  it("sends one message the other way on Ctrl+Enter, and leaves the menu's choice alone", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-opposite-delivery" as MessageId,
+        targetText: "opposite delivery target",
+        sessionStatus: "running",
+        sessionActiveTurnId: "turn-opposite-delivery" as TurnId,
+      }),
+    });
+    const submitted = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.follow-up.submit",
+      );
+    const sendWith = async (text: string, keys: string) => {
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill(text, { timeout: 5_000 });
+      await waitForComposerText(text);
+      await userEvent.keyboard(keys);
+      await vi.waitFor(() => {
+        expect(submitted().at(-1)).toMatchObject({ message: { text } });
+      });
+      await waitForComposerText("");
+    };
+    try {
+      // Hovering the arrow, like the send button, says what each key does.
+      await page.getByTestId("composer-editor").fill("just looking", { timeout: 5_000 });
+      await waitForComposerText("just looking");
+      await page.getByLabelText("Choose how this message is sent").hover();
+      await expect.element(page.getByText("Send when done")).toBeVisible();
+      await page.getByTestId("composer-editor").hover();
+
+      // The menu says steer (the default).
+      await sendWith("hold this one", "{Control>}{Enter}{/Control}");
+      expect(submitted().at(-1)).toMatchObject({ delivery: "queue" });
+      expect(getClientSettings().followUpDelivery).toBe("steer");
+      await sendWith("steer this one", "{Enter}");
+      expect(submitted().at(-1)).toMatchObject({ delivery: "steer" });
+
+      // The menu says "Send when done".
+      updateSettings({ followUpDelivery: "queue" });
+      await sendWith("correct it now", "{Control>}{Enter}{/Control}");
+      expect(submitted().at(-1)).toMatchObject({ delivery: "steer" });
+      expect(getClientSettings().followUpDelivery).toBe("queue");
     } finally {
       updateSettings({ followUpDelivery: "steer" });
       await mounted.cleanup();

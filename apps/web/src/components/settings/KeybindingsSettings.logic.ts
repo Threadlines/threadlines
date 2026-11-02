@@ -337,3 +337,23 @@ export function keybindingFromKeyboardEvent(
   parts.push(keyToken);
   return parts.join("+");
 }
+
+/**
+ * The message box's own keys, for the read-only list under the shortcuts. They
+ * can't be rebound: Enter has to give way to the slash menu and to typing in
+ * other languages, which the shortcut system knows nothing about.
+ */
+const MESSAGE_BOX_SHORTCUTS = [
+  { label: "Send", keys: "Enter" },
+  { label: "New line", keys: "shift+Enter" },
+  { label: "Send the other way while an agent works", keys: "mod+Enter" },
+] as const;
+
+export function messageBoxShortcuts(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  return MESSAGE_BOX_SHORTCUTS.filter(
+    (shortcut) =>
+      shortcut.label.toLowerCase().includes(normalizedQuery) ||
+      shortcut.keys.toLowerCase().includes(normalizedQuery),
+  );
+}
