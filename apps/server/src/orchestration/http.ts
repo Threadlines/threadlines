@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { ServerAuth } from "../auth/Services/ServerAuth.ts";
-import { normalizeDispatchCommand } from "./Normalizer.ts";
+import { normalizeDispatchCommand, toDispatchCommandError } from "./Normalizer.ts";
 import {
   messageSentFromClient,
   sessionDevicePlace,
@@ -91,15 +91,16 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
           messageSentFromClient(session.client, sessionDevicePlace(session)),
         )
       : normalized;
-    const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestrationDispatchCommandError({
-            message: "Failed to dispatch orchestration command.",
-            cause,
-          }),
-      ),
-    );
+    // No ThreadBootstrap here: the app's first sends go over the WebSocket, and
+    // the decider refuses a command whose `bootstrap` reaches it. The caller
+    // gets that reason.
+    const result = yield* orchestrationEngine
+      .dispatch(normalizedCommand)
+      .pipe(
+        Effect.mapError((cause) =>
+          toDispatchCommandError(cause, "Failed to dispatch orchestration command."),
+        ),
+      );
     return HttpServerResponse.jsonUnsafe(result, { status: 200 });
   }).pipe(Effect.catchTag("OrchestrationDispatchCommandError", respondToOrchestrationHttpError)),
 );

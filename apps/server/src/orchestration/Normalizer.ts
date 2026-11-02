@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import {
   type ChatAttachment,
   type ClientOrchestrationCommand,
@@ -38,6 +39,20 @@ import { claimsServerLineage } from "./childThreadDecisions.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 const FORK_CONTEXT_SOURCE_EXCERPT_CHARS = 2_000;
+
+const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+
+/**
+ * A failed dispatch as its caller gets it, over either route (ws.ts, http.ts):
+ * with the reason, so a refusal says why instead of only that it failed.
+ */
+export const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
+  isOrchestrationDispatchCommandError(cause)
+    ? cause
+    : new OrchestrationDispatchCommandError({
+        message: cause instanceof Error ? cause.message : fallbackMessage,
+        cause,
+      });
 
 function buildForkThreadTitle(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
