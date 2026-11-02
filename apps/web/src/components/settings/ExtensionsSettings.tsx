@@ -56,16 +56,12 @@ import { useShallow } from "zustand/react/shallow";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProjectFavicon } from "../ProjectFavicon";
-import {
-  resolveEnvironmentHttpUrl,
-  useSavedEnvironmentRegistryStore,
-  useSavedEnvironmentRuntimeStore,
-} from "../../environments/runtime";
+import { resolveEnvironmentHttpUrl } from "../../environments/runtime";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { usePlaceScopeArrival } from "../../hooks/usePlaceArrival";
+import { useScopeMachines } from "./useScopeMachines";
 import { readEnvironmentApi, useEnvironmentApiAvailable } from "../../environmentApi";
 import { ensureLocalApi } from "../../localApi";
-import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 import {
   buildExtensionJsonSchemaFormArguments,
   createExtensionInventoryMemoryCache,
@@ -98,7 +94,6 @@ import {
   mergeRefreshedProviders,
   makeExtensionInventoryCacheKey,
   type ExtensionScopeGroup,
-  type ExtensionScopeMachineInput,
   type ExtensionScopeSelection,
   type PluginComponentTarget,
   resolvePluginComponentTarget,
@@ -4418,37 +4413,7 @@ export function ExtensionsSettingsPanel() {
   const serverConfig = useServerConfig();
   const serverProviders = useServerProviders();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
-  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
-  // Every machine this client knows about, this device first. Same source and
-  // ordering the sidebar's picker uses, so the two lists never disagree.
-  const machineOptions = useMemo<ExtensionScopeMachineInput[]>(() => {
-    const resolveLabel = (environmentId: EnvironmentId, isPrimary: boolean) =>
-      resolveEnvironmentOptionLabel({
-        isPrimary,
-        environmentId,
-        runtimeLabel: savedEnvironmentRuntimeById[environmentId]?.descriptor?.label ?? null,
-        savedLabel: savedEnvironmentRegistry[environmentId]?.label ?? null,
-      });
-    const savedOptions = Object.values(savedEnvironmentRegistry)
-      .filter((record) => record.environmentId !== primaryEnvironmentId)
-      .map((record) => ({
-        environmentId: record.environmentId,
-        label: resolveLabel(record.environmentId, false),
-        isPrimary: false,
-      }))
-      .toSorted((left, right) => left.label.localeCompare(right.label));
-    return primaryEnvironmentId === null
-      ? savedOptions
-      : [
-          {
-            environmentId: primaryEnvironmentId,
-            label: resolveLabel(primaryEnvironmentId, true),
-            isPrimary: true,
-          },
-          ...savedOptions,
-        ];
-  }, [primaryEnvironmentId, savedEnvironmentRegistry, savedEnvironmentRuntimeById]);
+  const machineOptions = useScopeMachines();
   const scopeGroups = useMemo(
     () => deriveExtensionScopeGroups(projects, sidebarThreads, machineOptions),
     [machineOptions, projects, sidebarThreads],

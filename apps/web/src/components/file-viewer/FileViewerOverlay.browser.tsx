@@ -26,7 +26,8 @@ vi.mock("../../localApi", () => {
     server: { getConfig: vi.fn(async () => ({ availableEditors: [] })) },
     persistence: {
       getClientSettings: vi.fn(async () => null),
-      setClientSettings: vi.fn(async () => undefined),
+      updateClientSettings: vi.fn(async (patch: object) => patch),
+      subscribeClientSettings: () => () => undefined,
     },
   };
   return { readLocalApi: () => api, ensureLocalApi: () => api };

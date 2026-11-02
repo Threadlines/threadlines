@@ -68,7 +68,12 @@ const LINK_REPORT_SLACK_MS = 60_000;
 /** How long a child's alert waits for its report to reach the asking computer. */
 const LINK_DELIVERY_WAIT_MS = 60_000;
 /** Alerts that ask the user for something: no report to another agent stands in for them. */
-const ASKS_THE_USER: ReadonlySet<string> = new Set(["approval", "question", "schedule"]);
+const ASKS_THE_USER: ReadonlySet<string> = new Set([
+  "approval",
+  "question",
+  "schedule",
+  "settings",
+]);
 
 const DROP: AlertVerdict = { type: "drop" };
 
@@ -182,6 +187,12 @@ export const makeAlertChecks = Effect.gen(function* () {
             return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies AlertVerdict;
           }
           return schedule.waiting.has(alert.subjectId) ? send("needs_you", "schedule") : DROP;
+        case "settings":
+          return (thread.settingsRequests ?? []).some(
+            (request) => request.requestId === alert.subjectId && request.status === "waiting",
+          )
+            ? send("needs_you", "settings")
+            : DROP;
         case "plan": {
           // A plan alert that waits for a retry still needs its plan open, on the latest turn.
           const plan =

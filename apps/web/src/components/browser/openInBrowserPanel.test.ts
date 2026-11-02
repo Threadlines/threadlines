@@ -109,7 +109,8 @@ describe("openUrlInBrowserPanel", () => {
     vi.stubGlobal("window", {
       desktopBridge: {
         previewSetNavigationPolicy,
-        setClientSettings: vi.fn(async () => undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        onClientSettingsChanged: () => () => undefined,
       },
     });
     registerPreviewWebview(THREAD_REF, tab.id, {

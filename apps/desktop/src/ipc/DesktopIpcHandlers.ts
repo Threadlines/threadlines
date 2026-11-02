@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { getBackgroundOptions, setBackgroundOptions } from "./methods/background.ts";
 import { getCliCommandStatus, installCliCommand, removeCliCommand } from "./methods/cliCommand.ts";
-import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
+import { getClientSettings, updateClientSettings } from "./methods/clientSettings.ts";
 import { claimUpdateNotice, getPreviousAppVersion } from "./methods/versionHistory.ts";
 import {
   getSavedEnvironmentRegistry,
@@ -94,7 +94,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handleSync(getPreviousAppVersion);
 
   yield* ipc.handle(getClientSettings);
-  yield* ipc.handle(setClientSettings);
+  yield* ipc.handle(updateClientSettings);
   yield* ipc.handle(claimUpdateNotice);
   yield* ipc.handle(getSavedEnvironmentRegistry);
   yield* ipc.handle(setSavedEnvironmentRegistry);

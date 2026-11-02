@@ -79,7 +79,7 @@ import { fileAttachmentMimeTypeForExtension } from "@threadlines/shared/fileAtta
 import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
-import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import { normalizeDispatchCommand, toDispatchCommandError } from "./orchestration/Normalizer.ts";
 import {
   messageSentFromClient,
   sessionIsComputer,
@@ -777,14 +777,6 @@ const makeCoreRpcLayer = (
           liveEvents,
         );
       });
-
-      const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
-        isOrchestrationDispatchCommandError(cause)
-          ? cause
-          : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
 
       const enrichProjectEvent = (
         event: OrchestrationEvent,

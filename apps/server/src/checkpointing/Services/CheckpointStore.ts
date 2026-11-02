@@ -19,6 +19,11 @@ import { CheckpointRef } from "@threadlines/contracts";
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  /**
+   * Other refs for the same snapshot, written with `checkpointRef`: a single
+   * capture when two points in the timeline are the same moment.
+   */
+  readonly alsoCheckpointRefs?: ReadonlyArray<CheckpointRef>;
 }
 
 export interface RestoreCheckpointInput {

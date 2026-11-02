@@ -49,7 +49,7 @@ const STATUS: DictationStatus = {
 
 const downloadModel = vi.fn(async () => undefined);
 const updateServerSettings = vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS);
-const setClientSettings = vi.fn().mockResolvedValue(undefined);
+const updateClientSettings = vi.fn(async (patch: object) => patch);
 
 describe("DictationSettings", () => {
   beforeEach(async () => {
@@ -58,11 +58,12 @@ describe("DictationSettings", () => {
     __resetDictationStatusForTests();
     downloadModel.mockClear();
     updateServerSettings.mockClear();
-    setClientSettings.mockClear();
+    updateClientSettings.mockClear();
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings,
+        updateClientSettings,
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings: updateServerSettings },
     } as unknown as LocalApi;
@@ -121,7 +122,7 @@ describe("DictationSettings", () => {
     await holdSwitch.click();
     await vi.waitFor(
       () =>
-        expect(setClientSettings).toHaveBeenCalledWith(
+        expect(updateClientSettings).toHaveBeenCalledWith(
           expect.objectContaining({ dictationHoldToRecord: false }),
         ),
       { timeout: 5_000 },

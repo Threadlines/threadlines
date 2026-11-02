@@ -17,7 +17,15 @@ import {
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Select,
+  SelectGroup,
+  SelectGroupLabel,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -27,7 +35,12 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import { usePlaceScopeArrival } from "../../hooks/usePlaceArrival";
-import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
+import {
+  deriveExtensionScopeGroups,
+  extensionScopeKey,
+  type ExtensionScopeProjectEntry,
+} from "./ExtensionsSettings.logic";
+import { useScopeMachines } from "./useScopeMachines";
 
 interface InstructionDraft {
   readonly contents: string;
@@ -209,20 +222,30 @@ function InstructionFileEditor({
 export function AgentInstructionsSettingsPanel() {
   const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const machines = useScopeMachines();
+  // A project is a computer and a path: two computers can hold the same path.
+  const projectGroups = useMemo(
+    () =>
+      deriveExtensionScopeGroups(projects, sidebarThreads, machines).filter(
+        (group) => group.projects.length > 0,
+      ),
+    [machines, projects, sidebarThreads],
+  );
   const projectOptions = useMemo(
-    () => deriveSettingsProjectOptions(projects, sidebarThreads),
-    [projects, sidebarThreads],
+    () => projectGroups.flatMap((group) => group.projects),
+    [projectGroups],
   );
-  const environmentIdByCwd = useMemo(
-    () => new Map(projects.map((project) => [project.cwd, project.environmentId] as const)),
-    [projects],
+  const [picked, setPicked] = useState<ExtensionScopeProjectEntry | null>(
+    () => projectOptions[0] ?? null,
   );
-  const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  const selectedProject = projectOptions.find((project) => project.key === picked?.key) ?? picked;
+  const cwd = selectedProject?.cwd ?? "";
+  const showComputers = projectGroups.length > 1;
   // Instruction files live on the machine that owns the project, and the picker
   // spans machines, so the API is resolved from the project rather than from
   // whichever backend this client happens to be paired with. Resolved per call:
   // the connection behind an environment is rebuilt on reconnect.
-  const selectedProjectEnvironmentId = environmentIdByCwd.get(cwd);
+  const selectedProjectEnvironmentId = selectedProject?.environmentId;
   const environmentApiAvailable = useEnvironmentApiAvailable(selectedProjectEnvironmentId);
   const readProjectProvidersApi = useCallback(() => {
     if (!selectedProjectEnvironmentId) return null;
@@ -259,27 +282,42 @@ export function AgentInstructionsSettingsPanel() {
   );
 
   useEffect(() => {
-    if (!cwd && projectOptions[0]?.value) {
-      setCwd(projectOptions[0].value);
+    if (picked === null && projectOptions[0]) {
+      setPicked(projectOptions[0]);
     }
-  }, [cwd, projectOptions]);
+  }, [picked, projectOptions]);
 
-  // A place link from a thread opens on that thread's project once it's
-  // listed. After the default pick above, so it wins when projects arrive
-  // late. Only when that path is the linked computer's alone: this page picks
-  // a project by its path, so a path two computers share is left to the user
-  // rather than opened (and saved) on the wrong one.
+  // Counts project switches: a save that finishes after one, even a switch away
+  // and back, must not land in the editor as it is now.
+  const pickCountRef = useRef(0);
+
+  // Another project's files start clean: its drafts are for the files shown here.
+  const pickProject = (project: ExtensionScopeProjectEntry) => {
+    if (project.key === picked?.key) return;
+    pickCountRef.current += 1;
+    setPicked(project);
+    setInstructions(null);
+    setInstructionDrafts({});
+    setActiveFileKey(null);
+    setSavingFileKey(null);
+  };
+
+  // A place link from a thread opens on that thread's computer and project
+  // once it's listed. After the default pick above, so it wins when projects
+  // arrive late.
   usePlaceScopeArrival((scope) => {
     if (scope.project === null) return true;
-    const owners = projects.filter((project) => project.cwd === scope.project);
-    if (owners.length === 0) return false;
-    if (owners.length === 1 && owners[0]?.environmentId === scope.environmentId) {
-      setCwd(scope.project);
-    }
+    const key = extensionScopeKey({ environmentId: scope.environmentId, cwd: scope.project });
+    const project = projectOptions.find((option) => option.key === key);
+    if (project === undefined) return false;
+    pickProject(project);
     return true;
   });
 
   const refresh = useCallback(async () => {
+    // First, so a load still under way for another project can't land here.
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
     const requestCwd = cwd.trim();
     const providersApi = readProjectProvidersApi();
     if (!requestCwd || !providersApi) {
@@ -291,8 +329,6 @@ export function AgentInstructionsSettingsPanel() {
       return;
     }
 
-    const requestId = refreshRequestRef.current + 1;
-    refreshRequestRef.current = requestId;
     setIsLoading(true);
     setError(null);
     try {
@@ -398,6 +434,7 @@ export function AgentInstructionsSettingsPanel() {
       const key = instructionFileKey(file);
       const draft = instructionDrafts[key];
       const contents = draft?.contents ?? file.contents ?? "";
+      const pickCount = pickCountRef.current;
       setSavingFileKey(key);
       try {
         const providersApi = readProjectProvidersApi();
@@ -411,6 +448,16 @@ export function AgentInstructionsSettingsPanel() {
         });
         const resultKey = instructionFileKey(result.file);
         const savedContents = result.file.contents ?? contents;
+        if (pickCountRef.current !== pickCount) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: "Instruction file saved",
+              description: result.file.relativePath ?? result.file.path,
+            }),
+          );
+          return;
+        }
         setInstructionDrafts((current) => {
           const next = { ...current };
           if (resultKey !== key) {
@@ -438,7 +485,9 @@ export function AgentInstructionsSettingsPanel() {
           }),
         );
       } finally {
-        setSavingFileKey((current) => (current === key ? null : current));
+        if (pickCountRef.current === pickCount) {
+          setSavingFileKey((current) => (current === key ? null : current));
+        }
       }
     },
     [cwd, instructionDrafts, instructions?.cwd, readProjectProvidersApi, updateInstructionFile],
@@ -485,50 +534,56 @@ export function AgentInstructionsSettingsPanel() {
           control={
             projectOptions.length > 0 ? (
               <Select
-                value={cwd}
+                value={selectedProject?.key ?? ""}
                 onValueChange={(value) => {
-                  if (!value) return;
-                  setCwd(value);
-                  setInstructions(null);
-                  setInstructionDrafts({});
-                  setActiveFileKey(null);
+                  const project = projectOptions.find((option) => option.key === value);
+                  if (project) pickProject(project);
                 }}
               >
                 <SelectTrigger className="w-full sm:w-56" aria-label="Project">
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-1.5">
-                      {selectedProjectEnvironmentId ? (
+                      {selectedProject ? (
                         <ProjectFavicon
-                          environmentId={selectedProjectEnvironmentId}
-                          cwd={cwd}
-                          name={
-                            projectOptions.find((project) => project.value === cwd)?.label ?? ""
-                          }
+                          environmentId={selectedProject.environmentId}
+                          cwd={selectedProject.cwd}
+                          name={selectedProject.label}
                         />
                       ) : null}
-                      <span className="truncate">
-                        {projectOptions.find((project) => project.value === cwd)?.label ??
-                          "Project"}
-                      </span>
+                      <span className="truncate">{selectedProject?.label ?? "Project"}</span>
+                      {showComputers && selectedProject ? (
+                        <span className="truncate text-muted-foreground">
+                          {
+                            projectGroups.find(
+                              (group) => group.environmentId === selectedProject.environmentId,
+                            )?.label
+                          }
+                        </span>
+                      ) : null}
                     </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {projectOptions.map((project) => {
-                    const projectEnvironmentId = environmentIdByCwd.get(project.value);
-                    return (
-                      <SelectItem key={project.value} value={project.value}>
+                  {projectGroups.map((group) => {
+                    const rows = group.projects.map((project) => (
+                      <SelectItem key={project.key} value={project.key}>
                         <span className="flex min-w-0 items-center gap-1.5">
-                          {projectEnvironmentId ? (
-                            <ProjectFavicon
-                              environmentId={projectEnvironmentId}
-                              cwd={project.value}
-                              name={project.label}
-                            />
-                          ) : null}
+                          <ProjectFavicon
+                            environmentId={project.environmentId}
+                            cwd={project.cwd}
+                            name={project.label}
+                          />
                           <span className="truncate">{project.label}</span>
                         </span>
                       </SelectItem>
+                    ));
+                    return showComputers ? (
+                      <SelectGroup key={group.environmentId}>
+                        <SelectGroupLabel>{group.label}</SelectGroupLabel>
+                        {rows}
+                      </SelectGroup>
+                    ) : (
+                      rows
                     );
                   })}
                 </SelectPopup>

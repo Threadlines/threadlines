@@ -8,6 +8,7 @@ import {
   type AuthAccessStreamEvent,
   type AuthAccessSnapshot,
   AuthSessionId,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type DesktopBridge,
@@ -90,6 +91,7 @@ import {
 import { DeviceRenameDialogHost } from "../DeviceRenameDialog";
 import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
 import { OutsideAgentsHost } from "../outsideAgents/OutsideAgentsHost";
+import { AgentInstructionsSettingsPanel } from "./AgentInstructionsSettings";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import {
   closeConnectComputerDialog,
@@ -1047,7 +1049,8 @@ const createDesktopBridgeStub = (overrides?: {
       bootstrapToken: "desktop-bootstrap-token",
     }),
     getClientSettings: vi.fn().mockResolvedValue(null),
-    setClientSettings: vi.fn().mockResolvedValue(undefined),
+    updateClientSettings: vi.fn().mockResolvedValue(DEFAULT_CLIENT_SETTINGS),
+    onClientSettingsChanged: () => () => undefined,
     getSavedEnvironmentRegistry: vi.fn().mockResolvedValue([]),
     setSavedEnvironmentRegistry: vi.fn().mockResolvedValue(undefined),
     getSavedEnvironmentSecret: vi.fn().mockResolvedValue(null),
@@ -1604,7 +1607,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings,
@@ -2541,7 +2545,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: {
         openInEditor,
@@ -2602,7 +2607,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         getProcessDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
@@ -2767,7 +2773,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -2864,7 +2871,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3032,7 +3040,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3152,7 +3161,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
       shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
@@ -3215,7 +3225,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
       shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
@@ -3272,7 +3283,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3460,7 +3472,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings,
@@ -3502,7 +3515,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),
@@ -3539,7 +3553,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3574,7 +3589,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3644,7 +3660,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { addProviderAccount },
     } as unknown as LocalApi;
@@ -3688,7 +3705,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
@@ -3727,7 +3745,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
@@ -3761,7 +3780,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
     } as unknown as LocalApi;
@@ -3808,7 +3828,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3867,7 +3888,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         resolveProviderUpdateBlockers,
@@ -3979,7 +4001,8 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
     } as unknown as LocalApi;
@@ -4155,6 +4178,154 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
       .element(page.getByText("Turn on Rooms below to start threads with more than one agent."))
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Add agent" })).toBeDisabled();
+  });
+});
+
+describe("Agent Instructions", () => {
+  const THIS_MAC = EnvironmentId.make("env-this-mac");
+  const STUDIO = EnvironmentId.make("env-studio");
+  const SHARED_PATH = "/repo/app";
+
+  /** A computer whose project sits at the shared path, with its own CLAUDE.md. */
+  const seedComputer = (environmentId: EnvironmentId, contents: string) => {
+    useStore.getState().syncServerShellSnapshot(
+      {
+        snapshotSequence: 1,
+        projects: [
+          {
+            id: ProjectId.make(`project-${environmentId}`),
+            kind: "workspace" as const,
+            title: "app",
+            workspaceRoot: SHARED_PATH,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-10-23T00:00:00.000Z",
+            updatedAt: "2026-10-23T00:00:00.000Z",
+          },
+        ],
+        threads: [],
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+      environmentId,
+    );
+    const file = {
+      kind: "claude-instructions" as const,
+      scope: "project" as const,
+      path: `${SHARED_PATH}/CLAUDE.md`,
+      relativePath: "CLAUDE.md",
+      exists: true,
+      editable: true,
+      contents,
+    };
+    const providers = {
+      getInstructionFiles: vi.fn(async ({ cwd }: { cwd: string }) => ({
+        cwd,
+        generatedAt: "2026-10-23T00:00:00.000Z",
+        instructionFiles: [file],
+      })),
+      writeInstructionFile: vi.fn(async (input: { contents: string }) => ({
+        file: { ...file, contents: input.contents },
+      })),
+    };
+    __setEnvironmentApiOverrideForTests(environmentId, { providers } as unknown as EnvironmentApi);
+    return providers;
+  };
+
+  afterEach(() => {
+    __resetEnvironmentApiOverridesForTests();
+    useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
+    delete savedComputersHarness.registryById[STUDIO];
+    resetPrimaryEnvironmentDescriptorForTests();
+  });
+
+  it("reads and saves on the computer picked when two share a project's path", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_MAC,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    savedComputersHarness.registryById[STUDIO] = { environmentId: STUDIO, label: "Studio" };
+    const here = seedComputer(THIS_MAC, "the Mac's instructions");
+    const studio = seedComputer(STUDIO, "the Studio's instructions");
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <AgentInstructionsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const contents = page.getByLabelText("Claude instruction file contents");
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page.getByRole("group", { name: "Studio" }).getByRole("option", { name: "app" }).click();
+    await expect.element(contents).toHaveValue("the Studio's instructions");
+    expect(studio.getInstructionFiles).toHaveBeenCalledWith({ cwd: SHARED_PATH });
+
+    await contents.fill("edited on the Studio");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(studio.writeInstructionFile).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: SHARED_PATH, contents: "edited on the Studio" }),
+      );
+    });
+    expect(here.writeInstructionFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps a save that finishes after a switch out of the new project's editor", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_MAC,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    savedComputersHarness.registryById[STUDIO] = { environmentId: STUDIO, label: "Studio" };
+    seedComputer(THIS_MAC, "the Mac's instructions");
+    const studio = seedComputer(STUDIO, "the Studio's instructions");
+    const saveAsSent = studio.writeInstructionFile.getMockImplementation()!;
+    let finishSave = () => {};
+    studio.writeInstructionFile.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => {
+        finishSave = resolve;
+      });
+      return saveAsSent(input);
+    });
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <AgentInstructionsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const contents = page.getByLabelText("Claude instruction file contents");
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page.getByRole("group", { name: "Studio" }).getByRole("option", { name: "app" }).click();
+    await expect.element(contents).toHaveValue("the Studio's instructions");
+    await contents.fill("edited on the Studio");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await vi.waitFor(() => expect(studio.writeInstructionFile).toHaveBeenCalled());
+
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page
+      .getByRole("group", { name: "This device" })
+      .getByRole("option", { name: "app" })
+      .click();
+    await expect.element(contents).toHaveValue("the Mac's instructions");
+
+    // Back on the project it was saving, with a newer edit: the old save stays out.
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page.getByRole("group", { name: "Studio" }).getByRole("option", { name: "app" }).click();
+    await expect.element(contents).toHaveValue("the Studio's instructions");
+    await contents.fill("newer edit");
+
+    finishSave();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect.element(contents).toHaveValue("newer edit");
+    await expect.element(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
   });
 });
 
@@ -4892,7 +5063,8 @@ describe("ProviderSettingsPanel community agents", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server,
@@ -6175,7 +6347,8 @@ describe("Settings search", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS) },
     } as unknown as LocalApi;
@@ -6298,7 +6471,8 @@ describe("Settings search rows", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),

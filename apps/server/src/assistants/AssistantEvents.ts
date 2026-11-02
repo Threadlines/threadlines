@@ -128,6 +128,10 @@ const THREAD_CANCEL_REASON: Partial<Record<OrchestrationEvent["type"], string>> 
 
 /** An answered request, or one closed for it (its session stopped, its turn was interrupted). */
 const requestCloseReason = (event: OrchestrationEvent): string => {
+  if (event.type === "thread.settings-change-requested") return "replaced";
+  if (event.type === "thread.settings-change-settled" && event.payload.ending === "cancelled") {
+    return "closed";
+  }
   if (event.type !== "thread.activity-appended") return "answered";
   const { activity } = event.payload;
   if (activity.kind.endsWith(".respond.failed")) return "closed";

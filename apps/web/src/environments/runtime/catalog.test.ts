@@ -1,4 +1,5 @@
 import {
+  DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   type LocalApi,
   type PersistedSavedEnvironmentRecord,
@@ -20,7 +21,8 @@ describe("environment runtime catalog stores", () => {
       nativeApi: {
         persistence: {
           getClientSettings: async () => null,
-          setClientSettings: async () => undefined,
+          updateClientSettings: async (patch) => ({ ...DEFAULT_CLIENT_SETTINGS, ...patch }),
+          subscribeClientSettings: () => () => undefined,
           getSavedEnvironmentRegistry: async () => [],
           setSavedEnvironmentRegistry: async () => undefined,
           getSavedEnvironmentSecret: async () => null,
@@ -104,7 +106,8 @@ describe("environment runtime catalog stores", () => {
       nativeApi: {
         persistence: {
           getClientSettings: async () => null,
-          setClientSettings: async () => undefined,
+          updateClientSettings: async (patch) => ({ ...DEFAULT_CLIENT_SETTINGS, ...patch }),
+          subscribeClientSettings: () => () => undefined,
           getSavedEnvironmentRegistry: () =>
             new Promise<readonly PersistedSavedEnvironmentRecord[]>((resolve) => {
               resolveRegistryRead = () => resolve([]);
@@ -156,7 +159,8 @@ describe("environment runtime catalog stores", () => {
       nativeApi: {
         persistence: {
           getClientSettings: async () => null,
-          setClientSettings: async () => undefined,
+          updateClientSettings: async (patch) => ({ ...DEFAULT_CLIENT_SETTINGS, ...patch }),
+          subscribeClientSettings: () => () => undefined,
           getSavedEnvironmentRegistry: async () => [saved],
           setSavedEnvironmentRegistry: async (records) => {
             writes.push(records);

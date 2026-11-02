@@ -63,6 +63,13 @@ import { makeScratchIndexes } from "./scratchIndex.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
+/**
+ * The reason git locks a worktree with while `git worktree add` makes it
+ * (untranslated: the add runs with `LC_ALL=C`). One still locked that way is an
+ * add that was cut short.
+ */
+export const GIT_ADDING_LOCK_REASON = "initializing";
+
 export interface ExecuteGitInput {
   readonly operation: string;
   readonly cwd: string;
@@ -1254,7 +1261,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       yield* execute({
         operation,
         cwd: input.cwd,
-        args: ["update-ref", input.checkpointRef, commitOid],
+        args: ["update-ref", "--stdin"],
+        stdin: `${[input.checkpointRef, ...(input.alsoCheckpointRefs ?? [])]
+          .map((ref) => `update ${ref} ${commitOid}`)
+          .join("\n")}\n`,
       });
     }),
 

@@ -84,6 +84,40 @@ describe("pushAlertActionsForEvent", () => {
     ).toEqual([]);
   });
 
+  it("alerts for a waiting settings card, and stops once it's answered or replaced", () => {
+    const requested = pushAlertActionsForEvent(
+      event("thread.settings-change-requested", {
+        threadId: THREAD,
+        request: { requestId: "new" },
+        replaces: ["old"],
+      }),
+    );
+    expect(requested).toEqual([
+      { type: "cancel", alertId: "settings:old" },
+      {
+        type: "add",
+        intent: {
+          alertId: "settings:new",
+          threadId: THREAD,
+          kind: "needs_you",
+          reason: "settings",
+          subjectId: "new",
+          detail: null,
+          holdMs: 0,
+          occurredAt: "2026-10-23T12:00:00.000Z",
+        },
+      },
+    ]);
+    for (const type of [
+      "thread.settings-change-claimed",
+      "thread.settings-change-settled",
+    ] as const) {
+      expect(pushAlertActionsForEvent(event(type, { threadId: THREAD, requestId: "new" }))).toEqual(
+        [{ type: "cancel", alertId: "settings:new" }],
+      );
+    }
+  });
+
   it("holds a finished turn, sends a failed one sooner, and never alerts a turn the user stopped", () => {
     const completed = (turnId: string, state: string) =>
       pushAlertActionsForEvent(

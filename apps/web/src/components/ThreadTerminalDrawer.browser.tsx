@@ -73,13 +73,19 @@ const {
       | {
           contextMenu: { show: ReturnType<typeof vi.fn> };
           shell: { openExternal: ReturnType<typeof vi.fn> };
-          persistence?: { setClientSettings: ReturnType<typeof vi.fn> };
+          persistence?: {
+            updateClientSettings: ReturnType<typeof vi.fn>;
+            subscribeClientSettings: () => () => void;
+          };
         }
       | undefined
   >(() => ({
     contextMenu: { show: vi.fn(async () => null) },
     shell: { openExternal: vi.fn(async () => undefined) },
-    persistence: { setClientSettings: vi.fn(async () => undefined) },
+    persistence: {
+      updateClientSettings: vi.fn(async (patch: object) => patch),
+      subscribeClientSettings: () => () => undefined,
+    },
   })),
   linkProviderRef: {
     current: null as TestTerminalLinkProvider | null,

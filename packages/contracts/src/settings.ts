@@ -1252,6 +1252,7 @@ export const ClientSettingsPatch = Schema.Struct({
   wrapUpThreadsOnPullRequestSettled: Schema.optionalKey(Schema.Boolean),
   wrapUpChildThreadsOnFinish: Schema.optionalKey(Schema.Boolean),
   wrapUpIdleThreads: Schema.optionalKey(Schema.Boolean),
+  dismissedProviderUpdateNotificationKeys: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   dictationHoldToRecord: Schema.optionalKey(Schema.Boolean),
   dictationMicrophoneDeviceId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   diffChangesOnly: Schema.optionalKey(Schema.Boolean),

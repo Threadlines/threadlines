@@ -1665,6 +1665,39 @@ describe("CheckpointReactor", () => {
     ).toBe("v1\n");
   });
 
+  it("takes one snapshot for a thread's baseline and first pre-turn point", async () => {
+    const harness = await createHarness({
+      hasSession: false,
+      seedFilesystemCheckpoints: false,
+      threadWorktreePath: null,
+    });
+    const threadId = ThreadId.make("thread-1");
+    const baselineRef = checkpointRefForThreadTurn(threadId, 0);
+    const preTurnRef = checkpointPreTurnRefForThreadTurnCount(threadId, 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-one-snapshot"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-user-one-snapshot"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitForGitRefExists(harness.cwd, preTurnRef);
+    expect(runGit(harness.cwd, ["rev-parse", preTurnRef])).toBe(
+      runGit(harness.cwd, ["rev-parse", baselineRef]),
+    );
+  });
+
   it("retakes the pre-turn snapshot when a failed turn start is retried", async () => {
     const harness = await createHarness({
       hasSession: false,
