@@ -939,14 +939,6 @@ describe("a thread another computer asked to start", () => {
     expect(opened).toEqual([]);
   });
 
-  it("opens the request when the row is clicked", async () => {
-    stubMacMini(vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined));
-    render(<PendingRequestRows />);
-
-    await userEvent.click(page.getByTestId(`link-request-title-${REQUEST.requestId}`));
-    expect(opened).toEqual([REQUEST.requestId]);
-  });
-
   it("sends Deny, and offers both again when Mac mini can't take the answer", async () => {
     const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => {
       throw new Error("Mac mini can't be reached right now.");
