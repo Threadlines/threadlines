@@ -73,9 +73,9 @@ overrides:
 packageExtensionsChecksum: sha256-q5WdBF7BCWKzly/tgcivWtVAQ00t1e/WaEGl0+mhjaI=
 
 patchedDependencies:
-  '@legendapp/list@3.7.0':
-    hash: 7c923507bdc5e9e897a4254cda220dcb5e3a068d35fbf6ec89e682ea77f27218
-    path: patches/@legendapp__list@3.7.0.patch
+  '@legendapp/list@3.7.1':
+    hash: d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3
+    path: patches/@legendapp__list@3.7.1.patch
   brace-expansion@5.0.12:
     hash: 0e03496f6903d2d5279ca778c42ee3a5195a2d1f8f522bb39e87db16857f3674
     path: patches/brace-expansion@5.0.12.patch
@@ -320,8 +320,8 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@legendapp/list':
-        specifier: 3.7.0
-        version: 3.7.0(patch_hash=7c923507bdc5e9e897a4254cda220dcb5e3a068d35fbf6ec89e682ea77f27218)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: 3.7.1
+        version: 3.7.1(patch_hash=d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@lexical/react':
         specifier: ^0.53.0
         version: 0.53.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yjs@13.6.31)
@@ -1996,8 +1996,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@legendapp/list@3.7.0':
-    resolution: {integrity: sha512-Er2D5eKIv+rfbakJ3ra4pD7NCNtOj2m1nrU6s6Ea3dO+x3vgt0h9NE0dn5WHOLIRkPEWHiwbslgl95QxZiEkjg==}
+  '@legendapp/list@3.7.1':
+    resolution: {integrity: sha512-zgIy84yG2JP93+kib61rZBTcYGZ6fULrkCQz/MF7WrjVJeJQa/rR4z+rXfM5oveirO5mYkro4IDGytARIjJe9w==}
     peerDependencies:
       react: '*'
       react-dom: '*'
@@ -8105,7 +8105,7 @@ snapshots:
   '@koromix/koffi-win32-x64@3.2.1':
     optional: true
 
-  '@legendapp/list@3.7.0(patch_hash=7c923507bdc5e9e897a4254cda220dcb5e3a068d35fbf6ec89e682ea77f27218)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@legendapp/list@3.7.1(patch_hash=d55f71220bb558433ce21a1c3536e2cb09b528bc6bc0627247bfe8f8e3bd56e3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
