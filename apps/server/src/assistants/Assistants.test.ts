@@ -647,7 +647,12 @@ const CALLERS = {
 } as const;
 
 /** The handler over two callers (one may see, one may start) and tools that answer at once. */
-const makeMcp = (options: { readonly fits?: (response: AssistantHttpResponse) => boolean } = {}) =>
+const makeMcp = (
+  options: {
+    readonly fits?: (response: AssistantHttpResponse) => boolean;
+    readonly scrubText?: (text: string) => string;
+  } = {},
+) =>
   makeAssistantMcp({
     authenticate: ({ credential }) =>
       Effect.succeed(
@@ -658,6 +663,7 @@ const makeMcp = (options: { readonly fits?: (response: AssistantHttpResponse) =>
     tools: Object.values(ConnectToolkit.tools).map((tool) => ({
       tool,
       ...(tool.name === "thread_start" ? { required: ["requestId"] } : {}),
+      ...(tool.name === "thread_stop" ? { hints: { destructive: true } } : {}),
       run: (caller) =>
         Effect.succeed(
           tool.name === "projects"
@@ -709,6 +715,7 @@ const makeMcp = (options: { readonly fits?: (response: AssistantHttpResponse) =>
     }),
     serverInfo: { name: "threadlines", title: "Threadlines", version: "0.0.0-test" },
     fits: options.fits ?? (() => true),
+    ...(options.scrubText !== undefined ? { scrubText: options.scrubText } : {}),
   });
 
 const rpc = (
@@ -745,6 +752,22 @@ const modernHeaders = (method: string, name?: string) => ({
 });
 
 describe("AssistantMcp", () => {
+  it.effect("keeps the user's home folder out of every string in an answer", () =>
+    Effect.gen(function* () {
+      const answer = yield* rpc(makeMcp({ scrubText: (text) => text.replace("/repos", "~") }), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "projects", arguments: {} },
+      });
+      const projects = answer.body?.result?.structuredContent as {
+        readonly projects: ReadonlyArray<{ readonly folder: string }>;
+      };
+      expect(projects.projects[0]?.folder).toBe("~/app");
+      expect(JSON.stringify(answer.body)).not.toContain("/repos");
+    }),
+  );
+
   describe("MCP Events", () => {
     const SECRET = `whsec_${Buffer.alloc(32, 1).toString("base64")}`;
     const subscribeParams = (overrides: Record<string, unknown> = {}) => ({
@@ -1086,7 +1109,10 @@ describe("AssistantMcp", () => {
       for (const tool of tools) {
         expect(tool.inputSchema.type, tool.name).toBe("object");
         expect(typeof tool.title, tool.name).toBe("string");
-        expect(tool.annotations, tool.name).toMatchObject({ destructiveHint: false });
+        // What this door says about a tool wins over the tool's own.
+        expect(tool.annotations, tool.name).toMatchObject({
+          destructiveHint: tool.name === "thread_stop",
+        });
       }
       for (const name of ["inbox", "thread_changes"]) {
         expect(tools.find((tool) => tool.name === name)?.annotations, name).toMatchObject({

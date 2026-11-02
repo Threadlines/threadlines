@@ -31,7 +31,9 @@
  * request id too, and a retried stop answers from its row.
  *
  * The assistants door (docs/design/assistants.md, "Tools") runs the same
- * handlers with `door: "assistant"`, which changes three things:
+ * handlers with `door: "assistant"`, which changes these things:
+ * - `projects` gives a folder's own name, not its path, which names the
+ *   user's home;
  * - `requestId` is required on `thread_start`, `thread_send` and
  *   `thread_stop`;
  * - `thread_start` answers `starting` with the thread id at once, before the
@@ -338,6 +340,13 @@ export const projectsIn = <Project extends ConnectProject>(
 ) =>
   projects.filter((project) => project.kind !== "general-chat" && grantsProject(grant, project.id));
 
+/** A folder's own name: an assistant has no use for the path to it, which names the user's home. */
+const lastPathSegment = (path: string) => {
+  // A backslash separates only on Windows; elsewhere it can be part of a name.
+  const separators = /^(?:[a-z]:[\\/]|\\\\)/iu.test(path) ? /[\\/]+/u : /\/+/u;
+  return path.split(separators).findLast((segment) => segment !== "") || path;
+};
+
 /** The project a call names, by id or by name (case ignored), among the ones it sees. */
 export const findProject = <Project extends ConnectProject>(
   projects: ReadonlyArray<Project>,
@@ -611,7 +620,7 @@ export const makeConnectToolHandlers = (
           projects: projectsIn(yield* deps.projects, gated.grant).map((project) => ({
             projectId: project.id,
             name: project.title,
-            folder: project.workspaceRoot,
+            folder: assistant ? lastPathSegment(project.workspaceRoot) : project.workspaceRoot,
           })),
         } satisfies ProjectsResult;
       });

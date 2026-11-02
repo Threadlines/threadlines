@@ -2129,3 +2129,171 @@ one made during the change still works.
 To watch: `www` and `app` were on a Vercel `*.threadlines.dev` certificate (expires
 Jan 8, 2027) that renews through Vercel's DNS. Vercel should issue per-name
 certificates now; `nightly.app`'s expires Dec 22 and will show it first.
+
+## Build plan: step 6 (listings)
+
+Written Nov 2 on main (`08584e3f9`). Sources, read today:
+developers.openai.com/plugins/deploy/app-review, /plugins/deploy/submission,
+/apps-sdk/app-submission-guidelines; claude.com/docs/connectors/building/submission
+and /review-criteria; cursor.com/docs/plugins. Listings earlier in this doc are
+out of date where they differ from this section.
+
+### What the directories require
+
+|                     | OpenAI                                                                                             | Anthropic                                                | Cursor (Grok Bot)                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------- |
+| **Who**             | Verified individual or business; the listing shows that name                                       | Any paid Claude plan; company name and contact           | Public repo: "all plugins must be open source"    |
+| **Review**          | By hand; a daily rescan after                                                                      | Automatic scan, Community label; a person sometimes      | By hand, each update too                          |
+| **Pages**           | Website, support, privacy, terms                                                                   | Docs, privacy, support contact                           | None named                                        |
+| **Reviewer access** | Test account with sample data; no MFA, codes or magic links; must not expire                       | Test account, "fully populated"                          | Not stated                                        |
+| **Also**            | ZIP package, logo, demo video, exactly 5 positive and 3 negative test cases, domain challenge file | Icon, use cases, ten portal steps, seven acknowledgments | `.cursor-plugin/plugin.json`, `mcp.json`, a skill |
+
+### What this changes in the earlier sketch
+
+1. **The demo connection must be at Work, not See.** Both directories read the
+   tools from a live connection, and `tools/list` shows only what the grant
+   allows. A See connection would have seven tools reviewed, and every Start or
+   Work user would be running tools no one approved (OpenAI holds tools that
+   didn't pass its scan). The demo computer's data is fake and its agent is a
+   stand-in, so Work risks nothing there.
+2. **A one-use code doesn't pass.** Sign-in codes last 10 minutes, one use, and
+   OpenAI refuses verification codes and anything that expires. The reviewer's
+   credential has to act like a password.
+3. **A stable release comes before anything public.** A listing promises users can
+   connect, and the door, the Work level, alerts and MCP Events are nightly only.
+   Reviewers don't need stable: they only meet the demo computer.
+
+### The reviewer's code
+
+- **Its own path, not the app's codes.** Codes are 8 characters, one use, and the
+  host consumes them (`signIns.ts`, `RelayHost.ts`), so a fixed value can't ride on
+  them. `ASSISTANT_REVIEW_CODE` (a secret, at least 128 bits) and
+  `ASSISTANT_REVIEW_HOST` (one host id) are relay settings. When both are set, the
+  sign-in page's form also accepts that value: same page secret, same tries and
+  per-IP limits, compared in constant time. It binds the sign-in to that host with
+  a `review: true` mark on the handoff, and isn't consumed.
+- **Auto-approve applies only to that mark.** With
+  `THREADLINES_ASSISTANT_REVIEW_COMPUTER=1` in the environment, a sign-in marked
+  `review` is approved without a click: all projects, full access, Work, or See when
+  the client asked only for `threads:read` (never more than it asked). **Any other
+  sign-in on that computer still waits for Allow**, so the flag on a real computer
+  gives nobody anything: a review-marked sign-in only comes from the relay, for the
+  one host it names. It's read only from the environment, Settings shows a warning
+  row while it's on, and each approval logs.
+- **The computer listens from the start.** A sign-in waiting at the relay can't wake
+  a closed socket (`reconsiderSocket`), so the flag also registers the computer and
+  keeps its assistant socket open.
+- **Review sign-ins never replace each other.** A second sign-in from one client
+  replaces the first (`insertReplacing`), so a reviewer signing in would break the
+  connection OpenAI's daily scan uses. On the review path it adds a row instead.
+- **A leak:** rotate the secret **and** remove the demo computer's connections; old
+  tokens don't depend on the code. The computer holds fake data and no credentials.
+
+### The demo computer
+
+- Container on a small always-on VPS: the Threadlines server, sample repos, every
+  real provider off, telemetry off (`THREADLINES_TELEMETRY_ENABLED=false`), firewalled
+  to what it needs.
+- **Its identity survives resets.** Connections, signing keys and the relay
+  registration live apart from the fixtures. A reset rebuilds projects and threads
+  only, and a test proves a token refreshes across one. If the computer is down, MCP
+  and `/token` both fail, and OpenAI scans daily, so a monitor alerts the developer.
+- **The agent does real work on fake data.** A scripted ACP agent that really edits
+  files in the sample repos and commits, so `thread_changes` shows real diffs; it can
+  ask a real question, and fail on request. Fixtures hold threads in each state and a
+  branch with a real pull request on a public sample repo (read-only token). Reviewer
+  notes say plainly that the agent is scripted, why (no model bill, no real code), and
+  which real providers it stands in for; so does the video. An agent that only pretended
+  would mislead, and fail "test every tool".
+- About $5 a month. The provider is the developer's choice.
+
+### Tools
+
+- **Annotations must be true.** Read tools: `readOnlyHint` true, `destructiveHint`
+  false, `openWorldHint` false. `thread_start`, `thread_send`, `thread_answer`:
+  read-only false, destructive true, open world true, since a coding agent can
+  change files and reach the internet, with the access cap, worktrees and the
+  outside-work gate as the safeguards in the justification. `thread_stop`: read-only false, destructive true (OpenAI names cancelling, and says
+  undo doesn't excuse it), open world false. In Claude every destructive tool prompts
+  per call, which suits these.
+- **One published set of tools.** Directories scan a Work connection: all eleven. A
+  user at See is shown fewer, and a cached call to a tool it lacks gets the existing
+  refusal, with words for the user. Tested on each directory before submitting. Never
+  scan the demo at a lower level: OpenAI treats a tool that vanishes as deleted.
+- **Descriptions stay.** Anthropic rejects tool descriptions that send the model to
+  other software, interfere with other tools, pull instructions from elsewhere, hide
+  anything, or ask for behavior unrelated to the tool. Ours say what a tool does and how
+  to treat its output (titles are data, approvals wait for the user), which is about the
+  tool. Audited, no change. If a reviewer disagrees, that's quick to change.
+- **No home folders.** `projects` returns `folder`, an absolute path such as
+  `/Users/will/...`, a personal identifier nobody needs on this door. On
+  `door: "assistant"` it's the folder's own name. Paths also turn up in setup errors,
+  approvals and agents' messages, so this door replaces the home folder with `~` in every
+  string of every tool answer (`scrubText`, `scrubUserPaths`). The local door is unchanged.
+- **Audit real responses** for internal ids and debug fields. Thread ids stay;
+  they're how every other tool names a thread. Timestamps that the answer is about
+  stay.
+- **Eligibility is the real risk, and it's OpenAI's.** Its guidelines say not to use
+  "a generic executor to reach operations that weren't individually reviewed", and
+  exclude plugins that "primarily function as unofficial connectors", including
+  pass-through layers. `thread_start` takes a free prompt to a third-party coding
+  agent. The case for it: Threadlines is the first-party product, the user runs their
+  own agents on their own subscriptions on their own computer, and nothing bypasses
+  anyone's access controls. The listing must describe that workflow, not a pipe. It may
+  still be refused. A read-only listing is no cheap fallback: real users could still
+  reach write tools on the same address, so it needs a server-enforced boundary, which
+  we'd only build if told that's what would pass.
+
+### Pages and packages
+
+- **Marketing site:** `/privacy`, `/terms`, `/support`, `/docs/assistants`, linked
+  from the footer. The privacy page must be true to what ships: what stays on the
+  computer; what crosses the relay and that it can read assistants' requests (unlike
+  phones); that thread text reaches the assistant's maker under their terms; PostHog
+  analytics and how to turn them off; retention (event record 7 days, deliveries 7
+  days); who to write to. Plain words, no em dashes. Not legal advice: the developer
+  reads it before it goes up.
+- **Domain challenge:** `OPENAI_APPS_CHALLENGE` on the relay, served as plain text at
+  `/.well-known/openai-apps-challenge` on the door's origin; unset is 404.
+- **Packages:** a small public repo rooted at the plugin (Cursor reads manifests from
+  a repo's root, and reviews every update), with `.cursor-plugin/plugin.json`,
+  `mcp.json`, `skills/threadlines/SKILL.md`, a README and logo. OpenAI's ZIP is built
+  from it with the listing metadata and test cases. No secrets in either; reviewer
+  credentials go in the portals.
+- **Five positive and three negative cases**, run against the demo computer, in a file
+  next to the package.
+- **Demo video:** recorded on the demo computer with real ChatGPT.
+
+### Order
+
+Decided Nov 2 (Will): Cursor and Anthropic now. OpenAI waits; the notes above stay for
+when it's picked up.
+
+1. Tools, pages, the package. None of it depends on who publishes except the pages' names.
+2. **Cursor:** a repo and a hand review, no demo computer asked for.
+3. Review code, auto-approve, scripted agent, demo computer. Anthropic requires test
+   credentials for a populated account, and nobody is there to read a one-use code. Its
+   image can be built from main: reviewers only meet the demo computer, whatever build it runs.
+4. **A stable release before anything is public.** The sign-in page sends people to
+   Settings › Assistants, which stable 0.8.0 doesn't have. Review doesn't need stable, but a
+   listing does. Anthropic lists automatically after its scan, so stable ships before that
+   submission. Cursor publishes after a hand review, so its timing is looser.
+5. **Anthropic:** an automatic scan and a Community listing.
+
+### Decisions
+
+- **Who publishes:** Will, in his own name (Wilfredo Leon), as for the Mac and Windows
+  signing; the terms name Florida law. Support is `support@threadlines.dev`.
+- **Still open:** the VPS provider, and when the stable release goes out.
+
+### Sol's review of the step 6 plan (Nov 2), and what changed
+
+Eleven findings, all taken: auto-approve as first written would have skipped Allow for
+ordinary codes on any computer with the flag set (now only for review-marked sign-ins);
+rotating the code doesn't end connections it made; a fixed code can't use the 8-character
+path; a fresh computer's closed socket would never hear a sign-in; resets and repeat
+sign-ins would break the scan's connection; a read-only fallback has no boundary;
+`thread_stop` is destructive; a stand-in that does no work can't pass "test every tool";
+eligibility should be faced before the infrastructure (it's now last, with the cheap
+directories first); a `threads:read` request can't be given Work; Cursor needs manifests
+at a repo's root.

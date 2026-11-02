@@ -123,6 +123,10 @@
       "types": "./src/observability.ts",
       "import": "./src/observability.ts"
     },
+    "./scrubUserPaths": {
+      "types": "./src/scrubUserPaths.ts",
+      "import": "./src/scrubUserPaths.ts"
+    },
     "./shell": {
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
