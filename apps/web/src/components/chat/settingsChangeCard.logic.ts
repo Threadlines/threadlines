@@ -171,17 +171,23 @@ export function settingsChangeResultNotice(input: {
     );
   }
   const allChanged = changed.length === input.lines.length;
+  // The computer couldn't say what its part did: the title doesn't claim either way.
+  const unsure = computerLines.length > 0 && input.computer.ending === "uncertain";
   return {
     type: allChanged ? "success" : "warning",
     title: allChanged
       ? input.lines.length === 1
         ? "Setting changed"
         : "Settings changed"
-      : changed.length === 0
+      : unsure
         ? input.lines.length === 1
-          ? "The setting didn't change"
-          : "The settings didn't change"
-        : "Some settings didn't change",
+          ? "Check this setting"
+          : "Check these settings"
+        : changed.length === 0
+          ? input.lines.length === 1
+            ? "The setting didn't change"
+            : "The settings didn't change"
+          : "Some settings didn't change",
     ...(sentences.length > 0 ? { description: sentences.join(" ") } : {}),
   };
 }

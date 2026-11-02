@@ -81,6 +81,16 @@ describe("settingsChangeDeviceLabel", () => {
 describe("settings change notices", () => {
   const lines = settingsChangeLines(request, () => "dark");
 
+  it("doesn't claim the computer's settings stayed when it couldn't tell", () => {
+    const notice = settingsChangeResultNotice({
+      lines: lines.filter((line) => line.lands === "computer"),
+      computer: { ending: "uncertain", detail: "Threadlines stopped while making the change." },
+      device: null,
+    });
+    expect(notice.title).toMatch(/^Check this setting|^Check these settings/);
+    expect(notice.description).toContain("Threadlines stopped while making the change.");
+  });
+
   it("says what changed when everything did", () => {
     expect(
       settingsChangeResultNotice({

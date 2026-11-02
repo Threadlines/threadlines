@@ -9,7 +9,9 @@ import {
 } from "@threadlines/contracts";
 import { settingsChangeStateOn } from "@threadlines/shared/settingsChangeState";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import { describe, expect, it } from "vite-plus/test";
@@ -181,6 +183,45 @@ describe("answering an agent's settings change", () => {
     );
     expect(answer.result.outcome).toBe("changed");
     expect(answer.request?.status).toBe("changed");
+  });
+
+  it("finishes an accepted change when the app that pressed Change goes away mid-way", async () => {
+    const release = Effect.runSync(Deferred.make<void>());
+    const writing = Effect.runSync(Deferred.make<void>());
+    const slow = Layer.effect(
+      ServerSettingsService,
+      Effect.gen(function* () {
+        const stored = yield* Ref.make<ServerSettings>(DEFAULT_SERVER_SETTINGS);
+        return {
+          readStored: Ref.get(stored),
+          updateSettingsChecked: () =>
+            Deferred.succeed(writing, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(
+                Ref.updateAndGet(stored, (current) => ({
+                  ...current,
+                  enableAssistantStreaming: false,
+                })),
+              ),
+            ),
+        } as unknown as ServerSettingsShape;
+      }),
+    );
+    const request = await run([waiting([STREAM_OFF])], slow, (service, state) =>
+      Effect.gen(function* () {
+        const caller = yield* service
+          .respond({ threadId: THREAD, requestId: REQUEST, allow: true, claim })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writing);
+        // The app's request ends (its connection dropped) while the write is under way.
+        yield* Fiber.interrupt(caller);
+        yield* Deferred.succeed(release, undefined);
+        // The next answer waits its turn behind the first, so after it the first is done.
+        yield* service.respond({ threadId: THREAD, requestId: REQUEST, allow: false });
+        return state()[0];
+      }),
+    );
+    expect(request).toMatchObject({ status: "changed", claim });
   });
 
   it("answers a retry from the same app with how it went, and anyone else with who answered", async () => {

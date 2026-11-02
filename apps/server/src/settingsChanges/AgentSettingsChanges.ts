@@ -29,6 +29,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -143,6 +144,9 @@ export const make = (reads: AgentSettingsChangesReads) =>
     const engine = yield* OrchestrationEngineService;
     const settings = yield* ServerSettingsService;
     const answers = yield* Semaphore.make(1);
+    // Answers run here, not in the caller's request: an app that disconnects
+    // after its claim landed must not leave the change half made.
+    const scope = yield* Effect.scope;
     const recovered = yield* Deferred.make<void>();
     const nowIso = Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms).toISOString()));
 
@@ -297,9 +301,17 @@ export const make = (reads: AgentSettingsChangesReads) =>
         return yield* makeChange(input.threadId, { ...request, status: "claimed", claim });
       });
 
-    // Recovery first, outside the lock it takes itself; then one answer at a time.
+    // Recovery first, outside the lock it takes itself; then one answer at a
+    // time, each run to its end in the service's own scope.
     const respond: AgentSettingsChangesShape["respond"] = (input) =>
-      Effect.andThen(Deferred.await(recovered), answer(input).pipe(answers.withPermits(1)));
+      Effect.andThen(
+        Deferred.await(recovered),
+        answer(input).pipe(
+          answers.withPermits(1),
+          Effect.forkIn(scope),
+          Effect.flatMap(Fiber.join),
+        ),
+      );
 
     const reportDevice: AgentSettingsChangesShape["reportDevice"] = (input) =>
       Effect.gen(function* () {

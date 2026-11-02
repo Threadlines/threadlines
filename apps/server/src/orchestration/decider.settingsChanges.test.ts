@@ -300,24 +300,6 @@ describe("agents' settings changes", () => {
       ["turn-1", 1],
       ["turn-2", 2],
     ] as const) {
-      model = await project(model, "thread.message-sent", {
-        messageId: MessageId.make(`user-${count}`),
-        role: "user",
-        text: `Edit ${count}`,
-        turnId: null,
-        streaming: false,
-        createdAt: at(count * 10),
-        updatedAt: at(count * 10),
-      });
-      model = await project(model, "thread.message-sent", {
-        messageId: MessageId.make(`assistant-${count}`),
-        role: "assistant",
-        text: `Done ${count}`,
-        turnId: TurnId.make(turn),
-        streaming: false,
-        createdAt: at(count * 10 + 2),
-        updatedAt: at(count * 10 + 2),
-      });
       // Two agents, so the second card doesn't replace the first.
       ({ model } = await apply(
         model,
@@ -327,21 +309,15 @@ describe("agents' settings changes", () => {
           createdAt: at(count * 10 + 1),
         }),
       ));
-      model = await project(model, "thread.turn-diff-completed", {
-        turnId: TurnId.make(turn),
-        checkpointTurnCount: count,
-        checkpointRef: CheckpointRef.make(`refs/threadlines/checkpoints/thread-1/turn/${count}`),
-        status: "ready",
-        files: [],
-        assistantMessageId: MessageId.make(`assistant-${count}`),
-        completedAt: at(count * 10 + 3),
-      });
     }
+    // The checkpoint reactor names the turns it took away; the read model's
+    // own checkpoints aren't loaded after a restart, so they aren't consulted.
     ({ model } = await apply(model, {
       type: "thread.revert.complete",
       commandId: nextCommandId(),
       threadId: THREAD,
       turnCount: 1,
+      revertedTurnIds: [TurnId.make("turn-2")],
       createdAt: at(40),
     }));
     expect(statuses(model)).toEqual([

@@ -10,6 +10,7 @@ import {
   ProviderSession,
   ProviderInstanceId,
   ThreadParticipantId,
+  SettingsChangeRequestId,
 } from "@threadlines/contracts";
 import {
   CheckpointRef,
@@ -2032,6 +2033,19 @@ describe("CheckpointReactor", () => {
         createdAt,
       }),
     );
+    // A settings card the second turn's agent left waiting goes with that turn.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.settings-change.request",
+        commandId: CommandId.make("cmd-settings-ask"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: SettingsChangeRequestId.make("settings-ask-2"),
+        participantId: null,
+        turnId: asTurnId("turn-2"),
+        changes: [{ place: "general.theme", value: "light" }],
+        createdAt,
+      }),
+    );
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -2050,6 +2064,10 @@ describe("CheckpointReactor", () => {
     );
 
     expect(thread.latestTurn?.turnId).toBe("turn-1");
+    const settings = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )?.settingsRequests;
+    expect(settings?.map((request) => request.status)).toEqual(["cancelled"]);
     expect(thread.checkpoints).toHaveLength(1);
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
     expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);

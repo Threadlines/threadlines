@@ -124,7 +124,6 @@ import {
   decideSettingsChangeNotesDelivered,
   decideSettingsChangeRequest,
   decideSettingsChangeSettle,
-  revertTakesSettingsChange,
 } from "./settingsChangeDecisions.ts";
 import {
   outsideAnswerDecision,
@@ -5082,7 +5081,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         SETTINGS_CHANGE_CANCELLED.reverted,
         command.createdAt,
         childEventBase(command, command.createdAt),
-        revertTakesSettingsChange(thread, command.turnCount),
+        (request) => (command.revertedTurnIds ?? []).includes(request.turnId),
       );
       return cancelled.length === 0 ? revertedEvent : [...cancelled, revertedEvent];
     }

@@ -269,27 +269,3 @@ export function cancelWaitingSettingsChanges(
       settledEvent(thread, request.requestId, "cancelled", detail, settledAt, baseFor),
     );
 }
-
-/**
- * Whether a revert to the first `turnCount` turns takes `request`'s turn
- * away, judged the way the read models cut the transcript: a request from a
- * turn the revert keeps (by checkpoint or by a kept message stamped with
- * it), or from before the cut, stays.
- */
-export function revertTakesSettingsChange(
-  thread: Pick<OrchestrationThread, "checkpoints" | "messages">,
-  turnCount: number,
-): (request: OrchestrationSettingsChangeRequest) => boolean {
-  const { cut, keptTurnIds } = revertMessages({
-    messages: thread.messages,
-    idOf: (message) => message.id,
-    retainedTurnIds: new Set(
-      thread.checkpoints
-        .filter((checkpoint) => checkpoint.checkpointTurnCount <= turnCount)
-        .map((checkpoint) => checkpoint.turnId),
-    ),
-    turnCount,
-  });
-  return (request) =>
-    cut !== undefined && !keptTurnIds.has(request.turnId) && request.createdAt >= cut.createdAt;
-}

@@ -1315,6 +1315,9 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
+        revertedTurnIds: context.thread.checkpoints
+          .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
+          .map((checkpoint) => checkpoint.turnId),
         createdAt: now,
       })
       .pipe(

@@ -212,18 +212,31 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
 
 /**
  * Writes this device's settings and resolves only once they are saved,
- * rejecting (and changing nothing) when the save fails, where `updateSettings`
- * only logs it. For callers that must say truthfully whether a change landed:
- * an agent's settings change reports each device setting it made. Waits for
- * the saved settings to load first, so the write never puts defaults over them.
+ * rejecting (and putting back what it changed) when the save fails, where
+ * `updateSettings` only logs it. For callers that must say truthfully whether
+ * a change landed: an agent's settings change reports each device setting it
+ * made. Waits for the saved settings to load first, so the write never puts
+ * defaults over them. Like every client write it changes memory first and
+ * then saves the whole snapshot, so saves go out in the order the changes
+ * were made and a later one never drops an earlier one.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
   await hydrateClientSettings();
-  await ensureLocalApi().persistence.setClientSettings({
-    ...getClientSettingsSnapshot(),
-    ...patch,
-  });
-  replaceClientSettingsSnapshot({ ...getClientSettingsSnapshot(), ...patch });
+  const before = getClientSettingsSnapshot();
+  const next: ClientSettings = { ...before, ...patch };
+  replaceClientSettingsSnapshot(next);
+  try {
+    await ensureLocalApi().persistence.setClientSettings(next);
+  } catch (error) {
+    // Put back only what this write set and nothing has changed since.
+    const current = getClientSettingsSnapshot();
+    const restored: Record<string, unknown> = { ...current };
+    for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
+      if (current[key] === next[key]) restored[key] = before[key];
+    }
+    replaceClientSettingsSnapshot(restored as ClientSettings);
+    throw error;
+  }
 }
 
 function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
