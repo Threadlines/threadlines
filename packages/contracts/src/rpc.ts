@@ -62,6 +62,12 @@ import {
   ScheduledTaskUpdateInput,
 } from "./scheduledTasks.ts";
 import {
+  SettingsChangeAnswer,
+  SettingsChangeError,
+  SettingsChangeReportDeviceInput,
+  SettingsChangeRespondInput,
+} from "./settingsChanges.ts";
+import {
   ThreadMoveCancelInput,
   ThreadMoveError,
   ThreadMovePreview,
@@ -680,6 +686,8 @@ export const WS_METHODS = {
   scheduledTasksDelete: "scheduledTasks.delete",
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
+  settingsChangeRespond: "settingsChange.respond",
+  settingsChangeReportDevice: "settingsChange.reportDevice",
   scheduledTasksWebhookAddress: "scheduledTasks.webhookAddress",
   scheduledTasksRotateWebhookAddress: "scheduledTasks.rotateWebhookAddress",
   scheduledTasksSetWebhookSigningSecret: "scheduledTasks.setWebhookSigningSecret",
@@ -2035,6 +2043,19 @@ export const WsScheduledTasksRespondRequestRpc = Rpc.make(WS_METHODS.scheduledTa
   error: ScheduledTaskError,
 });
 
+/** Answers an agent's settings change on its card (docs/design/agent-settings-changes.md). */
+export const WsSettingsChangeRespondRpc = Rpc.make(WS_METHODS.settingsChangeRespond, {
+  payload: SettingsChangeRespondInput,
+  success: SettingsChangeAnswer,
+  error: SettingsChangeError,
+});
+
+/** The claiming app made its device changes: what each did, for the agent's note. */
+export const WsSettingsChangeReportDeviceRpc = Rpc.make(WS_METHODS.settingsChangeReportDevice, {
+  payload: SettingsChangeReportDeviceInput,
+  error: SettingsChangeError,
+});
+
 /** An event task's addresses (docs/design/event-tasks.md). */
 export const WsScheduledTasksWebhookAddressRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookAddress, {
   payload: ScheduledTaskIdInput,
@@ -2559,6 +2580,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRespondRequestRpc,
+  WsSettingsChangeRespondRpc,
+  WsSettingsChangeReportDeviceRpc,
   WsScheduledTasksWebhookAddressRpc,
   WsScheduledTasksRotateWebhookAddressRpc,
   WsScheduledTasksSetWebhookSigningSecretRpc,

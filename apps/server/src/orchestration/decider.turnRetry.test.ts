@@ -239,6 +239,60 @@ describe("decider turn retry", () => {
     expect(events[1].payload.providerMessageId).not.toBe(events[1].payload.messageId);
   });
 
+  it("resends the named message when its failure was never shown, unless Stop came since", async () => {
+    const thread = makeThread();
+    const quiet = {
+      ...thread,
+      session: { ...failedSession, status: "stopped" as const, lastError: null },
+      // An agent's reply waiting to go out is also the newest user-role message.
+      messages: [
+        ...thread.messages,
+        {
+          id: MessageId.make("message-agent-reply"),
+          role: "user" as const,
+          text: "Here is what I found.",
+          fromAgent: { participantId: null },
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:04.000Z",
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+      ],
+    };
+    const resend = {
+      type: "thread.turn.resend" as const,
+      commandId: CommandId.make("cmd-turn-resend"),
+      threadId,
+      messageId: MessageId.make("message-user-2"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+    };
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({ command: resend, readModel: makeReadModel(quiet) }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    expect(
+      events.find((event) => event.type === "thread.turn-start-requested")?.payload,
+    ).toMatchObject({ messageId: MessageId.make("message-user-2") });
+    expect(events[0]).toMatchObject({
+      payload: { session: { status: "starting", lastError: null } },
+    });
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: { ...resend, chainEpoch: quiet.agentRequests.chainEpoch + 1 },
+          readModel: makeReadModel(quiet),
+        }),
+      ),
+    ).rejects.toThrow("was stopped");
+    // Retry, with no failure on the session, still has nothing to do.
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({ command: retryCommand, readModel: makeReadModel(quiet) }),
+      ),
+    ).rejects.toThrow("no failed turn to retry");
+  });
+
   it("emits events the projector can apply", async () => {
     const readModel = makeReadModel(makeThread());
     const decided = await Effect.runPromise(

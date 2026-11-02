@@ -671,6 +671,9 @@ const make = Effect.gen(function* () {
           runtimeMode: launch.runtimeMode,
           interactionMode: launch.interactionMode,
           ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
+          ...(input.lineage.kind === "scheduled"
+            ? { scheduledTaskId: input.lineage.scheduledRun.taskId }
+            : {}),
           createdAt: yield* nowIso,
         },
         proceed: (stage) =>

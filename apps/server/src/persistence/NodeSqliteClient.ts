@@ -22,6 +22,8 @@ import type { Connection } from "effect/sql/SqlConnection";
 import { ConnectionError, SqlError, classifySqliteError } from "effect/sql/SqlError";
 import * as Statement from "effect/sql/Statement";
 
+import { timeDatabaseCall } from "../observability/databaseCallTime.ts";
+
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
 export const TypeId: TypeId = "~local/sqlite-node/SqliteClient";
@@ -108,7 +110,7 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
       timeToLive: options.prepareCacheTTL ?? Duration.minutes(10),
       lookup: (sql: string) =>
         Effect.try({
-          try: () => db.prepare(sql),
+          try: () => timeDatabaseCall(() => db.prepare(sql)),
           catch: (cause) =>
             new SqlError({
               reason: classifySqliteError(cause, {
@@ -124,9 +126,9 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));
         try {
           if (hasRows(statement)) {
-            return Effect.succeed(statement.all(...(params as any)));
+            return Effect.succeed(timeDatabaseCall(() => statement.all(...(params as any))));
           }
-          const result = statement.run(...(params as any));
+          const result = timeDatabaseCall(() => statement.run(...(params as any)));
           return Effect.succeed(raw ? (result as unknown as ReadonlyArray<any>) : []);
         } catch (cause) {
           return Effect.fail(
@@ -149,11 +151,11 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
           if (hasRows(statement)) {
             statement.setReturnArrays(true);
             // Safe to cast to array after we've setReturnArrays(true)
-            return statement.all(...(params as any)) as unknown as ReadonlyArray<
-              ReadonlyArray<unknown>
-            >;
+            return timeDatabaseCall(() =>
+              statement.all(...(params as any)),
+            ) as unknown as ReadonlyArray<ReadonlyArray<unknown>>;
           }
-          statement.run(...(params as any));
+          timeDatabaseCall(() => statement.run(...(params as any)));
           return [];
         },
         catch: (cause) =>
@@ -188,10 +190,17 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         return runValues(sql, params);
       },
       executeValuesUnprepared(sql, params) {
-        return runValuesStatement(db.prepare(sql), params ?? []);
+        return runValuesStatement(
+          timeDatabaseCall(() => db.prepare(sql)),
+          params ?? [],
+        );
       },
       executeUnprepared(sql, params, rowTransform) {
-        const effect = runStatement(db.prepare(sql), params ?? [], false);
+        const effect = runStatement(
+          timeDatabaseCall(() => db.prepare(sql)),
+          params ?? [],
+          false,
+        );
         return rowTransform ? Effect.map(effect, rowTransform) : effect;
       },
       executeStream(_sql, _params) {

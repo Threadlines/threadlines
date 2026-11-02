@@ -28,6 +28,7 @@ import {
   ThreadBootstrapCreateThread,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { ProviderTurnResend } from "./providerRuntime.ts";
 
 const ProviderSessionStatus = Schema.Literals([
   "connecting",
@@ -243,6 +244,28 @@ export const ProviderTypedInput = Schema.Struct({
 });
 export type ProviderTypedInput = typeof ProviderTypedInput.Type;
 
+/**
+ * Who the message that starts a turn came from, for usage analytics only
+ * (never who the person is, and drivers ignore it). Retry sends the same
+ * message, so it keeps that message's label, except a task's: its retry
+ * counts as `automatic`. `person`: a client app sent it for its user (typed,
+ * a plan they chose, their answer).
+ * `room_agent`: another agent in the room asked or handed over.
+ * `other_thread`: another thread's agent (a parent's request, a child's
+ * report). `outside_agent`: an agent outside Threadlines. `task`: a scheduled
+ * or event task's run. `automatic`: Threadlines on its own (continuing after a
+ * usage limit, pull request automation).
+ */
+export const ProviderTurnOrigin = Schema.Literals([
+  "person",
+  "room_agent",
+  "other_thread",
+  "outside_agent",
+  "task",
+  "automatic",
+]);
+export type ProviderTurnOrigin = typeof ProviderTurnOrigin.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   messageId: Schema.optional(MessageId),
@@ -267,6 +290,10 @@ export const ProviderSendTurnInput = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   /** When the message that starts this turn reached the server; turn latency counts from here. */
   requestedAt: Schema.optional(IsoDateTime),
+  /** See ProviderTurnOrigin. */
+  origin: Schema.optional(ProviderTurnOrigin),
+  /** See ProviderTurnResend. */
+  resend: Schema.optional(ProviderTurnResend),
   telemetryContext: Schema.optional(
     Schema.Struct({
       kind: Schema.Literal("thread_fork"),

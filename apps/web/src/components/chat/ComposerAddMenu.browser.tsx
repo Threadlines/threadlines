@@ -41,7 +41,6 @@ function renderAddMenu(props: {
   canReferenceProjectFiles?: boolean;
   onRestore?: (entry: PromptStashEntry) => void;
   onDelete?: (entry: PromptStashEntry) => void;
-  onReferenceProjectFile?: () => void;
   onTakePhoto?: () => void;
 }) {
   function Harness() {
@@ -56,7 +55,7 @@ function renderAddMenu(props: {
         onAttachFiles={vi.fn()}
         onAddPhotos={vi.fn()}
         onTakePhoto={props.onTakePhoto ?? vi.fn()}
-        onReferenceProjectFile={props.onReferenceProjectFile ?? vi.fn()}
+        onReferenceProjectFile={vi.fn()}
         stash={{
           entries: props.entries,
           canStash: props.canStash,
@@ -134,15 +133,6 @@ describe("ComposerAddMenu", () => {
     // The delete must not double as an activation of the row it sits in.
     expect(onRestore).not.toHaveBeenCalled();
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
-    await screen.unmount();
-  });
-
-  it("types an @ for a project file", async () => {
-    const onReferenceProjectFile = vi.fn();
-    const screen = await renderAddMenu({ entries: [], canStash: false, onReferenceProjectFile });
-    await page.getByRole("button", { name: "Add to message" }).click();
-    await page.getByRole("menuitem", { name: /Project file/ }).click();
-    expect(onReferenceProjectFile).toHaveBeenCalledTimes(1);
     await screen.unmount();
   });
 

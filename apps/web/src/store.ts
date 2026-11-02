@@ -19,6 +19,7 @@ import type {
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
   OrchestrationReadModel,
+  OrchestrationSettingsChangeRequest,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
   OrchestrationSession,
@@ -132,6 +133,10 @@ import {
   sameRemoteThreadFiling,
   localChildStartsOf,
 } from "@threadlines/shared/childThreads";
+import {
+  hasPendingSettingsChange,
+  settingsChangeStateOn,
+} from "@threadlines/shared/settingsChangeState";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -202,6 +207,8 @@ export interface EnvironmentState {
   threadDetailLoadedById?: Record<ThreadId, true>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
+  /** Settings changes agents asked for (docs/design/agent-settings-changes.md); absent until a thread's detail loads. */
+  settingsRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationSettingsChangeRequest>>;
 
   // ---------------------------------------------------------------------------
   // Sidebar summary — written by the shell stream and provisionally by the
@@ -247,6 +254,7 @@ const initialEnvironmentState: EnvironmentState = {
   commandRunsByThreadId: {},
   threadDetailLoadedById: {},
   childRequestsByThreadId: {},
+  settingsRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
 };
@@ -452,6 +460,20 @@ function childRequestCounts(thread: {
         awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
         pendingChildApproval: thread.pendingChildApproval ?? false,
       };
+}
+
+/**
+ * Whether a settings change its agent asked for waits on the user, or is
+ * being made. The detail stream knows the requests and reads them the way the
+ * server does; without them, the shell's flag stands.
+ */
+function settingsChangePending(thread: {
+  readonly settingsRequests?: ReadonlyArray<OrchestrationSettingsChangeRequest> | undefined;
+  readonly pendingSettingsChange?: boolean | undefined;
+}): boolean {
+  return thread.settingsRequests !== undefined
+    ? hasPendingSettingsChange(thread.settingsRequests)
+    : (thread.pendingSettingsChange ?? false);
 }
 
 /**
@@ -765,6 +787,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...outsideWorkField(thread.outsideWork),
     agentRequests: thread.agentRequests,
     childRequests: thread.childRequests,
+    settingsRequests: thread.settingsRequests ?? [],
+    pendingSettingsChange: hasPendingSettingsChange(thread.settingsRequests),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
@@ -823,6 +847,7 @@ function mapThreadShell(
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
+    pendingSettingsChange: thread.pendingSettingsChange,
     ...remoteFamily(thread),
     ...threadMoves(thread),
     doneOverride: thread.doneOverride,
@@ -873,6 +898,7 @@ function mapThreadShell(
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
+    pendingSettingsChange: thread.pendingSettingsChange,
     ...sidebarLineage(shell),
   };
   return {
@@ -908,6 +934,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
+    pendingSettingsChange: settingsChangePending(thread),
     ...remoteFamily(thread),
     ...threadMoves(thread),
     doneOverride: thread.doneOverride,
@@ -1028,6 +1055,7 @@ function toSidebarThreadSummary(
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
+    pendingSettingsChange: settingsChangePending(thread),
     ...sidebarLineage({
       ...threadLineage(thread),
       ...childRequestCounts(thread),
@@ -1277,6 +1305,7 @@ function sidebarThreadSummariesEqual(
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
@@ -1375,6 +1404,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     outsideWorkEqual(left.outsideWork, right.outsideWork) &&
@@ -1734,6 +1764,19 @@ function writeThreadState(
     };
   }
 
+  if (
+    nextThread.settingsRequests !== undefined &&
+    previousThread?.settingsRequests !== nextThread.settingsRequests
+  ) {
+    nextState = {
+      ...nextState,
+      settingsRequestsByThreadId: {
+        ...nextState.settingsRequestsByThreadId,
+        [nextThread.id]: nextThread.settingsRequests,
+      },
+    };
+  }
+
   if (previousThread?.turnDiffSummaries !== nextThread.turnDiffSummaries) {
     const nextTurnDiffSlice = buildTurnDiffSlice(nextThread);
     nextState = {
@@ -1887,6 +1930,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.threadDetailLoadedById ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
+  const { [threadId]: _removedSettingsRequests, ...settingsRequestsByThreadId } =
+    state.settingsRequestsByThreadId ?? {};
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
     state.sidebarThreadSummaryById;
 
@@ -1911,6 +1956,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     commandRunsByThreadId,
     threadDetailLoadedById,
     childRequestsByThreadId,
+    settingsRequestsByThreadId,
     sidebarThreadSummaryById,
   };
 }
@@ -2208,6 +2254,21 @@ function updateChildRequestState(
   });
 }
 
+/** Apply a change to one thread's settings change requests (agents' `settings_change`). */
+function updateSettingsRequests(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  change: (
+    current: ReadonlyArray<OrchestrationSettingsChangeRequest>,
+  ) => ReadonlyArray<OrchestrationSettingsChangeRequest>,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    const current = thread.settingsRequests ?? [];
+    const next = change(current);
+    return next === current ? thread : { ...thread, settingsRequests: next };
+  });
+}
+
 /**
  * Apply a step of one move to a thread's `move`: only while that move is the
  * thread's own, so a late step of a move that already ended changes nothing.
@@ -2318,6 +2379,10 @@ function syncEnvironmentShellSnapshot(
       nextThreadIds,
     ),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
+    settingsRequestsByThreadId: retainThreadScopedRecord(
+      state.settingsRequestsByThreadId ?? {},
+      nextThreadIds,
+    ),
     bootstrapComplete: true,
   };
 
@@ -3472,6 +3537,33 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.child-requests-reset":
       return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
+
+    // Agents' settings changes (docs/design/agent-settings-changes.md),
+    // folded through the reducer the server's projector uses.
+    case "thread.settings-change-requested":
+      return updateSettingsRequests(state, event.payload.threadId, (current) =>
+        settingsChangeStateOn.requested(current, event.payload.request),
+      );
+
+    case "thread.settings-change-claimed":
+      return updateSettingsRequests(state, event.payload.threadId, (current) =>
+        settingsChangeStateOn.claimed(current, event.payload),
+      );
+
+    case "thread.settings-change-settled":
+      return updateSettingsRequests(state, event.payload.threadId, (current) =>
+        settingsChangeStateOn.settled(current, event.payload),
+      );
+
+    case "thread.settings-change-device-reported":
+      return updateSettingsRequests(state, event.payload.threadId, (current) =>
+        settingsChangeStateOn.deviceReported(current, event.payload),
+      );
+
+    case "thread.settings-change-notes-delivered":
+      return updateSettingsRequests(state, event.payload.threadId, (current) =>
+        settingsChangeStateOn.notesDelivered(current, event.payload),
+      );
 
     // Children on linked computers (docs/design/fleet.md), kept on the parent.
     case "thread.remote-child-updated":

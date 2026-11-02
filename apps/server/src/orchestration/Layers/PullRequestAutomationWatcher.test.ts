@@ -111,6 +111,7 @@ function thread(overrides: Partial<OrchestrationThreadShell> = {}): Orchestratio
     handedBackTurnId: null,
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
+    pendingSettingsChange: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -400,6 +401,7 @@ function makeSnapshotQuery(input: {
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
+    listClaimedSettingsChanges: () => Effect.succeed([]),
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: (threadId) =>
       Effect.sync(() => {

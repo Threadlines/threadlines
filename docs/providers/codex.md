@@ -20,6 +20,11 @@ codex login
 Or use `Sign in` on the Codex row in `Settings -> Providers`. Threadlines runs the same sign-in for
 you and opens the sign-in page.
 
+A running Codex keeps a sign-in renewal that failed, so when one chat's sign-in goes stale Threadlines
+stops that chat's Codex. If Codex hadn't started on your message yet, it starts a fresh Codex and
+sends the message again, once, with a note in the chat. If that fails too, or the message came from
+an agent, the chat asks you to sign in, and the next message or Retry uses a fresh Codex.
+
 ## Add Another Codex Account
 
 Open `Settings -> Providers`, open the Codex row, and choose `Add another Codex account`. The `+`

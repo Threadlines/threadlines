@@ -180,6 +180,8 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
 
 How much of each plan you've used is on {place:usage}.
 
+If Codex's sign-in goes stale in a chat before it has started on your message, Threadlines restarts Codex and sends the message again, once, with a note in the chat. If that fails too, the chat asks you to sign in.
+
 When a Claude or Codex usage limit stops a thread, the notice above the composer says which limit and when it resets. Its Continue at reset switch sends "Continue where you left off." a minute after the reset, from the computer the thread runs on, and {place:threads.continueAfterUsageLimits} turns it on for every limit. If you added another account of the same agent that still has room, the notice offers it by name. Threadlines never switches accounts on its own.`,
   },
   {
@@ -256,6 +258,14 @@ Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a
     body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
 
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
+  },
+  {
+    id: "changing-settings",
+    title: "Agents changing settings",
+    keywords: ["change setting", "turn on", "turn off", "switch", "theme", "dark mode", "card"],
+    body: `An agent can change some settings when you ask: the theme, streaming replies, diff wrapping, the terminal's text size and a few more (the guide says which, place by place). It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
+
+Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },
   {
     id: "updates",

@@ -1713,6 +1713,7 @@ describe("ProviderCommandReactor", () => {
   type SentTurn = {
     readonly input?: string;
     readonly typed?: { readonly text: string; readonly context?: string };
+    readonly resend?: { readonly messageId: string };
   };
 
   it("tells the provider which words the user typed, apart from the context put in front", async () => {
@@ -1723,6 +1724,10 @@ describe("ProviderCommandReactor", () => {
     expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).typed).toEqual({
       text: "first question",
     });
+    // A person's words alone may be sent again by the driver.
+    expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).resend?.messageId).toBe(
+      "user-message-typed-1",
+    );
 
     // The session can not reopen its conversation, so the next message goes
     // with the thread's history in front of it.
@@ -1749,6 +1754,15 @@ describe("ProviderCommandReactor", () => {
     expect(sent.typed?.text).toBe("ultracode the second question");
     expect(sent.typed?.context).toContain("prior context");
     expect(sent.typed?.context).not.toContain("ultracode the second question");
+    // A resend wouldn't carry the history that went with this one.
+    expect(sent.resend).toBeUndefined();
+  });
+
+  it("gives no leave to resend a message nobody sent from an app", async () => {
+    const harness = await createHarness();
+    await startTurnAs(harness, "automation", "Fix the failing checks.", undefined);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).resend).toBeUndefined();
   });
 
   it("tells the agent about a phone or another computer on every turn, and about the computer once back from it", async () => {

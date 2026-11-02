@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import {
   EventId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProviderItemId,
   PositiveInt,
@@ -390,10 +391,32 @@ const PagePublishedPayload = Schema.Struct({
 });
 export type PagePublishedPayload = typeof PagePublishedPayload.Type;
 
+/**
+ * Leave for a driver to have a turn's message sent again by itself, given with
+ * a turn only when a person sent the message and it went with nothing beyond
+ * their words: a resend carries no one-time context. `chainEpoch` is the Stop
+ * count the turn was asked under, so Stop still wins.
+ */
+export const ProviderTurnResend = Schema.Struct({
+  messageId: MessageId,
+  chainEpoch: Schema.optional(NonNegativeInt),
+});
+export type ProviderTurnResend = typeof ProviderTurnResend.Type;
+
 const SessionExitedPayload = Schema.Struct({
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
   recoverable: Schema.optional(Schema.Boolean),
   exitKind: Schema.optional(RuntimeSessionExitKind),
+  /**
+   * The runtime ended on a failure a fresh one may not hit, before the turn it
+   * was running did anything, so the server sends the turn's message again on
+   * a new runtime (ProviderTurnResend). The driver asks this once, and reports
+   * the failure as usual if it comes back. `error` is what the thread shows if
+   * it can't be sent.
+   */
+  resendTurn: Schema.optional(
+    Schema.Struct({ ...ProviderTurnResend.fields, error: TrimmedNonEmptyStringSchema }),
+  ),
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 

@@ -597,6 +597,15 @@ every request has a durable record from submission to its final outcome.
     failing that returns `timeout` and stops the answer.
   - The side runtime's own 30-minute ceiling still applies; Stop and the
     caller leaving end it as for any open request.
+- **The user writes to the caller while it waits**: the call returns
+  `continuing` at once, the same way, because providers read a steer only when
+  the running tool returns. Only the user's own words do this (`composer` is
+  set, or it answers a question the agent asked); an agent's reply or a
+  thread's report waits. A steer that came just
+  before the call counts too, when the caller may not have read it yet: no tool
+  that started after it has finished. Another tool asked for at the same time
+  can hold a call back until the steer frees it. If detach is refused here, the
+  call just goes on waiting; nothing is stopped.
 - **Dropped call**: if the HTTP server interrupts the handler when the client
   goes away, that waiter detaches; the request is cancelled only when its
   last waiter leaves. To verify at build time; if the handler is not

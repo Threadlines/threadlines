@@ -80,6 +80,7 @@ function thread(
     handedBackTurnId: null,
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
+    pendingSettingsChange: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -129,6 +130,7 @@ function makeSnapshotQuery(
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
+    listClaimedSettingsChanges: () => Effect.succeed([]),
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getTurnActivities: () => Effect.succeed([]),
@@ -295,8 +297,10 @@ describe("ThreadAutoArchiveSweeper", () => {
       start: Effect.void,
       ready: Effect.void,
       getSettings: Effect.sync(() => current),
+      readStored: Effect.sync(() => current),
       updateSettings: () => Effect.die("unused"),
       updateSettingsWith: () => Effect.die("unused"),
+      updateSettingsChecked: () => Effect.die("unused"),
       streamChanges: Stream.make(enabled).pipe(
         Stream.tap((settings) =>
           Effect.sync(() => {

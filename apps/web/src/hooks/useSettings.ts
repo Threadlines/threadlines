@@ -111,13 +111,29 @@ async function hydrateClientSettings(): Promise<void> {
   return clientSettingsHydrationPromise;
 }
 
+/** The save in flight, so the next one starts only after it. */
+let clientSettingsSaveChain: Promise<void> = Promise.resolve();
+
+/**
+ * Saves this device's settings as they are when the save runs, after every
+ * save before it: saves land in order, and each holds every change made
+ * before it ran (including a failed one's put-back), so an older snapshot
+ * never lands over a newer one.
+ */
+function saveClientSettingsInOrder(): Promise<void> {
+  const { persistence } = ensureLocalApi();
+  const save = clientSettingsSaveChain.then(() =>
+    persistence.setClientSettings(getClientSettingsSnapshot()),
+  );
+  clientSettingsSaveChain = save.catch(() => undefined);
+  return save;
+}
+
 function persistClientSettings(settings: ClientSettings): void {
   replaceClientSettingsSnapshot(settings);
-  void ensureLocalApi()
-    .persistence.setClientSettings(settings)
-    .catch((error) => {
-      console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, error);
-    });
+  void saveClientSettingsInOrder().catch((error) => {
+    console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, error);
+  });
 }
 
 // ── Key sets for routing patches ─────────────────────────────────────
@@ -210,6 +226,39 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
   return writeSettings(patch);
 }
 
+/**
+ * Writes this device's settings and resolves only once they are saved,
+ * rejecting (and putting back what it changed) when the save fails, where
+ * `updateSettings` only logs it. For callers that must say truthfully whether
+ * a change landed: an agent's settings change reports each device setting it
+ * made. Waits for the saved settings to load first, so the write never puts
+ * defaults over them. The change, its save and any put-back run as one step
+ * of the in-order save chain, so a later write's change is never undone by an
+ * earlier one's failure and every later save carries the put-back.
+ */
+export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
+  await hydrateClientSettings();
+  const write = clientSettingsSaveChain.then(async () => {
+    const before = getClientSettingsSnapshot();
+    const next: ClientSettings = { ...before, ...patch };
+    replaceClientSettingsSnapshot(next);
+    try {
+      await ensureLocalApi().persistence.setClientSettings(next);
+    } catch (error) {
+      // Put back only what this write set and nothing has changed since.
+      const current = getClientSettingsSnapshot();
+      const restored: Record<string, unknown> = { ...current };
+      for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
+        if (current[key] === next[key]) restored[key] = before[key];
+      }
+      replaceClientSettingsSnapshot(restored as ClientSettings);
+      throw error;
+    }
+  });
+  clientSettingsSaveChain = write.catch(() => undefined);
+  return write;
+}
+
 function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
   const { serverPatch, clientPatch } = splitPatch(patch);
   let serverWrite: Promise<unknown> = Promise.resolve();
@@ -250,6 +299,7 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
+  clientSettingsSaveChain = Promise.resolve();
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }

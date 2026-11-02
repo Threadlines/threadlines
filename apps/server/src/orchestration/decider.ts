@@ -116,6 +116,16 @@ import {
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import {
+  SETTINGS_CHANGE_CANCELLED,
+  type SettingsChangeDecision,
+  cancelWaitingSettingsChanges,
+  decideSettingsChangeClaim,
+  decideSettingsChangeDeviceReport,
+  decideSettingsChangeNotesDelivered,
+  decideSettingsChangeRequest,
+  decideSettingsChangeSettle,
+} from "./settingsChangeDecisions.ts";
+import {
   outsideAnswerDecision,
   outsideWorkOf,
   outsideStopRefusal,
@@ -228,6 +238,13 @@ function planAgentRequestDecision(commandType: string, decision: AgentRequestDec
 
 /** Plan a child-thread decision's events, or refuse the command with its reason. */
 function planChildThreadDecision(commandType: string, decision: ChildThreadDecision) {
+  return "refusal" in decision
+    ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
+    : Effect.succeed(decision);
+}
+
+/** Plan a settings-change decision's events, or refuse the command with its reason. */
+function planSettingsChangeDecision(commandType: string, decision: SettingsChangeDecision) {
   return "refusal" in decision
     ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
     : Effect.succeed(decision);
@@ -1330,6 +1347,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         })),
         ...childDeletionEvents(readModel, thread, baseFor, occurredAt, true, "archived"),
+        // Its agents' settings cards waiting for an answer go with it.
+        ...[thread, ...plan.archive].flatMap((archived) =>
+          cancelWaitingSettingsChanges(
+            archived,
+            SETTINGS_CHANGE_CANCELLED.archived,
+            occurredAt,
+            baseFor,
+          ),
+        ),
         // An archived thread doesn't continue by itself, now or after it comes back.
         ...[thread, ...plan.archive].flatMap((archived): PlannedOrchestrationEvent[] => {
           const waiting = archived.session?.continueAtReset ?? null;
@@ -2947,6 +2973,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
           ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
+          ...(command.scheduledTaskId !== undefined
+            ? { scheduledTaskId: command.scheduledTaskId }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -3005,7 +3034,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ];
     }
 
-    case "thread.turn.retry": {
+    case "thread.turn.retry":
+    case "thread.turn.resend": {
       const targetThread = yield* requireThread({
         readModel,
         command,
@@ -3022,13 +3052,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // steered into it while it ran) is never the turn's own message, so it
       // is never what a retry sends again.
       const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
-      if (!session || session.lastError === null) {
+      if (!session || (command.type === "thread.turn.retry" && session.lastError === null)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no failed turn to retry.`,
         });
       }
-      const lastUserMessage = turnMessages.findLast((message) => message.role === "user");
+      if (
+        command.type === "thread.turn.resend" &&
+        command.chainEpoch !== undefined &&
+        command.chainEpoch !== targetThread.agentRequests.chainEpoch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' was stopped after this message was sent.`,
+        });
+      }
+      const lastUserMessage =
+        command.type === "thread.turn.resend"
+          ? turnMessages.find(
+              (message) => message.role === "user" && message.id === command.messageId,
+            )
+          : turnMessages.findLast((message) => message.role === "user");
       if (!lastUserMessage) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -3462,6 +3507,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             // Only the user's own queued message carries it.
             ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
             ...(!agentQueued && queued.sentFrom !== undefined ? { sentFrom: queued.sentFrom } : {}),
+            ...(queued.scheduledTaskId !== undefined
+              ? { scheduledTaskId: queued.scheduledTaskId }
+              : {}),
             createdAt: command.createdAt,
           },
         ],
@@ -4573,6 +4621,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Agents' settings changes (settingsChangeDecisions.ts).
+    case "thread.settings-change.request":
+    case "thread.settings-change.claim":
+    case "thread.settings-change.settle":
+    case "thread.settings-change.report-device":
+    case "thread.settings-change.deliver-notes": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planSettingsChangeDecision(
+        command.type,
+        command.type === "thread.settings-change.request"
+          ? decideSettingsChangeRequest(thread, command, baseFor)
+          : command.type === "thread.settings-change.claim"
+            ? decideSettingsChangeClaim(thread, command, baseFor)
+            : command.type === "thread.settings-change.settle"
+              ? decideSettingsChangeSettle(thread, command, baseFor)
+              : command.type === "thread.settings-change.report-device"
+                ? decideSettingsChangeDeviceReport(thread, command, baseFor)
+                : decideSettingsChangeNotesDelivered(thread, command, baseFor),
+      );
+    }
+
     case "thread.command-request.create": {
       const thread = yield* requireThread({
         readModel,
@@ -5003,12 +5077,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.revert.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const revertedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -5021,6 +5095,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           turnCount: command.turnCount,
         },
       };
+      // Settings cards waiting from the turns the revert took away go with
+      // them. Decided here, where the revert happened, not when it was
+      // asked for: a revert can still fail before this.
+      const cancelled = cancelWaitingSettingsChanges(
+        thread,
+        SETTINGS_CHANGE_CANCELLED.reverted,
+        command.createdAt,
+        childEventBase(command, command.createdAt),
+        (request) =>
+          (command.revertedTurnIds ?? []).includes(request.turnId) ||
+          (command.revertRequestedAt !== undefined &&
+            request.createdAt >= command.revertRequestedAt),
+      );
+      return cancelled.length === 0 ? revertedEvent : [...cancelled, revertedEvent];
     }
 
     case "thread.workflow-run.record": {

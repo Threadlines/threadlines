@@ -143,6 +143,12 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   return { ...settings, providerInstances };
 }
 
+/** A settings write that failed, and whether the file was written before it did. */
+export interface ServerSettingsWriteFailure<E> {
+  readonly cause: E;
+  readonly written: boolean;
+}
+
 export interface ServerSettingsShape {
   /** Start the settings runtime and attach file watching. */
   readonly start: Effect.Effect<void, ServerSettingsError>;
@@ -152,6 +158,12 @@ export interface ServerSettingsShape {
 
   /** Read the current settings. */
   readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
+
+  /**
+   * The stored settings, without filling in provider secrets: for readers of
+   * plain settings that must not fail when the secret store does.
+   */
+  readonly readStored: Effect.Effect<ServerSettings, ServerSettingsError>;
 
   /** Patch settings and persist. Returns the new full settings object. */
   readonly updateSettings: (
@@ -167,6 +179,16 @@ export interface ServerSettingsShape {
   readonly updateSettingsWith: <E>(
     makePatch: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, E>,
   ) => Effect.Effect<ServerSettings, ServerSettingsError | E>;
+
+  /**
+   * `updateSettingsWith` that says whether its write landed: a failure
+   * carries `written`, true once the settings file was written even if a
+   * step after it (filling in provider secrets) failed. For a caller that
+   * has to tell someone truthfully what changed (an agent's settings change).
+   */
+  readonly updateSettingsChecked: <E>(
+    makePatch: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, E>,
+  ) => Effect.Effect<ServerSettings, ServerSettingsWriteFailure<ServerSettingsError | E>>;
 
   /** Stream of settings change events. */
   readonly streamChanges: Stream.Stream<ServerSettings>;
@@ -206,6 +228,7 @@ export class ServerSettingsService extends Context.Service<
           start: Effect.void,
           ready: Effect.void,
           getSettings: Ref.get(currentSettingsRef),
+          readStored: Ref.get(currentSettingsRef),
           updateSettings: (patch) =>
             Ref.get(currentSettingsRef).pipe(
               Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
@@ -225,6 +248,20 @@ export class ServerSettingsService extends Context.Service<
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
               Effect.tap(publish),
               writeLock.withPermits(1),
+            ),
+          // Nothing fails after the write here, so a failure never wrote.
+          updateSettingsChecked: (makePatch) =>
+            Ref.get(currentSettingsRef).pipe(
+              Effect.flatMap((currentSettings) =>
+                makePatch(currentSettings).pipe(
+                  Effect.map((patch) => applyServerSettingsPatch(currentSettings, patch)),
+                ),
+              ),
+              Effect.flatMap(normalizeServerSettings),
+              Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              Effect.tap(publish),
+              writeLock.withPermits(1),
+              Effect.mapError((cause) => ({ cause, written: false })),
             ),
           get streamChanges() {
             return Stream.fromPubSub(changesPubSub);
@@ -699,9 +736,10 @@ const makeServerSettings = Effect.gen(function* () {
     );
   });
 
-  /** One settings write; callers hold `writeSemaphore`. */
+  /** One settings write; callers hold `writeSemaphore`. `onWritten` runs the moment the file lands. */
   const applyPatchLocked = <E>(
     makePatch: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, E>,
+    onWritten: Effect.Effect<void> = Effect.void,
   ) =>
     Effect.gen(function* () {
       const current = yield* getSettingsFromCache;
@@ -712,6 +750,7 @@ const makeServerSettings = Effect.gen(function* () {
       );
       const next = yield* normalizeServerSettings(persisted.settings);
       yield* writeSettingsAtomically(next);
+      yield* onWritten;
       // Only now that the write landed: a stale secret is truly unused. A
       // failed removal leaves an orphan file, never a missing key.
       yield* persisted.removeStale.pipe(
@@ -768,9 +807,23 @@ const makeServerSettings = Effect.gen(function* () {
       Effect.flatMap(materializeProviderEnvironmentSecrets),
       Effect.map(resolveTextGenerationProviders),
     ),
+    readStored: getSettingsFromCache,
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(applyPatchLocked(() => Effect.succeed(patch))),
     updateSettingsWith: (makePatch) => writeSemaphore.withPermits(1)(applyPatchLocked(makePatch)),
+    updateSettingsChecked: (makePatch) =>
+      Effect.gen(function* () {
+        const written = yield* Ref.make(false);
+        return yield* writeSemaphore
+          .withPermits(1)(applyPatchLocked(makePatch, Ref.set(written, true)))
+          .pipe(
+            Effect.catch((cause) =>
+              Ref.get(written).pipe(
+                Effect.flatMap((landed) => Effect.fail({ cause, written: landed })),
+              ),
+            ),
+          );
+      }),
     get streamChanges() {
       return materializeChanges(Stream.fromPubSub(changesPubSub));
     },

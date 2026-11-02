@@ -4447,6 +4447,10 @@ function deriveRuntimeWarningDisplay(
     additionalDetails,
   });
 
+  if (warningKind === "sign-in-resend" && message) {
+    return { label: message };
+  }
+
   if (warningKind === "api-retry") {
     if (!codexStreamWarning) {
       const label = message ?? "Provider API retry";
@@ -4543,6 +4547,13 @@ function extractRuntimeActivityDetail(
   const detailMessage = asTrimmedString(detail?.message) ?? asTrimmedString(detailError?.message);
   const additionalDetails = asTrimmedString(detailError?.additionalDetails);
   const primaryMessage = directDetail ?? message ?? detailMessage;
+
+  if (
+    activity.kind === "runtime.warning" &&
+    asTrimmedString(payload?.warningKind) === "sign-in-resend"
+  ) {
+    return null;
+  }
 
   if (
     activity.kind === "runtime.warning" &&
