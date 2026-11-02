@@ -2088,5 +2088,10 @@ address off, and both kinds' envelope `timestamp`.
   subscriber can't receive, so 101 events in another project could crowd out
   one in its own. The limit now counts only the projects its grant reaches,
   without General Chats.
+- **ChatGPT's client document (live test, Nov 2).** `chatgpt.com/oauth/client.json`
+  sets `token_endpoint_auth_method: private_key_jwt`, but lists `none` under
+  `token_endpoint_auth_methods_supported`. The singular field is only a
+  preference, and ChatGPT picks from what both sides support, so the relay now
+  accepts a client that lists `none`. It refused ChatGPT before the code step.
 - **Not checked yet:** a real client. Everything above ran against a fake
   receiver and a fake door; the live test on the dot is still to do.
