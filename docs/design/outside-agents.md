@@ -641,6 +641,7 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
   see today: a session gone after a quiet weekend, for any client that doesn't
   start again on a 404. Worth revisiting if Effect adds expiry, or if a real
   client turns out to loop on `initialize`.
+
 - **Phones** can't see, approve or remove connections.
 - **One long-lived token per connection** (see Spec status).
 

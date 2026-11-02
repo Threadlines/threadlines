@@ -238,8 +238,7 @@ export function AgentInstructionsSettingsPanel() {
   const [picked, setPicked] = useState<ExtensionScopeProjectEntry | null>(
     () => projectOptions[0] ?? null,
   );
-  const selectedProject =
-    projectOptions.find((project) => project.key === picked?.key) ?? picked;
+  const selectedProject = projectOptions.find((project) => project.key === picked?.key) ?? picked;
   const cwd = selectedProject?.cwd ?? "";
   const showComputers = projectGroups.length > 1;
   // Instruction files live on the machine that owns the project, and the picker

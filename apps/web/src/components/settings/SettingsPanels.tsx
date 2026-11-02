@@ -519,8 +519,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
         : []),
-      ...(settings.enableCommandRequests === false ? [placeById("threads.commandRequests").title] : []),
-      ...(settings.startAgentsWhileTyping === false ? [placeById("threads.startWhileTyping").title] : []),
+      ...(settings.enableCommandRequests === false
+        ? [placeById("threads.commandRequests").title]
+        : []),
+      ...(settings.startAgentsWhileTyping === false
+        ? [placeById("threads.startWhileTyping").title]
+        : []),
       ...(agentInvitesChoice(settings) !== "ask" ? [placeById("threads.agentInvites").title] : []),
       ...(agentThreadsMode(settings) !== "ask" ? [placeById("threads.agentThreads").title] : []),
       ...(settings.wrapUpChildThreadsOnFinish !==
