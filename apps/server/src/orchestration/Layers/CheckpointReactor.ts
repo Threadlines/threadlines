@@ -29,7 +29,7 @@ import {
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { settingsChangeTurnsRevertTakes } from "../settingsChangeDecisions.ts";
+import { settingsChangeTurnsRevertKeeps } from "../settingsChangeDecisions.ts";
 import { turnAdmission } from "../turnAdmission.ts";
 import { checkpointHandover } from "../checkpointHandover.ts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
@@ -1316,10 +1316,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        // Read when the revert began; a card asked for since then is from a
-        // turn the revert takes too.
-        revertedTurnIds: settingsChangeTurnsRevertTakes(context.thread, event.payload.turnCount),
-        revertRequestedAt: event.payload.createdAt,
+        ...settingsChangeTurnsRevertKeeps(context.thread, event.payload.turnCount),
         createdAt: now,
       })
       .pipe(

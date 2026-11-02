@@ -4112,17 +4112,11 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
   /**
-   * The turns the revert took away, from the checkpoints that recorded them:
-   * settings cards those turns' agents left waiting are cancelled with them.
-   * Absent: none are.
+   * The turns the revert keeps: a settings card left waiting from any other
+   * turn is cancelled, including one asked for while the revert ran. Absent:
+   * the revert removed nothing, and no card is cancelled.
    */
-  revertedTurnIds: Schema.optional(Schema.Array(TurnId)),
-  /**
-   * When the revert was asked for: a settings card left waiting since then
-   * came from a turn the revert takes too (it started after the turns it
-   * keeps), so it is cancelled with them. Absent: only `revertedTurnIds` count.
-   */
-  revertRequestedAt: Schema.optional(IsoDateTime),
+  keptTurnIds: Schema.optional(Schema.Array(TurnId)),
   createdAt: IsoDateTime,
 });
 

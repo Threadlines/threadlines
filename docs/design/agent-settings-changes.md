@@ -244,10 +244,10 @@ Lifetime:
 
 - Archive, the start of a move, and revert (for requests from reverted turns)
   settle waiting requests `cancelled` in the same decision. For a revert the
-  checkpoint reactor names the turns it took (`revertedTurnIds`, from the
+  checkpoint reactor names the turns it keeps (`keptTurnIds`, from the
   checkpoints and transcript cut it loaded; the engine's read model has no
-  checkpoints after a restart) and when it was asked for (`revertRequestedAt`:
-  a card asked for since then came from a turn it takes too).
+  checkpoints after a restart), and any other turn's waiting card goes, also
+  one asked for while the revert ran. A revert that removes nothing cancels none.
 - A claimed request always finishes: its settle and its device report are
   allowed on an archived thread and through the move freeze (both join the
   frozen thread's allowed commands, as the server's own bookkeeping). A
@@ -296,8 +296,9 @@ Lifetime:
 Device changes follow the claim even when the computer part failed: the
 user saw them as they are, and accepted them. Client-settings saves run one
 after another (every writer shares the chain in `useSettings.ts`), so an older
-snapshot never lands over a newer one, and an agent's write makes its change,
-saves and puts back on failure as one step.
+snapshot never lands over a newer one. Every write changes memory at once, so
+the last one made stands; a failed agent write puts back only the settings no
+later write has set, to what was last stored.
 
 **On the thread's computer**, one answer at a time (a semaphore in the answer
 service; answers are rare), each run to its end in the service's own scope, so

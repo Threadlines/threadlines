@@ -21,6 +21,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
+import { settingsChangeTurnsRevertKeeps } from "./settingsChangeDecisions.ts";
 
 const now = "2026-11-02T10:00:00.000Z";
 const at = (second: number) => `2026-11-02T10:00:${String(second).padStart(2, "0")}.000Z`;
@@ -311,7 +312,7 @@ describe("agents' settings changes", () => {
       ));
     }
     // Asked for while the revert was under way, from a turn the reactor's
-    // read didn't have yet.
+    // read didn't have yet: not one it keeps, whatever the clocks say.
     ({ model } = await apply(
       model,
       ask("ask-3", {
@@ -320,15 +321,14 @@ describe("agents' settings changes", () => {
         createdAt: at(36),
       }),
     ));
-    // The checkpoint reactor names the turns it took away; the read model's
-    // own checkpoints aren't loaded after a restart, so they aren't consulted.
+    // The checkpoint reactor names the turns it keeps; the read model's own
+    // checkpoints aren't loaded after a restart, so they aren't consulted.
     ({ model } = await apply(model, {
       type: "thread.revert.complete",
       commandId: nextCommandId(),
       threadId: THREAD,
       turnCount: 1,
-      revertedTurnIds: [TurnId.make("turn-2")],
-      revertRequestedAt: at(35),
+      keptTurnIds: [TurnId.make("turn-1")],
       createdAt: at(40),
     }));
     expect(statuses(model)).toEqual([
@@ -336,5 +336,27 @@ describe("agents' settings changes", () => {
       ["ask-2", "cancelled", "The turn that asked was undone."],
       ["ask-3", "cancelled", "The turn that asked was undone."],
     ]);
+  });
+
+  it("cancels no card when a revert removes nothing, and says so only when it does", async () => {
+    let model = await seeded();
+    ({ model } = await apply(model, ask("ask-1", { turnId: TurnId.make("turn-1") })));
+    ({ model } = await apply(model, {
+      type: "thread.revert.complete",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      turnCount: 1,
+      createdAt: at(40),
+    }));
+    expect(statuses(model)).toEqual([["ask-1", "waiting", undefined]]);
+    const turn = (turnId: string, checkpointTurnCount: number) => ({
+      turnId: TurnId.make(turnId),
+      checkpointTurnCount,
+    });
+    const checkpoints = [turn("turn-1", 1), turn("turn-2", 2)] as never;
+    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 2)).toEqual({});
+    expect(settingsChangeTurnsRevertKeeps({ checkpoints, messages: [] }, 1)).toEqual({
+      keptTurnIds: ["turn-1"],
+    });
   });
 });
