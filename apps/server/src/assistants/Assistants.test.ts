@@ -333,6 +333,71 @@ describe("assistants: sign-in", () => {
     ),
   );
 
+  it.effect(
+    "names an assistant by what it is: guessed from its sign-in, then as the user picks",
+    () =>
+      withDoor((door) =>
+        Effect.gen(function* () {
+          // Grok Bot signs in as "Cursor", through Cursor's site.
+          const challenge = pkce();
+          yield* door.fake.push({
+            type: "frame",
+            frame: yield* signInFrame("sign-in-cursor", {
+              clientName: "Cursor",
+              identity: { kind: "registered", host: "www.cursor.com", known: true },
+              codeChallenge: challenge.challenge,
+            }),
+          });
+          const waiting = yield* until(
+            door.assistants.state,
+            (state) => state.signIns.length === 1,
+          );
+          expect(waiting.signIns[0]).toMatchObject({
+            name: "Grok Bot",
+            givenName: "Cursor",
+            assistant: "grok-bot",
+          });
+
+          // The user says it's Cursor's own agent: that's what it's called from then on.
+          yield* door.signIn.approve({
+            requestId: OutsideAgentRequestId.make("sign-in-cursor"),
+            ...SEE,
+            assistant: "cursor",
+          });
+          const decision = door.fake.sent.find(
+            (frame) => frame.type === "signin.decision" && frame.signInId === "sign-in-cursor",
+          );
+          if (decision?.type !== "signin.decision" || decision.decision !== "allow") {
+            return yield* Effect.die(new Error("no allow decision"));
+          }
+          yield* exchange(door.fake, decision.authorizationCode, {
+            code_verifier: challenge.verifier,
+          });
+          const saved = yield* until(
+            Stream.runHead(door.signIn.changes).pipe(Effect.map(Option.getOrThrow)),
+            (value) => value.connections.length === 1,
+          );
+          expect(saved.connections[0]).toMatchObject({
+            name: "Cursor",
+            givenName: null,
+            assistant: "cursor",
+          });
+
+          // Change picks again.
+          const changed = yield* door.signIn.update({
+            connectionId: saved.connections[0]!.connectionId,
+            ...SEE,
+            assistant: "grok-bot",
+          });
+          expect(changed).toMatchObject({
+            name: "Grok Bot",
+            givenName: "Cursor",
+            assistant: "grok-bot",
+          });
+        }),
+      ),
+  );
+
   it.effect("stays on the relay until an approved code is traded or can't be", () =>
     withDoor((door) =>
       Effect.gen(function* () {

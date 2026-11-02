@@ -55,6 +55,7 @@ import {
   parseAssistantCredential,
   randomAssistantSecret,
 } from "@threadlines/shared/assistantCredentials";
+import { assistantDisplayName, guessKnownAssistant } from "@threadlines/shared/knownAssistants";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -72,12 +73,16 @@ import {
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { makeKeyedLock } from "../links/keyedLock.ts";
 import {
+  assistantOfRow,
+  connectionNameOf,
   connectionOfRow,
   grantRefusal,
   normalizedGrant,
 } from "../outsideAgents/connectionShapes.ts";
 import { clientIdHash, pkceMatches, secretsMatch } from "../outsideAgents/credentials.ts";
 import {
+  type AssistantPick,
+  assistantPickOf,
   OutsideAgentConnectionRepository,
   OutsideAgentConnectionRepositoryLive,
   type OutsideAgentConnectionRow,
@@ -137,6 +142,8 @@ interface IssuedCode {
   readonly clientId: string;
   readonly clientName: string;
   readonly identity: OutsideAgentIdentity;
+  /** Which assistant the user said it is at approval; null: not picked. */
+  readonly assistantPick: AssistantPick | null;
   readonly redirectUri: string;
   readonly codeChallenge: string;
   readonly resource: string;
@@ -436,16 +443,25 @@ export const makeAssistants = Effect.gen(function* () {
       if (entry.expiresAt <= now) continue;
       const hash = clientIdHash(entry.signIn.clientId);
       const earlier = rows.find((row) => row.kind === "assistant" && row.clientIdHash === hash);
+      const identity = identityOf(entry.signIn);
+      // The connection it replaces says which assistant it is, else its sign-in does.
+      const assistant =
+        earlier !== undefined
+          ? assistantOfRow(earlier)
+          : guessKnownAssistant({ host: identity.host, name: entry.name });
+      const name = assistantDisplayName(assistant, entry.name);
       waiting.push({
         requestId: entry.requestId,
-        name: entry.name,
-        identity: identityOf(entry.signIn),
+        name,
+        givenName: name === entry.name ? null : entry.name,
+        assistant,
+        identity,
         place: placeOf(entry.signIn.place),
         requestedAccess: requestedAccessOf(entry.signIn.scopes),
         replaces:
           earlier === undefined
             ? null
-            : { connectionId: earlier.connectionId, name: earlier.clientName },
+            : { connectionId: earlier.connectionId, name: connectionNameOf(earlier) },
         createdAt: isoAt(entry.createdAt),
         expiresAt: isoAt(entry.expiresAt),
       });
@@ -592,6 +608,7 @@ export const makeAssistants = Effect.gen(function* () {
       const refusal = grantRefusal(input, requestedAccessOf(entry.signIn.scopes), "assistant");
       if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
       const grant = normalizedGrant(input);
+      const assistantPick = input.assistant === undefined ? null : assistantPickOf(input.assistant);
       const connectionId = OutsideAgentConnectionId.make(randomUUID());
       const tagged = yield* relay.routeTag(connectionId).pipe(
         Effect.mapError(
@@ -621,6 +638,7 @@ export const makeAssistants = Effect.gen(function* () {
         clientId: entry.signIn.clientId,
         clientName: entry.name,
         identity: identityOf(entry.signIn),
+        assistantPick,
         redirectUri: entry.signIn.redirectUri,
         codeChallenge: entry.signIn.codeChallenge,
         resource: entry.signIn.resource,
@@ -652,12 +670,20 @@ export const makeAssistants = Effect.gen(function* () {
         Effect.andThen(reconsiderSocket),
         forkInScope,
       );
+      const shown = {
+        kind: "assistant" as const,
+        assistantPick,
+        identity: identityOf(entry.signIn),
+        clientName: entry.name,
+      };
       return {
         connectionId,
-        name: entry.name,
+        name: connectionNameOf(shown),
+        givenName: connectionNameOf(shown) === entry.name ? null : entry.name,
+        assistant: assistantOfRow(shown),
         kind: "assistant",
         signIn: "oauth",
-        identity: identityOf(entry.signIn),
+        identity: shown.identity,
         ...grant,
         createdAt: isoAt(now),
         lastUsedAt: null,
@@ -741,6 +767,7 @@ export const makeAssistants = Effect.gen(function* () {
         routeTag: route.routeTag,
         refresh: null,
         keyHash: signer.keyHash(secret),
+        assistantPick: input.assistant === undefined ? null : assistantPickOf(input.assistant),
         createdAt: isoAt(now),
         lastUsedAt: null,
         removedAt: null,
@@ -836,6 +863,7 @@ export const makeAssistants = Effect.gen(function* () {
         routeTag: issued.route.routeTag,
         refresh: { generation: 0, rotatedAt: isoAt(now), seenGeneration: -1 },
         keyHash: null,
+        assistantPick: issued.assistantPick,
         createdAt: isoAt(now),
         lastUsedAt: null,
         removedAt: null,
@@ -1050,7 +1078,7 @@ export const makeAssistants = Effect.gen(function* () {
         yield* repository.touch({ connectionId: row.connectionId, now: isoAt(now) });
         yield* notify;
       }
-      return { connectionId: row.connectionId, name: row.clientName };
+      return { connectionId: row.connectionId, name: connectionNameOf(row) };
     }).pipe(
       Effect.catchTag("OutsideAgentConnectionRepositoryError", (cause) =>
         Effect.logWarning("assistants: couldn't check a credential", { cause }).pipe(

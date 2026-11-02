@@ -60,10 +60,28 @@ export const OutsideAgentIdentity = Schema.Struct({
 });
 export type OutsideAgentIdentity = typeof OutsideAgentIdentity.Type;
 
+/**
+ * Always-on assistants Threadlines knows by name and mark
+ * (docs/design/assistants.md). Several sign in through someone else's
+ * service (Grok Bot through Cursor's), so which one it is is a guess from
+ * its sign-in until the user picks.
+ */
+export const KnownAssistant = Schema.Literals(["grok-bot", "chatgpt", "claude", "muse", "cursor"]);
+export type KnownAssistant = typeof KnownAssistant.Type;
+
 export const OutsideAgentConnection = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
-  /** The name the agent gave when it signed in ("Claude Code"), or the key's name: shown as given, never verified. */
+  /**
+   * What Threadlines calls it: the known assistant it is ("Grok Bot"), else
+   * the name it gave when it signed in ("Claude Code") or the key's name.
+   */
   name: TrimmedNonEmptyString,
+  /** The name it gave itself ("Cursor"): its own claim, never verified. Null: the same as `name`. */
+  givenName: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** Which known assistant it is: the user's pick, else Threadlines' guess; null: none, or a local agent. */
+  assistant: Schema.NullOr(KnownAssistant).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   kind: OutsideAgentConnectionKind,
   signIn: OutsideAgentSignInMethod,
   /** Assistants signed in with OAuth; null for local agents and keys. */
@@ -98,8 +116,14 @@ export type OutsideAgentPendingRequest = typeof OutsideAgentPendingRequest.Type;
  */
 export const OutsideAgentAssistantSignIn = Schema.Struct({
   requestId: OutsideAgentRequestId,
-  /** The name the assistant gave ("Grok Bot"): its own claim unless `identity.verified`. */
+  /** What Threadlines calls it: the known assistant it looks like, else the name it gave. */
   name: TrimmedNonEmptyString,
+  /** The name the assistant gave ("Cursor"): its own claim unless `identity.verified`. Null: the same as `name`. */
+  givenName: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** The known assistant it looks like (the one it replaces, else from its sign-in); the user may pick another. */
+  assistant: Schema.NullOr(KnownAssistant).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   identity: OutsideAgentIdentity,
   /** Roughly where the sign-in page was opened ("Austin, US"), information only; null: unknown. */
   place: Schema.NullOr(TrimmedNonEmptyString),
@@ -182,9 +206,14 @@ export const OutsideAgentsSnapshot = Schema.Struct({
 });
 export type OutsideAgentsSnapshot = typeof OutsideAgentsSnapshot.Type;
 
+/** Which known assistant a connection is, as the user picked: null for none of them. Left out: unchanged, or the guess. */
+const PickedAssistant = Schema.optional(Schema.NullOr(KnownAssistant));
+
 export const OutsideAgentApproveInput = Schema.Struct({
   requestId: OutsideAgentRequestId,
   ...OutsideAgentGrant.fields,
+  /** For an assistant's sign-in. */
+  assistant: PickedAssistant,
 });
 export type OutsideAgentApproveInput = typeof OutsideAgentApproveInput.Type;
 
@@ -194,6 +223,8 @@ export type OutsideAgentRequestInput = typeof OutsideAgentRequestInput.Type;
 export const OutsideAgentUpdateInput = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
   ...OutsideAgentGrant.fields,
+  /** For an assistant's connection. */
+  assistant: PickedAssistant,
 });
 export type OutsideAgentUpdateInput = typeof OutsideAgentUpdateInput.Type;
 
@@ -206,6 +237,7 @@ export type OutsideAgentConnectionInput = typeof OutsideAgentConnectionInput.Typ
 export const OutsideAgentCreateKeyInput = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(60)),
   ...OutsideAgentGrant.fields,
+  assistant: PickedAssistant,
 });
 export type OutsideAgentCreateKeyInput = typeof OutsideAgentCreateKeyInput.Type;
 

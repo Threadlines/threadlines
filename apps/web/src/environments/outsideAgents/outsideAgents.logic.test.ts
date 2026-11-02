@@ -68,22 +68,35 @@ describe("outside agent wording", () => {
 
   it("says how an assistant signs in, checked or only claimed, and nothing for a local agent", () => {
     const identity = { host: "cursor.sh", verified: true, known: true };
-    expect(describeOutsideAgentSignIn({ kind: "assistant", signIn: "oauth", identity })).toBe(
-      "Signs in from cursor.sh",
-    );
+    const oauth = { kind: "assistant", signIn: "oauth", givenName: null } as const;
+    expect(describeOutsideAgentSignIn({ ...oauth, identity })).toBe("Signs in from cursor.sh");
+    expect(
+      describeOutsideAgentSignIn({ ...oauth, identity: { ...identity, verified: false } }),
+    ).toBe("Sign-in returns to cursor.sh");
+    // Shown as another name than the one it gave (Grok Bot signs in as Cursor): it says so.
+    expect(
+      describeOutsideAgentSignIn({
+        ...oauth,
+        givenName: "Cursor",
+        identity: { host: "www.cursor.com", verified: false, known: true },
+      }),
+    ).toBe("Signs in as Cursor through www.cursor.com");
     expect(
       describeOutsideAgentSignIn({
         kind: "assistant",
-        signIn: "oauth",
-        identity: { ...identity, verified: false },
+        signIn: "key",
+        identity: null,
+        givenName: null,
       }),
-    ).toBe("Sign-in returns to cursor.sh");
-    expect(describeOutsideAgentSignIn({ kind: "assistant", signIn: "key", identity: null })).toBe(
-      "Key",
-    );
-    expect(describeOutsideAgentSignIn({ kind: "local", signIn: "oauth", identity: null })).toBe(
-      null,
-    );
+    ).toBe("Key");
+    expect(
+      describeOutsideAgentSignIn({
+        kind: "local",
+        signIn: "oauth",
+        identity: null,
+        givenName: null,
+      }),
+    ).toBe(null);
   });
 
   it("counts the quiet period down in whole minutes and drops it once over", () => {
@@ -219,6 +232,8 @@ describe("waitingOutsideAgentSignIns", () => {
     const assistant = (id: string, createdAt: string): OutsideAgentAssistantSignIn => ({
       requestId: OutsideAgentRequestId.make(id),
       name: "Grok Bot",
+      givenName: null,
+      assistant: null,
       identity: { host: "cursor.sh", verified: false, known: true },
       place: null,
       requestedAccess: "see",

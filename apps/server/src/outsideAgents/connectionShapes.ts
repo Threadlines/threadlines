@@ -1,20 +1,43 @@
 /**
  * What both doors (the local `/mcp/connect` and the assistants door,
  * docs/design/assistants.md) share about a connection: how a row is shown in
- * Settings, and the rules a grant the user picks must pass.
+ * Settings and named everywhere else, and the rules a grant the user picks
+ * must pass.
  */
 import type {
+  KnownAssistant,
   OutsideAgentAccess,
   OutsideAgentConnection,
   OutsideAgentGrant,
 } from "@threadlines/contracts";
+import { assistantDisplayName, guessKnownAssistant } from "@threadlines/shared/knownAssistants";
 
 import type { OutsideAgentConnectionRow } from "./OutsideAgentConnectionRepository.ts";
 
 /** A connection row as Settings shows it. */
+/**
+ * Which known assistant an assistant connection is: the user's pick, else the
+ * guess from its sign-in (knownAssistants.ts). Null for local agents and when
+ * neither says.
+ */
+export const assistantOfRow = (
+  row: Pick<OutsideAgentConnectionRow, "kind" | "assistantPick" | "identity" | "clientName">,
+): KnownAssistant | null => {
+  if (row.kind !== "assistant") return null;
+  if (row.assistantPick !== null) return row.assistantPick === "none" ? null : row.assistantPick;
+  return guessKnownAssistant({ host: row.identity?.host ?? null, name: row.clientName });
+};
+
+/** What Threadlines calls a connection everywhere it names it: "Grok Bot", not the "Cursor" it signed in as. */
+export const connectionNameOf = (
+  row: Pick<OutsideAgentConnectionRow, "kind" | "assistantPick" | "identity" | "clientName">,
+) => assistantDisplayName(assistantOfRow(row), row.clientName);
+
 export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentConnection => ({
   connectionId: row.connectionId,
-  name: row.clientName,
+  name: connectionNameOf(row),
+  givenName: connectionNameOf(row) === row.clientName ? null : row.clientName,
+  assistant: assistantOfRow(row),
   kind: row.kind,
   signIn: row.signIn,
   identity: row.identity,
