@@ -918,17 +918,36 @@ export type ResultEncoded<T> = SuccessEncoded<T> | FailureResultEncoded<T>
  * @category utility types
  * @since 4.0.0
  */
-export type HandlerServices<T> = T extends Tool<
+export type HandlerServices<T> = SchemaServices<T> | Requirements<T>
+
+/**
+ * A utility type to extract the request-level dependencies a `Tool` declares
+ * with `dependencies` or `Tool.addDependency`.
+ *
+ * @stability unstable
+ * @category utility types
+ * @since 4.0.0
+ */
+export type Requirements<T> = T extends Tool<
   infer _Name,
   infer _Config,
   infer _Requirements
-> ? // Parameters must be decoded when received from a model
-    | _Config["parameters"]["DecodingServices"]
-    // A tool call `result`, whether success or failure, is encoded and returned
-    // as the `encodedResult` along with the `result`
-    | ResultEncodingServices<T>
-    // Per-request requirements
-    | _Requirements
+> ? _Requirements
+  : never
+
+/**
+ * A utility type to extract the services needed to decode the parameters of a
+ * `Tool` call and encode its result, whether success or failure.
+ *
+ * @stability unstable
+ * @category utility types
+ * @since 4.0.0
+ */
+export type SchemaServices<T> = T extends Tool<
+  infer _Name,
+  infer _Config,
+  infer _Requirements
+> ? _Config["parameters"]["DecodingServices"] | ResultEncodingServices<T>
   : never
 
 /**
@@ -2033,8 +2052,9 @@ export const getStrictMode = <T extends Any>(tool: T): boolean | undefined => Co
 //
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-const suspectProtoRx = /"__proto__"\s*:/
-const suspectConstructorRx = /"constructor"\s*:/
+// Text that may decode to a forbidden key. `JSON.parse` decodes Unicode
+// escapes (e.g. `"\u005f_proto__"`), so any `\u` escape also triggers the scan.
+const suspectRx = /"__proto__"\s*:|"constructor"\s*:|\\u/
 
 function _parse(text: string) {
   // Parse normally
@@ -2045,15 +2065,8 @@ function _parse(text: string) {
     return obj
   }
 
-  if (
-    suspectProtoRx.test(text) === false &&
-    suspectConstructorRx.test(text) === false
-  ) {
-    return obj
-  }
-
   // Scan result for proto keys
-  return filter(obj)
+  return suspectRx.test(text) ? filter(obj) : obj
 }
 
 function filter(obj: any) {
@@ -2070,6 +2083,7 @@ function filter(obj: any) {
 
       if (
         Object.hasOwn(node, "constructor") &&
+        node.constructor !== null &&
         Object.hasOwn(node.constructor, "prototype")
       ) {
         throw new SyntaxError("Object contains forbidden prototype property")

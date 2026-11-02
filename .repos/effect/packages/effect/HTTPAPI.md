@@ -1521,6 +1521,81 @@ The payload stream's errors are added to the handler's error channel automatical
 - Read the payload stream once. The body is never buffered for a replay, so a repeated read keeps the adapter's native behavior: an empty body, a typed `RequestParseError`, or a replay of the caller's stream under `HttpApiTest`. Don't rely on any of them.
 - A handler can respond without reading the whole body, for example to reject an upload early. Over HTTP/1.1 the Node server then drains up to 256 KiB of what is left. Past that it sends `Connection: close` and closes the socket.
 
+### Timing Out Request Bodies
+
+Effect puts no deadline on reading a request body. Bound the read with Effect timeouts:
+
+- For a streaming payload, use `Stream.timeoutOrElse` to fail the read when the client stops sending. `Stream.timeout` would end the stream instead, so a stalled upload would look complete to the handler.
+- For a buffered payload, add a middleware with `Effect.timeoutOrElse`. Middleware runs around payload decoding (see [Body Lifetime](#body-lifetime)), so its deadline covers receiving and decoding the body as well as the handler.
+
+**Example** (Timing Out Uploads)
+
+```ts
+import { Effect, Layer, Schema, Stream } from "effect"
+import {
+  HttpApi,
+  HttpApiBuilder,
+  HttpApiEndpoint,
+  HttpApiError,
+  HttpApiGroup,
+  HttpApiMiddleware,
+  HttpApiSchema
+} from "effect/http-api"
+
+// Answers 408 when the endpoint, payload decoding included, takes too long
+class Deadline extends HttpApiMiddleware.Service<Deadline>()("Deadline", {
+  error: HttpApiError.RequestTimeout
+}) {}
+
+const Api = HttpApi.make("api").add(
+  HttpApiGroup.make("files").add(
+    HttpApiEndpoint.post("upload", "/upload", {
+      payload: HttpApiSchema.StreamUint8Array(),
+      success: Schema.Number,
+      error: HttpApiError.RequestTimeout
+    }),
+    HttpApiEndpoint.post("import", "/import", {
+      payload: Schema.Array(Schema.String),
+      success: Schema.Number
+    }).middleware(Deadline)
+  )
+)
+
+const DeadlineLayer = Layer.succeed(
+  Deadline,
+  (httpEffect) =>
+    Effect.timeoutOrElse(httpEffect, {
+      duration: "30 seconds",
+      orElse: () => Effect.fail(new HttpApiError.RequestTimeout({}))
+    })
+)
+
+const FilesLayer = HttpApiBuilder.group(
+  Api,
+  "files",
+  (handlers) =>
+    handlers
+      .handle("upload", ({ payload }) =>
+        payload.pipe(
+          // Fail the read when the client sends nothing for 10 seconds
+          Stream.timeoutOrElse({
+            duration: "10 seconds",
+            orElse: () => Stream.fail(new HttpApiError.RequestTimeout({}))
+          }),
+          Stream.runFold(() => 0, (total, chunk) => total + chunk.length)
+        ))
+      .handle("import", ({ payload }) => Effect.succeed(payload.length))
+).pipe(Layer.provide(DeadlineLayer))
+```
+
+When a timeout interrupts a handler before it has read the whole body, the unread rest is handled as described in [Body Lifetime](#body-lifetime). A middleware deadline stops applying once the handler returns a streaming response. To bound the response, see [Timing Out Streaming Responses](#timing-out-streaming-responses).
+
+The runtimes also have their own server-wide timers:
+
+- Node's `requestTimeout` (300 seconds by default) limits the time to receive the whole request, including a streaming upload. When it expires, Node answers `408`, or closes the connection if the response has already started. It also applies to a request body the handler never reads, so it can cut a streaming response that ignores a large upload. Change it on the server you pass to `NodeHttpServer.layer`. `0` disables it.
+- Node's `headersTimeout` (60 seconds by default) limits the time to receive the headers. When it is not set, Node lowers it to `requestTimeout` if that is smaller, so `createServer({ requestTimeout: 0 })` disables the header deadline too. Use `createServer({ requestTimeout: 0, headersTimeout: 60_000 })` to keep it. When both are nonzero, `headersTimeout` may not exceed `requestTimeout`.
+- `BunHttpServer` disables Bun's idle timeout by default, so a slow upload is limited only by your own timeouts. Pass `idleTimeout` (in seconds, at most 255) to restore a cut for connections that stay silent that long.
+
 ### Mixing Buffered and Streaming Payloads
 
 One streaming payload can share the `payload` array with buffered payloads that use other content types. The server picks one by the request's content type, and the handler tells them apart with `Stream.isStream`.
@@ -2476,6 +2551,25 @@ Things to know:
 - An endpoint may declare at most one streaming success schema, `HEAD` endpoints cannot declare one, and streaming schemas are not supported in error responses.
 - The `effect/http-api/stream/failure` event name is reserved: `events` schemas may not declare it, and the client treats such an event as a stream failure only when its `data` decodes to a `Cause`.
 
+### Timing Out Streaming Responses
+
+Neither server adapter cuts a quiet response stream by default. Node's socket inactivity timeout (`server.timeout`) is off unless you enable it, and `BunHttpServer` disables Bun's idle timeout unless you pass `idleTimeout`. To limit how long a stream may stay quiet, time out the stream the handler returns:
+
+- `Stream.timeout(duration)` ends the response normally when no element arrives within `duration`.
+- `Stream.timeoutOrElse({ duration, orElse: () => Stream.fail(error) })` fails it instead. As with any failure after the response has started, the connection is aborted, unless a `StreamSse` endpoint declares the error and sends it as a [typed failure](#typed-stream-failures).
+
+**Example** (Ending a Quiet Stream)
+
+```ts
+handlers.handle("ticks", () =>
+  // End the response when no tick arrives for 60 seconds
+  Effect.succeed(Stream.timeout(ticks, "60 seconds")))
+```
+
+These timeouts are checked each time the server pulls the next element. If the client stops reading, the server stops pulling and no timeout fires. Idle keep-alive connections between requests have no handler at all. Only a socket-level timer covers these cases: an explicit Bun `idleTimeout`, Node's `server.timeout` and `keepAliveTimeout` (5 seconds by default, between requests only), or a proxy with its own idle timeout. Without `idleTimeout`, Bun closes neither stalled readers nor idle keep-alive connections, so a directly exposed Bun server should set one or sit behind such a proxy.
+
+Bun 1.3 still closes connections that never send a complete request when `idleTimeout` is `0`. That is Bun's behavior, not something `BunHttpServer` guarantees across Bun versions.
+
 ## Upgrading the Connection
 
 `HttpApiSchema.Upgrade({ protocol })` declares an endpoint that switches the connection to another protocol with an HTTP/1.1 upgrade, like Docker's `Upgrade: tcp` for container attach. After `101 Switching Protocols` the connection carries raw bytes in both directions as a `Socket`.
@@ -2521,7 +2615,7 @@ const GroupLayer = HttpApiBuilder.group(
 )
 ```
 
-The derived client sends `Connection: Upgrade` and `Upgrade: tcp`, and resolves to the `101` response headers and the connection. Any other response is decoded as one of the endpoint's errors.
+The derived client sends `Connection: Upgrade` and `Upgrade: tcp`, and resolves to the `101` response headers and the connection. Any other response is decoded as one of the endpoint's errors, or as one of its ordinary successes when it declares any (see below).
 
 ```ts
 const { headers, socket } = yield * client.containers.attach({ params: { id: "abc" } })
@@ -2565,12 +2659,38 @@ const { headers, socket } = yield * client.exec.start({ params: { id }, payload:
 headers["content-type"] // "application/vnd.docker.raw-stream" | "application/vnd.docker.multiplexed-stream"
 ```
 
+A server may decline an upgrade and answer with an ordinary response instead (RFC 9110 §7.8). Declare the ordinary successes alongside the upgrade, at statuses other than `101`. The handler either calls `upgrade` or returns one of the ordinary successes; once it has called `upgrade`, it must return nothing. The client returns either the upgraded connection or the decoded ordinary success, and `HttpApiClient.isUpgraded` tells them apart.
+
+**Example** (Starting a Detached Exec)
+
+```ts
+const start = HttpApiEndpoint.post("start", "/exec/:id/start", {
+  params: { id: Schema.String },
+  payload: Schema.Struct({ Detach: Schema.Boolean }),
+  success: [HttpApiSchema.Upgrade({ protocol: "tcp" }), HttpApiSchema.Empty(200)]
+})
+
+// server
+handlers.handle("start", ({ payload, upgrade }) =>
+  Effect.gen(function*() {
+    if (payload.Detach) return // answers with an empty 200
+    const socket = yield* upgrade()
+    // ...
+  }))
+
+// client
+const result = yield * client.exec.start({ params: { id }, payload: { Detach: false } })
+if (HttpApiClient.isUpgraded(result)) {
+  const reader = yield * result.socket.reader
+}
+```
+
 Things to know:
 
 - The client needs a backend that can hand over the connection: `NodeHttpClient.layerNodeHttp` (Node, Bun 1.4+, Deno) or `NodeHttpClient.layerUndici` (Node, Deno). Fetch and `XMLHttpRequest` cannot send upgrade requests, so the call fails with a `TransportError` before anything is sent.
 - Serve upgrade endpoints with `NodeHttpServer`, which also works on Bun 1.4+ and Deno. `Bun.serve` and `Deno.serve` only upgrade to WebSocket, so `BunHttpServer` and `DenoHttpServer` fail these upgrades.
 - Requests that do not ask for the declared protocol get `426 Upgrade Required`, before the payload is decoded.
-- An upgrade endpoint cannot declare a streaming payload or other success schemas, and upgrades are not supported in error responses. For WebSocket, use `HttpServerRequest.upgrade` and `Socket.makeWebSocket` instead.
+- An endpoint can declare one upgrade, and it cannot be combined with a streaming payload, a streaming success, or another success at status `101`. Upgrades are not supported in error responses. For WebSocket, use `HttpServerRequest.upgrade` and `Socket.makeWebSocket` instead.
 - `Connection`, `Upgrade`, `Content-Length` and `Transfer-Encoding` cannot be set on the `101`. Headers that fail to encode end the handler with a defect.
 - The `101` waits for the request body to end. Node 25 and older do not parse upgrade request bodies, so `NodeHttpServer` reads them with `Content-Length` there and answers chunked ones with `411 Length Required`.
 - Releasing the writer's scope half-closes the connection, and releasing the reader's scope closes it.
