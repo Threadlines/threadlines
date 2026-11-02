@@ -24,6 +24,7 @@ import type {
   ThreadId,
   TurnId,
   OrchestrationWorkflowRun,
+  OrchestrationSettingsChangeRequest,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -246,6 +247,19 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly listThreadIdsWithOpenAgentRequests: () => Effect.Effect<
     ReadonlyArray<ThreadId>,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Agents' settings changes an answer was in the middle of making
+   * (`claimed`), with their threads. Used once at startup to settle them
+   * from what the settings hold (AgentSettingsChanges).
+   */
+  readonly listClaimedSettingsChanges: () => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly request: OrchestrationSettingsChangeRequest;
+    }>,
     ProjectionRepositoryError
   >;
 

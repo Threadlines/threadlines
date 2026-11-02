@@ -1,9 +1,9 @@
 /**
  * What a thread waits on the user for, item by item: each open approval
- * (a tool's, a scheduled-task change an agent asked for, threads its agent
- * asked to start), each open question, and its plan to review. `thread_read`
- * and `thread_wait` show them in detail, `inbox` as a list with Threadlines'
- * own one-line summary of each.
+ * (a tool's, a scheduled-task or settings change an agent asked for, threads
+ * its agent asked to start), each open question, and its plan to review.
+ * `thread_read` and `thread_wait` show them in detail, `inbox` as a list
+ * with Threadlines' own one-line summary of each.
  *
  * The details (a command, a question, a plan's title) are the agent's words,
  * clipped; the summary is Threadlines' and says only what kind of thing waits.
@@ -18,6 +18,7 @@ import {
   collectOpenPendingRequests,
   USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
+import { isPlaceId, placeById } from "@threadlines/shared/appPlaces";
 
 import { actionableProposedPlan, proposedPlanTitle } from "../orchestration/proposedPlans.ts";
 import { threadStatus } from "./threadOperations.ts";
@@ -30,6 +31,7 @@ export type ThreadApprovalAsk =
   | "permissions"
   | "terminal-input"
   | "scheduled-task"
+  | "settings"
   | "start-threads"
   | "other";
 
@@ -240,6 +242,22 @@ export function threadWaitingItems(
           : "Wants to change a scheduled task",
       asks: "scheduled-task",
       detail: clip([request.name, ...request.details].join(" · "), WAITING_DETAIL_CHAR_LIMIT),
+    });
+  }
+  for (const request of thread.settingsRequests ?? []) {
+    if (request.status !== "waiting") continue;
+    items.push({
+      kind: "approval",
+      requestId: request.requestId,
+      askedAt: request.createdAt,
+      summary: `Wants to change ${plural(request.changes.length, "setting")}`,
+      asks: "settings",
+      detail: clip(
+        request.changes
+          .map(({ place }) => (isPlaceId(place) ? placeById(place).title : place))
+          .join(" · "),
+        WAITING_DETAIL_CHAR_LIMIT,
+      ),
     });
   }
   const batches = new Map<string, { askedAt: string; starts: number; sends: number }>();

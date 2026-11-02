@@ -14,6 +14,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RoomAgentRequestId,
+  SettingsChangeRequestId,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
@@ -64,7 +65,7 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
-/** A shell no other thread started, with no threads of its own. */
+/** A shell no other thread started, with no threads of its own and no settings change waiting. */
 const NO_CHILD_THREAD_SHELL_FIELDS = {
   parentThreadId: null,
   parentTurnId: null,
@@ -73,6 +74,7 @@ const NO_CHILD_THREAD_SHELL_FIELDS = {
   handedBackTurnId: null,
   awaitedChildThreadCount: 0,
   pendingChildApproval: false,
+  pendingSettingsChange: false,
 } as const;
 
 function withActiveEnvironmentState(
@@ -387,6 +389,147 @@ describe("thread detail loaded", () => {
       localEnvironmentId,
     );
     expect(selectThreadDetailLoaded(deleted, threadRef)).toBe(false);
+  });
+});
+
+describe("agents' settings changes", () => {
+  const threadId = ThreadId.make("thread-1");
+  const threadRef = scopeThreadRef(localEnvironmentId, threadId);
+  const requestId = SettingsChangeRequestId.make("settings-request-1");
+  const waiting = {
+    requestId,
+    participantId: null,
+    turnId: TurnId.make("turn-1"),
+    changes: [{ place: "general.theme", value: "light" }],
+    status: "waiting" as const,
+    createdAt: "2026-02-27T00:00:01.000Z",
+    noted: false,
+  };
+  const pillOf = (state: AppState) => {
+    const summary = localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+    return summary === undefined
+      ? null
+      : (resolveThreadStatusPill({ thread: summary })?.label ?? null);
+  };
+  const shellUpsert = (pendingSettingsChange: boolean) =>
+    ({
+      kind: "thread-upserted",
+      sequence: 2,
+      thread: {
+        id: threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        effectiveCwd: null,
+        goal: null,
+        latestTurn: null,
+        createdAt: "2026-02-13T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+        archivedAt: null,
+        pinnedAt: null,
+        pullRequestAutoFix: false,
+        pullRequestAutoMerge: null,
+        linkedPullRequests: [],
+        participants: [],
+        doneOverride: null,
+        lastSeenAt: null,
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+        cumulativeDiffStat: null,
+        diffStatBaselineTurnCount: 0,
+        ...NO_CHILD_THREAD_SHELL_FIELDS,
+        pendingSettingsChange,
+      },
+    }) as const;
+
+  it("waits on the user from the shell, then from the thread's own requests as they change", () => {
+    // The sidebar knows from the shell before the thread's detail loads.
+    const fromShell = applyShellEvent(
+      makeState(makeThread()),
+      shellUpsert(true),
+      localEnvironmentId,
+    );
+    expect(pillOf(fromShell)).toBe("Pending Approval");
+
+    const loaded = syncServerThreadDetail(
+      fromShell,
+      decodeOrchestrationThread({
+        id: threadId,
+        projectId: "project-1",
+        title: "Thread",
+        modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-02-13T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+        deletedAt: null,
+        messages: [],
+        activities: [],
+        checkpoints: [],
+        session: null,
+        settingsRequests: [waiting],
+      }),
+      localEnvironmentId,
+    );
+    expect(selectThreadByRef(loaded, threadRef)?.settingsRequests).toEqual([waiting]);
+    expect(pillOf(loaded)).toBe("Pending Approval");
+
+    // Being made still waits; settled, it no longer does.
+    const claimed = applyOrchestrationEvent(
+      loaded,
+      makeEvent("thread.settings-change-claimed", {
+        threadId,
+        requestId,
+        claim: { claimId: "claim-1", deviceLabel: "iPhone" },
+        claimedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(pillOf(claimed)).toBe("Pending Approval");
+    const settled = applyOrchestrationEvent(
+      claimed,
+      makeEvent("thread.settings-change-settled", {
+        threadId,
+        requestId,
+        ending: "changed",
+        settledAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(pillOf(settled)).toBe(null);
+    expect(selectThreadByRef(settled, threadRef)?.settingsRequests).toEqual([
+      {
+        ...waiting,
+        status: "changed",
+        claim: { claimId: "claim-1", deviceLabel: "iPhone" },
+        settledAt: "2026-02-27T00:00:03.000Z",
+      },
+    ]);
+    // The shell's next push agrees with what the thread folded.
+    const pushed = applyShellEvent(settled, shellUpsert(false), localEnvironmentId);
+    expect(localEnvironmentStateOf(pushed).sidebarThreadSummaryById[threadId]).toBe(
+      localEnvironmentStateOf(settled).sidebarThreadSummaryById[threadId],
+    );
+
+    // The agent asks again.
+    const askedAgain = applyOrchestrationEvent(
+      settled,
+      makeEvent("thread.settings-change-requested", {
+        threadId,
+        request: { ...waiting, requestId: SettingsChangeRequestId.make("settings-request-2") },
+      }),
+      localEnvironmentId,
+    );
+    expect(pillOf(askedAgain)).toBe("Pending Approval");
   });
 });
 

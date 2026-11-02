@@ -30,6 +30,7 @@ import {
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSettingsChangeRequest,
   OrchestrationThreadMove,
   ThreadMovedFrom,
   ThreadRemoteOrigin,
@@ -171,6 +172,13 @@ export const ProjectionThread = Schema.Struct({
   historySeedMessageId: Schema.optional(Schema.NullOr(MessageId)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
+  /**
+   * See `OrchestrationThread.settingsRequests`. Optional so rows written
+   * before migration 097 decode; absent, null or empty reads as none.
+   */
+  settingsRequests: Schema.optional(
+    Schema.NullOr(Schema.Array(OrchestrationSettingsChangeRequest)),
+  ),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two

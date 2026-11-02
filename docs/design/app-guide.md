@@ -38,7 +38,7 @@ point at the right row is a large part of the app feeling finished.
    from `app_guide`, and places are linked with the links it gives. ACP
    agents get no instructions, so the tool description says the same.
 
-Agents change no settings in this version (see "Changing settings, later").
+Agents change settings only through a card the user accepts (see "Changing settings").
 
 ## One catalog: places
 
@@ -203,24 +203,12 @@ Each refusal below gets the place's path and link, built from the catalog
 - Browser tools refused by "Sites agents can visit".
 - `ask_user_to_run` with command requests off.
 
-## Changing settings, later
+## Changing settings
 
-Not in this version. When it comes: a `settings_change` tool whose every
-call is a card the user accepts or declines, limited to an explicit
-server-side allowlist of writable settings (fail closed: a place is not
-writable unless listed). Every underlying key a change touches is checked
-against the list, including aggregate actions: "Restore defaults" turns
-rooms, pages, command requests, invites and thread starts back on, so it is
-never agent-callable. `widensAgents` stays as metadata the guide shows ("only
-you can change this"); it marks everything that gives agents more reach: starting threads, rooms,
-invites, agent pages, artifacts, command requests, start-while-typing,
-new-thread agent and room, providers and sign-ins, computer links and their
-access, outside agents, devices and relay, plugins, skills, MCP connections
-and instruction files, scheduled and event tasks, per-thread access, site
-policy, server exposure and Tailscale, keep awake for scheduled tasks, keep
-running in the background (it keeps scheduled tasks and linked computers
-working with the window closed). A
-prompt-injected agent could otherwise unlock itself.
+Built separately: `agent-settings-changes.md`. An agent asks with
+`settings_change`, the user accepts on a card, and only places the catalog
+gives an `edit` can be asked for (never a `widensAgents` one). The guide says
+for each place whether an agent may change it.
 
 ## Providers
 

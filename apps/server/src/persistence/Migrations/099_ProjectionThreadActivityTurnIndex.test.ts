@@ -5,11 +5,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
-it.layer(NodeSqliteClient.layerMemory())("098_ProjectionThreadActivityTurnIndex", (it) => {
+it.layer(NodeSqliteClient.layerMemory())("099_ProjectionThreadActivityTurnIndex", (it) => {
   it.effect("serves one turn's activities in order from the turn index, not a thread scan", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 98 });
+      yield* runMigrations({ toMigrationInclusive: 99 });
 
       // The shape of ProjectionSnapshotQuery's listThreadActivityRowsByTurn.
       const plan = yield* sql

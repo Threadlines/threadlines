@@ -475,6 +475,178 @@ describe("room_ask", () => {
       ]);
     }),
   );
+
+  /** The call has stopped waiting on its answer. */
+  const released = (room: { readonly dispatched: ReadonlyArray<OrchestrationCommand> }) => () =>
+    room.dispatched.some((c) => c.type === "thread.agent-request.detach");
+
+  const steerAccepted = (payload: Record<string, unknown> = {}) =>
+    ({
+      type: "thread.follow-up-accepted",
+      payload: {
+        threadId: THREAD,
+        turnId: TURN,
+        messageId: "steer",
+        composer: "typed",
+        ...payload,
+      },
+    }) as unknown as OrchestrationEvent;
+
+  it.effect("stops waiting when the user writes, and the answer goes on", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}) });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      yield* room.publish(steerAccepted());
+      yield* until(released(room));
+      expect(released(room)()).toBe(true);
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("continuing");
+      expect(room.dispatched.at(-1)).toMatchObject({
+        type: "thread.agent-request.detach",
+        requestId: submits(room.dispatched)[0]!.requestId,
+      });
+      expect(room.dispatched.some((c) => c.type === "thread.side-turn.interrupt")).toBe(false);
+    }),
+  );
+
+  it.effect("stops waiting when the user answers a question the agent asked", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}) });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      yield* room.publish(
+        steerAccepted({ composer: undefined, messageId: "question-answer:request-1" }),
+      );
+      yield* until(released(room));
+      expect(released(room)()).toBe(true);
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("continuing");
+    }),
+  );
+
+  it.effect("keeps waiting through messages the user did not write to this agent", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}) });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      const [submit] = submits(room.dispatched);
+      // An agent's reply, the same words into an older turn, and another agent's turn.
+      yield* room.publish(steerAccepted({ composer: undefined }));
+      yield* room.publish(steerAccepted({ turnId: "turn-older" }));
+      yield* room.publish(steerAccepted({ participantId: REVIEWER }));
+      // Time for the call to react, before an answer could hide that it did.
+      yield* until(released(room));
+      expect(released(room)()).toBe(false);
+      yield* room.publish(settledEvent({ sideTurnId: submit!.sideTurnId, outcome: "completed" }));
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("answered");
+    }),
+  );
+
+  it.effect("waits for the answer when the user writes just as it lands", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({ onSubmit: () => ({}), refuseDetach: true });
+      const waiter = yield* Effect.forkChild(
+        room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+      );
+      yield* until(() => submits(room.dispatched).length > 0);
+      const [submit] = submits(room.dispatched);
+      yield* room.publish(steerAccepted());
+      yield* until(released(room));
+      yield* room.publish(settledEvent({ sideTurnId: submit!.sideTurnId, outcome: "completed" }));
+      const result = yield* Fiber.join(waiter);
+
+      expect(result.outcome).toBe("answered");
+      expect(room.dispatched.some((c) => c.type === "thread.side-turn.interrupt")).toBe(false);
+    }),
+  );
+
+  describe("a message the user wrote before the call got here", () => {
+    const steer = {
+      id: "steer",
+      role: "user",
+      text: "Also do this",
+      composer: "typed",
+      turnId: TURN,
+      eventSequence: 10,
+    };
+    const tool = (
+      kind: string,
+      toolCallId: string,
+      eventSequence: number,
+      turnId: unknown = TURN,
+    ) => ({
+      kind,
+      payload: { toolCallId },
+      eventSequence,
+      turnId,
+    });
+
+    it.effect("stops waiting when the agent has taken no step since", () =>
+      Effect.gen(function* () {
+        const room = yield* makeRoom({
+          onSubmit: () => ({}),
+          thread: makeThread({
+            messages: [steer],
+            activities: [
+              // Asked for together: the command ended after the message came,
+              // which only let this call start.
+              tool("tool.started", "command", 5),
+              tool("tool.started", "this-call", 6),
+              tool("tool.completed", "command", 11),
+              // The reviewer's own steps, not the agent's.
+              tool("tool.started", "side", 12, null),
+              tool("tool.completed", "side", 13, null),
+            ],
+          } as unknown as Partial<OrchestrationThread>),
+        });
+        const waiter = yield* Effect.forkChild(
+          room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+        );
+        yield* until(released(room));
+        expect(released(room)()).toBe(true);
+        const result = yield* Fiber.join(waiter);
+
+        expect(result.outcome).toBe("continuing");
+      }),
+    );
+
+    it.effect("keeps waiting when the agent has already read it", () =>
+      Effect.gen(function* () {
+        const room = yield* makeRoom({
+          onSubmit: () => ({}),
+          thread: makeThread({
+            messages: [steer],
+            activities: [
+              tool("tool.started", "next-step", 11),
+              tool("tool.completed", "next-step", 12),
+            ],
+          } as unknown as Partial<OrchestrationThread>),
+        });
+        const waiter = yield* Effect.forkChild(
+          room.handlers.room_ask(mainCaller(), { agent: "Opus 5.5", question: "Why?" }),
+        );
+        yield* until(() => submits(room.dispatched).length > 0);
+        const [submit] = submits(room.dispatched);
+        yield* until(released(room));
+        expect(released(room)()).toBe(false);
+        yield* room.publish(settledEvent({ sideTurnId: submit!.sideTurnId, outcome: "completed" }));
+        const result = yield* Fiber.join(waiter);
+
+        expect(result.outcome).toBe("answered");
+      }),
+    );
+  });
 });
 
 describe("room_review", () => {

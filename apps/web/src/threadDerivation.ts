@@ -29,6 +29,7 @@ const threadCache = new WeakMap<
     turnDiffSummaries: Thread["turnDiffSummaries"];
     agentRequests: NonNullable<Thread["agentRequests"]>;
     childRequests: Thread["childRequests"];
+    settingsRequests: Thread["settingsRequests"];
     pages: Thread["pages"];
     workflowRuns: Thread["workflowRuns"];
     subagents: Thread["subagents"];
@@ -113,6 +114,8 @@ export function getThreadFromEnvironmentState(
   const agentRequests = state.agentRequestsByThreadId[threadId] ?? EMPTY_AGENT_REQUEST_STATE;
   // Absent until the detail stream loads it, so the shell's counts stand meanwhile.
   const childRequests = state.childRequestsByThreadId[threadId];
+  // Likewise: the shell's pendingSettingsChange stands until the detail loads.
+  const settingsRequests = state.settingsRequestsByThreadId?.[threadId];
   const pages = state.pagesByThreadId?.[threadId];
   const workflowRuns = state.workflowRunsByThreadId?.[threadId];
   const subagents = state.subagentsByThreadId?.[threadId];
@@ -130,6 +133,7 @@ export function getThreadFromEnvironmentState(
     cached.turnDiffSummaries === turnDiffSummaries &&
     cached.agentRequests === agentRequests &&
     cached.childRequests === childRequests &&
+    cached.settingsRequests === settingsRequests &&
     cached.pages === pages &&
     cached.workflowRuns === workflowRuns &&
     cached.subagents === subagents &&
@@ -150,6 +154,7 @@ export function getThreadFromEnvironmentState(
     turnDiffSummaries,
     agentRequests,
     ...(childRequests !== undefined ? { childRequests } : {}),
+    ...(settingsRequests !== undefined ? { settingsRequests } : {}),
     ...(pages !== undefined ? { pages } : {}),
     ...(workflowRuns !== undefined ? { workflowRuns } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
@@ -166,6 +171,7 @@ export function getThreadFromEnvironmentState(
     turnDiffSummaries,
     agentRequests,
     childRequests,
+    settingsRequests,
     pages,
     workflowRuns,
     subagents,

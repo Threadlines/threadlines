@@ -16,9 +16,16 @@
 import type {
   AgentInvitesMode,
   AgentThreadsMode,
+  ClientSettings,
+  ClientSettingsPatch,
   ComputerLinkAccess,
   ServerSettings,
+  ServerSettingsPatch,
+  SourceControlWritingStyleMode,
+  ThreadEnvMode,
+  TimestampFormat,
 } from "@threadlines/contracts";
+import * as Duration from "effect/Duration";
 
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
 
@@ -53,6 +60,12 @@ export type AppPlaceValue =
       readonly options: Readonly<Record<string, string>>;
     }
   | {
+      readonly kind: "count";
+      readonly read: (settings: ServerSettings) => number;
+      /** Plural, as a value is said: "60 seconds". */
+      readonly unit: string;
+    }
+  | {
       readonly kind: "state";
       /** Values the server gathers from its own records, not from settings. */
       readonly state: "linkedComputers" | "providers" | "outsideAgents" | "scheduledTasks";
@@ -79,12 +92,145 @@ interface AppPlaceSpec {
   readonly appliesWhen?: "desktop";
   /** Gives agents more reach: the guide says only the user can change it. */
   readonly widensAgents?: true;
+  /**
+   * An agent may ask to change it, on a card the user accepts
+   * (docs/design/agent-settings-changes.md). Absent: agents can't. This is the
+   * whole allowlist.
+   */
+  readonly edit?: AppPlaceEdit;
 }
+
+/** The control an agent's change fills in, as the row's own control takes it. */
+export type EditControl =
+  | { readonly kind: "switch" }
+  | {
+      readonly kind: "choice";
+      /** Each value an agent may pick, with its label as the screen shows it. */
+      readonly options: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly kind: "count";
+      readonly min: number;
+      readonly max: number;
+      /** Plural, as a value is said: "12 px", "60 seconds". */
+      readonly unit: string;
+      /** 0 is also allowed, and means off. */
+      readonly offAtZero?: true;
+    };
+
+export type EditValue = boolean | string | number;
+
+/**
+ * Where an agent's change lands and how it is written. "computer": the
+ * thread's computer writes it into its settings. "device": the app the user
+ * accepts it in writes it into its own (client settings, or the theme store).
+ * `leaves` names every setting the patch may touch, dotted for nested ones.
+ */
+export type AppPlaceEdit =
+  | {
+      readonly lands: "computer";
+      readonly control: EditControl;
+      readonly leaves: ReadonlyArray<string>;
+      readonly read: (settings: ServerSettings) => EditValue;
+      readonly patch: (value: EditValue) => ServerSettingsPatch;
+    }
+  | {
+      readonly lands: "device";
+      readonly control: EditControl;
+      readonly leaves: ReadonlyArray<string>;
+      readonly read: (settings: ClientSettings) => EditValue;
+      readonly patch: (value: EditValue) => ClientSettingsPatch;
+    }
+  | {
+      readonly lands: "device";
+      readonly control: EditControl;
+      /** Kept outside client settings, by the app's own store. */
+      readonly store: "theme";
+    };
 
 const onOff = (read: (settings: ServerSettings) => boolean): AppPlaceValue => ({
   kind: "switch",
   read,
 });
+
+type KeysOfType<T, V> = { [K in keyof T]-?: T[K] extends V ? K : never }[keyof T];
+
+/** A computer switch agents may change: the guide reads it and an accepted card writes it. */
+const editableServerSwitch = <K extends KeysOfType<ServerSettings, boolean>>(key: K) =>
+  ({
+    value: onOff((settings) => settings[key] as boolean),
+    edit: {
+      lands: "computer",
+      control: { kind: "switch" },
+      leaves: [key],
+      read: (settings) => settings[key] as boolean,
+      patch: (value) => ({ [key]: value === true }) as ServerSettingsPatch,
+    },
+  }) satisfies Pick<AppPlaceSpec, "value" | "edit">;
+
+/**
+ * A computer choice agents may change. The guide words every value with
+ * `labels`; agents may pick only `agentChoices` (all of them unless given).
+ */
+const editableServerChoice = <K extends KeysOfType<ServerSettings, string>>(
+  key: K,
+  labels: Readonly<Record<ServerSettings[K] & string, string>>,
+  agentChoices?: ReadonlyArray<ServerSettings[K] & string>,
+) => {
+  const choices = agentChoices ?? (Object.keys(labels) as Array<ServerSettings[K] & string>);
+  const options: Readonly<Record<string, string>> = Object.fromEntries(
+    choices.map((choice) => [choice, labels[choice]]),
+  );
+  return {
+    value: { kind: "choice", read: (settings) => settings[key] as string, options: labels },
+    edit: {
+      lands: "computer",
+      control: { kind: "choice", options },
+      leaves: [key],
+      read: (settings) => settings[key] as string,
+      patch: (value) => ({ [key]: value }) as ServerSettingsPatch,
+    },
+  } satisfies Pick<AppPlaceSpec, "value" | "edit">;
+};
+
+/** A device switch agents may change, in the app the user accepts it in. */
+const editableDeviceSwitch = <K extends KeysOfType<ClientSettings, boolean>>(key: K) =>
+  ({
+    lands: "device",
+    control: { kind: "switch" },
+    leaves: [key],
+    read: (settings) => settings[key] as boolean,
+    patch: (value) => ({ [key]: value === true }) as ClientSettingsPatch,
+  }) satisfies AppPlaceEdit;
+
+/** Fetch interval in whole seconds, as its row shows it. */
+const fetchIntervalSeconds = (settings: ServerSettings): number =>
+  Math.round(Duration.toSeconds(settings.automaticGitFetchInterval));
+
+/** "Start in", as its menu words each choice. */
+export const THREAD_ENV_MODE_LABELS: Readonly<Record<ThreadEnvMode, string>> = {
+  local: "Local",
+  worktree: "New worktree",
+};
+
+/** "Time format", as its menu words each choice. */
+export const TIMESTAMP_FORMAT_LABELS: Readonly<Record<TimestampFormat, string>> = {
+  locale: "System default",
+  "12-hour": "12-hour",
+  "24-hour": "24-hour",
+};
+
+/** "Theme", as its menu words each choice. */
+export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
+
+/** "Source control writing style", as its menu words each choice. */
+export const SOURCE_CONTROL_WRITING_STYLE_LABELS: Readonly<
+  Record<SourceControlWritingStyleMode, string>
+> = {
+  repo_conventions: "Repository conventions",
+  conventional_commits: "Conventional Commits",
+  custom: "Custom instructions",
+};
 
 /** "Agents bringing in other agents", as its menu words each choice. */
 export const AGENT_INVITES_LABELS: Readonly<Record<AgentInvitesMode, string>> = {
@@ -628,6 +774,7 @@ const ROWS = [
     about: "How Threadlines looks.",
     keywords: ["dark mode", "light mode", "night mode", "colors"],
     scope: "device",
+    edit: { lands: "device", control: { kind: "choice", options: THEME_LABELS }, store: "theme" },
   },
   {
     id: "general.timeFormat",
@@ -637,6 +784,13 @@ const ROWS = [
     about: "System default follows your computer's clock setting.",
     keywords: ["12-hour", "24-hour", "clock"],
     scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: TIMESTAMP_FORMAT_LABELS },
+      leaves: ["timestampFormat"],
+      read: (settings) => settings.timestampFormat,
+      patch: (value) => ({ timestampFormat: value as TimestampFormat }),
+    },
   },
   // General › Chat & diffs (on a phone, Stream replies sits under This computer)
   {
@@ -646,7 +800,7 @@ const ROWS = [
     title: "Stream replies",
     about: "Show the agent's reply while it's being written.",
     keywords: ["streaming"],
-    value: onOff((settings) => settings.enableAssistantStreaming),
+    ...editableServerSwitch("enableAssistantStreaming"),
   },
   {
     id: "general.changedFilesInChat",
@@ -656,6 +810,7 @@ const ROWS = [
     about: "Open the list of changed files under each reply.",
     keywords: ["files", "edits"],
     scope: "device",
+    edit: editableDeviceSwitch("chatChangedFilesDefaultExpanded"),
   },
   {
     id: "general.agentsPanel",
@@ -665,6 +820,7 @@ const ROWS = [
     about: "Open it on the right when a thread starts subagents.",
     keywords: ["subagents"],
     scope: "device",
+    edit: editableDeviceSwitch("autoOpenAgentsPanel"),
   },
   {
     id: "general.wrapDiffLines",
@@ -674,6 +830,7 @@ const ROWS = [
     about: "Wrap long lines when the diff panel opens.",
     keywords: ["word wrap", "long lines"],
     scope: "device",
+    edit: editableDeviceSwitch("diffWordWrap"),
   },
   {
     id: "general.hideWhitespace",
@@ -683,6 +840,7 @@ const ROWS = [
     about: "Leave out edits that only change spacing.",
     keywords: ["diff", "whitespace"],
     scope: "device",
+    edit: editableDeviceSwitch("diffIgnoreWhitespace"),
   },
   // General › Terminal
   {
@@ -693,6 +851,13 @@ const ROWS = [
     about: "The size of the terminal's text on this device.",
     keywords: ["font size", "zoom", "bigger text", "smaller text"],
     scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "count", min: 9, max: 24, unit: "px" },
+      leaves: ["terminalFontSize"],
+      read: (settings) => settings.terminalFontSize,
+      patch: (value) => ({ terminalFontSize: value as number }),
+    },
   },
   {
     id: "general.terminalScreenReader",
@@ -702,6 +867,7 @@ const ROWS = [
     about: "Lets a screen reader read what the terminal prints. Busy output draws a little slower.",
     keywords: ["accessibility", "voiceover"],
     scope: "device",
+    edit: editableDeviceSwitch("terminalScreenReaderMode"),
   },
   // General › Dictation
   {
@@ -722,6 +888,7 @@ const ROWS = [
       "Hold the mic button to record and let go to finish. Off: click to start, click again to stop.",
     keywords: ["push to talk"],
     scope: "device",
+    edit: editableDeviceSwitch("dictationHoldToRecord"),
   },
   {
     id: "general.downloadedModels",
@@ -740,7 +907,7 @@ const ROWS = [
     title: "Keep awake during turns",
     about: "Stops the computer sleeping while an agent works, on macOS and Windows.",
     keywords: ["sleep", "caffeinate"],
-    value: onOff((settings) => settings.preventSleepDuringActiveTurns),
+    ...editableServerSwitch("preventSleepDuringActiveTurns"),
   },
   {
     id: "general.keepAwakeForScheduledTasks",
@@ -898,6 +1065,7 @@ const ROWS = [
     title: "Start in",
     about: "Work in the project folder, or give each new thread its own worktree.",
     keywords: ["worktree", "local checkout"],
+    ...editableServerChoice("defaultThreadEnvMode", THREAD_ENV_MODE_LABELS),
   },
   {
     id: "threads.worktreesFrom",
@@ -949,6 +1117,7 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Claude workflow size",
     about: "How many agents Claude aims for in a workflow.",
+    widensAgents: true,
   },
   {
     id: "threads.claudeSuggestions",
@@ -958,7 +1127,7 @@ const ROWS = [
     about:
       "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
     keywords: ["autocomplete", "prompt suggestions"],
-    value: onOff((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
+    ...editableServerSwitch("claudeSuggestionsWhenUsageRunsFast"),
   },
   {
     id: "threads.continueAfterUsageLimits",
@@ -969,6 +1138,7 @@ const ROWS = [
       "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets. Each limit's notice above the composer also has a Continue at reset switch.",
     keywords: ["usage limit", "rate limit", "resume", "reset"],
     value: onOff((settings) => settings.continueAfterUsageLimits),
+    widensAgents: true,
   },
   {
     id: "threads.commandRequests",
@@ -1045,6 +1215,7 @@ const ROWS = [
       "Move a thread to Wrapped after two quiet days, unless it's pinned or has news you haven't seen.",
     keywords: ["wrapped"],
     scope: "device",
+    edit: editableDeviceSwitch("wrapUpIdleThreads"),
   },
   {
     id: "threads.wrapUpMerged",
@@ -1054,6 +1225,7 @@ const ROWS = [
     about: "Move a thread to Wrapped when its pull request merges or closes, unless it's pinned.",
     keywords: ["wrapped", "pull request"],
     scope: "device",
+    edit: editableDeviceSwitch("wrapUpThreadsOnPullRequestSettled"),
   },
   {
     id: "threads.wrapUpChildren",
@@ -1064,6 +1236,7 @@ const ROWS = [
       "File a thread an agent started under Wrapped once its answer went back to that agent, or once the thread that started it is wrapped.",
     keywords: ["wrapped", "child threads"],
     scope: "device",
+    edit: editableDeviceSwitch("wrapUpChildThreadsOnFinish"),
   },
   {
     id: "threads.confirmArchive",
@@ -1131,6 +1304,7 @@ const ROWS = [
       "Show the source control panel when you enter a thread. Narrow windows always start with it closed, since the panel covers the conversation there.",
     keywords: ["git", "changes"],
     scope: "device",
+    edit: editableDeviceSwitch("sourceControlPanelDefaultOpen"),
   },
   // Source Control › Version control
   {
@@ -1141,6 +1315,14 @@ const ROWS = [
     about:
       "How often Git checks remote branches in the background. 0 seconds leaves it to the Git actions you run.",
     keywords: ["git fetch", "background", "remote branches"],
+    value: { kind: "count", read: (settings) => fetchIntervalSeconds(settings), unit: "seconds" },
+    edit: {
+      lands: "computer",
+      control: { kind: "count", min: 30, max: 3600, unit: "seconds", offAtZero: true },
+      leaves: ["automaticGitFetchInterval"],
+      read: (settings) => fetchIntervalSeconds(settings),
+      patch: (value) => ({ automaticGitFetchInterval: Duration.seconds(value as number) }),
+    },
   },
   // Source Control › Text generation
   {
@@ -1151,6 +1333,27 @@ const ROWS = [
     about:
       "How commit messages and pull requests are written: in the repository's style, as Conventional Commits, or by your own instructions.",
     keywords: ["commit message", "conventional commits"],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.sourceControlWritingStyle.mode,
+      options: SOURCE_CONTROL_WRITING_STYLE_LABELS,
+    },
+    edit: {
+      lands: "computer",
+      // Not custom: its instructions go into prompts.
+      control: {
+        kind: "choice",
+        options: {
+          repo_conventions: SOURCE_CONTROL_WRITING_STYLE_LABELS.repo_conventions,
+          conventional_commits: SOURCE_CONTROL_WRITING_STYLE_LABELS.conventional_commits,
+        },
+      },
+      leaves: ["sourceControlWritingStyle.mode"],
+      read: (settings) => settings.sourceControlWritingStyle.mode,
+      patch: (value) => ({
+        sourceControlWritingStyle: { mode: value as SourceControlWritingStyleMode },
+      }),
+    },
   },
   {
     id: "sourceControl.followPrTemplates",
@@ -1160,6 +1363,14 @@ const ROWS = [
     about:
       "Structures PR descriptions using the repository's pull request template when one is available.",
     keywords: ["pull request template"],
+    value: onOff((settings) => settings.sourceControlWritingStyle.followPrTemplates),
+    edit: {
+      lands: "computer",
+      control: { kind: "switch" },
+      leaves: ["sourceControlWritingStyle.followPrTemplates"],
+      read: (settings) => settings.sourceControlWritingStyle.followPrTemplates,
+      patch: (value) => ({ sourceControlWritingStyle: { followPrTemplates: value === true } }),
+    },
   },
   {
     id: "sourceControl.writerModel",

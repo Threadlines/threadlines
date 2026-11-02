@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-type Theme = "light" | "dark" | "system";
+export type Theme = "light" | "dark" | "system";
 type ThemeSnapshot = {
   theme: Theme;
   systemDark: boolean;
@@ -180,6 +180,25 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/** This device's theme, as the Theme row shows it. */
+export function readThemePreference(): Theme {
+  return getStored();
+}
+
+/**
+ * Sets this device's theme, as the Theme row does. Throws when the browser
+ * won't keep it (no storage, or storage refused the write), so a caller that
+ * reports whether a change landed can say so.
+ */
+export function setThemePreference(next: Theme): void {
+  if (!hasThemeStorage()) {
+    throw new Error("This browser can't keep a theme.");
+  }
+  localStorage.setItem(STORAGE_KEY, next);
+  applyTheme(next, true);
+  emitChange();
+}
+
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const theme = snapshot.theme;
@@ -189,9 +208,7 @@ export function useTheme() {
 
   const setTheme = useCallback((next: Theme) => {
     if (!hasThemeStorage()) return;
-    localStorage.setItem(STORAGE_KEY, next);
-    applyTheme(next, true);
-    emitChange();
+    setThemePreference(next);
   }, []);
 
   // Keep DOM in sync on mount/change

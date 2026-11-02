@@ -74,6 +74,9 @@ export type CommandRequestId = typeof CommandRequestId.Type;
 /** One time the user ran a suggested command, or put it in the terminal. */
 export const CommandRunId = makeEntityId("CommandRunId");
 export type CommandRunId = typeof CommandRunId.Type;
+/** A settings change an agent asked for (`settings_change`), answered on a card. */
+export const SettingsChangeRequestId = makeEntityId("SettingsChangeRequestId");
+export type SettingsChangeRequestId = typeof SettingsChangeRequestId.Type;
 /** One piece of work a thread's agent asked of a thread it started. */
 export const ChildRequestId = makeEntityId("ChildRequestId");
 export type ChildRequestId = typeof ChildRequestId.Type;

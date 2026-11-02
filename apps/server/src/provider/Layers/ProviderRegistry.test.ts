@@ -311,6 +311,7 @@ function makeMutableServerSettingsService(
       start: Effect.void,
       ready: Effect.void,
       getSettings: Ref.get(settingsRef),
+      readStored: Ref.get(settingsRef),
       updateSettings: (patch) =>
         Effect.gen(function* () {
           const current = yield* Ref.get(settingsRef);
@@ -329,6 +330,7 @@ function makeMutableServerSettingsService(
           yield* PubSub.publish(changes, next);
           return next;
         }),
+      updateSettingsChecked: () => Effect.die("unused"),
       get streamChanges() {
         return Stream.fromPubSub(changes);
       },

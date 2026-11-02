@@ -654,8 +654,9 @@ export function decideAgentRequestQueue(
 }
 
 /**
- * An ask's or review's call ran out of time. While the caller's turn that
- * made it still runs, its answer goes on and comes back as a reply message
+ * An ask's or review's call stopped waiting: it ran out of time, or the user
+ * wrote to the caller. While the caller's turn that made it still runs, its
+ * answer goes on and comes back as a reply message
  * instead. Once that turn is over, the turn's end has already stopped the
  * answer (or is about to), so this is refused: the two cannot cross.
  */

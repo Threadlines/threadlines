@@ -19,6 +19,7 @@ import {
   revertOwesHistorySeed,
 } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
+import { applySettingsChangeEvent } from "@threadlines/shared/settingsChangeState";
 import {
   ApprovalRequestId,
   EMPTY_AGENT_REQUEST_STATE,
@@ -896,6 +897,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                             : childRequestStateOn.reset(state);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
+          }
+          return;
+        }
+
+        case "thread.settings-change-requested":
+        case "thread.settings-change-claimed":
+        case "thread.settings-change-settled":
+        case "thread.settings-change-device-reported":
+        case "thread.settings-change-notes-delivered": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const requests = existingRow.value.settingsRequests ?? [];
+          const settingsRequests = applySettingsChangeEvent(requests, event);
+          if (settingsRequests !== requests) {
+            yield* projectionThreadRepository.upsert({ ...existingRow.value, settingsRequests });
           }
           return;
         }
