@@ -286,7 +286,7 @@ export interface ConnectToolDeps {
 }
 
 /** A project as these tools see it. */
-type ConnectProject = Pick<
+export type ConnectProject = Pick<
   OrchestrationProjectCatalogEntry,
   "id" | "kind" | "title" | "workspaceRoot"
 >;
@@ -332,14 +332,14 @@ const grantsProject = (grant: OutsideAgentLiveGrant, projectId: ProjectId) =>
  * of those threads has a scratch folder of its own, and is the user's own
  * conversation, not a project's work).
  */
-const projectsIn = <Project extends ConnectProject>(
+export const projectsIn = <Project extends ConnectProject>(
   projects: ReadonlyArray<Project>,
   grant: OutsideAgentLiveGrant,
 ) =>
   projects.filter((project) => project.kind !== "general-chat" && grantsProject(grant, project.id));
 
 /** The project a call names, by id or by name (case ignored), among the ones it sees. */
-const findProject = <Project extends ConnectProject>(
+export const findProject = <Project extends ConnectProject>(
   projects: ReadonlyArray<Project>,
   wanted: string,
 ): { readonly project: Project } | { readonly detail: string } => {

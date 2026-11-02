@@ -1,4 +1,5 @@
 import {
+  AssistantAlertTargetId,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
   type OrchestrationOutsideWork,
@@ -10,6 +11,8 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  assistantAlertTargetTitles,
+  describeAssistantAlertRenewal,
   describeOutsideAgentAccess,
   describeOutsideAgentProjects,
   describeOutsideAgentSignIn,
@@ -104,6 +107,64 @@ describe("outside agent wording", () => {
     expect(outsideAgentQuietMinutesLeft("2026-10-23T12:07:30.000Z", NOW_MS)).toBe(8);
     expect(outsideAgentQuietMinutesLeft("2026-10-23T12:00:10.000Z", NOW_MS)).toBe(1);
     expect(outsideAgentQuietMinutesLeft("2026-10-23T11:59:00.000Z", NOW_MS)).toBeNull();
+  });
+});
+
+describe("assistantAlertTargetTitles", () => {
+  const dots = { connectionId: OutsideAgentConnectionId.make("connection-dots"), name: "dots" };
+  const target = (
+    id: string,
+    url: string,
+    addedBy: typeof dots | null = null,
+  ): { targetId: AssistantAlertTargetId; url: string; addedBy: typeof dots | null } => ({
+    targetId: AssistantAlertTargetId.make(id),
+    url,
+    addedBy,
+  });
+  const titles = (...targets: ReadonlyArray<ReturnType<typeof target>>) => [
+    ...assistantAlertTargetTitles(targets).values(),
+  ];
+
+  it("shows a subscription's host and path, so two at one host tell apart", () => {
+    expect(
+      titles(
+        target("a", "https://chatgpt.com/api/mcp/events/abc?token=hidden", dots),
+        target("b", "https://chatgpt.com/api/mcp/events/def", dots),
+      ),
+    ).toEqual(["chatgpt.com/api/mcp/events/abc", "chatgpt.com/api/mcp/events/def"]);
+  });
+
+  it("leaves the titles of addresses the user added as they were, whatever subscribes", () => {
+    expect(
+      titles(
+        target("mine", "https://chatgpt.com/hooks/mine"),
+        target("theirs", "https://chatgpt.com/api/mcp/events/abc", dots),
+      ),
+    ).toEqual(["chatgpt.com", "chatgpt.com/api/mcp/events/abc"]);
+    expect(
+      titles(
+        target("one", "https://hooks.example.com/routines/one"),
+        target("two", "https://hooks.example.com/routines/two"),
+      ),
+    ).toEqual(["hooks.example.com/routines/one", "hooks.example.com/routines/two"]);
+  });
+});
+
+describe("describeAssistantAlertRenewal", () => {
+  it("says when it must be renewed by in the user's clock, and Expired from that moment on", () => {
+    const expiresAt = new Date(2026, 10, 9, 15, 14).toISOString();
+    const expiresAtMs = Date.parse(expiresAt);
+
+    expect(describeAssistantAlertRenewal(expiresAt, expiresAtMs - 1, "24-hour")).toBe(
+      "Renews by Nov 9, 15:14",
+    );
+    expect(describeAssistantAlertRenewal(expiresAt, expiresAtMs - 1, "12-hour")).toBe(
+      "Renews by Nov 9, 3:14 PM",
+    );
+    expect(describeAssistantAlertRenewal(expiresAt, expiresAtMs, "24-hour")).toBe("Expired");
+    expect(describeAssistantAlertRenewal(expiresAt, expiresAtMs + 60_000, "24-hour")).toBe(
+      "Expired",
+    );
   });
 });
 

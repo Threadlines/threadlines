@@ -69,6 +69,7 @@ import {
 import { __resetLocalApiForTests } from "../../localApi";
 import { useStore } from "../../store";
 import { useTerminalStateStore } from "../../terminalStateStore";
+import { formatDateAndTime } from "../../timestampFormat";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import {
@@ -5945,6 +5946,8 @@ describe("Agents outside Threadlines", () => {
       lastError: null,
       retrying: 0,
       createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      addedBy: null,
+      expiresAt: null,
       ...overrides,
     };
   }
@@ -6091,6 +6094,60 @@ describe("Agents outside Threadlines", () => {
     await expect
       .element(page.getByTestId(`assistant-alert-warning-${gone.targetId}`))
       .not.toBeInTheDocument();
+  });
+
+  it("shows a subscription an assistant made with who added it and when it renews, and only removes it", async () => {
+    const dots = assistantConnection("connection-dots", { name: "dots", assistant: "chatgpt" });
+    const url = "https://chatgpt.com/api/mcp/events/abc?id=1";
+    const expiresAt = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    const subscription = alertTarget("target-subscription", {
+      url,
+      kinds: ["finished"],
+      projectIds: [WEB],
+      addedBy: { connectionId: dots.connectionId, name: dots.name },
+      expiresAt,
+    });
+    outsideAgentsHarness.emit(
+      snapshot({
+        connections: [dots],
+        assistants: assistantsState({ alertTargets: [subscription] }),
+      }),
+    );
+    await mountConnectionsWithHost();
+
+    const row = page.getByTestId(`assistant-alert-row-${subscription.targetId}`);
+    await expect
+      .element(row.getByRole("heading", { name: "chatgpt.com/api/mcp/events/abc" }))
+      .toHaveAttribute("title", url);
+    await expect
+      .element(row)
+      .toMatchTextContent(
+        `Added by dots · Finished · web · Nothing sent yet · Renews by ${formatDateAndTime(expiresAt, "locale")}`,
+      );
+    await expect.element(row.getByTestId("assistant-mark-chatgpt")).toBeInTheDocument();
+    expect(
+      row
+        .getByRole("button")
+        .elements()
+        .map((button) => button.textContent),
+    ).toEqual(["Remove"]);
+
+    await row.getByRole("button", { name: "Remove" }).click();
+    await expect.element(page.getByText("Remove this subscription?")).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "dots can subscribe again while it's connected. Remove the assistant to stop it for good.",
+        ),
+      )
+      .toBeVisible();
+    await page.getByTestId("assistant-alert-remove-confirm").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.alertTargetRemove).toHaveBeenCalledWith({
+        targetId: subscription.targetId,
+      });
+    });
+    await expect.element(row).not.toBeInTheDocument();
   });
 });
 

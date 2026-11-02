@@ -42,7 +42,13 @@ import { OutsideAgentSignIn } from "../outsideAgents/OutsideAgentSignIn.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { RelayHostLink } from "../relay/RelayHostLink.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
+import {
+  AssistantSubscriptionError,
+  type AssistantSubscribeInput,
+  type AssistantSubscriptionKey,
+} from "./AssistantAlerts.ts";
 import { makeAssistantMcp } from "./AssistantMcp.ts";
+import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
 import {
   AssistantRelay,
   type AssistantRelayEvent,
@@ -631,6 +637,10 @@ describe("assistants: credentials", () => {
 // AssistantMcp
 // ---------------------------------------------------------------------------
 
+/** What the fake subscriptions were asked for. */
+const subscribed: Array<AssistantSubscribeInput> = [];
+const unsubscribed: Array<AssistantSubscriptionKey> = [];
+
 const CALLERS = {
   "see-token": { connectionId: "see", name: "Grok Bot" },
   "start-token": { connectionId: "start", name: "Claude Duet" },
@@ -660,6 +670,43 @@ const makeMcp = (options: { readonly fits?: (response: AssistantHttpResponse) =>
             : { outcome: "not_allowed", detail: "Not in this test." },
         ),
     })),
+    events: makeAssistantMcpEvents({
+      alerts: {
+        subscribe: (input) =>
+          subscribed.push(input) > 0 && input.url.includes("refuse")
+            ? Effect.fail(
+                new AssistantSubscriptionError({
+                  code: -32015,
+                  message: "No.",
+                  reason: "blocked_address",
+                }),
+              )
+            : Effect.succeed({
+                id: "sub_test",
+                refreshBefore: "2026-11-09T00:00:00.000Z",
+                cursor: "cursor-1",
+                truncated: false,
+              }),
+        unsubscribe: (input) => Effect.sync(() => void unsubscribed.push(input)),
+      },
+      grantOf: (connectionId) =>
+        Effect.succeed(
+          connectionId === "see"
+            ? ({
+                connectionId,
+                name: "Grok Bot",
+                access: "see",
+                maxRuntimeMode: "approval-required",
+                projectIds: ["app"],
+              } as never)
+            : null,
+        ),
+      projects: Effect.succeed([
+        { id: "app", kind: "project", title: "App", workspaceRoot: "/repos/app" },
+        { id: "other", kind: "project", title: "Other", workspaceRoot: "/repos/other" },
+        { id: "chats", kind: "general-chat", title: "General", workspaceRoot: "/chats" },
+      ] as never),
+    }),
     serverInfo: { name: "threadlines", title: "Threadlines", version: "0.0.0-test" },
     fits: options.fits ?? (() => true),
   });
@@ -698,6 +745,161 @@ const modernHeaders = (method: string, name?: string) => ({
 });
 
 describe("AssistantMcp", () => {
+  describe("MCP Events", () => {
+    const SECRET = `whsec_${Buffer.alloc(32, 1).toString("base64")}`;
+    const subscribeParams = (overrides: Record<string, unknown> = {}) => ({
+      name: "thread.finished",
+      arguments: {},
+      delivery: { mode: "webhook", url: "https://chatgpt.example/hook", secret: SECRET },
+      ...overrides,
+    });
+    const call = (
+      method: string,
+      params: Record<string, unknown>,
+      headers: Record<string, string> = {},
+      credential = "see-token",
+    ) => rpc(makeMcp(), { jsonrpc: "2.0", id: 1, method, params }, headers, credential);
+
+    it.effect("both generations advertise and list them", () =>
+      Effect.gen(function* () {
+        const handler = makeMcp();
+        const legacy = yield* rpc(handler, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {},
+        });
+        expect(legacy.body?.result?.capabilities).toMatchObject({ events: {} });
+        const discover = yield* rpc(
+          handler,
+          { jsonrpc: "2.0", id: 1, method: "server/discover", params: { _meta: MODERN } },
+          modernHeaders("server/discover"),
+        );
+        expect(discover.body?.result?.capabilities).toMatchObject({ events: {} });
+
+        const listed = yield* call("events/list", {});
+        const events = listed.body?.result?.events as ReadonlyArray<{
+          readonly name: string;
+          readonly delivery: ReadonlyArray<string>;
+          readonly inputSchema: { readonly properties: Record<string, unknown> };
+        }>;
+        expect(events.map((event) => event.name)).toEqual([
+          "thread.needs_you",
+          "thread.finished",
+          "thread.failed",
+        ]);
+        expect(events[0]?.delivery).toEqual(["webhook"]);
+        expect(Object.keys(events[0]!.inputSchema.properties)).toEqual(["project"]);
+
+        const modern = yield* call("events/list", { _meta: MODERN }, modernHeaders("events/list"));
+        expect(modern.body?.result?.resultType).toBe("complete");
+        expect(modern.body?.result?.events).toHaveLength(3);
+      }),
+    );
+
+    it.effect("subscribe resolves its project and keeps the arguments as sent", () =>
+      Effect.gen(function* () {
+        subscribed.length = 0;
+        const answered = yield* call(
+          "events/subscribe",
+          subscribeParams({ arguments: { project: "app" }, ttlMs: 3_600_000, cursor: "c" }),
+        );
+        expect(answered.body?.result).toEqual({
+          id: "sub_test",
+          refreshBefore: "2026-11-09T00:00:00.000Z",
+          cursor: "cursor-1",
+          truncated: false,
+        });
+        const [input] = subscribed;
+        expect(input?.argumentsJson).toBe('{"project":"app"}');
+        expect(input?.projectIds).toEqual(["app"]);
+        // The grant reaches only "app": "other" and General Chats don't count towards a replay.
+        expect(input?.reachableProjectIds).toEqual(["app"]);
+        expect(input?.secret.length).toBe(32);
+        expect(input?.cursor).toBe("c");
+        expect(input?.ttlMs).toBe(3_600_000);
+
+        const everything = yield* call("events/subscribe", subscribeParams());
+        expect(everything.body?.result?.id).toBe("sub_test");
+        expect(subscribed[1]?.projectIds).toBe(null);
+        expect(subscribed[1]?.argumentsJson).toBe("{}");
+      }),
+    );
+
+    it.effect("refuses with the codes the guide names", () =>
+      Effect.gen(function* () {
+        const codeOf = (params: Record<string, unknown>, credential = "see-token") =>
+          call("events/subscribe", params, {}, credential).pipe(
+            Effect.map((answer) => answer.body?.error?.code),
+          );
+        expect(yield* codeOf(subscribeParams({ name: "thread.nope" }))).toBe(-32023);
+        // Outside the grant, General Chats, or no live grant at all.
+        expect(yield* codeOf(subscribeParams({ arguments: { project: "other" } }))).toBe(-32024);
+        expect(yield* codeOf(subscribeParams({ arguments: { project: "General" } }))).toBe(-32024);
+        expect(yield* codeOf(subscribeParams(), "start-token")).toBe(-32024);
+        // Malformed.
+        expect(yield* codeOf(subscribeParams({ arguments: { x: 1 } }))).toBe(-32602);
+        const url = "https://chatgpt.example/hook";
+        for (const secret of [
+          "nope",
+          "whsec_AAAA",
+          `whsec_${Buffer.alloc(65, 1).toString("base64")}`,
+        ]) {
+          expect(
+            yield* codeOf(subscribeParams({ delivery: { mode: "webhook", url, secret } })),
+          ).toBe(-32602);
+        }
+        expect(
+          yield* codeOf(
+            subscribeParams({
+              delivery: { mode: "webhook", url: "not an address", secret: SECRET },
+            }),
+          ),
+        ).toBe(-32602);
+        // Refused by the subscriptions: the reason goes along.
+        const refused = yield* call(
+          "events/subscribe",
+          subscribeParams({
+            delivery: { mode: "webhook", url: "https://refuse.example/", secret: SECRET },
+          }),
+        );
+        expect(refused.body?.error?.code).toBe(-32015);
+        expect(refused.body?.error?.data).toEqual({ reason: "blocked_address" });
+      }),
+    );
+
+    it.effect("an Mcp-Name, when sent, must match", () =>
+      Effect.gen(function* () {
+        const mismatch = yield* call("events/subscribe", subscribeParams(), {
+          "mcp-name": "thread.failed",
+        });
+        expect(mismatch.status).toBe(400);
+        expect(mismatch.body?.error?.code).toBe(-32020);
+        const matching = yield* call("events/subscribe", subscribeParams(), {
+          "mcp-name": "thread.finished",
+        });
+        expect(matching.body?.result?.id).toBe("sub_test");
+      }),
+    );
+
+    it.effect("unsubscribe answers the same whatever it matched", () =>
+      Effect.gen(function* () {
+        unsubscribed.length = 0;
+        const delivery = { mode: "webhook", url: "https://chatgpt.example/hook" };
+        const answer = yield* call("events/unsubscribe", {
+          name: "thread.finished",
+          arguments: { project: "Renamed since" },
+          delivery,
+        });
+        expect(answer.body?.result).toEqual({});
+        expect(unsubscribed[0]?.argumentsJson).toBe('{"project":"Renamed since"}');
+
+        const unknown = yield* call("events/unsubscribe", { name: "thread.nope", delivery });
+        expect(unknown.body?.result).toEqual({});
+        expect(unsubscribed).toHaveLength(1);
+      }),
+    );
+  });
   it.effect("2025-06-18: initialize, a notification, then tools/call under any session id", () =>
     Effect.gen(function* () {
       const handler = makeMcp();

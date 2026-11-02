@@ -197,7 +197,12 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
         testId="assistants-connections"
       />
 
-      {assistants !== null ? <AssistantAlertsSection targets={assistants.alertTargets} /> : null}
+      {assistants !== null ? (
+        <AssistantAlertsSection
+          targets={assistants.alertTargets}
+          connections={assistantConnections}
+        />
+      ) : null}
 
       {/* A stray click mustn't close it: its last view is a key shown once. */}
       <Dialog

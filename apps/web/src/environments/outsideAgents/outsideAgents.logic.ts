@@ -5,9 +5,9 @@
  * client connects; the sign-ins waiting, oldest first; the choices the
  * approval dialog starts from and the grant they make; when a new sign-in
  * earns a system notification; what a thread says while their work limits
- * its agents' tools; and the web addresses assistants' alerts go to, with
- * their dialog's choices. Pure, so Settings, the dialogs and the labels say
- * it alike.
+ * its agents' tools; and the web addresses assistants' alerts go to (the
+ * user's, with their dialog's choices, and the subscriptions assistants
+ * made). Pure, so Settings, the dialogs and the labels say it alike.
  */
 import {
   AssistantAlertKind,
@@ -31,10 +31,11 @@ import type {
   RuntimeMode,
   ThreadParticipantId,
 } from "@threadlines/contracts";
+import type { TimestampFormat } from "@threadlines/contracts/settings";
 import { assistantDisplayName } from "@threadlines/shared/knownAssistants";
 
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatDateAndTime, formatRelativeTimeLabel } from "../../timestampFormat";
 
 /** What a connection may do, as a choice in the dialog. */
 export const OUTSIDE_AGENT_ACCESS_CHOICES: Record<OutsideAgentAccess, string> = {
@@ -425,25 +426,49 @@ function parseAlertAddress(url: string): { readonly host: string; readonly path:
 }
 
 /**
- * Each web address's row title: its host ("hooks.example.com"), or its host
- * and path where two share a host (two routines at one service), so the rows
- * tell apart.
+ * Each row's title. A web address the user added shows its host
+ * ("hooks.example.com"), or its host and path where two of them share a
+ * host (two routines at one service), so the rows tell apart. A
+ * subscription an assistant made always shows its callback's host and path
+ * ("chatgpt.com/api/mcp/events/abc"): one assistant's callbacks usually
+ * share a host. Only addresses the user added count toward a shared host,
+ * so a subscription never changes their titles.
  */
 export function assistantAlertTargetTitles(
-  targets: ReadonlyArray<Pick<AssistantAlertTarget, "targetId" | "url">>,
+  targets: ReadonlyArray<Pick<AssistantAlertTarget, "targetId" | "url" | "addedBy">>,
 ): ReadonlyMap<AssistantAlertTargetId, string> {
   const parsed = targets.map((target) => ({ target, address: parseAlertAddress(target.url) }));
   const hostCounts = new Map<string, number>();
-  for (const { address } of parsed) {
-    if (address !== null) hostCounts.set(address.host, (hostCounts.get(address.host) ?? 0) + 1);
+  for (const { target, address } of parsed) {
+    if (address !== null && target.addedBy === null) {
+      hostCounts.set(address.host, (hostCounts.get(address.host) ?? 0) + 1);
+    }
   }
   return new Map(
     parsed.map(({ target, address }) => {
       if (address === null) return [target.targetId, target.url] as const;
+      if (target.addedBy !== null) {
+        return [target.targetId, `${address.host}${address.path}`] as const;
+      }
       const shared = (hostCounts.get(address.host) ?? 0) > 1;
       return [target.targetId, shared ? `${address.host}${address.path}` : address.host] as const;
     }),
   );
+}
+
+/**
+ * When a subscription stops unless its assistant renews it, as its row says
+ * it: "Renews by Nov 9, 3:14 PM" in the user's clock style, or "Expired"
+ * once that's past.
+ */
+export function describeAssistantAlertRenewal(
+  expiresAt: string,
+  nowMs: number,
+  timestampFormat: TimestampFormat,
+): string {
+  return Date.parse(expiresAt) <= nowMs
+    ? "Expired"
+    : `Renews by ${formatDateAndTime(expiresAt, timestampFormat)}`;
 }
 
 /** How a web address is doing, as its row says it. */

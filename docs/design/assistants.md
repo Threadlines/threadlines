@@ -1873,7 +1873,7 @@ the method only to word its offline answer. So no relay change.
 - Any access level may list and subscribe: an event says no more than
   `inbox` does.
 
-### Subscriptions (`AssistantAlertsLive`, migration 097)
+### Subscriptions (`AssistantAlertsLive`, migration 100)
 
 - **A subscription is a target** with `kind = 'subscription'`, its
   `connection_id`, `expires_at`, one event name and its project filter. New
@@ -2042,3 +2042,51 @@ across expiry, a subscribe while a slow send holds the lock, two identical
 subscribes at once, a grant that can't be read, a renamed project, a rotation
 cut by a crash, Remove with two secrets, step 4's 410 still turning an
 address off, and both kinds' envelope `timestamp`.
+
+### Build notes: step 5 (Nov 2)
+
+- **Where things live.** `assistantMcpEvents.ts` reads the wire (the catalog,
+  argument and secret checks, the project against the live grant);
+  `AssistantAlertsLive` owns subscriptions, the callback check and sending;
+  `AssistantMcp.ts` only routes and checks `Mcp-Name`. A subscription's
+  `target_id` is its `sub_…` id, so identical subscribes meet on one lock.
+- **A refresh that restarts deletes its waiting rows.** `queue` keeps an
+  existing row (`ON CONFLICT DO NOTHING`), so a row only marked `dropped` would
+  never be queued again and the "queued fresh" promise would quietly fail. A
+  row already final stays and is never sent again; one left `in_flight` ends
+  `failed`, since it may have arrived.
+- **`nextDueAt` skips expired subscriptions.** Otherwise a waiting row on an
+  expired one would wake the loop every 250 ms.
+- **The check cache drops its oldest** past 200 instead of answering `-32025`:
+  the worst case is one more check, which the per-connection limit still
+  bounds, and a full cache shouldn't lock out an unrelated assistant.
+- **Removed connections go within a pass, not only at a send.** A quiet
+  subscription would otherwise stay in Settings until an event came.
+- **HTTP status of errors.** Refusals are JSON-RPC errors over HTTP 200, so a
+  client that treats other statuses as transport failures still reads the
+  code. Only `-32602` on the modern generation (as `tools/call` does) and
+  `-32020` are 400. Guess, until the live test shows what ChatGPT does.
+- **`maxAgeMs`** is read from the subscribe params when sent; OpenAI's guide
+  doesn't name it, the SEP does.
+- **Effect's semaphore is fair now.** 4.1.2 queues a new take behind waiters,
+  so per-delivery locking needs no extra guard. Tried one, removed it: the
+  test passes with or without, and fails with a per-pass lock.
+- **Sol's diff review (Nov 2), all fixed:** a project lookup that failed read as
+  "not General Chats", so now it holds the event without spending an attempt;
+  the sweep's guard for targets being written counts writers, so one finishing
+  doesn't uncover another; a lock lives only while someone holds or waits for
+  it, so a queued subscribe and a later one can't end up on two locks; and a
+  client's cursor equal to where the record turned on says `truncated`, since
+  it can't tell which side of the gap it's from. That one can over-report once
+  (a cursor saved just after turning on), which is the honest direction. A
+  subscription's own watermark doesn't, because it kept the record on. One
+  corner stays: a record that has never recorded anything has nothing to tell
+  apart, so a cursor of 0 isn't flagged.
+- **Sol's second pass (Nov 2), both fixed:** a foreign cursor started at the
+  newest event, which skipped everything still kept (the plan says the oldest
+  kept, under the replay limits); and the replay limit counted events the
+  subscriber can't receive, so 101 events in another project could crowd out
+  one in its own. The limit now counts only the projects its grant reaches,
+  without General Chats.
+- **Not checked yet:** a real client. Everything above ran against a fake
+  receiver and a fake door; the live test on the dot is still to do.
