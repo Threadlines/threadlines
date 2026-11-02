@@ -9,7 +9,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRef, type ReactElement, type ReactNode, type Ref } from "react";
+import { type ComponentProps, createRef, type ReactElement, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
@@ -778,6 +778,77 @@ describe("MessagesTimeline", () => {
     expect(markup.match(/data-provider-auth-reconnect-resolved="false"/g)).toHaveLength(1);
     expect(markup.match(/data-provider-auth-reconnect-resolved="true"/g)).toHaveLength(1);
     expect(markup).toContain("Codex sign-in refreshed");
+  });
+
+  it("keeps a sign-in step and its button out of the fold until it is resolved", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const signInError = "Your access token could not be refreshed. Please sign in again.";
+    const stretch: ComponentProps<typeof MessagesTimeline>["timelineEntries"] = [
+      {
+        id: "entry-resend-note",
+        kind: "work",
+        createdAt: "2026-11-02T07:18:52.000Z",
+        entry: {
+          id: "work-resend-note",
+          createdAt: "2026-11-02T07:18:52.000Z",
+          label: "Restarted Codex and sent your message again",
+          tone: "info",
+        },
+      },
+      {
+        id: "entry-auth-step",
+        kind: "work",
+        createdAt: "2026-11-02T07:18:54.000Z",
+        entry: {
+          id: "work-auth",
+          createdAt: "2026-11-02T07:18:54.000Z",
+          label: "Authentication required",
+          detail: signInError,
+          tone: "error",
+          authReconnect: {
+            provider: ProviderDriverKind.make("codex"),
+            command: "codex login",
+            message: signInError,
+          },
+        },
+      },
+    ];
+    const signInStep = 'data-provider-auth-reconnect-resolved="false"';
+
+    const waiting = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={stretch}
+      />,
+    );
+    expect(waiting).toContain(signInStep);
+
+    // Once the agent replies, the stretch folds like any other.
+    const answered = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          ...stretch,
+          {
+            id: "entry-reply",
+            kind: "message",
+            createdAt: "2026-11-02T07:19:30.000Z",
+            message: {
+              id: MessageId.make("message-reply"),
+              role: "assistant",
+              text: "Signed in now, here is the fix.",
+              turnId: TurnId.make("turn-after-sign-in"),
+              createdAt: "2026-11-02T07:19:30.000Z",
+              completedAt: "2026-11-02T07:19:35.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(answered).not.toContain(signInStep);
   });
 
   it("names the running step on the working line while the steps before it show above", async () => {

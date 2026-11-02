@@ -2482,6 +2482,10 @@ const make = Effect.gen(function* () {
         : requestedModelSelection);
 
     return {
+      /** It goes with more than its words: one-time context a resend wouldn't carry. */
+      carriesMore:
+        providerContext.length > 0 ||
+        (!nativeForkApplied && input.providerAttachments !== undefined),
       request: {
         threadId: sessionKey,
         messageId: input.providerMessageId ?? input.messageId,
@@ -3187,6 +3191,7 @@ const make = Effect.gen(function* () {
       );
 
       const {
+        carriesMore,
         request: turnRequest,
         roomContext,
         recordedModel,
@@ -3219,39 +3224,55 @@ const make = Effect.gen(function* () {
         );
       }
       yield* historyDebtClaimed;
-      yield* providerService.sendTurn({ ...turnRequest, requestedAt, origin }).pipe(
-        // The provider has the history now, whatever the bookkeeping below does.
-        Effect.tap(() => historyDebtPaid),
-        Effect.onError(() => historyDebtReturned),
-        Effect.tap((turn) =>
-          Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
-        ),
-        Effect.flatMap((turn) =>
-          markProviderTurnAccepted({
-            threadId: event.payload.threadId,
-            turnId: turn.turnId,
-          }),
-        ),
-        Effect.tap(() =>
-          roomContext !== undefined
-            ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
-            : Effect.void,
-        ),
-        Effect.tap(() => notesDelivered),
-        // Replies and reports queued while the turn was starting go in now,
-        // behind its own message (and its notes), in this thread's worker.
-        Effect.tap(() =>
-          worker.enqueue(String(event.payload.threadId), {
-            type: "continue",
-            run: Effect.andThen(
-              steerQueuedAgentMessages(event.payload.threadId),
-              steerOvertakingFollowUps(event.payload.threadId),
-            ),
-          }),
-        ),
-        Effect.catchCause(recoverTurnStartFailure),
-        Effect.forkScoped,
-      );
+      const resend =
+        origin === "person" && !carriesMore
+          ? {
+              messageId: message.id,
+              ...(event.payload.chainEpoch !== undefined
+                ? { chainEpoch: event.payload.chainEpoch }
+                : {}),
+            }
+          : undefined;
+      yield* providerService
+        .sendTurn({
+          ...turnRequest,
+          requestedAt,
+          origin,
+          ...(resend !== undefined ? { resend } : {}),
+        })
+        .pipe(
+          // The provider has the history now, whatever the bookkeeping below does.
+          Effect.tap(() => historyDebtPaid),
+          Effect.onError(() => historyDebtReturned),
+          Effect.tap((turn) =>
+            Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
+          ),
+          Effect.flatMap((turn) =>
+            markProviderTurnAccepted({
+              threadId: event.payload.threadId,
+              turnId: turn.turnId,
+            }),
+          ),
+          Effect.tap(() =>
+            roomContext !== undefined
+              ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
+              : Effect.void,
+          ),
+          Effect.tap(() => notesDelivered),
+          // Replies and reports queued while the turn was starting go in now,
+          // behind its own message (and its notes), in this thread's worker.
+          Effect.tap(() =>
+            worker.enqueue(String(event.payload.threadId), {
+              type: "continue",
+              run: Effect.andThen(
+                steerQueuedAgentMessages(event.payload.threadId),
+                steerOvertakingFollowUps(event.payload.threadId),
+              ),
+            }),
+          ),
+          Effect.catchCause(recoverTurnStartFailure),
+          Effect.forkScoped,
+        );
     });
 
     // Taking the thread from another agent: that agent's last turn is recorded

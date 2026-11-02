@@ -4160,6 +4160,42 @@ const make = Effect.gen(function* () {
         yield* clearTurnStateForSession(thread.id);
       }
 
+      if (event.type === "session.exited" && event.payload.resendTurn !== undefined) {
+        const { error, messageId, chainEpoch } = event.payload.resendTurn;
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.turn.resend",
+            commandId: providerCommandId(event, "turn-resend"),
+            threadId: thread.id,
+            messageId,
+            ...(chainEpoch !== undefined ? { chainEpoch } : {}),
+            createdAt: now,
+          })
+          .pipe(
+            // Nothing else will tell the user their message didn't go, unless
+            // a turn of theirs has already taken over.
+            Effect.catch((cause) =>
+              Effect.gen(function* () {
+                yield* Effect.logInfo("provider runtime ingestion could not resend a turn", {
+                  threadId: thread.id,
+                  detail: String(cause),
+                });
+                const latest = (yield* resolveThreadShell(thread.id))?.session;
+                if (!latest || latest.status === "running" || latest.status === "starting") {
+                  return;
+                }
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.session.set",
+                  commandId: providerCommandId(event, "turn-resend-refused"),
+                  threadId: thread.id,
+                  session: { ...withoutLaunchMark(latest), lastError: error, updatedAt: now },
+                  createdAt: now,
+                });
+              }),
+            ),
+          );
+      }
+
       if (event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
 

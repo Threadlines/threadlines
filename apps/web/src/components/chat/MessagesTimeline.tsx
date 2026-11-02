@@ -4441,8 +4441,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
     anchorOwnsLiveAgents,
     sideAnswerContext,
     threadStartCallsByTurn,
+    resolvedProviderAuthReconnectIds,
   } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
+  // A sign-in still to do keeps its button in sight: the composer's own
+  // sign-in notice stands aside for this step.
+  const waitsOnSignIn = row.groupedEntries.some(
+    (entry) => entry.authReconnect && !resolvedProviderAuthReconnectIds.has(entry.id),
+  );
   const groupedEntries = useMemo(
     () =>
       coalesceFileChangeWorkEntries(
@@ -4566,7 +4572,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <ActivityGroup
           steps={steps}
           renderExtras={renderExtras}
-          folded={row.folded}
+          folded={row.folded && !waitsOnSignIn}
           live={!row.folded}
           durationMs={row.folded ? stretchDurationMs(row.groupedEntries) : null}
         />

@@ -4613,7 +4613,23 @@ const ThreadHistorySeedDeliveredCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server only: sends a message again because its runtime asked (ProviderRuntime
+ * `session.exited`'s `resendTurn`). Like `thread.turn.retry`, but the failure
+ * was never shown, so no error is on the session for it to find; it names the
+ * message, and is refused if Stop has been pressed since `chainEpoch`.
+ */
+const ThreadTurnResendCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.resend"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  chainEpoch: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadTurnResendCommand,
   ProjectGeneralChatsRelocateCommand,
   ThreadMoveStartCommand,
   ThreadMoveProgressCommand,

@@ -2905,6 +2905,25 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.changedFiles).toBeUndefined();
   });
 
+  it("shows a resend after a stale sign-in as one plain line", () => {
+    const message =
+      "Restarted Codex and sent your message again: its sign-in in this chat had gone stale.";
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "sign-in-resend",
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "info",
+          payload: { message, warningKind: "sign-in-resend", provider: "codex" },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.label).toBe(message);
+    expect(entry?.detail).toBeUndefined();
+  });
+
   it("collapses repeated api-retry warnings into one updating row", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

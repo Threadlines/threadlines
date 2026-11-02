@@ -28,6 +28,7 @@ import {
   ThreadBootstrapCreateThread,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { ProviderTurnResend } from "./providerRuntime.ts";
 
 const ProviderSessionStatus = Schema.Literals([
   "connecting",
@@ -291,6 +292,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   requestedAt: Schema.optional(IsoDateTime),
   /** See ProviderTurnOrigin. */
   origin: Schema.optional(ProviderTurnOrigin),
+  /** See ProviderTurnResend. */
+  resend: Schema.optional(ProviderTurnResend),
   telemetryContext: Schema.optional(
     Schema.Struct({
       kind: Schema.Literal("thread_fork"),

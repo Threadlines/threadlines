@@ -519,6 +519,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           });
           return;
         }
+        case "session.exited": {
+          if (event.payload.resendTurn === undefined) return;
+          yield* analytics.record("provider.turn.resent", {
+            ...analyticsAgentProperties({
+              provider: event.provider,
+              communityAgentId: yield* communityAgentIdOf(event.providerInstanceId),
+            }),
+            ...analyticsModelProperties({
+              model: yield* runtimeEventModel(event),
+              provider: event.provider,
+            }),
+            reason: "stale_sign_in",
+          });
+          return;
+        }
         case "runtime.error": {
           const selectedModel = yield* runtimeEventModel(event);
           yield* analytics.record("provider.runtime.error", {

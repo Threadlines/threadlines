@@ -23,6 +23,7 @@ import {
   type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderTurnResend,
   type McpAppToolResult,
   type RuntimeMcpAppCall,
   SubagentMetadataUpdatedPayload,
@@ -73,6 +74,7 @@ import {
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
+import { isAgentOutputEvent } from "../turnLatency.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
@@ -679,6 +681,15 @@ interface CodexAdapterSessionContext {
   stopped: boolean;
   /** A room's side answer: never asked to act for the user's own Codex. */
   readonly lockdown: boolean;
+  readonly turnProgress: CodexTurnProgress;
+}
+
+/** What this runtime's turns have done so far, for `resendTurn`. */
+interface CodexTurnProgress {
+  /** The turn `sendTurn` last started, with its leave to be sent again. */
+  sent?: { readonly turnId: TurnId; readonly resend?: ProviderTurnResend };
+  /** Turns the agent has answered in, or someone has steered into. */
+  readonly workedTurnIds: Set<TurnId>;
 }
 
 function mapCodexRuntimeError(
@@ -3126,13 +3137,17 @@ export function mapToRuntimeEvents(
   return [];
 }
 
-function hasAuthenticationRuntimeError(events: ReadonlyArray<ProviderRuntimeEvent>): boolean {
-  return events.some(
-    (event) => event.type === "runtime.error" && event.payload.class === "authentication_error",
+function authenticationRuntimeError(events: ReadonlyArray<ProviderRuntimeEvent>) {
+  return events.find(
+    (event): event is Extract<ProviderRuntimeEvent, { type: "runtime.error" }> =>
+      event.type === "runtime.error" && event.payload.class === "authentication_error",
   );
 }
 
-function makeAuthenticationSessionExitedEvent(event: ProviderEvent): ProviderRuntimeEvent {
+function makeAuthenticationSessionExitedEvent(
+  event: ProviderEvent,
+  resendTurn?: ProviderTurnResend & { readonly error: string },
+): ProviderRuntimeEvent {
   return {
     ...runtimeEventBase(event, event.threadId),
     eventId: EventId.make(`${event.id}:auth-session-exited`),
@@ -3141,6 +3156,20 @@ function makeAuthenticationSessionExitedEvent(event: ProviderEvent): ProviderRun
       reason: "Authentication failed",
       recoverable: true,
       exitKind: "error",
+      ...(resendTurn !== undefined ? { resendTurn } : {}),
+    },
+  };
+}
+
+/** The chat's note in place of the sign-in error when the message goes again. */
+function makeSignInResendWarning(event: ProviderEvent): ProviderRuntimeEvent {
+  return {
+    ...runtimeEventBase(event, event.threadId),
+    type: "runtime.warning",
+    payload: {
+      message:
+        "Restarted Codex and sent your message again: its sign-in in this chat had gone stale.",
+      warningKind: "sign-in-resend",
     },
   };
 }
@@ -3173,6 +3202,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  /**
+   * Threads whose message went again after a sign-in failure, until their
+   * agent answers: a fresh app server that fails too means the sign-in itself
+   * is bad, so the user is told rather than sent around again.
+   */
+  const signInResends = new Set<ThreadId>();
   let sweptSideAnswerHomes = false;
 
   /**
@@ -3369,11 +3404,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        const turnProgress: CodexTurnProgress = { workedTurnIds: new Set() };
+        let resendingTurn = false;
+
         // The session context owns and explicitly interrupts this fiber. It
         // must not inherit the short-lived caller that happens to start the
         // session, otherwise provider events stop as soon as startup returns.
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
+            // Its turn is going again on a new runtime: a late end of this
+            // one would read as that turn failing.
+            if (resendingTurn) {
+              return;
+            }
             if (event.method === "thread/realtime/outputAudio/delta") {
               const payload = readPayload(
                 EffectCodexSchema.V2ThreadRealtimeOutputAudioDeltaNotification,
@@ -3403,9 +3446,28 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               yield* options.releaseRealtimeAudio(event.threadId);
             }
             yield* writeNativeEvent(event);
-            const runtimeEvents = yield* withUsageLimitReset(
+            const mappedEvents = yield* withUsageLimitReset(
               mapToRuntimeEvents(event, event.threadId),
             );
+            if (event.turnId !== undefined && mappedEvents.some(isAgentOutputEvent)) {
+              turnProgress.workedTurnIds.add(event.turnId);
+              signInResends.delete(input.threadId);
+            }
+            // A running app server keeps a sign-in renewal that failed, while
+            // a fresh one reads what is on disk now. So a message Codex has
+            // done nothing with yet goes again on a new one, once, and the
+            // user only hears about it if that fails too.
+            const signInError = authenticationRuntimeError(mappedEvents);
+            const resend =
+              signInError !== undefined &&
+              event.turnId !== undefined &&
+              turnProgress.sent?.turnId === event.turnId &&
+              !turnProgress.workedTurnIds.has(event.turnId) &&
+              !signInResends.has(input.threadId)
+                ? turnProgress.sent.resend
+                : undefined;
+            const runtimeEvents =
+              resend !== undefined ? [makeSignInResendWarning(event)] : mappedEvents;
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -3442,14 +3504,28 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   .pipe(Effect.ignoreCause({ log: true }));
               }
             }
-            if (hasAuthenticationRuntimeError(runtimeEvents)) {
-              yield* Queue.offer(runtimeEventQueue, makeAuthenticationSessionExitedEvent(event));
+            if (signInError !== undefined) {
+              if (resend !== undefined) {
+                resendingTurn = true;
+                signInResends.add(input.threadId);
+              }
+              // Gone before the exit is reported: the resend must not find
+              // this runtime still routable.
               const session = sessions.get(event.threadId);
               if (session && !session.stopped) {
                 yield* stopSessionInternal(session, {
                   interruptEventFiber: false,
                 });
               }
+              yield* Queue.offer(
+                runtimeEventQueue,
+                makeAuthenticationSessionExitedEvent(
+                  event,
+                  resend !== undefined
+                    ? { ...resend, error: signInError.payload.message }
+                    : undefined,
+                ),
+              );
             }
           }),
         ).pipe(Effect.forkDetach);
@@ -3486,6 +3562,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               : undefined,
           stopped: false,
           lockdown: input.lockdown !== undefined,
+          turnProgress,
         });
         sessionScopeTransferred = true;
 
@@ -3591,6 +3668,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+    // A cross-driver handoff's seed goes once, with this turn: no resend for it.
+    session.turnProgress.sent = {
+      turnId: turn.turnId,
+      ...(input.resend !== undefined && pendingContextSeedText === undefined
+        ? { resend: input.resend }
+        : {}),
+    };
     if (pendingContextSeedText !== undefined) {
       session.pendingContextSeedText = undefined;
     }
@@ -3607,6 +3691,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
+    // A resend wouldn't carry what is steered in.
+    session.turnProgress.workedTurnIds.add(input.expectedTurnId);
     return yield* session.runtime
       .steerTurn({
         expectedTurnId: input.expectedTurnId,

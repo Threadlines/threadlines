@@ -29,6 +29,9 @@ Threadlines sends product and reliability events such as:
   Threadlines, another agent in the same room, another thread's agent, an
   agent outside Threadlines, a scheduled or event task, or Threadlines on its
   own (such as continuing after a usage limit). Never who the person is;
+- when Threadlines sends a message again by itself because the agent's sign-in
+  went stale in that chat (it restarts the agent first), with the agent and
+  model;
 - how long a sent message waited, in milliseconds, before Threadlines handed it
   to the agent and before the agent's first output, whether the agent had to
   start up for it, and whether it was started early while you typed. When it
