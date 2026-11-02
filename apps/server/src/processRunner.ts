@@ -7,8 +7,8 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { ChildProcessSpawner } from "effect/process";
+import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 import { type GitLaunch, resolveGitLaunch, spawnGitWithFallback } from "./vcs/gitLaunch.ts";
 import {
   collectUint8StreamText,
@@ -238,9 +238,9 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
         ? { ...input.env, ...launch.env }
         : input.env;
     return spawner.spawn(
-      ChildProcess.make(
+      makeCommandWithShell(
         launch?.command ?? input.command,
-        [...input.args],
+        input.args,
         hideWindowsConsole({
           ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
           ...(env !== undefined

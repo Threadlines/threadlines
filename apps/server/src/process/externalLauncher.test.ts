@@ -884,12 +884,15 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
       assertSuccess(result, undefined);
       assert.ok(spawnedCommand);
       const isWin32 = process.platform === "win32";
-      // Windows: the full path, quoted for cmd.exe, and the user's environment.
-      assert.equal(spawnedCommand.command, isWin32 ? `"${process.execPath}"` : process.execPath);
-      assert.deepEqual(
-        spawnedCommand.args,
-        isWin32 ? expectedArgs.map((arg) => `"${arg}"`) : expectedArgs,
+      // Windows: one cmd.exe command line, the full path and each argument
+      // quoted, and the user's environment.
+      assert.equal(
+        spawnedCommand.command,
+        isWin32
+          ? [process.execPath, ...expectedArgs].map((word) => `"${word}"`).join(" ")
+          : process.execPath,
       );
+      assert.deepEqual(spawnedCommand.args.map(String), isWin32 ? [] : expectedArgs);
       assert.deepEqual(
         spawnedCommand.options,
         expectedHiddenWindowsOptions({
@@ -908,14 +911,15 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
   it.effect("starts the fallback only when an attached launch fails", () =>
     Effect.gen(function* () {
       const run = (firstExitCode: number) => {
-        const spawned: Array<ReadonlyArray<string>> = [];
+        // Each launch's whole command line: on Windows it is one string.
+        const spawned: Array<string> = [];
         const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
           spawn: (command) =>
             Effect.sync(() => {
               if (!ChildProcess.isStandardCommand(command)) {
                 throw new Error("Expected a standard command");
               }
-              spawned.push(command.args.map(String));
+              spawned.push([command.command, ...command.args.map(String)].join(" "));
               return makeMockDetachedHandle(undefined, spawned.length === 1 ? firstExitCode : 0);
             }),
         });
@@ -929,10 +933,12 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
         );
       };
 
-      assert.deepEqual(yield* run(0), [["ask"]]);
+      const attached = yield* run(0);
+      assert.equal(attached.length, 1);
+      assert.include(attached[0], "ask");
       const afterFailure = yield* run(1);
       assert.equal(afterFailure.length, 2);
-      assert.ok(afterFailure[1]?.some((arg) => arg.includes("open-folder")));
+      assert.include(afterFailure[1], "open-folder");
     }),
   );
 
