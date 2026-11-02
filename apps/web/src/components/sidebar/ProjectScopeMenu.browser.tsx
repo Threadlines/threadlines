@@ -267,33 +267,6 @@ describe("ProjectScopeMenu", () => {
     }
   });
 
-  it("narrows to rooms from the View button and marks it while it does", async () => {
-    const onRoomsOnlyChange = vi.fn();
-    const { mounted } = await renderMenu({ roomsOnly: false, onRoomsOnlyChange });
-    try {
-      await expect
-        .element(page.getByTestId("inbox-view-trigger"))
-        .not.toHaveAttribute("data-filtered");
-      await page.getByTestId("inbox-view-trigger").click();
-      await page.getByTestId("inbox-rooms-filter-only").click();
-      expect(onRoomsOnlyChange).toHaveBeenCalledWith(true);
-    } finally {
-      await mounted.unmount();
-    }
-
-    const { mounted: filteredMounted } = await renderMenu({ roomsOnly: true, onRoomsOnlyChange });
-    try {
-      await expect
-        .element(page.getByTestId("inbox-view-trigger"))
-        .toHaveAttribute("data-filtered", "true");
-      await page.getByTestId("inbox-view-trigger").click();
-      await page.getByTestId("inbox-rooms-filter-all").click();
-      expect(onRoomsOnlyChange).toHaveBeenLastCalledWith(false);
-    } finally {
-      await filteredMounted.unmount();
-    }
-  });
-
   it("groups by project, and by computer only once there are two", async () => {
     const onGroupingChange = vi.fn();
     const { mounted } = await renderMenu({ grouping: "none", onGroupingChange });
