@@ -781,6 +781,58 @@ describe("wsApi", () => {
     await loaded;
   });
 
+  it("reads and writes under the browser's cross-tab lock, so another tab's save survives", async () => {
+    const { readBrowserClientSettings, updateBrowserClientSettings } =
+      await import("./clientPersistenceStorage");
+    let release = () => {};
+    const otherTabDone = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (_name: string, run: () => unknown) => {
+          await otherTabDone;
+          return run();
+        },
+      },
+    });
+    const mine = updateBrowserClientSettings({ timestampFormat: "24-hour" });
+    // Another tab holds the lock and saves its own setting meanwhile.
+    vi.stubGlobal("navigator", {});
+    await updateBrowserClientSettings({ diffWordWrap: false });
+    release();
+    await expect(mine).resolves.toMatchObject({ timestampFormat: "24-hour", diffWordWrap: false });
+    expect(readBrowserClientSettings()).toMatchObject({
+      timestampFormat: "24-hour",
+      diffWordWrap: false,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("lets a write made right after a device write stand, even before settings load", async () => {
+    let finishLoading: (settings: null) => void = () => {};
+    const patches: Array<Record<string, unknown>> = [];
+    getWindowForTest().desktopBridge = makeDesktopBridge({
+      getClientSettings: () =>
+        new Promise((resolve) => {
+          finishLoading = resolve;
+        }),
+      updateClientSettings: async (patch) => {
+        patches.push({ ...patch });
+        return { ...DEFAULT_CLIENT_SETTINGS, ...patch };
+      },
+    });
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
+    const write = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    updateSettings({ timestampFormat: "12-hour" });
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+    finishLoading(null);
+    await write;
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+    expect(patches.at(-1)).toMatchObject({ timestampFormat: "12-hour" });
+  });
+
   it("keeps two browser tabs' changes apart, and a tab follows the other's change", async () => {
     const listeners = new Map<string, (event: unknown) => void>();
     const testWindow = getWindowForTest() as unknown as {

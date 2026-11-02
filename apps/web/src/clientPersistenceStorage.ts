@@ -85,11 +85,7 @@ export function readBrowserClientSettings(): ClientSettings | null {
   }
 }
 
-/**
- * Stores the patch over what this browser holds now and returns the result, in
- * one synchronous step, so a tab only ever changes the settings it names.
- */
-export function updateBrowserClientSettings(patch: ClientSettingsPatch): ClientSettings {
+function mergeBrowserClientSettings(patch: ClientSettingsPatch): ClientSettings {
   const settings: ClientSettings = {
     ...(readBrowserClientSettings() ?? DEFAULT_CLIENT_SETTINGS),
     ...patch,
@@ -98,6 +94,20 @@ export function updateBrowserClientSettings(patch: ClientSettingsPatch): ClientS
     setLocalStorageItem(CLIENT_SETTINGS_STORAGE_KEY, settings, ClientSettingsSchema);
   }
   return settings;
+}
+
+/**
+ * Stores the patch over what this browser holds now and returns the result, so
+ * a tab only ever changes the settings it names. Tabs can run at once and
+ * localStorage has no transactions, so the read and write hold the browser's
+ * cross-tab lock. Without one (Web Locks needs a secure address) it runs as is,
+ * and only two tabs saving within the same moment could lose a change.
+ */
+export function updateBrowserClientSettings(patch: ClientSettingsPatch): Promise<ClientSettings> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  return locks === undefined
+    ? Promise.resolve().then(() => mergeBrowserClientSettings(patch))
+    : locks.request(CLIENT_SETTINGS_STORAGE_KEY, () => mergeBrowserClientSettings(patch));
 }
 
 /**

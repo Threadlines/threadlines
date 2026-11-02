@@ -291,17 +291,18 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
  * rejecting when the save fails, where `updateSettings` only logs it. For
  * callers that must say truthfully whether a change landed: an agent's
  * settings change reports each device setting it made. Waits for the saved
- * settings to load first, so the write never puts defaults over them.
+ * settings to load before saving.
  *
  * A failed save puts back only the settings no later write has set, to what
  * was last stored, before the next save runs. Those match storage again, so no
  * save owes them; the rest stay owed and the next save carries them.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
-  // Only when it has to wait, so a write made right after this one still follows it.
-  if (!clientSettingsHydrated) await hydrateClientSettings();
+  // At once, so a write made right after this one follows it. Loading the saved
+  // settings can't undo it, and a failed save needs them to go back to.
   const write = applyClientPatch(patch);
   try {
+    await hydrateClientSettings();
     await saveClientSettingsInOrder();
   } catch (error) {
     const restored: Record<string, unknown> = { ...getClientSettingsSnapshot() };
