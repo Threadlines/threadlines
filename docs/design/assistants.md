@@ -138,11 +138,13 @@ assistant's webhook ◀──────────── https, signed alerts
 
 ## The public address
 
-- **Decided Oct 30 (Will):** for now the door is the relay's own origin,
-  `https://threadlines-relay.threadlines.workers.dev`. threadlines.dev's DNS
-  is on Vercel, so `connect.threadlines.dev` can't route to the worker without
-  moving the zone to Cloudflare. Credentials are bound to the origin, so a
-  move disconnects every assistant: make it, if at all, before listing.
+- **Decided Nov 2 (Will):** the door is `https://connect.threadlines.dev`, with
+  threadlines.dev's DNS moved from Vercel to Cloudflare. The sign-in page asks
+  people to type a code, and the address is how they judge it; anyone can get a
+  name on `workers.dev`. Sites stay on Vercel (DNS-only records). Credentials
+  are bound to the origin, so the move disconnected every assistant, which is
+  why it happened before listing. Computers and phones keep the worker's own
+  address.
 - **Hostname (the plan):** a custom domain on the relay worker, e.g.
   `connect.threadlines.dev`. Today the relay answers only on
   `threadlines-relay.threadlines.workers.dev` (`relayApi.ts` 27;
@@ -2113,3 +2115,17 @@ address off, and both kinds' envelope `timestamp`.
 
   Not exercised live: `thread.needs_you`, `thread.failed`, a refresh or expiry,
   a key change, and Remove in Settings against a live client.
+
+### Build notes: the permanent address (Nov 2)
+
+The door moved to `connect.threadlines.dev` before any listing, on relay version
+`65640fab`. threadlines.dev's DNS is on Cloudflare (Vercel stays the registrar and
+hosts the sites, through DNS-only CNAMEs). The relay config needs `workers_dev: true`
+spelled out: with `routes` set, Wrangler would otherwise turn off the address
+computers and phones use. A running computer learns the new address when its socket
+reopens or a code or key is made; a sign-in binds the resource the relay gave it, so
+one made during the change still works.
+
+To watch: `www` and `app` were on a Vercel `*.threadlines.dev` certificate (expires
+Jan 8, 2027) that renews through Vercel's DNS. Vercel should issue per-name
+certificates now; `nightly.app`'s expires Dec 22 and will show it first.
