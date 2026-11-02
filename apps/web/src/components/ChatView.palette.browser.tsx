@@ -48,6 +48,7 @@ import {
   dispatchInputKey,
   mountChatView,
   registerChatViewSuiteHooks,
+  rpcHarness,
   setPrimaryOutsideAgentsSnapshot,
   setPrimarySessionRole,
   withOutsideAgentsFixture,
@@ -128,6 +129,20 @@ describe("ChatView (full app): command palette and search", () => {
       },
     };
     setPrimaryOutsideAgentsSnapshot(outsideAgents);
+    // As the server does: the code it makes is in everything it streams from
+    // then on. Settings can close and reopen the stream while the code is on
+    // its way, and a fresh stream that still said "no code" would wipe it.
+    const makeAssistantCode = () => {
+      const code = { code: "K4D82PQX", expiresAt: new Date(Date.now() + 600_000).toISOString() };
+      const withCode: OutsideAgentsSnapshot = {
+        ...outsideAgents,
+        pending: [],
+        assistants: { ...outsideAgents.assistants, code },
+      };
+      setPrimaryOutsideAgentsSnapshot(withCode);
+      rpcHarness.emitStreamValue(WS_METHODS.outsideAgentsSubscribe, withCode);
+      return code;
+    };
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -150,7 +165,7 @@ describe("ChatView (full app): command palette and search", () => {
               lastUsedAt: null,
             }
           : body._tag === WS_METHODS.outsideAgentsAssistantCode
-            ? { code: "K4D82PQX", expiresAt: new Date(Date.now() + 600_000).toISOString() }
+            ? makeAssistantCode()
             : undefined,
     });
 
