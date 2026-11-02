@@ -12,7 +12,12 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import { HostedStaticOnboardingState } from "./ConnectionStatusStates";
+import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
+
+import {
+  HostedStaticLinkNotPairedState,
+  HostedStaticOnboardingState,
+} from "./ConnectionStatusStates";
 import { SidebarProvider } from "./ui/sidebar";
 
 const DESKTOP_VIEWPORT = { height: 900, width: 1280 };
@@ -74,5 +79,30 @@ describe("HostedStaticOnboardingState", () => {
     await expect
       .element(page.getByRole("link", { name: "Download the desktop app" }))
       .not.toBeInTheDocument();
+  });
+});
+
+describe("HostedStaticLinkNotPairedState", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("offers to open the thread in the desktop app, with pairing second", async () => {
+    await renderWithTestRouter(
+      <HostedStaticLinkNotPairedState
+        pairedElsewhere={false}
+        threadRef={{
+          environmentId: "env-1" as EnvironmentId,
+          threadId: "thread-1" as ThreadId,
+        }}
+      />,
+    );
+
+    // The test build is the dev channel, so the link is for the dev app.
+    await expect
+      .element(page.getByRole("link", { name: "Open in the Threadlines app" }))
+      .toHaveAttribute("href", "threadlines-dev://open/env-1/thread-1");
+    await expect.element(page.getByRole("button", { name: "Enter code" })).toBeVisible();
+    await expect.element(page.getByText("Settings → Connections → Connect a device")).toBeVisible();
   });
 });

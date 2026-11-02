@@ -164,6 +164,16 @@ export const resolveQuitConfirmation = makeIpcMethod({
   }),
 });
 
+export const setMenuActionsListening = makeIpcMethod({
+  channel: IpcChannels.MENU_ACTION_LISTENING_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setMenuActionsListening")(function* (listening) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.setMenuActionsListening(listening);
+  }),
+});
+
 export const showContextMenu = makeIpcMethod({
   channel: IpcChannels.CONTEXT_MENU_CHANNEL,
   payload: ContextMenuInput,

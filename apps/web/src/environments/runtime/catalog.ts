@@ -9,7 +9,11 @@ import type {
 import { create } from "zustand";
 
 import { ensureLocalApi } from "../../localApi";
-import { getPrimaryKnownEnvironment, readPrimaryEnvironmentDescriptor } from "../primary";
+import {
+  getPrimaryKnownEnvironment,
+  readPrimaryEnvironmentDescriptor,
+  resolveInitialPrimaryEnvironmentDescriptor,
+} from "../primary";
 
 export interface SavedEnvironmentRecord {
   readonly environmentId: EnvironmentId;
@@ -398,6 +402,20 @@ export function getSavedEnvironmentRuntimeState(
 
 export function resetSavedEnvironmentRuntimeStoreForTests() {
   useSavedEnvironmentRuntimeStore.getState().reset();
+}
+
+/**
+ * Whether this app can show threads from `environmentId`: this device's own
+ * server or a computer saved here. Waits for both to be known, so a thread
+ * link that just opened the app isn't turned away while it is still loading.
+ */
+export async function isKnownEnvironment(environmentId: EnvironmentId): Promise<boolean> {
+  await waitForSavedEnvironmentRegistryHydration().catch(() => undefined);
+  if (getSavedEnvironmentRecord(environmentId) !== null) {
+    return true;
+  }
+  const primary = await resolveInitialPrimaryEnvironmentDescriptor().catch(() => null);
+  return primary?.environmentId === environmentId;
 }
 
 /**

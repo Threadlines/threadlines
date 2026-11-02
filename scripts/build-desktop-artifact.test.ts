@@ -174,6 +174,33 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("declares each channel's own thread link scheme", () =>
+    Effect.gen(function* () {
+      for (const [version, scheme] of [
+        ["0.9.0", "threadlines"],
+        ["0.9.0-nightly.20261102.4", "threadlines-nightly"],
+      ] as const) {
+        for (const [platform, target] of [
+          ["mac", "dmg"],
+          ["win", "nsis"],
+          ["linux", "AppImage"],
+        ] as const) {
+          const buildConfig = yield* createBuildConfig(
+            platform,
+            target,
+            version,
+            false,
+            false,
+            undefined,
+          );
+          assert.deepStrictEqual(buildConfig.protocols, [
+            { name: "Threadlines thread link", schemes: [scheme] },
+          ]);
+        }
+      }
+    }),
+  );
+
   it.effect("tells a Mac too old for this Electron that no update is waiting", () =>
     Effect.gen(function* () {
       // electron-updater compares the manifest's minimum with os.release(),

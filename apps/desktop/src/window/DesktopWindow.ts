@@ -6,6 +6,7 @@ import type {
 } from "@threadlines/contracts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
@@ -19,6 +20,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
 
@@ -89,6 +91,8 @@ export const OPEN_FLEET_MENU_ACTION = "open-fleet";
 export const OPEN_SCHEDULED_MENU_ACTION = "open-scheduled";
 export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
 export const OPEN_USAGE_MENU_ACTION = "open-usage";
+/** Opens one thread: the tray's thread rows and links to a thread send it. */
+export const OPEN_THREAD_MENU_ACTION = "open-thread";
 /** Help › What's New: the release notes for the version you have. */
 export const OPEN_WHATS_NEW_MENU_ACTION = "open-whats-new";
 export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
@@ -146,6 +150,25 @@ export class DesktopWindowQuitConfirmationError extends Data.TaggedError(
  */
 export const QUIT_CONFIRMATION_SHOWN_TIMEOUT = Duration.millis(1500);
 
+/**
+ * How many menu actions wait for a page that isn't listening yet, newest kept.
+ * Enough for a burst of clicks during a slow start, never a backlog.
+ */
+const HELD_MENU_ACTION_LIMIT = 8;
+
+/**
+ * How long a held menu action stays worth doing. A cold start that opens the
+ * window late still opens the thread its link named; a click from minutes ago
+ * does not fire out of nowhere once the page finally listens.
+ */
+export const HELD_MENU_ACTION_TTL = Duration.minutes(2);
+
+interface HeldMenuAction {
+  readonly action: string;
+  readonly payload: DesktopMenuActionPayload | undefined;
+  readonly heldAtMillis: number;
+}
+
 /** One sending of the quit question to the page. */
 interface QuitConfirmationDelivery {
   readonly requestId: string;
@@ -198,10 +221,21 @@ export interface DesktopWindowShape {
    * the page lost it (a reload, a crash). False when nothing is pending.
    */
   readonly repeatQuitConfirmation: Effect.Effect<boolean>;
+  /**
+   * Sends the page's app shell an action from a menu, the tray or a link, and
+   * brings the window forward. With no shell listening yet (the window still
+   * loading, not open, or open on a page without the shell) the action waits
+   * for it, up to {@link HELD_MENU_ACTION_TTL}.
+   */
   readonly dispatchMenuAction: (
     action: string,
     payload?: DesktopMenuActionPayload,
   ) => Effect.Effect<void, DesktopWindowError>;
+  /**
+   * The page's app shell started (true) or stopped listening for menu
+   * actions. Starting delivers the actions that waited for it, oldest first.
+   */
+  readonly setMenuActionsListening: (listening: boolean) => Effect.Effect<void>;
   readonly syncAppearance: Effect.Effect<void>;
 }
 
@@ -507,6 +541,15 @@ const make = Effect.gen(function* () {
   const pendingQuitConfirmation = yield* Ref.make<Option.Option<QuitConfirmationDelivery>>(
     Option.none(),
   );
+  // Whether the window's page has its app shell listening for menu actions.
+  // The app keeps one window, so this is that window's page. A new document
+  // starts without the shell, so a navigation, a crash or a close resets it.
+  let menuActionsListening = false;
+  let heldMenuActions: ReadonlyArray<HeldMenuAction> = [];
+  const windowCreationLock = yield* Semaphore.make(1);
+  const stopMenuActionsListening = () => {
+    menuActionsListening = false;
+  };
 
   const createWindow = Effect.fn("desktop.window.createWindow")(function* (
     backendHttpUrl: URL,
@@ -1178,7 +1221,10 @@ const make = Effect.gen(function* () {
         );
       },
     );
+    // Fires once a new document commits, never for the app's own route changes.
+    window.webContents.on("did-navigate", stopMenuActionsListening);
     window.webContents.on("render-process-gone", (_event, details) => {
+      stopMenuActionsListening();
       void runPromise(
         logWindowWarning("main window render process gone", {
           reason: details.reason,
@@ -1206,6 +1252,7 @@ const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      stopMenuActionsListening();
       void runPromise(electronWindow.clearMain(Option.some(window)));
     });
 
@@ -1220,13 +1267,20 @@ const make = Effect.gen(function* () {
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
 
-  const ensureMain = Effect.gen(function* () {
-    const existingWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isSome(existingWindow)) {
-      return existingWindow.value;
-    }
-    return yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.ensureMain"));
+  // Creating a window reads its saved size first, so two callers that both
+  // found none (backend readiness and a link at startup, say) would each open
+  // one. They take turns, and the second finds the first's window.
+  const ensureMain = windowCreationLock
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const existingWindow = yield* electronWindow.currentMainOrFirst;
+        if (Option.isSome(existingWindow)) {
+          return existingWindow.value;
+        }
+        return yield* createMain;
+      }),
+    )
+    .pipe(Effect.withSpan("desktop.window.ensureMain"));
 
   const revealOrCreateMain = Effect.gen(function* () {
     const window = yield* ensureMain;
@@ -1234,13 +1288,17 @@ const make = Effect.gen(function* () {
     return window;
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
 
-  const createMainIfBackendReady = Effect.gen(function* () {
-    const backendReady = yield* Ref.get(state.backendReady);
-    if (!backendReady || !(yield* Deferred.isDone(mainWindowOpenAllowed))) return;
-    const existingWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isSome(existingWindow)) return;
-    yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
+  const createMainIfBackendReady = windowCreationLock
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const backendReady = yield* Ref.get(state.backendReady);
+        if (!backendReady || !(yield* Deferred.isDone(mainWindowOpenAllowed))) return;
+        const existingWindow = yield* electronWindow.currentMainOrFirst;
+        if (Option.isSome(existingWindow)) return;
+        yield* createMain;
+      }),
+    )
+    .pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
   // The backend can come back on a different port when its previous one was
   // taken while it was down, which leaves an open window loaded from an origin
@@ -1267,6 +1325,34 @@ const make = Effect.gen(function* () {
       void window.loadURL(backendConfig.httpBaseUrl.href);
     });
   }).pipe(Effect.withSpan("desktop.window.repointMainWindowIfBackendMoved"));
+
+  const sendMenuAction = (
+    window: Electron.BrowserWindow,
+    action: string,
+    payload: DesktopMenuActionPayload | undefined,
+  ) =>
+    Effect.gen(function* () {
+      if (window.isDestroyed()) return;
+      window.webContents.send(IpcChannels.MENU_ACTION_CHANNEL, action, payload);
+      yield* electronWindow.reveal(window);
+    });
+
+  const setMenuActionsListening = Effect.fn("desktop.window.setMenuActionsListening")(function* (
+    listening: boolean,
+  ) {
+    menuActionsListening = listening;
+    if (!listening || heldMenuActions.length === 0) return;
+    const window = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(window)) return;
+    const held = heldMenuActions;
+    heldMenuActions = [];
+    const now = yield* Clock.currentTimeMillis;
+    const ttlMillis = Duration.toMillis(HELD_MENU_ACTION_TTL);
+    for (const entry of held) {
+      if (now - entry.heldAtMillis > ttlMillis) continue;
+      yield* sendMenuAction(window.value, entry.action, entry.payload);
+    }
+  });
 
   const resolveQuitConfirmation = (confirmed: boolean) =>
     Ref.get(pendingQuitConfirmation).pipe(
@@ -1417,21 +1503,31 @@ const make = Effect.gen(function* () {
 
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* electronWindow.focusedMainOrFirst;
-      const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* createMain;
-
-      const send = () => {
-        if (targetWindow.isDestroyed()) return;
-        targetWindow.webContents.send(IpcChannels.MENU_ACTION_CHANNEL, action, payload);
-        void runPromise(electronWindow.reveal(targetWindow));
-      };
-
-      if (targetWindow.webContents.isLoadingMainFrame()) {
-        targetWindow.webContents.once("did-finish-load", send);
+      if (Option.isSome(existingWindow) && menuActionsListening) {
+        yield* sendMenuAction(existingWindow.value, action, payload);
         return;
       }
 
-      send();
+      // Sent now, it would reach a page that drops it: one still loading (the
+      // shell subscribes well after the load event), or none at all.
+      const heldAtMillis = yield* Clock.currentTimeMillis;
+      heldMenuActions = [...heldMenuActions, { action, payload, heldAtMillis }].slice(
+        -HELD_MENU_ACTION_LIMIT,
+      );
+      yield* Effect.annotateCurrentSpan({ held: true });
+      if (Option.isSome(existingWindow)) {
+        // A page still loading shows itself when it is ready (or when the
+        // action reaches it); shown sooner, it would flash empty.
+        if (!existingWindow.value.webContents.isLoadingMainFrame()) {
+          yield* electronWindow.reveal(existingWindow.value);
+        }
+      } else {
+        // A window opens only for a backend that answers. One still starting
+        // opens it when it does, and the action waits for that page.
+        yield* createMainIfBackendReady;
+      }
     }),
+    setMenuActionsListening,
     allowMainWindowClose: Effect.sync(() => {
       mainWindowCloseAllowed = true;
     }),

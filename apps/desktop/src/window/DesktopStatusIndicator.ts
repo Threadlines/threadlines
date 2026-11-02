@@ -380,8 +380,8 @@ const make = Effect.gen(function* () {
         toolTip: `${thread.title.trim()} — ${describeThreadMenuState(thread)}`,
         click: () =>
           runTrayEffect(
-            "open-thread",
-            dispatchRendererAction("open-thread", {
+            DesktopWindow.OPEN_THREAD_MENU_ACTION,
+            dispatchRendererAction(DesktopWindow.OPEN_THREAD_MENU_ACTION, {
               environmentId: thread.environmentId,
               threadId: thread.threadId,
             }),

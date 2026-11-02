@@ -63,6 +63,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
     focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
+    setAsDefaultProtocolClient: () => Effect.succeed(true),
     on: () => Effect.void,
   } satisfies ElectronApp.ElectronAppShape);
 

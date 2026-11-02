@@ -24,6 +24,7 @@ import {
   requestDesktopShutdownAndWaitWithFailsafe,
 } from "./DesktopLifecycle.ts";
 import * as DesktopState from "./DesktopState.ts";
+import * as DesktopThreadLinks from "./DesktopThreadLinks.ts";
 
 const makeElectronAppLayer = (
   exitCodes: Array<number>,
@@ -50,6 +51,7 @@ const makeElectronAppLayer = (
     focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
+    setAsDefaultProtocolClient: () => Effect.succeed(true),
     on,
   } satisfies ElectronApp.ElectronAppShape);
 
@@ -141,6 +143,7 @@ const runConfirmHarness = (input: {
           resolveQuitConfirmation: () => Effect.void,
           repeatQuitConfirmation: Effect.succeed(false),
           dispatchMenuAction: () => Effect.void,
+          setMenuActionsListening: () => Effect.void,
           syncAppearance: Effect.void,
         } satisfies DesktopWindow.DesktopWindowShape),
       ),
@@ -349,6 +352,10 @@ describe("register", () => {
         platform: "linux",
       } as DesktopEnvironment.DesktopEnvironmentShape),
       Layer.succeed(DesktopWindow.DesktopWindow, {} as DesktopWindow.DesktopWindowShape),
+      Layer.succeed(
+        DesktopThreadLinks.DesktopThreadLinks,
+        {} as DesktopThreadLinks.DesktopThreadLinksShape,
+      ),
       makeElectronDialogLayer({ calls: [], response: 0 }),
       makeElectronAppLayer([], (eventName) => track(appListeners, eventName)),
       Layer.succeed(ElectronTheme.ElectronTheme, {

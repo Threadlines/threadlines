@@ -47,6 +47,7 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   focus: Effect.void,
   cancelDockBounce: () => Effect.void,
   appendCommandLineSwitch: () => Effect.void,
+  setAsDefaultProtocolClient: () => Effect.succeed(true),
   on: () => Effect.void,
 } satisfies ElectronApp.ElectronAppShape);
 
@@ -83,6 +84,7 @@ const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
     resolveQuitConfirmation: () => Effect.void,
     repeatQuitConfirmation: Effect.succeed(false),
     dispatchMenuAction: (action) => Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
+    setMenuActionsListening: () => Effect.void,
     syncAppearance: Effect.void,
   } satisfies DesktopWindow.DesktopWindowShape);
 

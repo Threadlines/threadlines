@@ -41,6 +41,7 @@ import * as DesktopBackendManager from "./backend/DesktopBackendManager.ts";
 import * as DesktopDataMigration from "./app/DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./app/DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./app/DesktopLifecycle.ts";
+import * as DesktopThreadLinks from "./app/DesktopThreadLinks.ts";
 import * as DesktopObservability from "./app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
@@ -175,6 +176,19 @@ if (!isPrimaryInstance) {
   void exitAfterSecondaryInstanceHandoff();
 }
 
+// Links that open a thread (DesktopThreadLinks.ts). macOS hands over the link
+// that launched the app before "ready", long before the Effect runtime below
+// is up, so the listener goes on here and the inbox holds what arrives until
+// the window can open. Windows and Linux pass the link as an argument.
+const threadLinkInbox = DesktopThreadLinks.makeThreadLinkInbox();
+if (isPrimaryInstance) {
+  Electron.app.on("open-url", (event, url) => {
+    event.preventDefault();
+    threadLinkInbox.receive([url]);
+  });
+  threadLinkInbox.receive(process.argv.slice(1));
+}
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -304,8 +318,16 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(desktopWindowLayer),
 );
 
+const desktopThreadLinksLayer = DesktopThreadLinks.layer({
+  inbox: threadLinkInbox,
+  execPath: process.execPath,
+  entryScriptPath: process.argv[1] === undefined ? undefined : NodePath.resolve(process.argv[1]),
+});
+
 const desktopApplicationLayer = Layer.mergeAll(
-  DesktopLifecycle.layer,
+  // A second launch's arguments reach the app through the lifecycle's
+  // second-instance handler, and may carry a link.
+  DesktopLifecycle.layer.pipe(Layer.provideMerge(desktopThreadLinksLayer)),
   DesktopApplicationMenu.layer,
   DesktopBackground.layer.pipe(Layer.provideMerge(DesktopStatusIndicator.layer)),
   DesktopScreenCapture.layer,

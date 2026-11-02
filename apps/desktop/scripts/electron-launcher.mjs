@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { APP_THREAD_LINK_SCHEMES } from "../../../packages/shared/src/appThreadLinks.ts";
 import {
   MAC_ADAPTIVE_ICON_NAME,
   buildMacAdaptiveIconSync,
@@ -27,7 +28,7 @@ import {
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "Threadlines (Dev)" : "Threadlines";
 const APP_BUNDLE_ID = isDevelopment ? "com.threadlines.app.dev" : "com.threadlines.app";
-const LAUNCHER_VERSION = 4;
+const LAUNCHER_VERSION = 5;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
@@ -131,6 +132,22 @@ function patchMainBundleInfoPlist(appBundlePath, iconPath) {
   setPlistString(infoPlistPath, "CFBundleName", APP_DISPLAY_NAME);
   setPlistString(infoPlistPath, "CFBundleIdentifier", APP_BUNDLE_ID);
   setPlistString(infoPlistPath, "CFBundleIconFile", "icon.icns");
+  if (isDevelopment) {
+    // macOS hands a thread link only to an app whose bundle declares its
+    // scheme, so the dev app answers the dev links (DesktopThreadLinks.ts).
+    runChecked("plutil", [
+      "-replace",
+      "CFBundleURLTypes",
+      "-json",
+      JSON.stringify([
+        {
+          CFBundleURLName: "Threadlines Dev thread link",
+          CFBundleURLSchemes: [APP_THREAD_LINK_SCHEMES.dev],
+        },
+      ]),
+      infoPlistPath,
+    ]);
+  }
 
   const resourcesDir = join(appBundlePath, "Contents", "Resources");
   copyFileSync(iconPath, join(resourcesDir, "icon.icns"));

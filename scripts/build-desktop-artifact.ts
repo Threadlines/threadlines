@@ -19,6 +19,7 @@ import {
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { parseUpdateManifest, serializeUpdateManifest } from "./lib/update-manifest.ts";
 import { isTransientNetworkFailure } from "./fetch-with-network-retry.ts";
+import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
 
@@ -887,6 +888,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     },
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
+  // Links that open a thread in the app, one scheme per channel so a nightly
+  // link never opens the stable app. macOS reads them as the bundle's URL
+  // types, Linux as the desktop file's MimeType. The Windows installer writes
+  // none, so the app claims its scheme itself at startup (DesktopThreadLinks).
+  buildConfig.protocols = [
+    { name: "Threadlines thread link", schemes: [APP_THREAD_LINK_SCHEMES[updateChannel]] },
+  ];
   const publishConfig = resolveGitHubPublishConfig(updateChannel);
   if (publishConfig) {
     buildConfig.publish = [publishConfig];
