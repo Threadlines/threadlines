@@ -595,14 +595,89 @@ describe("wsApi", () => {
 
     // Two writes of the same value: the first failing doesn't undo the second.
     const third = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
-    const fourth = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
     await until(() => saves.length === 3);
+    const fourth = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
     answers[2]!.reject(new Error("disk full"));
     await expect(third).rejects.toThrow("disk full");
     await until(() => saves.length === 4);
     expect(saves[3]).toMatchObject({ timestampFormat: "12-hour" });
     answers[3]!.resolve();
     await expect(fourth).resolves.toBeUndefined();
+  });
+
+  it("keeps a newer choice made in Settings over a device write and its failure", async () => {
+    const saves: Array<{ readonly timestampFormat: string }> = [];
+    const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    getWindowForTest().desktopBridge = makeDesktopBridge({
+      setClientSettings: (settings) =>
+        new Promise<void>((resolve, reject) => {
+          saves.push(settings);
+          answers.push({ resolve, reject });
+        }),
+    });
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
+    const until = async (done: () => boolean) => {
+      for (let tries = 0; tries < 100 && !done(); tries += 1) await Promise.resolve();
+    };
+
+    // The agent's change waits behind a save in flight; a choice made after it stands.
+    updateSettings({ diffWordWrap: false });
+    await until(() => saves.length === 1);
+    const queued = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await vi.waitFor(() => expect(getClientSettings().timestampFormat).toBe("24-hour"));
+    updateSettings({ timestampFormat: "12-hour" });
+    answers[0]!.resolve();
+    await until(() => saves.length === 2);
+    expect(saves[1]).toMatchObject({ timestampFormat: "12-hour" });
+    answers[1]!.resolve();
+    await expect(queued).resolves.toBeUndefined();
+
+    // The same value written by hand while a device write's save fails: it stays.
+    await until(() => saves.length === 3);
+    answers[2]!.resolve();
+    const failing = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await until(() => saves.length === 4);
+    updateSettings({ timestampFormat: "24-hour" });
+    answers[3]!.reject(new Error("disk full"));
+    await expect(failing).rejects.toThrow("disk full");
+    await until(() => saves.length === 5);
+    expect(saves[4]).toMatchObject({ timestampFormat: "24-hour" });
+    answers[4]!.resolve();
+  });
+
+  it("puts overlapping failed device writes back to where they started", async () => {
+    const answers: Array<{ reject: (error: Error) => void; resolve: () => void }> = [];
+    const saved: string[] = [];
+    getWindowForTest().desktopBridge = makeDesktopBridge({
+      setClientSettings: (settings) =>
+        new Promise<void>((resolve, reject) => {
+          saved.push(settings.timestampFormat);
+          answers.push({ resolve, reject });
+        }),
+    });
+    const { getClientSettings, updateClientSettingsAndPersist, updateSettings } =
+      await import("./hooks/useSettings");
+    const first = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    const second = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
+    answers[0]!.reject(new Error("disk full"));
+    await expect(first).rejects.toThrow("disk full");
+    await vi.waitFor(() => expect(saved).toHaveLength(2));
+    answers[1]!.reject(new Error("disk full"));
+    await expect(second).rejects.toThrow("disk full");
+    expect(getClientSettings().timestampFormat).toBe("locale");
+
+    // Once loaded, a write made right after an agent's write follows it.
+    const third = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    updateSettings({ timestampFormat: "12-hour" });
+    expect(getClientSettings().timestampFormat).toBe("12-hour");
+    await vi.waitFor(() => expect(saved).toHaveLength(3));
+    answers[2]!.resolve();
+    await third;
+    await vi.waitFor(() => expect(saved).toHaveLength(4));
+    answers[3]!.resolve();
+    expect(saved[3]).toBe("12-hour");
   });
 
   it("falls back to browser storage for persistence when the desktop bridge is missing", async () => {

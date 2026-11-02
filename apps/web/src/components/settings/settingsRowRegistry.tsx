@@ -1,6 +1,10 @@
 import type { ComponentType } from "react";
 
-import { AlertKindRow, AlertsOnThisDeviceRow } from "../../pushAlerts/PushAlertsSettings";
+import {
+  AlertKindRow,
+  AlertsOnThisDeviceRow,
+  AlertsQuietAtComputerRow,
+} from "../../pushAlerts/PushAlertsSettings";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
@@ -83,6 +87,7 @@ export const SETTINGS_ROWS = {
   "general.alertNeedsYou": live(() => <AlertKindRow kind="needs_you" />),
   "general.alertFinished": live(() => <AlertKindRow kind="finished" />),
   "general.alertFailed": live(() => <AlertKindRow kind="failed" />),
+  "general.alertsQuietAtComputer": live(AlertsQuietAtComputerRow),
   "general.theme": live(ThemeRow),
   "general.timeFormat": live(TimeFormatRow),
   "general.streamReplies": live(AssistantStreamingRow),

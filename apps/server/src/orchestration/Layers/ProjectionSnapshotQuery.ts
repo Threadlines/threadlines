@@ -140,6 +140,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
+    phoneAlertsMuted: Schema.BooleanFromBit,
   }),
 );
 const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
@@ -694,8 +695,9 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 
 /**
  * Context-window activities are state snapshots rather than timeline entries.
- * Keep the latest usable value per turn, and per agent in a room, so initial
- * thread snapshots do not repeatedly send superseded token telemetry.
+ * Keep the latest usable value per turn, and per agent in a room, so the full
+ * snapshot does not repeat superseded token telemetry. Not for a thread's
+ * detail: that feed's size says whether its window is full.
  * Retaining one value per turn preserves the meter when a later turn is
  * reverted; keeping one per agent keeps each room agent's meter when their
  * readings share no turn. Malformed rows remain visible and cannot shadow the
@@ -735,6 +737,7 @@ function mapProjectShellRow(
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
     scripts: row.scripts,
+    ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -859,6 +862,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1783,6 +1787,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1806,6 +1811,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -2769,6 +2775,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
                 scripts: row.scripts,
+                ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -2996,6 +3003,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   workspaceRoot: row.workspaceRoot,
                   defaultModelSelection: row.defaultModelSelection,
                   scripts: row.scripts,
+                  ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
@@ -3473,6 +3481,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
                     scripts: option.value.scripts,
+                    ...(option.value.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
                     deletedAt: option.value.deletedAt,
@@ -3481,6 +3490,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
         ),
       );
+
+  const isProjectPhoneAlertsMuted: ProjectionSnapshotQueryShape["isProjectPhoneAlertsMuted"] = (
+    projectId,
+  ) =>
+    getActiveProjectRowById({ projectId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.isProjectPhoneAlertsMuted:query",
+          "ProjectionSnapshotQuery.isProjectPhoneAlertsMuted:decodeRow",
+        ),
+      ),
+      Effect.map((row) => Option.isSome(row) && row.value.phoneAlertsMuted),
+    );
 
   const getProjectShellById: ProjectionSnapshotQueryShape["getProjectShellById"] = (projectId) =>
     getActiveProjectRowById({ projectId }).pipe(
@@ -4035,8 +4057,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           .slice(-MAX_THREAD_COMMAND_REQUESTS),
         commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
         settingsRequests: threadRow.value.settingsRequests ?? [],
-        activities: dropStaleContextWindowActivities(
-          retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
+        // The whole window, superseded context-window readings included: it is
+        // what the live feed holds, and the chat tells that older turns' steps
+        // were cut from it being full (turnsWithCutSteps in the web app).
+        activities: retainThreadActivities(
+          activityRows.map(mapThreadActivityRow),
+          MAX_THREAD_ACTIVITIES,
         ),
         subagents: subagentRows.map(mapThreadSubagentRow),
         workflowRuns: workflowRunsByThreadOf(workflowRunRows).get(threadId) ?? [],
@@ -4066,6 +4092,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    isProjectPhoneAlertsMuted,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,

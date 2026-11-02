@@ -30,6 +30,8 @@ export const DEFAULT_ALERT_KINDS: PushAlertKinds = {
 };
 
 const STORAGE_KEY = "threadlines:push-alerts:v1";
+/** Its own entry: a window on an older build rewrites the one above without it. */
+const QUIET_STORAGE_KEY = "threadlines:push-alerts:quiet-at-computer";
 const WORKER_URL = "/push-sw.js";
 
 /** Why one computer does or doesn't send this phone alerts. */
@@ -51,6 +53,8 @@ export type PushAlertsSupport =
 interface PushAlertsState {
   readonly enabled: boolean;
   readonly kinds: PushAlertKinds;
+  /** Stay quiet while someone uses Threadlines on a computer. */
+  readonly quietAtComputer: boolean;
   readonly permission: NotificationPermission | "unsupported";
   readonly statusByEnvironmentId: Readonly<Record<EnvironmentId, ComputerAlertStatus>>;
   /** A turn on, off or a switch change is in flight. */
@@ -95,6 +99,23 @@ function writeStored(enabled: boolean, kinds: PushAlertKinds) {
   }
 }
 
+/** On unless this phone said otherwise. */
+function readStoredQuiet(): boolean {
+  try {
+    return localStorage.getItem(QUIET_STORAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function writeStoredQuiet(on: boolean) {
+  try {
+    localStorage.setItem(QUIET_STORAGE_KEY, on ? "on" : "off");
+  } catch {
+    storageCurrent = false;
+  }
+}
+
 const REVISION_KEY = "threadlines:push-alerts:revision";
 let lastRevision = 0;
 
@@ -124,6 +145,7 @@ function readPermission(): PushAlertsState["permission"] {
 
 export const usePushAlertsStore = create<PushAlertsState>()(() => ({
   ...readStored(),
+  quietAtComputer: readStoredQuiet(),
   permission: readPermission(),
   statusByEnvironmentId: {},
   busy: false,
@@ -296,6 +318,10 @@ async function relayDeviceRequest(
  */
 function syncFromStorage() {
   if (!storageCurrent) return;
+  const quietAtComputer = readStoredQuiet();
+  if (quietAtComputer !== usePushAlertsStore.getState().quietAtComputer) {
+    usePushAlertsStore.setState({ quietAtComputer });
+  }
   const stored = readStoredIfAny();
   if (!stored) return;
   const { enabled, kinds } = usePushAlertsStore.getState();
@@ -386,6 +412,7 @@ async function registerWith(environmentId: EnvironmentId, phone: PhoneSubscripti
         auth: phone.auth,
         keyId: phone.keyId,
         appOrigin: window.location.origin,
+        quietAtComputer: usePushAlertsStore.getState().quietAtComputer,
       }),
       REGISTER_TIMEOUT_MS,
       "That computer didn't answer.",
@@ -513,6 +540,17 @@ export async function setPushAlertKind(kind: keyof PushAlertKinds, on: boolean):
   void reconcilePushAlerts();
 }
 
+/**
+ * Stay quiet while someone uses Threadlines on a computer, or don't. Computers
+ * hold this, since they decide whether to send: each one this phone reaches
+ * hears now, and any other the next time it connects.
+ */
+export async function setPushAlertsQuietAtComputer(on: boolean): Promise<void> {
+  writeStoredQuiet(on);
+  usePushAlertsStore.setState({ quietAtComputer: on });
+  await reconcilePushAlerts();
+}
+
 /** Asks one computer to send this phone a test alert. */
 export async function sendTestPushAlert(environmentId: EnvironmentId): Promise<string> {
   const connection = readEnvironmentConnection(environmentId);
@@ -550,7 +588,7 @@ export function startPushAlerts(): () => void {
   schedule();
   const stopConnections = subscribeEnvironmentConnections(schedule);
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
+    if (event.key !== STORAGE_KEY && event.key !== QUIET_STORAGE_KEY) return;
     syncFromStorage();
     schedule();
   };

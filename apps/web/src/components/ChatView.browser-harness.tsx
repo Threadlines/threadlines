@@ -885,6 +885,9 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
       repositoryIdentity: project.repositoryIdentity ?? null,
       defaultModelSelection: project.defaultModelSelection,
       scripts: project.scripts,
+      ...(project.phoneAlertsMuted !== undefined
+        ? { phoneAlertsMuted: project.phoneAlertsMuted }
+        : {}),
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     })),

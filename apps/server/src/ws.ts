@@ -66,6 +66,7 @@ import {
   WsRpcGroup,
   WsOwnerRequiredError,
 } from "@threadlines/contracts";
+import type { AuthClientMetadata } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
@@ -81,6 +82,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import {
   messageSentFromClient,
+  sessionIsComputer,
   sessionDevicePlace,
   withMessageSentFrom,
   writesUserMessage,
@@ -613,6 +615,8 @@ const makeWsRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
+    readonly subject: string;
+    readonly client: AuthClientMetadata;
   },
   viewerId: string,
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
@@ -627,6 +631,8 @@ const makeCoreRpcLayer = (
   currentSession: {
     readonly sessionId: AuthSessionId;
     readonly role: "owner" | "client";
+    readonly subject: string;
+    readonly client: AuthClientMetadata;
   },
   /** This connection, as a terminal viewer (who controls a tab's size and replies). */
   viewerId: string,
@@ -3081,7 +3087,13 @@ const makeCoreRpcLayer = (
           observeRpcEffect(WS_METHODS.pushSendTest, pushAlerts.sendTest(currentSessionId), {
             "rpc.aggregate": "push",
           }),
-        [WS_METHODS.presenceSetViewing]: (input) => pushAlerts.setViewing(viewerId, input.threadId),
+        [WS_METHODS.presenceSetViewing]: (input) =>
+          pushAlerts.setViewing(viewerId, input.threadId, sessionIsComputer(currentSession)),
+        // Only a computer's use says the user is at one, whatever a client asks.
+        [WS_METHODS.presenceNoteActive]: (input) =>
+          sessionIsComputer(currentSession)
+            ? pushAlerts.noteComputerActive(input.idleMs)
+            : Effect.void,
         [WS_METHODS.relayDirectRoutes]: (_input) =>
           observeRpcEffect(
             WS_METHODS.relayDirectRoutes,

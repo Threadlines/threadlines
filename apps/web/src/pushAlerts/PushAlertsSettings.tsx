@@ -1,7 +1,8 @@
 /**
  * Settings › General › Alerts: this device's phone alerts (pushAlerts.ts).
- * One switch turns them on, three choose which ones, and each paired computer
- * says whether it sends them, with a test alert to prove it.
+ * One switch turns them on, three choose which ones, one keeps them quiet
+ * while a computer is in use, and each paired computer says whether it sends
+ * them, with a test alert to prove it.
  */
 import type { EnvironmentId, PushAlertKinds } from "@threadlines/contracts";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
@@ -10,7 +11,10 @@ import { useMemo, useState } from "react";
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/ui/switch";
-import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
+import {
+  readEnvironmentDescriptor,
+  useSavedEnvironmentRegistryStore,
+} from "../environments/runtime";
 import {
   type ComputerAlertStatus,
   disablePushAlerts,
@@ -19,6 +23,7 @@ import {
   relayLinkOf,
   sendTestPushAlert,
   setPushAlertKind,
+  setPushAlertsQuietAtComputer,
   usePushAlertsStore,
 } from "./pushAlerts";
 
@@ -32,10 +37,15 @@ const KIND_ROWS = [
   readonly place: SettingsPlaceId;
 }>;
 
-function describeStatus(status: ComputerAlertStatus | undefined): string {
+function describeStatus(
+  status: ComputerAlertStatus | undefined,
+  { staysQuiet }: { readonly staysQuiet: boolean },
+): string {
   switch (status?.state) {
     case "on":
-      return "Sends alerts to this device.";
+      return staysQuiet
+        ? "Sends alerts to this device."
+        : "Sends alerts to this device. Update Threadlines there to keep it quiet while you're at a computer.";
     case "older":
       return "Needs a newer Threadlines to send alerts.";
     case "not-paired":
@@ -58,10 +68,14 @@ function ComputerRow({
   const status = usePushAlertsStore((state) => state.statusByEnvironmentId[environmentId]);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const quietAtComputer = usePushAlertsStore((state) => state.quietAtComputer);
+  const descriptor = readEnvironmentDescriptor(environmentId);
+  const staysQuiet =
+    !quietAtComputer || descriptor === null || descriptor.capabilities.phoneAlertControls === true;
   return (
     <SettingsRow
       title={label}
-      description={describeStatus(status)}
+      description={describeStatus(status, { staysQuiet })}
       status={testResult}
       control={
         status?.state === "on" ? (
@@ -104,6 +118,7 @@ export function PushAlertsSettingsSection() {
     <SettingsSection place="general.alerts">
       <AlertsOnThisDeviceRow />
       {on ? KIND_ROWS.map((row) => <AlertKindRow key={row.kind} kind={row.kind} />) : null}
+      {on ? <AlertsQuietAtComputerRow /> : null}
       {on
         ? computers.map((record) => (
             <ComputerRow
@@ -151,6 +166,27 @@ export function AlertsOnThisDeviceRow() {
             void (checked ? enablePushAlerts() : disablePushAlerts());
           }}
           aria-label="Alerts on this device"
+        />
+      }
+    />
+  );
+}
+
+/** Keeps this device quiet while someone uses Threadlines on a computer, shown while alerts are on. */
+export function AlertsQuietAtComputerRow() {
+  const on = usePushAlertsStore((state) => state.quietAtComputer);
+  const busy = usePushAlertsStore((state) => state.busy);
+  return (
+    <SettingsRow
+      place="general.alertsQuietAtComputer"
+      control={
+        <Switch
+          checked={on}
+          disabled={busy}
+          onCheckedChange={(checked) => {
+            void setPushAlertsQuietAtComputer(Boolean(checked));
+          }}
+          aria-label={placeById("general.alertsQuietAtComputer").title}
         />
       }
     />

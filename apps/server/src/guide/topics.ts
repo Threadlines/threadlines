@@ -88,12 +88,17 @@ With a link allowed, an agent can start a thread on the other computer in that c
       "network",
       "browser",
       "open in the app",
+      "alerts",
+      "notifications",
+      "mute",
     ],
     body: `{place:settings.connections} is where other devices use this computer. {place:connections.devices} lists every phone, tablet, browser and linked computer paired with it; Connect a phone, tablet, or computer there to pair a new one.
 
 {place:connections.computersFromHere} are other computers this app opens, so their threads show here too. {place:connections.options} sets how devices reach this computer: the same network, Tailscale, or a one-time link. A phone away from home connects through Threadlines' relay, end to end encrypted.
 
 A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed. On Linux only the .deb install opens these links; with the AppImage, pair the browser instead.
+
+{place:general.alerts} on a phone turns its alerts on and picks which ones it gets. {place:general.alertsQuietAtComputer} holds them while you're using Threadlines on a computer that's connected to the thread's computer: a request that still needs you comes through once you've stepped away, and finished or failed alerts from that time don't. To stop one project's alerts on every phone, choose Mute phone alerts from that project's menu in the project list at the top of the sidebar.
 
 {place:connections.thisComputer} is this computer's name as the others see it.`,
   },

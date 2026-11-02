@@ -26,6 +26,8 @@ export const PushRegistrationRow = Schema.Struct({
   auth: Schema.String,
   keyId: Schema.String,
   appOrigin: Schema.String,
+  /** The phone stays quiet while someone uses Threadlines on a computer. */
+  quietAtComputer: Schema.BooleanFromBit,
 });
 export type PushRegistrationRow = typeof PushRegistrationRow.Type;
 
@@ -56,7 +58,11 @@ export type PushDeliveryRow = typeof PushDeliveryRow.Type;
 
 export interface PushAlertRepositoryShape {
   readonly saveRegistration: (
-    row: PushRegistrationRow & { readonly now: string },
+    row: Omit<PushRegistrationRow, "quietAtComputer"> & {
+      /** Left out by an older phone: what's saved stays, else on. */
+      readonly quietAtComputer: boolean | undefined;
+      readonly now: string;
+    },
   ) => Effect.Effect<void, PushAlertRepositoryError>;
   /** Forgets a phone's keys; with `registrationId`, only if they are still that registration's. */
   readonly deleteRegistration: (
@@ -96,9 +102,11 @@ export interface PushAlertRepositoryShape {
     alertId: string,
     state: "delivered" | "dropped",
   ) => Effect.Effect<void, PushAlertRepositoryError>;
+  /** Looks at it again at `dueAt`; with `expiresAt`, it lives until then too. */
   readonly deferAlert: (
     alertId: string,
     dueAt: string,
+    expiresAt?: string,
   ) => Effect.Effect<void, PushAlertRepositoryError>;
   /** A finished turn that left a plan to review goes out as "needs you". */
   readonly retypeAlert: (
@@ -106,7 +114,10 @@ export interface PushAlertRepositoryShape {
     kind: PushAlertKind,
     reason: PushAlertReason,
   ) => Effect.Effect<void, PushAlertRepositoryError>;
-  /** One delivery per phone registered now; existing ones are kept. */
+  /**
+   * One delivery per phone registered now; existing ones are kept. One not
+   * tried yet, as a held alert isn't, follows the phone to a new subscription.
+   */
   readonly ensureDeliveries: (input: {
     readonly alertId: string;
     readonly registrations: ReadonlyArray<PushRegistrationRow>;
@@ -142,16 +153,18 @@ const make = Effect.gen(function* () {
 
   const registrationColumns = sql`
     device_id AS "deviceId", registration_id AS "registrationId", p256dh, auth,
-    key_id AS "keyId", app_origin AS "appOrigin"
+    key_id AS "keyId", app_origin AS "appOrigin", quiet_at_computer AS "quietAtComputer"
   `;
 
-  const saveRegistration: PushAlertRepositoryShape["saveRegistration"] = (row) =>
-    sql`
+  const saveRegistration: PushAlertRepositoryShape["saveRegistration"] = (row) => {
+    const quietColumn = row.quietAtComputer === false ? 0 : 1;
+    return sql`
       INSERT INTO push_registrations (
-        device_id, registration_id, p256dh, auth, key_id, app_origin, updated_at
+        device_id, registration_id, p256dh, auth, key_id, app_origin, quiet_at_computer,
+        updated_at
       ) VALUES (
         ${row.deviceId}, ${row.registrationId}, ${row.p256dh}, ${row.auth}, ${row.keyId},
-        ${row.appOrigin}, ${row.now}
+        ${row.appOrigin}, ${quietColumn}, ${row.now}
       )
       ON CONFLICT(device_id) DO UPDATE SET
         registration_id = excluded.registration_id,
@@ -159,8 +172,10 @@ const make = Effect.gen(function* () {
         auth = excluded.auth,
         key_id = excluded.key_id,
         app_origin = excluded.app_origin,
+        quiet_at_computer = ${row.quietAtComputer === undefined ? sql`push_registrations.quiet_at_computer` : quietColumn},
         updated_at = excluded.updated_at
     `.pipe(Effect.asVoid, wrap("saveRegistration"));
+  };
 
   const deleteRegistration: PushAlertRepositoryShape["deleteRegistration"] = (
     deviceId,
@@ -299,10 +314,17 @@ const make = Effect.gen(function* () {
       UPDATE push_alerts SET state = ${state} WHERE alert_id = ${alertId} AND state = 'pending'
     `.pipe(Effect.asVoid, wrap("finishAlert"));
 
-  const deferAlert: PushAlertRepositoryShape["deferAlert"] = (alertId, dueAt) =>
-    sql`
-      UPDATE push_alerts SET due_at = ${dueAt} WHERE alert_id = ${alertId} AND state = 'pending'
-    `.pipe(Effect.asVoid, wrap("deferAlert"));
+  const deferAlert: PushAlertRepositoryShape["deferAlert"] = (alertId, dueAt, expiresAt) =>
+    (expiresAt === undefined
+      ? sql`
+          UPDATE push_alerts SET due_at = ${dueAt}
+          WHERE alert_id = ${alertId} AND state = 'pending'
+        `
+      : sql`
+          UPDATE push_alerts SET due_at = ${dueAt}, expires_at = ${expiresAt}
+          WHERE alert_id = ${alertId} AND state = 'pending'
+        `
+    ).pipe(Effect.asVoid, wrap("deferAlert"));
 
   const retypeAlert: PushAlertRepositoryShape["retypeAlert"] = (alertId, kind, reason) =>
     sql`
@@ -325,7 +347,9 @@ const make = Effect.gen(function* () {
             ${input.alertId}, ${registration.deviceId}, ${registration.registrationId},
             'pending', 0, ${input.now}
           )
-          ON CONFLICT(alert_id, device_id) DO NOTHING
+          ON CONFLICT(alert_id, device_id) DO UPDATE SET
+            registration_id = excluded.registration_id
+          WHERE state = 'pending' AND attempts = 0
         `;
       }
       const rows = yield* sql`

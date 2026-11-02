@@ -10,7 +10,14 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRef, type ReactElement, type ReactNode, useLayoutEffect, useState } from "react";
+import {
+  Component,
+  createRef,
+  type ReactElement,
+  type ReactNode,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -59,6 +66,20 @@ function dispatchTouch(
       changedTouches: [touch],
     }),
   );
+}
+
+/** Hands a render crash to the test, where an app's error page would show it. */
+class CrashCatcher extends Component<{ onCrash: (error: unknown) => void; children: ReactNode }> {
+  override state = { crashed: false };
+  static getDerivedStateFromError() {
+    return { crashed: true };
+  }
+  override componentDidCatch(error: unknown) {
+    this.props.onCrash(error);
+  }
+  override render() {
+    return this.state.crashed ? null : this.props.children;
+  }
 }
 
 function nextFrame() {
@@ -279,6 +300,80 @@ describe("MessagesTimeline with the real virtual list", () => {
       expect(Math.abs(body.getBoundingClientRect().top - readingTop)).toBeLessThanOrEqual(1);
     } finally {
       cancelAnimationFrame(frame);
+      await screen.unmount();
+    }
+  });
+
+  // The expanded browser hides the chat with `display: none` and leaves it
+  // mounted, so every row reads 0x0 while the agent keeps writing behind it. A
+  // thread this long used to run out of React's nested updates.
+  it("keeps a long thread working behind the expanded browser", async () => {
+    const props = buildProps();
+    const sentence = "A reply long enough to wrap onto another line of the chat, and then some. ";
+    const entries = (count: number): TimelineEntry[] =>
+      Array.from({ length: count }, (_, index) => {
+        const id = `reply-${index}` as ChatMessage["id"];
+        return {
+          id,
+          kind: "message",
+          createdAt: props.activeTurnStartedAt,
+          message: {
+            id,
+            role: "assistant",
+            turnId: ACTIVE_TURN_ID,
+            text: sentence.repeat(1 + (index % 4)),
+            streaming: false,
+            createdAt: props.activeTurnStartedAt,
+          },
+        };
+      });
+    const crashes: unknown[] = [];
+    const renderList = (hidden: boolean, count: number, working: boolean) => (
+      <CrashCatcher onCrash={(error) => crashes.push(error)}>
+        <div style={{ height: 600, width: 600, display: hidden ? "none" : "block" }}>
+          <MessagesTimeline
+            {...props}
+            isWorking={working}
+            activeTurnInProgress={working}
+            timelineEntries={entries(count)}
+          />
+        </div>
+      </CrashCatcher>
+    );
+    const drawnRows = () => document.querySelectorAll("[data-message-id]").length;
+    const screen = await renderTimeline(renderList(false, 1500, true));
+    try {
+      await waitForListToSettle(
+        document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!,
+      );
+
+      await screen.rerender(renderList(true, 1500, true));
+      await nextFrame();
+      await screen.rerender(renderList(true, 1501, true));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(crashes).toEqual([]);
+      expect(drawnRows(), "a hidden list must not draw the whole thread").toBeLessThan(100);
+
+      // The turn ending rebuilds the list, still hidden.
+      await screen.rerender(renderList(true, 1501, false));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(crashes).toEqual([]);
+
+      await screen.rerender(renderList(false, 1501, false));
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
+      expect(crashes).toEqual([]);
+      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+      const box = list.getBoundingClientRect();
+      const rowsInView = [...document.querySelectorAll("[data-message-id]")]
+        .map((row) => row.getBoundingClientRect())
+        .filter((row) => row.bottom > box.top && row.top < box.bottom)
+        .toSorted((a, b) => a.top - b.top);
+      expect(rowsInView.length).toBeGreaterThan(1);
+      rowsInView.slice(1).forEach((row, index) => {
+        expect(row.top).toBeGreaterThanOrEqual(rowsInView[index]!.bottom - 1);
+      });
+    } finally {
       await screen.unmount();
     }
   });

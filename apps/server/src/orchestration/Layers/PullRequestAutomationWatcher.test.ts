@@ -391,6 +391,7 @@ function makeSnapshotQuery(input: {
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
     getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+    isProjectPhoneAlertsMuted: () => Effect.succeed(false),
     getProjectShellById: (projectId) =>
       Effect.sync(() =>
         Option.fromUndefinedOr(input.projects.find((project) => project.id === projectId)),

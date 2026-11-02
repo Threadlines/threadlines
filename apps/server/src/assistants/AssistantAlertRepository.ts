@@ -1,5 +1,5 @@
 /**
- * Storage for alerts to a web address (migrations 096 and 100,
+ * Storage for alerts to a web address (migrations 096 and 101,
  * docs/design/assistants.md "Build plan: step 4" and "step 5"): the targets,
  * an address the user added or an assistant's MCP Events subscription, and
  * one delivery row per event that matched one. Times are ISO strings (UTC),

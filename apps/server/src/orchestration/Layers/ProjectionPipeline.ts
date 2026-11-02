@@ -468,6 +468,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { defaultModelSelection: event.payload.defaultModelSelection }
               : {}),
             ...(event.payload.scripts !== undefined ? { scripts: event.payload.scripts } : {}),
+            ...(event.payload.phoneAlertsMuted !== undefined
+              ? { phoneAlertsMuted: event.payload.phoneAlertsMuted }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

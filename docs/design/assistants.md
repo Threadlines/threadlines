@@ -1873,7 +1873,7 @@ the method only to word its offline answer. So no relay change.
 - Any access level may list and subscribe: an event says no more than
   `inbox` does.
 
-### Subscriptions (`AssistantAlertsLive`, migration 100)
+### Subscriptions (`AssistantAlertsLive`, migration 101)
 
 - **A subscription is a target** with `kind = 'subscription'`, its
   `connection_id`, `expires_at`, one event name and its project filter. New

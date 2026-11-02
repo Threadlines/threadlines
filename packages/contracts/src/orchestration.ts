@@ -403,6 +403,8 @@ export const OrchestrationProject = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** This project's threads send no phone alerts. Absent means they do. */
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -2493,6 +2495,8 @@ export const OrchestrationProjectShell = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** This project's threads send no phone alerts. Absent means they do. */
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -2787,6 +2791,7 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -4112,17 +4117,11 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
   /**
-   * The turns the revert took away, from the checkpoints that recorded them:
-   * settings cards those turns' agents left waiting are cancelled with them.
-   * Absent: none are.
+   * The turns the revert keeps: a settings card left waiting from any other
+   * turn is cancelled, including one asked for while the revert ran. Absent:
+   * the revert removed nothing, and no card is cancelled.
    */
-  revertedTurnIds: Schema.optional(Schema.Array(TurnId)),
-  /**
-   * When the revert was asked for: a settings card left waiting since then
-   * came from a turn the revert takes too (it started after the turns it
-   * keeps), so it is cancelled with them. Absent: only `revertedTurnIds` count.
-   */
-  revertRequestedAt: Schema.optional(IsoDateTime),
+  keptTurnIds: Schema.optional(Schema.Array(TurnId)),
   createdAt: IsoDateTime,
 });
 
@@ -4821,6 +4820,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 

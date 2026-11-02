@@ -38,9 +38,10 @@ import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
-import { type AlertVerdict, makeAlertChecks } from "./alertChecks.ts";
+import { type AlertVerdict, makeAlertChecks, READ_RETRY_MS } from "./alertChecks.ts";
 import {
   type PushAlertRow,
   PushAlertRepository,
@@ -49,6 +50,7 @@ import {
 } from "./PushAlertRepository.ts";
 import {
   ALERT_EVENT_MAX_AGE_MS,
+  ALERT_LIFETIME_MS,
   alertPayload,
   type PushAlertAction,
   pushAlertActionsForEvent,
@@ -73,7 +75,13 @@ export interface PushAlertsShape {
     sessionId: AuthSessionId,
   ) => Effect.Effect<PushSendTestResult, PushAlertsError>;
   /** This connection shows `threadId` now, or no thread (`presence.setViewing`). */
-  readonly setViewing: (viewerId: string, threadId: ThreadId | null) => Effect.Effect<void>;
+  readonly setViewing: (
+    viewerId: string,
+    threadId: ThreadId | null,
+    isComputer: boolean,
+  ) => Effect.Effect<void>;
+  /** A computer's window was used `idleMs` ago (`presence.noteActive`). */
+  readonly noteComputerActive: (idleMs: number) => Effect.Effect<void>;
   /** The connection closed. */
   readonly releaseViewer: (viewerId: string) => Effect.Effect<void>;
   /** Whether someone is looking at `threadId` now, by the same leases (alerts to a web address skip it). */
@@ -94,6 +102,13 @@ const ALERT_BATCH = 20;
 const KEEP_FINISHED_ALERTS_MS = 2 * 24 * 60 * 60_000;
 const PRUNE_EVERY_MS = 6 * 60 * 60_000;
 const IDLE_WAKE_MS = 30_000;
+/**
+ * How often an alert held back for someone at a computer is looked at again.
+ * Each look reads everything afresh, so a phone's switch, a project's mute or
+ * someone stepping away all count within this long, with no one having to wake it.
+ */
+const QUIET_RECHECK_MS = 30_000;
+const DROP: AlertVerdict = { type: "drop" };
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const fromBase64Url = (text: string) => Buffer.from(text, "base64url");
@@ -124,6 +139,7 @@ const make = Effect.gen(function* () {
   const repo = yield* PushAlertRepository;
   const relayHost = yield* RelayHost;
   const engine = yield* OrchestrationEngineService;
+  const snapshots = yield* ProjectionSnapshotQuery;
   const environment = yield* ServerEnvironment;
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
   const checks = yield* makeAlertChecks;
@@ -174,6 +190,7 @@ const make = Effect.gen(function* () {
           auth: input.auth,
           keyId: input.keyId,
           appOrigin,
+          quietAtComputer: input.quietAtComputer,
           now: iso(yield* Clock.currentTimeMillis),
         })
         .pipe(Effect.mapError(storageFailed));
@@ -283,7 +300,21 @@ const make = Effect.gen(function* () {
     const actions: PushAlertAction[] = [];
     for (const event of events) {
       const fresh = now - Date.parse(event.occurredAt) <= ALERT_EVENT_MAX_AGE_MS;
+      // A turn's alert says "finished" until it goes out, when a plan it left
+      // makes it "needs you". A plan on screen is still waiting, so seeing the
+      // turn doesn't end that alert.
+      const planWaiting =
+        event.type === "thread.seen-set" &&
+        anyPhone &&
+        (yield* checks.hasPlanToReview(event.payload.threadId));
       for (const action of pushAlertActionsForEvent(event)) {
+        if (planWaiting && action.type === "cancel-thread") {
+          actions.push({
+            ...action,
+            kinds: action.kinds.filter((kind) => kind !== "finished"),
+          });
+          continue;
+        }
         // Cancels always apply; a new alert only for a recent event, with a phone to tell.
         if (action.type !== "add" || (fresh && anyPhone)) actions.push(action);
       }
@@ -330,15 +361,32 @@ const make = Effect.gen(function* () {
 
   // ----- sending them ----------------------------------------------------------
 
-  /** Whether the alert still holds, as the thread is now (alertChecks), with nobody looking at it. */
+  /**
+   * Whether the alert still holds, as the thread is now (alertChecks), in a
+   * project that sends phone alerts. Someone looking at the thread ends it,
+   * except one asking for the user with only a computer looking: that may
+   * still need saying once they step away, which handleAlert decides per phone.
+   */
   const evaluate = (alert: PushAlertRow, now: number): Effect.Effect<AlertVerdict> =>
-    presence.isViewed(alert.threadId, now)
-      ? Effect.succeed({ type: "drop" })
-      : checks.judge(alert, now, {
-          available: Option.isSome(scheduledTasks),
-          seen: scheduleSnapshotSeen,
-          waiting: waitingScheduleRequests,
-        });
+    Effect.gen(function* () {
+      const viewer = presence.viewerOf(alert.threadId, now);
+      if (viewer === "other") return DROP;
+      const verdict = yield* checks.judge(alert, now, {
+        available: Option.isSome(scheduledTasks),
+        seen: scheduleSnapshotSeen,
+        waiting: waitingScheduleRequests,
+      });
+      if (verdict.type !== "send") return verdict;
+      if (viewer === "computer" && verdict.kind !== "needs_you") return DROP;
+      return (yield* snapshots.isProjectPhoneAlertsMuted(verdict.thread.projectId))
+        ? DROP
+        : verdict;
+    }).pipe(
+      // A project that can't be read says nothing about a mute: look again soon.
+      Effect.catch(() =>
+        Effect.succeed<AlertVerdict>({ type: "defer", untilMs: now + READ_RETRY_MS }),
+      ),
+    );
 
   const handleAlert = (
     alert: PushAlertRow,
@@ -365,6 +413,8 @@ const make = Effect.gen(function* () {
         now: iso(now),
       });
       let nextTry: number | null = null;
+      let held = false;
+      const computerInUse = presence.computerInUse(now);
       for (const delivery of deliveries) {
         if (delivery.state !== "pending") continue;
         const dueAt = Date.parse(delivery.nextAttemptAt);
@@ -387,8 +437,22 @@ const make = Effect.gen(function* () {
         }
         // Checked again right before each send: cancelled, or opened, meanwhile.
         if (!(yield* repo.isPending(alert.alertId))) return;
-        if (presence.isViewed(alert.threadId, now)) {
-          return yield* repo.finishAlert(alert.alertId, "dropped");
+        const viewer = presence.viewerOf(alert.threadId, now);
+        if (viewer === "other") return yield* repo.finishAlert(alert.alertId, "dropped");
+        if (registration.quietAtComputer && computerInUse) {
+          // What still needs the user waits for them to step away. What only
+          // says something happened was there on the screen in front of them.
+          if (verdict.kind === "needs_you") {
+            held = true;
+            nextTry = Math.min(nextTry ?? now + QUIET_RECHECK_MS, now + QUIET_RECHECK_MS);
+          } else {
+            yield* settle("dropped", delivery.attempts);
+          }
+          continue;
+        }
+        if (viewer === "computer") {
+          yield* settle("dropped", delivery.attempts);
+          continue;
         }
         const text = alertPayload({
           threadTitle: verdict.thread.title,
@@ -423,8 +487,13 @@ const make = Effect.gen(function* () {
         }
         yield* settle(outcome.outcome === "sent" ? "sent" : "dropped");
       }
-      if (nextTry !== null) yield* repo.deferAlert(alert.alertId, iso(nextTry));
-      else yield* repo.finishAlert(alert.alertId, "delivered");
+      if (nextTry !== null) {
+        // However long they stay, it still has its full life once they leave.
+        const stillWaiting = held ? iso(now + ALERT_LIFETIME_MS.needs_you) : undefined;
+        yield* repo.deferAlert(alert.alertId, iso(nextTry), stillWaiting);
+      } else {
+        yield* repo.finishAlert(alert.alertId, "delivered");
+      }
     });
 
   /** One pass over the alerts that are due; true when more are waiting. */
@@ -505,8 +574,12 @@ const make = Effect.gen(function* () {
     register,
     unregister,
     sendTest,
-    setViewing: (viewerId, threadId) =>
-      Clock.currentTimeMillis.pipe(Effect.map((now) => presence.set(viewerId, threadId, now))),
+    setViewing: (viewerId, threadId, isComputer) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => presence.set(viewerId, threadId, now, isComputer)),
+      ),
+    noteComputerActive: (idleMs) =>
+      Clock.currentTimeMillis.pipe(Effect.map((now) => presence.noteComputerActive(idleMs, now))),
     releaseViewer: (viewerId) => Effect.sync(() => presence.release(viewerId)),
     isViewed: (threadId) =>
       Clock.currentTimeMillis.pipe(Effect.map((now) => presence.isViewed(threadId, now))),

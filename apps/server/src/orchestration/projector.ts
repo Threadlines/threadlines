@@ -398,6 +398,9 @@ export function projectEvent(
                     ? { defaultModelSelection: payload.defaultModelSelection }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
+                  ...(payload.phoneAlertsMuted !== undefined
+                    ? { phoneAlertsMuted: payload.phoneAlertsMuted }
+                    : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,
