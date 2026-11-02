@@ -1,7 +1,20 @@
-import { UserInputRequestedPayload, type ProviderUserInputAnswers } from "@threadlines/contracts";
+import {
+  MessageId,
+  UserInputRequestedPayload,
+  type ProviderUserInputAnswers,
+} from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
 const decodeRequestedInput = Schema.decodeUnknownOption(UserInputRequestedPayload);
+
+const QUESTION_ANSWER_MESSAGE_PREFIX = "question-answer:";
+
+/** The message an answer goes to the agent as. Stable, so a replay finds it already sent. */
+export const questionAnswerMessageId = (requestId: string) =>
+  MessageId.make(`${QUESTION_ANSWER_MESSAGE_PREFIX}${requestId}`);
+
+export const isQuestionAnswerMessageId = (messageId: string) =>
+  messageId.startsWith(QUESTION_ANSWER_MESSAGE_PREFIX);
 
 /** Read durable questions so message replies survive a provider process restart. */
 export const readRequestedUserInput = decodeRequestedInput;

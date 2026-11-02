@@ -21,6 +21,7 @@ import {
   type ModelSelection,
   type OrchestrationEvent,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
   type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -49,6 +50,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 
 import {
@@ -59,6 +61,7 @@ import {
 import { clipSideAnswer } from "../orchestration/agentRequestDecisions.ts";
 import { matchReasoningLevel } from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
+import { isQuestionAnswerMessageId } from "../orchestration/userInput.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import {
@@ -217,6 +220,64 @@ const settledBy =
     }
     return undefined;
   };
+
+/**
+ * The user's own words sent into this agent's running turn: what they wrote in
+ * their composer, or their answer to a question the agent asked. An agent's
+ * reply or a thread's report is neither, and can wait.
+ */
+const isUserSteerInto =
+  (turnId: TurnId, participantId: ThreadParticipantId | null) =>
+  (
+    messageId: MessageId,
+    steer: {
+      readonly turnId?: TurnId | null | undefined;
+      readonly composer?: unknown;
+      readonly participantId?: ThreadParticipantId | null | undefined;
+    },
+  ) =>
+    steer.turnId === turnId &&
+    (steer.composer !== undefined || isQuestionAnswerMessageId(messageId)) &&
+    (steer.participantId ?? null) === participantId;
+
+const toolCallIdOf = (activity: OrchestrationThreadActivity) =>
+  Predicate.hasProperty(activity.payload, "toolCallId") ? activity.payload.toolCallId : undefined;
+
+/**
+ * Whether the agent may not have read the user's latest steer yet. Providers
+ * read a steer at their next step and do not say when, so it counts as read
+ * once a tool that started after it has finished. A tool started before it is
+ * no sign: its result can arrive without the agent having read anything.
+ * Guessing "unread" wrongly costs little (an answer comes as a message);
+ * guessing "read" wrongly leaves the user's words waiting on the call.
+ */
+function hasUnreadUserSteer(
+  thread: OrchestrationThread,
+  turnId: TurnId,
+  participantId: ThreadParticipantId | null,
+): boolean {
+  const isSteer = isUserSteerInto(turnId, participantId);
+  const steer = thread.messages.findLast((message) => isSteer(message.id, message));
+  if (steer === undefined) {
+    return false;
+  }
+  const steerSequence = steer.eventSequence;
+  if (steerSequence === undefined) {
+    return true;
+  }
+  const sinceSteer = thread.activities.filter(
+    (activity) =>
+      activity.turnId === turnId &&
+      activity.eventSequence !== undefined &&
+      activity.eventSequence > steerSequence,
+  );
+  const started = new Set(
+    sinceSteer.filter((activity) => activity.kind === "tool.started").map(toolCallIdOf),
+  );
+  return !sinceSteer.some(
+    (activity) => activity.kind === "tool.completed" && started.has(toolCallIdOf(activity)),
+  );
+}
 
 export function makeRoomToolHandlers(deps: RoomToolDeps) {
   const roomGit = makeRoomGit(deps.git);
@@ -571,9 +632,9 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     });
 
   /**
-   * Switch an ask or review whose call ran out of time to answering by
-   * message. False when the decider refuses: it settled meanwhile, Stop came,
-   * or the caller's turn is over.
+   * Switch an ask or review whose call stops waiting to answering by message.
+   * False when the decider refuses: it settled meanwhile, Stop came, or the
+   * caller's turn is over.
    */
   const detachRequest = (threadId: ThreadId, requestId: RoomAgentRequestId) =>
     Effect.gen(function* () {
@@ -595,7 +656,10 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
    * One ask or review, from the rules to its answer. Runs in the request
    * registry, so a dropped call does not end it; `abandoned` completes when
    * every call waiting on it has gone. An answer that outruns the call goes
-   * on, and comes back to the caller as a message (`continuing`).
+   * on, and comes back to the caller as a message (`continuing`). The user
+   * writing to the caller ends the wait the same way: a provider reads their
+   * words only once this call returns, and they should not wait on an answer
+   * that can just as well come later.
    */
   const runAnswerRequest = (input: {
     readonly scope: McpInvocationScope;
@@ -651,6 +715,22 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           events.pipe(
             Stream.map(settledBy(scope.threadId, requestId, sideTurnId)),
             Stream.filter((value): value is Settled => value !== undefined),
+            Stream.runHead,
+          ),
+        );
+        // Accepted, not submitted: the provider has the words by then, so the
+        // call's result does not reach the agent ahead of them. Its own
+        // subscription, since one subscription hands each event to one reader.
+        const steerEvents = yield* deps.engine.subscribeDomainEvents;
+        const isSteer = isUserSteerInto(arrival.callerTurnId, scope.participantId);
+        const steerListener = yield* Effect.forkScoped(
+          steerEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "thread.follow-up-accepted" &&
+                event.payload.threadId === scope.threadId &&
+                isSteer(event.payload.messageId, event.payload),
+            ),
             Stream.runHead,
           ),
         );
@@ -713,9 +793,34 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         if (typeof sent === "object") {
           return sent;
         }
+        const what = kind === "review" ? "review" : "answer";
         let ending: "timeout" | "abandoned";
         if (sent === "sent") {
-          const waited = yield* Effect.raceFirst(Fiber.join(listener), callEnds);
+          // The steer may have come before the call got here: another tool the
+          // agent asked for at the same time held this one back until then.
+          const latest = yield* deps.readThread(scope.threadId);
+          const steered =
+            latest !== undefined &&
+            hasUnreadUserSteer(latest, arrival.callerTurnId, scope.participantId)
+              ? Effect.void
+              : Fiber.join(steerListener).pipe(
+                  Effect.flatMap((steer) => (Option.isSome(steer) ? Effect.void : Effect.never)),
+                );
+          const first = yield* Effect.raceFirst(
+            Fiber.join(listener),
+            Effect.raceFirst(callEnds, steered.pipe(Effect.as("steered" as const))),
+          );
+          if (first === "steered" && (yield* detachRequest(scope.threadId, requestId))) {
+            return {
+              ...ids,
+              outcome: "continuing",
+              detail: `The user just wrote to you; their message comes with this result or right after it. ${arrival.target.name} is still working on it, and its ${what} will come to you as a message when it is done, so go on without it; there is no need to look for it. Do not ask again.`,
+            } satisfies RoomAnswerResult;
+          }
+          // Refused: the answer landed, or the turn is ending. That settles the
+          // call in a moment, so it waits as it would have.
+          const waited =
+            first === "steered" ? yield* Effect.raceFirst(Fiber.join(listener), callEnds) : first;
           if (typeof waited !== "string") {
             return yield* answered(waited);
           }
@@ -729,7 +834,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         // so its settle is a moment away.
         if (submitted && ending === "timeout") {
           if (yield* detachRequest(scope.threadId, requestId)) {
-            const what = kind === "review" ? "review" : "answer";
             return {
               ...ids,
               outcome: "continuing",
