@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
+  buildRestoreDefaultsConfirmationMessage,
   deriveProviderSettingsRows,
   filterArchivedThreads,
   formatArchivedThreadDeleteAgeLabel,
@@ -20,6 +21,47 @@ const MAINTAINED_DRIVER_KINDS = [
   ProviderDriverKind.make("codex"),
   ProviderDriverKind.make("claudeAgent"),
 ] as const;
+
+describe("buildRestoreDefaultsConfirmationMessage", () => {
+  it("names what it gives agents back apart from the rest", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: [
+          "Theme",
+          "Rooms",
+          "Agents bringing in other agents",
+          "Agents can start threads",
+        ],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          enableRooms: false,
+          agentThreads: "off",
+          // Going back to asking first takes reach away, so this one just resets.
+          agentInvites: "auto",
+        },
+      }),
+    ).toBe(
+      [
+        "Restore default settings?",
+        "",
+        "Agents get these abilities back:",
+        "Rooms: On",
+        "Agents can start threads: Ask me first",
+        "",
+        "This will also reset: Theme, Agents bringing in other agents.",
+      ].join("\n"),
+    );
+  });
+
+  it("only lists what resets when agents get nothing back", () => {
+    expect(
+      buildRestoreDefaultsConfirmationMessage({
+        changedSettingLabels: ["Theme", "Time format"],
+        settings: DEFAULT_SERVER_SETTINGS,
+      }),
+    ).toBe("Restore default settings?\n\nThis will reset: Theme, Time format.");
+  });
+});
 
 describe("formatDiagnosticsDescription", () => {
   it("collapses trace and metric URLs that share the same OTEL base path", () => {

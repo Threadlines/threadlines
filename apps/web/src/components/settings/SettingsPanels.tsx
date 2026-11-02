@@ -147,6 +147,7 @@ import {
   type ArchivedThreadDeleteAgeDays,
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
+  buildRestoreDefaultsConfirmationMessage,
   compareArchivedThreadsNewestFirst,
   formatArchivedThreadDeleteAgeLabel,
   formatAutoArchiveCandidateSummary,
@@ -505,8 +506,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy
         ? ["Sites agents can visit"]
         : []),
-      ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
-      ...(settings.enableAgentPages === false ? ["Agent pages"] : []),
+      ...(!roomsEnabledFor(settings) ? [placeById("threads.enableRooms").title] : []),
+      ...(settings.enableAgentPages === false ? [placeById("threads.agentPages").title] : []),
       ...(settings.enableClaudeArtifacts === true ? ["Claude artifacts"] : []),
       ...(settings.claudeWorkflowSize !== DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize
         ? ["Claude workflow size"]
@@ -518,10 +519,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
         : []),
-      ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
-      ...(settings.startAgentsWhileTyping === false ? ["Start agents while you type"] : []),
-      ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
-      ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
+      ...(settings.enableCommandRequests === false ? [placeById("threads.commandRequests").title] : []),
+      ...(settings.startAgentsWhileTyping === false ? [placeById("threads.startWhileTyping").title] : []),
+      ...(agentInvitesChoice(settings) !== "ask" ? [placeById("threads.agentInvites").title] : []),
+      ...(agentThreadsMode(settings) !== "ask" ? [placeById("threads.agentThreads").title] : []),
       ...(settings.wrapUpChildThreadsOnFinish !==
       DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish
         ? ["Wrap up finished child threads"]
@@ -550,6 +551,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
       settings.claudeSuggestionsWhenUsageRunsFast,
+      settings.continueAfterUsageLimits,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
       settings.agentInvites,
@@ -581,9 +583,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     if (changedSettingLabels.length === 0) return;
     const api = readLocalApi();
     const confirmed = await (api ?? ensureLocalApi()).dialogs.confirm(
-      ["Restore default settings?", `This will reset: ${changedSettingLabels.join(", ")}.`].join(
-        "\n",
-      ),
+      buildRestoreDefaultsConfirmationMessage({ changedSettingLabels, settings }),
     );
     if (!confirmed) return;
 
@@ -635,7 +635,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sourceControlWriterModelSelection: DEFAULT_UNIFIED_SETTINGS.sourceControlWriterModelSelection,
     });
     onRestored?.();
-  }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
+  }, [changedSettingLabels, onRestored, setTheme, settings, updateSettings]);
 
   return {
     changedSettingLabels,
