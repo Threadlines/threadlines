@@ -67,28 +67,13 @@ describe("settingsChangeDeviceLabel", () => {
   it("names the desktop app by its computer, and a browser by what it is", () => {
     const browserLabel = "iPhone";
     expect(
-      settingsChangeDeviceLabel({
-        desktopApp: true,
-        threadOnThisComputer: true,
-        thisComputerName: "Studio",
-        browserLabel,
-      }),
-    ).toBe("this computer's app");
+      settingsChangeDeviceLabel({ desktopApp: true, thisComputerName: "Studio", browserLabel }),
+    ).toBe("Studio");
     expect(
-      settingsChangeDeviceLabel({
-        desktopApp: true,
-        threadOnThisComputer: false,
-        thisComputerName: "Studio",
-        browserLabel,
-      }),
-    ).toBe("the app on Studio");
+      settingsChangeDeviceLabel({ desktopApp: true, thisComputerName: null, browserLabel }),
+    ).toBe("the desktop app");
     expect(
-      settingsChangeDeviceLabel({
-        desktopApp: false,
-        threadOnThisComputer: true,
-        thisComputerName: "Studio",
-        browserLabel,
-      }),
+      settingsChangeDeviceLabel({ desktopApp: false, thisComputerName: "Studio", browserLabel }),
     ).toBe("iPhone");
   });
 });

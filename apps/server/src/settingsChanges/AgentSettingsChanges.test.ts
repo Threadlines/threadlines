@@ -2,6 +2,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type OrchestrationSettingsChangeRequest,
   type ServerSettings,
+  type ServerSettingsError,
   SettingsChangeRequestId,
   ThreadId,
   TurnId,
@@ -41,13 +42,13 @@ const THEME_LIGHT = { place: "general.theme", value: "light" } as const;
  * the projections do (a command the reducer can't apply is refused), and the
  * given settings service.
  */
-function run<A>(
+function run<A, E>(
   requests: ReadonlyArray<OrchestrationSettingsChangeRequest>,
-  settingsLayer: Layer.Layer<ServerSettingsService>,
+  settingsLayer: Layer.Layer<ServerSettingsService, ServerSettingsError>,
   body: (
     service: Effect.Success<ReturnType<typeof make>>,
     state: () => ReadonlyArray<OrchestrationSettingsChangeRequest>,
-  ) => Effect.Effect<A, unknown, ServerSettingsService>,
+  ) => Effect.Effect<A, E, ServerSettingsService>,
 ) {
   let state = requests;
   const engine = Layer.mock(OrchestrationEngineService)({

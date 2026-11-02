@@ -305,6 +305,7 @@ describe("ProviderSessionReaper", () => {
           listThreadDiffStatBaselines: () => Effect.die("unused"),
           listThreadTurnOverlapsSince: () => Effect.die("unused"),
           listThreadIdsWithOpenAgentRequests: () => Effect.die("unused"),
+          listClaimedSettingsChanges: () => Effect.die("unused"),
           listThreadShells: () => Effect.succeed([]),
           getThreadShellById: (threadId) => {
             const thread = input.readModel.threads.find((entry) => entry.id === threadId);

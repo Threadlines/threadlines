@@ -96,25 +96,22 @@ export function checkDeviceChanges(
 }
 
 /**
- * How this app names its device in a claim, for the agent's note ("Theme is
- * now Light on iPhone"). The desktop app says whether it is on the thread's
- * own computer, the one the agent works on; a browser says what it is.
+ * How this app names its device in a claim, read after "on" in the agent's
+ * note ("On iPhone: Theme is now Light"): the desktop app by its computer's
+ * name, a browser by what it is.
  */
 export function settingsChangeDeviceLabel(input: {
   /** The desktop app, whose own computer runs its server. */
   readonly desktopApp: boolean;
-  /** The thread runs on this app's own computer. */
-  readonly threadOnThisComputer: boolean;
   /** This app's computer's name, when known. */
   readonly thisComputerName: string | null;
   /** What this browser calls itself ("iPhone", "Chrome on macOS"). */
   readonly browserLabel: string;
 }): string {
   if (!input.desktopApp) return input.browserLabel;
-  if (input.threadOnThisComputer) return "this computer's app";
   return input.thisComputerName !== null && input.thisComputerName.trim().length > 0
-    ? `the app on ${input.thisComputerName.trim()}`
-    : "the app on another computer";
+    ? input.thisComputerName.trim()
+    : "the desktop app";
 }
 
 export interface SettingsChangeNotice {

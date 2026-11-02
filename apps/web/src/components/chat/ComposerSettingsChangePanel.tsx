@@ -62,7 +62,6 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
         allow,
         deviceLabel: settingsChangeDeviceLabel({
           desktopApp: isPrimaryEnvironmentOnThisComputer(),
-          threadOnThisComputer: primaryDescriptor?.environmentId === threadRef.environmentId,
           thisComputerName: primaryDescriptor?.label ?? null,
           browserLabel: describeThisBrowser().label,
         }),

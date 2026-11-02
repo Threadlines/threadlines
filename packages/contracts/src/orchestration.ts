@@ -1145,7 +1145,7 @@ export type SettingsChangeDeviceReport = typeof SettingsChangeDeviceReport.Type;
 /** The app that pressed Change: only it makes the device changes, once its claim wins. */
 export const SettingsChangeClaim = Schema.Struct({
   claimId: TrimmedNonEmptyString,
-  /** How that app names its device, for the agent's note ("iPhone", "this computer's app"). */
+  /** That app's device, read after "on" in the agent's note: "iPhone", "Chrome on macOS", a computer's name. */
   deviceLabel: TrimmedNonEmptyString,
 });
 export type SettingsChangeClaim = typeof SettingsChangeClaim.Type;

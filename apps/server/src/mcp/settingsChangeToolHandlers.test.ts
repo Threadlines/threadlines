@@ -4,6 +4,7 @@ import {
   type OrchestrationThread,
   ProjectId,
   ProviderInstanceId,
+  SideTurnId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -154,7 +155,11 @@ describe("settings_change", () => {
     const { handler } = harness();
     const result = await Effect.runPromise(
       handler(
-        { ...mainCaller(), side: "ask", roomTools: new Set(roomToolsFor("ask")) },
+        {
+          ...mainCaller(),
+          side: { sideTurnId: SideTurnId.make("side-1"), kind: "ask" },
+          roomTools: new Set(roomToolsFor("ask")),
+        },
         { changes: [{ place: "general.theme", value: "dark" }] },
       ),
     );

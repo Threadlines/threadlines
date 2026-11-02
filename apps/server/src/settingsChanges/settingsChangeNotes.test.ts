@@ -26,16 +26,14 @@ const ended = (
 
 describe("the agent's note about its settings change", () => {
   it("says what changed where, and what the device reported", () => {
-    expect(
-      settingsChangeNote(ended({ device: { applied: ["general.theme"], failed: [] } })),
-    ).toBe(
-      "The user accepted your settings change. On this computer: Settings › General › Chat & diffs › Stream replies is now Off. On their iPhone: Settings › General › Appearance › Theme is now Light.",
+    expect(settingsChangeNote(ended({ device: { applied: ["general.theme"], failed: [] } }))).toBe(
+      "The user accepted your settings change. On this computer: Settings › General › Chat & diffs › Stream replies is now Off. On iPhone: Settings › General › Appearance › Theme is now Light.",
     );
   });
 
   it("doesn't claim a device change the app never confirmed", () => {
     expect(settingsChangeNote(ended({}))).toContain(
-      "The change on their iPhone (Settings › General › Appearance › Theme to Light) wasn't confirmed by their app.",
+      "Their app on iPhone didn't confirm the change there (Settings › General › Appearance › Theme to Light).",
     );
   });
 

@@ -195,7 +195,8 @@ export const make = (reads: AgentSettingsChangesReads) =>
           yield* settle(threadId, request, "changed");
           return { outcome: "changed" as const, makeDeviceChanges: true };
         }
-        const ending = off.length === computer.length ? "failed" : "uncertain";
+        const ending: "failed" | "uncertain" =
+          off.length === computer.length ? "failed" : "uncertain";
         const detail = `Threadlines stopped while making the change. Now: ${off.join("; ")}.`;
         yield* settle(threadId, request, ending, detail);
         return { outcome: ending, detail, makeDeviceChanges: true };

@@ -1622,6 +1622,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Threads holding a settings change an answer was making (`claimed`); the
+  // JSON text match only narrows the rows, the decoded state decides.
+  const listClaimedSettingsChangeRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      settingsRequests: Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest)),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          settings_requests AS "settingsRequests"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND settings_requests LIKE '%"claimed"%'
+      `,
+  });
+
   // ISO-8601 UTC stamps compare lexicographically, so the window predicate is
   // plain string comparison. A turn overlaps the window if it started or
   // completed at/after `sinceIso`; a turn that started earlier and is still
@@ -3585,6 +3604,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listClaimedSettingsChanges: ProjectionSnapshotQueryShape["listClaimedSettingsChanges"] =
+    () =>
+      listClaimedSettingsChangeRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listClaimedSettingsChanges:query",
+            "ProjectionSnapshotQuery.listClaimedSettingsChanges:decodeRows",
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.flatMap((row) =>
+            row.settingsRequests
+              .filter((request) => request.status === "claimed")
+              .map((request) => ({ threadId: row.threadId, request })),
+          ),
+        ),
+      );
+
   const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
     input,
   ) =>
@@ -4035,6 +4072,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listThreadDiffStatBaselines,
     listThreadTurnOverlapsSince,
     listThreadIdsWithOpenAgentRequests,
+    listClaimedSettingsChanges,
     listThreadShells,
     getThreadShellById,
     getThreadDetailById,

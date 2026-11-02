@@ -30,10 +30,10 @@ const asked = (changes: ReadonlyArray<SettingsChangeItem>) =>
 function devicePart(request: OrchestrationSettingsChangeRequest): string | undefined {
   const changes = request.changes.filter(landsOnDevice);
   if (changes.length === 0) return undefined;
-  const where = `their ${request.claim?.deviceLabel ?? "device"}`;
+  const where = request.claim?.deviceLabel ?? "the device they answered from";
   const report = request.device;
   if (report === undefined) {
-    return `The change on ${where} (${asked(changes)}) wasn't confirmed by their app.`;
+    return `Their app on ${where} didn't confirm the change there (${asked(changes)}).`;
   }
   const applied = changes.filter((change) => report.applied.includes(change.place));
   return [
