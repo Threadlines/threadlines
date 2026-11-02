@@ -106,6 +106,7 @@ import * as AgentPages from "./pages/AgentPages.ts";
 import * as McpApps from "./mcpApps/McpApps.ts";
 import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
 import * as CommandRuns from "./commandRuns/CommandRuns.ts";
+import * as AgentSettingsChanges from "./settingsChanges/AgentSettingsChanges.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
@@ -549,6 +550,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       ThreadContextSeedBuilderLive,
       AgentPages.layer,
       CommandRuns.layer,
+      // Answers to agents' settings changes; it settles at startup what a
+      // previous run left mid-change.
+      AgentSettingsChanges.layer,
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
       // Outside agents' starts and sends by request id (`/mcp/connect`);

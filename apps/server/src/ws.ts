@@ -93,6 +93,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
+import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -640,6 +641,7 @@ const makeCoreRpcLayer = (
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
+      const agentSettingsChanges = yield* AgentSettingsChanges;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -3163,6 +3165,18 @@ const makeCoreRpcLayer = (
             WS_METHODS.scheduledTasksRespondRequest,
             scheduledTasks.respondRequest(input),
             { "rpc.aggregate": "scheduledTasks" },
+          ),
+        // Agents' settings changes, answered from their card by any app that
+        // can use this computer (docs/design/agent-settings-changes.md).
+        [WS_METHODS.settingsChangeRespond]: (input) =>
+          observeRpcEffect(WS_METHODS.settingsChangeRespond, agentSettingsChanges.respond(input), {
+            "rpc.aggregate": "settingsChange",
+          }),
+        [WS_METHODS.settingsChangeReportDevice]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.settingsChangeReportDevice,
+            agentSettingsChanges.reportDevice(input),
+            { "rpc.aggregate": "settingsChange" },
           ),
         // Event tasks (docs/design/event-tasks.md): the same callers as the
         // scheduled-task calls above, paired phones included.

@@ -138,13 +138,13 @@ describe("McpSessionRegistry", () => {
     expect([...(reviewer?.roomTools ?? [])]).toEqual(["room_diff"]);
   });
 
-  it("gives a thread with rooms and agent-started threads off the app guide alone, never to a side runtime", async () => {
+  it("gives a thread with rooms and agent-started threads off the app's own tools alone, never to a side runtime", async () => {
     const registry = makeMcpSessionRegistry();
     const main = await Effect.runPromise(
       registry.credentialFor({ sessionKey: THREAD, browser: true, room: true, guideOnly: true }),
     );
     expect([...((await Effect.runPromise(registry.resolve(main.token)))?.roomTools ?? [])]).toEqual(
-      ["app_guide"],
+      ["app_guide", "settings_change"],
     );
     const side = await Effect.runPromise(
       registry.credentialFor({
@@ -449,6 +449,7 @@ describe("MCP endpoints", () => {
           ]);
           expect("tools" in result.guideOnlyRoom ? result.guideOnlyRoom.tools : []).toEqual([
             "app_guide",
+            "settings_change",
           ]);
           for (const listed of [result.browser, result.scheduledRunRoom]) {
             expect("nonObjectInputs" in listed ? listed.nonObjectInputs : ["(not listed)"]).toEqual(

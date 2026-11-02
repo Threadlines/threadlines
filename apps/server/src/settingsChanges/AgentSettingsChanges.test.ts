@@ -1,0 +1,254 @@
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type OrchestrationSettingsChangeRequest,
+  type ServerSettings,
+  SettingsChangeRequestId,
+  ThreadId,
+  TurnId,
+} from "@threadlines/contracts";
+import { settingsChangeStateOn } from "@threadlines/shared/settingsChangeState";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
+import { describe, expect, it } from "vite-plus/test";
+
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ServerSettingsService, type ServerSettingsShape } from "../serverSettings.ts";
+import { make } from "./AgentSettingsChanges.ts";
+
+const THREAD = ThreadId.make("thread-settings");
+const REQUEST = SettingsChangeRequestId.make("request-1");
+const AT = "2026-11-02T10:00:00.000Z";
+
+const waiting = (
+  changes: OrchestrationSettingsChangeRequest["changes"],
+): OrchestrationSettingsChangeRequest => ({
+  requestId: REQUEST,
+  participantId: null,
+  turnId: TurnId.make("turn-1"),
+  changes,
+  status: "waiting",
+  createdAt: AT,
+  noted: false,
+});
+
+const STREAM_OFF = { place: "general.streamReplies", value: false, from: true } as const;
+const THEME_LIGHT = { place: "general.theme", value: "light" } as const;
+
+/**
+ * The service over one thread's requests, an engine that keeps them the way
+ * the projections do (a command the reducer can't apply is refused), and the
+ * given settings service.
+ */
+function run<A>(
+  requests: ReadonlyArray<OrchestrationSettingsChangeRequest>,
+  settingsLayer: Layer.Layer<ServerSettingsService>,
+  body: (
+    service: Effect.Success<ReturnType<typeof make>>,
+    state: () => ReadonlyArray<OrchestrationSettingsChangeRequest>,
+  ) => Effect.Effect<A, unknown, ServerSettingsService>,
+) {
+  let state = requests;
+  const engine = Layer.mock(OrchestrationEngineService)({
+    dispatch: (command) =>
+      Effect.suspend(() => {
+        const before = state;
+        if (command.type === "thread.settings-change.claim") {
+          state = settingsChangeStateOn.claimed(state, {
+            threadId: THREAD,
+            requestId: command.requestId,
+            claim: command.claim,
+            claimedAt: command.createdAt,
+          });
+        } else if (command.type === "thread.settings-change.settle") {
+          const request = state.find((entry) => entry.requestId === command.requestId);
+          const allowed =
+            command.ending === "declined"
+              ? request?.status === "waiting"
+              : request?.status === "claimed" && request.claim?.claimId === command.claimId;
+          if (allowed) {
+            state = settingsChangeStateOn.settled(state, {
+              threadId: THREAD,
+              requestId: command.requestId,
+              ending: command.ending,
+              ...(command.detail !== undefined ? { detail: command.detail } : {}),
+              settledAt: command.createdAt,
+            });
+          }
+        } else if (command.type === "thread.settings-change.report-device") {
+          state = settingsChangeStateOn.deviceReported(state, {
+            threadId: THREAD,
+            requestId: command.requestId,
+            device: command.device,
+            reportedAt: command.createdAt,
+          });
+        }
+        return state === before
+          ? Effect.fail({ _tag: "OrchestrationCommandInvariantError", message: "refused" } as never)
+          : Effect.succeed({ sequence: 1 });
+      }),
+  });
+  const program = Effect.gen(function* () {
+    const service = yield* make({
+      request: (_threadId, requestId) =>
+        Effect.sync(() => state.find((entry) => entry.requestId === requestId)),
+      claimed: Effect.sync(() =>
+        state
+          .filter((request) => request.status === "claimed")
+          .map((request) => ({ threadId: THREAD, request })),
+      ),
+    });
+    return yield* body(service, () => state);
+  });
+  return Effect.runPromise(
+    program.pipe(Effect.scoped, Effect.provide(Layer.merge(engine, settingsLayer))),
+  );
+}
+
+const claim = { claimId: "claim-a", deviceLabel: "iPhone" };
+
+describe("answering an agent's settings change", () => {
+  it("Change claims it, writes the computer's changes once and says the app makes the device ones", async () => {
+    const answer = await run(
+      [waiting([STREAM_OFF, THEME_LIGHT])],
+      ServerSettingsService.layerTest(),
+      (service, state) =>
+        Effect.gen(function* () {
+          const result = yield* service.respond({
+            threadId: THREAD,
+            requestId: REQUEST,
+            allow: true,
+            claim,
+          });
+          const settings = yield* ServerSettingsService;
+          return { result, settings: yield* settings.readStored, request: state()[0] };
+        }),
+    );
+    expect(answer.result).toEqual({ outcome: "changed", makeDeviceChanges: true });
+    expect(answer.settings.enableAssistantStreaming).toBe(false);
+    expect(answer.request).toMatchObject({ status: "changed", claim });
+  });
+
+  it("writes nothing when a computer setting moved since the agent asked", async () => {
+    const answer = await run(
+      [waiting([STREAM_OFF])],
+      ServerSettingsService.layerTest({ enableAssistantStreaming: false }),
+      (service, state) =>
+        Effect.gen(function* () {
+          const result = yield* service.respond({
+            threadId: THREAD,
+            requestId: REQUEST,
+            allow: true,
+            claim,
+          });
+          return { result, request: state()[0] };
+        }),
+    );
+    expect(answer.result.outcome).toBe("failed");
+    expect(answer.result.detail).toContain(
+      "Stream replies was changed to Off since the agent asked",
+    );
+    expect(answer.result.makeDeviceChanges).toBe(true);
+    expect(answer.request?.status).toBe("failed");
+  });
+
+  it("settles changed when the file landed but a later step failed", async () => {
+    const landed = Layer.effect(
+      ServerSettingsService,
+      Effect.gen(function* () {
+        const stored = yield* Ref.make<ServerSettings>(DEFAULT_SERVER_SETTINGS);
+        return {
+          readStored: Ref.get(stored),
+          updateSettingsChecked: () =>
+            Ref.set(stored, { ...DEFAULT_SERVER_SETTINGS, enableAssistantStreaming: false }).pipe(
+              Effect.andThen(Effect.fail({ cause: new Error("secret store"), written: true })),
+            ),
+        } as unknown as ServerSettingsShape;
+      }),
+    );
+    const answer = await run([waiting([STREAM_OFF])], landed, (service, state) =>
+      Effect.gen(function* () {
+        const result = yield* service.respond({
+          threadId: THREAD,
+          requestId: REQUEST,
+          allow: true,
+          claim,
+        });
+        return { result, request: state()[0] };
+      }),
+    );
+    expect(answer.result.outcome).toBe("changed");
+    expect(answer.request?.status).toBe("changed");
+  });
+
+  it("answers a retry from the same app with how it went, and anyone else with who answered", async () => {
+    const answer = await run(
+      [waiting([STREAM_OFF])],
+      ServerSettingsService.layerTest(),
+      (service) =>
+        Effect.gen(function* () {
+          const input = { threadId: THREAD, requestId: REQUEST, allow: true, claim };
+          yield* service.respond(input);
+          const retry = yield* service.respond(input);
+          const other = yield* service.respond({
+            ...input,
+            claim: { claimId: "claim-b", deviceLabel: "Mac" },
+          });
+          const notNow = yield* service.respond({ ...input, allow: false });
+          return { retry, other, notNow };
+        }),
+    );
+    expect(answer.retry).toEqual({ outcome: "changed", makeDeviceChanges: true });
+    expect(answer.other).toMatchObject({ outcome: "already_answered", makeDeviceChanges: false });
+    expect(answer.other.detail).toContain("iPhone");
+    expect(answer.notNow.outcome).toBe("already_answered");
+  });
+
+  it("Not now changes nothing", async () => {
+    const answer = await run(
+      [waiting([STREAM_OFF, THEME_LIGHT])],
+      ServerSettingsService.layerTest(),
+      (service, state) =>
+        Effect.gen(function* () {
+          const result = yield* service.respond({
+            threadId: THREAD,
+            requestId: REQUEST,
+            allow: false,
+          });
+          const settings = yield* ServerSettingsService;
+          return { result, settings: yield* settings.readStored, request: state()[0] };
+        }),
+    );
+    expect(answer.result).toEqual({ outcome: "declined", makeDeviceChanges: false });
+    expect(answer.settings.enableAssistantStreaming).toBe(true);
+    expect(answer.request?.status).toBe("declined");
+  });
+
+  it("settles a claim a previous run stopped in the middle of from what the settings hold", async () => {
+    const claimed = (
+      changes: OrchestrationSettingsChangeRequest["changes"],
+    ): OrchestrationSettingsChangeRequest => ({ ...waiting(changes), status: "claimed", claim });
+    const FETCH = { place: "sourceControl.fetchInterval", value: 60, from: 120 } as const;
+    const outcome = (settings: Parameters<typeof ServerSettingsService.layerTest>[0]) =>
+      run(
+        [claimed([STREAM_OFF, FETCH])],
+        ServerSettingsService.layerTest(settings),
+        (service, state) =>
+          // An answer waits for recovery, so after it the claim is settled.
+          service
+            .respond({ threadId: THREAD, requestId: REQUEST, allow: true, claim })
+            .pipe(Effect.map(() => state()[0])),
+      );
+    const all = await outcome({
+      enableAssistantStreaming: false,
+      automaticGitFetchInterval: Duration.seconds(60),
+    });
+    expect(all?.status).toBe("changed");
+    const none = await outcome({});
+    expect(none?.status).toBe("failed");
+    expect(none?.detail).toContain("Stream replies is On (asked: Off)");
+    const mix = await outcome({ enableAssistantStreaming: false });
+    expect(mix?.status).toBe("uncertain");
+  });
+});

@@ -71,7 +71,7 @@ export function editValueFits(control: EditControl, value: unknown): value is Ed
 }
 
 /** What a control takes, said for an agent. */
-function describeControl(control: EditControl): string {
+export function describeEditControl(control: EditControl): string {
   switch (control.kind) {
     case "switch":
       return "true (on) or false (off)";
@@ -143,7 +143,7 @@ export function checkEdits(
       return {
         refused: {
           reason: "bad_value",
-          detail: `${placePathLabel(place)} takes ${describeControl(spec.edit.control)}, not ${JSON.stringify(change.value)}.`,
+          detail: `${placePathLabel(place)} takes ${describeEditControl(spec.edit.control)}, not ${JSON.stringify(change.value)}.`,
         },
       };
     }
