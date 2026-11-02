@@ -31,16 +31,40 @@ export interface TimelineRowRevealOptions {
   readonly renderAttempts: number;
   readonly onRow: (row: HTMLElement) => void;
   /**
-   * Frames after `onRow` during which the row is handed to `onRow` again
-   * whenever the list moved it: rows drawn on the way are measured a frame or
-   * two late. Ends once the row holds still for HOLD_STILL_FRAMES. Unset: no hold.
+   * Keeps the row where `onRow` put it while the list finishes measuring the
+   * rows it drew on the way, which can push it off a frame or two late.
+   * Unset: no hold.
    */
-  readonly holdFrames?: number | undefined;
+  readonly hold?: RevealHold | undefined;
   readonly onGiveUp?: (() => void) | undefined;
 }
 
-/** Frames a held row must keep still before the hold ends. */
+/**
+ * How a placed row is held. Only a move of the row within the list's content
+ * (a row above it measured anew) hands it back to `onRow`: a scroll, the
+ * reader's or the list's, leaves that place alone, so the hold never fights
+ * one. It ends once the row is `isPlaced` and has kept still for
+ * HOLD_STILL_FRAMES, or after `durationMs`: the list can put off a scroll
+ * while it measures, so a placement may land some frames late.
+ */
+export interface RevealHold {
+  readonly durationMs: number;
+  readonly isPlaced: (row: HTMLElement) => boolean;
+}
+
+/** Frames a held row must keep still, in place, before the hold ends. */
 const HOLD_STILL_FRAMES = 3;
+
+/** Where a drawn row's top sits within the list's content; null without a list. */
+function offsetInContent(list: LegendListRef | null, row: HTMLElement): number | null {
+  const scrollableNode = list?.getScrollableNode?.();
+  if (!scrollableNode) return null;
+  return (
+    row.getBoundingClientRect().top -
+    scrollableNode.getBoundingClientRect().top +
+    (finiteScrollMetric(scrollableNode.scrollTop) ?? 0)
+  );
+}
 
 /** Scrolls to a row until it is drawn, then hands it over. Returns a cancel. */
 export function revealTimelineRow(options: TimelineRowRevealOptions): () => void {
@@ -57,18 +81,18 @@ export function revealTimelineRow(options: TimelineRowRevealOptions): () => void
     if (!cancelled) options.onGiveUp?.();
   };
 
-  const holdRow = (framesLeft: number, lastTop: number, stillFrames: number) => {
-    if (framesLeft <= 0 || stillFrames >= HOLD_STILL_FRAMES) return;
+  const holdRow = (hold: RevealHold, until: number, lastOffset: number, stillFrames: number) => {
+    if (stillFrames >= HOLD_STILL_FRAMES || performance.now() > until) return;
     nextFrame(() => {
       const row = options.findRow();
-      if (!row) return;
-      const top = row.getBoundingClientRect().top;
-      if (Math.abs(top - lastTop) < 1) {
-        holdRow(framesLeft - 1, top, stillFrames + 1);
-        return;
+      const offset = row ? offsetInContent(options.getList(), row) : null;
+      if (!row || offset === null) return;
+      if (Math.abs(offset - lastOffset) >= 1) {
+        options.onRow(row);
+        holdRow(hold, until, offset, 0);
+      } else {
+        holdRow(hold, until, offset, hold.isPlaced(row) ? stillFrames + 1 : 0);
       }
-      options.onRow(row);
-      holdRow(framesLeft - 1, row.getBoundingClientRect().top, 0);
     });
   };
 
@@ -77,8 +101,9 @@ export function revealTimelineRow(options: TimelineRowRevealOptions): () => void
       const row = options.findRow();
       if (row) {
         options.onRow(row);
-        if (options.holdFrames !== undefined) {
-          holdRow(options.holdFrames, row.getBoundingClientRect().top, 0);
+        const offset = options.hold ? offsetInContent(options.getList(), row) : null;
+        if (options.hold && offset !== null) {
+          holdRow(options.hold, performance.now() + options.hold.durationMs, offset, 0);
         }
       } else if (renderAttemptsLeft > 1) {
         waitForRow(renderAttemptsLeft - 1, scrollAttemptsLeft);

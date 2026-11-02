@@ -701,8 +701,8 @@ function findFirstTimelineSearchMatchRect(messageRow: HTMLElement, query: string
 const REVEAL_VIEW_POSITION = 0.2;
 /** Tries to reach a followed link's row while the list moves under it. */
 const REVEAL_ATTEMPTS = 3;
-/** Frames a followed link's row is held in place after it lands. */
-const REVEAL_HOLD_FRAMES = 30;
+/** How long a followed link's row is held in place after it lands, at most. */
+const REVEAL_HOLD_MS = 1_000;
 
 /** Puts a drawn row at REVEAL_VIEW_POSITION, correcting a scroll that aimed by
  *  guessed row heights. */
@@ -713,6 +713,19 @@ function settleRevealedRow(list: LegendListRef | null, row: HTMLElement): void {
     bottomInsetPx: 0,
     always: true,
   });
+}
+
+/** Whether a drawn row is at REVEAL_VIEW_POSITION, or as near as the list can scroll. */
+function isRevealedRowPlaced(list: LegendListRef | null, row: HTMLElement): boolean {
+  const scrollableNode = list?.getScrollableNode?.();
+  if (!scrollableNode) return true;
+  const viewport = scrollableNode.getBoundingClientRect();
+  const off =
+    row.getBoundingClientRect().top - (viewport.top + viewport.height * REVEAL_VIEW_POSITION);
+  if (Math.abs(off) < 4) return true;
+  const top = finiteScrollMetric(scrollableNode.scrollTop) ?? 0;
+  const atEnd = top + scrollableNode.clientHeight >= scrollableNode.scrollHeight - 1;
+  return (off > 0 && atEnd) || (off < 0 && top <= 0);
 }
 
 function revealTimelineSearchMatch(
@@ -1418,7 +1431,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onRow: (row) => settleRevealedRow(listRef.current, row),
         // The rows drawn on the way are measured a frame or two after it
         // lands and can push it off its place; it is put back until they stop.
-        holdFrames: REVEAL_HOLD_FRAMES,
+        hold: {
+          durationMs: REVEAL_HOLD_MS,
+          isPlaced: (row) => isRevealedRowPlaced(listRef.current, row),
+        },
       });
     },
     [listRef, markUserScrollIntent],
