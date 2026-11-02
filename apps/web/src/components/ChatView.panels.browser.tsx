@@ -1172,6 +1172,9 @@ describe("ChatView (full app): right panel and header actions", () => {
       trigger.focus();
       await userEvent.keyboard("{Enter}");
       await expect.element(page.getByRole("menuitem", { name: "Open in Kiro" })).toBeVisible();
+      // Enter goes to whatever has focus: wait for the menu to put it on its
+      // first item, so a busy machine can't send the key back to the crumb.
+      await vi.waitFor(() => expect(document.activeElement?.textContent).toContain("Open in Kiro"));
       await userEvent.keyboard("{Enter}");
 
       await vi.waitFor(
@@ -1179,7 +1182,10 @@ describe("ChatView (full app): right panel and header actions", () => {
           const openRequest = wsRequests.find(
             (request) => request._tag === WS_METHODS.shellOpenInEditor,
           );
-          expect(openRequest).toMatchObject({
+          expect(
+            openRequest,
+            `focus on ${document.activeElement?.tagName} "${document.activeElement?.textContent?.slice(0, 30)}", menu ${document.querySelector('[role="menu"]') ? "open" : "closed"}`,
+          ).toMatchObject({
             _tag: WS_METHODS.shellOpenInEditor,
             cwd: "/repo/project",
             editor: "kiro",
