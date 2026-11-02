@@ -2640,13 +2640,6 @@ const make = Effect.gen(function* () {
         cwd,
         checkpointRef: baselineCheckpointRef,
       });
-      if (!baselineExists) {
-        yield* checkpointStore.captureCheckpoint({
-          cwd,
-          checkpointRef: baselineCheckpointRef,
-        });
-      }
-
       const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
         input.threadId,
         currentTurnCount + 1,
@@ -2655,11 +2648,14 @@ const make = Effect.gen(function* () {
         cwd,
         checkpointRef: preTurnCountCheckpointRef,
       });
-      if (!preTurnCountCheckpointExists) {
-        yield* checkpointStore.captureCheckpoint({
-          cwd,
-          checkpointRef: preTurnCountCheckpointRef,
-        });
+      // Both missing (a thread's first message): nothing happens between them,
+      // so they are one snapshot, and the message waits for one capture.
+      const [checkpointRef, ...alsoCheckpointRefs] = [
+        ...(baselineExists ? [] : [baselineCheckpointRef]),
+        ...(preTurnCountCheckpointExists ? [] : [preTurnCountCheckpointRef]),
+      ];
+      if (checkpointRef !== undefined) {
+        yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef, alsoCheckpointRefs });
       }
     },
   );
