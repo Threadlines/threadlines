@@ -1316,7 +1316,10 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
+        // Read when the revert began; a card asked for since then is from a
+        // turn the revert takes too.
         revertedTurnIds: settingsChangeTurnsRevertTakes(context.thread, event.payload.turnCount),
+        revertRequestedAt: event.payload.createdAt,
         createdAt: now,
       })
       .pipe(

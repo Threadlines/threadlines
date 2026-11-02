@@ -5081,7 +5081,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         SETTINGS_CHANGE_CANCELLED.reverted,
         command.createdAt,
         childEventBase(command, command.createdAt),
-        (request) => (command.revertedTurnIds ?? []).includes(request.turnId),
+        (request) =>
+          (command.revertedTurnIds ?? []).includes(request.turnId) ||
+          (command.revertRequestedAt !== undefined &&
+            request.createdAt >= command.revertRequestedAt),
       );
       return cancelled.length === 0 ? revertedEvent : [...cancelled, revertedEvent];
     }

@@ -591,6 +591,17 @@ describe("wsApi", () => {
     expect(saves[1]).toMatchObject({ timestampFormat: "locale", diffWordWrap: false });
     answers[1]!.resolve();
     await expect(second).resolves.toBeUndefined();
+
+    // Two writes of the same value: the first failing doesn't undo the second.
+    const third = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
+    const fourth = updateClientSettingsAndPersist({ timestampFormat: "12-hour" });
+    await until(() => saves.length === 3);
+    answers[2]!.reject(new Error("disk full"));
+    await expect(third).rejects.toThrow("disk full");
+    await until(() => saves.length === 4);
+    expect(saves[3]).toMatchObject({ timestampFormat: "12-hour" });
+    answers[3]!.resolve();
+    await expect(fourth).resolves.toBeUndefined();
   });
 
   it("falls back to browser storage for persistence when the desktop bridge is missing", async () => {

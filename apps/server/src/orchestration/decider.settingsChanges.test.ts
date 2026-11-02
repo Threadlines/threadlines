@@ -310,6 +310,16 @@ describe("agents' settings changes", () => {
         }),
       ));
     }
+    // Asked for while the revert was under way, from a turn the reactor's
+    // read didn't have yet.
+    ({ model } = await apply(
+      model,
+      ask("ask-3", {
+        participantId: ThreadParticipantId.make("helper"),
+        turnId: TurnId.make("turn-3"),
+        createdAt: at(36),
+      }),
+    ));
     // The checkpoint reactor names the turns it took away; the read model's
     // own checkpoints aren't loaded after a restart, so they aren't consulted.
     ({ model } = await apply(model, {
@@ -318,11 +328,13 @@ describe("agents' settings changes", () => {
       threadId: THREAD,
       turnCount: 1,
       revertedTurnIds: [TurnId.make("turn-2")],
+      revertRequestedAt: at(35),
       createdAt: at(40),
     }));
     expect(statuses(model)).toEqual([
       ["ask-1", "waiting", undefined],
       ["ask-2", "cancelled", "The turn that asked was undone."],
+      ["ask-3", "cancelled", "The turn that asked was undone."],
     ]);
   });
 });

@@ -121,8 +121,9 @@ let clientSettingsSaveChain: Promise<void> = Promise.resolve();
  * never lands over a newer one.
  */
 function saveClientSettingsInOrder(): Promise<void> {
+  const { persistence } = ensureLocalApi();
   const save = clientSettingsSaveChain.then(() =>
-    ensureLocalApi().persistence.setClientSettings(getClientSettingsSnapshot()),
+    persistence.setClientSettings(getClientSettingsSnapshot()),
   );
   clientSettingsSaveChain = save.catch(() => undefined);
   return save;
@@ -231,27 +232,31 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
  * `updateSettings` only logs it. For callers that must say truthfully whether
  * a change landed: an agent's settings change reports each device setting it
  * made. Waits for the saved settings to load first, so the write never puts
- * defaults over them. Like every client write it changes memory first and
- * saves in order (`saveClientSettingsInOrder`), so a later save never drops
- * it, and a put-back after a failure reaches the next save.
+ * defaults over them. The change, its save and any put-back run as one step
+ * of the in-order save chain, so a later write's change is never undone by an
+ * earlier one's failure and every later save carries the put-back.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
   await hydrateClientSettings();
-  const before = getClientSettingsSnapshot();
-  const next: ClientSettings = { ...before, ...patch };
-  replaceClientSettingsSnapshot(next);
-  try {
-    await saveClientSettingsInOrder();
-  } catch (error) {
-    // Put back only what this write set and nothing has changed since.
-    const current = getClientSettingsSnapshot();
-    const restored: Record<string, unknown> = { ...current };
-    for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
-      if (current[key] === next[key]) restored[key] = before[key];
+  const write = clientSettingsSaveChain.then(async () => {
+    const before = getClientSettingsSnapshot();
+    const next: ClientSettings = { ...before, ...patch };
+    replaceClientSettingsSnapshot(next);
+    try {
+      await ensureLocalApi().persistence.setClientSettings(next);
+    } catch (error) {
+      // Put back only what this write set and nothing has changed since.
+      const current = getClientSettingsSnapshot();
+      const restored: Record<string, unknown> = { ...current };
+      for (const key of Object.keys(patch) as Array<keyof ClientSettings>) {
+        if (current[key] === next[key]) restored[key] = before[key];
+      }
+      replaceClientSettingsSnapshot(restored as ClientSettings);
+      throw error;
     }
-    replaceClientSettingsSnapshot(restored as ClientSettings);
-    throw error;
-  }
+  });
+  clientSettingsSaveChain = write.catch(() => undefined);
+  return write;
 }
 
 function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
