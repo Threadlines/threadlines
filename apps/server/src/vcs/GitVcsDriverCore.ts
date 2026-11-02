@@ -5165,8 +5165,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   )(function* (input) {
     const targetBranch = input.newRefName ?? input.refName;
     const repoName = path.basename(input.cwd);
-    const worktreePath =
-      input.path ?? path.join(worktreesDir, repoName, worktreeFolderNameForBranch(targetBranch));
+    // Against the repository, where git resolves a relative path.
+    const worktreePath = path.resolve(
+      input.cwd,
+      input.path ?? path.join(worktreesDir, repoName, worktreeFolderNameForBranch(targetBranch)),
+    );
     // `--no-track`: a thread's branch may start from a remote-tracking ref
     // (see resolveFreshWorktreeBase) and must not inherit it as upstream, or a
     // later push would target the base branch itself.
@@ -5184,10 +5187,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
     // What's here already, so a failed add takes back only what it made. Anything
     // that can't be read counts as already here.
-    // Against the repository, where git resolves a relative path.
-    const resolvedWorktreePath = path.resolve(input.cwd, worktreePath);
     const folderExisted = yield* fileSystem
-      .exists(resolvedWorktreePath)
+      .exists(worktreePath)
       .pipe(Effect.catch(() => Effect.succeed(true)));
     const branchWasFree =
       input.newRefName !== undefined &&
@@ -5213,7 +5214,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.tapError((failure) =>
         undoFailedWorktreeAdd({
           cwd: input.cwd,
-          worktreePath: resolvedWorktreePath,
+          worktreePath,
           branch: targetBranch,
           folderExisted,
           madeBranchFrom,

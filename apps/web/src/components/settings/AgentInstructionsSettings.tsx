@@ -287,19 +287,19 @@ export function AgentInstructionsSettingsPanel() {
     }
   }, [picked, projectOptions]);
 
-  // A save that finishes after a switch must not land in the new project's editor.
-  const pickedKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    pickedKeyRef.current = picked?.key ?? null;
-  }, [picked]);
+  // Counts project switches: a save that finishes after one, even a switch away
+  // and back, must not land in the editor as it is now.
+  const pickCountRef = useRef(0);
 
   // Another project's files start clean: its drafts are for the files shown here.
   const pickProject = (project: ExtensionScopeProjectEntry) => {
     if (project.key === picked?.key) return;
+    pickCountRef.current += 1;
     setPicked(project);
     setInstructions(null);
     setInstructionDrafts({});
     setActiveFileKey(null);
+    setSavingFileKey(null);
   };
 
   // A place link from a thread opens on that thread's computer and project
@@ -315,6 +315,9 @@ export function AgentInstructionsSettingsPanel() {
   });
 
   const refresh = useCallback(async () => {
+    // First, so a load still under way for another project can't land here.
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
     const requestCwd = cwd.trim();
     const providersApi = readProjectProvidersApi();
     if (!requestCwd || !providersApi) {
@@ -326,8 +329,6 @@ export function AgentInstructionsSettingsPanel() {
       return;
     }
 
-    const requestId = refreshRequestRef.current + 1;
-    refreshRequestRef.current = requestId;
     setIsLoading(true);
     setError(null);
     try {
@@ -433,7 +434,7 @@ export function AgentInstructionsSettingsPanel() {
       const key = instructionFileKey(file);
       const draft = instructionDrafts[key];
       const contents = draft?.contents ?? file.contents ?? "";
-      const savingProjectKey = pickedKeyRef.current;
+      const pickCount = pickCountRef.current;
       setSavingFileKey(key);
       try {
         const providersApi = readProjectProvidersApi();
@@ -447,7 +448,7 @@ export function AgentInstructionsSettingsPanel() {
         });
         const resultKey = instructionFileKey(result.file);
         const savedContents = result.file.contents ?? contents;
-        if (pickedKeyRef.current !== savingProjectKey) {
+        if (pickCountRef.current !== pickCount) {
           toastManager.add(
             stackedThreadToast({
               type: "success",
@@ -484,7 +485,9 @@ export function AgentInstructionsSettingsPanel() {
           }),
         );
       } finally {
-        setSavingFileKey((current) => (current === key ? null : current));
+        if (pickCountRef.current === pickCount) {
+          setSavingFileKey((current) => (current === key ? null : current));
+        }
       }
     },
     [cwd, instructionDrafts, instructions?.cwd, readProjectProvidersApi, updateInstructionFile],

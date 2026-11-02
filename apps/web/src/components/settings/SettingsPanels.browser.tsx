@@ -4293,9 +4293,16 @@ describe("Agent Instructions", () => {
       .click();
     await expect.element(contents).toHaveValue("the Mac's instructions");
 
+    // Back on the project it was saving, with a newer edit: the old save stays out.
+    await page.getByRole("combobox", { name: "Project" }).click();
+    await page.getByRole("group", { name: "Studio" }).getByRole("option", { name: "app" }).click();
+    await expect.element(contents).toHaveValue("the Studio's instructions");
+    await contents.fill("newer edit");
+
     finishSave();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect.element(contents).toHaveValue("the Mac's instructions");
+    await expect.element(contents).toHaveValue("newer edit");
+    await expect.element(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
   });
 });
 
