@@ -333,6 +333,100 @@ describe("assistants: sign-in", () => {
     ),
   );
 
+  it.effect(
+    "names an assistant by the site its sign-in returns to, never by the name it gives, then as the user picks",
+    () =>
+      withDoor((door) =>
+        Effect.gen(function* () {
+          // Calling itself ChatGPT from a site Threadlines doesn't know earns no brand.
+          yield* door.fake.push({
+            type: "frame",
+            frame: yield* signInFrame("sign-in-spoof", {
+              clientId: "spoof-client",
+              clientName: "Helper for ChatGPT",
+              identity: { kind: "registered", host: "helper.example", known: false },
+            }),
+          });
+          // Grok Bot signs in as "Cursor", through Cursor's site.
+          const allowCursor = (signInId: string, assistant?: "cursor" | "grok-bot") =>
+            Effect.gen(function* () {
+              const challenge = pkce();
+              yield* door.fake.push({
+                type: "frame",
+                frame: yield* signInFrame(signInId, {
+                  clientName: "Cursor",
+                  identity: { kind: "registered", host: "www.cursor.com", known: true },
+                  codeChallenge: challenge.challenge,
+                }),
+              });
+              const waiting = yield* until(door.assistants.state, (state) =>
+                state.signIns.some((entry) => entry.requestId === signInId),
+              );
+              yield* door.signIn.approve({
+                requestId: OutsideAgentRequestId.make(signInId),
+                ...SEE,
+                ...(assistant !== undefined ? { assistant } : {}),
+              });
+              const decision = door.fake.sent.find(
+                (frame) => frame.type === "signin.decision" && frame.signInId === signInId,
+              );
+              if (decision?.type !== "signin.decision" || decision.decision !== "allow") {
+                return yield* Effect.die(new Error("no allow decision"));
+              }
+              yield* exchange(door.fake, decision.authorizationCode, {
+                code_verifier: challenge.verifier,
+              });
+              return waiting.signIns.find((entry) => entry.requestId === signInId)!;
+            });
+          const latest = Stream.runHead(door.signIn.changes).pipe(Effect.map(Option.getOrThrow));
+
+          const first = yield* allowCursor("sign-in-cursor", "cursor");
+          expect(first).toMatchObject({
+            name: "Grok Bot",
+            givenName: "Cursor",
+            assistant: "grok-bot",
+          });
+          const spoof = (yield* door.assistants.state).signIns.find(
+            (entry) => entry.requestId === "sign-in-spoof",
+          );
+          expect(spoof).toMatchObject({
+            name: "Helper for ChatGPT",
+            givenName: null,
+            assistant: null,
+          });
+          // The user said it's Cursor's own agent: that's what it's called from then on.
+          const saved = yield* until(latest, (value) => value.connections.length === 1);
+          expect(saved.connections[0]).toMatchObject({
+            name: "Cursor",
+            givenName: null,
+            assistant: "cursor",
+          });
+
+          // It signs in again, allowed by an app that doesn't send a pick: the pick stays.
+          yield* allowCursor("sign-in-cursor-again");
+          const again = yield* until(
+            latest,
+            (value) =>
+              value.connections.length === 1 &&
+              value.connections[0]!.connectionId !== saved.connections[0]!.connectionId,
+          );
+          expect(again.connections[0]).toMatchObject({ name: "Cursor", assistant: "cursor" });
+
+          // Change picks again.
+          const changed = yield* door.signIn.update({
+            connectionId: again.connections[0]!.connectionId,
+            ...SEE,
+            assistant: "grok-bot",
+          });
+          expect(changed).toMatchObject({
+            name: "Grok Bot",
+            givenName: "Cursor",
+            assistant: "grok-bot",
+          });
+        }),
+      ),
+  );
+
   it.effect("stays on the relay until an approved code is traded or can't be", () =>
     withDoor((door) =>
       Effect.gen(function* () {

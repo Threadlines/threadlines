@@ -33,6 +33,7 @@ const row: OutsideAgentConnectionRow = {
   routeTag: null,
   refresh: null,
   keyHash: null,
+  assistantPick: null,
   createdAt: "2026-10-30T10:00:00.000Z",
   lastUsedAt: null,
   removedAt: null,

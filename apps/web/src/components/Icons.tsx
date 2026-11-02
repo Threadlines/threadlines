@@ -640,6 +640,45 @@ export const GrokIcon: Icon = (props) => (
 );
 
 /**
+ * Grok Bot's own one-color mark: a ball with two slanted eyes, the glyph its
+ * Mac app puts in the menu bar, redrawn from it (its dock icon is the same
+ * face on a tile).
+ */
+export const GrokBotIcon: Icon = ({ className, ...props }) => {
+  const maskId = `${useId().replaceAll(":", "")}-grok-bot`;
+  return (
+    <svg
+      {...props}
+      viewBox="0 0 36 36"
+      className={cn("fill-[#141414] dark:fill-[#EDEDED]", className)}
+    >
+      <mask id={maskId}>
+        <circle cx="18" cy="18" r="17" fill="#fff" />
+        <rect
+          x="17.9"
+          y="8.1"
+          width="3.6"
+          height="8.8"
+          rx="1.8"
+          transform="rotate(-24 19.7 12.5)"
+          fill="#000"
+        />
+        <rect
+          x="25.9"
+          y="4.6"
+          width="2.8"
+          height="8.8"
+          rx="1.4"
+          transform="rotate(-31 27.3 9)"
+          fill="#000"
+        />
+      </mask>
+      <circle cx="18" cy="18" r="17" mask={`url(#${maskId})`} />
+    </svg>
+  );
+};
+
+/**
  * A pull request the host is landing on its own: GitHub's own merge queue glyph
  * (one change on its way down to the base, two more waiting beside it), so the
  * badge reads the same here as on the pull request's page.

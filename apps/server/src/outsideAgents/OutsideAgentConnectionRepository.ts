@@ -1,5 +1,6 @@
 import {
   IsoDateTime,
+  KnownAssistant,
   OutsideAgentAccess,
   OutsideAgentConnectionId,
   OutsideAgentConnectionKind,
@@ -54,6 +55,13 @@ export const OutsideAgentRefreshState = Schema.Struct({
 });
 export type OutsideAgentRefreshState = typeof OutsideAgentRefreshState.Type;
 
+/** A user's pick of which known assistant a connection is, as stored. */
+export const AssistantPick = Schema.Union([KnownAssistant, Schema.Literal("none")]);
+export type AssistantPick = typeof AssistantPick.Type;
+
+/** The stored pick for what the user chose in a dialog (null: none of them). */
+export const assistantPickOf = (picked: KnownAssistant | null): AssistantPick => picked ?? "none";
+
 export const OutsideAgentConnectionRow = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
   kind: OutsideAgentConnectionKind,
@@ -83,6 +91,8 @@ export const OutsideAgentConnectionRow = Schema.Struct({
   refresh: Schema.NullOr(OutsideAgentRefreshState),
   /** Assistants with a key. */
   keyHash: Schema.NullOr(Schema.String),
+  /** Which known assistant the user said it is (`none`: none of them); null: not picked, the guess stands. */
+  assistantPick: Schema.NullOr(AssistantPick),
   createdAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
   removedAt: Schema.NullOr(IsoDateTime),
@@ -115,6 +125,7 @@ const OutsideAgentConnectionDbRow = Schema.Struct({
   refreshRotatedAt: Schema.NullOr(IsoDateTime),
   refreshSeenGeneration: Schema.NullOr(Schema.Int),
   keyHash: Schema.NullOr(Schema.String),
+  assistantPick: Schema.NullOr(AssistantPick),
   createdAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
   removedAt: Schema.NullOr(IsoDateTime),
@@ -163,6 +174,7 @@ const fromDb = (row: OutsideAgentConnectionDbRow): OutsideAgentConnectionRow => 
           seenGeneration: row.refreshSeenGeneration ?? -1,
         },
   keyHash: row.keyHash,
+  assistantPick: row.assistantPick,
   createdAt: row.createdAt,
   lastUsedAt: row.lastUsedAt,
   removedAt: row.removedAt,
@@ -211,10 +223,14 @@ export interface OutsideAgentConnectionRepositoryShape {
     ReadonlyArray<OutsideAgentConnectionId>,
     OutsideAgentConnectionRepositoryError
   >;
-  /** Changes a live connection's grant; none when it is removed or unknown. */
+  /**
+   * Changes a live connection's grant, and its assistant pick when given;
+   * none when it is removed or unknown.
+   */
   readonly setGrant: (input: {
     readonly connectionId: OutsideAgentConnectionId;
     readonly grant: OutsideAgentGrant;
+    readonly assistantPick?: AssistantPick;
   }) => Effect.Effect<
     Option.Option<OutsideAgentConnectionRow>,
     OutsideAgentConnectionRepositoryError
@@ -309,6 +325,7 @@ const make = Effect.gen(function* () {
       refresh_rotated_at AS "refreshRotatedAt",
       refresh_seen_generation AS "refreshSeenGeneration",
       key_hash AS "keyHash",
+      assistant_pick AS "assistantPick",
       created_at AS "createdAt",
       last_used_at AS "lastUsedAt",
       removed_at AS "removedAt",
@@ -363,7 +380,8 @@ const make = Effect.gen(function* () {
           resource, access, work_level, max_runtime_mode, project_ids_json, token_generation,
           identity_host, identity_verified, identity_known, host_id, route_tag,
           refresh_generation, refresh_rotated_at, refresh_seen_generation, key_hash,
-          created_at, last_used_at, removed_at, removed_reason, relay_revoke_pending
+          assistant_pick, created_at, last_used_at, removed_at, removed_reason,
+          relay_revoke_pending
         ) VALUES (
           ${row.connectionId}, ${row.kind}, ${row.signIn}, ${row.clientIdHash}, ${row.clientName},
           ${row.softwareId}, ${row.redirectUri}, ${row.resource},
@@ -372,7 +390,7 @@ const make = Effect.gen(function* () {
           ${row.identity?.host ?? null}, ${flag(row.identity?.verified)},
           ${flag(row.identity?.known)}, ${row.hostId}, ${row.routeTag},
           ${row.refresh?.generation ?? null}, ${row.refresh?.rotatedAt ?? null},
-          ${row.refresh?.seenGeneration ?? null}, ${row.keyHash},
+          ${row.refresh?.seenGeneration ?? null}, ${row.keyHash}, ${row.assistantPick},
           ${row.createdAt}, ${row.lastUsedAt}, ${row.removedAt}, ${row.removedReason}, 0
         )
       `;
@@ -389,6 +407,7 @@ const make = Effect.gen(function* () {
           grant_writes = grant_writes + 1,
           max_runtime_mode = ${input.grant.maxRuntimeMode},
           project_ids_json = ${projectIdsJson(input.grant.projectIds)}
+          ${input.assistantPick !== undefined ? sql`, assistant_pick = ${input.assistantPick}` : sql``}
         WHERE connection_id = ${input.connectionId} AND removed_at IS NULL
         RETURNING connection_id AS "connectionId"
       `;
