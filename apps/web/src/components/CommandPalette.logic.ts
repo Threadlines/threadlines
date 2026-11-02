@@ -4,6 +4,7 @@ import {
   type FilesystemBrowseEntry,
   type MessageId,
 } from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   analyzeSearchText,
   parseSearchQuery,
@@ -197,6 +198,28 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       },
     );
   });
+}
+
+/**
+ * The scoped key of the thread the highlighted result opens, or null when the
+ * highlight is on anything else.
+ */
+export function highlightedThreadKeyOf(
+  groups: ReadonlyArray<CommandPaletteGroup>,
+  highlightedItemValue: string | null,
+): string | null {
+  if (highlightedItemValue === null) {
+    return null;
+  }
+  for (const group of groups) {
+    const item = group.items.find((candidate) => candidate.value === highlightedItemValue);
+    if (item) {
+      return item.threadRef && !item.disabled
+        ? scopedThreadKey(scopeThreadRef(item.threadRef.environmentId, item.threadRef.id))
+        : null;
+    }
+  }
+  return null;
 }
 
 export interface ThreadContentSearchMatch {

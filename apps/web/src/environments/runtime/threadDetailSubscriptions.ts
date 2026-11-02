@@ -942,6 +942,15 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     };
   }
 
+  /**
+   * Opens a thread the user just chose at foreground priority, before its
+   * chat mounts, and holds it `holdMs` for the chat to take over. A load an
+   * intent started carries on instead of being let go when the intent ends.
+   */
+  function holdForOpen(environmentId: EnvironmentId, threadId: ThreadId, holdMs: number): void {
+    releaseLater(retain(environmentId, threadId, "foreground"), holdMs);
+  }
+
   /** Restarts a retained stream to fetch a fresh snapshot; false if none is open. */
   function refresh(environmentId: EnvironmentId, threadId: ThreadId): boolean {
     const entry = entries.get(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
@@ -1106,6 +1115,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     disposeForEnvironment,
     disposeThread,
     evictIdleToCapacity,
+    holdForOpen,
     holdIntent,
     isShown,
     reconcileEvictionForEnvironment,
