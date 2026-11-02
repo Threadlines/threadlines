@@ -16,6 +16,7 @@ import type {
   SettingsChangeEnding,
   SettingsChangeRequestId,
   ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import { isOpenSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { checkEdits } from "@threadlines/shared/settingsEdits";
@@ -268,4 +269,43 @@ export function cancelWaitingSettingsChanges(
     .map((request) =>
       settledEvent(thread, request.requestId, "cancelled", detail, settledAt, baseFor),
     );
+}
+
+/**
+ * The turns a revert to the first `turnCount` turns takes away that have
+ * settings cards, for `thread.revert.complete`'s `revertedTurnIds`. Read from
+ * the thread as the revert loaded it (checkpoints and messages): a turn with a
+ * checkpoint past `turnCount`, or one the transcript cut drops (a turn whose
+ * checkpoint was never captured has none). The decider can't work this out
+ * itself: the engine doesn't load checkpoints after a restart.
+ */
+export function settingsChangeTurnsRevertTakes(
+  thread: Pick<OrchestrationThread, "checkpoints" | "messages" | "settingsRequests">,
+  turnCount: number,
+): ReadonlyArray<TurnId> {
+  const taken = new Set(
+    thread.checkpoints
+      .filter((checkpoint) => checkpoint.checkpointTurnCount > turnCount)
+      .map((checkpoint) => checkpoint.turnId),
+  );
+  const { cut, keptTurnIds } = revertMessages({
+    messages: thread.messages,
+    idOf: (message) => message.id,
+    retainedTurnIds: new Set(
+      thread.checkpoints
+        .filter((checkpoint) => checkpoint.checkpointTurnCount <= turnCount)
+        .map((checkpoint) => checkpoint.turnId),
+    ),
+    turnCount,
+  });
+  for (const request of thread.settingsRequests ?? []) {
+    if (
+      cut !== undefined &&
+      !keptTurnIds.has(request.turnId) &&
+      request.createdAt >= cut.createdAt
+    ) {
+      taken.add(request.turnId);
+    }
+  }
+  return [...taken];
 }

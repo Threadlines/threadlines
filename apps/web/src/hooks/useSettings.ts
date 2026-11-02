@@ -111,13 +111,28 @@ async function hydrateClientSettings(): Promise<void> {
   return clientSettingsHydrationPromise;
 }
 
+/** The save in flight, so the next one starts only after it. */
+let clientSettingsSaveChain: Promise<void> = Promise.resolve();
+
+/**
+ * Saves this device's settings as they are when the save runs, after every
+ * save before it: saves land in order, and each holds every change made
+ * before it ran (including a failed one's put-back), so an older snapshot
+ * never lands over a newer one.
+ */
+function saveClientSettingsInOrder(): Promise<void> {
+  const save = clientSettingsSaveChain.then(() =>
+    ensureLocalApi().persistence.setClientSettings(getClientSettingsSnapshot()),
+  );
+  clientSettingsSaveChain = save.catch(() => undefined);
+  return save;
+}
+
 function persistClientSettings(settings: ClientSettings): void {
   replaceClientSettingsSnapshot(settings);
-  void ensureLocalApi()
-    .persistence.setClientSettings(settings)
-    .catch((error) => {
-      console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, error);
-    });
+  void saveClientSettingsInOrder().catch((error) => {
+    console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, error);
+  });
 }
 
 // ── Key sets for routing patches ─────────────────────────────────────
@@ -217,8 +232,8 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
  * a change landed: an agent's settings change reports each device setting it
  * made. Waits for the saved settings to load first, so the write never puts
  * defaults over them. Like every client write it changes memory first and
- * then saves the whole snapshot, so saves go out in the order the changes
- * were made and a later one never drops an earlier one.
+ * saves in order (`saveClientSettingsInOrder`), so a later save never drops
+ * it, and a put-back after a failure reaches the next save.
  */
 export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
   await hydrateClientSettings();
@@ -226,7 +241,7 @@ export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch)
   const next: ClientSettings = { ...before, ...patch };
   replaceClientSettingsSnapshot(next);
   try {
-    await ensureLocalApi().persistence.setClientSettings(next);
+    await saveClientSettingsInOrder();
   } catch (error) {
     // Put back only what this write set and nothing has changed since.
     const current = getClientSettingsSnapshot();
@@ -279,6 +294,7 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
+  clientSettingsSaveChain = Promise.resolve();
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }

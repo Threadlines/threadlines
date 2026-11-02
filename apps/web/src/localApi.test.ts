@@ -562,6 +562,37 @@ describe("wsApi", () => {
     expect(removeSavedEnvironmentSecret).toHaveBeenCalledWith("environment-local");
   });
 
+  it("saves device settings in order, and a failed save's put-back reaches the next save", async () => {
+    const saves: Array<{ readonly timestampFormat: string; readonly diffWordWrap: boolean }> = [];
+    const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    getWindowForTest().desktopBridge = makeDesktopBridge({
+      setClientSettings: (settings) =>
+        new Promise<void>((resolve, reject) => {
+          saves.push(settings);
+          answers.push({ resolve, reject });
+        }),
+    });
+    const { updateClientSettingsAndPersist } = await import("./hooks/useSettings");
+    const until = async (done: () => boolean) => {
+      for (let tries = 0; tries < 100 && !done(); tries += 1) await Promise.resolve();
+    };
+
+    const first = updateClientSettingsAndPersist({ timestampFormat: "24-hour" });
+    await until(() => saves.length === 1);
+    const second = updateClientSettingsAndPersist({ diffWordWrap: false });
+    await until(() => saves.length === 2);
+    // The second save waits for the first, whatever order they'd finish in.
+    expect(saves).toHaveLength(1);
+
+    answers[0]!.reject(new Error("disk full"));
+    await expect(first).rejects.toThrow("disk full");
+    await until(() => saves.length === 2);
+    // It saves the settings as they are now: the failed change put back, its own kept.
+    expect(saves[1]).toMatchObject({ timestampFormat: "locale", diffWordWrap: false });
+    answers[1]!.resolve();
+    await expect(second).resolves.toBeUndefined();
+  });
+
   it("falls back to browser storage for persistence when the desktop bridge is missing", async () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);

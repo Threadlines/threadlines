@@ -29,6 +29,7 @@ import {
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { settingsChangeTurnsRevertTakes } from "../settingsChangeDecisions.ts";
 import { turnAdmission } from "../turnAdmission.ts";
 import { checkpointHandover } from "../checkpointHandover.ts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
@@ -1315,9 +1316,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        revertedTurnIds: context.thread.checkpoints
-          .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
-          .map((checkpoint) => checkpoint.turnId),
+        revertedTurnIds: settingsChangeTurnsRevertTakes(context.thread, event.payload.turnCount),
         createdAt: now,
       })
       .pipe(
