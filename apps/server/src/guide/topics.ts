@@ -28,6 +28,8 @@ A new thread starts either in the project folder as it is, or in a worktree of i
 
 The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort, Build or Plan mode, and the access level.
 
+While an agent works, the arrow beside the send button picks how a message goes: Steer now adds it to the reply in progress, Send when done holds it for the next one, and the choice sticks. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
+
 When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. Old threads can be archived for you: {place:archived.cleanup}.`,
   },
   {

@@ -55,6 +55,7 @@ import {
   buildKeybindingCommandOptions,
   buildWhenVariableOptions,
   commandLabel,
+  messageBoxShortcuts,
   DEFAULT_WHEN_VARIABLE,
   isKnownWhenVariable,
   keybindingConflictLabels,
@@ -1074,6 +1075,7 @@ export function KeybindingsSettingsPanel() {
   const [savingCommand, setSavingCommand] = useState<KeybindingCommand | null>(null);
   const [isAddingBinding, setIsAddingBinding] = useState(false);
   const rows = useMemo(() => buildKeybindingRows(keybindings, query), [keybindings, query]);
+  const messageKeys = useMemo(() => messageBoxShortcuts(query), [query]);
   const commandOptions = useMemo(() => buildKeybindingCommandOptions(keybindings), [keybindings]);
   const whenVariables = useMemo(() => buildWhenVariableOptions(), []);
 
@@ -1277,6 +1279,21 @@ export function KeybindingsSettingsPanel() {
           </div>
         </ScrollArea>
       </SettingsSection>
+      {messageKeys.length > 0 ? (
+        <SettingsSection place="keybindings.messageBox">
+          <div className="divide-y divide-group-divider" data-testid="message-box-shortcuts">
+            {messageKeys.map((shortcut) => (
+              <div
+                key={shortcut.keys}
+                className="flex items-center justify-between gap-3 px-3.5 py-2 text-[13px] font-medium text-foreground"
+              >
+                <span className="min-w-0">{shortcut.label}</span>
+                <KeybindingPill value={shortcut.keys} />
+              </div>
+            ))}
+          </div>
+        </SettingsSection>
+      ) : null}
     </SettingsPageContainer>
   );
 }

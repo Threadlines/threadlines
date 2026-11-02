@@ -189,6 +189,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { ChevronDownIcon } from "lucide-react";
 import { ComposerFollowUpQueue } from "./chat/ComposerFollowUpQueue";
+import { oppositeFollowUpDelivery, type ComposerSendOptions } from "./chat/ComposerPrimaryActions";
 import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { CommandRunActionsContext } from "./chat/CommandRuns";
@@ -2986,6 +2987,13 @@ export default function ChatView(props: ChatViewProps) {
   const [providerSendPreflightRecheckFailed, setProviderSendPreflightRecheckFailed] =
     useState(false);
   const [isRecheckingProviderSendPreflight, setIsRecheckingProviderSendPreflight] = useState(false);
+  // How the held message was sent (Cmd/Ctrl+Enter), for when "I've signed in"
+  // sends it, and what the send menu said then. With two ways to send, a menu
+  // changed since then already says the way that message was going.
+  const heldSendRef = useRef<{
+    readonly options: ComposerSendOptions | undefined;
+    readonly menuChoice: string;
+  } | null>(null);
   // The recheck runs the ordinary send path, which is rebuilt every render.
   // Holding it behind a ref keeps the notice itself stable.
   const confirmProviderSignedInRef = useRef<() => void>(() => {});
@@ -5282,8 +5290,19 @@ export default function ChatView(props: ChatViewProps) {
     return waiting.length === 0 && !pendingUserInputsRef.current.some(isBlockingUserInput);
   };
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const readSendMenuChoice = () =>
+    `${settings.followUpDelivery}:${
+      activeThread !== undefined &&
+      isRoomWaitChosen(
+        useRoomRecipientStore.getState().waitChosen,
+        scopeThreadRef(environmentId, activeThread.id),
+        activeThread.latestTurn?.turnId,
+      )
+    }`;
+
+  const onSend = async (e?: { preventDefault: () => void }, options?: ComposerSendOptions) => {
     e?.preventDefault();
+    const oppositeDelivery = options?.oppositeDelivery === true;
     const api = readEnvironmentApi(environmentId);
     const activeSteerTurnId =
       activeThread?.session?.status === "running" && activeThread.session.activeTurnId != null
@@ -5502,11 +5521,14 @@ export default function ChatView(props: ChatViewProps) {
               entry.instanceId ===
               (roomRecipient?.modelSelection ?? activeThread.modelSelection).instanceId,
           )?.driverKind,
-          waitChosen: isRoomWaitChosen(
-            useRoomRecipientStore.getState().waitChosen,
-            roomThreadRef,
-            activeThread.latestTurn?.turnId,
-          ),
+          // The other way for this message: ask now if it would wait, wait if
+          // it would ask. An agent that can't answer on the side still waits.
+          waitChosen:
+            isRoomWaitChosen(
+              useRoomRecipientStore.getState().waitChosen,
+              roomThreadRef,
+              activeThread.latestTurn?.turnId,
+            ) !== oppositeDelivery,
         })
       : "direct";
     const askOnTheSide = roomDelivery === "ask";
@@ -5538,6 +5560,7 @@ export default function ChatView(props: ChatViewProps) {
       providers: providerStatusesRef.current,
     });
     if (preflight) {
+      heldSendRef.current = { options, menuChoice: readSendMenuChoice() };
       setProviderSendPreflight(preflight);
       return;
     }
@@ -5594,7 +5617,9 @@ export default function ChatView(props: ChatViewProps) {
       ? "queue"
       : approvalDeclines.length > 0
         ? "steer"
-        : settings.followUpDelivery;
+        : oppositeDelivery
+          ? oppositeFollowUpDelivery(settings.followUpDelivery)
+          : settings.followUpDelivery;
     const shouldCreateWorktree = firstWorkNeedsWorktree({
       isFirstWork: isFirstMessage,
       envMode: sendEnvMode,
@@ -6177,7 +6202,8 @@ export default function ChatView(props: ChatViewProps) {
       }
       setProviderSendPreflight(null);
       setProviderSendPreflightRecheckFailed(false);
-      await onSend();
+      const held = heldSendRef.current;
+      await onSend(undefined, held?.menuChoice === readSendMenuChoice() ? held.options : undefined);
     } catch {
       setProviderSendPreflightRecheckFailed(true);
     } finally {
