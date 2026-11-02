@@ -469,6 +469,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               }
             : {}),
           handoffMs: latency.handoffMs,
+          ...(latency.handoffSteps !== undefined
+            ? {
+                handoffQueueMs: latency.handoffSteps.queueMs,
+                handoffPrepareMs: latency.handoffSteps.prepareMs,
+                handoffCheckpointMs: latency.handoffSteps.checkpointMs,
+              }
+            : {}),
           firstOutputMs: latency.firstOutputMs,
         });
 
@@ -1575,9 +1582,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           model: input.modelSelection?.model,
           attachmentCount: input.attachments.length,
           sessionStartedEarly,
+          ...(input.handoffSteps !== undefined ? { handoffSteps: input.handoffSteps } : {}),
         });
         latencySendId = sendId;
-        yield* Effect.annotateCurrentSpan({ "provider.turn.handoff_ms": handoffMs });
+        yield* Effect.annotateCurrentSpan({
+          "provider.turn.handoff_ms": handoffMs,
+          ...(input.handoffSteps !== undefined
+            ? {
+                "provider.turn.handoff_queue_ms": input.handoffSteps.queueMs,
+                "provider.turn.handoff_prepare_ms": input.handoffSteps.prepareMs,
+                "provider.turn.handoff_checkpoint_ms": input.handoffSteps.checkpointMs,
+              }
+            : {}),
+        });
       }
       const turn = yield* routed.adapter
         .sendTurn(routed.adapter.sendsDeviceNote === true ? input : withDeviceNoteInFront(input))

@@ -2,6 +2,7 @@ import {
   TOOL_LIFECYCLE_ITEM_TYPES,
   type CanonicalItemType,
   type ProviderRuntimeEvent,
+  type ProviderTurnHandoffSteps,
   type TurnId,
 } from "@threadlines/contracts";
 
@@ -56,6 +57,8 @@ export interface TurnLatencySample {
   readonly sessionStart?: SessionStartTiming | undefined;
   /** Until Threadlines handed the message to the agent. */
   readonly handoffMs: number;
+  /** Where that went, when the sender measured it. */
+  readonly handoffSteps?: ProviderTurnHandoffSteps | undefined;
   /** Until the agent's first visible output. */
   readonly firstOutputMs: number;
 }
@@ -120,6 +123,7 @@ export const makeTurnLatencyTracker = () => {
     sessionStartedEarly: turn.sessionStartedEarly,
     ...(turn.sessionStart !== undefined ? { sessionStart: turn.sessionStart } : {}),
     handoffMs: turn.handoffMs,
+    ...(turn.handoffSteps !== undefined ? { handoffSteps: turn.handoffSteps } : {}),
     firstOutputMs: Math.max(0, firstOutputAtMs - turn.requestedAtMs),
   });
 

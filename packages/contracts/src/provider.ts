@@ -266,6 +266,19 @@ export const ProviderTurnOrigin = Schema.Literals([
 ]);
 export type ProviderTurnOrigin = typeof ProviderTurnOrigin.Type;
 
+/**
+ * How long the steps before the agent gets a message took, for usage analytics
+ * only. `queueMs`: waiting behind the thread's earlier work. `prepareMs`: getting
+ * the agent ready, its startup included when it had to start. `checkpointMs`:
+ * saving the code snapshot the turn is measured against.
+ */
+export const ProviderTurnHandoffSteps = Schema.Struct({
+  queueMs: NonNegativeInt,
+  prepareMs: NonNegativeInt,
+  checkpointMs: NonNegativeInt,
+});
+export type ProviderTurnHandoffSteps = typeof ProviderTurnHandoffSteps.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   messageId: Schema.optional(MessageId),
@@ -294,6 +307,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   origin: Schema.optional(ProviderTurnOrigin),
   /** See ProviderTurnResend. */
   resend: Schema.optional(ProviderTurnResend),
+  /** See ProviderTurnHandoffSteps. */
+  handoffSteps: Schema.optional(ProviderTurnHandoffSteps),
   telemetryContext: Schema.optional(
     Schema.Struct({
       kind: Schema.Literal("thread_fork"),

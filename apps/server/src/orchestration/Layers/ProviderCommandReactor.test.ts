@@ -1724,6 +1724,14 @@ describe("ProviderCommandReactor", () => {
     expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).typed).toEqual({
       text: "first question",
     });
+    // Each step before the agent got it is timed, for usage analytics.
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      handoffSteps: {
+        queueMs: expect.any(Number),
+        prepareMs: expect.any(Number),
+        checkpointMs: expect.any(Number),
+      },
+    });
     // A person's words alone may be sent again by the driver.
     expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).resend?.messageId).toBe(
       "user-message-typed-1",
