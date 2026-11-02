@@ -1,9 +1,13 @@
 /**
  * The always-on assistants Threadlines knows (contracts' KnownAssistant):
- * their names, and the guess at which one signed in. The guess reads the site
- * the sign-in returns to, then the name it gave: Grok Bot signs in as
- * "Cursor" through cursor.com, since it runs on Cursor's service. A guess
- * only: the user can pick another in the approval dialog and in Change.
+ * their names, and the guess at which one a connection is.
+ *
+ * A sign-in is guessed from the site it returns to, never from the name it
+ * gives: anyone can call itself "ChatGPT", but the sign-in ends at that site,
+ * so a client that names someone else's can't finish it. Grok Bot signs in as
+ * "Cursor" through cursor.com, since it runs on Cursor's service. A key is
+ * guessed from the label the user typed. Only a guess: the user can pick
+ * another in the approval dialog and in Change.
  */
 import type { KnownAssistant } from "@threadlines/contracts";
 
@@ -38,7 +42,7 @@ const BY_HOST: ReadonlyArray<readonly [string, KnownAssistant]> = [
   ["meta.ai", "muse"],
 ];
 
-/** Names given at sign-in, or typed for a key. */
+/** Labels the user typed for a key. Never applied to the name a sign-in gives. */
 const BY_NAME: ReadonlyArray<readonly [RegExp, KnownAssistant]> = [
   [/\bgrok\b/iu, "grok-bot"],
   [/\b(chatgpt|openai|dots?)\b/iu, "chatgpt"],
@@ -47,19 +51,15 @@ const BY_NAME: ReadonlyArray<readonly [RegExp, KnownAssistant]> = [
   [/\bcursor\b/iu, "cursor"],
 ];
 
-/** Which known assistant a sign-in looks like; null when nothing says. */
-export function guessKnownAssistant(input: {
-  /** The site its sign-in returns to, or its checked site; null for a key. */
-  readonly host: string | null;
-  /** The name it gave, or the key's name. */
-  readonly name: string;
-}): KnownAssistant | null {
-  if (input.host !== null) {
-    const host = input.host.toLowerCase().replace(/:\d+$/u, "");
-    const byHost = BY_HOST.find(([site]) => host === site || host.endsWith(`.${site}`));
-    if (byHost !== undefined) return byHost[1];
-  }
-  return BY_NAME.find(([pattern]) => pattern.test(input.name))?.[1] ?? null;
+/** Which known assistant a sign-in is, by the site it returns to (or its checked site); null: none. */
+export function assistantOfSignInHost(host: string): KnownAssistant | null {
+  const bare = host.toLowerCase().replace(/:\d+$/u, "");
+  return BY_HOST.find(([site]) => bare === site || bare.endsWith(`.${site}`))?.[1] ?? null;
+}
+
+/** Which known assistant a key is, by the label the user typed for it ("Muse work"); null: none. */
+export function assistantOfKeyLabel(label: string): KnownAssistant | null {
+  return BY_NAME.find(([pattern]) => pattern.test(label))?.[1] ?? null;
 }
 
 /** What Threadlines calls an assistant: the known one's name, else the name it gave. */

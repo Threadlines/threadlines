@@ -147,12 +147,15 @@ function assistantOf(subject: GrantSubject) {
     return {
       givenName: subject.signIn.givenName ?? subject.signIn.name,
       initial: subject.signIn.assistant,
+      keepsLabel: false,
     };
   }
   if (subject.kind === "change" && subject.connection.kind === "assistant") {
     return {
       givenName: subject.connection.givenName ?? subject.connection.name,
       initial: subject.connection.assistant,
+      // A key keeps the label the user typed ("Muse work"); the pick only sets its mark.
+      keepsLabel: subject.connection.signIn === "key",
     };
   }
   return null;
@@ -177,7 +180,7 @@ function GrantContent({
   const [choice, setChoice] = useState<AssistantChoice>(() => assistant?.initial ?? "none");
   // An assistant is named as the picker says: "Grok Bot", or the name it gave.
   const name =
-    assistant !== null
+    assistant !== null && !assistant.keepsLabel
       ? choiceDisplayName(choice, assistant.givenName)
       : (signIn?.name ?? (subject.kind === "change" ? subject.connection.name : ""));
   const givenName = assistant !== null && assistant.givenName !== name ? assistant.givenName : null;

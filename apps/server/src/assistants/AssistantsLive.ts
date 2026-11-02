@@ -55,7 +55,7 @@ import {
   parseAssistantCredential,
   randomAssistantSecret,
 } from "@threadlines/shared/assistantCredentials";
-import { assistantDisplayName, guessKnownAssistant } from "@threadlines/shared/knownAssistants";
+import { assistantDisplayName, assistantOfSignInHost } from "@threadlines/shared/knownAssistants";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -444,11 +444,10 @@ export const makeAssistants = Effect.gen(function* () {
       const hash = clientIdHash(entry.signIn.clientId);
       const earlier = rows.find((row) => row.kind === "assistant" && row.clientIdHash === hash);
       const identity = identityOf(entry.signIn);
-      // The connection it replaces says which assistant it is, else its sign-in does.
+      // The connection it replaces says which assistant it is, else the site
+      // its sign-in returns to does (never the name it gives itself).
       const assistant =
-        earlier !== undefined
-          ? assistantOfRow(earlier)
-          : guessKnownAssistant({ host: identity.host, name: entry.name });
+        earlier !== undefined ? assistantOfRow(earlier) : assistantOfSignInHost(identity.host);
       const name = assistantDisplayName(assistant, entry.name);
       waiting.push({
         requestId: entry.requestId,
@@ -597,6 +596,18 @@ export const makeAssistants = Effect.gen(function* () {
   const isWaiting: AssistantsShape["isWaiting"] = (requestId) =>
     Effect.map(Clock.currentTimeMillis, (now) => waitingEntry(requestId, now) !== undefined);
 
+  /** The pick of the live connection a sign-in from `clientId` replaces; null: none. */
+  const replacedPick = (clientId: string) =>
+    repository.listLive.pipe(
+      Effect.map(
+        (rows) =>
+          rows.find(
+            (row) => row.kind === "assistant" && row.clientIdHash === clientIdHash(clientId),
+          )?.assistantPick ?? null,
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+
   const approve: AssistantsShape["approve"] = (input) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
@@ -608,7 +619,11 @@ export const makeAssistants = Effect.gen(function* () {
       const refusal = grantRefusal(input, requestedAccessOf(entry.signIn.scopes), "assistant");
       if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
       const grant = normalizedGrant(input);
-      const assistantPick = input.assistant === undefined ? null : assistantPickOf(input.assistant);
+      // Not picked (an older app): the connection it replaces keeps its pick.
+      const assistantPick =
+        input.assistant !== undefined
+          ? assistantPickOf(input.assistant)
+          : yield* replacedPick(entry.signIn.clientId);
       const connectionId = OutsideAgentConnectionId.make(randomUUID());
       const tagged = yield* relay.routeTag(connectionId).pipe(
         Effect.mapError(
@@ -672,6 +687,7 @@ export const makeAssistants = Effect.gen(function* () {
       );
       const shown = {
         kind: "assistant" as const,
+        signIn: "oauth" as const,
         assistantPick,
         identity: identityOf(entry.signIn),
         clientName: entry.name,

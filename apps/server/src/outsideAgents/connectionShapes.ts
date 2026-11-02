@@ -10,28 +10,42 @@ import type {
   OutsideAgentConnection,
   OutsideAgentGrant,
 } from "@threadlines/contracts";
-import { assistantDisplayName, guessKnownAssistant } from "@threadlines/shared/knownAssistants";
+import {
+  assistantDisplayName,
+  assistantOfKeyLabel,
+  assistantOfSignInHost,
+} from "@threadlines/shared/knownAssistants";
 
 import type { OutsideAgentConnectionRow } from "./OutsideAgentConnectionRepository.ts";
 
 /** A connection row as Settings shows it. */
+type NamedRow = Pick<
+  OutsideAgentConnectionRow,
+  "kind" | "signIn" | "assistantPick" | "identity" | "clientName"
+>;
+
 /**
  * Which known assistant an assistant connection is: the user's pick, else the
- * guess from its sign-in (knownAssistants.ts). Null for local agents and when
- * neither says.
+ * guess (knownAssistants.ts): a sign-in's from the site it returns to, never
+ * from the name it gave; a key's from the label the user typed. Null for
+ * local agents and when nothing says.
  */
-export const assistantOfRow = (
-  row: Pick<OutsideAgentConnectionRow, "kind" | "assistantPick" | "identity" | "clientName">,
-): KnownAssistant | null => {
+export const assistantOfRow = (row: NamedRow): KnownAssistant | null => {
   if (row.kind !== "assistant") return null;
   if (row.assistantPick !== null) return row.assistantPick === "none" ? null : row.assistantPick;
-  return guessKnownAssistant({ host: row.identity?.host ?? null, name: row.clientName });
+  if (row.signIn === "key") return assistantOfKeyLabel(row.clientName);
+  return row.identity === null ? null : assistantOfSignInHost(row.identity.host);
 };
 
-/** What Threadlines calls a connection everywhere it names it: "Grok Bot", not the "Cursor" it signed in as. */
-export const connectionNameOf = (
-  row: Pick<OutsideAgentConnectionRow, "kind" | "assistantPick" | "identity" | "clientName">,
-) => assistantDisplayName(assistantOfRow(row), row.clientName);
+/**
+ * What Threadlines calls a connection everywhere it names it: "Grok Bot", not
+ * the "Cursor" it signed in as. A key keeps the label the user typed ("Muse
+ * work"): the user named it, and two keys must stay apart.
+ */
+export const connectionNameOf = (row: NamedRow) =>
+  row.kind === "assistant" && row.signIn === "key"
+    ? row.clientName
+    : assistantDisplayName(assistantOfRow(row), row.clientName);
 
 export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentConnection => ({
   connectionId: row.connectionId,
