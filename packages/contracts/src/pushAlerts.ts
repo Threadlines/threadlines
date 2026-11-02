@@ -20,6 +20,11 @@ export const PushRegisterInput = Schema.Struct({
   keyId: PushVapidKeyId,
   /** The phone's app, where tapping an alert opens its thread. */
   appOrigin: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /**
+   * Quiet while someone uses Threadlines on a computer, this phone's switch.
+   * An older phone leaves it out: the computer keeps what it has, else on.
+   */
+  quietAtComputer: Schema.optional(Schema.Boolean),
 });
 export type PushRegisterInput = typeof PushRegisterInput.Type;
 
@@ -34,6 +39,16 @@ export const PresenceSetViewingInput = Schema.Struct({
   threadId: Schema.NullOr(ThreadId),
 });
 export type PresenceSetViewingInput = typeof PresenceSetViewingInput.Type;
+
+/**
+ * `presence.noteActive`: this client's window was used `idleMs` ago, by the
+ * client's own clock so the two clocks needn't agree. Counts only from a
+ * computer, as the server knows the session (docs/design/push-alerts.md).
+ */
+export const PresenceNoteActiveInput = Schema.Struct({
+  idleMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type PresenceNoteActiveInput = typeof PresenceNoteActiveInput.Type;
 
 /**
  * Why a push call can't go ahead. `not-a-paired-phone`: only a device paired

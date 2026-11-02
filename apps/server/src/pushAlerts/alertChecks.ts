@@ -209,7 +209,18 @@ export const makeAlertChecks = Effect.gen(function* () {
       }
     });
 
-  return { judge };
+  /** Whether the thread's latest turn left a plan to review, as far as can be read. */
+  const hasPlanToReview = (threadId: ThreadId): Effect.Effect<boolean> =>
+    projections.getThreadDetailById(threadId).pipe(
+      Effect.map((found) => {
+        if (Option.isNone(found)) return false;
+        const turnId = found.value.latestTurn?.turnId;
+        return turnId != null && actionablePlanOf(found.value, turnId) !== undefined;
+      }),
+      Effect.orElseSucceed(() => false),
+    );
+
+  return { judge, hasPlanToReview };
 });
 
 export type AlertChecks = Effect.Success<typeof makeAlertChecks>;

@@ -89,6 +89,7 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "general.alertNeedsYou": (s) => s.alertKindsShown,
   "general.alertFinished": (s) => s.alertKindsShown,
   "general.alertFailed": (s) => s.alertKindsShown,
+  "general.alertsQuietAtComputer": (s) => s.alertKindsShown,
   // On a phone the panel covers the conversation, so it never opens itself.
   "general.agentsPanel": (s) => !s.phone,
   "general.speechModel": (s) => s.dictationSupported,

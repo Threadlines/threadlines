@@ -17,10 +17,28 @@ alerts on for the device and three for which ones:
 - **Failed:** a turn ended with an error, couldn't start, was cut off by a
   restart, or a side answer failed.
 
-A thread someone is looking at right now, on any device, stays quiet. Tapping
-an alert opens its thread. The desktop app gets no alerts here (macOS
+A thread someone is looking at right now, on any device, stays quiet. Past five
+minutes without a touch, an open window stops counting as looking. Tapping an
+alert opens its thread. The desktop app gets no alerts here (macOS
 notifications are a later piece) but it does report what it's showing, so a
 thread open on the Mac doesn't buzz the phone.
+
+Two more controls, on the computer rather than the relay because the computer
+decides what to send:
+
+- **Quiet while I'm at a computer**, a switch per phone, on by default. While
+  someone uses Threadlines on a computer connected to the thread's computer
+  (touched within the last five minutes, `COMPUTER_IN_USE_MS`), finished and
+  failed alerts for that phone are dropped, and needs-you alerts wait. Anything
+  still unanswered when they step away goes out then. A window not connected to
+  a computer can't show its threads, so its use doesn't quiet that computer.
+- **Mute phone alerts**, per project, from the project's menu. Muted projects
+  send no phone alerts of any kind, to any phone. It goes by the thread's own
+  project: a child thread in a muted project stays quiet even if its parent's
+  project isn't, a child in an unmuted one still alerts, and a moved thread takes
+  its new project's mute. General Chats has no project menu, so no mute.
+  Grouped projects change every copy; a copy on a computer too old to keep a mute
+  says so.
 
 ## Who holds what
 
@@ -70,7 +88,16 @@ Right before sending, every alert is checked against the thread as it is then
 turn and no work going (`childHasLiveWork`), and a plan left to review sends it
 as needs-you instead; for a child's turn, its result not already handed back
 to the parent (`handedBackTurnId`); nobody looking at it (presence leases, renewed every 30 s,
-held 90 s, dropped on disconnect). Finished turns wait 8 s first, failures 3 s.
+held 90 s, dropped on disconnect); the project not muted. Finished turns wait
+8 s first, failures 3 s.
+
+Someone looking from a computer doesn't end a needs-you alert for a phone that
+stays quiet: it is held like the rest, so a request nobody answered still reaches
+them once they leave. A held alert is looked at again every 30 s, reading
+everything afresh, and each look renews its lifetime, so it doesn't run out while
+they're still there. Which sessions count as a computer is `sessionIsComputer`.
+What a computer was last used is kept in memory, apart from any connection; a
+window says it again on reconnecting, so a restart can let one alert through.
 
 Each phone's alert is sealed (RFC 8291 aes128gcm) and handed to the relay
 (`POST /v2/hosts/{h}/devices/{d}/alert`), with retries inside the alert's

@@ -29,6 +29,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { PushAlerts, PushAlertsLive } from "./PushAlerts.ts";
 import { FINISHED_HOLD_MS } from "./pushAlertRules.ts";
+import { makePushPresence } from "./pushPresence.ts";
 
 const THREAD = ThreadId.make("thread-1");
 const PHONE_SESSION = AuthSessionId.make("session-phone");
@@ -101,6 +102,7 @@ const makeHarness = Effect.gen(function* () {
     thread: makeThread(),
     phoneActive: true,
     failReads: 0,
+    projectMuted: false,
     linkRows: [] as Array<Partial<LinkRequestRow>>,
   };
   const receiver = createECDH("prime256v1");
@@ -122,6 +124,7 @@ const makeHarness = Effect.gen(function* () {
                   return Effect.fail(new Error("database is locked") as never);
                 })
               : Effect.succeed(Option.some(state.thread)),
+          isProjectPhoneAlertsMuted: () => Effect.sync(() => state.projectMuted),
         }),
         Layer.mock(RelayHost)({
           admitDirect: () => null,
@@ -183,7 +186,256 @@ const settle = (ms = 500) =>
     }
   });
 
+/** Time passing in bigger steps, for what takes minutes. */
+const settleMinutes = (minutes: number) =>
+  Effect.gen(function* () {
+    for (let elapsed = 0; elapsed < minutes * 12; elapsed += 1) {
+      yield* TestClock.adjust("5 seconds");
+      yield* Effect.yieldNow;
+    }
+  });
+
+/** A running computer with the phone registered, and what the phone can be asked. */
+const startedWithPhone = Effect.gen(function* () {
+  const harness = yield* makeHarness;
+  const pushAlerts = yield* PushAlerts.pipe(Effect.provide(harness.context));
+  yield* TestClock.adjust("1 hour");
+  yield* pushAlerts.start();
+  yield* settle();
+  const register = (quietAtComputer?: boolean) =>
+    pushAlerts.register(PHONE_SESSION, {
+      registrationId: "registration-1",
+      p256dh: harness.receiver.getPublicKey().toString("base64url"),
+      auth: harness.auth.toString("base64url"),
+      keyId: "key-nightly",
+      appOrigin: "https://nightly.app.threadlines.dev",
+      ...(quietAtComputer !== undefined ? { quietAtComputer } : {}),
+    });
+  yield* register();
+  const askForApproval = (requestId: string) =>
+    Effect.gen(function* () {
+      const requested = {
+        threadId: THREAD,
+        activity: {
+          id: `activity-${requestId}`,
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Run a command",
+          payload: { requestId },
+          turnId: "turn-1",
+          createdAt: "2026-10-23T12:00:00.000Z",
+        },
+      };
+      harness.state.thread = makeThread({
+        activities: [...harness.state.thread.activities, requested.activity] as never,
+      });
+      yield* appended(harness, "thread.activity-appended", requested);
+    });
+  const fail = (turnId: string) =>
+    appended(harness, "thread.turn-completed", {
+      threadId: THREAD,
+      turnId,
+      state: "error",
+      completedAt: "2026-10-23T12:00:00.000Z",
+    });
+  return { harness, pushAlerts, register, askForApproval, fail };
+});
+
 it.layer(NodeServices.layer)("PushAlerts", (it) => {
+  it.effect(
+    "holds what needs the user while a computer is in use, however long, then says it",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { harness, pushAlerts, askForApproval, fail } = yield* startedWithPhone;
+          yield* pushAlerts.noteComputerActive(0);
+          yield* askForApproval("request-1");
+          yield* fail("turn-2");
+          yield* settle(5_000);
+          assert.strictEqual(harness.sent.length, 0);
+
+          // Past the alert's own 30 minutes, with the user still there.
+          for (let minute = 0; minute < 40; minute += 1) {
+            yield* pushAlerts.noteComputerActive(0);
+            yield* settleMinutes(1);
+          }
+          assert.strictEqual(harness.sent.length, 0);
+
+          // They step away: the request comes through, the failure they were
+          // there for doesn't.
+          yield* settleMinutes(6);
+          assert.deepStrictEqual(
+            harness.sent.map((alert) => alert.kind),
+            ["needs_you"],
+          );
+        }),
+      ),
+  );
+
+  it.effect("goes by the phone's own switch, and an older phone's silence changes nothing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts, register, askForApproval } = yield* startedWithPhone;
+        yield* register(false);
+        yield* register();
+        yield* pushAlerts.noteComputerActive(0);
+        yield* askForApproval("request-1");
+        yield* settle();
+        assert.strictEqual(harness.sent.length, 1);
+
+        // Turning it back on holds the next one.
+        yield* register(true);
+        yield* askForApproval("request-2");
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 1);
+
+        // And a held one goes as soon as the switch is off, without anyone leaving.
+        yield* register(false);
+        yield* settleMinutes(1);
+        assert.strictEqual(harness.sent.length, 2);
+      }),
+    ),
+  );
+
+  it.effect("a window that was used a while ago says when, by its own clock", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts, fail } = yield* startedWithPhone;
+        yield* pushAlerts.noteComputerActive(0);
+        yield* pushAlerts.releaseViewer("desktop-window");
+        yield* fail("turn-1");
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 0);
+
+        yield* settleMinutes(6);
+        // Told late that it was used long ago: that isn't in use now.
+        yield* pushAlerts.noteComputerActive(6 * 60_000);
+        yield* fail("turn-2");
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("a request on a thread open on a computer waits; one open on a phone doesn't", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts, askForApproval } = yield* startedWithPhone;
+        yield* pushAlerts.noteComputerActive(0);
+        yield* pushAlerts.setViewing("desktop-window", THREAD, true);
+        yield* askForApproval("request-1");
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 0);
+        // The window stops saying so once nobody touches it.
+        yield* pushAlerts.setViewing("desktop-window", null, true);
+        yield* settleMinutes(6);
+        assert.strictEqual(harness.sent.length, 1);
+
+        yield* pushAlerts.setViewing("phone-app", THREAD, false);
+        yield* askForApproval("request-2");
+        yield* settleMinutes(2);
+        yield* pushAlerts.setViewing("phone-app", null, false);
+        yield* settleMinutes(1);
+        assert.strictEqual(harness.sent.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("a held alert follows the phone to a new subscription", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts, askForApproval } = yield* startedWithPhone;
+        yield* pushAlerts.noteComputerActive(0);
+        yield* askForApproval("request-1");
+        yield* settle(5_000);
+        yield* pushAlerts.register(PHONE_SESSION, {
+          registrationId: "registration-2",
+          p256dh: harness.receiver.getPublicKey().toString("base64url"),
+          auth: harness.auth.toString("base64url"),
+          keyId: "key-nightly",
+          appOrigin: "https://nightly.app.threadlines.dev",
+        });
+        yield* settleMinutes(6);
+        assert.deepStrictEqual(
+          harness.sent.map((alert) => alert.registrationId),
+          ["registration-2"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a plan seen on a computer still comes through once the user steps away", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts } = yield* startedWithPhone;
+        yield* pushAlerts.noteComputerActive(0);
+        harness.state.thread = makeThread({
+          latestTurn: { turnId: "turn-1", state: "completed" } as never,
+          proposedPlans: [
+            { id: "plan-1", turnId: "turn-1", implementedAt: null, dismissedAt: null },
+          ] as never,
+        });
+        yield* appended(harness, "thread.turn-completed", {
+          threadId: THREAD,
+          turnId: "turn-1",
+          state: "completed",
+          completedAt: "2026-10-23T12:00:00.000Z",
+        });
+        yield* settle();
+        yield* appended(harness, "thread.seen-set", {
+          threadId: THREAD,
+          at: "2026-10-23T12:00:00.000Z",
+        });
+        yield* settle(FINISHED_HOLD_MS + 2_000);
+        assert.strictEqual(harness.sent.length, 0);
+        yield* settleMinutes(6);
+        assert.deepStrictEqual(
+          harness.sent.map((alert) => alert.kind),
+          ["needs_you"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a clock that steps back doesn't leave a computer in use", () =>
+    Effect.sync(() => {
+      const presence = makePushPresence();
+      const now = 1_000_000_000;
+      presence.noteComputerActive(0, now);
+      assert.isTrue(presence.computerInUse(now + 1_000));
+      assert.isFalse(presence.computerInUse(now - 3_600_000));
+      presence.noteComputerActive(0, now - 3_600_000);
+      assert.isTrue(presence.computerInUse(now - 3_599_000));
+    }),
+  );
+
+  it.effect("a muted project sends nothing, and a mute reaches what was already held", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { harness, pushAlerts, askForApproval, fail } = yield* startedWithPhone;
+        harness.state.projectMuted = true;
+        yield* askForApproval("request-1");
+        yield* fail("turn-1");
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 0);
+
+        harness.state.projectMuted = false;
+        yield* pushAlerts.noteComputerActive(0);
+        yield* askForApproval("request-2");
+        yield* settle();
+        harness.state.projectMuted = true;
+        yield* settleMinutes(1);
+        harness.state.projectMuted = false;
+        yield* settleMinutes(6);
+        assert.strictEqual(harness.sent.length, 0);
+
+        yield* askForApproval("request-3");
+        yield* settle();
+        assert.strictEqual(harness.sent.length, 1);
+      }),
+    ),
+  );
+
   it.effect("alerts a phone once for each approval, sealed for that phone", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -339,7 +591,7 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
             completedAt: "2026-10-23T12:00:00.000Z",
           });
 
-        yield* pushAlerts.setViewing("desktop-window", THREAD);
+        yield* pushAlerts.setViewing("desktop-window", THREAD, true);
         yield* failed("turn-1");
         yield* settle(5_000);
         assert.strictEqual(harness.sent.length, 0);

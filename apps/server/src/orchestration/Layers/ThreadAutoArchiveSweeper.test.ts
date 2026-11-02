@@ -123,6 +123,7 @@ function makeSnapshotQuery(
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
     getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+    isProjectPhoneAlertsMuted: () => Effect.succeed(false),
     getProjectShellById: () => Effect.succeed(Option.none()),
     getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
     getThreadCheckpointContext: () => Effect.succeed(Option.none()),

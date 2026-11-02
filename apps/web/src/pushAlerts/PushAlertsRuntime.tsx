@@ -4,25 +4,31 @@
  * the service worker asks, and tells the open thread's computer that someone
  * is looking at it, so that thread stays quiet meanwhile. Presence comes from
  * every client, the desktop app too: a thread open on the Mac shouldn't buzz
- * the phone.
+ * the phone. A computer's window also says when it's in use, for phones that
+ * stay quiet meanwhile; it can only tell computers it's connected to, which are
+ * the ones whose threads it can show.
  */
 import type { ThreadId } from "@threadlines/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import {
+  listEnvironmentConnections,
   readEnvironmentConnection,
   readEnvironmentDescriptor,
   subscribeEnvironmentConnections,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { usePageAttended } from "../lib/pageAttention";
+import { isPageInUse, onPageUseChange, pageIdleMs, usePageInUse } from "../lib/pageAttention";
+import { joinerKindForThisBrowser } from "../relayDevice";
 import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { startPushAlerts } from "./pushAlerts";
 
 /** How often an open thread's presence is renewed; the computer's lease is 90 s. */
 const PRESENCE_RENEW_MS = 30_000;
+/** How often a window in use says so; the computer holds it for COMPUTER_IN_USE_MS. */
+const ACTIVITY_REPORT_MS = 30_000;
 
 function usePresenceReporting() {
   const threadRef = useParams({
@@ -46,10 +52,10 @@ function usePresenceReporting() {
       : savedConnectionState === "connected"
         ? "connected"
         : null;
-  const attended = usePageAttended();
+  const inUse = usePageInUse();
 
   useEffect(() => {
-    if (environmentId === null || threadId === null || !attended || connectedSince === null) {
+    if (environmentId === null || threadId === null || !inUse || connectedSince === null) {
       return;
     }
     const report = (viewing: ThreadId | null) => {
@@ -68,7 +74,43 @@ function usePresenceReporting() {
       stopWatching();
       report(null);
     };
-  }, [environmentId, threadId, attended, connectedSince]);
+  }, [environmentId, threadId, inUse, connectedSince]);
+}
+
+/**
+ * Tells every computer this window is connected to that it's in use: when it
+ * starts, while it goes on, and to each connection that comes along, since one
+ * that dropped was still in use and a restarted computer has forgotten.
+ */
+function useActivityReporting() {
+  useEffect(() => {
+    // Only a computer's use counts: the server checks, this saves a phone the traffic.
+    if (joinerKindForThisBrowser() !== "browser") return;
+    let reportedAt = 0;
+    const report = () => {
+      if (!isPageInUse()) return;
+      reportedAt = Date.now();
+      const idleMs = pageIdleMs();
+      for (const connection of listEnvironmentConnections()) {
+        const capable =
+          readEnvironmentDescriptor(connection.environmentId)?.capabilities.phoneAlertControls ===
+          true;
+        if (capable) void connection.client.presence.noteActive({ idleMs }).catch(() => undefined);
+      }
+    };
+    report();
+    const timer = setInterval(() => {
+      // Nothing new since the last report: the computer already knows.
+      if (Date.now() - pageIdleMs() > reportedAt) report();
+    }, ACTIVITY_REPORT_MS);
+    const stopUse = onPageUseChange(report);
+    const stopConnections = subscribeEnvironmentConnections(report);
+    return () => {
+      clearInterval(timer);
+      stopUse();
+      stopConnections();
+    };
+  }, []);
 }
 
 export function PushAlertsRuntime() {
@@ -90,5 +132,6 @@ export function PushAlertsRuntime() {
   }, [router]);
 
   usePresenceReporting();
+  useActivityReporting();
   return null;
 }

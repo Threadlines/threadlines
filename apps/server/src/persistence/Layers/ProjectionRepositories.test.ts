@@ -22,6 +22,31 @@ const projectionRepositoriesLayer = it.layer(
 );
 
 projectionRepositoriesLayer("Projection repositories", (it) => {
+  it.effect("keeps a project's phone alert mute, and a new project has none", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectionProjectRepository;
+      const project = {
+        projectId: ProjectId.make("project-mute"),
+        kind: "workspace" as const,
+        title: "Mute",
+        workspaceRoot: "/tmp/project-mute",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-03-24T00:00:00.000Z",
+        updatedAt: "2026-03-24T00:00:00.000Z",
+        deletedAt: null,
+      };
+      const read = projects
+        .getById({ projectId: project.projectId })
+        .pipe(Effect.map((row) => Option.getOrThrow(row).phoneAlertsMuted));
+
+      yield* projects.upsert(project);
+      assert.strictEqual(yield* read, false);
+      yield* projects.upsert({ ...project, phoneAlertsMuted: true });
+      assert.strictEqual(yield* read, true);
+    }),
+  );
+
   it.effect("stores SQL NULL for missing project model options", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectionProjectRepository;

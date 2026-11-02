@@ -140,6 +140,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
+    phoneAlertsMuted: Schema.BooleanFromBit,
   }),
 );
 const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
@@ -736,6 +737,7 @@ function mapProjectShellRow(
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
     scripts: row.scripts,
+    ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -860,6 +862,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1784,6 +1787,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1807,6 +1811,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
+          phone_alerts_muted AS "phoneAlertsMuted",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -2770,6 +2775,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
                 scripts: row.scripts,
+                ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -2997,6 +3003,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   workspaceRoot: row.workspaceRoot,
                   defaultModelSelection: row.defaultModelSelection,
                   scripts: row.scripts,
+                  ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
@@ -3474,6 +3481,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
                     scripts: option.value.scripts,
+                    ...(option.value.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
                     deletedAt: option.value.deletedAt,
@@ -3482,6 +3490,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
         ),
       );
+
+  const isProjectPhoneAlertsMuted: ProjectionSnapshotQueryShape["isProjectPhoneAlertsMuted"] = (
+    projectId,
+  ) =>
+    getActiveProjectRowById({ projectId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.isProjectPhoneAlertsMuted:query",
+          "ProjectionSnapshotQuery.isProjectPhoneAlertsMuted:decodeRow",
+        ),
+      ),
+      Effect.map((row) => Option.isSome(row) && row.value.phoneAlertsMuted),
+    );
 
   const getProjectShellById: ProjectionSnapshotQueryShape["getProjectShellById"] = (projectId) =>
     getActiveProjectRowById({ projectId }).pipe(
@@ -4071,6 +4092,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    isProjectPhoneAlertsMuted,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,

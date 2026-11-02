@@ -1,4 +1,5 @@
 import {
+  BellOffIcon,
   CheckIcon,
   ChevronsUpDownIcon,
   EllipsisIcon,
@@ -18,6 +19,7 @@ import { cn, newCommandId } from "../../lib/utils";
 import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebarListField";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
+import { readEnvironmentDescriptor } from "../../environments/runtime";
 import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
@@ -95,6 +97,50 @@ function formatProjectMemberActionLabel(
 }
 
 const SET_UP_ELSEWHERE_ITEM_ID = "set-up-elsewhere";
+const MUTE_ALERTS_ITEM_ID = "mute-phone-alerts";
+const UNMUTE_ALERTS_ITEM_ID = "unmute-phone-alerts";
+
+/**
+ * Mutes or unmutes phone alerts for a project's copies that aren't that way yet,
+ * each on its own computer: that computer is what sends them. One it can't
+ * reach, or one too old to keep a mute, says so and the others still change.
+ */
+async function setProjectPhoneAlertsMuted(
+  members: ReadonlyArray<SidebarProjectGroupMember>,
+  muted: boolean,
+): Promise<void> {
+  const failure = muted ? "Couldn't mute phone alerts" : "Couldn't unmute phone alerts";
+  await Promise.all(
+    members
+      .filter((member) => (member.phoneAlertsMuted === true) !== muted)
+      .map(async (member) => {
+        const api = readEnvironmentApi(member.environmentId);
+        if (!api) {
+          addComputerNotConnectedNotice({ environmentId: member.environmentId, failure });
+          return;
+        }
+        const descriptor = readEnvironmentDescriptor(member.environmentId);
+        if (descriptor && descriptor.capabilities.phoneAlertControls !== true) {
+          toastManager.add({
+            type: "warning",
+            title: failure,
+            description: `Update Threadlines on ${descriptor.label} to use this there.`,
+          });
+          return;
+        }
+        try {
+          await api.orchestration.dispatchCommand({
+            type: "project.meta.update",
+            commandId: newCommandId(),
+            projectId: member.id,
+            phoneAlertsMuted: muted,
+          });
+        } catch (error) {
+          toastManager.add(failureNotice({ title: failure, error }));
+        }
+      }),
+  );
+}
 
 const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
 const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
@@ -432,6 +478,12 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             openProjectSetupDialog({ project: setupSource }),
           );
         }
+        // Both show for copies that differ, so either way is one step from there.
+        const members = project.memberProjects;
+        const canMute = members.some((member) => member.phoneAlertsMuted !== true);
+        const canUnmute = members.some((member) => member.phoneAlertsMuted === true);
+        actionHandlers.set(MUTE_ALERTS_ITEM_ID, () => setProjectPhoneAlertsMuted(members, true));
+        actionHandlers.set(UNMUTE_ALERTS_ITEM_ID, () => setProjectPhoneAlertsMuted(members, false));
 
         const clicked = await api.contextMenu.show(
           [
@@ -441,6 +493,8 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             ...(setupSource !== null
               ? [{ id: SET_UP_ELSEWHERE_ITEM_ID, label: "Set up on another computer…" }]
               : []),
+            ...(canMute ? [{ id: MUTE_ALERTS_ITEM_ID, label: "Mute phone alerts" }] : []),
+            ...(canUnmute ? [{ id: UNMUTE_ALERTS_ITEM_ID, label: "Unmute phone alerts" }] : []),
             buildTargetedItem("delete", "Remove project", { destructive: true }),
           ],
           position,
@@ -657,6 +711,18 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 <span className="flex min-w-0 flex-1 items-center gap-1.5">
                   <span className="min-w-0 truncate">{option.label}</span>
                   {picked ? <CheckIcon aria-hidden className="size-3 shrink-0" /> : null}
+                  {project?.memberProjects.some((member) => member.phoneAlertsMuted === true) ? (
+                    <BellOffIcon
+                      role="img"
+                      data-testid={`inbox-scope-muted-${option.key}`}
+                      aria-label={
+                        project.memberProjects.every((member) => member.phoneAlertsMuted === true)
+                          ? "Phone alerts muted"
+                          : "Phone alerts muted on some computers"
+                      }
+                      className="size-3 shrink-0 text-muted-foreground"
+                    />
+                  ) : null}
                 </span>
                 {/* The fast switch: toggling is the click, so jumping to one
                     project is its own small button. It and the manage button

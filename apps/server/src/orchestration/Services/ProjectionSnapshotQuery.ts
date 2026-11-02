@@ -195,6 +195,14 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectionRepositoryError>;
 
   /**
+   * Whether an active project has muted its phone alerts. Reads only the
+   * project's row: unlike a shell, it asks git nothing, so it can run often.
+   */
+  readonly isProjectPhoneAlertsMuted: (
+    projectId: ProjectId,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
    * Read the earliest active thread for a project.
    */
   readonly getFirstActiveThreadIdByProjectId: (

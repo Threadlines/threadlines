@@ -752,6 +752,7 @@ function mapProject(
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     scripts: mapProjectScripts(project.scripts),
+    phoneAlertsMuted: project.phoneAlertsMuted === true,
   };
 }
 
@@ -2533,6 +2534,9 @@ function applyEnvironmentOrchestrationEvent(
           : {}),
         ...(event.payload.scripts !== undefined
           ? { scripts: mapProjectScripts(event.payload.scripts) }
+          : {}),
+        ...(event.payload.phoneAlertsMuted !== undefined
+          ? { phoneAlertsMuted: event.payload.phoneAlertsMuted }
           : {}),
         updatedAt: event.payload.updatedAt,
       };
