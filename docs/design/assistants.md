@@ -1961,3 +1961,84 @@ and remove the connection.
   `ttlMs` it asks for: we'll see on the live test.
 - Whether ChatGPT re-subscribes on its own after a Remove in Settings
   (expected: yes, at its next refresh).
+
+### Sol's review of the step 5 plan (Nov 2), and what changed
+
+Twelve findings, all taken:
+
+- **General Chats.** `inbox` leaves out General Chats (`projectsIn`,
+  `connectToolHandlers.ts`); step 4's sender doesn't, so an address on "All
+  projects" also hears about General Chats threads today. One shared rule
+  for what an assistant's alerts may cover (the grant, never General Chats)
+  serves `inbox`, addresses and subscriptions. This fixes step 4 too.
+- **Limits before any network call.** At most 20 subscriptions per
+  connection and 50 in all; at most 10 callback checks per connection an
+  hour, one at a time per connection; the check cache holds 200 entries.
+  Over a limit: `-32025` (ResourceExhausted), before DNS or any POST. The
+  failure reasons stay coarse (`blocked_address`, `timeout`, `unreachable`,
+  `bad_status`, `challenge_failed`), and private addresses are refused
+  before connecting, so the check can't map a network.
+- **Replay has a ceiling.** Resuming from a cursor sends only events recorded
+  in the last 24 hours (less with `maxAgeMs`), at most 100; anything older is
+  skipped and the result says `truncated: true`. Each delivery may start a
+  paid run.
+- **Which cursor wins.** A resume starts at the later of the client's cursor
+  and the subscription's own watermark. Everything at or below the watermark
+  was acknowledged, judged no longer relevant, or may have arrived (never sent
+  twice, step 4's rule, kept on purpose because a repeat can cost a run). A
+  new subscription has no watermark, so the client's cursor counts.
+- **Gaps say `truncated`.** On every subscribe (new or refresh), a watermark
+  or cursor below what the record still keeps, or from before the record last
+  turned on, answers `truncated: true`. The record keeps the `seq` it had when
+  it last turned on (a new `began_at_seq`). While any subscription exists its
+  connection does, so the record stays on; the check covers a cursor carried
+  over from an earlier connection.
+- **The lock.** The sender takes a target's lock per delivery, not per pass,
+  so Edit, Remove, subscribe and unsubscribe wait at most one call (10 s).
+  Subscribe and unsubscribe wait at most 5 s for it, then answer `-32603`
+  "busy, try again". The callback check runs before the lock. The whole
+  subscribe stays under 20 s, inside the relay's 30.
+- **"Can't read the grant" isn't "removed".** The sender reads the
+  connection row itself: removed or gone ends its subscriptions; a read that
+  fails leaves the delivery waiting (no attempt spent).
+- **Identity uses the arguments as sent.** The id comes from the canonical
+  JSON of the original arguments (`{"project":"Website"}` stays itself); the
+  resolved project id is stored apart as the filter. A rename doesn't break
+  unsubscribe, and the name and id forms are two subscriptions, as the spec's
+  canonical comparison has it.
+- **Expiry doesn't eat retries.** A refresh after expiry drops the
+  subscription's waiting deliveries (none was in flight) and looks again from
+  its watermark, so they're queued fresh.
+- **Secrets have a full lifecycle.** A new secret goes in a new entry; one
+  write switches `signing_secret` and moves the old name to
+  `previous_signing_secret` until an hour later; a second rotation in that
+  hour removes the older previous entry first. When the hour passes, the
+  loop clears the column, then removes the entry. Remove clears every entry
+  a row names. `ServerSecretStore` gains `list(prefix)`, and a start removes
+  `assistant-alert-*` entries no row names (crash leftovers, from step 4
+  too).
+- **Wire checks.** An `Mcp-Name` header, when sent, must match the event name
+  (HTTP 400, `-32020`); absent is fine. Unknown event `-32023`; no grant or a
+  project the grant doesn't reach `-32024`; a malformed URL, secret or
+  arguments `-32602`; a refused address and a failed check `-32015`
+  (OpenAI's code; the SEP now says `-32027`).
+- **Settings tells rows apart.** A subscription row shows its callback's host
+  and path (the full address on hover), its event and its project argument,
+  so two subscriptions to one host differ. Remove stays its only action.
+
+Two policy calls, decided:
+
+- **A subscription belongs to its connection.** A re-sign-in makes a new
+  connection and removes the old one with its subscriptions; the client's
+  next subscribe (with the cursor it saved) starts over under the new one.
+  Tested.
+- **Remove in Settings is not a veto.** The assistant may subscribe again
+  while it's connected; Settings says so, and removing the assistant is the
+  way to stop it for good.
+
+Tests added to the list: the record pruned under a subscription, a cursor
+from before the record last turned on, filtered paging, waiting deliveries
+across expiry, a subscribe while a slow send holds the lock, two identical
+subscribes at once, a grant that can't be read, a renamed project, a rotation
+cut by a crash, Remove with two secrets, step 4's 410 still turning an
+address off, and both kinds' envelope `timestamp`.
