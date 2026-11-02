@@ -5,6 +5,7 @@
  * and on Pending Approval. Each returns the same array when nothing changed.
  */
 import type {
+  OrchestrationEvent,
   OrchestrationSettingsChangeRequest,
   SettingsChangeRequestId,
   ThreadParticipantId,
@@ -131,3 +132,25 @@ export const settingsChangeNotesFor = (
     (request) =>
       !isOpenSettingsChange(request) && !request.noted && request.participantId === participantId,
   );
+
+/** The events that change a thread's settings requests. */
+export type SettingsChangeEvent = Extract<
+  OrchestrationEvent,
+  { readonly type: `thread.settings-change-${string}` }
+>;
+
+/** Folds one of those events: what the projector, the projection pipeline and the web store share. */
+export function applySettingsChangeEvent(requests: Requests, event: SettingsChangeEvent): Requests {
+  switch (event.type) {
+    case "thread.settings-change-requested":
+      return settingsChangeStateOn.requested(requests, event.payload.request);
+    case "thread.settings-change-claimed":
+      return settingsChangeStateOn.claimed(requests, event.payload);
+    case "thread.settings-change-settled":
+      return settingsChangeStateOn.settled(requests, event.payload);
+    case "thread.settings-change-device-reported":
+      return settingsChangeStateOn.deviceReported(requests, event.payload);
+    case "thread.settings-change-notes-delivered":
+      return settingsChangeStateOn.notesDelivered(requests, event.payload);
+  }
+}

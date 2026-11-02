@@ -129,6 +129,7 @@ function makeReadModel(
       handedBackTurnId: null,
       awaitedChildThreadCount: 0,
       pendingChildApproval: false,
+      pendingSettingsChange: false,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
       latestTurn: null,

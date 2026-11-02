@@ -51,6 +51,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSettingsChangeRequest,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationSessionStartup,
   OrchestrationSessionUsageLimit,
@@ -79,6 +80,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import type * as Statement from "effect/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
@@ -283,6 +285,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     childRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
+    ),
+    settingsRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
@@ -588,9 +593,11 @@ function mapThreadShellRow(
     session: related.session,
     latestUserMessageAt: row.latestUserMessageAt,
     ...shellLineageFields(row),
+    pendingSettingsChange: hasPendingSettingsChange(row.settingsRequests ?? []),
     hasPendingApprovals:
       row.pendingApprovalCount > 0 ||
-      hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
+      hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE) ||
+      hasPendingSettingsChange(row.settingsRequests ?? []),
     hasPendingUserInput: row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
     hasBlockingUserInput: row.blockingUserInputCount > 0,
     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -922,6 +929,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
@@ -988,6 +996,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
@@ -1056,6 +1065,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
@@ -1866,6 +1876,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           outside_origin_json AS "outsideOrigin",
@@ -2789,6 +2800,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 pages: pagesByThread.get(row.threadId) ?? [],
                 commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                 commandRuns: commandRunsByThread.get(row.threadId) ?? [],
+                settingsRequests: row.settingsRequests ?? [],
                 activities: dropStaleContextWindowActivities(
                   retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
@@ -3108,6 +3120,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pages: pagesByThread.get(row.threadId) ?? [],
                   commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                   commandRuns: commandRunsByThread.get(row.threadId) ?? [],
+                  settingsRequests: row.settingsRequests ?? [],
                   activities: [],
                   workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                   checkpoints: [],
@@ -3624,6 +3637,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     handed_back_turn_id AS "handedBackTurnId",
     archived_with_parent_at AS "archivedWithParentAt",
     child_requests AS "childRequests",
+    settings_requests AS "settingsRequests",
     remote_origin_json AS "remoteOrigin",
     scheduled_run_json AS "scheduledRun",
     outside_origin_json AS "outsideOrigin",
@@ -3983,6 +3997,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           .map((row) => row.json)
           .slice(-MAX_THREAD_COMMAND_REQUESTS),
         commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
+        settingsRequests: threadRow.value.settingsRequests ?? [],
         activities: dropStaleContextWindowActivities(
           retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),

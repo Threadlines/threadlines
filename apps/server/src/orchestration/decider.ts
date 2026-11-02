@@ -116,6 +116,17 @@ import {
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import {
+  SETTINGS_CHANGE_CANCELLED,
+  type SettingsChangeDecision,
+  cancelWaitingSettingsChanges,
+  decideSettingsChangeClaim,
+  decideSettingsChangeDeviceReport,
+  decideSettingsChangeNotesDelivered,
+  decideSettingsChangeRequest,
+  decideSettingsChangeSettle,
+  revertTakesSettingsChange,
+} from "./settingsChangeDecisions.ts";
+import {
   outsideAnswerDecision,
   outsideWorkOf,
   outsideStopRefusal,
@@ -228,6 +239,13 @@ function planAgentRequestDecision(commandType: string, decision: AgentRequestDec
 
 /** Plan a child-thread decision's events, or refuse the command with its reason. */
 function planChildThreadDecision(commandType: string, decision: ChildThreadDecision) {
+  return "refusal" in decision
+    ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
+    : Effect.succeed(decision);
+}
+
+/** Plan a settings-change decision's events, or refuse the command with its reason. */
+function planSettingsChangeDecision(commandType: string, decision: SettingsChangeDecision) {
   return "refusal" in decision
     ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
     : Effect.succeed(decision);
@@ -1330,6 +1348,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         })),
         ...childDeletionEvents(readModel, thread, baseFor, occurredAt, true, "archived"),
+        // Its agents' settings cards waiting for an answer go with it.
+        ...[thread, ...plan.archive].flatMap((archived) =>
+          cancelWaitingSettingsChanges(
+            archived,
+            SETTINGS_CHANGE_CANCELLED.archived,
+            occurredAt,
+            baseFor,
+          ),
+        ),
         // An archived thread doesn't continue by itself, now or after it comes back.
         ...[thread, ...plan.archive].flatMap((archived): PlannedOrchestrationEvent[] => {
           const waiting = archived.session?.continueAtReset ?? null;
@@ -4573,6 +4600,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Agents' settings changes (settingsChangeDecisions.ts).
+    case "thread.settings-change.request":
+    case "thread.settings-change.claim":
+    case "thread.settings-change.settle":
+    case "thread.settings-change.report-device":
+    case "thread.settings-change.deliver-notes": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planSettingsChangeDecision(
+        command.type,
+        command.type === "thread.settings-change.request"
+          ? decideSettingsChangeRequest(thread, command, baseFor)
+          : command.type === "thread.settings-change.claim"
+            ? decideSettingsChangeClaim(thread, command, baseFor)
+            : command.type === "thread.settings-change.settle"
+              ? decideSettingsChangeSettle(thread, command, baseFor)
+              : command.type === "thread.settings-change.report-device"
+                ? decideSettingsChangeDeviceReport(thread, command, baseFor)
+                : decideSettingsChangeNotesDelivered(thread, command, baseFor),
+      );
+    }
+
     case "thread.command-request.create": {
       const thread = yield* requireThread({
         readModel,
@@ -5003,12 +5056,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.revert.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const revertedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -5021,6 +5074,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           turnCount: command.turnCount,
         },
       };
+      // Settings cards waiting from the turns the revert took away go with
+      // them. Decided here, where the revert happened, not when it was
+      // asked for: a revert can still fail before this.
+      const cancelled = cancelWaitingSettingsChanges(
+        thread,
+        SETTINGS_CHANGE_CANCELLED.reverted,
+        command.createdAt,
+        childEventBase(command, command.createdAt),
+        revertTakesSettingsChange(thread, command.turnCount),
+      );
+      return cancelled.length === 0 ? revertedEvent : [...cancelled, revertedEvent];
     }
 
     case "thread.workflow-run.record": {
