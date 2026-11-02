@@ -1,6 +1,11 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "threadlines-relay",
+  // The assistants' door has its own name. Computers and phones keep the
+  // worker's own address, so it must stay on: with routes set, Wrangler would
+  // otherwise turn it off.
+  "workers_dev": true,
+  "routes": [{ "pattern": "connect.threadlines.dev", "custom_domain": true }],
   "main": "src/index.ts",
   "compatibility_date": "2026-06-20",
   "compatibility_flags": ["nodejs_compat"],
@@ -32,11 +37,9 @@
     // Assistants (docs/design/assistants.md): the door's public origin, its
     // kill switch, and the requests each computer forwards per UTC day. Its
     // two keys are secrets: `wrangler secret put ASSISTANT_ROUTE_KEY` and
-    // `ASSISTANT_CLIENT_KEY`. The origin is the worker's own for now:
-    // threadlines.dev's DNS is on Vercel, so a threadlines.dev name can't
-    // route here. Every credential is bound to it, so changing it disconnects
-    // every assistant: move it (if at all) before Threadlines is listed.
-    "ASSISTANTS_ORIGIN": "https://threadlines-relay.threadlines.workers.dev",
+    // `ASSISTANT_CLIENT_KEY`. Every credential is bound to the origin, so
+    // changing it disconnects every assistant.
+    "ASSISTANTS_ORIGIN": "https://connect.threadlines.dev",
     "ASSISTANTS_ENABLED": "true",
     "THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS": "20000",
   },
