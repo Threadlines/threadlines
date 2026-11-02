@@ -1,20 +1,27 @@
 import {
+  ArrowDownAZIcon,
+  CalendarArrowDownIcon,
+  CalendarArrowUpIcon,
+  ClockIcon,
   CloudIcon,
   FolderIcon,
+  GripVerticalIcon,
   ListIcon,
   MessageSquareIcon,
   MonitorIcon,
   MonitorSmartphoneIcon,
+  RotateCcwIcon,
   SlidersHorizontalIcon,
   UsersRoundIcon,
 } from "lucide-react";
 import React, { memo } from "react";
-import type { EnvironmentId, SidebarGrouping } from "@threadlines/contracts";
+import type { EnvironmentId, InboxSort, SidebarGrouping } from "@threadlines/contracts";
 
 import {
   Menu,
   MenuGroup,
   MenuGroupLabel,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -61,11 +68,27 @@ export interface InboxViewMenuProps {
   onRoomsOnlyChange: (roomsOnly: boolean) => void;
   grouping: SidebarGrouping;
   onGroupingChange: (grouping: SidebarGrouping) => void;
+  sort: InboxSort;
+  onSortChange: (sort: InboxSort) => void;
+  /** Starts the custom order over. Offered only while it's the sort in use. */
+  onResetCustomOrder: () => void;
 }
+
+const SORT_OPTIONS: readonly {
+  readonly value: InboxSort;
+  readonly label: string;
+  readonly Icon: typeof ClockIcon;
+}[] = [
+  { value: "recent", label: "Recent activity", Icon: ClockIcon },
+  { value: "created_desc", label: "Newest first", Icon: CalendarArrowDownIcon },
+  { value: "created_asc", label: "Oldest first", Icon: CalendarArrowUpIcon },
+  { value: "title_asc", label: "Title A to Z", Icon: ArrowDownAZIcon },
+  { value: "custom", label: "Custom (drag to arrange)", Icon: GripVerticalIcon },
+];
 
 /**
  * How the thread list is shown, beside the project picker: which computer,
- * which kind of thread, and how rows are grouped.
+ * which kind of thread, and how rows are grouped and sorted.
  *
  * These are set once and left, unlike the projects you switch between all day,
  * so they sit behind their own small button instead of lengthening the project
@@ -83,6 +106,9 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
     onRoomsOnlyChange,
     grouping,
     onGroupingChange,
+    sort,
+    onSortChange,
+    onResetCustomOrder,
   } = props;
   // One computer is not a choice: its section only appears once there is
   // somewhere else the work could be.
@@ -185,6 +211,39 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
             </MenuRadioItem>
           ) : null}
         </MenuRadioGroup>
+      </MenuGroup>
+    ),
+  });
+  sections.push({
+    key: "sort",
+    node: (
+      <MenuGroup>
+        <MenuGroupLabel>Sort</MenuGroupLabel>
+        <MenuRadioGroup
+          value={sort}
+          onValueChange={(value) => {
+            const picked = SORT_OPTIONS.find((option) => option.value === value);
+            if (picked) onSortChange(picked.value);
+          }}
+        >
+          {SORT_OPTIONS.map(({ value, label, Icon }) => (
+            <MenuRadioItem key={value} value={value} data-testid={`inbox-sort-${value}`}>
+              <Icon className={OPTION_ICON_CLASS_NAME} />
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+        {sort === "custom" ? (
+          <MenuItem
+            data-testid="inbox-sort-reset"
+            // Lines up with the choices above it.
+            className="grid grid-cols-[1rem_1fr] gap-x-1.5 pe-4 [&>svg]:mx-0"
+            onClick={onResetCustomOrder}
+          >
+            <RotateCcwIcon className={OPTION_ICON_CLASS_NAME} />
+            <span className="min-w-0 flex-1 truncate">Reset custom order</span>
+          </MenuItem>
+        ) : null}
       </MenuGroup>
     ),
   });

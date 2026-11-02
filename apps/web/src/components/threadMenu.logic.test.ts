@@ -57,6 +57,13 @@ describe("the thread menu", () => {
       read(describeThreadMenu(facts({ inbox: { isDone: true, canMarkDone: false } }))),
     ).toContain("Reopen");
     // A general chat: the inbox doesn't list it, so neither Wrap up nor Reopen.
+    const arranged = describeThreadMenu(
+      facts({ customOrder: { canMoveUp: false, canMoveDown: true } }),
+    );
+    expect(read(arranged).slice(3, 7)).toEqual(["Wrap up", "--", "Move up", "Move down"]);
+    expect(arranged.find((item) => item.id === "move-up")?.disabled).toBe(true);
+    expect(arranged.find((item) => item.id === "move-down")?.disabled).toBe(false);
+    expect(read(describeThreadMenu(facts()))).not.toContain("Move up");
     const chat = read(describeThreadMenu(facts({ inbox: null, pinned: true })));
     expect(chat).toContain("Unpin");
     expect(chat).not.toContain("Wrap up");

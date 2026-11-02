@@ -8,6 +8,8 @@ export type ThreadMenuAction =
   | "mark-unread"
   | "wrap-up"
   | "reopen"
+  | "move-up"
+  | "move-down"
   | "separate"
   | "attach"
   | "stop-children"
@@ -31,6 +33,11 @@ export interface ThreadMenuFacts {
   readonly moveOffered: boolean;
   /** Its agent is mid-turn: archiving waits until it stops. */
   readonly running: boolean;
+  /** A row of the inbox's custom order, and where it can go; null anywhere else. */
+  readonly customOrder?: {
+    readonly canMoveUp: boolean;
+    readonly canMoveDown: boolean;
+  } | null;
 }
 
 /**
@@ -51,7 +58,8 @@ const asGroup = <T extends string>(
 
 /**
  * A thread's menu, in groups: the thread itself (rename, pin, unread, and
- * wrap up or reopen where the inbox lists it), its family, moving it,
+ * wrap up or reopen where the inbox lists it), its place in the inbox's custom
+ * order, its family, moving it,
  * copying, and filing it away for good (archive, delete).
  */
 export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<ThreadMenuAction>[] {
@@ -64,6 +72,14 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
     items.push({ id: "reopen", label: "Reopen" });
   } else if (facts.inbox?.canMarkDone) {
     items.push({ id: "wrap-up", label: "Wrap up" });
+  }
+  if (facts.customOrder) {
+    items.push(
+      ...asGroup<ThreadMenuAction>([
+        { id: "move-up", label: "Move up", disabled: !facts.customOrder.canMoveUp },
+        { id: "move-down", label: "Move down", disabled: !facts.customOrder.canMoveDown },
+      ]),
+    );
   }
 
   const family: ContextMenuItem<ThreadMenuAction>[] = [];

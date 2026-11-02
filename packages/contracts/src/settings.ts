@@ -44,6 +44,20 @@ export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode =
 export const SidebarGrouping = Schema.Literals(["none", "project", "computer"]);
 export type SidebarGrouping = typeof SidebarGrouping.Type;
 export const DEFAULT_SIDEBAR_GROUPING: SidebarGrouping = "none";
+/**
+ * How the inbox's live list is sorted. `recent` follows the user's latest
+ * message; `custom` follows `inboxCustomOrder`, so only the user moves a row.
+ * Pinned threads stay above the rest in every sort.
+ */
+export const InboxSort = Schema.Literals([
+  "recent",
+  "created_desc",
+  "created_asc",
+  "title_asc",
+  "custom",
+]);
+export type InboxSort = typeof InboxSort.Type;
+export const DEFAULT_INBOX_SORT: InboxSort = "recent";
 export const MIN_SIDEBAR_THREAD_PREVIEW_COUNT = 1;
 export const MAX_SIDEBAR_THREAD_PREVIEW_COUNT = 15;
 export const SidebarThreadPreviewCount = Schema.Int.check(
@@ -243,6 +257,15 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarGrouping: SidebarGrouping.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_GROUPING)),
   ),
+  inboxSort: InboxSort.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INBOX_SORT))),
+  // The inbox's custom order, as scoped thread keys. Kept on this device: the
+  // inbox spans computers, and no one of them owns the order across all of them.
+  inboxCustomOrder: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  // The order the user dragged the inbox's project and computer headers into,
+  // as group keys. Empty: each group sits where its first row would.
+  inboxGroupOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -1289,6 +1312,9 @@ export const ClientSettingsPatch = Schema.Struct({
   ),
   suppressCrossProviderSwitchWarning: Schema.optionalKey(Schema.Boolean),
   sidebarGrouping: Schema.optionalKey(SidebarGrouping),
+  inboxSort: Schema.optionalKey(InboxSort),
+  inboxCustomOrder: Schema.optionalKey(Schema.Array(Schema.String)),
+  inboxGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

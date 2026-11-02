@@ -55,6 +55,7 @@ import {
   InboxRemoteDoneRow,
   InboxThreadRow,
 } from "./InboxRows";
+import { InboxLiveList, InboxReorderGroup, InboxReorderRow } from "./InboxLiveList";
 import { usePendingLinkRequests } from "./linkedComputers";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
 import { writePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
@@ -1043,5 +1044,194 @@ describe("InboxThreadRow background wait", () => {
     const card = page.getByTestId("thread-hover-card");
     await expect.element(card).toMatchTextContent(/Waiting on 2\sagents and 1\scommand/);
     await expect.element(card).toMatchTextContent(/Watch CI run until completion/);
+  });
+});
+
+describe("dragging rows in the inbox's custom order", () => {
+  const KEYS = ["first", "second", "third"];
+  const pointer = (type: string, clientY: number, init: PointerEventInit = {}) =>
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerType: "mouse",
+      clientY,
+      ...init,
+    });
+  const rowOf = (key: string) => document.querySelector<HTMLElement>(`[data-row="${key}"]`)!;
+
+  async function renderList() {
+    const onMove = vi.fn();
+    const onOpen = vi.fn();
+    const mounted = await render(
+      <div className="w-64">
+        <InboxLiveList
+          reorder={{ peersOf: () => KEYS, onMove }}
+          groupReorder={null}
+          layoutKey="stable"
+        >
+          {KEYS.map((key) => (
+            <InboxReorderRow key={key} threadKey={key}>
+              <li data-inbox-live-row="plain">
+                <div data-row={key} className="h-10" onClick={() => onOpen(key)}>
+                  <button type="button" data-button={key}>
+                    {key}
+                  </button>
+                </div>
+              </li>
+              <li data-inbox-child-row="local" data-child={key} className="h-6" />
+            </InboxReorderRow>
+          ))}
+        </InboxLiveList>
+      </div>,
+    );
+    return { mounted, onMove, onOpen };
+  }
+
+  it("moves a row, its children going with it, and swallows the click the drag ends on", async () => {
+    const { mounted, onMove, onOpen } = await renderList();
+    try {
+      const row = rowOf("first");
+      const top = row.getBoundingClientRect().top + 5;
+      row.dispatchEvent(pointer("pointerdown", top));
+      window.dispatchEvent(pointer("pointermove", top + 200));
+      await expect
+        .poll(() => row.closest("[data-inbox-reorder-row]")?.getAttribute("data-dragging"))
+        .toBe("true");
+      window.dispatchEvent(pointer("pointerup", top + 200));
+      row.click();
+      expect(onOpen).not.toHaveBeenCalled();
+      await expect.poll(() => onMove.mock.calls).toEqual([["first", 2]]);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("leaves a press on a control, a child row, a finger or a selecting click alone", async () => {
+    const { mounted, onMove } = await renderList();
+    try {
+      const top = rowOf("first").getBoundingClientRect().top + 5;
+      const presses: [Element, PointerEventInit][] = [
+        [document.querySelector('[data-button="first"]')!, {}],
+        [document.querySelector('[data-child="first"]')!, {}],
+        [rowOf("first"), { pointerType: "touch" }],
+        [rowOf("first"), { metaKey: true }],
+        [rowOf("first"), { shiftKey: true }],
+      ];
+      for (const [target, init] of presses) {
+        target.dispatchEvent(pointer("pointerdown", top, init));
+        window.dispatchEvent(pointer("pointermove", top + 200));
+        expect(document.querySelector('[data-dragging="true"]')).toBeNull();
+        window.dispatchEvent(pointer("pointerup", top + 200));
+      }
+      expect(onMove).not.toHaveBeenCalled();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("puts the row back on Escape, and the next click works", async () => {
+    const { mounted, onMove, onOpen } = await renderList();
+    try {
+      const row = rowOf("first");
+      const top = row.getBoundingClientRect().top + 5;
+      row.dispatchEvent(pointer("pointerdown", top));
+      window.dispatchEvent(pointer("pointermove", top + 200));
+      await expect.poll(() => document.querySelector('[data-dragging="true"]')).not.toBeNull();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await expect.poll(() => document.querySelector('[data-dragging="true"]')).toBeNull();
+      window.dispatchEvent(pointer("pointerup", top + 200));
+      row.click();
+      expect(onOpen).not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      row.click();
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(onMove).not.toHaveBeenCalled();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+});
+
+describe("dragging a group's header", () => {
+  const GROUPS = ["project:a", "project:b"];
+  const pointer = (type: string, clientY: number) =>
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerType: "mouse",
+      clientY,
+    });
+
+  async function renderGroups() {
+    const onMove = vi.fn();
+    const onToggle = vi.fn();
+    const mounted = await render(
+      <div className="w-64">
+        <InboxLiveList reorder={null} groupReorder={{ onMove }} layoutKey="stable">
+          {GROUPS.map((key) => (
+            <InboxReorderGroup key={key} groupKey={key}>
+              <li data-inbox-group-header>
+                <button
+                  type="button"
+                  data-header={key}
+                  className="block h-8 w-full"
+                  onClick={() => onToggle(key)}
+                />
+              </li>
+              <li data-inbox-live-row="plain" data-row={key} className="h-10" />
+            </InboxReorderGroup>
+          ))}
+        </InboxLiveList>
+      </div>,
+    );
+    const header = (key: string) => document.querySelector<HTMLElement>(`[data-header="${key}"]`)!;
+    const row = (key: string) => document.querySelector<HTMLElement>(`[data-row="${key}"]`)!;
+    return { mounted, onMove, onToggle, header, row };
+  }
+
+  it("moves the group, and swallows the click the drag ends on", async () => {
+    const { mounted, onMove, onToggle, header, row } = await renderGroups();
+    try {
+      const list = () => document.querySelector<HTMLElement>('[data-testid="inbox-thread-list"]')!;
+      const listHeight = list().offsetHeight;
+      const top = header("project:a").getBoundingClientRect().top + 5;
+      header("project:a").dispatchEvent(pointer("pointerdown", top));
+      window.dispatchEvent(pointer("pointermove", top + 200));
+      await expect.poll(() => document.querySelector('[data-dragging="true"]')).not.toBeNull();
+      // It rides as just its header, and its rows come back when it lands. The
+      // list keeps its height, so nothing scrolls out from under the pointer.
+      expect(row("project:a").offsetHeight).toBe(0);
+      expect(list().offsetHeight).toBe(listHeight);
+      window.dispatchEvent(pointer("pointerup", top + 200));
+      header("project:a").click();
+      expect(onToggle).not.toHaveBeenCalled();
+      await expect.poll(() => onMove.mock.calls).toEqual([["project:a", 1]]);
+      await expect.poll(() => row("project:a").offsetHeight).toBeGreaterThan(0);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("still folds on a click, and a press on a row under it doesn't move the group", async () => {
+    const { mounted, onMove, onToggle, header, row } = await renderGroups();
+    try {
+      const top = header("project:a").getBoundingClientRect().top + 5;
+      header("project:a").dispatchEvent(pointer("pointerdown", top));
+      window.dispatchEvent(pointer("pointermove", top + 1));
+      window.dispatchEvent(pointer("pointerup", top + 1));
+      header("project:a").click();
+      expect(onToggle).toHaveBeenCalledTimes(1);
+
+      row("project:a").dispatchEvent(pointer("pointerdown", top + 40));
+      window.dispatchEvent(pointer("pointermove", top + 200));
+      expect(document.querySelector('[data-dragging="true"]')).toBeNull();
+      window.dispatchEvent(pointer("pointerup", top + 200));
+      expect(onMove).not.toHaveBeenCalled();
+    } finally {
+      await mounted.unmount();
+    }
   });
 });

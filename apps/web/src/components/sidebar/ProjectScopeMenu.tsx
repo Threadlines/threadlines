@@ -10,6 +10,7 @@ import {
 import React, { memo, useCallback, useMemo, useState } from "react";
 import type {
   ContextMenuItem,
+  InboxSort,
   SidebarGrouping,
   SidebarProjectGroupingMode,
 } from "@threadlines/contracts";
@@ -192,6 +193,9 @@ export interface ProjectScopeMenuProps {
   onRoomsOnlyChange: (roomsOnly: boolean) => void;
   grouping: SidebarGrouping;
   onGroupingChange: (grouping: SidebarGrouping) => void;
+  sort: InboxSort;
+  onSortChange: (sort: InboxSort) => void;
+  onResetCustomOrder: () => void;
   onAddProject: () => void;
   /**
    * A new-thread button at the row's end, on a phone. Null on a wide screen,
@@ -231,6 +235,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     onRoomsOnlyChange,
     grouping,
     onGroupingChange,
+    sort,
+    onSortChange,
+    onResetCustomOrder,
     onAddProject,
     onNewThread,
     newThreadShortcutLabel,
@@ -806,6 +813,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             onRoomsOnlyChange={onRoomsOnlyChange}
             grouping={grouping}
             onGroupingChange={onGroupingChange}
+            sort={sort}
+            onSortChange={onSortChange}
+            onResetCustomOrder={onResetCustomOrder}
           />
           <Tooltip>
             <TooltipTrigger

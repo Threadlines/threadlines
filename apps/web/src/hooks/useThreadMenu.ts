@@ -45,6 +45,12 @@ export interface ThreadMenuTarget {
   readonly inbox?: { readonly isDone: boolean; readonly canMarkDone: boolean } | null;
   /** Renames in place (a sidebar row); without it, a dialog asks for the name. */
   readonly renameInPlace?: (() => void) | undefined;
+  /** A row of the inbox's custom order: where it can go, and how to move it there. */
+  readonly customOrder?: {
+    readonly canMoveUp: boolean;
+    readonly canMoveDown: boolean;
+    readonly move: (delta: -1 | 1) => void;
+  } | null;
 }
 
 type MenuPosition = { readonly x: number; readonly y: number };
@@ -134,6 +140,7 @@ export function useThreadMenu() {
       workingChildCount,
       moveOffered: readThreadMoveOffered(thread.environmentId, thread.moveStatus),
       running: isThreadTurnRunning(full?.session),
+      customOrder: target.customOrder ?? null,
     });
   }, []);
 
@@ -149,6 +156,12 @@ export function useThreadMenu() {
         case "rename":
           if (target.renameInPlace) target.renameInPlace();
           else openThreadRenameDialog(threadRef, thread.title);
+          return;
+        case "move-up":
+          target.customOrder?.move(-1);
+          return;
+        case "move-down":
+          target.customOrder?.move(1);
           return;
         case "pin":
         case "unpin":
