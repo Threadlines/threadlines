@@ -17,6 +17,7 @@ const clientSettings: ClientSettings = {
   agentBrowserProjectSitePolicy: {},
   agentBrowserTrustedCertificates: {},
   browserNewTabSize: null,
+  browserSignIns: "shared",
   autoOpenAgentsPanel: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,

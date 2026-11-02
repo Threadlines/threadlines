@@ -28,9 +28,12 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as IpcChannels from "../ipc/channels.ts";
+import { PREVIEW_PROFILE_SCOPE_PREFERENCE } from "@threadlines/shared/preview";
+
 import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
+import * as PreviewScopes from "../preview/PreviewScopes.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
-import { previewProfilePartition } from "../preview/previewPartitions.ts";
+import { previewProfilePartition, previewSharedPartition } from "../preview/previewPartitions.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -224,6 +227,7 @@ function makeTestLayer(input: {
   readonly appQuitCalls?: Ref.Ref<number>;
   readonly initialRunningThreadCount?: number;
   readonly previewSession?: PreviewSession.PreviewSessionShape;
+  readonly previewScopes?: PreviewScopes.PreviewScopesShape;
   /** Leave the window gate shut, as if startup were still building menus and IPC. */
   readonly startupInProgress?: boolean;
   readonly guests?: ReadonlyArray<Electron.WebContents>;
@@ -330,6 +334,10 @@ function makeTestLayer(input: {
           showMessageBox: input.showMessageBox ?? (() => Effect.die("unexpected message box")),
           showErrorBox: () => Effect.void,
         } satisfies ElectronDialog.ElectronDialogShape),
+        Layer.succeed(
+          PreviewScopes.PreviewScopes,
+          input.previewScopes ?? PreviewScopes.makePreviewScopeRegistry(),
+        ),
         Layer.succeed(
           PreviewSession.PreviewSession,
           input.previewSession ?? {
@@ -1554,6 +1562,7 @@ describe("DesktopWindow", () => {
           ? Effect.fail(new PreviewSession.PreviewSessionCreationError({ partition, cause: null }))
           : Effect.succeed({} as Electron.Session),
       );
+      const previewScopes = PreviewScopes.makePreviewScopeRegistry();
       const layer = makeTestLayer({
         window: fakeWindow.window,
         createCount,
@@ -1565,13 +1574,18 @@ describe("DesktopWindow", () => {
           clearAllData: () => Effect.void,
           storedPartitions: Effect.succeed([]),
         },
+        previewScopes,
       });
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
 
-        const attach = (partition: string | undefined, preferredPartition?: string) => {
+        const attach = (
+          partition: string | undefined,
+          preferredPartition?: string,
+          scope?: string,
+        ) => {
           const preventDefault = vi.fn();
           const webPreferences: Electron.WebPreferences = {
             preload: "/tmp/evil-preload.js",
@@ -1579,6 +1593,7 @@ describe("DesktopWindow", () => {
             contextIsolation: false,
             sandbox: false,
             ...(preferredPartition === undefined ? {} : { partition: preferredPartition }),
+            ...(scope === undefined ? {} : { [PREVIEW_PROFILE_SCOPE_PREFERENCE]: scope }),
           };
           fakeWindow.emitWebContents(
             "will-attach-webview",
@@ -1618,6 +1633,21 @@ describe("DesktopWindow", () => {
 
         // A session that cannot be configured would grant every permission.
         assert.isTrue(attach(brokenPartition).refused);
+
+        // A project's own partition has no other project's pages in it.
+        const otherProject = previewProfilePartition("environment-1", "project-2");
+        assert.isTrue(attach(projectPartition, undefined, otherProject).refused);
+
+        // A shared partition takes only the projects handed out with it, and
+        // the project's name never reaches the guest's preferences.
+        const sharedPartition = previewSharedPartition("environment-1");
+        assert.isTrue(attach(sharedPartition).refused);
+        assert.isTrue(attach(sharedPartition, undefined, projectPartition).refused);
+        previewScopes.issue(sharedPartition, projectPartition);
+        const shared = attach(sharedPartition, undefined, projectPartition);
+        assert.isFalse(shared.refused);
+        assert.notProperty(shared.webPreferences, PREVIEW_PROFILE_SCOPE_PREFERENCE);
+        assert.isTrue(attach(sharedPartition, undefined, otherProject).refused);
       }).pipe(Effect.provide(layer));
     }),
   );

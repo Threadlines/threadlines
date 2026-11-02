@@ -308,3 +308,14 @@ export function withoutBrowserApproval(
   const next = approved.filter((entry) => browserApprovalKey(entry) !== key);
   return next.length === approved.length ? approved : next;
 }
+
+/**
+ * The `<webview>` `webpreferences` key naming the project a browser page
+ * belongs to, as the page's scope (the project's own partition name).
+ *
+ * Several projects can share one partition when sign-ins are shared, and the
+ * main process holds each page to its own project's sites and certificates
+ * from the moment the page exists. The renderer sets it; `will-attach-webview`
+ * reads it, checks it and takes it out before the page is created.
+ */
+export const PREVIEW_PROFILE_SCOPE_PREFERENCE = "threadlinesProfileScope";

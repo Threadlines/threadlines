@@ -7,6 +7,7 @@ import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
 import {
   AddProjectStartsInRow,
   AgentBrowserSitesRow,
+  BrowserSignInsRow,
   AgentsPanelRow,
   AssistantStreamingRow,
   BrowserPageSizeRow,
@@ -101,6 +102,7 @@ export const SETTINGS_ROWS = {
   "general.openLinksIn": live(OpenLinksRow),
   "general.browserPageSize": live(BrowserPageSizeRow),
   "general.sitesAgentsCanVisit": live(AgentBrowserSitesRow),
+  "general.browserSignIns": live(BrowserSignInsRow),
   "general.clearBrowserData": live(ClearBrowserDataRow),
   "general.version": live(VersionRow),
   "general.updateTrack": live(UpdateTrackRow),

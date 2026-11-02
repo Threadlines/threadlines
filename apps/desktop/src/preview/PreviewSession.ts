@@ -1,11 +1,13 @@
 /**
  * The browser sessions behind the in-app preview.
  *
- * One persistent partition per project (see `previewPartitions.ts`), so a
- * sign-in to the app you are building happens once per project, every tab and
- * thread of that project shares it, and the agent driving a tab works inside
- * that same signed-in session rather than a blank one. Two projects never
- * share cookies or storage, even when their dev servers use the same port.
+ * One persistent partition per environment when sign-ins are shared, or per
+ * project when they are not (see `previewPartitions.ts`). Either way a sign-in
+ * happens once for everything sharing the partition, every tab and thread in
+ * it shares it, and the agent driving a tab works inside that same signed-in
+ * session rather than a blank one. Separate, two projects never share cookies
+ * or storage, even when their dev servers use the same port. What a page may
+ * visit stays its project's either way (`PreviewScopes.ts`).
  *
  * Kept separate from the app's own session: preview content is untrusted, and
  * it has no business reading Threadlines' cookies. `getSession` refuses any
