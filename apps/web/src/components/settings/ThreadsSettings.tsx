@@ -9,7 +9,11 @@ import {
   ROOM_AGENT_ROLE_MAX_LENGTH,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
-import { AGENT_INVITES_LABELS, AGENT_THREADS_LABELS } from "@threadlines/shared/appPlaces";
+import {
+  AGENT_INVITES_LABELS,
+  AGENT_THREADS_LABELS,
+  THREAD_ENV_MODE_LABELS,
+} from "@threadlines/shared/appPlaces";
 import { createModelSelection } from "@threadlines/shared/model";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
@@ -338,13 +342,11 @@ export function DefaultThreadEnvModeRow() {
           }}
         >
           <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
-            <SelectValue>
-              {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-            </SelectValue>
+            <SelectValue>{THREAD_ENV_MODE_LABELS[settings.defaultThreadEnvMode]}</SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
-            <SelectItem value="local">Local</SelectItem>
-            <SelectItem value="worktree">New worktree</SelectItem>
+            <SelectItem value="local">{THREAD_ENV_MODE_LABELS.local}</SelectItem>
+            <SelectItem value="worktree">{THREAD_ENV_MODE_LABELS.worktree}</SelectItem>
           </SelectPopup>
         </Select>
       }

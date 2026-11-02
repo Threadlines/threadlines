@@ -5,6 +5,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
+  WS_METHODS,
   EnvironmentId,
   type EnvironmentApi,
   MessageId,
@@ -12,7 +13,10 @@ import {
   type PreviewAutomationResponse,
   type ProjectId,
   ProviderInstanceId,
+  type OrchestrationEvent,
+  type OrchestrationSettingsChangeRequest,
   type RoomAgentRequestId,
+  SettingsChangeRequestId,
   type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
@@ -64,7 +68,10 @@ import {
   findVisibleComposerFooter,
   mountChatView,
   registerChatViewSuiteHooks,
+  fixture,
+  rpcHarness,
 } from "./ChatView.browser-harness";
+import { readThemePreference } from "../hooks/useTheme";
 
 vi.mock("../lib/gitStatusState", () => ({
   // Read synchronously by the draft seeder to skip a checkout already known
@@ -1456,5 +1463,272 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  describe("an agent's settings change", () => {
+    const settingsRequest = (
+      id: string,
+      changes: OrchestrationSettingsChangeRequest["changes"],
+    ): OrchestrationSettingsChangeRequest => ({
+      requestId: SettingsChangeRequestId.make(id),
+      participantId: null,
+      turnId: "turn-settings" as TurnId,
+      changes,
+      status: "waiting",
+      createdAt: isoAt(301),
+      noted: false,
+    });
+    const snapshotWith = (requests: ReadonlyArray<OrchestrationSettingsChangeRequest>) => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: "msg-user-settings-change" as MessageId,
+        targetText: "switch me to light theme and stop streaming",
+      });
+      return {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID ? { ...thread, settingsRequests: requests } : thread,
+        ),
+      };
+    };
+    /** Sends the open thread a live event, as its computer would. */
+    let liveSequence = 0;
+    const sendLive = <T extends OrchestrationEvent["type"]>(
+      type: T,
+      payload: Extract<OrchestrationEvent, { type: T }>["payload"],
+    ) => {
+      liveSequence += 1;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: fixture.snapshot.snapshotSequence + liveSequence,
+          eventId: EventId.make(`evt-settings-change-${liveSequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type,
+          payload,
+        },
+      });
+    };
+    const respondRequests = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.settingsChangeRespond);
+    const reportRequests = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.settingsChangeReportDevice);
+    const panel = () =>
+      waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="settings-change-panel"]'),
+        "Unable to find the settings change card.",
+      );
+    const button = (card: HTMLElement, name: string) =>
+      [...card.querySelectorAll<HTMLButtonElement>("button")].find(
+        (candidate) => candidate.textContent === name,
+      )!;
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((settle) => {
+        resolve = settle;
+      });
+      return { promise, resolve };
+    };
+
+    it("shows each setting and where it lands, and makes this device's changes once its claim wins", async () => {
+      localStorage.setItem("threadlines:theme", "dark");
+      const request = settingsRequest("settings-request-change", [
+        { place: "general.streamReplies", value: false, from: true },
+        { place: "general.theme", value: "light" },
+        { place: "general.timeFormat", value: "24-hour" },
+      ]);
+      const answer = deferred<unknown>();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.settingsChangeRespond ? answer.promise : undefined,
+      });
+
+      try {
+        const card = await panel();
+        expect(
+          card.querySelector('[data-testid="settings-change-panel-heading"]')?.textContent,
+        ).toBe("The agent wants to change 3 settings");
+        const lines = [
+          ...card.querySelectorAll<HTMLElement>('[data-testid="settings-change-panel-line"]'),
+        ].map((line) => ({
+          name: line.querySelector("[data-place-link]")?.textContent,
+          value: line.querySelector("[data-settings-change-value]")?.textContent,
+          lands: line.querySelector("[data-settings-change-lands]")?.textContent,
+        }));
+        expect(lines).toEqual([
+          {
+            name: "Stream replies",
+            value: "On → Off",
+            lands: readPrimaryEnvironmentDescriptor()?.label,
+          },
+          { name: "Theme", value: "Dark → Light", lands: "this device" },
+          { name: "Time format", value: "System default → 24-hour", lands: "this device" },
+        ]);
+        // The names open their rows.
+        expect(card.querySelector('a[data-place-link="general.theme"]')).not.toBeNull();
+
+        button(card, "Change").click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        const sent = respondRequests()[0]!;
+        expect(sent).toMatchObject({
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          allow: true,
+          claim: { claimId: expect.any(String), deviceLabel: expect.any(String) },
+        });
+        // Nothing on this device changes before the claim has won.
+        expect(getClientSettings().timestampFormat).toBe("locale");
+        expect(readThemePreference()).toBe("dark");
+
+        answer.resolve({ outcome: "changed", makeDeviceChanges: true });
+        await vi.waitFor(
+          () => {
+            expect(getClientSettings().timestampFormat).toBe("24-hour");
+            expect(readThemePreference()).toBe("light");
+            expect(reportRequests()).toEqual([
+              expect.objectContaining({
+                threadId: THREAD_ID,
+                requestId: request.requestId,
+                claimId: (sent["claim"] as { claimId: string }).claimId,
+                device: { applied: ["general.timeFormat", "general.theme"], failed: [] },
+              }),
+            ]);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("makes the device changes from the thread when the answer is lost, once", async () => {
+      const request = settingsRequest("settings-request-lost", [
+        { place: "general.timeFormat", value: "12-hour" },
+      ]);
+      const answer = deferred<unknown>();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.settingsChangeRespond ? answer.promise : undefined,
+      });
+
+      try {
+        button(await panel(), "Change").click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        const claim = respondRequests()[0]!["claim"] as { claimId: string; deviceLabel: string };
+
+        // The answer never comes; the thread says this app's claim won.
+        sendLive("thread.settings-change-claimed", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          claim,
+          claimedAt: isoAt(302),
+        });
+        await vi.waitFor(
+          async () => expect(button(await panel(), "Changing…").disabled).toBe(true),
+          { timeout: 8_000, interval: 16 },
+        );
+        expect(getClientSettings().timestampFormat).toBe("locale");
+        sendLive("thread.settings-change-settled", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          ending: "changed",
+          settledAt: isoAt(303),
+        });
+        await vi.waitFor(
+          () => {
+            expect(getClientSettings().timestampFormat).toBe("12-hour");
+            expect(reportRequests()).toHaveLength(1);
+            expect(document.querySelector('[data-testid="settings-change-panel"]')).toBeNull();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+
+        // The answer turns up late: the changes aren't made or reported again.
+        answer.resolve({ outcome: "changed", makeDeviceChanges: true });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(reportRequests()).toHaveLength(1);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("changes nothing when another device answered first, and asks for an update it can't make", async () => {
+      localStorage.setItem("threadlines:theme", "dark");
+      const first = settingsRequest("settings-request-answered", [
+        { place: "general.theme", value: "light" },
+      ]);
+      const newer = settingsRequest("settings-request-newer", [
+        { place: "general.streamReplies", value: false, from: true },
+        { place: "general.settingFromANewerApp", value: true },
+      ]);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([first, newer]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.settingsChangeRespond
+            ? body["allow"] === true
+              ? { outcome: "already_answered", makeDeviceChanges: false }
+              : { outcome: "declined", makeDeviceChanges: false }
+            : undefined,
+      });
+
+      try {
+        button(await panel(), "Change").click();
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Already answered"), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        expect(readThemePreference()).toBe("dark");
+        expect(reportRequests()).toHaveLength(0);
+
+        // Its computer settles it: the next card comes up.
+        sendLive("thread.settings-change-settled", {
+          threadId: THREAD_ID,
+          requestId: first.requestId,
+          ending: "declined",
+          settledAt: isoAt(302),
+        });
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await panel()).querySelector('[data-testid="settings-change-panel-update"]')
+                ?.textContent,
+            ).toBe("Update Threadlines on this device to make these changes."),
+          { timeout: 8_000, interval: 16 },
+        );
+        const card = await panel();
+        expect(button(card, "Change").disabled).toBe(true);
+
+        // Not now still answers it, and claims nothing.
+        button(card, "Not now").click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(2), {
+          timeout: 8_000,
+          interval: 16,
+        });
+        expect(respondRequests()[1]).toMatchObject({
+          threadId: THREAD_ID,
+          requestId: newer.requestId,
+          allow: false,
+        });
+        expect(respondRequests()[1]!["claim"]).toBeUndefined();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
   });
 });

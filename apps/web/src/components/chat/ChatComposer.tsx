@@ -136,6 +136,7 @@ import { getThreadInFlightStatus } from "../../lib/threadSort";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
 import { ComposerScheduleRequestPanel } from "./ComposerScheduleRequestPanel";
+import { ComposerSettingsChangePanel } from "./ComposerSettingsChangePanel";
 import { useScheduledTaskRequestsForThread } from "../../lib/scheduledTasksState";
 import { ComposerRemoteStartPanel } from "./ComposerRemoteStartPanel";
 import { usePendingLinkRequests } from "../sidebar/linkedComputers";
@@ -197,6 +198,7 @@ import {
 } from "../../rooms";
 import { getPickerModelName } from "./providerIconUtils";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
 import {
   getTraitsSectionVisibility,
@@ -1160,6 +1162,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     routeThreadRef.environmentId,
     routeThreadRef.threadId,
   )[0];
+  // Settings the agent asked to change (`settings_change`): on its card until
+  // the user answers, and while the change is being made.
+  const pendingSettingsChange = useMemo(
+    () => shownSettingsChange(activeThread?.settingsRequests),
+    [activeThread?.settingsRequests],
+  );
   // A thread the agent asked another computer to start, waiting for that
   // computer's user: the card that decides it sits here, in the thread that
   // asked, where the conversation says why.
@@ -3798,6 +3806,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingScheduleRequest.requestId}
                   threadRef={routeThreadRef}
                   request={pendingScheduleRequest}
+                />
+              </div>
+            ) : pendingSettingsChange !== null ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerSettingsChangePanel
+                  key={pendingSettingsChange.requestId}
+                  threadRef={routeThreadRef}
+                  request={pendingSettingsChange}
                 />
               </div>
             ) : pendingRemoteStart !== null ? (

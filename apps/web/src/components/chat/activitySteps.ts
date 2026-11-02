@@ -450,6 +450,9 @@ function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
       return routine(
         phrase("Looked it up in the Threadlines guide", "Looking it up in the Threadlines guide"),
       );
+    // Settings the agent asked to change: a card asks the user to accept.
+    case "settings_change":
+      return notable(phrase("Asked to change settings", "Asking to change settings"));
     default:
       return null;
   }
