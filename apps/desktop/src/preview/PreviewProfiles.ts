@@ -1,17 +1,20 @@
 /**
- * The in-app browser's profiles: one per (environment, project), remembered.
+ * The in-app browser's profiles, remembered: one per environment when
+ * sign-ins are shared, one per (environment, project) when they are not.
  *
  * A partition is just a directory Electron keeps under the app's data, and it
  * stays there after the project it belonged to is gone. The inventory is how
  * the desktop knows which partitions exist, so "clear all browser data" can
- * reach every one and a deleted project's profile can be forgotten. Written
- * when a partition is handed out; the file lives in the desktop state dir next
- * to the window and client settings.
+ * reach every one and a deleted project's profile can be forgotten. A shared
+ * profile is recorded without a project, so no project's deletion forgets it.
+ * Written when a partition is handed out; the file lives in the desktop state
+ * dir next to the window and client settings.
  */
 
 import {
   DesktopPreviewProfileSchema,
   type DesktopPreviewProfile,
+  type DesktopPreviewProfileAssignment,
   type DesktopPreviewProfileInput,
 } from "@threadlines/contracts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
@@ -35,6 +38,7 @@ import {
   isPreviewPartition,
   LEGACY_PREVIEW_PARTITION,
   previewProfilePartition,
+  previewSharedPartition,
 } from "./previewPartitions.ts";
 
 export const PREVIEW_PROFILES_FILE_NAME = "preview-profiles.json";
@@ -71,11 +75,14 @@ export class PreviewProfilesClearError extends Schema.TaggedError<PreviewProfile
 
 export interface PreviewProfilesShape {
   /**
-   * The partition for a project's tabs, recorded with the time it was asked
-   * for. Never fails: a profile that could not be written down still works, it
-   * just cannot be reached by "clear all" until the next successful write.
+   * Where a project's tabs run (the partition, and the scope its pages carry),
+   * recorded with the time it was asked for. Never fails: a profile that
+   * could not be written down still works, it just cannot be reached by
+   * "clear all" until the next successful write.
    */
-  readonly partitionFor: (input: DesktopPreviewProfileInput) => Effect.Effect<string>;
+  readonly profileFor: (
+    input: DesktopPreviewProfileInput,
+  ) => Effect.Effect<DesktopPreviewProfileAssignment>;
   readonly list: Effect.Effect<ReadonlyArray<DesktopPreviewProfile>>;
   /**
    * Clears everything the partition holds, then stops remembering it. The
@@ -177,15 +184,18 @@ export const make = Effect.gen(function* PreviewProfilesMake() {
   ) => writeLock.withPermits(1)(updateLocked(change));
 
   return PreviewProfiles.of({
-    partitionFor: Effect.fn("PreviewProfiles.partitionFor")(function* (input) {
-      const partition = previewProfilePartition(input.environmentId, input.projectId);
+    profileFor: Effect.fn("PreviewProfiles.profileFor")(function* (input) {
+      // A page's scope is its project's own partition name, wherever it runs.
+      const scope = previewProfilePartition(input.environmentId, input.projectId);
+      const shared = input.shared === true;
+      const partition = shared ? previewSharedPartition(input.environmentId) : scope;
       const lastUsedAt = DateTime.formatIso(yield* DateTime.now);
       yield* update((profiles) => [
         ...profiles.filter((profile) => profile.partition !== partition),
         {
           partition,
           environmentId: input.environmentId,
-          projectId: input.projectId,
+          ...(shared ? {} : { projectId: input.projectId }),
           lastUsedAt,
         },
       ]).pipe(
@@ -197,7 +207,7 @@ export const make = Effect.gen(function* PreviewProfilesMake() {
           }),
         ),
       );
-      return partition;
+      return { partition, scope };
     }),
     list: Ref.get(profilesRef),
     forget: Effect.fn("PreviewProfiles.forget")(function* (partition: string) {

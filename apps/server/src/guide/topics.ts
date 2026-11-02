@@ -197,10 +197,15 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
       "sites",
       "page size",
       "viewport",
+      "sign in",
+      "cookies",
+      "passwords",
     ],
     body: `In the desktop app a browser panel sits beside the chat. Agents use it to open your dev server, check a layout, reproduce a bug or fill in a form, and you watch every step; you can also mark up the page and send the marks to the agent.
 
 {place:general.sitesAgentsCanVisit} decides which sites agents may open without asking you first. Local addresses always work.
+
+{place:general.browserSignIns} is Shared by default: every project on a computer uses one browser, so you sign in to a site once and every project's agents can use that sign-in. Local sites are shared too, so two projects on localhost:3000 see each other's cookies and storage. Per project gives each project its own. Each project still has its own allowed sites. The browser can't use Chrome's saved passwords or your Chrome sign-ins.
 
 Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.`,
   },

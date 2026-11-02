@@ -51,7 +51,10 @@ async function renderThreadOnScreen(tabs: readonly [BrowserTab, ...BrowserTab[]]
   window.desktopBridge = {
     setTheme: () => Promise.resolve(),
     previewProfilePartition: () =>
-      Promise.resolve({ partition: `persist:threadlines-preview-${"a".repeat(32)}` }),
+      Promise.resolve({
+        partition: `persist:threadlines-preview-${"a".repeat(32)}`,
+        scope: `persist:threadlines-preview-${"a".repeat(32)}`,
+      }),
   } as unknown as NonNullable<typeof window.desktopBridge>;
   useBrowserPanelStore.setState({
     browserStateByThreadKey: {
@@ -117,7 +120,10 @@ describe("LiveThreadBrowserView", () => {
     window.desktopBridge = {
       setTheme: () => Promise.resolve(),
       previewProfilePartition: () =>
-        Promise.resolve({ partition: `persist:threadlines-preview-${"a".repeat(32)}` }),
+        Promise.resolve({
+          partition: `persist:threadlines-preview-${"a".repeat(32)}`,
+          scope: `persist:threadlines-preview-${"a".repeat(32)}`,
+        }),
     } as unknown as NonNullable<typeof window.desktopBridge>;
     const current = { ...makeBrowserTab(), url: "http://localhost:5173/" };
     const working = { ...makeBrowserTab(), url: "http://localhost:5173/settings" };

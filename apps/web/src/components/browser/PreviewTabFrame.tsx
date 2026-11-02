@@ -1,4 +1,5 @@
 import type { ScopedThreadRef } from "@threadlines/contracts";
+import { PREVIEW_PROFILE_SCOPE_PREFERENCE } from "@threadlines/shared/preview";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import {
@@ -34,6 +35,7 @@ declare global {
       webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
         src?: string;
         partition?: string;
+        webpreferences?: string;
       };
     }
   }
@@ -96,6 +98,7 @@ export function PreviewTabFrame({
   tab,
   threadRef,
   partition,
+  scope,
   isActive,
   mode,
   viewport,
@@ -107,6 +110,8 @@ export function PreviewTabFrame({
   threadRef: ScopedThreadRef;
   /** The project's browser profile, as handed out by the desktop. */
   partition: string;
+  /** The project the page belongs to inside it, as handed out with it. */
+  scope: string;
   /** The thread's current tab, whose state the panel's toolbar shows. */
   isActive: boolean;
   mode: PreviewFrameMode;
@@ -339,6 +344,9 @@ export function PreviewTabFrame({
               : {}),
           }}
           partition={partition}
+          // Read once, as the guest is created: the desktop binds the page to
+          // its project from its first moment (`PreviewScopes.ts`).
+          webpreferences={`${PREVIEW_PROFILE_SCOPE_PREFERENCE}=${scope}`}
           {...ALLOW_POPUPS}
           src={initialSrc}
         />

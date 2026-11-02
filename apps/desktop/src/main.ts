@@ -50,6 +50,7 @@ import * as DesktopScreenCapture from "./screenCapture/DesktopScreenCapture.ts";
 import * as PreviewAutomation from "./preview/PreviewAutomation.ts";
 import * as PreviewLoopbackProxy from "./preview/PreviewLoopbackProxy.ts";
 import * as PreviewProfiles from "./preview/PreviewProfiles.ts";
+import * as PreviewScopes from "./preview/PreviewScopes.ts";
 import * as PreviewSession from "./preview/PreviewSession.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
@@ -288,6 +289,8 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
 const desktopWindowLayer = DesktopWindow.layer.pipe(
   Layer.provideMerge(PreviewSession.layer),
   Layer.provideMerge(PreviewAutomation.layer),
+  // Beneath the window and the automation, which both ask whose a page is.
+  Layer.provideMerge(PreviewScopes.layer),
   Layer.provideMerge(PreviewLoopbackProxy.layer),
   Layer.provideMerge(desktopServerExposureLayer),
 );

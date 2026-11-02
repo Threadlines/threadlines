@@ -9,7 +9,11 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as PreviewProfiles from "./PreviewProfiles.ts";
 import * as PreviewSession from "./PreviewSession.ts";
-import { LEGACY_PREVIEW_PARTITION, previewProfilePartition } from "./previewPartitions.ts";
+import {
+  LEGACY_PREVIEW_PARTITION,
+  previewProfilePartition,
+  previewSharedPartition,
+} from "./previewPartitions.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 const projectA = ProjectId.make("project-a");
@@ -80,19 +84,26 @@ describe("PreviewProfiles", () => {
         const session = makePreviewSession();
         const partitionA = previewProfilePartition(environmentId, projectA);
         const partitionB = previewProfilePartition(environmentId, projectB);
+        const shared = previewSharedPartition(environmentId);
 
         yield* Effect.gen(function* () {
           const profiles = yield* PreviewProfiles.PreviewProfiles;
-          assert.equal(
-            yield* profiles.partitionFor({ environmentId, projectId: projectA }),
-            partitionA,
-          );
-          assert.equal(
-            yield* profiles.partitionFor({ environmentId, projectId: projectB }),
-            partitionB,
-          );
+          assert.deepEqual(yield* profiles.profileFor({ environmentId, projectId: projectA }), {
+            partition: partitionA,
+            scope: partitionA,
+          });
+          assert.deepEqual(yield* profiles.profileFor({ environmentId, projectId: projectB }), {
+            partition: partitionB,
+            scope: partitionB,
+          });
           // Asking again refreshes the entry rather than adding a second one.
-          yield* profiles.partitionFor({ environmentId, projectId: projectA });
+          yield* profiles.profileFor({ environmentId, projectId: projectA });
+          // Shared: the environment's partition, each page still scoped to its project.
+          assert.deepEqual(
+            yield* profiles.profileFor({ environmentId, projectId: projectA, shared: true }),
+            { partition: shared, scope: partitionA },
+          );
+          yield* profiles.profileFor({ environmentId, projectId: projectB, shared: true });
         }).pipe(Effect.provide(makeLayer(baseDir, session.layer)));
 
         const reloaded = yield* Effect.gen(function* () {
@@ -100,6 +111,7 @@ describe("PreviewProfiles", () => {
           return yield* profiles.list;
         }).pipe(Effect.provide(makeLayer(baseDir, session.layer)));
 
+        // The shared one belongs to no project, so no project's deletion forgets it.
         assert.deepEqual(
           reloaded
             .map(({ partition, environmentId, projectId }) => ({
@@ -107,11 +119,12 @@ describe("PreviewProfiles", () => {
               environmentId,
               projectId,
             }))
-            .toSorted((left, right) => left.projectId.localeCompare(right.projectId)),
+            .toSorted((left, right) => left.partition.localeCompare(right.partition)),
           [
             { partition: partitionA, environmentId, projectId: projectA },
             { partition: partitionB, environmentId, projectId: projectB },
-          ],
+            { partition: shared, environmentId, projectId: undefined },
+          ].toSorted((left, right) => left.partition.localeCompare(right.partition)),
         );
         assert.deepEqual(session.cleared, []);
       }),
@@ -128,8 +141,8 @@ describe("PreviewProfiles", () => {
 
         yield* Effect.gen(function* () {
           const profiles = yield* PreviewProfiles.PreviewProfiles;
-          yield* profiles.partitionFor({ environmentId, projectId: projectA });
-          yield* profiles.partitionFor({ environmentId, projectId: projectB });
+          yield* profiles.profileFor({ environmentId, projectId: projectA });
+          yield* profiles.profileFor({ environmentId, projectId: projectB });
 
           yield* profiles.forget(partitionA);
           const failed = yield* Effect.flip(profiles.forget(partitionB));
@@ -150,20 +163,27 @@ describe("PreviewProfiles", () => {
         const partitionB = previewProfilePartition(environmentId, projectB);
         // On disk from an earlier run whose record was never written.
         const unrecorded = previewProfilePartition(environmentId, ProjectId.make("project-c"));
+        const shared = previewSharedPartition(environmentId);
         const session = makePreviewSession(new Set([partitionA]), [unrecorded, partitionB]);
 
         yield* Effect.gen(function* () {
           const profiles = yield* PreviewProfiles.PreviewProfiles;
-          yield* profiles.partitionFor({ environmentId, projectId: projectA });
-          yield* profiles.partitionFor({ environmentId, projectId: projectB });
+          yield* profiles.profileFor({ environmentId, projectId: projectA });
+          yield* profiles.profileFor({ environmentId, projectId: projectB });
+          yield* profiles.profileFor({ environmentId, projectId: projectB, shared: true });
 
           const failed = yield* Effect.flip(profiles.clearAll);
           assert.deepEqual(failed.partitions, [partitionA]);
           // Clearing is not forgetting: the profiles still exist.
-          assert.deepEqual(yield* listPartitions, [partitionA, partitionB].toSorted());
+          assert.deepEqual(yield* listPartitions, [partitionA, partitionB, shared].toSorted());
         }).pipe(Effect.provide(makeLayer(baseDir, session.layer)));
 
-        assert.deepEqual(session.cleared, [LEGACY_PREVIEW_PARTITION, partitionB, unrecorded]);
+        assert.deepEqual(session.cleared, [
+          LEGACY_PREVIEW_PARTITION,
+          partitionB,
+          shared,
+          unrecorded,
+        ]);
       }),
     ),
   );
