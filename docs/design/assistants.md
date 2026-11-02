@@ -1799,3 +1799,317 @@ Sol's review of the build (Oct 31), three findings, all fixed:
 - **A stalled body lost the answer.** A 503 whose body never finished
   timed out as "may have arrived" and was never retried. An answer keeps its
   status once its headers come.
+
+## Build plan: step 5 (MCP Events)
+
+Written Nov 2 on main (`c5dd57cce`). Will has a dot on his ChatGPT account, so
+this can be tested live.
+
+### What the clients expect (research, Nov 2)
+
+Sources: OpenAI's guide (developers.openai.com/plugins/build/mcp-events), the
+MCP events design sketch it links (modelcontextprotocol/experimental-ext-
+triggers-events) and the draft SEP-3415 "Events Extension" (2026-07-28 and
+later). Where they disagree, ChatGPT is the client, so OpenAI's guide wins.
+
+- **Capability:** `events: {}` in `initialize`'s capabilities and in
+  `server/discover`'s. (The SEP moves it under `extensions`; not yet.)
+- **`events/list`:** `events[]` with `name`, `description`,
+  `delivery: ["webhook"]`, `inputSchema` (the subscribe arguments) and
+  `payloadSchema` (the `data` object); `nextCursor` paging. Only events the
+  caller may see.
+- **`events/subscribe`:** `{ name, arguments, delivery: { mode: "webhook",
+  url, secret: "whsec_…" }, cursor?, ttlMs? }`. **The client makes the
+  secret** (24 to 64 bytes). The server derives the subscription id from (the
+  caller, URL, name, canonical arguments); a repeat with the same identity
+  refreshes it (new expiry, maybe a new secret). Result `{ id, refreshBefore,
+  cursor, truncated }`.
+- **Callback check:** before accepting a new callback, POST
+  `{"type":"verification","challenge":"…"}` signed with the subscription's
+  secret, with a fresh `webhook-id` and `X-MCP-Subscription-Id`; require 2xx
+  and the same challenge back (constant-time compare). Failure is JSON-RPC
+  `-32015` (`CallbackEndpointError`) with `data.reason`. Successful checks
+  may be cached per (caller, URL) for a while.
+- **`events/unsubscribe`:** `{ name, arguments, delivery: { mode, url } }`,
+  idempotent, `{}` even when nothing matched.
+- **Deliveries:** one event per POST, `{ eventId, name, timestamp, data,
+  cursor }`, `timestamp` the occurrence time; Standard Webhooks headers with
+  `webhook-id` = `eventId` (a fresh timestamp and signature per attempt), plus
+  `X-MCP-Subscription-Id`; at most 256 KiB; bounded backoff; never retry 410
+  or 413 (410 ends that delivery, not the subscription). Out of order and
+  repeats are allowed: receivers dedup by event id.
+- **Cursors:** a subscribe may carry the last cursor the client saved; resume
+  after it, or return `truncated: true` when that history is gone. The
+  returned cursor must not skip anything still waiting to be delivered.
+- **Lifetime:** `ttlMs` omitted: the server's default; `null`: asks for no
+  expiry (we don't grant that); past `refreshBefore` delivery stops. State
+  survives restarts.
+- **Access:** same OAuth token as the tools; re-check access while the
+  subscription lives and stop when it's revoked.
+- **Who uses it:** ChatGPT Work chats and dots (Pro 100/200/500, Business
+  Premium; Enterprise if the admin turns on "Allow event-triggered scheduled
+  tasks"). A custom MCP server is added as a plugin; its events show on the
+  plugin page next to its tools.
+
+### What already exists (step 4)
+
+The alerts sender does nearly everything a subscription needs: rows in
+`assistant_targets` (with `kind`, `connection_id` and `expires_at` already
+there for this step), deliveries with a watermark, never sending twice, the
+live re-check, the outbound network rules, Standard Webhooks signing, the
+envelope, Settings' list. The relay passes every MCP method through; it reads
+the method only to word its offline answer. So no relay change.
+
+### The door (`AssistantMcp.ts`, `AssistantMcpServer.ts`)
+
+- Both generations advertise `events: {}` and answer `events/list`,
+  `events/subscribe` and `events/unsubscribe` (modern ones with `resultType:
+  "complete"`). Only the assistants door: local agents have no public
+  callback, and the network rules would refuse one on this computer anyway.
+- **Events:** `thread.needs_you`, `thread.finished`, `thread.failed`.
+  `inputSchema`: `{ project?: string }` (a project's id or name; out: every
+  project the caller can see), no other properties. `payloadSchema`: the
+  `data` object step 4 sends.
+- Any access level may list and subscribe: an event says no more than
+  `inbox` does.
+
+### Subscriptions (`AssistantAlertsLive`, migration 101)
+
+- **A subscription is a target** with `kind = 'subscription'`, its
+  `connection_id`, `expires_at`, one event name and its project filter. New
+  columns: `subscription_id` (unique, `sub_` + 32 base64url characters of
+  SHA-256 over connection id, URL, name and canonical arguments),
+  `arguments_json` (canonical), `signing_secret` (the secret store entry
+  holding its key; null for step 4's targets, which keep their fixed entry),
+  `previous_signing_secret` and `previous_signing_until` (rotation).
+- **Subscribe:**
+  1. The caller's live grant (`OutsideAgentConnections.grant`); none:
+     `-32024`.
+  2. Check the name, the arguments (`project` must be one the grant reaches;
+     resolved to its id) and the secret (`whsec_`, 24 to 64 bytes): else
+     `-32602`. The URL under the network rules (`checkOutboundUrl`,
+     `resolveOutbound`): else `-32015` with `blocked_address`.
+  3. The callback check, unless this caller checked this URL in the last 24
+     hours: under the network rules, 10 s. `postOutbound` learns to return
+     the first 64 KiB of the answer's body for it. Reasons: `timeout`,
+     `unreachable`, `bad_status`, `challenge_failed`.
+  4. Under the target's lock: create or refresh. Lifetime `min(ttlMs, 7
+     days)`, at least 1 hour; `null` or none gets 7 days. A new secret on a
+     refresh becomes the key, and the old one also signs (space-separated
+     `v1,` signatures) for an hour.
+  5. Where it starts, as a new subscription: the client's cursor when it's
+     this record's and still kept (deliveries resume right after it); a
+     cursor that's foreign or older than the record keeps: `truncated: true`,
+     starting at the oldest kept; no cursor: the record's last `seq` (no
+     history). A refresh keeps the subscription's own watermark: the server
+     knows what was acknowledged. Either way the result's `cursor` is the
+     watermark's.
+  6. `AssistantEvents.keep` around the save, as for step 4's targets.
+- **Unsubscribe:** derive the id for this caller, remove it as Remove does
+  (its secrets, then its rows); `{}` either way.
+- **Sending:** step 4's loop, with:
+  - a subscription past `expires_at` gets nothing queued or sent (it can be
+    refreshed and catches up from its watermark); kept 7 days past expiry,
+    then removed;
+  - before each send, the connection's live grant: removed, the subscription
+    is removed; the event's project outside the grant, or outside the
+    subscription's filter after a grant change, is dropped;
+  - `X-MCP-Subscription-Id`, `webhook-id` = `eventId`;
+  - 410 drops that delivery and leaves the subscription on (webhooks still
+    turn `gone`); 413 fails it; the rest as step 4.
+- **Envelope `timestamp`:** the event's occurrence time, for both kinds (step
+  4 sent the time it was recorded; only nightly has shipped it).
+
+### Settings
+
+- Subscriptions show in "Alerts to a web address" as rows of their own:
+  - the callback's host;
+  - "Added by <the assistant's name>", its kind and projects;
+  - when it must be renewed by;
+  - the same status line as an address.
+- Their only action is Remove ("<name> can subscribe again while it's
+  connected; remove the assistant to stop it for good"). No Edit, no test, no
+  secret to copy: the secret is the assistant's.
+- Contracts: `AssistantAlertTarget` gains `addedBy` (null, or the connection's
+  id and name) and `expiresAt`, both defaulting to null for older servers.
+- The app guide's assistants topic says what dots and ChatGPT Work can
+  subscribe to.
+
+### Tests
+
+- The door: both generations advertise events; `events/list`; subscribe
+  refuses a bad secret, a private callback and a failed or wrong challenge
+  with the right codes; a repeat subscribe returns the same id and refreshes
+  it; unsubscribe is idempotent.
+- Sending: a delivery carries the subscription id and signs with its secret
+  (and both secrets after a rotation); an expired subscription sends nothing
+  until refreshed, then catches up; a removed connection removes its
+  subscriptions; a narrowed grant drops other projects' events; 410 leaves the
+  subscription on; a cursor resumes, an old one says `truncated`.
+- Web: a subscription row (added by, renew by, Remove only).
+
+### Live test
+
+Add Threadlines to Will's dot as a custom MCP server (a plugin), check the
+events show on the plugin page, make an event-triggered task on
+`thread.finished`, finish a thread, and watch it run. Then Remove in Settings,
+and remove the connection.
+
+### Open questions
+
+- How long ChatGPT waits for the callback check and for a delivery, and the
+  `ttlMs` it asks for: we'll see on the live test.
+- Whether ChatGPT re-subscribes on its own after a Remove in Settings
+  (expected: yes, at its next refresh).
+
+### Sol's review of the step 5 plan (Nov 2), and what changed
+
+Twelve findings, all taken:
+
+- **General Chats.** `inbox` leaves out General Chats (`projectsIn`,
+  `connectToolHandlers.ts`); step 4's sender doesn't, so an address on "All
+  projects" also hears about General Chats threads today. One shared rule
+  for what an assistant's alerts may cover (the grant, never General Chats)
+  serves `inbox`, addresses and subscriptions. This fixes step 4 too.
+- **Limits before any network call.** At most 20 subscriptions per
+  connection and 50 in all; at most 10 callback checks per connection an
+  hour, one at a time per connection; the check cache holds 200 entries.
+  Over a limit: `-32025` (ResourceExhausted), before DNS or any POST. The
+  failure reasons stay coarse (`blocked_address`, `timeout`, `unreachable`,
+  `bad_status`, `challenge_failed`), and private addresses are refused
+  before connecting, so the check can't map a network.
+- **Replay has a ceiling.** Resuming from a cursor sends only events recorded
+  in the last 24 hours (less with `maxAgeMs`), at most 100; anything older is
+  skipped and the result says `truncated: true`. Each delivery may start a
+  paid run.
+- **Which cursor wins.** A resume starts at the later of the client's cursor
+  and the subscription's own watermark. Everything at or below the watermark
+  was acknowledged, judged no longer relevant, or may have arrived (never sent
+  twice, step 4's rule, kept on purpose because a repeat can cost a run). A
+  new subscription has no watermark, so the client's cursor counts.
+- **Gaps say `truncated`.** On every subscribe (new or refresh), a watermark
+  or cursor below what the record still keeps, or from before the record last
+  turned on, answers `truncated: true`. The record keeps the `seq` it had when
+  it last turned on (a new `began_at_seq`). While any subscription exists its
+  connection does, so the record stays on; the check covers a cursor carried
+  over from an earlier connection.
+- **The lock.** The sender takes a target's lock per delivery, not per pass,
+  so Edit, Remove, subscribe and unsubscribe wait at most one call (10 s).
+  Subscribe and unsubscribe wait at most 5 s for it, then answer `-32603`
+  "busy, try again". The callback check runs before the lock. The whole
+  subscribe stays under 20 s, inside the relay's 30.
+- **"Can't read the grant" isn't "removed".** The sender reads the
+  connection row itself: removed or gone ends its subscriptions; a read that
+  fails leaves the delivery waiting (no attempt spent).
+- **Identity uses the arguments as sent.** The id comes from the canonical
+  JSON of the original arguments (`{"project":"Website"}` stays itself); the
+  resolved project id is stored apart as the filter. A rename doesn't break
+  unsubscribe, and the name and id forms are two subscriptions, as the spec's
+  canonical comparison has it.
+- **Expiry doesn't eat retries.** A refresh after expiry drops the
+  subscription's waiting deliveries (none was in flight) and looks again from
+  its watermark, so they're queued fresh.
+- **Secrets have a full lifecycle.** A new secret goes in a new entry; one
+  write switches `signing_secret` and moves the old name to
+  `previous_signing_secret` until an hour later; a second rotation in that
+  hour removes the older previous entry first. When the hour passes, the
+  loop clears the column, then removes the entry. Remove clears every entry
+  a row names. `ServerSecretStore` gains `list(prefix)`, and a start removes
+  `assistant-alert-*` entries no row names (crash leftovers, from step 4
+  too).
+- **Wire checks.** An `Mcp-Name` header, when sent, must match the event name
+  (HTTP 400, `-32020`); absent is fine. Unknown event `-32023`; no grant or a
+  project the grant doesn't reach `-32024`; a malformed URL, secret or
+  arguments `-32602`; a refused address and a failed check `-32015`
+  (OpenAI's code; the SEP now says `-32027`).
+- **Settings tells rows apart.** A subscription row shows its callback's host
+  and path (the full address on hover), its event and its project argument,
+  so two subscriptions to one host differ. Remove stays its only action.
+
+Two policy calls, decided:
+
+- **A subscription belongs to its connection.** A re-sign-in makes a new
+  connection and removes the old one with its subscriptions; the client's
+  next subscribe (with the cursor it saved) starts over under the new one.
+  Tested.
+- **Remove in Settings is not a veto.** The assistant may subscribe again
+  while it's connected; Settings says so, and removing the assistant is the
+  way to stop it for good.
+
+Tests added to the list: the record pruned under a subscription, a cursor
+from before the record last turned on, filtered paging, waiting deliveries
+across expiry, a subscribe while a slow send holds the lock, two identical
+subscribes at once, a grant that can't be read, a renamed project, a rotation
+cut by a crash, Remove with two secrets, step 4's 410 still turning an
+address off, and both kinds' envelope `timestamp`.
+
+### Build notes: step 5 (Nov 2)
+
+- **Where things live.** `assistantMcpEvents.ts` reads the wire (the catalog,
+  argument and secret checks, the project against the live grant);
+  `AssistantAlertsLive` owns subscriptions, the callback check and sending;
+  `AssistantMcp.ts` only routes and checks `Mcp-Name`. A subscription's
+  `target_id` is its `sub_…` id, so identical subscribes meet on one lock.
+- **A refresh that restarts deletes its waiting rows.** `queue` keeps an
+  existing row (`ON CONFLICT DO NOTHING`), so a row only marked `dropped` would
+  never be queued again and the "queued fresh" promise would quietly fail. A
+  row already final stays and is never sent again; one left `in_flight` ends
+  `failed`, since it may have arrived.
+- **`nextDueAt` skips expired subscriptions.** Otherwise a waiting row on an
+  expired one would wake the loop every 250 ms.
+- **The check cache drops its oldest** past 200 instead of answering `-32025`:
+  the worst case is one more check, which the per-connection limit still
+  bounds, and a full cache shouldn't lock out an unrelated assistant.
+- **Removed connections go within a pass, not only at a send.** A quiet
+  subscription would otherwise stay in Settings until an event came.
+- **HTTP status of errors.** Refusals are JSON-RPC errors over HTTP 200, so a
+  client that treats other statuses as transport failures still reads the
+  code. Only `-32602` on the modern generation (as `tools/call` does) and
+  `-32020` are 400. Guess, until the live test shows what ChatGPT does.
+- **`maxAgeMs`** is read from the subscribe params when sent; OpenAI's guide
+  doesn't name it, the SEP does.
+- **Effect's semaphore is fair now.** 4.1.2 queues a new take behind waiters,
+  so per-delivery locking needs no extra guard. Tried one, removed it: the
+  test passes with or without, and fails with a per-pass lock.
+- **Sol's diff review (Nov 2), all fixed:** a project lookup that failed read as
+  "not General Chats", so now it holds the event without spending an attempt;
+  the sweep's guard for targets being written counts writers, so one finishing
+  doesn't uncover another; a lock lives only while someone holds or waits for
+  it, so a queued subscribe and a later one can't end up on two locks; and a
+  client's cursor equal to where the record turned on says `truncated`, since
+  it can't tell which side of the gap it's from. That one can over-report once
+  (a cursor saved just after turning on), which is the honest direction. A
+  subscription's own watermark doesn't, because it kept the record on. One
+  corner stays: a record that has never recorded anything has nothing to tell
+  apart, so a cursor of 0 isn't flagged.
+- **Sol's second pass (Nov 2), both fixed:** a foreign cursor started at the
+  newest event, which skipped everything still kept (the plan says the oldest
+  kept, under the replay limits); and the replay limit counted events the
+  subscriber can't receive, so 101 events in another project could crowd out
+  one in its own. The limit now counts only the projects its grant reaches,
+  without General Chats.
+- **ChatGPT's client document (live test, Nov 2).** `chatgpt.com/oauth/client.json`
+  sets `token_endpoint_auth_method: private_key_jwt`, but lists `none` under
+  `token_endpoint_auth_methods_supported`. The singular field is only a
+  preference, and ChatGPT picks from what both sides support, so the relay now
+  accepts a client that lists `none`. It refused ChatGPT before the code step.
+- **Live test (Nov 2), real ChatGPT over the production relay, against a
+  throwaway computer with a stand-in agent:** sign-in through the code page; the
+  events on the plugin page; a dot and a Work chat each subscribing (the callback
+  check passed); the row in Settings; deliveries answered 2xx on the first try;
+  both replying on their own with the right project and link; a dot's "stop
+  monitoring" reaching `events/unsubscribe`, with the row and its key gone in
+  under 20 s. Four things we learned:
+  - **Runs start well after the 2xx.** Replies came roughly 10 to 25 minutes
+    after delivery, for both the dot and Work chat. The guide says processing is
+    asynchronous and promises no delay; the task showed no run in the meantime,
+    which looks like a failure until it isn't. This may differ once a plugin is
+    out of development status.
+  - **Three alerts gave a dot two replies.** The guide allows grouping events
+    into one run. We can't see which happened; every delivery was answered 2xx.
+  - **ChatGPT makes one subscription per event** with its own callback URL, and
+    asked for a lifetime that came out at our 7-day ceiling.
+  - **`Allow` showed "ChatGPT"**, correctly, from the sign-in host.
+
+  Not exercised live: `thread.needs_you`, `thread.failed`, a refresh or expiry,
+  a key change, and Remove in Settings against a live client.

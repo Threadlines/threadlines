@@ -158,6 +158,8 @@ To connect one, paste {place:connections.assistantAddress} into the assistant as
 
 With {place:connections.assistantAlerts}, this computer wakes an assistant instead of waiting for it to check in: it sends a signed alert to a web address when a thread needs you, finishes or fails. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote. For a Grok routine, add its webhook URL with its key (\`Bearer crsr_…\`) as the Authorization header, so the routine runs and checks in to see what happened. Skip threads I'm looking at, on by default, holds back alerts for threads you have open, since the routine runs a model for each one.
 
+Dots and ChatGPT Work chats can subscribe to those alerts themselves (MCP Events), for one kind of alert and every project they can see or just one. A subscription shows in that same list with the assistant that added it and when it must be renewed by. The assistant renews it on its own, at most a week at a time. Its only action is Remove, and the assistant can subscribe again while it's connected; remove the assistant to stop it for good. None of these alerts cover General Chats.
+
 While this computer is asleep or Threadlines is closed, assistants are told it's offline. The relay passes their requests to this computer and can read them, unlike a phone's, which are end-to-end encrypted.`,
   },
   {

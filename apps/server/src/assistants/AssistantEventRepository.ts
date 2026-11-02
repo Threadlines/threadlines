@@ -44,6 +44,8 @@ export interface AssistantEventState {
   readonly prunedThroughSeq: number;
   /** When the record last turned on. */
   readonly startedAt: string | null;
+  /** The last `seq` when the record last turned on: a cursor below it may have missed what happened while it was off. */
+  readonly beganAtSeq: number;
 }
 
 export const SettlingAssistantEventRow = Schema.Struct({
@@ -77,6 +79,7 @@ const StateRow = Schema.Struct({
   lastSeq: Schema.Number,
   prunedThroughSeq: Schema.Number,
   startedAt: Schema.NullOr(Schema.String),
+  beganAtSeq: Schema.Number,
 });
 
 /** What making a settling row final came to (AssistantEventRepositoryShape.record). */
@@ -168,6 +171,19 @@ export interface AssistantEventRepositoryShape {
     readonly names?: ReadonlyArray<AssistantEventName>;
     readonly projectIds?: ReadonlyArray<ProjectId>;
   }) => Effect.Effect<ReadonlyArray<AssistantEvent>, AssistantEventRepositoryError>;
+  /** The highest `seq` recorded before `before` (0: none). */
+  readonly lastSeqRecordedBefore: (
+    before: string,
+  ) => Effect.Effect<number, AssistantEventRepositoryError>;
+  /**
+   * The `seq` just before the newest `count` recorded events of these names
+   * and projects; null when there are no more than `count`.
+   */
+  readonly seqBeforeNewest: (input: {
+    readonly count: number;
+    readonly names?: ReadonlyArray<AssistantEventName>;
+    readonly projectIds?: ReadonlyArray<ProjectId>;
+  }) => Effect.Effect<number | null, AssistantEventRepositoryError>;
   /** The recorded event with this `seq`, with its subject key; none once pruned. */
   readonly recorded: (
     seq: number,
@@ -208,7 +224,8 @@ const make = Effect.gen(function* () {
 
   const readState = sql`
     SELECT record_id AS "recordId", event_sequence AS "cursor", last_seq AS "lastSeq",
-      pruned_through_seq AS "prunedThroughSeq", started_at AS "startedAt"
+      pruned_through_seq AS "prunedThroughSeq", started_at AS "startedAt",
+      began_at_seq AS "beganAtSeq"
     FROM assistant_event_state WHERE id = 1
   `.pipe(
     Effect.flatMap(decodeState),
@@ -242,7 +259,8 @@ const make = Effect.gen(function* () {
       Effect.andThen(
         sql`
           UPDATE assistant_event_state
-          SET event_sequence = ${input.cursor}, started_at = ${input.startedAt}
+          SET event_sequence = ${input.cursor}, started_at = ${input.startedAt},
+            began_at_seq = last_seq
           WHERE id = 1
         `,
       ),
@@ -474,6 +492,28 @@ const make = Effect.gen(function* () {
           LIMIT ${input.limit}
         `.pipe(Effect.flatMap(decodeRecorded), wrap("since"));
 
+  const lastSeqRecordedBefore: AssistantEventRepositoryShape["lastSeqRecordedBefore"] = (before) =>
+    sql<{ readonly seq: number | null }>`
+      SELECT MAX(seq) AS seq FROM assistant_events
+      WHERE state = 'recorded' AND recorded_at < ${before}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.seq ?? 0),
+      wrap("lastSeqRecordedBefore"),
+    );
+
+  const seqBeforeNewest: AssistantEventRepositoryShape["seqBeforeNewest"] = (input) =>
+    sql<{ readonly seq: number }>`
+      SELECT seq FROM assistant_events
+      WHERE state = 'recorded'
+        ${input.names !== undefined ? sql`AND name IN ${sql.in(input.names)}` : sql``}
+        ${input.projectIds !== undefined ? sql`AND project_id IN ${sql.in(input.projectIds)}` : sql``}
+      ORDER BY seq DESC
+      LIMIT 1 OFFSET ${input.count}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.seq ?? null),
+      wrap("seqBeforeNewest"),
+    );
+
   const decodeRecordedWithKey = Schema.decodeUnknownEffect(
     Schema.Array(Schema.Struct({ ...RecordedRow.fields, subjectKey: Schema.String })),
   );
@@ -540,6 +580,8 @@ const make = Effect.gen(function* () {
     record,
     recordPlan,
     since,
+    lastSeqRecordedBefore,
+    seqBeforeNewest,
     recorded,
     standingScheduleKeys,
     prune,

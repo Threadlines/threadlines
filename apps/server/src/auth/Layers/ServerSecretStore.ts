@@ -141,11 +141,26 @@ export const makeServerSecretStore = Effect.gen(function* () {
       ),
     );
 
+  const list: ServerSecretStoreShape["list"] = (prefix) =>
+    fileSystem.readDirectory(serverConfig.secretsDir).pipe(
+      Effect.map((entries) =>
+        entries.flatMap((entry) => {
+          if (!entry.endsWith(".bin")) return [];
+          const name = entry.slice(0, -".bin".length);
+          return name.startsWith(prefix) ? [name] : [];
+        }),
+      ),
+      Effect.mapError(
+        (cause) => new SecretStoreError({ message: "Failed to list secrets.", cause }),
+      ),
+    );
+
   return {
     get,
     set,
     getOrCreateRandom,
     remove,
+    list,
   } satisfies ServerSecretStoreShape;
 });
 

@@ -15,6 +15,8 @@ export interface ServerSecretStoreShape {
     bytes: number,
   ) => Effect.Effect<Uint8Array, SecretStoreError>;
   readonly remove: (name: string) => Effect.Effect<void, SecretStoreError>;
+  /** The names of the entries that start with `prefix`. */
+  readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<string>, SecretStoreError>;
 }
 
 export class ServerSecretStore extends Context.Service<ServerSecretStore, ServerSecretStoreShape>()(

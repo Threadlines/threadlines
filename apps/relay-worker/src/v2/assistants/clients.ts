@@ -381,8 +381,15 @@ async function resolveMetadataDocument(
   if (metadata.client_id !== clientId) {
     return refused("This assistant's client details are for a different client.");
   }
-  const authMethod = metadata.token_endpoint_auth_method;
-  if (authMethod !== undefined && authMethod !== "none") {
+  // The singular field is only a preference: ChatGPT's says `private_key_jwt`,
+  // and it signs in as a public client with any server that lists just `none`,
+  // as ours does (discovery.ts).
+  const preferred = metadata.token_endpoint_auth_method;
+  const supported = metadata.token_endpoint_auth_methods_supported;
+  const canBePublic =
+    preferred === "none" ||
+    (Array.isArray(supported) ? supported.includes("none") : preferred === undefined);
+  if (!canBePublic) {
     return refused("This assistant signs in a way Threadlines doesn't support.");
   }
   const listed = Array.isArray(metadata.redirect_uris)

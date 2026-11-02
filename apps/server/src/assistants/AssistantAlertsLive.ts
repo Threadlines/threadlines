@@ -1,32 +1,40 @@
 /**
  * Sends assistants' alerts to web addresses (AssistantAlerts.ts). One loop
  * wakes when the record records an event, when a target changes and when a
- * retry comes due. For each target that's on, under the target's lock (which
- * Edit, Turn off and Remove take too):
+ * retry comes due. For each target that's on, taking the target's lock for
+ * each step (Edit, Turn off, Remove, subscribe and unsubscribe take it too,
+ * so they wait at most one call):
  *
  * 1. Every recorded event of its kinds and projects past where it looked
  *    gets a pending delivery row.
  * 2. Due rows go out oldest first, one at a time. Right before each, the
  *    event is read again: a needs-you that no longer needs the user (judged
  *    live, as phones are), an event the target no longer takes (Edit changed
- *    its kinds or projects), or any event on a thread someone is looking at
- *    (with "Skip threads I'm looking at"), is dropped. The attempt is
- *    written before the call, so one cut off by a crash is never repeated.
+ *    its kinds or projects), an event in General Chats (no assistant's alerts
+ *    cover them, as `inbox` doesn't), or any event on a thread someone is
+ *    looking at (with "Skip threads I'm looking at"), is dropped. The attempt
+ *    is written before the call, so one cut off by a crash is never repeated.
  * 3. The answer settles the row, and the target's watermark moves with it.
  *
  * Tried again (`retryDelayMs`, `Retry-After` honored, at most 6 attempts and
  * 24 hours from when it was queued): a call that plainly never arrived, and
  * answers 401, 403, 408, 425, 429 and 5xx. 410 turns the target off for good
  * (`gone`). Anything else, and a call that may have arrived, ends it.
+ *
+ * A subscription (an assistant's, through MCP Events) differs in that past
+ * its expiry nothing is queued or sent until it's refreshed; before each send
+ * its connection is read again, and a removed one ends it, while events out
+ * of a narrowed grant are dropped; a 410 ends only that delivery.
  */
 // @effect-diagnostics nodeBuiltinImport:off
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   type AssistantAlertKind,
   type AssistantAlertTarget,
   AssistantAlertTargetId,
   type AssistantAlertTargetTestResult,
+  type OutsideAgentConnectionId,
   OutsideAgentError,
   type ProjectId,
 } from "@threadlines/contracts";
@@ -53,6 +61,11 @@ import {
 import { READ_RETRY_MS } from "../pushAlerts/alertChecks.ts";
 import { PushAlerts } from "../pushAlerts/PushAlerts.ts";
 import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from "../pushAlerts/pushAlertRules.ts";
+import { connectionNameOf } from "../outsideAgents/connectionShapes.ts";
+import {
+  OutsideAgentConnectionRepository,
+  OutsideAgentConnectionRepositoryLive,
+} from "../outsideAgents/OutsideAgentConnectionRepository.ts";
 import {
   type AlertDeliveryRow,
   AssistantAlertRepository,
@@ -61,12 +74,21 @@ import {
   type DeliveryOutcome,
   type TargetNote,
 } from "./AssistantAlertRepository.ts";
-import { AssistantAlerts, type AssistantAlertsShape } from "./AssistantAlerts.ts";
+import {
+  AssistantAlerts,
+  type AssistantAlertsShape,
+  AssistantSubscriptionError,
+  type AssistantSubscribeInput,
+  type AssistantSubscriptionKey,
+  type CallbackRefusal,
+  SUBSCRIBE_ERROR,
+} from "./AssistantAlerts.ts";
 import {
   type AssistantEvent,
   type AssistantEventName,
   assistantEventNameOf,
   AssistantEvents,
+  decodeEventCursor,
   encodeEventCursor,
 } from "./AssistantEvents.ts";
 import { hostedAppOrigin, hostedThreadLink } from "./hostedAppLinks.ts";
@@ -104,6 +126,31 @@ const TARGET_CONCURRENCY = 4;
 const IDLE_WAKE_MS = 30_000;
 const AUTHORIZATION_MAX_LENGTH = 4096;
 
+/** Subscriptions per connection, and in all. */
+const MAX_SUBSCRIPTIONS_PER_CONNECTION = 20;
+const MAX_SUBSCRIPTIONS = 50;
+const MIN_SUBSCRIPTION_TTL_MS = 60 * 60_000;
+const MAX_SUBSCRIPTION_TTL_MS = 7 * 24 * 60 * 60_000;
+/** A subscription past its expiry stays this long, to be refreshed, before it's removed. */
+const KEEP_EXPIRED_MS = 7 * 24 * 60 * 60_000;
+/** A key a refresh replaced keeps signing alongside the new one for this long. */
+const PREVIOUS_KEY_MS = 60 * 60_000;
+/** A resume reaches back at most this far and this many events: each may start a paid run. */
+const REPLAY_WINDOW_MS = 24 * 60 * 60_000;
+const REPLAY_LIMIT = 100;
+/** Callback checks per connection per hour, and how long a passed check counts. */
+const CHECKS_PER_HOUR = 10;
+const CHECK_VALID_MS = 24 * 60 * 60_000;
+const CHECK_CACHE_SIZE = 200;
+/**
+ * A subscribe's waits, which with the 10 s of the check itself stay within 20
+ * s (the relay gives up at 30): for another check by this caller, for the
+ * address's lookup, and for the target's lock.
+ */
+const CHECK_SLOT_WAIT_MS = 2_000;
+const CHECK_LOOKUP_WAIT_MS = 3_000;
+const LOCK_WAIT_MS = 5_000;
+
 const KIND_ORDER: ReadonlyArray<AssistantAlertKind> = ["needs_you", "finished", "failed"];
 const KIND_OF_NAME: Record<AssistantEventName, AssistantAlertKind> = {
   "thread.needs_you": "needs_you",
@@ -111,14 +158,59 @@ const KIND_OF_NAME: Record<AssistantEventName, AssistantAlertKind> = {
   "thread.failed": "failed",
 };
 
-const signingSecretName = (targetId: string) => `assistant-alert-${targetId}-signing`;
+const SECRET_PREFIX = "assistant-alert-";
+const signingSecretName = (targetId: string) => `${SECRET_PREFIX}${targetId}-signing`;
+/** A subscription's key: a new entry per key, which the row names (AssistantAlertRepository). */
+const newSubscriptionKeyName = (targetId: string) =>
+  `${SECRET_PREFIX}${targetId}-signing-${randomUUID().slice(0, 8)}`;
 /** A new entry for every value: the row names the one in use (AssistantAlertRepository). */
 const newAuthorizationName = (targetId: string) =>
-  `assistant-alert-${targetId}-authorization-${randomUUID().slice(0, 8)}`;
+  `${SECRET_PREFIX}${targetId}-authorization-${randomUUID().slice(0, 8)}`;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const failure = (detail: string) => new OutsideAgentError({ detail });
 const NO_NOTE: TargetNote = { type: "none" };
+
+const subscribeFailure = (code: number, message: string, reason?: CallbackRefusal) =>
+  new AssistantSubscriptionError({ code, message, ...(reason !== undefined ? { reason } : {}) });
+const subscribeBusy = () =>
+  subscribeFailure(SUBSCRIBE_ERROR.internal, "Threadlines is busy with that one. Try again.");
+/** A failure in storage reads as one to retry; a refusal keeps its own words. */
+const subscribeStored = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      error instanceof AssistantSubscriptionError
+        ? error
+        : subscribeFailure(SUBSCRIBE_ERROR.internal, "Threadlines couldn't save that. Try again."),
+    ),
+  );
+
+/** `sub_` and 32 characters of a hash of what identifies it: a repeat finds the same one. */
+export const subscriptionIdOf = (key: AssistantSubscriptionKey) =>
+  `sub_${createHash("sha256")
+    .update(JSON.stringify([key.connectionId, key.url, key.name, key.argumentsJson]))
+    .digest("base64url")
+    .slice(0, 32)}`;
+
+/** Whether an answer to a callback check gives the same challenge back. */
+const answersChallenge = (body: string, challenge: string) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  const given =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as { readonly challenge?: unknown }).challenge
+      : undefined;
+  if (typeof given !== "string") return false;
+  const [a, b] = [Buffer.from(given), Buffer.from(challenge)];
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+const isExpired = (row: AlertTargetRow, nowIso: string) =>
+  row.expiresAt !== null && row.expiresAt <= nowIso;
 
 /** What an answer from the receiver means for the delivery. */
 type AnswerVerdict =
@@ -162,7 +254,10 @@ const checkAuthorization = (value: string) =>
         )
       : Effect.succeed(value);
 
-const toContract = (row: AlertTargetRow): AssistantAlertTarget | null =>
+const toContract = (
+  row: AlertTargetRow,
+  nameOfConnection: (connectionId: OutsideAgentConnectionId) => string,
+): AssistantAlertTarget | null =>
   row.state === "deleting"
     ? null
     : {
@@ -178,11 +273,17 @@ const toContract = (row: AlertTargetRow): AssistantAlertTarget | null =>
         lastError: row.lastError?.trim() || null,
         retrying: row.retrying,
         createdAt: row.createdAt,
+        addedBy:
+          row.connectionId === null
+            ? null
+            : { connectionId: row.connectionId, name: nameOfConnection(row.connectionId) },
+        expiresAt: row.expiresAt,
       };
 
 const make = (transport: AlertTransport) =>
   Effect.gen(function* () {
     const repo = yield* AssistantAlertRepository;
+    const connections = yield* OutsideAgentConnectionRepository;
     const record = yield* AssistantEvents;
     const pushAlerts = yield* Effect.serviceOption(PushAlerts);
     const secrets = yield* ServerSecretStore;
@@ -190,15 +291,67 @@ const make = (transport: AlertTransport) =>
     const appOrigin = hostedAppOrigin(packageJson.version);
     const changed = yield* PubSub.sliding<void>(1);
     const bell = yield* Queue.sliding<void>(1);
-    /** One per target: sends, Edit, Turn off and Remove take it. */
-    const locks = new Map<string, Semaphore.Semaphore>();
-    const lockOf = (targetId: string) => {
-      const existing = locks.get(targetId);
-      if (existing !== undefined) return existing;
-      const made = Semaphore.makeUnsafe(1);
-      locks.set(targetId, made);
-      return made;
-    };
+    /**
+     * One lock per key, there only while someone holds it or waits for it, so
+     * no two can ever have different locks for one key. Per target: sends,
+     * Edit, Turn off, Remove, subscribe and unsubscribe. Per connection: a
+     * callback check.
+     */
+    const locks = new Map<string, { readonly permit: Semaphore.Semaphore; users: number }>();
+    const usingLock = <A, E, R>(
+      key: string,
+      use: (permit: Semaphore.Semaphore) => Effect.Effect<A, E, R>,
+    ) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const entry = locks.get(key) ?? { permit: Semaphore.makeUnsafe(1), users: 0 };
+          entry.users += 1;
+          locks.set(key, entry);
+          return entry;
+        }),
+        (entry) => use(entry.permit),
+        (entry) =>
+          Effect.sync(() => {
+            entry.users -= 1;
+            if (entry.users === 0) locks.delete(key);
+          }),
+      );
+    const locked =
+      (targetId: string) =>
+      <A, E, R>(use: Effect.Effect<A, E, R>) =>
+        usingLock(targetId, (permit) => permit.withPermits(1)(use));
+    /** Holds `lock` while `use` runs, or `onBusy` when it isn't free within `waitMs`. */
+    const withinWait = <A, E, R, B>(
+      lock: Semaphore.Semaphore,
+      waitMs: number,
+      onBusy: () => B,
+      use: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const got = yield* lock.takeScoped(1).pipe(Effect.timeoutOption(Duration.millis(waitMs)));
+          if (Option.isNone(got)) return yield* Effect.fail(onBusy());
+          return yield* use;
+        }),
+      );
+    /** The target's lock for a subscribe or unsubscribe, which can't wait long. */
+    const lockedWithin = <A, E, R>(targetId: string, use: Effect.Effect<A, E, R>) =>
+      usingLock(targetId, (permit) => withinWait(permit, LOCK_WAIT_MS, subscribeBusy, use));
+    /** Targets whose secret entries are being written, by how many at once: the sweep leaves them alone. */
+    const writingSecrets = new Map<string, number>();
+    const whileWritingSecrets = <A, E, R>(targetId: string, use: Effect.Effect<A, E, R>) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          writingSecrets.set(targetId, (writingSecrets.get(targetId) ?? 0) + 1);
+        }),
+        () => use,
+        () =>
+          Effect.sync(() => {
+            const left = (writingSecrets.get(targetId) ?? 1) - 1;
+            if (left === 0) writingSecrets.delete(targetId);
+            else writingSecrets.set(targetId, left);
+          }),
+      );
 
     const notify = PubSub.publish(changed, undefined).pipe(
       Effect.andThen(Queue.offer(bell, undefined)),
@@ -212,23 +365,34 @@ const make = (transport: AlertTransport) =>
     const isViewed = (threadId: AssistantEvent["threadId"]) =>
       Option.isSome(pushAlerts) ? pushAlerts.value.isViewed(threadId) : Effect.succeed(false);
 
-    const removeSecrets = (targetId: string, authorizationSecret: string | null) =>
-      Effect.all([
-        secrets.remove(signingSecretName(targetId)),
-        ...(authorizationSecret !== null ? [secrets.remove(authorizationSecret)] : []),
-      ]).pipe(Effect.asVoid);
+    /** Every secret entry a target's row names. */
+    const secretEntriesOf = (row: AlertTargetRow) =>
+      [
+        signingSecretName(row.targetId),
+        row.signingSecret,
+        row.previousSigningSecret,
+        row.authorizationSecret,
+      ].filter((name) => name !== null);
+
+    const removeSecrets = (names: ReadonlyArray<string>) =>
+      Effect.forEach(names, (name) => secrets.remove(name), { discard: true });
 
     // ----- the list Settings shows ----------------------------------------------
 
-    const list = repo.list.pipe(
-      Effect.map((rows) =>
-        rows.flatMap((row) => {
-          const target = toContract(row);
-          return target === null ? [] : [target];
-        }),
-      ),
-      stored("read the alert addresses"),
-    );
+    const list = Effect.gen(function* () {
+      const rows = yield* repo.list;
+      const names = new Map<string, string>();
+      // Only subscriptions name a connection: most of the time there's no read to do.
+      if (rows.some((row) => row.connectionId !== null)) {
+        for (const connection of yield* connections.listLive) {
+          names.set(connection.connectionId, connectionNameOf(connection));
+        }
+      }
+      return rows.flatMap((row) => {
+        const target = toContract(row, (id) => names.get(id) ?? "An assistant");
+        return target === null ? [] : [target];
+      });
+    }).pipe(stored("read the alert addresses"));
 
     // Subscribes before the first read, so a change can't fall between the two.
     const targets: AssistantAlertsShape["targets"] = Stream.unwrap(
@@ -275,7 +439,13 @@ const make = (transport: AlertTransport) =>
           return yield* Effect.fail(failure("That address was removed."));
         }
         return yield* use(found.value);
-      }).pipe(lockOf(targetId).withPermits(1));
+      }).pipe(locked(targetId));
+
+    /** A subscription's only action is Remove: the rest are its assistant's. */
+    const refuseSubscription = (row: AlertTargetRow) =>
+      row.kind === "subscription"
+        ? Effect.fail(failure("An assistant's subscription can only be removed."))
+        : Effect.void;
 
     const create: AssistantAlertsShape["create"] = (input) =>
       Effect.gen(function* () {
@@ -283,7 +453,10 @@ const make = (transport: AlertTransport) =>
         const authorization =
           input.authorization === null ? null : yield* checkAuthorization(input.authorization);
         const existing = yield* repo.list.pipe(stored("read the alert addresses"));
-        if (existing.filter((row) => row.state !== "deleting").length >= MAX_TARGETS) {
+        if (
+          existing.filter((row) => row.kind === "webhook" && row.state !== "deleting").length >=
+          MAX_TARGETS
+        ) {
           return yield* Effect.fail(
             failure(`Threadlines sends alerts to at most ${MAX_TARGETS} addresses.`),
           );
@@ -292,7 +465,7 @@ const make = (transport: AlertTransport) =>
         const authorizationSecret = authorization === null ? null : newAuthorizationName(targetId);
         const now = iso(yield* Clock.currentTimeMillis);
         // Secrets first: a target never stands without its signing secret.
-        yield* Effect.gen(function* () {
+        const created = Effect.gen(function* () {
           yield* secrets.set(signingSecretName(targetId), randomBytes(WEBHOOK_SECRET_BYTES));
           if (authorization !== null && authorizationSecret !== null) {
             yield* secrets.set(authorizationSecret, Buffer.from(authorization, "utf8"));
@@ -310,9 +483,15 @@ const make = (transport: AlertTransport) =>
             }),
           );
         }).pipe(
-          Effect.onError(() => removeSecrets(targetId, authorizationSecret).pipe(Effect.ignore)),
+          Effect.onError(() =>
+            removeSecrets([
+              signingSecretName(targetId),
+              ...(authorizationSecret !== null ? [authorizationSecret] : []),
+            ]).pipe(Effect.ignore),
+          ),
           stored("save the address"),
         );
+        yield* whileWritingSecrets(targetId, created);
         yield* notify;
         return { targetId };
       });
@@ -326,6 +505,7 @@ const make = (transport: AlertTransport) =>
             : null;
         yield* withTarget(input.targetId, (row) =>
           Effect.gen(function* () {
+            yield* refuseSubscription(row);
             const now = iso(yield* Clock.currentTimeMillis);
             // A new value goes in a new entry, which the row's one write
             // switches to with the address: a failure on the way leaves the
@@ -367,7 +547,7 @@ const make = (transport: AlertTransport) =>
             if (credentialsChanged && row.authorizationSecret !== null) {
               yield* secrets.remove(row.authorizationSecret).pipe(Effect.ignore);
             }
-          }),
+          }).pipe((edit) => whileWritingSecrets(input.targetId, edit)),
         );
         yield* notify;
       });
@@ -390,7 +570,9 @@ const make = (transport: AlertTransport) =>
           } else if (row.state !== "off") {
             yield* repo.setState({ targetId: row.targetId, state: "off", now });
           }
-        }).pipe(stored(input.on ? "turn the address on" : "turn the address off")),
+        }).pipe(stored(input.on ? "turn the address on" : "turn the address off"), (change) =>
+          Effect.andThen(refuseSubscription(row), change),
+        ),
       ).pipe(Effect.andThen(notify));
 
     /** Remove's steps, in an order a restart can finish: marked, secrets gone, rows gone. */
@@ -398,21 +580,14 @@ const make = (transport: AlertTransport) =>
       Effect.gen(function* () {
         const now = iso(yield* Clock.currentTimeMillis);
         yield* repo.setState({ targetId: row.targetId, state: "deleting", now });
-        yield* removeSecrets(row.targetId, row.authorizationSecret);
+        yield* removeSecrets(secretEntriesOf(row));
         yield* repo.delete(row.targetId);
       });
 
     const remove: AssistantAlertsShape["remove"] = (input) =>
       withTarget(input.targetId, (row) =>
         finishRemoving(row).pipe(stored("remove the address")),
-      ).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            locks.delete(input.targetId);
-          }),
-        ),
-        Effect.andThen(notify),
-      );
+      ).pipe(Effect.andThen(notify));
 
     const secret: AssistantAlertsShape["secret"] = (input) =>
       Effect.gen(function* () {
@@ -420,6 +595,7 @@ const make = (transport: AlertTransport) =>
         if (Option.isNone(found) || found.value.state === "deleting") {
           return yield* Effect.fail(failure("That address was removed."));
         }
+        yield* refuseSubscription(found.value);
         const bytes = yield* secrets
           .get(signingSecretName(input.targetId))
           .pipe(stored("read the signing secret"));
@@ -454,7 +630,7 @@ const make = (transport: AlertTransport) =>
         return {
           eventId: event.eventId,
           name: event.name,
-          timestamp: event.recordedAt,
+          timestamp: event.occurredAt,
           data: {
             kind: KIND_OF_NAME[event.name],
             reason: event.reason,
@@ -469,20 +645,37 @@ const make = (transport: AlertTransport) =>
         };
       });
 
-    /** The headers for one call: signed now, plus the Authorization the user set. */
+    /**
+     * The headers for one call: signed now, plus the Authorization the user
+     * set, or a subscription's id. A key being replaced signs too, until its
+     * hour is over.
+     */
     const headersFor = (row: AlertTargetRow, id: string, body: string) =>
       Effect.gen(function* () {
-        const signing = yield* secrets.get(signingSecretName(row.targetId));
+        const signing = yield* secrets.get(row.signingSecret ?? signingSecretName(row.targetId));
         if (signing === null) return null;
         const authorization =
           row.authorizationSecret !== null ? yield* secrets.get(row.authorizationSecret) : null;
         if (row.authorizationSecret !== null && authorization === null) return null;
-        const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const now = yield* Clock.currentTimeMillis;
+        const previous =
+          row.previousSigningSecret !== null &&
+          row.previousSigningUntil !== null &&
+          row.previousSigningUntil > iso(now)
+            ? yield* secrets.get(row.previousSigningSecret)
+            : null;
         return {
-          ...webhookHeaders({ secret: signing, id, timestamp, body }),
+          ...webhookHeaders({
+            secret: signing,
+            previousSecret: previous,
+            id,
+            timestamp: Math.floor(now / 1000),
+            body,
+          }),
           ...(authorization !== null
             ? { authorization: Buffer.from(authorization).toString("utf8") }
             : {}),
+          ...(row.subscriptionId !== null ? { "x-mcp-subscription-id": row.subscriptionId } : {}),
         };
       });
 
@@ -516,7 +709,20 @@ const make = (transport: AlertTransport) =>
         }
       });
 
-    /** One delivery, start to answer; "gone" when the receiver turned the target off. */
+    /** A subscription's connection as it is now; "unknown" when it couldn't be read. */
+    const connectionOf = (row: AlertTargetRow) =>
+      row.connectionId === null
+        ? Effect.succeed("removed" as const)
+        : connections.get(row.connectionId).pipe(
+            Effect.map((found) =>
+              Option.isSome(found) && found.value.removedAt === null
+                ? found.value
+                : ("removed" as const),
+            ),
+            Effect.orElseSucceed(() => "unknown" as const),
+          );
+
+    /** One delivery, start to answer; "gone" when the target ended with it. */
     const deliver = (row: AlertTargetRow, delivery: AlertDeliveryRow) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
@@ -547,9 +753,30 @@ const make = (transport: AlertTransport) =>
           yield* settle({ state: "pending", nextAttemptAt: iso(now + READ_RETRY_MS) });
           return "done" as const;
         }
-        // Edited since it was queued (other kinds or projects), or a thread
-        // someone is looking at: not for this address now.
+        if (row.kind === "subscription") {
+          const connection = yield* connectionOf(row);
+          // It couldn't be read, which doesn't mean it's gone: look again soon.
+          if (connection === "unknown") {
+            yield* settle({ state: "pending", nextAttemptAt: iso(now + READ_RETRY_MS) });
+            return "done" as const;
+          }
+          if (connection === "removed") {
+            yield* finishRemoving(row);
+            return "gone" as const;
+          }
+          // The grant was narrowed since it was queued.
+          if (
+            connection.projectIds !== null &&
+            !connection.projectIds.includes(current.event.projectId)
+          ) {
+            yield* settle({ state: "dropped" });
+            return "done" as const;
+          }
+        }
+        // Edited since it was queued (other kinds or projects), General Chats,
+        // or a thread someone is looking at: not for this address now.
         const wanted =
+          !current.generalChat &&
           row.names.includes(current.event.name) &&
           (row.projectIds === null || row.projectIds.includes(current.event.projectId));
         if (!wanted || (row.skipViewed && (yield* isViewed(current.event.threadId)))) {
@@ -592,6 +819,8 @@ const make = (transport: AlertTransport) =>
                 return "done" as const;
               case "gone":
                 yield* settle({ state: "dropped" });
+                // A subscription's 410 is about that one event.
+                if (row.kind === "subscription") return "done" as const;
                 yield* repo.setState({
                   targetId: row.targetId,
                   state: "gone",
@@ -609,31 +838,78 @@ const make = (transport: AlertTransport) =>
         }
       });
 
-    /** Queues and sends for one target under its lock; true when anything moved. */
-    const handleTarget = (targetId: AssistantAlertTargetId) =>
+    /**
+     * What a pass does first, before anything goes out: closes a call that
+     * lost its answer, retires a replaced key whose hour is over, ends a
+     * subscription whose connection is gone or that has been expired too
+     * long, and queues new events. Says whether to go on sending.
+     */
+    const prepareTarget = (targetId: AssistantAlertTargetId) =>
       Effect.gen(function* () {
         const before = yield* repo.get(targetId);
-        if (Option.isNone(before) || before.value.state !== "on") return false;
+        if (Option.isNone(before) || before.value.state !== "on") {
+          return { send: false, moved: false };
+        }
+        const row = before.value;
+        const now = yield* Clock.currentTimeMillis;
         // Under the lock nothing is mid-call: a row still in flight lost its answer (a failed write).
-        yield* repo.failInFlight({
-          targetId,
-          detail: LOST_ANSWER,
-          now: iso(yield* Clock.currentTimeMillis),
-        });
-        yield* queueFor(before.value);
+        yield* repo.failInFlight({ targetId, detail: LOST_ANSWER, now: iso(now) });
+        if (
+          row.previousSigningSecret !== null &&
+          (row.previousSigningUntil === null || row.previousSigningUntil <= iso(now))
+        ) {
+          // The row first: what's left if this stops here is an entry no row names, which a start sweeps.
+          yield* repo.clearPreviousSigning(targetId);
+          yield* secrets.remove(row.previousSigningSecret).pipe(Effect.ignore);
+        }
+        if (row.kind === "subscription") {
+          if ((yield* connectionOf(row)) === "removed") {
+            yield* finishRemoving(row);
+            return { send: false, moved: true };
+          }
+          if (isExpired(row, iso(now))) {
+            if (Date.parse(row.expiresAt ?? "") + KEEP_EXPIRED_MS <= now) {
+              yield* finishRemoving(row);
+              return { send: false, moved: true };
+            }
+            return { send: false, moved: false };
+          }
+        }
+        yield* queueFor(row);
+        return { send: true, moved: false };
+      }).pipe(locked(targetId));
+
+    /**
+     * One delivery in the target's lock, read again under it: Edit, Remove,
+     * or a refresh may have changed the target or ended the delivery while
+     * it waited.
+     */
+    const deliverTurn = (targetId: AssistantAlertTargetId, seq: number) =>
+      Effect.gen(function* () {
+        const found = yield* repo.get(targetId);
+        if (Option.isNone(found) || found.value.state !== "on") return "gone" as const;
+        if (isExpired(found.value, iso(yield* Clock.currentTimeMillis))) return "gone" as const;
+        const delivery = yield* repo.pending({ targetId, seq });
+        if (Option.isNone(delivery)) return "done" as const;
+        return yield* deliver(found.value, delivery.value);
+      }).pipe(locked(targetId));
+
+    /** Queues and sends for one target; true when anything moved. */
+    const handleTarget = (targetId: AssistantAlertTargetId) =>
+      Effect.gen(function* () {
+        const prepared = yield* prepareTarget(targetId);
+        if (!prepared.send) return prepared.moved;
         let moved = false;
         for (;;) {
-          const found = yield* repo.get(targetId);
-          if (Option.isNone(found) || found.value.state !== "on") return moved;
           const now = yield* Clock.currentTimeMillis;
           const due = yield* repo.due({ targetId, now: iso(now), limit: SEND_BATCH });
           for (const delivery of due) {
             moved = true;
-            if ((yield* deliver(found.value, delivery)) === "gone") return true;
+            if ((yield* deliverTurn(targetId, delivery.seq)) === "gone") return true;
           }
           if (due.length < SEND_BATCH) return moved;
         }
-      }).pipe(lockOf(targetId).withPermits(1));
+      });
 
     const logged =
       (what: string) =>
@@ -667,7 +943,9 @@ const make = (transport: AlertTransport) =>
           lastPrune = now;
           yield* repo.prune(iso(now - KEEP_DELIVERIES_MS)).pipe(logged("pruning"));
         }
-        const next = yield* repo.nextDueAt.pipe(Effect.orElseSucceed(() => Option.none<string>()));
+        const next = yield* repo
+          .nextDueAt(iso(now))
+          .pipe(Effect.orElseSucceed(() => Option.none<string>()));
         const waitMs = Option.match(next, {
           onNone: () => IDLE_WAKE_MS,
           onSome: (at) => Math.max(250, Math.min(IDLE_WAKE_MS, Date.parse(at) - now)),
@@ -681,6 +959,7 @@ const make = (transport: AlertTransport) =>
     const test: AssistantAlertsShape["test"] = (input) =>
       withTarget(input.targetId, (row) =>
         Effect.gen(function* () {
+          yield* refuseSubscription(row);
           const now = yield* Clock.currentTimeMillis;
           const id = `test_${randomUUID()}`;
           const body = JSON.stringify({
@@ -727,6 +1006,322 @@ const make = (transport: AlertTransport) =>
         }),
       ).pipe(Effect.tap(() => notify));
 
+    // ----- an assistant's subscriptions -------------------------------------------
+
+    /** Passed callback checks by (caller, address), oldest first. */
+    const checkedCallbacks = new Map<string, number>();
+    /** Each connection's recent checks. */
+    const recentChecks = new Map<string, ReadonlyArray<number>>();
+    /** One new subscription at a time, so the limits hold. */
+    const newSubscriptions = Semaphore.makeUnsafe(1);
+
+    const exhausted = (message: string) =>
+      subscribeFailure(SUBSCRIBE_ERROR.resourceExhausted, message);
+    const refused = (reason: CallbackRefusal, message: string) =>
+      subscribeFailure(SUBSCRIBE_ERROR.callbackEndpoint, message, reason);
+
+    /** The limits on subscriptions, for one that doesn't exist yet. */
+    const checkSubscriptionRoom = (connectionId: OutsideAgentConnectionId) =>
+      Effect.gen(function* () {
+        const subscriptions = (yield* repo.list.pipe(subscribeStored)).filter(
+          (row) => row.kind === "subscription" && row.state !== "deleting",
+        );
+        if (
+          subscriptions.filter((row) => row.connectionId === connectionId).length >=
+          MAX_SUBSCRIPTIONS_PER_CONNECTION
+        ) {
+          return yield* Effect.fail(
+            exhausted(
+              `An assistant can have at most ${MAX_SUBSCRIPTIONS_PER_CONNECTION} subscriptions.`,
+            ),
+          );
+        }
+        if (subscriptions.length >= MAX_SUBSCRIPTIONS) {
+          return yield* Effect.fail(
+            exhausted(`This computer takes at most ${MAX_SUBSCRIPTIONS} subscriptions.`),
+          );
+        }
+      });
+
+    /** The address's lookup, under the network rules, within its wait. */
+    const lookUpCallback = (url: string) =>
+      transport.check(url).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(CHECK_LOOKUP_WAIT_MS),
+          orElse: () => Effect.fail(refused("timeout", "Looking up the callback took too long.")),
+        }),
+        Effect.mapError((error) =>
+          error instanceof AssistantSubscriptionError
+            ? error
+            : error.reason === "unreachable"
+              ? refused("unreachable", "The callback's host couldn't be found.")
+              : refused(
+                  "blocked_address",
+                  "Threadlines doesn't send to that address: it needs https and a public host.",
+                ),
+        ),
+      );
+
+    /** The verification POST: signed with the new key, and the challenge must come back. */
+    const challengeCallback = (input: AssistantSubscribeInput, subscriptionId: string) =>
+      Effect.gen(function* () {
+        const challenge = randomBytes(32).toString("base64url");
+        const body = JSON.stringify({ type: "verification", challenge });
+        const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const result = yield* transport.post({
+          url: input.url,
+          headers: {
+            ...webhookHeaders({
+              secret: input.secret,
+              id: `verify_${randomUUID()}`,
+              timestamp,
+              body,
+            }),
+            "x-mcp-subscription-id": subscriptionId,
+          },
+          body,
+        });
+        switch (result.type) {
+          case "not_sent":
+            return yield* Effect.fail(refused("unreachable", "The callback couldn't be reached."));
+          case "unknown":
+            return yield* Effect.fail(refused("timeout", "The callback didn't answer in time."));
+          case "answered":
+            if (result.status < 200 || result.status >= 300) {
+              return yield* Effect.fail(
+                refused("bad_status", `The callback answered ${result.status}.`),
+              );
+            }
+            if (!answersChallenge(result.body, challenge)) {
+              return yield* Effect.fail(
+                refused("challenge_failed", "The callback didn't give the challenge back."),
+              );
+            }
+        }
+      });
+
+    /** The callback is checked unless this caller passed a check on it lately. */
+    const checkCallback = (input: AssistantSubscribeInput, subscriptionId: string) =>
+      Effect.gen(function* () {
+        const key = `${input.connectionId} ${input.url}`;
+        const passedLately = (now: number) => {
+          const at = checkedCallbacks.get(key);
+          return at !== undefined && now - at < CHECK_VALID_MS;
+        };
+        if (passedLately(yield* Clock.currentTimeMillis)) {
+          yield* lookUpCallback(input.url);
+          return;
+        }
+        const busy = () =>
+          exhausted("Another callback check from this assistant is under way. Try again shortly.");
+        const check = Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          // An identical subscribe may have just done it.
+          if (passedLately(now)) {
+            yield* lookUpCallback(input.url);
+            return;
+          }
+          const recent = (recentChecks.get(input.connectionId) ?? []).filter(
+            (at) => now - at < 60 * 60_000,
+          );
+          if (recent.length >= CHECKS_PER_HOUR) {
+            return yield* Effect.fail(
+              exhausted("Too many callback checks from this assistant. Try again later."),
+            );
+          }
+          recentChecks.set(input.connectionId, [...recent, now]);
+          yield* lookUpCallback(input.url);
+          yield* challengeCallback(input, subscriptionId);
+          checkedCallbacks.delete(key);
+          checkedCallbacks.set(key, yield* Clock.currentTimeMillis);
+          // The oldest goes: at worst that one is checked again.
+          if (checkedCallbacks.size > CHECK_CACHE_SIZE) {
+            for (const oldest of checkedCallbacks.keys()) {
+              checkedCallbacks.delete(oldest);
+              break;
+            }
+          }
+        });
+        yield* usingLock(`check ${input.connectionId}`, (slot) =>
+          withinWait(slot, CHECK_SLOT_WAIT_MS, busy, check),
+        );
+      });
+
+    /** Makes it, or refreshes it; run under the target's lock, with the record on. */
+    const saveSubscription = (
+      input: AssistantSubscribeInput,
+      subscriptionId: string,
+      recordId: string,
+    ) =>
+      Effect.gen(function* () {
+        const targetId = AssistantAlertTargetId.make(subscriptionId);
+        const now = yield* Clock.currentTimeMillis;
+        const ttl =
+          input.ttlMs === null || input.ttlMs === undefined
+            ? MAX_SUBSCRIPTION_TTL_MS
+            : Math.min(MAX_SUBSCRIPTION_TTL_MS, Math.max(MIN_SUBSCRIPTION_TTL_MS, input.ttlMs));
+        const expiresAt = iso(now + ttl);
+        const decoded = input.cursor === null ? null : decodeEventCursor(input.cursor);
+        const asked =
+          input.cursor === null
+            ? null
+            : decoded !== null && decoded.recordId === recordId
+              ? decoded.seq
+              : ("foreign" as const);
+        const resumeFilter = {
+          notBefore: iso(now - Math.min(REPLAY_WINDOW_MS, input.maxAgeMs ?? REPLAY_WINDOW_MS)),
+          limit: REPLAY_LIMIT,
+          names: [input.name],
+          projectIds: input.projectIds ?? input.reachableProjectIds,
+        };
+
+        // A Remove cut short by a restart that a start hasn't finished yet.
+        const found = yield* repo.findSubscription(subscriptionId);
+        if (Option.isSome(found) && found.value.state === "deleting") {
+          yield* finishRemoving(found.value);
+        }
+        if (Option.isNone(found) || found.value.state === "deleting") {
+          const resume = yield* record.resumeAfter({ after: asked, ...resumeFilter });
+          const signingSecret = newSubscriptionKeyName(subscriptionId);
+          yield* secrets.set(signingSecret, input.secret);
+          yield* Effect.gen(function* () {
+            yield* checkSubscriptionRoom(input.connectionId);
+            yield* repo.insertSubscription({
+              targetId,
+              subscriptionId,
+              connectionId: input.connectionId,
+              url: input.url,
+              name: input.name,
+              argumentsJson: input.argumentsJson,
+              projectIds: input.projectIds,
+              signingSecret,
+              startSeq: resume.start,
+              expiresAt,
+              now: iso(now),
+            });
+          }).pipe(
+            newSubscriptions.withPermits(1),
+            Effect.onError(() => secrets.remove(signingSecret).pipe(Effect.ignore)),
+          );
+          return {
+            id: subscriptionId,
+            refreshBefore: expiresAt,
+            cursor: encodeEventCursor(recordId, resume.start),
+            truncated: resume.truncated,
+          };
+        }
+
+        const row = found.value;
+        // The later of the two: what's at or below its watermark was acknowledged, judged
+        // no longer relevant, or may have arrived, and must not go out again.
+        const after = typeof asked === "number" ? Math.max(asked, row.watermark) : row.watermark;
+        const resume = yield* record.resumeAfter({
+          after,
+          ownWatermark: after === row.watermark,
+          ...resumeFilter,
+        });
+        // Past its expiry, what waited is queued fresh, so expiry doesn't use up its retries.
+        const restartAt =
+          isExpired(row, iso(now)) || resume.start > row.watermark ? resume.start : null;
+        const currentKey =
+          row.signingSecret === null ? null : yield* secrets.get(row.signingSecret);
+        const keyChanged =
+          currentKey === null ||
+          currentKey.length !== input.secret.length ||
+          !timingSafeEqual(currentKey, input.secret);
+        const nextKeyName = keyChanged ? newSubscriptionKeyName(subscriptionId) : null;
+        if (nextKeyName !== null) {
+          // A second change within the hour: only the newest old key keeps signing.
+          if (row.previousSigningSecret !== null) {
+            yield* secrets.remove(row.previousSigningSecret).pipe(Effect.ignore);
+          }
+          yield* secrets.set(nextKeyName, input.secret);
+        }
+        yield* repo
+          .refreshSubscription({
+            targetId,
+            projectIds: input.projectIds,
+            expiresAt,
+            ...(nextKeyName !== null
+              ? {
+                  signing: {
+                    secret: nextKeyName,
+                    previousSecret: row.signingSecret ?? signingSecretName(targetId),
+                    previousUntil: iso(now + PREVIOUS_KEY_MS),
+                  },
+                }
+              : {}),
+            restartAt,
+            now: iso(now),
+          })
+          .pipe(
+            Effect.tapError(() =>
+              nextKeyName !== null ? secrets.remove(nextKeyName).pipe(Effect.ignore) : Effect.void,
+            ),
+          );
+        return {
+          id: subscriptionId,
+          refreshBefore: expiresAt,
+          cursor: encodeEventCursor(recordId, restartAt ?? row.watermark),
+          truncated: resume.truncated,
+        };
+      });
+
+    const subscribe: AssistantAlertsShape["subscribe"] = (input) =>
+      Effect.gen(function* () {
+        const subscriptionId = subscriptionIdOf(input);
+        // The limits come before any lookup or call.
+        const existing = yield* repo.findSubscription(subscriptionId).pipe(subscribeStored);
+        if (Option.isNone(existing)) yield* checkSubscriptionRoom(input.connectionId);
+        yield* checkCallback(input, subscriptionId);
+        const saved = yield* whileWritingSecrets(
+          subscriptionId,
+          lockedWithin(
+            subscriptionId,
+            record
+              .keep((position) => saveSubscription(input, subscriptionId, position.recordId))
+              .pipe(subscribeStored),
+          ),
+        );
+        yield* notify;
+        return saved;
+      });
+
+    const unsubscribe: AssistantAlertsShape["unsubscribe"] = (input) =>
+      Effect.gen(function* () {
+        const subscriptionId = subscriptionIdOf(input);
+        yield* lockedWithin(
+          subscriptionId,
+          Effect.gen(function* () {
+            const found = yield* repo.findSubscription(subscriptionId);
+            if (Option.isSome(found)) yield* finishRemoving(found.value);
+          }).pipe(subscribeStored),
+        );
+        yield* notify;
+      });
+
+    /**
+     * Entries no row names: a crash between writing a new key and the row
+     * moving to it. Read the entries first, then the rows, so a target made
+     * in between is named or being written.
+     */
+    const sweepSecrets = Effect.gen(function* () {
+      const entries = yield* secrets.list(SECRET_PREFIX);
+      const rows = yield* repo.list;
+      const named = new Set(rows.flatMap(secretEntriesOf));
+      yield* Effect.forEach(
+        entries.filter(
+          (name) =>
+            !named.has(name) &&
+            ![...writingSecrets.keys()].some((targetId) =>
+              name.startsWith(`${SECRET_PREFIX}${targetId}-`),
+            ),
+        ),
+        (name) => secrets.remove(name),
+        { discard: true },
+      );
+    });
+
     // ----- starting ---------------------------------------------------------------
 
     const start: AssistantAlertsShape["start"] = () =>
@@ -751,6 +1346,7 @@ const make = (transport: AlertTransport) =>
             now,
           })
           .pipe(logged("closing interrupted sends"));
+        yield* sweepSecrets.pipe(logged("sweeping old secrets"));
         yield* Effect.forkScoped(
           Stream.runForEach(record.changes, () => Queue.offer(bell, undefined)),
         );
@@ -765,6 +1361,8 @@ const make = (transport: AlertTransport) =>
       remove,
       test,
       secret,
+      subscribe,
+      unsubscribe,
       start,
     });
   });
@@ -775,4 +1373,5 @@ export const makeAssistantAlertsLayer = (transport: AlertTransport) =>
 
 export const AssistantAlertsLive = makeAssistantAlertsLayer(outboundTransport).pipe(
   Layer.provide(AssistantAlertRepositoryLive),
+  Layer.provide(OutsideAgentConnectionRepositoryLive),
 );

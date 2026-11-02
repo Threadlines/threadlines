@@ -13,9 +13,9 @@
  * - **Before 2026-07-28** (an `initialize` lifecycle): `initialize`
  *   negotiates 2025-06-18 whatever the client offers, and returns an opaque
  *   `mcp-session-id`; any session id is taken afterwards and nothing is kept.
- *   `ping`, `tools/list`, `tools/call`.
+ *   `ping`, `tools/list`, `tools/call`, and MCP Events' methods.
  * - **2026-07-28** (the version in each request's `_meta`): `server/discover`,
- *   `tools/list` and `tools/call`. An unknown version gets
+ *   `tools/list`, `tools/call` and MCP Events' methods. An unknown version gets
  *   UnsupportedProtocolVersion (-32022), never for an `initialize`; the
  *   `MCP-Protocol-Version`, `Mcp-Method` and (for `tools/call`) `Mcp-Name`
  *   headers must match the body (HeaderMismatch, -32020); every result
@@ -25,6 +25,10 @@
  * `tools/list` shows what the caller's live grant allows, as the local door
  * does (`listOnlyGrantedTools`); each tool checks the grant again anyway. A
  * tool result too large for the relay's frame becomes a tool error saying so.
+ *
+ * MCP Events (`events/list`, `events/subscribe`, `events/unsubscribe`, with
+ * the `events` capability) answer the same way in both generations; an
+ * `Mcp-Name` header is optional there, but must match when it's sent.
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import { Buffer } from "node:buffer";
@@ -72,12 +76,34 @@ export interface AssistantMcpTool {
   readonly run: (caller: OutsideAgentCaller, parameters: unknown) => Effect.Effect<unknown>;
 }
 
+/** How an MCP Events method went: its result, or the JSON-RPC error to answer with. */
+export type AssistantMcpEventsAnswer =
+  | { readonly result: JsonObject }
+  | {
+      readonly error: { readonly code: number; readonly message: string; readonly data?: unknown };
+    };
+
+/** MCP Events behind this door (assistantMcpEvents.ts). */
+export interface AssistantMcpEvents {
+  /** The events the caller may subscribe to. */
+  readonly list: (caller: OutsideAgentCaller) => Effect.Effect<ReadonlyArray<JsonObject>>;
+  readonly subscribe: (
+    caller: OutsideAgentCaller,
+    params: JsonObject | undefined,
+  ) => Effect.Effect<AssistantMcpEventsAnswer>;
+  readonly unsubscribe: (
+    caller: OutsideAgentCaller,
+    params: JsonObject | undefined,
+  ) => Effect.Effect<AssistantMcpEventsAnswer>;
+}
+
 export interface AssistantMcpOptions {
   readonly authenticate: AssistantsShape["authenticate"];
   /** The tools the caller's live grant lists now. */
   readonly listed: (caller: OutsideAgentCaller) => Effect.Effect<ReadonlySet<string>>;
   /** Every tool, in the order `tools/list` shows them. */
   readonly tools: ReadonlyArray<AssistantMcpTool>;
+  readonly events: AssistantMcpEvents;
   readonly serverInfo: {
     readonly name: string;
     readonly title: string;
@@ -88,7 +114,7 @@ export interface AssistantMcpOptions {
   readonly fits: (response: AssistantHttpResponse) => boolean;
 }
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 type RpcId = string | number;
 
 const isObject = (value: unknown): value is JsonObject =>
@@ -224,6 +250,71 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
       ),
     );
 
+  /** An MCP Events method's answer, or null for any other method. */
+  const callEvents = (
+    caller: OutsideAgentCaller,
+    id: RpcId,
+    method: string,
+    params: JsonObject | undefined,
+    headers: Readonly<Record<string, string>>,
+    /** The fields every result of this generation carries, and how it words invalid params. */
+    generation: { readonly extra: JsonObject; readonly invalidParamsStatus: number },
+  ): Effect.Effect<AssistantHttpResponse> | null => {
+    if (
+      method !== "events/list" &&
+      method !== "events/subscribe" &&
+      method !== "events/unsubscribe"
+    ) {
+      return null;
+    }
+    const header = headers["mcp-name"];
+    if (
+      method !== "events/list" &&
+      header !== undefined &&
+      typeof params?.name === "string" &&
+      decodeHeaderValue(header) !== params.name
+    ) {
+      return Effect.succeed(
+        rpcError(
+          400,
+          id,
+          HEADER_MISMATCH,
+          `Header mismatch: Mcp-Name header value '${header}' does not match body value '${params.name}'`,
+        ),
+      );
+    }
+    const answered: Effect.Effect<AssistantMcpEventsAnswer> =
+      method === "events/list"
+        ? Effect.map(options.events.list(caller), (events) => ({ result: { events } }))
+        : method === "events/subscribe"
+          ? options.events.subscribe(caller, params)
+          : options.events.unsubscribe(caller, params);
+    return answered.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("assistants: an events method failed", { cause }).pipe(
+          Effect.as<AssistantMcpEventsAnswer>({
+            error: { code: INTERNAL_ERROR, message: "Threadlines couldn't do that. Try again." },
+          }),
+        ),
+      ),
+      Effect.map((answer) =>
+        "error" in answer
+          ? rpcError(
+              answer.error.code === INVALID_PARAMS ? generation.invalidParamsStatus : 200,
+              id,
+              answer.error.code,
+              answer.error.message,
+              answer.error.data,
+            )
+          : jsonResponse(200, {
+              jsonrpc: "2.0",
+              id,
+              result: { ...answer.result, ...generation.extra },
+            }),
+      ),
+    );
+  };
+
   /** A result, or the too-large tool error when it wouldn't fit the relay's frame. */
   const answerCall = (id: RpcId, result: JsonObject, extra: JsonObject): AssistantHttpResponse => {
     const full = jsonResponse(200, { jsonrpc: "2.0", id, result: { ...result, ...extra } });
@@ -246,17 +337,23 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
     id: RpcId,
     method: string,
     params: JsonObject | undefined,
+    headers: Readonly<Record<string, string>>,
   ): Effect.Effect<AssistantHttpResponse> =>
     Effect.gen(function* () {
       const answer = (result: unknown, headers: Record<string, string> = {}) =>
         jsonResponse(200, { jsonrpc: "2.0", id, result }, headers);
+      const events = callEvents(caller, id, method, params, headers, {
+        extra: {},
+        invalidParamsStatus: 200,
+      });
+      if (events !== null) return yield* events;
       switch (method) {
         case "initialize":
           // We speak 2025-06-18; a client offering anything else gets it back and decides.
           return answer(
             {
               protocolVersion: ASSISTANT_MCP_LEGACY_VERSION,
-              capabilities: { tools: { listChanged: false } },
+              capabilities: { tools: { listChanged: false }, events: {} },
               serverInfo,
               ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
             },
@@ -308,11 +405,19 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
       const complete = { resultType: "complete", _meta: resultMeta };
       const answer = (result: JsonObject) =>
         jsonResponse(200, { jsonrpc: "2.0", id, result: { ...result, ...complete } });
+      const events = callEvents(caller, id, method, params, headers, {
+        extra:
+          method === "events/list"
+            ? { ...complete, ttlMs: TOOLS_TTL_MS, cacheScope: "private" }
+            : complete,
+        invalidParamsStatus: 400,
+      });
+      if (events !== null) return yield* events;
       switch (method) {
         case "server/discover":
           return answer({
             supportedVersions: SUPPORTED_VERSIONS,
-            capabilities: { tools: {} },
+            capabilities: { tools: {}, events: {} },
             ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
             ttlMs: DISCOVER_TTL_MS,
             cacheScope: "public",
@@ -400,7 +505,8 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
       const params = isObject(message.params) ? message.params : undefined;
       const meta = isObject(params?._meta) ? params._meta : undefined;
       const metaVersion = meta?.[META_PROTOCOL_VERSION];
-      if (method === "initialize") return yield* legacy(caller, id, method, params);
+      if (method === "initialize")
+        return yield* legacy(caller, id, method, params, request.headers);
       if (typeof metaVersion === "string" || method === "server/discover") {
         return yield* modern(
           caller,
@@ -411,6 +517,6 @@ export const makeAssistantMcp = (options: AssistantMcpOptions): AssistantMcpHand
           typeof metaVersion === "string" ? metaVersion : undefined,
         );
       }
-      return yield* legacy(caller, id, method, params);
+      return yield* legacy(caller, id, method, params, request.headers);
     });
 };

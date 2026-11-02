@@ -1,7 +1,9 @@
 /**
- * Storage for alerts to a web address (migration 096, docs/design/assistants.md
- * "Build plan: step 4"): the targets and one delivery row per event that
- * matched one. Times are ISO strings (UTC), so they compare as text.
+ * Storage for alerts to a web address (migrations 096 and 101,
+ * docs/design/assistants.md "Build plan: step 4" and "step 5"): the targets,
+ * an address the user added or an assistant's MCP Events subscription, and
+ * one delivery row per event that matched one. Times are ISO strings (UTC),
+ * so they compare as text.
  *
  * Every write that moves a delivery on moves its target's watermark in the
  * same transaction: the highest `seq` at or below which every event is final
@@ -10,6 +12,7 @@
 import {
   AssistantAlertTargetId,
   IsoDateTime,
+  OutsideAgentConnectionId,
   ProjectId,
   type ProjectId as ProjectIdType,
 } from "@threadlines/contracts";
@@ -34,8 +37,17 @@ export class AssistantAlertRepositoryError extends Data.TaggedError(
 export const AlertTargetState = Schema.Literals(["on", "off", "gone", "deleting"]);
 export type AlertTargetState = typeof AlertTargetState.Type;
 
+const AlertTargetKind = Schema.Literals(["webhook", "subscription"]);
+
 const AlertTargetDbRow = Schema.Struct({
   targetId: AssistantAlertTargetId,
+  kind: AlertTargetKind,
+  connectionId: Schema.NullOr(OutsideAgentConnectionId),
+  subscriptionId: Schema.NullOr(Schema.String),
+  expiresAt: Schema.NullOr(IsoDateTime),
+  signingSecret: Schema.NullOr(Schema.String),
+  previousSigningSecret: Schema.NullOr(Schema.String),
+  previousSigningUntil: Schema.NullOr(IsoDateTime),
   url: Schema.String,
   names: Schema.fromJsonString(Schema.Array(AssistantEventNameSchema)),
   projectIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(ProjectId))),
@@ -54,6 +66,19 @@ const AlertTargetDbRow = Schema.Struct({
 
 export interface AlertTargetRow {
   readonly targetId: AssistantAlertTargetId;
+  /** `webhook`: an address the user added. `subscription`: an assistant's, through MCP Events. */
+  readonly kind: typeof AlertTargetKind.Type;
+  /** The assistant a subscription belongs to; null for an address. */
+  readonly connectionId: OutsideAgentConnectionId | null;
+  /** The id its assistant knows it by; null for an address. */
+  readonly subscriptionId: string | null;
+  /** When a subscription stops being sent to, unless refreshed; null for an address. */
+  readonly expiresAt: string | null;
+  /** The secret store entry with a subscription's key; null: an address's fixed entry. */
+  readonly signingSecret: string | null;
+  /** The key a refresh replaced, which also signs until `previousSigningUntil`. */
+  readonly previousSigningSecret: string | null;
+  readonly previousSigningUntil: string | null;
   readonly url: string;
   readonly names: ReadonlyArray<AssistantEventName>;
   /** Null: every project. */
@@ -111,6 +136,10 @@ export interface AssistantAlertRepositoryShape {
   readonly get: (
     targetId: AssistantAlertTargetId,
   ) => Effect.Effect<Option.Option<AlertTargetRow>, AssistantAlertRepositoryError>;
+  /** The subscription with this id. */
+  readonly findSubscription: (
+    subscriptionId: string,
+  ) => Effect.Effect<Option.Option<AlertTargetRow>, AssistantAlertRepositoryError>;
   /** Targets that are on: while there is one, the record runs. */
   readonly countOn: Effect.Effect<number, AssistantAlertRepositoryError>;
   readonly insert: (input: {
@@ -124,6 +153,43 @@ export interface AssistantAlertRepositoryShape {
     readonly startSeq: number;
     readonly now: string;
   }) => Effect.Effect<void, AssistantAlertRepositoryError>;
+  /** A new subscription, on, nothing at or below `startSeq` sent. */
+  readonly insertSubscription: (input: {
+    readonly targetId: AssistantAlertTargetId;
+    readonly subscriptionId: string;
+    readonly connectionId: OutsideAgentConnectionId;
+    readonly url: string;
+    readonly name: AssistantEventName;
+    readonly argumentsJson: string;
+    readonly projectIds: ReadonlyArray<ProjectIdType> | null;
+    readonly signingSecret: string;
+    readonly startSeq: number;
+    readonly expiresAt: string;
+    readonly now: string;
+  }) => Effect.Effect<void, AssistantAlertRepositoryError>;
+  /**
+   * A subscribe again: a later expiry, the project it resolves to now. With
+   * `signing`, one write moves it to a new key and keeps the old one signing
+   * for a while. With `restartAt`, its waiting deliveries are forgotten and
+   * it looks again from there, so they're queued fresh; one already final
+   * stays, and is never sent again.
+   */
+  readonly refreshSubscription: (input: {
+    readonly targetId: AssistantAlertTargetId;
+    readonly projectIds: ReadonlyArray<ProjectIdType> | null;
+    readonly expiresAt: string;
+    readonly signing?: {
+      readonly secret: string;
+      readonly previousSecret: string;
+      readonly previousUntil: string;
+    };
+    readonly restartAt: number | null;
+    readonly now: string;
+  }) => Effect.Effect<void, AssistantAlertRepositoryError>;
+  /** The old key's hour is over: the row stops naming it, and its entry can go. */
+  readonly clearPreviousSigning: (
+    targetId: AssistantAlertTargetId,
+  ) => Effect.Effect<void, AssistantAlertRepositoryError>;
   /** Edit. `newCredentials` (a new address or Authorization) forgets the receiver's refusals. */
   readonly update: (input: {
     readonly targetId: AssistantAlertTargetId;
@@ -160,14 +226,21 @@ export interface AssistantAlertRepositoryShape {
     readonly scannedSeq: number;
     readonly now: string;
   }) => Effect.Effect<void, AssistantAlertRepositoryError>;
+  /** One delivery, if it's still pending: Edit, Remove or a refresh may have ended it. */
+  readonly pending: (input: {
+    readonly targetId: AssistantAlertTargetId;
+    readonly seq: number;
+  }) => Effect.Effect<Option.Option<AlertDeliveryRow>, AssistantAlertRepositoryError>;
   /** A target's pending deliveries due by `now`, oldest event first. */
   readonly due: (input: {
     readonly targetId: AssistantAlertTargetId;
     readonly now: string;
     readonly limit: number;
   }) => Effect.Effect<ReadonlyArray<AlertDeliveryRow>, AssistantAlertRepositoryError>;
-  /** The soonest retry of a target that's on. */
-  readonly nextDueAt: Effect.Effect<Option.Option<string>, AssistantAlertRepositoryError>;
+  /** The soonest retry of a target that's on and not past its expiry at `now`. */
+  readonly nextDueAt: (
+    now: string,
+  ) => Effect.Effect<Option.Option<string>, AssistantAlertRepositoryError>;
   /**
    * Written before the call: one more attempt, `in_flight`. If this process
    * dies before the answer, the delivery ends `failed`, never sent twice.
@@ -225,6 +298,13 @@ const make = Effect.gen(function* () {
   const selectTarget = `
     SELECT
       t.target_id AS "targetId",
+      t.kind AS "kind",
+      t.connection_id AS "connectionId",
+      t.subscription_id AS "subscriptionId",
+      t.expires_at AS "expiresAt",
+      t.signing_secret AS "signingSecret",
+      t.previous_signing_secret AS "previousSigningSecret",
+      t.previous_signing_until AS "previousSigningUntil",
       t.url AS "url",
       t.names_json AS "names",
       t.project_ids_json AS "projectIds",
@@ -241,7 +321,6 @@ const make = Effect.gen(function* () {
       (SELECT COUNT(*) FROM assistant_deliveries d
         WHERE d.target_id = t.target_id AND d.state = 'pending' AND d.attempts > 0) AS "retrying"
     FROM assistant_targets t
-    WHERE t.kind = 'webhook'
   `;
 
   const listRows = SqlSchema.findAll({
@@ -252,7 +331,13 @@ const make = Effect.gen(function* () {
   const findRow = SqlSchema.findOneOption({
     Request: Schema.String,
     Result: AlertTargetDbRow,
-    execute: (targetId) => sql.unsafe(`${selectTarget} AND t.target_id = ?`, [targetId]),
+    execute: (targetId) => sql.unsafe(`${selectTarget} WHERE t.target_id = ?`, [targetId]),
+  });
+  const findSubscriptionRow = SqlSchema.findOneOption({
+    Request: Schema.String,
+    Result: AlertTargetDbRow,
+    execute: (subscriptionId) =>
+      sql.unsafe(`${selectTarget} WHERE t.subscription_id = ?`, [subscriptionId]),
   });
 
   const list: AssistantAlertRepositoryShape["list"] = listRows(undefined).pipe(
@@ -262,6 +347,12 @@ const make = Effect.gen(function* () {
 
   const get: AssistantAlertRepositoryShape["get"] = (targetId) =>
     findRow(targetId).pipe(Effect.map(Option.map(fromDb)), wrap("get"));
+
+  const findSubscription: AssistantAlertRepositoryShape["findSubscription"] = (subscriptionId) =>
+    findSubscriptionRow(subscriptionId).pipe(
+      Effect.map(Option.map(fromDb)),
+      wrap("findSubscription"),
+    );
 
   const countOn: AssistantAlertRepositoryShape["countOn"] = sql<{ readonly count: number }>`
     SELECT COUNT(*) AS count FROM assistant_targets WHERE state = 'on'
@@ -285,6 +376,66 @@ const make = Effect.gen(function* () {
         ${input.now}, ${input.now}
       )
     `.pipe(Effect.asVoid, wrap("insert"));
+
+  const insertSubscription: AssistantAlertRepositoryShape["insertSubscription"] = (input) =>
+    sql`
+      INSERT INTO assistant_targets (
+        target_id, kind, connection_id, subscription_id, arguments_json, url, names_json,
+        project_ids_json, skip_viewed, signing_secret, state, scanned_seq, watermark, expires_at,
+        created_at, updated_at
+      ) VALUES (
+        ${input.targetId}, 'subscription', ${input.connectionId}, ${input.subscriptionId},
+        ${input.argumentsJson}, ${input.url}, ${JSON.stringify([input.name])},
+        ${projectIdsJson(input.projectIds)}, 0, ${input.signingSecret}, 'on', ${input.startSeq},
+        ${input.startSeq}, ${input.expiresAt}, ${input.now}, ${input.now}
+      )
+    `.pipe(Effect.asVoid, wrap("insertSubscription"));
+
+  const refreshSubscription: AssistantAlertRepositoryShape["refreshSubscription"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          if (input.restartAt !== null) {
+            // Gone, not marked: looking again must be able to queue them fresh. A row
+            // still in flight lost its answer and may have arrived, so it stays, final.
+            yield* sql`
+              DELETE FROM assistant_deliveries
+              WHERE target_id = ${input.targetId} AND state = 'pending'
+            `;
+            yield* sql`
+              UPDATE assistant_deliveries SET state = 'failed'
+              WHERE target_id = ${input.targetId} AND state = 'in_flight'
+            `;
+          }
+          yield* sql`
+            UPDATE assistant_targets
+            SET expires_at = ${input.expiresAt},
+              project_ids_json = ${projectIdsJson(input.projectIds)},
+              updated_at = ${input.now}
+              ${
+                input.signing !== undefined
+                  ? sql`, signing_secret = ${input.signing.secret},
+                      previous_signing_secret = ${input.signing.previousSecret},
+                      previous_signing_until = ${input.signing.previousUntil}`
+                  : sql``
+              }
+              ${
+                input.restartAt !== null
+                  ? sql`, scanned_seq = ${input.restartAt}, watermark = ${input.restartAt}`
+                  : sql``
+              }
+            WHERE target_id = ${input.targetId}
+          `;
+        }),
+      )
+      .pipe(Effect.asVoid, wrap("refreshSubscription"));
+
+  const clearPreviousSigning: AssistantAlertRepositoryShape["clearPreviousSigning"] = (targetId) =>
+    sql`
+      UPDATE assistant_targets
+      SET previous_signing_secret = NULL, previous_signing_until = NULL
+      WHERE target_id = ${targetId}
+    `.pipe(Effect.asVoid, wrap("clearPreviousSigning"));
 
   const update: AssistantAlertRepositoryShape["update"] = (input) =>
     sql`
@@ -385,16 +536,32 @@ const make = Effect.gen(function* () {
 
   const due: AssistantAlertRepositoryShape["due"] = (input) => dueRows(input).pipe(wrap("due"));
 
-  const nextDueAt: AssistantAlertRepositoryShape["nextDueAt"] = sql<{
-    readonly at: string | null;
-  }>`
-    SELECT MIN(d.next_attempt_at) AS at
-    FROM assistant_deliveries d JOIN assistant_targets t ON t.target_id = d.target_id
-    WHERE d.state = 'pending' AND t.state = 'on'
-  `.pipe(
-    Effect.map((rows) => Option.fromNullishOr(rows[0]?.at)),
-    wrap("nextDueAt"),
-  );
+  const pendingRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ targetId: Schema.String, seq: Schema.Number }),
+    Result: DeliveryDbRow,
+    execute: (request) => sql`
+      SELECT target_id AS "targetId", seq, event_id AS "eventId", attempts,
+        queued_at AS "queuedAt", next_attempt_at AS "nextAttemptAt"
+      FROM assistant_deliveries
+      WHERE target_id = ${request.targetId} AND seq = ${request.seq} AND state = 'pending'
+    `,
+  });
+
+  const pending: AssistantAlertRepositoryShape["pending"] = (input) =>
+    pendingRow(input).pipe(wrap("pending"));
+
+  const nextDueAt: AssistantAlertRepositoryShape["nextDueAt"] = (now) =>
+    sql<{
+      readonly at: string | null;
+    }>`
+      SELECT MIN(d.next_attempt_at) AS at
+      FROM assistant_deliveries d JOIN assistant_targets t ON t.target_id = d.target_id
+      WHERE d.state = 'pending' AND t.state = 'on'
+        AND (t.expires_at IS NULL OR t.expires_at > ${now})
+    `.pipe(
+      Effect.map((rows) => Option.fromNullishOr(rows[0]?.at)),
+      wrap("nextDueAt"),
+    );
 
   const beginAttempt: AssistantAlertRepositoryShape["beginAttempt"] = (input) =>
     sql`
@@ -490,12 +657,17 @@ const make = Effect.gen(function* () {
   return AssistantAlertRepository.of({
     list,
     get,
+    findSubscription,
     countOn,
     insert,
+    insertSubscription,
+    refreshSubscription,
+    clearPreviousSigning,
     update,
     setState,
     delete: deleteTarget,
     queue,
+    pending,
     due,
     nextDueAt,
     beginAttempt,

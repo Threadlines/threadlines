@@ -250,14 +250,41 @@ export interface AssistantEventsShape {
    * (alertChecks.ts), since the record can lag (after a restart) or miss an
    * answer given while it was off: `stands` is false once it no longer needs
    * the user, "unknown" when its thread couldn't be read. Finished and
-   * failed always stand. `project` is its project's name now (null: gone).
+   * failed always stand. `project` is its project's name now (null: gone);
+   * `generalChat`, whether that project is General Chats, which no
+   * assistant's alerts cover (the user's own conversations).
    */
   readonly current: (seq: number) => Effect.Effect<
     {
       readonly event: AssistantEvent;
       readonly stands: boolean | "unknown";
       readonly project: string | null;
+      readonly generalChat: boolean;
     } | null,
+    AssistantEventRepositoryError
+  >;
+  /**
+   * Where a subscriber resuming from a cursor starts (MCP Events): right
+   * after `after`, but never before what the record still keeps, and never
+   * further back than `notBefore` or the newest `limit` events of these
+   * names and projects, since each one may start a paid run. `truncated`
+   * when it starts later than asked, or when the record was off after
+   * `after` (what happened then was never recorded). `after` null: no
+   * cursor, start now; `foreign`: not this record's, so as far back as those
+   * limits reach, truncated. Past the newest `seq`: start now, truncated.
+   * `ownWatermark`: `after` is a subscription's own, which has kept the record
+   * on since; a client's cursor at the very `seq` the record turned on at
+   * says truncated, since it can't tell which side of the gap it's from.
+   */
+  readonly resumeAfter: (input: {
+    readonly after: number | null | "foreign";
+    readonly ownWatermark?: boolean;
+    readonly notBefore: string;
+    readonly limit: number;
+    readonly names?: ReadonlyArray<AssistantEventName>;
+    readonly projectIds?: ReadonlyArray<ProjectId>;
+  }) => Effect.Effect<
+    { readonly start: number; readonly truncated: boolean },
     AssistantEventRepositoryError
   >;
   /**

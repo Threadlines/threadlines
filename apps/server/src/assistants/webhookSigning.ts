@@ -31,9 +31,14 @@ export const signWebhook = (input: {
     .update(`${input.id}.${input.timestamp}.${input.body}`)
     .digest("base64")}`;
 
-/** The headers every alert carries, besides the Authorization the user may add. */
+/**
+ * The headers every alert carries, besides the Authorization the user may
+ * add. With `previousSecret` (a secret being replaced), it signs with both,
+ * space-separated, so a receiver on either key checks it.
+ */
 export const webhookHeaders = (input: {
   readonly secret: Uint8Array;
+  readonly previousSecret?: Uint8Array | null;
   readonly id: string;
   readonly timestamp: number;
   readonly body: string;
@@ -42,5 +47,8 @@ export const webhookHeaders = (input: {
   "user-agent": "Threadlines",
   "webhook-id": input.id,
   "webhook-timestamp": String(input.timestamp),
-  "webhook-signature": signWebhook(input),
+  "webhook-signature": [input.secret, input.previousSecret]
+    .filter((secret): secret is Uint8Array => secret !== undefined && secret !== null)
+    .map((secret) => signWebhook({ ...input, secret }))
+    .join(" "),
 });

@@ -225,6 +225,8 @@ const makeFakeSecrets = () => {
         return created;
       }),
     remove: (name) => Effect.sync(() => void secrets.delete(name)),
+    list: (prefix) =>
+      Effect.sync(() => [...secrets.keys()].filter((name) => name.startsWith(prefix))),
   });
   return { layer, secrets };
 };

@@ -97,9 +97,14 @@ export const isBlockedAddress = (address: string): boolean => {
   return BLOCKED.check(plain, "ipv6");
 };
 
-/** Why an address can't be used, in words for the user. */
+/** Why an address can't be used, in words for the user. `unreachable`: its host couldn't be found. */
 export class OutboundAddressError extends Error {
   override readonly name = "OutboundAddressError";
+  readonly reason: "blocked" | "unreachable";
+  constructor(message: string, reason: "blocked" | "unreachable" = "blocked") {
+    super(message);
+    this.reason = reason;
+  }
 }
 
 export const OUTBOUND_TIMEOUT_MS = 10_000;
@@ -154,15 +159,18 @@ export const resolveOutbound = (
         ? [{ address: host, family }]
         : yield* Effect.tryPromise({
             try: () => dns.promises.lookup(host, { all: true, order: "verbatim" }),
-            catch: () => new OutboundAddressError(`Couldn't find ${host}.`),
+            catch: () => new OutboundAddressError(`Couldn't find ${host}.`, "unreachable"),
           }).pipe(
             Effect.timeoutOrElse({
               duration: timeoutMs,
-              orElse: () => Effect.fail(new OutboundAddressError(`Couldn't find ${host} in time.`)),
+              orElse: () =>
+                Effect.fail(
+                  new OutboundAddressError(`Couldn't find ${host} in time.`, "unreachable"),
+                ),
             }),
           );
     if (addresses.length === 0) {
-      return yield* Effect.fail(new OutboundAddressError(`Couldn't find ${host}.`));
+      return yield* Effect.fail(new OutboundAddressError(`Couldn't find ${host}.`, "unreachable"));
     }
     if (addresses.some((entry) => isBlockedAddress(entry.address))) {
       return yield* Effect.fail(
@@ -188,6 +196,8 @@ export type OutboundResult =
       readonly status: number;
       /** Seconds from a numeric `Retry-After`. */
       readonly retryAfterSeconds: number | undefined;
+      /** The answer's body as text, at most its first 64 KiB (a callback check reads it). */
+      readonly body: string;
     }
   | { readonly type: "not_sent"; readonly detail: string }
   | { readonly type: "unknown"; readonly detail: string };
@@ -296,7 +306,9 @@ export const postToAddresses = (
     request.on("error", (error) => failed(error.message || "The connection failed."));
     request.on("response", (response) => {
       const retryAfter = Number(response.headers["retry-after"]);
-      const answered: OutboundResult = {
+      const chunks: Array<Buffer> = [];
+      let read = 0;
+      const answered = (): OutboundResult => ({
         type: "answered",
         status: response.statusCode ?? 0,
         retryAfterSeconds:
@@ -305,14 +317,16 @@ export const postToAddresses = (
           retryAfter >= 0
             ? retryAfter
             : undefined,
-      };
-      answer = answered;
-      let read = 0;
+        body: Buffer.concat(chunks).subarray(0, ANSWER_READ_LIMIT).toString("utf8"),
+      });
+      answer = answered();
       response.on("data", (chunk: Buffer) => {
+        if (read < ANSWER_READ_LIMIT) chunks.push(chunk);
         read += chunk.length;
+        answer = answered();
         if (read > ANSWER_READ_LIMIT) response.destroy();
       });
-      const done = () => finish(answered);
+      const done = () => finish(answered());
       response.on("end", done);
       response.on("close", done);
       response.on("error", done);

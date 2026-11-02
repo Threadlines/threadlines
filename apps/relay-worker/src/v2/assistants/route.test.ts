@@ -366,6 +366,45 @@ describe("clients and the sign-in page", () => {
     }
   });
 
+  it("signs in a CIMD client that can be public, whatever it prefers, and no other", async () => {
+    const { env, created } = edgeEnv();
+    const signIn = (clientId: string, details: Record<string, unknown>) =>
+      route(
+        new Request(
+          authorizeUrl({
+            client_id: clientId,
+            redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
+          }),
+        ),
+        env,
+        (async () =>
+          new Response(
+            JSON.stringify({
+              client_id: clientId,
+              redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"],
+              ...details,
+            }),
+          )) as unknown as typeof fetch,
+      );
+    // ChatGPT's own document, as it was on Nov 2, 2026.
+    const chatgpt = await signIn("https://chatgpt.com/oauth/client.json", {
+      client_name: "ChatGPT",
+      token_endpoint_auth_method: "private_key_jwt",
+      token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+    });
+    expect(chatgpt.status).toBe(200);
+    expect(await chatgpt.text()).toContain("Connect ChatGPT to Threadlines");
+    expect(created[0]?.identity).toMatchObject({ kind: "cimd", host: "chatgpt.com" });
+
+    for (const [path, details] of [
+      ["only-signed", { token_endpoint_auth_method: "private_key_jwt" }],
+      ["list-without-none", { token_endpoint_auth_methods_supported: ["private_key_jwt"] }],
+    ] as const) {
+      const refused = await signIn(`https://assistant.example.com/${path}.json`, details);
+      expect(await refused.text()).toContain("signs in a way Threadlines doesn&#39;t support");
+    }
+  });
+
   it("signs in a CIMD client from its fetched metadata, refusing redirects and IP literals", async () => {
     const { env, created } = edgeEnv();
     const requests: Array<{ url: string; redirect: RequestRedirect | undefined }> = [];

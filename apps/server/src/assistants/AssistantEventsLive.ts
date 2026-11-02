@@ -353,11 +353,52 @@ const make = Effect.gen(function* () {
       const found = yield* repo.recorded(seq);
       if (Option.isNone(found)) return null;
       const { subjectKey, ...event } = found.value;
-      const project = yield* projections.getProjectShellById(event.projectId).pipe(
-        Effect.map((shell) => (Option.isSome(shell) ? shell.value.title : null)),
-        Effect.orElseSucceed(() => null),
-      );
-      return { event, project, stands: yield* standsNow(event, subjectKey) };
+      const shell = yield* projections.getProjectShellById(event.projectId).pipe(Effect.result);
+      // Not knowing the project isn't knowing it isn't General Chats: nothing goes out yet.
+      if (shell._tag === "Failure") {
+        return { event, project: null, generalChat: false, stands: "unknown" as const };
+      }
+      const project = shell.success;
+      return {
+        event,
+        project: Option.isSome(project) ? project.value.title : null,
+        generalChat: Option.isSome(project) && project.value.kind === "general-chat",
+        stands: yield* standsNow(event, subjectKey),
+      };
+    });
+
+  const resumeAfter: AssistantEventsShape["resumeAfter"] = (input) =>
+    Effect.gen(function* () {
+      const state = yield* repo.getState;
+      if (input.after === null) return { start: state.lastSeq, truncated: false };
+      if (input.after !== "foreign" && input.after > state.lastSeq) {
+        return { start: state.lastSeq, truncated: true };
+      }
+      // Off after the cursor: whatever happened then was never recorded. A cursor equal to
+      // where it turned on may be from either side of that, so it counts, when anyone's
+      // cursor it is. A subscription's own watermark kept the record on the whole time.
+      let truncated =
+        input.after === "foreign" ||
+        (input.ownWatermark
+          ? input.after < state.beganAtSeq
+          : state.beganAtSeq > 0 && input.after <= state.beganAtSeq);
+      let start = input.after === "foreign" ? 0 : input.after;
+      const floors = [
+        state.prunedThroughSeq,
+        yield* repo.lastSeqRecordedBefore(input.notBefore),
+        (yield* repo.seqBeforeNewest({
+          count: input.limit,
+          ...(input.names !== undefined ? { names: input.names } : {}),
+          ...(input.projectIds !== undefined ? { projectIds: input.projectIds } : {}),
+        })) ?? 0,
+      ];
+      for (const floor of floors) {
+        if (start < floor) {
+          start = floor;
+          truncated = true;
+        }
+      }
+      return { start, truncated };
     });
 
   /** Whether a recorded event still holds (`current`). */
@@ -425,6 +466,7 @@ const make = Effect.gen(function* () {
     position,
     since,
     current,
+    resumeAfter,
     keep,
     changes: Stream.fromPubSub(recorded),
     start,

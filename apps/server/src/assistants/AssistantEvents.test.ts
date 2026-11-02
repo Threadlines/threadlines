@@ -30,7 +30,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { FINISHED_HOLD_MS } from "../pushAlerts/pushAlertRules.ts";
 import { AssistantEventRepositoryLive } from "./AssistantEventRepository.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
-import { AssistantEvents } from "./AssistantEvents.ts";
+import { type AssistantEventName, AssistantEvents } from "./AssistantEvents.ts";
 import {
   AssistantAlertRepository,
   AssistantAlertRepositoryLive,
@@ -73,7 +73,15 @@ const makeHarness = Effect.gen(function* () {
   const events: OrchestrationEvent[] = [];
   const published = yield* PubSub.unbounded<OrchestrationEvent>();
   /** `readDelayMs`: how long reading the event log takes (to make the settle loop win a race). */
-  const state = { thread: makeThread(), assistants: 1, readDelayMs: 0 };
+  const state = {
+    thread: makeThread(),
+    assistants: 1,
+    readDelayMs: 0,
+    /** What the project lookup says; "fails": it can't be read. */
+    project: { title: "app", kind: "project" } as
+      | { readonly title: string; readonly kind: string }
+      | "fails",
+  };
   const storage = yield* Layer.build(SqlitePersistenceMemory);
   const sql = Context.get(storage, SqlClient.SqlClient);
   /** The scheduled tasks' snapshots, as ScheduledTasks.changes sends them. */
@@ -95,6 +103,10 @@ const makeHarness = Effect.gen(function* () {
         }),
         Layer.mock(ProjectionSnapshotQuery)({
           getThreadDetailById: () => Effect.sync(() => Option.some(state.thread)),
+          getProjectShellById: () =>
+            state.project === "fails"
+              ? Effect.fail("the test's lookup" as never)
+              : Effect.succeed(Option.some(state.project as never)),
         }),
         Layer.mock(ScheduledTasks)({ changes: Stream.fromPubSub(schedules) }),
       ),
@@ -595,6 +607,120 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         const position = yield* record.position;
         assert.strictEqual(position.prunedThroughSeq, 1);
         assert.strictEqual(position.lastSeq, 1);
+      }),
+    ),
+  );
+  it.effect("a resume says where it starts, and when that's later than asked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+        const activities: Array<unknown> = [];
+        const ask = (requestId: string) =>
+          Effect.gen(function* () {
+            const asked = approvalRequested(requestId);
+            activities.push(asked.activity);
+            harness.state.thread = makeThread({ activities: activities as never });
+            yield* appended(harness, "thread.activity-appended", asked);
+            yield* settle();
+          });
+        yield* ask("r1");
+        yield* ask("r2");
+        yield* TestClock.adjust("1 hour");
+        const between = new Date(yield* Clock.currentTimeMillis).toISOString();
+        yield* TestClock.adjust("1 hour");
+        yield* ask("r3");
+        // Nothing left waiting by the time the turn's hold is over, so it counts as finished.
+        harness.state.thread = makeThread({
+          latestTurn: { turnId: "turn-1", state: "completed" } as never,
+        });
+        yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1"));
+        yield* settle(FINISHED_HOLD_MS + 500);
+        assert.strictEqual((yield* record.position).lastSeq, 4);
+
+        const longAgo = new Date(0).toISOString();
+        const resume = (
+          after: number | null | "foreign",
+          options: {
+            readonly notBefore?: string;
+            readonly limit?: number;
+            readonly names?: ReadonlyArray<AssistantEventName>;
+            readonly ownWatermark?: boolean;
+          } = {},
+        ) => record.resumeAfter({ after, notBefore: longAgo, limit: 100, ...options });
+
+        // No cursor: now, with nothing missing. Not this record's: as far back as it may
+        // reach, and it says so.
+        assert.deepStrictEqual(yield* resume(null), { start: 4, truncated: false });
+        assert.deepStrictEqual(yield* resume("foreign"), { start: 0, truncated: true });
+        assert.deepStrictEqual(yield* resume("foreign", { limit: 1 }), {
+          start: 3,
+          truncated: true,
+        });
+        assert.deepStrictEqual(yield* resume(99), { start: 4, truncated: true });
+        assert.deepStrictEqual(yield* resume(1), { start: 1, truncated: false });
+        // No further back than the newest few, counting only what it takes.
+        assert.deepStrictEqual(yield* resume(0, { limit: 1 }), { start: 3, truncated: true });
+        assert.deepStrictEqual(yield* resume(0, { limit: 1, names: ["thread.needs_you"] }), {
+          start: 2,
+          truncated: true,
+        });
+        assert.deepStrictEqual(yield* resume(0, { limit: 4 }), { start: 0, truncated: false });
+        // No further back than the time it may reach.
+        assert.deepStrictEqual(yield* resume(0, { notBefore: between }), {
+          start: 2,
+          truncated: true,
+        });
+        assert.deepStrictEqual(yield* resume(3, { notBefore: between }), {
+          start: 3,
+          truncated: false,
+        });
+
+        // Turned off and on: what happened between was never recorded.
+        harness.state.assistants = 0;
+        yield* PubSub.publish(harness.published, harness.events.at(-1)!);
+        yield* settle();
+        assert.isFalse((yield* record.position).running);
+        harness.state.assistants = 1;
+        yield* PubSub.publish(harness.published, harness.events.at(-1)!);
+        yield* settle();
+        assert.isTrue((yield* record.position).running);
+        assert.deepStrictEqual(yield* resume(2), { start: 2, truncated: true });
+        // A cursor saved right before it stopped looks the same as one saved just after it
+        // started, and what happened between isn't known. A subscription's own kept it on.
+        assert.deepStrictEqual(yield* resume(4), { start: 4, truncated: true });
+        assert.deepStrictEqual(yield* resume(4, { ownWatermark: true }), {
+          start: 4,
+          truncated: false,
+        });
+
+        // Pruned: it can't start before what's still kept.
+        yield* TestClock.adjust("8 days");
+        yield* settle(31_000);
+        assert.strictEqual((yield* record.position).prunedThroughSeq, 4);
+        assert.deepStrictEqual(yield* resume(1), { start: 4, truncated: true });
+      }),
+    ),
+  );
+  it.effect("says whether an event is in General Chats, and holds it when it can't tell", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+        const asked = approvalRequested("r1");
+        harness.state.thread = makeThread({ activities: [asked.activity] as never });
+        yield* appended(harness, "thread.activity-appended", asked);
+        yield* settle();
+
+        assert.strictEqual((yield* record.current(1))?.generalChat, false);
+        harness.state.project = { title: "General Chats", kind: "general-chat" };
+        assert.strictEqual((yield* record.current(1))?.generalChat, true);
+        harness.state.project = "fails";
+        assert.strictEqual((yield* record.current(1))?.stands, "unknown");
       }),
     ),
   );

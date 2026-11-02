@@ -8,6 +8,8 @@
  * mutations, `thread_start` answering before its setup, `thread_wait` capped
  * under the relay's timeout. This door's tool list says so: those tools'
  * descriptions differ and `requestId` is in their required parameters.
+ * MCP Events go alongside them (assistantMcpEvents.ts), only on this door:
+ * local agents have no public callback for them.
  */
 import {
   ASSISTANT_THREAD_WAIT_MAX_SECONDS,
@@ -36,7 +38,9 @@ import {
   ThreadWaitTool,
 } from "../outsideAgents/connectTools.ts";
 import { OutsideAgentConnections } from "../outsideAgents/OutsideAgentConnections.ts";
+import { AssistantAlerts } from "./AssistantAlerts.ts";
 import { type AssistantMcpTool, makeAssistantMcp } from "./AssistantMcp.ts";
+import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
 import { Assistants } from "./Assistants.ts";
 
 const INSTRUCTIONS =
@@ -61,9 +65,9 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const assistants = yield* Assistants;
     const connections = yield* OutsideAgentConnections;
-    const handlers = yield* makeConnectToolHandlers(yield* makeConnectToolDeps, {
-      door: "assistant",
-    });
+    const alerts = yield* AssistantAlerts;
+    const deps = yield* makeConnectToolDeps;
+    const handlers = yield* makeConnectToolHandlers(deps, { door: "assistant" });
     const tools: ReadonlyArray<AssistantMcpTool> = [
       { tool: ProjectsTool, run: (caller) => handlers.projects(caller) },
       {
@@ -129,6 +133,11 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
           .grant(caller.connectionId)
           .pipe(Effect.map((grant) => listedToolsFor(grant?.access ?? null))),
       tools,
+      events: makeAssistantMcpEvents({
+        alerts,
+        grantOf: connections.grant,
+        projects: deps.projects,
+      }),
       serverInfo: { name: "threadlines", title: "Threadlines", version: packageJson.version },
       instructions: INSTRUCTIONS,
       fits: (response) =>
