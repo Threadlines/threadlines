@@ -1316,7 +1316,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        ...settingsChangeTurnsRevertKeeps(context.thread, event.payload.turnCount),
+        keptTurnIds: settingsChangeTurnsRevertKeeps(context.thread, event.payload.turnCount),
         createdAt: now,
       })
       .pipe(

@@ -4114,7 +4114,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   /**
    * The turns the revert keeps: a settings card left waiting from any other
    * turn is cancelled, including one asked for while the revert ran. Absent:
-   * the revert removed nothing, and no card is cancelled.
+   * no card is cancelled.
    */
   keptTurnIds: Schema.optional(Schema.Array(TurnId)),
   createdAt: IsoDateTime,
@@ -5493,6 +5493,8 @@ export const ThreadCommandRequestDismissedPayload = Schema.Struct({
 export const ThreadSettingsChangeRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   request: OrchestrationSettingsChangeRequest,
+  /** The waiting requests it replaced, so what stands for them can end too. Absent: none. */
+  replaces: Schema.optional(Schema.Array(SettingsChangeRequestId)),
 });
 
 export const ThreadSettingsChangeClaimedPayload = Schema.Struct({

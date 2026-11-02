@@ -111,12 +111,18 @@ export function decideSettingsChangeRequest(
       `An agent can ask for at most ${MAX_SETTINGS_REQUESTS_PER_TURN} settings changes in one turn.`,
     );
   }
+  const replaces = requestsOf(thread)
+    .filter(
+      (request) => request.status === "waiting" && request.participantId === command.participantId,
+    )
+    .map((request) => request.requestId);
   return [
     {
       ...baseFor(thread.id),
       type: "thread.settings-change-requested",
       payload: {
         threadId: thread.id,
+        ...(replaces.length > 0 ? { replaces } : {}),
         request: {
           requestId: command.requestId,
           participantId: command.participantId,
@@ -277,14 +283,15 @@ export function cancelWaitingSettingsChanges(
  * the turns with a checkpoint it keeps and any a kept message is stamped with.
  * Naming what stays means a card from a turn this read never saw (asked for
  * while the revert ran, or a turn with no checkpoint) goes with what is
- * removed; a card wrongly cancelled can simply be asked for again. Empty when
- * the revert removes nothing: no card goes.
+ * removed. That holds even when this read saw nothing to remove: new work can
+ * arrive before the revert ends, and the transcript cut will take it. A card
+ * wrongly cancelled can simply be asked for again.
  */
 export function settingsChangeTurnsRevertKeeps(
   thread: Pick<OrchestrationThread, "checkpoints" | "messages">,
   turnCount: number,
-): { readonly keptTurnIds?: ReadonlyArray<TurnId> } {
-  const { cut, keptTurnIds } = revertMessages({
+): ReadonlyArray<TurnId> {
+  const { keptTurnIds } = revertMessages({
     messages: thread.messages,
     idOf: (message) => message.id,
     retainedTurnIds: new Set(
@@ -294,8 +301,5 @@ export function settingsChangeTurnsRevertKeeps(
     ),
     turnCount,
   });
-  const removesAny =
-    cut !== undefined ||
-    thread.checkpoints.some((checkpoint) => checkpoint.checkpointTurnCount > turnCount);
-  return removesAny ? { keptTurnIds: [...keptTurnIds].map((turnId) => TurnId.make(turnId)) } : {};
+  return [...keptTurnIds].map((turnId) => TurnId.make(turnId));
 }

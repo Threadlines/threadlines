@@ -57,7 +57,8 @@ sharing the user never agreed to.
    asked"); the device changes still are, since the user saw them as they
    are. The agent hears both, and can ask again.
 4. The sidebar shows the thread as Pending Approval while a card waits, like
-   the other agent requests.
+   the other agent requests, and a paired phone gets a "Needs you" alert
+   ("Wants to change your settings"); assistants see it the same way.
 5. "All or none" holds for the computer's changes (one file write). Device
    changes are made one store at a time (the theme has its own), so each is
    reported as it went.
@@ -247,7 +248,7 @@ Lifetime:
   checkpoint reactor names the turns it keeps (`keptTurnIds`, from the
   checkpoints and transcript cut it loaded; the engine's read model has no
   checkpoints after a restart), and any other turn's waiting card goes, also
-  one asked for while the revert ran. A revert that removes nothing cancels none.
+  one asked for while the revert ran.
 - A claimed request always finishes: its settle and its device report are
   allowed on an archived thread and through the move freeze (both join the
   frozen thread's allowed commands, as the server's own bookkeeping). A
