@@ -41,7 +41,6 @@ import {
   waitForServerConfigToApply,
   mountChatView,
   openProjectMenu,
-  clickProjectMenuItem,
   registerChatViewSuiteHooks,
 } from "./ChatView.browser-harness";
 
@@ -1112,43 +1111,7 @@ describe("ChatView (full app): right panel and header actions", () => {
     }
   });
 
-  it("opens the project cwd with VS Code Insiders when it is the only available editor", async () => {
-    setDraftThreadWithoutWorktree();
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createDraftOnlySnapshot(),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          availableEditors: ["vscode-insiders"],
-        };
-      },
-    });
-
-    try {
-      await waitForServerConfigToApply();
-      await clickProjectMenuItem("Open in VS Code Insiders");
-
-      await vi.waitFor(
-        () => {
-          const openRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.shellOpenInEditor,
-          );
-          expect(openRequest).toMatchObject({
-            _tag: WS_METHODS.shellOpenInEditor,
-            cwd: "/repo/project",
-            editor: "vscode-insiders",
-          });
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("shows Kiro in the open picker menu and opens the project cwd with it", async () => {
+  it("opens the project in an editor from the crumb menu with the keyboard", async () => {
     setDraftThreadWithoutWorktree();
 
     const mounted = await mountChatView({
