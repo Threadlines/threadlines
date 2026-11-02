@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ClientSettingsPatch,
   ClientSettingsSchema,
   CursorSettings,
   DEFAULT_CLIENT_SETTINGS,
@@ -18,6 +19,12 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
 describe("ClientSettings defaults", () => {
+  it("can save every client setting: a key the patch lacks is dropped on the way to storage", () => {
+    expect(Object.keys(ClientSettingsPatch.fields).toSorted()).toEqual(
+      Object.keys(ClientSettingsSchema.fields).toSorted(),
+    );
+  });
+
   it("leaves the Agents panel closed when subagents start by default", () => {
     expect(DEFAULT_CLIENT_SETTINGS.autoOpenAgentsPanel).toBe(false);
     expect(decodeClientSettings({}).autoOpenAgentsPanel).toBe(false);

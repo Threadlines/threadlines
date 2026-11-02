@@ -8,6 +8,7 @@ import {
   type AuthAccessStreamEvent,
   type AuthAccessSnapshot,
   AuthSessionId,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type DesktopBridge,
@@ -1047,7 +1048,8 @@ const createDesktopBridgeStub = (overrides?: {
       bootstrapToken: "desktop-bootstrap-token",
     }),
     getClientSettings: vi.fn().mockResolvedValue(null),
-    setClientSettings: vi.fn().mockResolvedValue(undefined),
+    updateClientSettings: vi.fn().mockResolvedValue(DEFAULT_CLIENT_SETTINGS),
+    onClientSettingsChanged: () => () => undefined,
     getSavedEnvironmentRegistry: vi.fn().mockResolvedValue([]),
     setSavedEnvironmentRegistry: vi.fn().mockResolvedValue(undefined),
     getSavedEnvironmentSecret: vi.fn().mockResolvedValue(null),
@@ -1604,7 +1606,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings,
@@ -2541,7 +2544,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: {
         openInEditor,
@@ -2602,7 +2606,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         getProcessDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
@@ -2767,7 +2772,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -2864,7 +2870,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3032,7 +3039,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3152,7 +3160,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
       shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
@@ -3215,7 +3224,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
       shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
@@ -3272,7 +3282,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server: {},
@@ -3460,7 +3471,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings,
@@ -3502,7 +3514,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),
@@ -3539,7 +3552,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3574,7 +3588,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3644,7 +3659,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { addProviderAccount },
     } as unknown as LocalApi;
@@ -3688,7 +3704,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
@@ -3727,7 +3744,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider: vi.fn().mockResolvedValue({ providers: [] }),
@@ -3761,7 +3779,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
     } as unknown as LocalApi;
@@ -3808,7 +3827,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateProvider,
@@ -3867,7 +3887,8 @@ describe("GeneralSettingsPanel observability", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         resolveProviderUpdateBlockers,
@@ -3979,7 +4000,8 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
     } as unknown as LocalApi;
@@ -4892,7 +4914,8 @@ describe("ProviderSettingsPanel community agents", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       shell: { openExternal },
       server,
@@ -6175,7 +6198,8 @@ describe("Settings search", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS) },
     } as unknown as LocalApi;
@@ -6298,7 +6322,8 @@ describe("Settings search rows", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: {
         updateSettings: vi.fn().mockResolvedValue(DEFAULT_SERVER_SETTINGS),

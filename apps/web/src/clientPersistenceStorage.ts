@@ -1,7 +1,9 @@
 import {
   ClientSettingsSchema,
+  DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   type ClientSettings,
+  type ClientSettingsPatch,
   type EnvironmentId as EnvironmentIdValue,
   PersistedRelayLinkV1Schema,
   PersistedRelayLinkV2Schema,
@@ -83,12 +85,64 @@ export function readBrowserClientSettings(): ClientSettings | null {
   }
 }
 
-export function writeBrowserClientSettings(settings: ClientSettings): void {
+function mergeBrowserClientSettings(patch: ClientSettingsPatch): ClientSettings {
+  const settings: ClientSettings = {
+    ...(readBrowserClientSettings() ?? DEFAULT_CLIENT_SETTINGS),
+    ...patch,
+  };
+  if (hasWindow()) {
+    setLocalStorageItem(CLIENT_SETTINGS_STORAGE_KEY, settings, ClientSettingsSchema);
+  }
+  return settings;
+}
+
+/**
+ * Stores the patch over what this browser holds now and returns the result, so
+ * a tab only ever changes the settings it names. Tabs can run at once and
+ * localStorage has no transactions, so the read and write hold the browser's
+ * cross-tab lock. Without one (Web Locks needs a secure address) it runs as is,
+ * and only two tabs saving within the same moment could lose a change.
+ */
+export function updateBrowserClientSettings(patch: ClientSettingsPatch): Promise<ClientSettings> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  return locks === undefined
+    ? Promise.resolve().then(() => mergeBrowserClientSettings(patch))
+    : locks.request(CLIENT_SETTINGS_STORAGE_KEY, () => mergeBrowserClientSettings(patch));
+}
+
+/**
+ * Calls the listener with the stored settings when another tab has changed them.
+ * Phones freeze background tabs, and a frozen tab can miss the storage event, so
+ * a tab also looks again when it comes back into view.
+ */
+export function subscribeBrowserClientSettings(
+  listener: (settings: ClientSettings) => void,
+): () => void {
   if (!hasWindow()) {
-    return;
+    return () => undefined;
   }
 
-  setLocalStorageItem(CLIENT_SETTINGS_STORAGE_KEY, settings, ClientSettingsSchema);
+  const lookAgain = () => {
+    const settings = readBrowserClientSettings();
+    if (settings) listener(settings);
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === CLIENT_SETTINGS_STORAGE_KEY) lookAgain();
+  };
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) lookAgain();
+  };
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") lookAgain();
+  };
+  window.addEventListener("storage", onStorage);
+  window.addEventListener("pageshow", onPageShow);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  return () => {
+    window.removeEventListener("storage", onStorage);
+    window.removeEventListener("pageshow", onPageShow);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  };
 }
 
 function readBrowserSavedEnvironmentRegistryDocument(): BrowserSavedEnvironmentRegistryDocument {

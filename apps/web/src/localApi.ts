@@ -18,7 +18,8 @@ import {
   readBrowserSavedEnvironmentRegistry,
   readBrowserSavedEnvironmentSecret,
   removeBrowserSavedEnvironmentSecret,
-  writeBrowserClientSettings,
+  subscribeBrowserClientSettings,
+  updateBrowserClientSettings,
   writeBrowserSavedEnvironmentRegistry,
   writeBrowserSavedEnvironmentSecret,
 } from "./clientPersistenceStorage";
@@ -96,12 +97,16 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
         }
         return readBrowserClientSettings();
       },
-      setClientSettings: async (settings) => {
+      updateClientSettings: async (patch) => {
         if (window.desktopBridge) {
-          return window.desktopBridge.setClientSettings(settings);
+          return window.desktopBridge.updateClientSettings(patch);
         }
-        writeBrowserClientSettings(settings);
+        return updateBrowserClientSettings(patch);
       },
+      subscribeClientSettings: (listener) =>
+        window.desktopBridge
+          ? window.desktopBridge.onClientSettingsChanged(listener)
+          : subscribeBrowserClientSettings(listener),
       getSavedEnvironmentRegistry: async () => {
         if (window.desktopBridge) {
           return window.desktopBridge.getSavedEnvironmentRegistry();

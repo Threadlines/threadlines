@@ -190,7 +190,8 @@ describe("AgentSetupScreen", () => {
     window.nativeApi = {
       persistence: {
         getClientSettings: vi.fn().mockResolvedValue(null),
-        setClientSettings: vi.fn().mockResolvedValue(undefined),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
       },
       server: { updateSettings },
     } as unknown as LocalApi;
