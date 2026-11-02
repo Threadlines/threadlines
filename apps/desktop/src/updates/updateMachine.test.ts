@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  classifyUpdateDownloadFailure,
   createInitialDesktopUpdateState,
+  describeUpdateDownloadFailure,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
@@ -12,6 +14,33 @@ import {
   reduceDesktopUpdateStateOnNoUpdate,
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine.ts";
+
+describe("classifyUpdateDownloadFailure", () => {
+  it.each([
+    ['Cannot download "https://github.com/a.exe", status 504: ', "server"],
+    ['Cannot download "https://github.com/a.exe", status 429: ', "server"],
+    [Object.assign(new Error("HTTP error"), { statusCode: 503 }), "server"],
+    ["net::ERR_INTERNET_DISCONNECTED", "network"],
+    ["connect ETIMEDOUT 140.82.114.3:443", "network"],
+    ['Cannot download "https://github.com/a.exe", status 404: ', "other"],
+    ["sha512 checksum mismatch, expected abc", "other"],
+    ["net::ERR_CONNECTION_RESET", "network"],
+    ["net::ERR_CERT_AUTHORITY_INVALID", "other"],
+    ["net::ERR_ABORTED", "other"],
+    ["cancelled", "other"],
+  ])("reads %s as %s", (cause, kind) => {
+    expect(classifyUpdateDownloadFailure(cause)).toBe(kind);
+  });
+
+  it("names the problem only when it knows it", () => {
+    expect(describeUpdateDownloadFailure(new Error("status 504"), "fallback")).toBe(
+      "GitHub's download server had a problem. Try again in a minute.",
+    );
+    expect(describeUpdateDownloadFailure(new Error("checksum mismatch"), "fallback")).toBe(
+      "fallback",
+    );
+  });
+});
 
 const runtimeInfo = {
   hostArch: "x64",

@@ -21,6 +21,7 @@ import {
   resolveFleetPair,
   resolveFleetUnlinkOutcomes,
   trustedOriginEnvironment,
+  unreachableNote,
 } from "./fleetLinks.logic";
 
 const MAC = EnvironmentId.make("env-mac");
@@ -340,6 +341,9 @@ describe("resolveFleetPair", () => {
     expect(pair.outward.inbound?.access).toBe("allowed");
     expect(pair.outward.settingsEditable).toBe(false);
     expect(pair.outward.settingsNote).toBe("Windows PC is offline.");
+    expect(unreachableNote({ ...pair.other, needsNewCode: true })).toBe(
+      "Connect to Windows PC again with a new code to change this.",
+    );
     // Mac holds Windows PC's setting and is reachable: it stays manageable,
     // though nothing new can be linked until both are there.
     expect(pair.inward.settingsEditable).toBe(true);

@@ -14,7 +14,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
 import { ServerConfig } from "../../config.ts";
 import { isLoopbackHost } from "../../startupAccess.ts";
-import { isInternalClientSession } from "../utils.ts";
+import { isInternalClientSession, isPairedDeviceSession } from "../utils.ts";
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
@@ -29,6 +29,7 @@ import {
   type ServerAuthShape,
 } from "../Services/ServerAuth.ts";
 import {
+  PAIRED_DEVICE_SESSION_TTL,
   SessionCredentialError,
   SessionCredentialService,
   type VerifiedSession,
@@ -537,8 +538,26 @@ export const makeServerAuth = Effect.gen(function* () {
       }),
     );
 
+  /**
+   * Connecting is using it: a paired computer's sign-in lasts until it goes
+   * unused for `PAIRED_DEVICE_SESSION_TTL`. Failing to renew never costs this
+   * connection, whose session is still good.
+   */
+  const renewPairedDeviceSession = (session: AuthenticatedSession) =>
+    isPairedDeviceSession(session)
+      ? sessions.extendExpiry(session.sessionId, PAIRED_DEVICE_SESSION_TTL).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Failed to renew a paired device's session.").pipe(
+              Effect.annotateLogs({ sessionId: session.sessionId, reason: cause.message }),
+            ),
+          ),
+          Effect.asVoid,
+        )
+      : Effect.void;
+
   const issueWebSocketToken: ServerAuthShape["issueWebSocketToken"] = (session) =>
-    sessions.issueWebSocketToken(session.sessionId).pipe(
+    renewPairedDeviceSession(session).pipe(
+      Effect.andThen(sessions.issueWebSocketToken(session.sessionId)),
       Effect.mapError(
         (cause) =>
           new AuthError({

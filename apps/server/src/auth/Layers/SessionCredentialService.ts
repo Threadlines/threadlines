@@ -337,13 +337,6 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         ),
       );
 
-      const now = yield* Clock.currentTimeMillis;
-      if (claims.exp <= now) {
-        return yield* new SessionCredentialError({
-          message: "Session token expired.",
-        });
-      }
-
       const row = yield* authSessions.getById({ sessionId: claims.sid });
       if (Option.isNone(row)) {
         return yield* new SessionCredentialError({
@@ -356,10 +349,12 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         });
       }
 
-      const expiresAt = DateTime.make(claims.exp);
-      if (Option.isNone(expiresAt)) {
+      // The stored row decides, not the token's `exp`: `extendExpiry` keeps a
+      // session in use alive, and a token can't change once it is handed out.
+      const now = yield* Clock.currentTimeMillis;
+      if (row.value.expiresAt.epochMilliseconds <= now) {
         return yield* new SessionCredentialError({
-          message: "Invalid `exp` claim",
+          message: "Session token expired.",
         });
       }
 
@@ -368,7 +363,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         token,
         method: claims.method,
         client: toClientMetadata(row.value.client),
-        expiresAt: expiresAt.value,
+        expiresAt: row.value.expiresAt,
         subject: claims.sub,
         role: claims.role,
       } satisfies VerifiedSession;

@@ -312,6 +312,55 @@ describe("ChatView (full app): Fleet and computer links", () => {
     }
   });
 
+  it("names a computer whose sign-in ended and offers the way back from All computers", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet" as MessageId,
+        targetText: "fleet",
+      }),
+      initialPath: "/fleet",
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          label: "Mac mini",
+          os: "darwin",
+          state: "disconnected",
+        },
+      ]);
+      await expect.element(page.getByTestId("fleet-needs-code")).not.toBeInTheDocument();
+
+      useSavedEnvironmentRuntimeStore.getState().patch(FLEET_OFFLINE_ENVIRONMENT_ID, {
+        authState: "requires-auth",
+        lastError: "Your sign-in to Mac mini has ended. Connect again with a new code.",
+      });
+
+      const row = page.getByTestId("fleet-needs-code");
+      await expect.element(row).toMatchTextContent("Mac mini");
+      await expect
+        .element(page.getByTestId("fleet-summary"))
+        .toMatchTextContent("Mac mini needs a new code.");
+      await expect
+        .element(
+          page
+            .getByTestId(`fleet-node-${FLEET_OFFLINE_ENVIRONMENT_ID}`)
+            .getByTestId("fleet-connection-needs-code"),
+        )
+        .toBeVisible();
+
+      await row.getByRole("button", { name: "Connect again", exact: true }).click();
+      await expect
+        .element(page.getByRole("dialog", { name: "Connect to a computer" }))
+        .toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("asks to connect another computer while this is the only one", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

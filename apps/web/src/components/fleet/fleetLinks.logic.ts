@@ -242,6 +242,8 @@ export interface FleetLinkReach {
   readonly reachable: boolean;
   /** This app has a connection saved for it (or it is this computer). */
   readonly known: boolean;
+  /** This app's sign-in to it ended, so it may be on and just not taking this app's calls. */
+  readonly needsNewCode?: boolean;
   /** Its server takes link calls; null until the app has heard from it. */
   readonly supportsLinks: boolean | null;
   readonly links: FleetLinksEntry | null;
@@ -300,7 +302,10 @@ export interface FleetPair {
   readonly linked: boolean;
 }
 
-function unreachableNote(computer: FleetLinkReach): string {
+export function unreachableNote(computer: FleetLinkReach): string {
+  if (computer.needsNewCode) {
+    return `Connect to ${computer.label} again with a new code to change this.`;
+  }
   return computer.known
     ? `${computer.label} is offline.`
     : `Connect to ${computer.label} to change this.`;
