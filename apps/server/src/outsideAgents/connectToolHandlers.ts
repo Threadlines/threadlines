@@ -341,11 +341,11 @@ export const projectsIn = <Project extends ConnectProject>(
   projects.filter((project) => project.kind !== "general-chat" && grantsProject(grant, project.id));
 
 /** A folder's own name: an assistant has no use for the path to it, which names the user's home. */
-const lastPathSegment = (path: string) =>
-  path
-    .replace(/[\\/]+$/u, "")
-    .split(/[\\/]/u)
-    .at(-1) || path;
+const lastPathSegment = (path: string) => {
+  // A backslash separates only on Windows; elsewhere it can be part of a name.
+  const separators = /^(?:[a-z]:[\\/]|\\\\)/iu.test(path) ? /[\\/]+/u : /\/+/u;
+  return path.split(separators).findLast((segment) => segment !== "") || path;
+};
 
 /** The project a call names, by id or by name (case ignored), among the ones it sees. */
 export const findProject = <Project extends ConnectProject>(

@@ -18,7 +18,7 @@ import {
   ASSISTANT_THREAD_WAIT_MAX_SECONDS,
   RELAY_ASSISTANT_FRAME_MAX_BYTES,
 } from "@threadlines/contracts";
-import { scrubUserPaths } from "@threadlines/shared/scrubUserPaths";
+import { restoreUserPaths, scrubUserPaths } from "@threadlines/shared/scrubUserPaths";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { Tool } from "effect/ai";
@@ -69,6 +69,17 @@ const INBOX_DESCRIPTION = `What needs the user, and what finished or failed, in 
  */
 const DRIVES_AN_AGENT = { destructive: true, openWorld: true };
 const STOPS_AN_AGENT = { destructive: true, openWorld: false };
+
+/** Answers name options as this door showed them, with the home folder scrubbed: back to what they say. */
+const withHomeRestored = (parameters: Tool.Parameters<typeof OutsideThreadAnswerTool>) => {
+  const restore = (text: string) => restoreUserPaths(text, homedir());
+  return {
+    ...parameters,
+    answers: parameters.answers.map((answer) =>
+      typeof answer === "string" ? restore(answer) : answer.map(restore),
+    ),
+  };
+};
 
 /** Runs a handler with the parameters AssistantMcp decoded with the tool's own schema. */
 const decoded = <T extends Tool.Any>(_tool: T, parameters: unknown) =>
@@ -140,7 +151,10 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
         required: ["requestId"],
         hints: DRIVES_AN_AGENT,
         run: (caller, parameters) =>
-          handlers.thread_answer(caller, decoded(OutsideThreadAnswerTool, parameters)),
+          handlers.thread_answer(
+            caller,
+            withHomeRestored(decoded(OutsideThreadAnswerTool, parameters)),
+          ),
       },
     ];
     const handler = makeAssistantMcp({
