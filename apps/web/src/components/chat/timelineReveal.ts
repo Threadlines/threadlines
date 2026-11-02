@@ -6,7 +6,8 @@
  * The list aims by guessed heights for rows it has not drawn yet, and rows
  * can move while it scrolls (older steps loading, a row being measured), so a
  * reveal scrolls, waits for the row to be drawn, and scrolls again if it never
- * appears.
+ * appears. Once placed, a row can be held there while the list finishes
+ * measuring the rows it drew on the way.
  */
 import type { LegendListRef } from "@legendapp/list/react";
 
@@ -29,8 +30,17 @@ export interface TimelineRowRevealOptions {
   /** Frames waited after each scroll for the row to be drawn. */
   readonly renderAttempts: number;
   readonly onRow: (row: HTMLElement) => void;
+  /**
+   * Frames after `onRow` during which the row is handed to `onRow` again
+   * whenever the list moved it: rows drawn on the way are measured a frame or
+   * two late. Ends once the row holds still for HOLD_STILL_FRAMES. Unset: no hold.
+   */
+  readonly holdFrames?: number | undefined;
   readonly onGiveUp?: (() => void) | undefined;
 }
+
+/** Frames a held row must keep still before the hold ends. */
+const HOLD_STILL_FRAMES = 3;
 
 /** Scrolls to a row until it is drawn, then hands it over. Returns a cancel. */
 export function revealTimelineRow(options: TimelineRowRevealOptions): () => void {
@@ -47,11 +57,29 @@ export function revealTimelineRow(options: TimelineRowRevealOptions): () => void
     if (!cancelled) options.onGiveUp?.();
   };
 
+  const holdRow = (framesLeft: number, lastTop: number, stillFrames: number) => {
+    if (framesLeft <= 0 || stillFrames >= HOLD_STILL_FRAMES) return;
+    nextFrame(() => {
+      const row = options.findRow();
+      if (!row) return;
+      const top = row.getBoundingClientRect().top;
+      if (Math.abs(top - lastTop) < 1) {
+        holdRow(framesLeft - 1, top, stillFrames + 1);
+        return;
+      }
+      options.onRow(row);
+      holdRow(framesLeft - 1, row.getBoundingClientRect().top, 0);
+    });
+  };
+
   const waitForRow = (renderAttemptsLeft: number, scrollAttemptsLeft: number) => {
     nextFrame(() => {
       const row = options.findRow();
       if (row) {
         options.onRow(row);
+        if (options.holdFrames !== undefined) {
+          holdRow(options.holdFrames, row.getBoundingClientRect().top, 0);
+        }
       } else if (renderAttemptsLeft > 1) {
         waitForRow(renderAttemptsLeft - 1, scrollAttemptsLeft);
       } else if (scrollAttemptsLeft > 1) {

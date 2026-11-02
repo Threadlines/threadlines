@@ -701,6 +701,8 @@ function findFirstTimelineSearchMatchRect(messageRow: HTMLElement, query: string
 const REVEAL_VIEW_POSITION = 0.2;
 /** Tries to reach a followed link's row while the list moves under it. */
 const REVEAL_ATTEMPTS = 3;
+/** Frames a followed link's row is held in place after it lands. */
+const REVEAL_HOLD_FRAMES = 30;
 
 /** Puts a drawn row at REVEAL_VIEW_POSITION, correcting a scroll that aimed by
  *  guessed row heights. */
@@ -1414,6 +1416,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         scrollAttempts: REVEAL_ATTEMPTS,
         renderAttempts: 1,
         onRow: (row) => settleRevealedRow(listRef.current, row),
+        // The rows drawn on the way are measured a frame or two after it
+        // lands and can push it off its place; it is put back until they stop.
+        holdFrames: REVEAL_HOLD_FRAMES,
       });
     },
     [listRef, markUserScrollIntent],
