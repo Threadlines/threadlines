@@ -2089,6 +2089,80 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.updatedAt).toBe("2026-01-01T00:00:05.000Z");
   });
 
+  it("sends a message again when its runtime asks, and shows the error if it can't", async () => {
+    const harness = await createHarness();
+    const askToResend = (id: string) =>
+      harness.emit({
+        type: "session.exited",
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+        payload: {
+          reason: "Authentication failed",
+          recoverable: true,
+          exitKind: "error",
+          resendTurn: {
+            messageId: asMessageId("user-message-resend"),
+            error: "Your access token could not be refreshed.",
+          },
+        },
+      });
+
+    // No message to send yet: the user is told what stopped it.
+    askToResend("evt-resend-refused");
+    const refused = await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.lastError === "Your access token could not be refreshed.",
+    );
+    expect(refused.session?.status).toBe("stopped");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-resend"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-resend"),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-running-resend"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-resend"),
+          updatedAt: "2026-01-01T00:00:02.000Z",
+          lastError: null,
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    askToResend("evt-resend");
+    const resent = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "starting" &&
+        thread.session.updatedAt === "2026-01-01T00:00:03.000Z",
+    );
+    expect(resent.session?.lastError).toBeNull();
+    // The same bubble, sent again.
+    expect(resent.messages.filter((message) => message.role === "user")).toHaveLength(1);
+  });
+
   it("keeps pending turn startup visible until the provider turn starts", async () => {
     const harness = await createHarness();
     const requestedAt = "2026-01-01T00:00:01.000Z";

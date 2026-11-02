@@ -42,7 +42,11 @@ import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+} from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
@@ -2047,7 +2051,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("treats a retryable auth error as terminal instead of a warning", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
 
       yield* runtime.emit({
         id: asEventId("evt-retryable-auth-error"),
@@ -2067,19 +2073,16 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         },
       } satisfies ProviderEvent);
 
-      const firstEvent = yield* Fiber.join(firstEventFiber);
+      const [firstEvent, secondEvent] = yield* Fiber.join(eventsFiber);
 
-      assert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag !== "Some") {
-        return;
-      }
       // Retrying cannot heal an expired credential; the sign-in surface must
       // appear on the first attempt, not after the reconnect schedule runs out.
-      assert.equal(firstEvent.value.type, "runtime.error");
-      if (firstEvent.value.type !== "runtime.error") {
+      assert.equal(firstEvent?.type, "runtime.error");
+      if (firstEvent?.type !== "runtime.error") {
         return;
       }
-      assert.equal(firstEvent.value.payload.class, "authentication_error");
+      assert.equal(firstEvent.payload.class, "authentication_error");
+      assert.equal(secondEvent?.type, "session.exited");
     }),
   );
 
@@ -2362,6 +2365,203 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         exitKind: "error",
       });
       assert.equal(runtime.closeImpl.mock.calls.length, 1);
+    }),
+  );
+
+  const staleSignInError = (id: string): ProviderEvent => ({
+    id: asEventId(id),
+    kind: "notification",
+    provider: ProviderDriverKind.make("codex"),
+    threadId: asThreadId("thread-1"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    method: "error",
+    turnId: asTurnId("turn-1"),
+    payload: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      error: {
+        message:
+          "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+        codexErrorInfo: "unauthorized",
+      },
+      willRetry: false,
+    },
+  });
+  // The agent answering clears the mark of an earlier resend on this thread.
+  const agentAnswers = (runtime: FakeCodexRuntime, id: string, turnId = "turn-1") =>
+    runtime.emit({
+      id: asEventId(id),
+      kind: "notification",
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "item/agentMessage/delta",
+      turnId: asTurnId(turnId),
+      itemId: asItemId(id),
+      payload: { itemId: id, threadId: "thread-1", turnId, delta: "Hi." },
+    });
+  // The tests share one adapter, so an earlier test's resend must not decide this one's.
+  const clearResendMark = (id: string) =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const cleared = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "content.delta",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      yield* agentAnswers(runtime, id);
+      yield* Fiber.join(cleared);
+    });
+  const signInOutcome = (adapter: CodexAdapterShape) =>
+    Stream.filter(
+      adapter.streamEvents,
+      (event) =>
+        event.type === "runtime.error" ||
+        event.type === "session.exited" ||
+        (event.type === "runtime.warning" && event.payload.warningKind === "sign-in-resend"),
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+
+  it.effect("sends a person's untouched message again once when Codex's sign-in goes stale", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const send = adapter.sendTurn({
+        threadId: asThreadId("thread-1"),
+        input: "hello",
+        attachments: [],
+        resend: { messageId: asMessageId("message-1"), chainEpoch: 4 },
+      });
+      yield* send;
+      const firstFiber = yield* signInOutcome(adapter);
+      yield* runtime.emit(staleSignInError("evt-stale-sign-in-1"));
+
+      const first = Array.from(yield* Fiber.join(firstFiber));
+      assert.deepEqual(
+        first.map((event) => event.type),
+        ["runtime.warning", "session.exited"],
+      );
+      const exited = first[1];
+      assert.deepEqual(exited?.type === "session.exited" ? exited.payload.resendTurn : undefined, {
+        messageId: asMessageId("message-1"),
+        chainEpoch: 4,
+        error:
+          "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again. Run `codex login` in a terminal, then retry.",
+      });
+      // Already gone when the exit is read, so the resend gets a fresh app server.
+      assert.equal(yield* adapter.hasSession(asThreadId("thread-1")), false);
+      assert.equal(runtime.closeImpl.mock.calls.length, 1);
+
+      // A fresh app server that fails too means the sign-in itself is bad.
+      const { runtime: second } = yield* startLifecycleRuntime();
+      yield* send;
+      const secondFiber = yield* signInOutcome(adapter);
+      yield* second.emit(staleSignInError("evt-stale-sign-in-2"));
+      const repeat = Array.from(yield* Fiber.join(secondFiber));
+      assert.deepEqual(
+        repeat.map((event) => event.type),
+        ["runtime.error", "session.exited"],
+      );
+      const repeatExit = repeat[1];
+      assert.equal(
+        repeatExit?.type === "session.exited" ? repeatExit.payload.resendTurn : "missing",
+        undefined,
+      );
+
+      // Once the agent answers, a later stale sign-in gets its one resend again.
+      const { runtime: third } = yield* startLifecycleRuntime();
+      yield* send;
+      yield* agentAnswers(third, "evt-answered");
+      third.sendTurnImpl.mockImplementationOnce(() =>
+        Promise.resolve({ threadId: asThreadId("thread-1"), turnId: asTurnId("turn-2") }),
+      );
+      yield* send;
+      const thirdFiber = yield* signInOutcome(adapter);
+      yield* third.emit({
+        ...staleSignInError("evt-stale-sign-in-3"),
+        turnId: asTurnId("turn-2"),
+      });
+      assert.equal(Array.from(yield* Fiber.join(thirdFiber))[0]?.type, "runtime.warning");
+    }),
+  );
+
+  it.effect("reports a sign-in failure when sending the message again wouldn't be right", () =>
+    Effect.gen(function* () {
+      yield* clearResendMark("evt-clear-before-reported");
+      const reported = (
+        arrange: (
+          adapter: CodexAdapterShape,
+          runtime: FakeCodexRuntime,
+        ) => Effect.Effect<unknown, ProviderAdapterError>,
+        id: string,
+      ) =>
+        Effect.gen(function* () {
+          const { adapter, runtime } = yield* startLifecycleRuntime();
+          yield* arrange(adapter, runtime);
+          const fiber = yield* signInOutcome(adapter);
+          yield* runtime.emit(staleSignInError(id));
+          return Array.from(yield* Fiber.join(fiber))[0]?.type;
+        });
+      const threadId = asThreadId("thread-1");
+      const sent = { threadId, input: "hello", attachments: [] };
+      const allowed = { ...sent, resend: { messageId: asMessageId("message-1") } };
+
+      // The server gave no leave: an agent wrote it, or it carried more than its words.
+      assert.equal(yield* reported((adapter) => adapter.sendTurn(sent), "evt-1"), "runtime.error");
+      // Codex had started on it: resending could repeat what it did.
+      assert.equal(
+        yield* reported(
+          (adapter, runtime) =>
+            adapter.sendTurn(allowed).pipe(Effect.andThen(agentAnswers(runtime, "evt-worked"))),
+          "evt-2",
+        ),
+        "runtime.error",
+      );
+      // A background agent of an older turn talking after doesn't undo that.
+      assert.equal(
+        yield* reported(
+          (adapter, runtime) =>
+            adapter
+              .sendTurn(allowed)
+              .pipe(
+                Effect.andThen(agentAnswers(runtime, "evt-worked-too")),
+                Effect.andThen(agentAnswers(runtime, "evt-older-turn", "turn-0")),
+              ),
+          "evt-2b",
+        ),
+        "runtime.error",
+      );
+      // A failure of another turn says nothing about their message.
+      assert.equal(
+        yield* reported(
+          (adapter, runtime) =>
+            Effect.gen(function* () {
+              runtime.sendTurnImpl.mockImplementationOnce(() =>
+                Promise.resolve({ threadId, turnId: asTurnId("turn-other") }),
+              );
+              yield* adapter.sendTurn(allowed);
+            }),
+          "evt-2c",
+        ),
+        "runtime.error",
+      );
+      // Someone steered into it: the resend wouldn't carry that.
+      assert.equal(
+        yield* reported(
+          (adapter) =>
+            adapter.sendTurn(allowed).pipe(
+              Effect.andThen(
+                adapter.steerTurn!({
+                  threadId,
+                  expectedTurnId: asTurnId("turn-1"),
+                  input: "also this",
+                  attachments: [],
+                }),
+              ),
+            ),
+          "evt-3",
+        ),
+        "runtime.error",
+      );
+      // A failure in a turn Codex started by itself has no message to send.
+      assert.equal(yield* reported(() => Effect.void, "evt-5"), "runtime.error");
     }),
   );
 

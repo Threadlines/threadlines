@@ -3008,7 +3008,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ];
     }
 
-    case "thread.turn.retry": {
+    case "thread.turn.retry":
+    case "thread.turn.resend": {
       const targetThread = yield* requireThread({
         readModel,
         command,
@@ -3025,13 +3026,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // steered into it while it ran) is never the turn's own message, so it
       // is never what a retry sends again.
       const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
-      if (!session || session.lastError === null) {
+      if (!session || (command.type === "thread.turn.retry" && session.lastError === null)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no failed turn to retry.`,
         });
       }
-      const lastUserMessage = turnMessages.findLast((message) => message.role === "user");
+      if (
+        command.type === "thread.turn.resend" &&
+        command.chainEpoch !== undefined &&
+        command.chainEpoch !== targetThread.agentRequests.chainEpoch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' was stopped after this message was sent.`,
+        });
+      }
+      const lastUserMessage =
+        command.type === "thread.turn.resend"
+          ? turnMessages.find(
+              (message) => message.role === "user" && message.id === command.messageId,
+            )
+          : turnMessages.findLast((message) => message.role === "user");
       if (!lastUserMessage) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
