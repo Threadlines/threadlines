@@ -5586,12 +5586,12 @@ export default function ChatView(props: ChatViewProps) {
           : answeringOnTheSide !== null
             ? {
                 title: `${nameOf(answeringOnTheSide.participantId)} is already answering on the side`,
-                description: `Wait for it to finish, or pick "Send when done" to send this after ${nameOf(roomHolderId)}.`,
+                description: `Wait for it to finish, or pick "After ${nameOf(roomHolderId)}" in the send menu.`,
               }
             : composerAttachments.length > 0 || composerDrawingContexts.length > 0
               ? {
                   title: "Pictures and files can't go with a side question",
-                  description: `Pick "Send when done" to send them after ${nameOf(roomHolderId)}.`,
+                  description: `Pick "After ${nameOf(roomHolderId)}" in the send menu to send them then.`,
                 }
               : null;
       if (refusal) {

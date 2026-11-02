@@ -1366,6 +1366,12 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       await waitForComposerText("just looking");
       await page.getByLabelText("Choose how this message is sent").hover();
       await expect.element(page.getByText("Send when done")).toBeVisible();
+      // The arrow stays slim on desktop: the button's size classes outrank a
+      // width unless it opts out of them.
+      expect(
+        page.getByLabelText("Choose how this message is sent").element().getBoundingClientRect()
+          .width,
+      ).toBe(20);
       await page.getByTestId("composer-editor").hover();
 
       // The menu says steer (the default).

@@ -73,6 +73,9 @@ const SEND_SHORTCUT = {
 } as const;
 /** Cmd/Ctrl+Enter, shown beside the way it would send. */
 const OPPOSITE_DELIVERY_SHORTCUT = { ...SEND_SHORTCUT, modKey: true } as const;
+/** The send keys take little room beside the send button: ⌘↵, Ctrl+↵, ↵. */
+const formatSendKeyLabel = (shortcut: typeof SEND_SHORTCUT | typeof OPPOSITE_DELIVERY_SHORTCUT) =>
+  formatShortcutLabel(shortcut).replace(/Enter$/u, "\u21B5");
 
 export const FOLLOW_UP_DELIVERY_LABELS: Record<
   FollowUpDelivery,
@@ -160,6 +163,9 @@ function FollowUpSplitButton(props: {
   options: ReadonlyArray<{
     value: FollowUpDelivery;
     label: string;
+    icon: ReactNode;
+    /** Says what the row does on phones, which have no hover labels. */
+    hint: string;
     title: string;
     disabled?: boolean;
   }>;
@@ -195,10 +201,12 @@ function FollowUpSplitButton(props: {
         <Menu onOpenChange={setMenuOpen}>
           <MenuTrigger
             render={
+              // Not size="icon": its desktop size outranks a width set here.
+              // Wider for fingers; the touch area starts at the divider, so a
+              // tap on the send half can't open the menu by mistake.
               <Button
-                size="icon"
                 variant="default"
-                className="w-5 rounded-l-none rounded-r-full border-l-white/12 px-0"
+                className="w-7 rounded-l-none rounded-r-full border-l-white/12 px-0 pointer-coarse:after:left-0 pointer-coarse:after:min-w-9 sm:w-5"
                 aria-label="Choose how this message is sent"
                 {...props.pointerFocusProps}
                 disabled={props.disabled}
@@ -207,7 +215,7 @@ function FollowUpSplitButton(props: {
           >
             <ChevronDownIcon className="size-3" />
           </MenuTrigger>
-          <MenuPopup align="end" side="top">
+          <MenuPopup align="end" side="top" className="max-w-72">
             <MenuRadioGroup
               value={props.value}
               onValueChange={(value) => {
@@ -222,11 +230,18 @@ function FollowUpSplitButton(props: {
                   value={option.value}
                   disabled={option.disabled === true}
                   title={option.title}
+                  className="pe-2"
                 >
-                  <span className="min-w-0 flex-1">{option.label}</span>
+                  {option.icon}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{option.label}</span>
+                    <span className="block text-muted-foreground text-xs sm:hidden">
+                      {option.hint}
+                    </span>
+                  </span>
                   {option.value !== props.value && option.disabled !== true ? (
-                    <MenuShortcut className="ps-3 tracking-normal max-sm:hidden">
-                      {formatShortcutLabel(OPPOSITE_DELIVERY_SHORTCUT)}
+                    <MenuShortcut className="ps-1 tracking-normal max-sm:hidden">
+                      {formatSendKeyLabel(OPPOSITE_DELIVERY_SHORTCUT)}
                     </MenuShortcut>
                   ) : null}
                 </MenuRadioItem>
@@ -252,7 +267,7 @@ function FollowUpSplitButton(props: {
                     {option.label}
                   </span>
                   <kbd className="text-right font-sans text-muted-foreground">
-                    {formatShortcutLabel(isCurrent ? SEND_SHORTCUT : OPPOSITE_DELIVERY_SHORTCUT)}
+                    {formatSendKeyLabel(isCurrent ? SEND_SHORTCUT : OPPOSITE_DELIVERY_SHORTCUT)}
                   </kbd>
                 </Fragment>
               );
@@ -296,6 +311,10 @@ export const ComposerRoomSendButton = memo(function ComposerRoomSendButton({
         {
           value: "steer",
           label: "Ask now",
+          icon: <MessageCircleQuestionIcon />,
+          hint: roomDelivery.canAsk
+            ? "Answers now and can only read"
+            : "Can't answer while another agent works",
           disabled: !roomDelivery.canAsk,
           title: roomDelivery.canAsk
             ? `${roomDelivery.recipientName} answers now and can only read, while ${roomDelivery.holderName} keeps working`
@@ -303,7 +322,9 @@ export const ComposerRoomSendButton = memo(function ComposerRoomSendButton({
         },
         {
           value: "queue",
-          label: `Send when ${roomDelivery.holderName} finishes`,
+          label: `After ${roomDelivery.holderName}`,
+          icon: <ListEndIcon />,
+          hint: `Waits for ${roomDelivery.holderName} to finish`,
           title: `Send to ${roomDelivery.recipientName} when ${roomDelivery.holderName} finishes`,
         },
       ]}
@@ -402,11 +423,15 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               {
                 value: "steer",
                 label: FOLLOW_UP_DELIVERY_LABELS.steer.menuLabel,
+                icon: <CornerDownRightIcon />,
+                hint: "Adds to the reply in progress",
                 title: "Add this message to the reply in progress",
               },
               {
                 value: "queue",
                 label: FOLLOW_UP_DELIVERY_LABELS.queue.menuLabel,
+                icon: <ListEndIcon />,
+                hint: "Waits for the reply to finish",
                 title: "Wait for the reply to finish, then send",
               },
             ]}
