@@ -3131,6 +3131,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   sentFrom: Schema.optional(MessageSentFrom),
   /** See MessageTrigger. A client can only name `accountSwitch`. */
   trigger: Schema.optional(MessageTrigger),
+  /** Server only: a scheduled or event task's run sent it (see ThreadTurnStartRequestedPayload). */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 
@@ -5089,6 +5091,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * mode this event carries, which the decider checked against the ceiling.
    */
   fromOutside: Schema.optional(OutsideTurnOrigin),
+  /**
+   * A scheduled or event task's run sent the message, into the thread it
+   * started or one it continues. Only usage analytics reads it; a retry of
+   * the message does not carry it.
+   */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 

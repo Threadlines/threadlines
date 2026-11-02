@@ -2947,6 +2947,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
           ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
+          ...(command.scheduledTaskId !== undefined
+            ? { scheduledTaskId: command.scheduledTaskId }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -3462,6 +3465,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             // Only the user's own queued message carries it.
             ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
             ...(!agentQueued && queued.sentFrom !== undefined ? { sentFrom: queued.sentFrom } : {}),
+            ...(queued.scheduledTaskId !== undefined
+              ? { scheduledTaskId: queued.scheduledTaskId }
+              : {}),
             createdAt: command.createdAt,
           },
         ],
