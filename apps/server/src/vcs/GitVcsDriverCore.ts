@@ -1467,6 +1467,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     ).pipe(Effect.map((result) => result.exitCode === 0));
 
+  /** The commit `refName` names now, or null when that can't be read. */
+  const resolveCommit = (cwd: string, refName: string) =>
+    executeGit(
+      "GitVcsDriver.resolveCommit",
+      cwd,
+      ["rev-parse", "--verify", "--quiet", `${refName}^{commit}`],
+      { allowNonZeroExit: true, timeoutMs: 5_000 },
+    ).pipe(
+      Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : null)),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+
   // A name is taken when a local branch or any remote's branch already uses
   // it (or nests under it). Generated names share namespaces like `fix/` with
   // everyone else's branches, and pushing over a teammate's would fail.
@@ -5065,6 +5077,72 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  /**
+   * Takes back what a failed `git worktree add` made, and only that.
+   *
+   * Git cleans up after a plain failure and on the SIGTERM a timeout sends,
+   * except the branch of `-b`, which it makes first. Killed outright (a timeout's
+   * taskkill on Windows, or anything else's kill) it can't: the folder stays, with
+   * the registration locked `initializing`. That goes only when the add was cut
+   * off, so it really was this add working there (a quick refusal may have met
+   * someone else's add), and never from a folder that was there before the add.
+   *
+   * The branch goes only if the add made it, nothing is on it, and it still sits
+   * where it was cut from, so it holds no work. A failure here is only logged: the
+   * caller gets the add's own.
+   */
+  const undoFailedWorktreeAdd = Effect.fn("GitVcsDriver.createWorktree.undoFailedAdd")(
+    function* (input: {
+      readonly cwd: string;
+      readonly worktreePath: string;
+      readonly branch: string;
+      readonly folderExisted: boolean;
+      readonly madeBranchFrom: string | null;
+      readonly failure: GitCommandError;
+    }) {
+      const { cwd, branch } = input;
+      const listing = yield* executeGit(
+        "GitVcsDriver.createWorktree.undoFailedAdd.list",
+        cwd,
+        ["worktree", "list", "--porcelain"],
+        { timeoutMs: 5_000 },
+      );
+      const onBranch = parseWorktreeRegistrations(listing.stdout).find(
+        (entry) => entry.branch === branch,
+      );
+      if (onBranch !== undefined) {
+        const cutOff = /(?:timed out|failed to report exit code)\.$/u.test(input.failure.detail);
+        if (
+          !cutOff ||
+          input.folderExisted ||
+          onBranch.lockReason !== GitVcsDriver.GIT_ADDING_LOCK_REASON ||
+          path.basename(onBranch.path) !== path.basename(input.worktreePath)
+        ) {
+          return;
+        }
+        yield* removeWorktree({ cwd, path: onBranch.path, force: true, unlock: true });
+      }
+      if (
+        input.madeBranchFrom === null ||
+        /a branch named .* already exists/iu.test(input.failure.detail)
+      ) {
+        return;
+      }
+      yield* executeGit(
+        "GitVcsDriver.createWorktree.undoFailedAdd.branch",
+        cwd,
+        ["update-ref", "-d", `refs/heads/${branch}`, input.madeBranchFrom],
+        { timeoutMs: 5_000, allowNonZeroExit: true },
+      );
+    },
+    (effect) =>
+      Effect.catch(effect, (error) =>
+        Effect.logWarning("could not clean up after a failed git worktree add", {
+          detail: error.detail,
+        }),
+      ),
+  );
+
   const createWorktree: GitVcsDriver.GitVcsDriverShape["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input) {
@@ -5079,13 +5157,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ? ["worktree", "add", "--no-track", "-b", input.newRefName, worktreePath, input.refName]
       : ["worktree", "add", "--no-guess", worktreePath, input.refName];
 
-    // Untranslated messages: the error matched below, and the `initializing`
-    // lock reason git leaves on an add a crash cut short, which ThreadBootstrap
-    // reads back to know the checkout is unfinished.
+    // Untranslated messages: the errors matched here and in
+    // undoFailedWorktreeAdd, and the `initializing` lock reason git leaves on an
+    // add a crash cut short, which ThreadBootstrap reads back to know the checkout
+    // is unfinished.
     const addOptions = {
       fallbackErrorMessage: "git worktree add failed",
       env: { LC_ALL: "C" },
     };
+    // What's here already, so a failed add takes back only what it made. Anything
+    // that can't be read counts as already here.
+    const folderExisted = yield* fileSystem
+      .exists(worktreePath)
+      .pipe(Effect.catch(() => Effect.succeed(true)));
+    const branchWasFree =
+      input.newRefName !== undefined &&
+      !(yield* branchExists(input.cwd, input.newRefName).pipe(
+        Effect.catch(() => Effect.succeed(true)),
+      ));
+    const madeBranchFrom = branchWasFree ? yield* resolveCommit(input.cwd, input.refName) : null;
     yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, addOptions).pipe(
       Effect.catchIf(
         // A worktree whose folder was deleted out-of-band leaves its
@@ -5100,6 +5190,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           }).pipe(
             Effect.andThen(executeGit("GitVcsDriver.createWorktree", input.cwd, args, addOptions)),
           ),
+      ),
+      Effect.tapError((failure) =>
+        undoFailedWorktreeAdd({
+          cwd: input.cwd,
+          worktreePath,
+          branch: targetBranch,
+          folderExisted,
+          madeBranchFrom,
+          failure,
+        }),
       ),
     );
 
