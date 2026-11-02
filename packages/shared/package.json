@@ -339,6 +339,14 @@
       "types": "./src/placeSearch.ts",
       "import": "./src/placeSearch.ts"
     },
+    "./settingsEdits": {
+      "types": "./src/settingsEdits.ts",
+      "import": "./src/settingsEdits.ts"
+    },
+    "./settingsChangeState": {
+      "types": "./src/settingsChangeState.ts",
+      "import": "./src/settingsChangeState.ts"
+    },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",
       "import": "./src/messageAuthor.ts"

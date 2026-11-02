@@ -37,6 +37,7 @@ export * from "./usage.ts";
 export * from "./links.ts";
 export * from "./scheduledTasks.ts";
 export * from "./moves.ts";
+export * from "./settingsChanges.ts";
 export * from "./projectSetup.ts";
 export * from "./outsideAgents.ts";
 export * from "./peerRpc.ts";
