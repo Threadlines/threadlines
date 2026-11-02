@@ -210,6 +210,22 @@ export function updateSettingsAndPersist(patch: Partial<UnifiedSettings>): Promi
   return writeSettings(patch);
 }
 
+/**
+ * Writes this device's settings and resolves only once they are saved,
+ * rejecting (and changing nothing) when the save fails, where `updateSettings`
+ * only logs it. For callers that must say truthfully whether a change landed:
+ * an agent's settings change reports each device setting it made. Waits for
+ * the saved settings to load first, so the write never puts defaults over them.
+ */
+export async function updateClientSettingsAndPersist(patch: ClientSettingsPatch): Promise<void> {
+  await hydrateClientSettings();
+  await ensureLocalApi().persistence.setClientSettings({
+    ...getClientSettingsSnapshot(),
+    ...patch,
+  });
+  replaceClientSettingsSnapshot({ ...getClientSettingsSnapshot(), ...patch });
+}
+
 function writeSettings(patch: Partial<UnifiedSettings>): Promise<void> {
   const { serverPatch, clientPatch } = splitPatch(patch);
   let serverWrite: Promise<unknown> = Promise.resolve();

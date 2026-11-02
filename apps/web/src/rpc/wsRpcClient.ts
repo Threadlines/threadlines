@@ -445,6 +445,15 @@ export interface WsRpcClient {
     >;
   };
   /**
+   * Agents' settings changes (docs/design/agent-settings-changes.md), answered
+   * on the thread's own computer: the card's answer, and the claiming app's
+   * report of the device changes it made.
+   */
+  readonly settingsChange: {
+    readonly respond: RpcUnaryMethod<typeof WS_METHODS.settingsChangeRespond>;
+    readonly reportDevice: RpcUnaryMethod<typeof WS_METHODS.settingsChangeReportDevice>;
+  };
+  /**
    * Agents outside Threadlines (docs/design/outside-agents.md): owner only,
    * on servers whose descriptor reports `outsideAgents`.
    */
@@ -1252,6 +1261,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) =>
           client[WS_METHODS.scheduledTasksDismissWebhookAddressChange](input),
         ),
+    },
+    settingsChange: {
+      respond: (input) =>
+        transport.request((client) => client[WS_METHODS.settingsChangeRespond](input)),
+      reportDevice: (input) =>
+        transport.request((client) => client[WS_METHODS.settingsChangeReportDevice](input)),
     },
     links: {
       subscribe: (listener, options) =>

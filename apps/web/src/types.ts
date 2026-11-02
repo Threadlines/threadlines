@@ -8,6 +8,7 @@ import type {
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
+  OrchestrationSettingsChangeRequest,
   PullRequestMergeMethod,
   ChatFileAttachmentKind,
   ChatSkillReference,
@@ -244,6 +245,12 @@ export interface Thread {
    */
   childRequests?: OrchestrationChildRequestState;
   /**
+   * See OrchestrationThread.settingsRequests: settings changes its agents
+   * asked for (docs/design/agent-settings-changes.md). Carried by the thread's
+   * detail stream only, so absent until it loads.
+   */
+  settingsRequests?: ReadonlyArray<OrchestrationSettingsChangeRequest>;
+  /**
    * Child threads (docs/design/child-threads.md): the thread whose agent
    * started this one, kept after it is separated. Absent or null: none.
    */
@@ -265,6 +272,8 @@ export interface Thread {
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
+  /** A settings change its agent asked for is on its card, or being made. */
+  pendingSettingsChange?: boolean;
   /** See ThreadShell.remoteOrigin. */
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.move. */
@@ -382,6 +391,8 @@ export interface ThreadShell {
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
+  /** A settings change its agent asked for is on its card, or being made. */
+  pendingSettingsChange?: boolean;
   /**
    * Started by an agent on a linked computer: which computer and thread.
    * Absent or null: started on this thread's own computer.
@@ -496,6 +507,8 @@ export interface SidebarThreadSummary {
   awaitedChildThreadCount?: number;
   /** See ThreadShell.pendingChildApproval. */
   pendingChildApproval?: boolean;
+  /** See ThreadShell.pendingSettingsChange. */
+  pendingSettingsChange?: boolean;
   /**
    * The thread's agent asked to create or change a scheduled task and a card
    * waits for the user's answer (from that computer's scheduled tasks feed,

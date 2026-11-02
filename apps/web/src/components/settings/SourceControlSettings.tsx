@@ -2,7 +2,10 @@ import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import { Fragment, type ReactNode } from "react";
-import type { SettingsPlaceId } from "@threadlines/shared/appPlaces";
+import {
+  SOURCE_CONTROL_WRITING_STYLE_LABELS,
+  type SettingsPlaceId,
+} from "@threadlines/shared/appPlaces";
 import type {
   EnvironmentId,
   SourceControlProviderKind,
@@ -413,6 +416,8 @@ export function OpenPanelByDefaultRow() {
   );
 }
 
+// Labels from the catalog (appPlaces), so an agent's settings change card
+// words each style the way this row does.
 const WRITING_STYLE_OPTIONS: ReadonlyArray<{
   readonly value: SourceControlWritingStyleMode;
   readonly label: string;
@@ -420,19 +425,19 @@ const WRITING_STYLE_OPTIONS: ReadonlyArray<{
 }> = [
   {
     value: "repo_conventions",
-    label: "Repository conventions",
+    label: SOURCE_CONTROL_WRITING_STYLE_LABELS.repo_conventions,
     description:
       "In each project, matches the style of recent commit messages and merged pull requests.",
   },
   {
     value: "conventional_commits",
-    label: "Conventional Commits",
+    label: SOURCE_CONTROL_WRITING_STYLE_LABELS.conventional_commits,
     description:
       "Uses Conventional Commit prefixes for commit messages; PR titles and descriptions stay concise.",
   },
   {
     value: "custom",
-    label: "Custom instructions",
+    label: SOURCE_CONTROL_WRITING_STYLE_LABELS.custom,
     description:
       "Applies your instructions to commit messages, PR titles, and PR descriptions in every project.",
   },
