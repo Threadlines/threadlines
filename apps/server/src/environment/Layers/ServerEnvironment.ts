@@ -107,6 +107,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       signInAddressReplay: true,
       outsideAgents: true,
       pushAlerts: true,
+      phoneAlertControls: true,
       deviceNames: true,
       draftGoalSetup: true,
       pullRequestSwitchesByNumber: true,

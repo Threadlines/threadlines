@@ -403,6 +403,8 @@ export const OrchestrationProject = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** This project's threads send no phone alerts. Absent means they do. */
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -2493,6 +2495,8 @@ export const OrchestrationProjectShell = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** This project's threads send no phone alerts. Absent means they do. */
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -2787,6 +2791,7 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -4821,6 +4826,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 

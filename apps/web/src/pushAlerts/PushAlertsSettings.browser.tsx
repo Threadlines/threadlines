@@ -42,11 +42,13 @@ describe("PushAlertsSettingsSection", () => {
     usePushAlertsStore.setState({
       enabled: false,
       kinds: DEFAULT_ALERT_KINDS,
+      quietAtComputer: true,
       permission: "default",
       statusByEnvironmentId: {},
       busy: false,
       error: null,
     });
+    localStorage.removeItem("threadlines:push-alerts:quiet-at-computer");
     document.body.innerHTML = "";
   });
 
@@ -57,6 +59,23 @@ describe("PushAlertsSettingsSection", () => {
       await expect.element(page.getByText("Alerts on this device")).not.toBeInTheDocument();
       saveComputer(MAC, "Studio Mac", true);
       await expect.element(page.getByText("Alerts on this device")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a phone quiet at a computer unless it says otherwise, and remembers that", async () => {
+    saveComputer(MAC, "Studio Mac", true);
+    usePushAlertsStore.setState({ permission: "granted" });
+    const screen = await render(<PushAlertsSettingsSection />);
+    const quiet = page.getByRole("switch", { name: "Quiet while I'm at a computer" });
+    try {
+      await expect.element(quiet).not.toBeInTheDocument();
+      usePushAlertsStore.setState({ enabled: true });
+      await expect.element(quiet).toBeChecked();
+      await quiet.click();
+      await expect.element(quiet).not.toBeChecked();
+      expect(localStorage.getItem("threadlines:push-alerts:quiet-at-computer")).toBe("off");
     } finally {
       await screen.unmount();
     }

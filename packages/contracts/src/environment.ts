@@ -96,6 +96,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Takes phone alert registrations (`push.register`, `presence.setViewing`). */
   pushAlerts: Schema.optionalKey(Schema.Boolean),
   /**
+   * Phone alerts stay quiet while a computer is in use
+   * (`presence.noteActive`, `PushRegisterInput.quietAtComputer`) and a project
+   * can mute them (`phoneAlertsMuted`). An older server keeps sending and would
+   * drop the mute without a word, so clients don't offer either for it.
+   */
+  phoneAlertControls: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server keeps each thread's terminal tabs and streams their output per
    * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit
    * it and send every terminal event on one stream.

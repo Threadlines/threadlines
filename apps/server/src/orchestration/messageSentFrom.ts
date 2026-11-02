@@ -74,6 +74,22 @@ export function messageSentFromClient(
 }
 
 /**
+ * Whether a session's device is a computer, for anything that asks if the user
+ * is at one. Beyond what messageSentFromClient says, a browser paired through
+ * the relay counts: its own pairing request called it a browser rather than a
+ * phone or a tablet, which RelayHost records as an unknown device type.
+ */
+export function sessionIsComputer(session: {
+  readonly subject: string;
+  readonly client: AuthClientMetadata;
+}): boolean {
+  if (session.client.deviceType === "desktop") return true;
+  return (
+    session.client.deviceType === "unknown" && session.subject === RELAY_DEVICE_SESSION_SUBJECT
+  );
+}
+
+/**
  * A command a client app sent for its user, stamped with the device it came
  * from. Only the commands that write a user message carry the stamp; the
  * client schemas have no such field, so this is the only way in.

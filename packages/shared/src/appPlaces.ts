@@ -765,6 +765,16 @@ const ROWS = [
     keywords: ["error", "notifications"],
     scope: "device",
   },
+  {
+    id: "general.alertsQuietAtComputer",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Quiet while I'm at a computer",
+    about:
+      "No alerts while you're using Threadlines on a computer. Anything that still needs you when you step away comes through.",
+    keywords: ["notifications", "push", "desktop", "mute"],
+    scope: "device",
+  },
   // General › Appearance
   {
     id: "general.theme",

@@ -193,6 +193,8 @@ export interface Project {
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
   scripts: ProjectScript[];
+  /** This project's threads send no phone alerts. */
+  phoneAlertsMuted?: boolean | undefined;
 }
 
 export interface Thread {

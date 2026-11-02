@@ -101,6 +101,7 @@ import {
   WsOwnerRequiredError,
 } from "./relayAccess.ts";
 import {
+  PresenceNoteActiveInput,
   PresenceSetViewingInput,
   PushAlertsError,
   PushRegisterInput,
@@ -668,6 +669,8 @@ export const WS_METHODS = {
   pushSendTest: "push.sendTest",
   /** Every client: the thread on screen, so it gets no alerts meanwhile. */
   presenceSetViewing: "presence.setViewing",
+  /** Every client: this window is in use, so phones that asked to can stay quiet. */
+  presenceNoteActive: "presence.noteActive",
 
   // Computer links (docs/design/fleet.md). Owner and client sessions alike.
   linksList: "links.list",
@@ -1955,6 +1958,10 @@ export const WsPresenceSetViewingRpc = Rpc.make(WS_METHODS.presenceSetViewing, {
   payload: PresenceSetViewingInput,
 });
 
+export const WsPresenceNoteActiveRpc = Rpc.make(WS_METHODS.presenceNoteActive, {
+  payload: PresenceNoteActiveInput,
+});
+
 export const WsLinksListRpc = Rpc.make(WS_METHODS.linksList, {
   payload: Schema.Struct({}),
   success: ComputerLinksSnapshot,
@@ -2565,6 +2572,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsPushUnregisterRpc,
   WsPushSendTestRpc,
   WsPresenceSetViewingRpc,
+  WsPresenceNoteActiveRpc,
   WsRelayDirectRoutesRpc,
   WsLinksListRpc,
   WsLinksSubscribeRpc,

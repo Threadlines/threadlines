@@ -83,6 +83,10 @@
       "types": "./src/fileAttachments.ts",
       "import": "./src/fileAttachments.ts"
     },
+    "./phoneAlerts": {
+      "types": "./src/phoneAlerts.ts",
+      "import": "./src/phoneAlerts.ts"
+    },
     "./git": {
       "types": "./src/git.ts",
       "import": "./src/git.ts"

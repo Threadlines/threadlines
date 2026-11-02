@@ -27,6 +27,8 @@ export const ProjectionProject = Schema.Struct({
   workspaceRoot: Schema.String,
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** Left out when writing a new project: it isn't muted. */
+  phoneAlertsMuted: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),

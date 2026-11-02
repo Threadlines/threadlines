@@ -179,6 +179,61 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
+  it("mutes a project's phone alerts from its menu and shows the way back", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-mute-target" as MessageId,
+      targetText: "mute target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        projects: snapshot.projects.map((project) => ({ ...project, phoneAlertsMuted: true })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: {
+            ...nextFixture.serverConfig.environment,
+            capabilities: { repositoryIdentity: true, phoneAlertControls: true },
+          },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: {
+            ...nextFixture.welcome.environment,
+            capabilities: { repositoryIdentity: true, phoneAlertControls: true },
+          },
+        };
+      },
+    });
+    try {
+      await page.getByTestId("inbox-scope-trigger").click();
+      await expect
+        .element(page.getByTestId(`inbox-scope-muted-${PROJECT_LOGICAL_KEY}`))
+        .toHaveAccessibleName("Phone alerts muted");
+
+      await userEvent.hover(page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`));
+      await page.getByTestId(`inbox-scope-actions-${PROJECT_LOGICAL_KEY}`).click();
+      await expect
+        .element(page.getByRole("button", { name: "Mute phone alerts", exact: true }))
+        .not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Unmute phone alerts" }).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "project.meta.update" &&
+              request.phoneAlertsMuted === false,
+          ),
+        ).toBe(true);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("narrows the live list to rooms from the View button and marks it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

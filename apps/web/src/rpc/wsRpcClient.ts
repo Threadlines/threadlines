@@ -410,6 +410,7 @@ export interface WsRpcClient {
   /** The thread this connection shows, so the computer keeps it quiet. */
   readonly presence: {
     readonly setViewing: RpcUnaryMethod<typeof WS_METHODS.presenceSetViewing>;
+    readonly noteActive: RpcUnaryMethod<typeof WS_METHODS.presenceNoteActive>;
   };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
@@ -1205,6 +1206,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     presence: {
       setViewing: (input) =>
         transport.request((client) => client[WS_METHODS.presenceSetViewing](input)),
+      noteActive: (input) =>
+        transport.request((client) => client[WS_METHODS.presenceNoteActive](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>
