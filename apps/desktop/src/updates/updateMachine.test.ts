@@ -24,6 +24,8 @@ describe("classifyUpdateDownloadFailure", () => {
     ["connect ETIMEDOUT 140.82.114.3:443", "network"],
     ['Cannot download "https://github.com/a.exe", status 404: ', "other"],
     ["sha512 checksum mismatch, expected abc", "other"],
+    ["net::ERR_CONNECTION_RESET", "network"],
+    ["net::ERR_CERT_AUTHORITY_INVALID", "other"],
     ["net::ERR_ABORTED", "other"],
     ["cancelled", "other"],
   ])("reads %s as %s", (cause, kind) => {

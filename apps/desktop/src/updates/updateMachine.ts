@@ -132,8 +132,9 @@ export function classifyUpdateDownloadFailure(cause: unknown): UpdateDownloadFai
   if (Number.isInteger(statusCode)) {
     return statusCode >= 500 || statusCode === 408 || statusCode === 429 ? "server" : "other";
   }
-  if (/ERR_ABORTED|cancel/iu.test(message)) return "other";
-  return /net::ERR_|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|socket hang up|timed? ?out/iu.test(
+  // Named one by one: other `net::ERR_` errors, like a certificate this
+  // computer doesn't trust, stay the same however often it tries.
+  return /net::ERR_(?:INTERNET_DISCONNECTED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|CONNECTION_\w+|TIMED_OUT|NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|EMPTY_RESPONSE)\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|socket hang up/iu.test(
     message,
   )
     ? "network"

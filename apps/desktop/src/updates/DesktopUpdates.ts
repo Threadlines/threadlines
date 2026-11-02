@@ -703,7 +703,11 @@ const make = Effect.gen(function* () {
             ? Effect.fail(error)
             : logUpdaterInfo("download failed, trying once more").pipe(
                 Effect.andThen(Effect.sleep(UPDATE_DOWNLOAD_RETRY_DELAY)),
-                Effect.andThen(electronUpdater.downloadUpdate),
+                // The app may have started quitting during the wait.
+                Effect.andThen(Ref.get(desktopState.quitting)),
+                Effect.flatMap((quitting) =>
+                  quitting ? Effect.fail(error) : electronUpdater.downloadUpdate,
+                ),
               ),
         ),
       );

@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
@@ -541,6 +542,25 @@ describe("DesktopUpdates", () => {
           }),
         ),
       );
+    });
+
+    it.effect("does not start the second try once the app is quitting", () => {
+      const harness = makeHarness({ downloadUpdate: () => failed(download504) });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          const desktopState = yield* DesktopState.DesktopState;
+          yield* updates.configure;
+          harness.emit("update-available", { version: "1.2.4" });
+          yield* flushCallbacks;
+          const fiber = yield* updates.download.pipe(Effect.forkScoped);
+          for (let turn = 0; turn < 50; turn += 1) yield* flushCallbacks;
+          yield* Ref.set(desktopState.quitting, true);
+          yield* TestClock.adjust("10 seconds");
+          yield* Fiber.join(fiber);
+          assert.equal(harness.downloadCount(), 1);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
     });
 
     it.effect("does not try again when another try can't help", () => {
