@@ -1,11 +1,12 @@
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { MessagesSquareIcon } from "lucide-react";
-import { useMemo } from "react";
+import { ChevronDownIcon, MessagesSquareIcon } from "lucide-react";
+import { useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { selectActiveAndRecentThreads } from "../lib/threadSort";
+import { getThreadInFlightStatus, selectActiveAndRecentThreads } from "../lib/threadSort";
+import { cn } from "../lib/utils";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -25,6 +26,13 @@ interface RecentThreadsListProps {
    * are separate modes, so a draft in one never advertises the other.
    */
   scope?: "all" | "chats" | "projects";
+  /**
+   * Set, the list starts as one line with the counts, which opens the rows in
+   * place. For a screen where popups open over this list: folded rows keep their
+   * room, so nothing around them moves, but they can't be clicked by accident.
+   * A new key starts folded again.
+   */
+  foldKey?: string;
 }
 
 export function RecentThreadsList({
@@ -32,7 +40,12 @@ export function RecentThreadsList({
   testId,
   className,
   scope = "all",
+  foldKey,
 }: RecentThreadsListProps) {
+  const foldable = foldKey !== undefined;
+  const [unfoldedKey, setUnfoldedKey] = useState<string | null>(null);
+  const unfolded = foldable && unfoldedKey === foldKey;
+  const rowsId = useId();
   const navigate = useNavigate();
   const { orderedProjects } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
@@ -70,12 +83,43 @@ export function RecentThreadsList({
     return null;
   }
 
+  const workingCount = recentThreads.filter(
+    (thread) => getThreadInFlightStatus(thread) !== null,
+  ).length;
+  const recentCount = recentThreads.length - workingCount;
+
   return (
     <div className={className}>
-      <div className="mb-2 text-center text-xs font-medium text-muted-foreground">
-        {scope === "chats" ? "Active and recent chats" : "Active and recent"}
-      </div>
-      <div className="flex flex-col divide-y divide-border/50">
+      {foldable ? (
+        <div className="mb-2 flex justify-center">
+          <button
+            aria-controls={rowsId}
+            aria-expanded={unfolded}
+            className="inline-flex cursor-pointer items-center gap-1 rounded-xs text-xs font-medium text-muted-foreground transition-colors focus-ring hover:text-foreground"
+            data-testid={`${testId}-fold`}
+            onClick={() => setUnfoldedKey(unfolded ? null : foldKey)}
+            type="button"
+          >
+            {workingCount > 0 ? (
+              <span className="text-foreground">{workingCount} working</span>
+            ) : null}
+            {workingCount > 0 && recentCount > 0 ? <span aria-hidden="true">·</span> : null}
+            {recentCount > 0 ? <span>{recentCount} recent</span> : null}
+            <ChevronDownIcon className={cn("size-3", unfolded && "rotate-180")} />
+          </button>
+        </div>
+      ) : (
+        <div className="mb-2 text-center text-xs font-medium text-muted-foreground">
+          {scope === "chats" ? "Active and recent chats" : "Active and recent"}
+        </div>
+      )}
+      <div
+        className={cn(
+          "flex flex-col divide-y divide-border/50",
+          foldable && !unfolded && "invisible",
+        )}
+        id={rowsId}
+      >
         {recentThreads.map((thread) => {
           const project = projectByScopedKey.get(
             scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),

@@ -8742,7 +8742,7 @@ export default function ChatView(props: ChatViewProps) {
             {isLocalDraftThread && draftHeroCapable ? (
               <div className="hidden w-full flex-col items-center px-4 pb-8 draft-hero:mb-auto draft-hero:flex">
                 <div className="flex w-full max-w-[45rem] flex-col items-center">
-                  <DraftRecentThreads isGeneralChat={isGeneralChatThread} />
+                  <DraftRecentThreads foldKey={threadId} isGeneralChat={isGeneralChatThread} />
                 </div>
               </div>
             ) : null}
