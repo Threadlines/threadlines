@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a scoped improvement or new capability.
+description: Something you'd like Threadlines to do, or do better.
 title: "[Feature]: "
 labels:
   - enhancement
@@ -8,94 +8,35 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this form for new capabilities or improvements to existing behavior.
-        Start with the problem you hit, then the change you'd like. If you want to build it yourself, tick the box at the end and we can agree on the approach before you start.
-
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Before submitting
-      options:
-        - label: I searched existing issues and did not find a duplicate.
-          required: true
-        - label: I am describing a concrete problem or use case, not just a vague idea.
-          required: true
-
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      description: Which part of the project would this change affect?
-      options:
-        - apps/web
-        - apps/server
-        - apps/desktop
-        - packages/contracts or packages/shared
-        - Build, CI, or release tooling
-        - Docs
-        - Not sure
-    validations:
-      required: true
+        Start with the problem you hit, then the change you'd like. A quick look through open issues helps us avoid duplicates.
 
   - type: textarea
     id: problem
     attributes:
-      label: Problem or use case
-      description: What are you trying to do? What is hard, slow, or impossible today?
-      placeholder: I want to reconnect to an existing provider session after a browser refresh without losing the current thread state.
+      label: What's the problem?
+      description: What are you trying to do, and what gets in the way?
+      placeholder: I keep several threads going, and the list reorders itself while I'm working.
     validations:
       required: true
 
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed solution
-      description: Describe the behavior, API, or UX you want.
-      placeholder: Persist enough session metadata so the client can discover and reattach to the active provider session on load.
+      label: What would you like instead?
+      placeholder: Let me drag threads into my own order and keep them there.
     validations:
       required: true
-
-  - type: textarea
-    id: value
-    attributes:
-      label: Why this matters
-      description: Who benefits, and what outcome does this unlock?
-      placeholder: This would make reconnects predictable during network drops and reduce accidental duplicate sessions.
-    validations:
-      required: true
-
-  - type: textarea
-    id: scope
-    attributes:
-      label: Smallest useful scope
-      description: What is the narrowest version of this request that would still solve your problem?
-      placeholder: A first pass only needs to support restoring the active session for the current thread.
-    validations:
-      required: true
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives considered
-      description: Workarounds, prior art, or other approaches you considered.
-      placeholder: I currently work around this by manually restarting the provider session, but that loses in-flight context.
-
-  - type: textarea
-    id: tradeoffs
-    attributes:
-      label: Risks or tradeoffs
-      description: What costs, complexity, or edge cases should be considered?
-      placeholder: This may require careful handling when the underlying provider session has already exited.
 
   - type: textarea
     id: references
     attributes:
-      label: Examples or references
-      description: Links, screenshots, mockups, or comparable tools.
+      label: Anything else?
+      description: Screenshots, links, or how another tool handles it.
 
   - type: checkboxes
     id: contribution
     attributes:
-      label: Contribution
+      label: Want to build it?
+      description: Tick this and we can agree on the approach before you start.
       options:
-        - label: I would be open to helping implement this.
+        - label: I'd be open to helping build this.

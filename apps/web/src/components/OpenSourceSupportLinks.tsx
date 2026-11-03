@@ -1,16 +1,17 @@
-import { HeartIcon, StarIcon } from "lucide-react";
+import { HeartIcon, MessageCircleWarningIcon, StarIcon } from "lucide-react";
 
+import { reportIssueUrl } from "../lib/reportIssue";
 import { riseDelay } from "./ThreadlinesFigure";
 
 interface OpenSourceSupportLinksProps {
   delay?: string;
 }
 
-/** Quiet repository links shared by the app's everyday empty states. */
+/** Quiet repository links, and the way to report a problem, on the app's everyday empty states. */
 export function OpenSourceSupportLinks({ delay = "0.34s" }: OpenSourceSupportLinksProps) {
   return (
     <div
-      className="no-thread-rise mt-12 flex items-center justify-center gap-6"
+      className="no-thread-rise mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-2"
       style={riseDelay(delay)}
     >
       <a
@@ -30,6 +31,15 @@ export function OpenSourceSupportLinks({ delay = "0.34s" }: OpenSourceSupportLin
       >
         <HeartIcon className="size-3.5" />
         Sponsor
+      </a>
+      <a
+        className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
+        href={reportIssueUrl()}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <MessageCircleWarningIcon className="size-3.5" />
+        Report a problem
       </a>
     </div>
   );

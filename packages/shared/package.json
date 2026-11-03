@@ -75,6 +75,10 @@
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"
     },
+    "./reportIssue": {
+      "types": "./src/reportIssue.ts",
+      "import": "./src/reportIssue.ts"
+    },
     "./appThreadLinks": {
       "types": "./src/appThreadLinks.ts",
       "import": "./src/appThreadLinks.ts"

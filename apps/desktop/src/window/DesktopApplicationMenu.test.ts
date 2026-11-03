@@ -277,16 +277,17 @@ describe("DesktopApplicationMenu", () => {
     }),
   );
 
-  it.effect("opens the issue tracker from the Help menu", () =>
+  it.effect("opens the bug form with the version and setup filled in from the Help menu", () =>
     Effect.gen(function* () {
       const { template, openedExternalUrl } = yield* configureMenu("darwin");
 
       const helpItems = submenuItems(template, (item) => item.role === "help", "Help");
       clickMenuItem(helpItems, "Report an Issue");
-      assert.equal(
-        yield* Deferred.await(openedExternalUrl),
-        DesktopApplicationMenu.GITHUB_NEW_ISSUE_URL,
-      );
+      const opened = new URL(yield* Deferred.await(openedExternalUrl));
+      assert.equal(opened.pathname, "/Threadlines/threadlines/issues/new");
+      assert.equal(opened.searchParams.get("template"), "bug_report.yml");
+      assert.equal(opened.searchParams.get("version"), "1.2.3");
+      assert.equal(opened.searchParams.get("environment"), "macOS, desktop app");
     }),
   );
 

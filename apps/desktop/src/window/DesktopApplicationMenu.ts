@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import type * as Electron from "electron";
+import { buildReportIssueUrl, nodePlatformLabel } from "@threadlines/shared/reportIssue";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -24,7 +25,6 @@ type GoMenuAction =
   | typeof DesktopWindow.OPEN_USAGE_MENU_ACTION;
 
 export const GITHUB_REPOSITORY_URL = "https://github.com/Threadlines/threadlines";
-export const GITHUB_NEW_ISSUE_URL = "https://github.com/Threadlines/threadlines/issues/new/choose";
 
 export interface DesktopApplicationMenuShape {
   readonly configure: Effect.Effect<void>;
@@ -175,7 +175,16 @@ const make = Effect.gen(function* () {
       runMenuEffect("open-github", openExternalHelpUrl(GITHUB_REPOSITORY_URL));
     };
     const reportIssueClick = () => {
-      runMenuEffect("report-issue", openExternalHelpUrl(GITHUB_NEW_ISSUE_URL));
+      runMenuEffect(
+        "report-issue",
+        openExternalHelpUrl(
+          buildReportIssueUrl({
+            version: environment.appVersion,
+            app: "desktop app",
+            operatingSystem: nodePlatformLabel(environment.platform),
+          }),
+        ),
+      );
     };
     const whatsNewClick = () => {
       runMenuEffect(

@@ -279,7 +279,9 @@ Settings that give agents more reach ({place:threads.agentThreads}, {place:threa
   {
     id: "updates",
     title: "Updates and release tracks",
-    keywords: ["update", "version", "nightly", "stable", "release", "what's new"],
-    body: `The desktop app updates itself. When an update is ready, a notice says so with a button to restart into it. The app's version and which releases it follows (stable, or nightly builds with the newest changes) are in {place:general.about}; its Version row opens What's new.`,
+    keywords: ["update", "version", "nightly", "stable", "release", "what's new", "bug", "report"],
+    body: `The desktop app updates itself. When an update is ready, a notice says so with a button to restart into it. The app's version and which releases it follows (stable, or nightly builds with the newest changes) are in {place:general.about}; its Version row opens What's new.
+
+To report a bug, {place:general.reportProblem} opens GitHub's bug form with the version and setup filled in; the user finishes and sends it from their own GitHub account. The search box (Report a problem), the new-thread screen and the Help menu in the desktop app open the same form.`,
   },
 ];

@@ -34,6 +34,7 @@ import {
   ChartColumnIcon,
   CloudIcon,
   CircleArrowUpIcon,
+  MessageCircleWarningIcon,
   CornerLeftUpIcon,
   EraserIcon,
   FileTextIcon,
@@ -132,6 +133,8 @@ import {
 } from "../lib/projectPaths";
 import { waitForProjectInStore } from "../lib/waitForProject";
 import { getLatestThreadForProject } from "../lib/threadSort";
+import { openExternalUrl } from "../lib/externalLinks";
+import { reportIssueUrl } from "../lib/reportIssue";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -1782,6 +1785,17 @@ export function OpenCommandPaletteDialog() {
     icon: <CircleArrowUpIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       openWhatsNewDialog();
+    },
+  });
+  actionItems.push({
+    kind: "action",
+    value: "action:report-problem",
+    searchTerms: ["report a problem", "report", "bug", "issue", "feedback", "github", "crash"],
+    title: "Report a problem",
+    description: "Open a GitHub form with your version and setup filled in",
+    icon: <MessageCircleWarningIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openExternalUrl(reportIssueUrl());
     },
   });
   actionItems.push({

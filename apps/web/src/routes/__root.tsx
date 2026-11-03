@@ -84,6 +84,8 @@ import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useSettings } from "../hooks/useSettings";
 import { isUnreadFinishedWork } from "../components/Sidebar.logic";
 import { toSortableTimestamp } from "../lib/threadSort";
+import { openExternalUrl } from "../lib/externalLinks";
+import { reportIssueUrl } from "../lib/reportIssue";
 import type { SidebarThreadSummary } from "../types";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -653,6 +655,9 @@ function RouteErrorView({ error, reset }: ErrorComponentProps) {
           </Button>
           <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
             Reload app
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => openExternalUrl(reportIssueUrl())}>
+            Report this
           </Button>
         </div>
 
