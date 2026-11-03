@@ -18,6 +18,7 @@ import {
   ChangedFilesInChatRow,
   ClearBrowserDataRow,
   DiagnosticsRow,
+  ReportProblemRow,
   HideWhitespaceRow,
   OpenLinksRow,
   PhoneSettingsRow,
@@ -113,6 +114,7 @@ export const SETTINGS_ROWS = {
   "general.updateTrack": live(UpdateTrackRow),
   "general.usageAnalytics": live(UsageAnalyticsRow),
   "general.diagnostics": live(DiagnosticsRow),
+  "general.reportProblem": live(ReportProblemRow),
   "general.phoneSettings": live(PhoneSettingsRow),
   // Threads
   "threads.agent": live(NewThreadAgentRow),

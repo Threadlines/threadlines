@@ -1,0 +1,19 @@
+name: Question
+description: Not sure how something works, or whether it's a bug? Ask here.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings › General › Privacy & about › Version, if it matters.
+      placeholder: 0.8.0

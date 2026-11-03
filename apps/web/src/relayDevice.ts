@@ -118,9 +118,11 @@ export function describeThisBrowser(
     ? "Windows"
     : /Mac OS X/u.test(ua)
       ? "macOS"
-      : /Linux/u.test(ua)
-        ? "Linux"
-        : undefined;
+      : /CrOS/u.test(ua)
+        ? "ChromeOS"
+        : /Linux/u.test(ua)
+          ? "Linux"
+          : undefined;
   return {
     label: os ? `${browser} on ${os}` : browser,
     ...(os ? { platform: os } : {}),

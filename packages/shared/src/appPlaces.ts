@@ -1053,6 +1053,14 @@ const ROWS = [
     keywords: ["logs", "traces", "otel"],
   },
   {
+    id: "general.reportProblem",
+    kind: "row",
+    parent: "general.about",
+    title: "Report a problem",
+    about: "Opens a GitHub form with your version and setup filled in, ready for you to finish.",
+    keywords: ["bug", "issue", "feedback", "github", "help", "crash"],
+  },
+  {
     id: "general.phoneSettings",
     kind: "row",
     parent: "general.about",

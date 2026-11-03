@@ -1,5 +1,5 @@
 name: Bug report
-description: Report broken behavior, regressions, crashes, or reliability issues.
+description: Something in Threadlines is broken, stuck or wrong.
 title: "[Bug]: "
 labels:
   - bug
@@ -8,110 +8,65 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this form for broken behavior, regressions, crashes, or reliability problems.
-        Search existing issues first and keep the report focused on one problem.
+        Thanks for reporting this. A quick look through open issues helps us avoid duplicates, and one problem per report is easiest to fix.
 
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Before submitting
-      options:
-        - label: I searched existing issues and did not find a duplicate.
-          required: true
-        - label: I included enough detail to reproduce or investigate the problem.
-          required: true
+        This page is public, so leave out private project names, file paths and keys.
 
-  - type: dropdown
-    id: area
+  - type: textarea
+    id: actual
     attributes:
-      label: Area
-      description: Which part of the project is affected?
-      options:
-        - apps/web
-        - apps/server
-        - apps/desktop
-        - packages/contracts or packages/shared
-        - Build, CI, or release tooling
-        - Docs
-        - Not sure
+      label: What happened?
+      placeholder: I changed the access level and the app jumped to a different chat.
     validations:
       required: true
 
   - type: textarea
     id: steps
     attributes:
-      label: Steps to reproduce
-      description: Provide a minimal, deterministic repro.
+      label: How can we make it happen?
+      description: Rough steps are fine. If it only happened once, say that.
       placeholder: |
-        1. Start the app with ...
-        2. Open ...
-        3. Disconnect the network
-        4. Reconnect and send another prompt
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-      placeholder: The thread should resume normally and accept the new message.
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-      placeholder: The composer clears, no new turn starts, and the session stays in a pending state.
-    validations:
-      required: true
-
-  - type: dropdown
-    id: impact
-    attributes:
-      label: Impact
-      description: How bad is this in practice?
-      options:
-        - Blocks work completely
-        - Major degradation or frequent failure
-        - Minor bug or occasional failure
-        - Cosmetic issue
+        1. Open a chat and type a message without sending it
+        2. Change the access level to Full access
     validations:
       required: true
 
   - type: input
     id: version
     attributes:
-      label: Version or commit
-      description: The Threadlines version (Settings › General › Version), or a commit or branch if you run from source.
-      placeholder: 0.8.0, or main @ abc1234
+      label: Version
+      description: Settings › General › Privacy & about › Version. If you run from source, a commit works too.
+      placeholder: 0.8.0
+    validations:
+      required: true
 
   - type: input
     id: environment
     attributes:
-      label: Environment
-      description: OS, desktop app or browser, and the agent and model if relevant. Add the Node version if you run the server yourself.
-      placeholder: Windows 11, desktop app, Claude Code with Opus 5.5
+      label: Your setup
+      description: Your computer, how you use Threadlines (desktop app, browser or phone), and the agent if it matters.
+      placeholder: Windows 11, desktop app, Claude
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      description: Skip this if it's obvious.
 
   - type: textarea
     id: logs
     attributes:
-      label: Logs or stack traces
-      description: Paste the most relevant output only. Redact secrets.
+      label: Error text or logs
+      description: Paste only the part that matters, and remove anything private.
       render: shell
 
   - type: upload
     id: attachments
     attributes:
-      label: Screenshots, recordings, or supporting files
-      description: Upload screenshots, short recordings, repro archives, or log files. Redact secrets before uploading.
+      label: Screenshots or recordings
+      description: Check them for anything private before you upload.
     validations:
       required: false
       accept: ".png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.mov,.webm,.log,.txt,.json,.zip"
-
-  - type: textarea
-    id: workaround
-    attributes:
-      label: Workaround
-      description: If you found a temporary workaround, include it.
-      placeholder: Restarting the provider session clears the stuck state.

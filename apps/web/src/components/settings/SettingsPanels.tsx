@@ -46,6 +46,8 @@ import { updateSettingsAndPersist, useSettings, useUpdateSettings } from "../../
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
+import { openExternalUrl } from "../../lib/externalLinks";
+import { reportIssueUrl } from "../../lib/reportIssue";
 import {
   deriveUsageWindow,
   usageSummaryQueryOptions,
@@ -1287,6 +1289,20 @@ export function DiagnosticsRow() {
   );
 }
 
+/** Opens GitHub's bug form, filled in for this copy of Threadlines. */
+export function ReportProblemRow() {
+  return (
+    <SettingsRow
+      place="general.reportProblem"
+      control={
+        <Button size="xs" variant="outline" onClick={() => openExternalUrl(reportIssueUrl())}>
+          Report
+        </Button>
+      }
+    />
+  );
+}
+
 export function PhoneSettingsRow() {
   return (
     <SettingsRow
@@ -1376,6 +1392,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           <ShownPlace place="general.diagnostics">
             <DiagnosticsRow />
           </ShownPlace>
+          <ReportProblemRow />
           <ShownPlace place="general.phoneSettings">
             <PhoneSettingsRow />
           </ShownPlace>
