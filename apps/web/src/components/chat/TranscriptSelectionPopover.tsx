@@ -421,6 +421,7 @@ function TranscriptSelectionPopover({
         // Capped to the list's height: in a short list the note form scrolls
         // inside itself, so Add and Cancel stay on screen.
         className="absolute top-0 left-0 z-40 flex flex-col"
+        data-slot="transcript-selection-popover"
         style={{
           width: noting ? TRANSCRIPT_NOTE_POPOVER_WIDTH_PX : undefined,
           maxWidth: `calc(100% - ${TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX * 2}px)`,

@@ -1962,6 +1962,26 @@ describe("ChatView (full app): sidebar", () => {
         { timeout: 8_000, interval: 16 },
       );
 
+      // The recent threads start folded into one line, so a popup opened over
+      // them has nothing to fall through to, and unfolding moves nothing.
+      const recentRow = column.querySelector<HTMLElement>(
+        '[data-testid="draft-empty-recent-thread"]',
+      )!;
+      const foldLine = column.querySelector<HTMLButtonElement>(
+        '[data-testid="draft-empty-recent-thread-fold"]',
+      )!;
+      const composerTop = editor.getBoundingClientRect().top;
+      expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(false);
+      foldLine.click();
+      await vi.waitFor(() => {
+        expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(true);
+      });
+      expect(editor.getBoundingClientRect().top).toBe(composerTop);
+      foldLine.click();
+      await vi.waitFor(() => {
+        expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(false);
+      });
+
       // The first turn starting ends the hero. The composer drops to the
       // bottom of the pane, and it is the same editor: the layout changed
       // around it without remounting it, so what was typed and focused stays.

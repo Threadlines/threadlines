@@ -45,12 +45,22 @@ interface DraftEmptyStateProps {
   layout: DraftEmptyStateLayout;
 }
 
-/** What follows the question: where the user left off, and the repository links. */
-export function DraftRecentThreads({ isGeneralChat }: { isGeneralChat: boolean }) {
+/**
+ * What follows the question: where the user left off, and the repository links.
+ * `foldKey` is for the hero layout, whose popups open over this list.
+ */
+export function DraftRecentThreads({
+  isGeneralChat,
+  foldKey,
+}: {
+  isGeneralChat: boolean;
+  foldKey?: string;
+}) {
   return (
     <>
       <RecentThreadsList
         className="no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
+        {...(foldKey !== undefined ? { foldKey } : {})}
         limit={5}
         scope={isGeneralChat ? "chats" : "projects"}
         testId="draft-empty-recent-thread"
