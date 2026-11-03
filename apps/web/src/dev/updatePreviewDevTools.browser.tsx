@@ -16,6 +16,7 @@ import {
   DESKTOP_UPDATE_PREVIEW_STORAGE_KEY,
   installUpdatePreviewDevTools,
 } from "./updatePreviewDevTools";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 let mounted: Awaited<ReturnType<typeof render>> | null = null;
 
@@ -27,7 +28,7 @@ afterEach(async () => {
   delete window.__threadlinesDesktopUpdatePreviewCheckForUpdate;
   delete window.__threadlinesDesktopUpdatePreviewAction;
   Reflect.deleteProperty(window, "desktopBridge");
-  document.body.innerHTML = "";
+  await resetTestPage();
 });
 
 async function installAndMount() {

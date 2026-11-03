@@ -115,6 +115,7 @@ import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers"
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 export const THREAD_ID = "thread-browser-test" as ThreadId;
 export const THREAD_TITLE = "Browser test thread";
@@ -3387,7 +3388,7 @@ export function registerChatViewSuiteHooks(): void {
     // A computer that has finished setup: these specs exercise empty drafts
     // and threads, which a first run would leave for the setup screen.
     dismissFirstRunSetup(LOCAL_ENVIRONMENT_ID);
-    document.body.innerHTML = "";
+    await resetTestPage();
     wsRequests.length = 0;
     customWsRpcResolver = null;
     suppressInitialShellSnapshot = false;
@@ -3445,9 +3446,9 @@ export function registerChatViewSuiteHooks(): void {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     customWsRpcResolver = null;
     suppressInitialShellSnapshot = false;
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 }

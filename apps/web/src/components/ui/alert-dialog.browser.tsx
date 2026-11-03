@@ -15,6 +15,7 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "./alert-dialog";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function AlertDialogHarness(props: {
   readonly onCancel: () => void;
@@ -51,8 +52,8 @@ function AlertDialogHarness(props: {
 }
 
 describe("AlertDialog", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("focuses the primary footer action so Enter confirms instead of cancelling", async () => {

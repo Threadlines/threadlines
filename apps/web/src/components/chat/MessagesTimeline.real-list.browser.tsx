@@ -40,6 +40,7 @@ import type { ChatMessage, ProposedPlan } from "../../types";
 import { useChatFindStore } from "../../chatFindStore";
 import { CHAT_FIND_CURRENT_HIGHLIGHT, CHAT_FIND_MATCH_HIGHLIGHT } from "./chatFind/chatFindDom";
 import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const ACTIVE_TURN_ID = "turn-active" as TurnId;
 const queryClient = new QueryClient();
@@ -230,9 +231,9 @@ function deriveAffectedThreadRenderState(
 }
 
 describe("MessagesTimeline with the real virtual list", () => {
-  afterEach(() => {
+  afterEach(async () => {
     queryClient.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("does not move streamed text back down as the response grows", async () => {
@@ -1546,10 +1547,10 @@ async function openFind(query: string) {
 const FIND_JUMP_WAIT = { timeout: 5_000 };
 
 describe("find in chat with the real virtual list", () => {
-  afterEach(() => {
+  afterEach(async () => {
     useChatFindStore.setState({ available: false, open: false, query: "" });
     queryClient.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("counts a match the list has not drawn, jumps to it and paints it current", async () => {
@@ -2063,10 +2064,10 @@ function isShown(element: HTMLElement | null): boolean {
 const AFTER_SCROLL = { timeout: 5_000 };
 
 describe("text selection popover with the real virtual list", () => {
-  afterEach(() => {
+  afterEach(async () => {
     window.getSelection()?.removeAllRanges();
     queryClient.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   async function renderLongChat(onAddTranscriptHighlightContext = vi.fn()) {

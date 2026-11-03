@@ -43,6 +43,7 @@ import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness } from "../../test/wsRpcHarness";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
   // Read synchronously by the draft seeder to skip a checkout already known
@@ -603,7 +604,7 @@ describe("Keybindings update toast", () => {
     });
     await __resetLocalApiForTests();
     localStorage.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
     useComposerDraftStore.setState({
       draftsByThreadKey: {},
       draftThreadsByThreadKey: {},
@@ -615,8 +616,8 @@ describe("Keybindings update toast", () => {
     });
   });
 
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("does not show a toast when keybindings reload without issues", async () => {

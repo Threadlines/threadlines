@@ -123,6 +123,7 @@ import {
   type ProviderAuthClient,
 } from "../../environments/providerComputer";
 import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 /**
  * The app-wide providers these panels are always mounted under. Settings rows
@@ -1191,7 +1192,7 @@ describe("GeneralSettingsPanel observability", () => {
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, "desktopBridge");
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
     authAccessHarness.reset();
@@ -4032,7 +4033,7 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
     }
     mounted = null;
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
   });
@@ -4340,7 +4341,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
   beforeEach(async () => {
     resetAppAtomRegistryForTests();
     await __resetLocalApiForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   afterEach(async () => {
@@ -4350,7 +4351,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
     }
     mounted = null;
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
     await __resetLocalApiForTests();
     resetAppAtomRegistryForTests();
   });
@@ -4921,7 +4922,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
     const teardown = mounted.cleanup ?? mounted.unmount;
     await teardown?.call(mounted).catch(() => {});
     mounted = null;
-    document.body.innerHTML = "";
+    await resetTestPage();
 
     mounted = await renderWithTestRouter(
       <TestAppProviders>
@@ -5082,7 +5083,7 @@ describe("ProviderSettingsPanel community agents", () => {
       null,
       providerAuthHarness.client as unknown as ProviderAuthClient,
     );
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   afterEach(async () => {
@@ -5092,7 +5093,7 @@ describe("ProviderSettingsPanel community agents", () => {
     }
     mounted = null;
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
   });
@@ -5576,7 +5577,7 @@ describe("Agents outside Threadlines", () => {
     toastManager.close();
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, "desktopBridge");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetPrimaryEnvironmentDescriptorForTests();
     useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
     resetServerStateForTests();
@@ -6338,7 +6339,7 @@ describe("Settings search", () => {
     mounted = null;
     useSettingsSearchStore.getState().clear();
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
   });
@@ -6459,7 +6460,7 @@ describe("Settings search rows", () => {
   afterEach(async () => {
     Reflect.deleteProperty(window, "nativeApi");
     Reflect.deleteProperty(window, "desktopBridge");
-    document.body.innerHTML = "";
+    await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
   });

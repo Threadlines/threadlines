@@ -7,6 +7,7 @@ import { render } from "vitest-browser-react";
 import type { ActivePlanStep } from "../../session-logic";
 import { Button } from "../ui/button";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const TASK_BADGE = {
   label: "1/3",
@@ -79,8 +80,8 @@ async function renderOpenPopover(taskProgress: ThreadTaskProgressState) {
 }
 
 describe("ThreadActivityPopover", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("matches adjacent compact button height at phone widths", async () => {

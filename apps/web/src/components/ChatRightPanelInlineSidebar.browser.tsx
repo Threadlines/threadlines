@@ -5,6 +5,7 @@ import { render } from "vitest-browser-react";
 
 import { ChatRightPanelInlineSidebar } from "./ChatRightPanelInlineSidebar";
 import { RIGHT_PANEL_INSET_CSS_VAR } from "../rightPanelLayout";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 function readPanelInset(): string {
   return document.documentElement.style.getPropertyValue(RIGHT_PANEL_INSET_CSS_VAR);
@@ -22,9 +23,9 @@ function renderSidebar(open: boolean) {
 }
 
 describe("ChatRightPanelInlineSidebar", () => {
-  afterEach(() => {
+  afterEach(async () => {
     document.documentElement.style.removeProperty(RIGHT_PANEL_INSET_CSS_VAR);
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   // Toasts and other body-portaled overlays are fixed to the viewport, so the

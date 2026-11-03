@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { CommandRequestRow, CommandRunActionsContext, type CommandRunActions } from "./CommandRuns";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const REQUEST_ID = CommandRequestId.make("request-1");
 
@@ -49,8 +50,8 @@ const renderCard = (card: OrchestrationCommandRequest, actions: CommandRunAction
   );
 
 describe("CommandRequestRow", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("offers Run, Put in terminal and Skip, and says the output comes back", async () => {

@@ -29,6 +29,7 @@ import { updateSettings } from "../../hooks/useSettings";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests } from "../../rpc/serverState";
 import { ComposerDictationControl } from "./ComposerDictationControl";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-dictation-control");
 
@@ -141,7 +142,7 @@ describe("ComposerDictationControl", () => {
     Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
     resetServerStateForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("offers the mic and its options once the model is on the server", async () => {

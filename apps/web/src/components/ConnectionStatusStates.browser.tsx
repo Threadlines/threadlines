@@ -19,6 +19,7 @@ import {
   HostedStaticOnboardingState,
 } from "./ConnectionStatusStates";
 import { SidebarProvider } from "./ui/sidebar";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const DESKTOP_VIEWPORT = { height: 900, width: 1280 };
 const PHONE_VIEWPORT = { height: 844, width: 390 };
@@ -43,7 +44,7 @@ function renderWithTestRouter(children: ReactNode) {
 describe("HostedStaticOnboardingState", () => {
   afterEach(async () => {
     await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("offers a download and a route to pairing on a desktop browser", async () => {
@@ -83,8 +84,8 @@ describe("HostedStaticOnboardingState", () => {
 });
 
 describe("HostedStaticLinkNotPairedState", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("offers to open the thread in the desktop app, with pairing second", async () => {

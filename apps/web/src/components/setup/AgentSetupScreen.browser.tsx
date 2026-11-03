@@ -36,6 +36,7 @@ import { ToastProvider } from "../ui/toast";
 import { parseSetupStep } from "./agentSetup.logic";
 import { AgentSetupScreen } from "./AgentSetupScreen";
 import { SETUP_PROGRESS_STORAGE_KEY, useSetupProgressStore } from "./setupProgress";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
@@ -182,7 +183,7 @@ describe("AgentSetupScreen", () => {
     resetAppAtomRegistryForTests();
     await __resetLocalApiForTests();
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("picks what is on this computer and turns on exactly the picked agents", async () => {

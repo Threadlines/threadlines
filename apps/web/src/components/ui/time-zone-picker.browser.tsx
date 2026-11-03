@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { TimeZonePicker } from "./time-zone-picker";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function Harness(props: { readonly onChange: (timeZone: string) => void }) {
   const [value, setValue] = useState("America/New_York");
@@ -27,8 +28,8 @@ function Harness(props: { readonly onChange: (timeZone: string) => void }) {
 }
 
 describe("TimeZonePicker", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("leads with a short list, and finds any zone by typing, from the keyboard", async () => {

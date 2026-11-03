@@ -13,6 +13,7 @@ import { render } from "vitest-browser-react";
 import { setPrimaryAccessRemoved } from "../environments/primary";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { WebSocketConnectionSurface } from "./WebSocketConnectionSurface";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 function renderSurface() {
   // Deliberately no SidebarProvider: this surface sits outside the app shell in
@@ -35,9 +36,9 @@ function renderSurface() {
 }
 
 describe("WebSocketConnectionSurface", () => {
-  afterEach(() => {
+  afterEach(async () => {
     setPrimaryAccessRemoved(false);
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("shows the app while this device still has access", async () => {

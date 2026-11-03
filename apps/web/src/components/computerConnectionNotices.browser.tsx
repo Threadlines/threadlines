@@ -3,6 +3,7 @@ import "../index.css";
 import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const MAC_MINI = EnvironmentId.make("environment-mac-mini");
 
@@ -30,9 +31,9 @@ const reconnectButton = () =>
   Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Reconnect");
 
 describe("addComputerNotConnectedNotice", () => {
-  afterEach(() => {
+  afterEach(async () => {
     toastManager.close();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("reconnects a linked computer from the notice, and reports in the same place", async () => {

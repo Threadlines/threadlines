@@ -5,6 +5,7 @@ import { useState } from "react";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const SHARED_THREAD_ID = ThreadId.make("thread-shared");
 const ENVIRONMENT_A = "environment-local" as never;
@@ -339,13 +340,13 @@ function PublishDialogHarness() {
 }
 
 describe("GitActionsControl thread-scoped progress toast", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     activeRunStackedActionDeferredRef.current = createDeferredPromise<never>();
     activeDraftThreadRef.current = null;
     hasServerThreadRef.current = true;
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("keeps an in-flight git action toast pinned to the thread ref that started it", async () => {
@@ -531,11 +532,11 @@ describe("GitActionsControl thread-scoped progress toast", () => {
 });
 
 describe("PublishRepositoryDialog", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
     publishGitStatusRef.current = null;
     sourceControlDiscoveryRef.current = { data: null };
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   function prepareGitHubPublish() {

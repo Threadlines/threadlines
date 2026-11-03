@@ -6,6 +6,7 @@ import { useState } from "react";
 import { render } from "vitest-browser-react";
 
 import { ProviderConnectTerminal } from "./ProviderConnectTerminal";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const onInput = vi.fn((_data: string) => {});
 
@@ -34,9 +35,9 @@ const terminalInput = () => page.getByRole("textbox", { name: "Terminal input" }
 const addressField = () => page.getByRole("textbox", { name: "Address the browser ended on" });
 
 describe("ProviderConnectTerminal", () => {
-  afterEach(() => {
+  afterEach(async () => {
     onInput.mockClear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("takes the keyboard when it appears, ready for the run's prompt", async () => {

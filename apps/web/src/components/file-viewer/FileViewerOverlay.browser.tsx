@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const { openInEditorMock } = vi.hoisted(() => ({
   openInEditorMock: vi.fn(async () => undefined),
@@ -89,7 +90,7 @@ async function renderViewerAt(path: string) {
 }
 
 describe("FileViewerOverlay", () => {
-  afterEach(() => {
+  afterEach(async () => {
     useFileViewerStore.setState({
       isOpen: false,
       context: null,
@@ -103,7 +104,7 @@ describe("FileViewerOverlay", () => {
     resetServerStateForTests();
     writePrimaryEnvironmentDescriptor(null);
     openInEditorMock.mockClear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("opens a file outside the project, lists it apart, and puts its original back", async () => {

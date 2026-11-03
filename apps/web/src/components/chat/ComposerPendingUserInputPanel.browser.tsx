@@ -7,6 +7,7 @@ import "../../index.css";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerMcpElicitation } from "./ComposerMcpElicitation";
 import type { PendingUserInput } from "../../session-logic";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function makePendingUserInput(): PendingUserInput {
   return {
@@ -128,8 +129,8 @@ describe("ComposerPendingUserInputPanel", () => {
     await page.getByRole("button", { name: "Decline", exact: true }).click();
     expect(onRespond).toHaveBeenCalledWith("request-1", { action: "decline" });
   });
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("says when the agent keeps working while a question is open", async () => {

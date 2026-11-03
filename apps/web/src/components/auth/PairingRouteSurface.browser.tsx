@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { render } from "vitest-browser-react";
 
 import { PairingRouteSurface } from "./PairingRouteSurface";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const auth: AuthSessionState["auth"] = {
   policy: "loopback-browser",
@@ -32,10 +33,10 @@ describe("PairingRouteSurface", () => {
     __resetServerAuthBootstrapForTests();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("pairs the browser with a token typed into the form", async () => {

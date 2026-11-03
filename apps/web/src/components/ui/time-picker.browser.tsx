@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { type TimeOfDay, TimePicker } from "./time-picker";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function TimePickerHarness(props: {
   readonly initial: TimeOfDay;
@@ -34,8 +35,8 @@ function chosenOption(column: string) {
 }
 
 describe("TimePicker", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("changes each column with Up/Down, moves between columns with Left/Right, and closes on Enter", async () => {

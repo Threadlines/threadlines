@@ -18,6 +18,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const { refreshProvidersMock, openExternalMock } = vi.hoisted(() => ({
   refreshProvidersMock: vi.fn(
@@ -230,14 +231,14 @@ function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
 }
 
 describe("provider status composer notice", () => {
-  afterEach(() => {
+  afterEach(async () => {
     refreshProvidersMock.mockClear();
     openExternalMock.mockClear();
     __resetProviderAuthClientsForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
     closeProviderSignInDialog();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("signs a thread's agent in on the computer the thread runs on, and finishes in the sign-in window", async () => {

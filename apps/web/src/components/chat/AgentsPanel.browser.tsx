@@ -18,6 +18,7 @@ import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
 import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
 const sendInputRpcMock = vi.hoisted(() => vi.fn());
@@ -119,8 +120,8 @@ describe("AgentsPanel", () => {
     });
   });
 
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("draws a branch for every state the turn is in", async () => {

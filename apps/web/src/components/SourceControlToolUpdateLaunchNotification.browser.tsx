@@ -36,6 +36,7 @@ import { useStore } from "../store";
 import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { SourceControlToolUpdateLaunchNotification } from "./SourceControlToolUpdateLaunchNotification";
 import { ToastProvider } from "./ui/toast";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-update-toast");
 const IDLE_SETUP: SourceControlSetupState = {
@@ -130,7 +131,7 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
 
   beforeEach(async () => {
     localStorage.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
     await __resetLocalApiForTests();
     resetAppAtomRegistryForTests();
     resetSourceControlDiscoveryStateForTests();
@@ -155,7 +156,7 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     resetAppAtomRegistryForTests();
     await __resetLocalApiForTests();
     Reflect.deleteProperty(window, "nativeApi");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("starts outside Settings and keeps progress across pages without opening Source Control", async () => {

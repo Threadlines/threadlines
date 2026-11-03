@@ -6,6 +6,7 @@ import "../../index.css";
 
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import type { TranscriptHighlightContextDraft } from "~/lib/transcriptHighlightContext";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function makeHighlightContext(): TranscriptHighlightContextDraft {
   return {
@@ -20,8 +21,8 @@ function makeHighlightContext(): TranscriptHighlightContextDraft {
 }
 
 describe("ComposerPendingTranscriptHighlightContexts", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("saves an edited note without submitting the surrounding composer form", async () => {
