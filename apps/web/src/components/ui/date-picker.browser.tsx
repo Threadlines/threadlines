@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { DatePicker } from "./date-picker";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function DatePickerHarness(props: {
   readonly initial: string;
@@ -29,8 +30,8 @@ function DatePickerHarness(props: {
 }
 
 describe("DatePicker", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("arrows across a month boundary and picks the focused day with Enter", async () => {

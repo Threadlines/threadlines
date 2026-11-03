@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { SwipeUndoBar } from "./SwipeUndoBar";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 describe("SwipeUndoBar", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("stays while an undo is out, says so in place when it fails, and goes once a retry lands", async () => {

@@ -9,6 +9,7 @@ import { render } from "vitest-browser-react";
 import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
 import { DesktopUpdateInstallDialog } from "../desktop/DesktopUpdateInstallDialog";
 import { SidebarVersionTag } from "./SidebarVersionTag";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const idleUpdateState: DesktopUpdateState = {
   enabled: true,
@@ -99,7 +100,7 @@ describe("SidebarVersionTag", () => {
     await mounted?.unmount();
     mounted = null;
     Reflect.deleteProperty(window, "desktopBridge");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("reveals the build card on hover and hides it again on hover-out", async () => {

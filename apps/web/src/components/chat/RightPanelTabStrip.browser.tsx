@@ -6,6 +6,7 @@ import { render } from "vitest-browser-react";
 
 import { RightPanelTabStrip } from "./RightPanelTabStrip";
 import type { RightPanelTab } from "../../rightPanelTabs";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const OPEN_TABS: ReadonlyArray<RightPanelTab> = ["sourceControl", "diff", "agents"];
 
@@ -38,8 +39,8 @@ function pointer(type: string, clientX: number): PointerEvent {
 }
 
 describe("RightPanelTabStrip drag reorder", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("drags the first tab all the way to the last slot and swallows the trailing click", async () => {
@@ -166,8 +167,8 @@ describe("RightPanelTabStrip drag reorder", () => {
 });
 
 describe("RightPanelTabStrip + menu", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("draws a live tab's row with the live node instead of its icon", async () => {

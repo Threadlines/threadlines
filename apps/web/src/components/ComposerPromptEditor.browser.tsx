@@ -10,6 +10,7 @@ import {
   type ComposerPromptEditorHandle,
   type ComposerSkillAvailability,
 } from "./ComposerPromptEditor";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 function EditorHarness(props: {
   recognizedSlashCommands: ReadonlyArray<string>;
@@ -57,8 +58,8 @@ function commandTokenText(): string | null {
 }
 
 describe("ComposerPromptEditor command token", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("demotes the token when the command stops matching", async () => {
@@ -112,8 +113,8 @@ describe("ComposerPromptEditor command token", () => {
 });
 
 describe("ComposerPromptEditor workflow keyword", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   const keywordTokens = () =>
@@ -163,8 +164,8 @@ describe("ComposerPromptEditor workflow keyword", () => {
 });
 
 describe("ComposerPromptEditor skill chip", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("marks a skill chip stale once the provider's skill list is authoritative", async () => {

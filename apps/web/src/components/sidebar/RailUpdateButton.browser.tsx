@@ -10,6 +10,7 @@ import { DesktopUpdateInstallDialog } from "../desktop/DesktopUpdateInstallDialo
 import { describeRailUpdateCard } from "../desktopUpdate.logic";
 import { RailUpdateButton } from "./RailUpdateButton";
 import { RailUpdateCard } from "./RailUpdateCard";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const idleUpdateState: DesktopUpdateState = {
   enabled: true,
@@ -68,7 +69,7 @@ describe("RailUpdateButton", () => {
     await mounted?.unmount();
     mounted = null;
     Reflect.deleteProperty(window, "desktopBridge");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("is not shown in a browser, where there is no updater", async () => {

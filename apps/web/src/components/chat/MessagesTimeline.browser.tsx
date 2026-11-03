@@ -20,6 +20,7 @@ import { useUiStateStore } from "../../uiStateStore";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
 import { ThreadlinesFigure } from "../ThreadlinesFigure";
 import { deriveTimelineEntries } from "../../session-logic";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
@@ -374,14 +375,14 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     scrollToEndSpy.mockReset();
     getStateSpy.mockClear();
     timelineScrollMetrics = AWAY_FROM_END_SCROLL_METRICS;
     useUiStateStore.setState({ threadChangedFilesExpandedById: {} });
     __resetClientSettingsPersistenceForTests();
     vi.restoreAllMocks();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("keeps a decorative empty state inside an extra-narrow timeline", async () => {

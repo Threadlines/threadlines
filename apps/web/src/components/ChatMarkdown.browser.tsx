@@ -24,6 +24,7 @@ import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const {
   contextMenuShowMock,
@@ -195,7 +196,7 @@ function installFilesystemBrowseEnvironment() {
 }
 
 describe("ChatMarkdown", () => {
-  afterEach(() => {
+  afterEach(async () => {
     setActiveFileViewerContext(null);
     useFileViewerStore.setState({
       isOpen: false,
@@ -218,7 +219,7 @@ describe("ChatMarkdown", () => {
     resetServerStateForTests();
     writePrimaryEnvironmentDescriptor(null);
     localStorage.clear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("renders local file links with copyable file url hrefs", async () => {
@@ -1767,8 +1768,8 @@ describe("ChatMarkdown code block commands", () => {
       </CommandRunActionsContext>,
     );
 
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("runs an everyday command, and only puts a risky one in the terminal", async () => {

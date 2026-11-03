@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useChatFindStore } from "../chatFindStore";
 import { installFindRegionTracking, resolveFindShortcutOwner } from "./findShortcutOwner";
+import { resetTestPage } from "./testPage.browser-harness";
 
 /**
  * The page as the app lays it out for this question: the chat, the browser
@@ -34,10 +35,10 @@ describe("resolveFindShortcutOwner", () => {
     uninstall = installFindRegionTracking();
     useChatFindStore.setState({ available: true });
   });
-  afterEach(() => {
+  afterEach(async () => {
     uninstall();
     useChatFindStore.setState({ available: false, open: false });
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("gives the key to the region holding focus", () => {

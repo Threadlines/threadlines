@@ -7,6 +7,7 @@ import { render } from "vitest-browser-react";
 
 import { setActiveFileViewerContext, useFileViewerStore } from "../../fileViewerStore";
 import { SubagentTranscript } from "./SubagentTranscript";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
 
@@ -95,8 +96,8 @@ function centerY(rect: DOMRect): number {
 }
 
 describe("SubagentTranscript drill-in", () => {
-  beforeEach(() => {
-    document.body.innerHTML = "";
+  beforeEach(async () => {
+    await resetTestPage();
     transcriptRpcMock.mockReset();
     transcriptRpcMock.mockResolvedValue({
       entries: ENTRIES,

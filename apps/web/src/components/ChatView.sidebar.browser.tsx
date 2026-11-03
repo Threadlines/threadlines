@@ -1963,20 +1963,24 @@ describe("ChatView (full app): sidebar", () => {
       );
 
       // The recent threads start folded into one line, so a popup opened over
-      // them has nothing to fall through to, and unfolding moves nothing.
+      // them has nothing to fall through to. Folded rows keep their room, so
+      // unfolding moves nothing. (Measured on the rows, not the composer: the
+      // hero centres the whole column, and anything else still settling in it
+      // nudges the composer by a pixel or two.)
       const recentRow = column.querySelector<HTMLElement>(
         '[data-testid="draft-empty-recent-thread"]',
       )!;
       const foldLine = column.querySelector<HTMLButtonElement>(
         '[data-testid="draft-empty-recent-thread-fold"]',
       )!;
-      const composerTop = editor.getBoundingClientRect().top;
+      const foldedRowsHeight = recentRow.parentElement!.getBoundingClientRect().height;
       expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(false);
+      expect(foldedRowsHeight).toBeGreaterThan(0);
       foldLine.click();
       await vi.waitFor(() => {
         expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(true);
       });
-      expect(editor.getBoundingClientRect().top).toBe(composerTop);
+      expect(recentRow.parentElement!.getBoundingClientRect().height).toBe(foldedRowsHeight);
       foldLine.click();
       await vi.waitFor(() => {
         expect(recentRow.checkVisibility({ visibilityProperty: true })).toBe(false);

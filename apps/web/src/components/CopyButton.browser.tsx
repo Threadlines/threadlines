@@ -2,6 +2,7 @@ import "../index.css";
 
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const clipboard = vi.hoisted(() => ({ copy: vi.fn<(value: string) => Promise<void>>() }));
 vi.mock("~/lib/clipboard", () => ({ copyTextToClipboard: clipboard.copy }));
@@ -16,9 +17,9 @@ import { CopyIconButton } from "./CopyButton";
 import { ToastProvider, toastManager } from "./ui/toast";
 
 describe("CopyIconButton", () => {
-  afterEach(() => {
+  afterEach(async () => {
     toastManager.close();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("shows a check after a copy, and a notice only when the copy fails", async () => {

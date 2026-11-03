@@ -21,6 +21,7 @@ import { __resetLocalApiForTests } from "../../localApi";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests } from "../../rpc/serverState";
 import { DictationSettings } from "./DictationSettings";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-dictation-settings");
 
@@ -94,7 +95,7 @@ describe("DictationSettings", () => {
     Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
     resetServerStateForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("picks a model, starts its download, and flips hold to record", async () => {

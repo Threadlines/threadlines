@@ -32,6 +32,7 @@ import {
 } from "@threadlines/contracts/settings";
 import { __resetLocalApiForTests } from "../../localApi";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../../clientPersistenceStorage";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 // Mock the environments/runtime module to provide a mock primary environment connection
 vi.mock("../../environments/runtime", () => {
@@ -420,7 +421,7 @@ describe("ProviderModelPicker", () => {
   });
 
   afterEach(async () => {
-    document.body.innerHTML = "";
+    await resetTestPage();
     await __resetLocalApiForTests();
   });
 

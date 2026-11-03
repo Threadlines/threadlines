@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { SegmentedControl, SegmentedControlItem } from "./segmented-control";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 type Layout = "stacked" | "split";
 
@@ -28,8 +29,8 @@ function SegmentedControlHarness(props: { readonly onChange: (value: Layout) => 
 }
 
 describe("SegmentedControl", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("always keeps one option chosen", async () => {

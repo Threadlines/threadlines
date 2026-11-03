@@ -11,6 +11,7 @@ import {
 } from "../environments/runtime";
 import { DEFAULT_ALERT_KINDS, usePushAlertsStore } from "./pushAlerts";
 import { PushAlertsSettingsSection } from "./PushAlertsSettings";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const MAC = EnvironmentId.make("env-mac");
 const PC = EnvironmentId.make("env-pc");
@@ -37,7 +38,7 @@ function saveComputer(environmentId: EnvironmentId, label: string, paired: boole
 }
 
 describe("PushAlertsSettingsSection", () => {
-  afterEach(() => {
+  afterEach(async () => {
     resetSavedEnvironmentRegistryStoreForTests();
     usePushAlertsStore.setState({
       enabled: false,
@@ -49,7 +50,7 @@ describe("PushAlertsSettingsSection", () => {
       error: null,
     });
     localStorage.removeItem("threadlines:push-alerts:quiet-at-computer");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("shows only once a computer is paired through the relay", async () => {

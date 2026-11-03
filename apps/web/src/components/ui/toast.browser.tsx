@@ -3,6 +3,7 @@ import "../../index.css";
 import type { DesktopBridge } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 // The provider reads the active thread from the route so a toast can offer to
 // jump to it. This case is about stacking, so it mounts outside a router and
@@ -41,8 +42,8 @@ function setPageFocus(focused: boolean) {
 }
 
 describe("toast layering", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("sits below the layer every menu, popover and dialog is on", async () => {
@@ -131,10 +132,10 @@ describe("toast layering", () => {
 });
 
 describe("notice reasons and clocks", () => {
-  afterEach(() => {
+  afterEach(async () => {
     toastManager.close();
     vi.useRealTimers();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("shows an error's whole reason instead of one cut-off line", async () => {

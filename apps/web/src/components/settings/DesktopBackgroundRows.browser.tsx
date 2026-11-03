@@ -7,6 +7,7 @@ import { render } from "vitest-browser-react";
 
 import { DesktopBackgroundRows } from "./DesktopBackgroundRows";
 import { SettingsSection } from "./settingsLayout";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 /** The desktop app's side: its saved options, and what the page asked to change. */
 function installBridge(initial: DesktopBackgroundOptions) {
@@ -23,9 +24,9 @@ function installBridge(initial: DesktopBackgroundOptions) {
 }
 
 describe("DesktopBackgroundRows", () => {
-  afterEach(() => {
+  afterEach(async () => {
     delete (window as { desktopBridge?: DesktopBridge }).desktopBridge;
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("saves keep-awake to the desktop app, and offers background running only where closing quits", async () => {

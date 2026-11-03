@@ -14,6 +14,7 @@ import {
   openWhatsNewDialog,
   WhatsNewDialogHost,
 } from "./WhatsNewDialog";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 // The notice stack reads the open thread from the route; there is no route here.
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -79,7 +80,7 @@ describe("What's new", () => {
     vi.restoreAllMocks();
     Reflect.deleteProperty(window, "desktopBridge");
     localStorage.removeItem("threadlines:whats-new:v1");
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("lists a nightly's changes since the build you had, then the earlier nightlies", async () => {

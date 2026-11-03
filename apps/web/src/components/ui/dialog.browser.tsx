@@ -6,6 +6,7 @@ import { render } from "vitest-browser-react";
 
 import { showOnScreenKeyboard } from "../../hooks/useOnScreenKeyboardInset.browser-harness";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "./dialog";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const PHONE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1_600, height: 1_300 };
@@ -17,7 +18,7 @@ const popupRect = () =>
 describe("Dialog", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
-    document.body.innerHTML = "";
+    await resetTestPage();
     await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
   });
 

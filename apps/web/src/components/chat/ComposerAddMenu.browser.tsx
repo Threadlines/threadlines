@@ -8,6 +8,7 @@ import { render } from "vitest-browser-react";
 
 import type { PromptStashEntry } from "../../promptStashStore";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 function makeEntry(input: { id: string; prompt: string; withChip?: boolean }): PromptStashEntry {
   return {
@@ -75,8 +76,8 @@ function renderAddMenu(props: {
 }
 
 describe("ComposerAddMenu", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("lists stashed prompts with their chip count and restores the row that was clicked", async () => {

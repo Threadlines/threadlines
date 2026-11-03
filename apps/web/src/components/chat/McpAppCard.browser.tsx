@@ -17,6 +17,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { McpAppCard, McpAppSidePanel } from "./McpAppCard";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 vi.mock("./agentPageClient", async () => {
   const { AGENT_PAGE_FALLBACK_THEMES } = await import("@threadlines/shared/agentPages");
@@ -76,9 +77,9 @@ const LOADED: McpAppLoadResult = {
 };
 
 describe("McpAppCard", () => {
-  afterEach(() => {
+  afterEach(async () => {
     __resetEnvironmentApiOverridesForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("removes an app that navigates itself away, so nothing it loads keeps running", async () => {

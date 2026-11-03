@@ -17,6 +17,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const { refreshProvidersMock } = vi.hoisted(() => ({
   refreshProvidersMock: vi.fn(
@@ -101,9 +102,9 @@ function slowStartedAt(): string {
 }
 
 describe("session startup composer notice", () => {
-  afterEach(() => {
+  afterEach(async () => {
     refreshProvidersMock.mockClear();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("offers targeted refresh and diagnostics actions once startup runs long", async () => {

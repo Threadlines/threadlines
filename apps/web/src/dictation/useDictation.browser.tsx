@@ -10,6 +10,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import { useDictation } from "./useDictation";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-dictation");
 
@@ -102,9 +103,9 @@ describe("useDictation", () => {
     installEnvironmentApi();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __resetEnvironmentApiOverridesForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("sends a long enough clip and hands the text back", async () => {

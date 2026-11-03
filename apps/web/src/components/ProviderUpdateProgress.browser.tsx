@@ -24,6 +24,7 @@ import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../rpc/at
 import { setServerConfigSnapshot } from "../rpc/serverState";
 import { ProviderUpdateProgress } from "./ProviderUpdateProgress";
 import { ToastProvider, toastManager } from "./ui/toast";
+import { resetTestPage } from "../lib/testPage.browser-harness";
 
 function serverConfig(updateState: ServerProvider["updateState"], version = "1.0.0"): ServerConfig {
   const codex: ServerProvider = {
@@ -118,11 +119,11 @@ const noticeTitles = () =>
   Array.from(document.querySelectorAll("[data-slot='toast-title']"), (el) => el.textContent);
 
 describe("ProviderUpdateProgress", () => {
-  afterEach(() => {
+  afterEach(async () => {
     toastManager.close();
     endProviderUpdateRun();
     resetAppAtomRegistryForTests();
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("reports an update however it started, and ends it in the same notice", async () => {

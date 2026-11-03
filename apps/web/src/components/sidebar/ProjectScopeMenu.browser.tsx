@@ -13,6 +13,7 @@ import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import type { ProjectScopeOption } from "../Sidebar.logic";
 import type { EnvironmentScopeOption } from "./InboxViewMenu";
 import { ProjectScopeMenu } from "./ProjectScopeMenu";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const PRIMARY_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-remote");
@@ -83,8 +84,8 @@ async function renderMenu(
 }
 
 describe("ProjectScopeMenu", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("opens the computer section from the View button with two computers and reports the pick", async () => {

@@ -12,6 +12,7 @@ import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/di
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import { applyEditSeedToEditor, findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
+import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 // Mirrors FileViewerPreview's pierre usage so lifecycle regressions in the
 // wrapper (mount/unmount assertions, stale renders on file switch) surface in
@@ -92,10 +93,10 @@ describe("FileViewer pierre integration", () => {
     pageErrors.push(event.error ?? event.message);
   };
 
-  afterEach(() => {
+  afterEach(async () => {
     window.removeEventListener("error", onError);
     pageErrors.length = 0;
-    document.body.innerHTML = "";
+    await resetTestPage();
   });
 
   it("mounts with a selection, switches files, and unmounts cleanly", async () => {
@@ -288,8 +289,8 @@ function EditableHarness({
 }
 
 describe("FileViewer pierre editing", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await resetTestPage();
   });
 
   it("applies programmatic edits and reports changes with undo support", async () => {
