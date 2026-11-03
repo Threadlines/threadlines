@@ -228,10 +228,6 @@ describe("InboxThreadRow on a touch screen", () => {
 });
 
 describe("InboxThreadRow swipes", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
-  });
-
   it("wraps up on a swipe left and pins on a swipe right, and leaves scrolls, short swipes and mouse drags alone", async () => {
     const onSwipeAction = vi.fn();
     const handleThreadClick = vi.fn();
