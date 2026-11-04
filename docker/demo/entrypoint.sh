@@ -7,6 +7,7 @@
 #   threadlines-demo reset    rebuild the fake projects and threads now
 #   threadlines-demo status   list the fake projects' threads and their states
 #   threadlines-demo ready    exit 0 when the last reset succeeded
+#   threadlines-demo monitor-key  a Work key for the daily check, printed alone
 #
 # Run the others with `docker exec <container> threadlines-demo reset`.
 set -eu
@@ -27,7 +28,7 @@ fixtures() {
 }
 
 case "${1:-serve}" in
-  reset | status | ready)
+  reset | status | ready | monitor-key)
     fixtures "$1"
     ;;
   serve)
@@ -72,7 +73,7 @@ case "${1:-serve}" in
     exit "$code"
     ;;
   *)
-    echo "Usage: threadlines-demo [serve|reset|status|ready]" >&2
+    echo "Usage: threadlines-demo [serve|reset|status|ready|monitor-key]" >&2
     exit 2
     ;;
 esac

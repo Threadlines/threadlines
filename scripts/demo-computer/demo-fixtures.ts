@@ -24,6 +24,10 @@
  *       Prints each demo project's threads and how they're doing.
  *   demo-fixtures.ts ready
  *       Exits 0 when the last reset succeeded (the container's health check).
+ *   demo-fixtures.ts monitor-key
+ *       Creates an assistant key at Work for the daily check (doorCheck.ts)
+ *       and prints only the key, so it can go straight into a password store.
+ *       Each run makes another key; remove old ones in Settings › Assistants.
  *
  * A reset never touches what makes the computer itself: its settings, its
  * secrets folder (signing keys, relay identity), its environment id, and the
@@ -856,9 +860,23 @@ async function main(args: ReadonlyArray<string>): Promise<void> {
     case "ready":
       process.exitCode = NodeFS.existsSync(readyPath()) ? 0 : 1;
       return;
+    case "monitor-key": {
+      // Work, so the check sees every tool a directory's scan sees.
+      const created = (await asOwner((client) =>
+        client.request("outsideAgents.createKey", {
+          name: "Daily check",
+          access: "work",
+          maxRuntimeMode: "full-access",
+          projectIds: null,
+        }),
+      )) as { readonly key?: unknown };
+      if (typeof created.key !== "string") throw new Error("The server returned no key.");
+      process.stdout.write(`${created.key}\n`);
+      return;
+    }
     default:
       console.error(
-        "Usage: demo-fixtures.ts settings --agent <path> --out <file> | boot [--reset-pending] | reset | status | ready",
+        "Usage: demo-fixtures.ts settings --agent <path> --out <file> | boot [--reset-pending] | reset | status | ready | monitor-key",
       );
       process.exitCode = 2;
   }
