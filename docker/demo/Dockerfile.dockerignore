@@ -1,0 +1,11 @@
+# Used by `docker build -f docker/demo/Dockerfile .`: the build installs its
+# own dependencies and builds from source, so local installs and outputs stay out.
+**/node_modules
+**/dist
+**/dist-electron
+**/.vite-plus
+**/*.tsbuildinfo
+.git
+.repos
+release
+apps/desktop/.electron-runtime
