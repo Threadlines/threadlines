@@ -105,7 +105,7 @@ reset succeeds, so a monitor on the health status catches both.
 
 ## Run it on Fly.io
 
-`fly.toml` here runs it as one always-on machine (shared CPU, 1 GB memory) with
+`fly.toml` here runs it as one always-on machine (shared CPU, 2 GB memory) with
 a 1 GB volume for its home folder, in its own app with no public address. From
 the repository root, once signed in with `fly auth login`:
 

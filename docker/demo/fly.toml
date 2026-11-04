@@ -19,7 +19,9 @@ initial_size = "1gb"
 
 [[vm]]
 size = "shared-cpu-1x"
-memory = "1gb"
+# The server takes about 350 MB and each agent about 80 MB: at 1 GB, three or
+# four threads a reviewer starts would run it out of memory.
+memory = "2gb"
 
 [[restart]]
 policy = "always"
