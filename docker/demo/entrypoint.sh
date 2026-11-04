@@ -11,6 +11,14 @@
 # Run the others with `docker exec <container> threadlines-demo reset`.
 set -eu
 
+# Started as root (the image has no USER, and a fresh Fly.io volume is mounted
+# owned by root): give the home folder to the threadlines user, then run this
+# same command as that user. Nothing after this runs as root.
+if [ "$(id -u)" = "0" ]; then
+  chown threadlines:threadlines /home/threadlines
+  HOME=/home/threadlines exec setpriv --reuid=threadlines --regid=threadlines --init-groups "$0" "$@"
+fi
+
 DEMO_DIR=/opt/threadlines-demo
 SETTINGS="$THREADLINES_HOME/userdata/settings.json"
 

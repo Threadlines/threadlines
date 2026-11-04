@@ -103,6 +103,33 @@ reset of the fake data succeeded (`threadlines-demo ready`). If seeding fails,
 the server keeps running and Docker shows the container as unhealthy until a
 reset succeeds, so a monitor on the health status catches both.
 
+## Run it on Fly.io
+
+`fly.toml` here runs it as one always-on machine (shared CPU, 1 GB memory) with
+a 1 GB volume for its home folder, in its own app with no public address. From
+the repository root, once signed in with `fly auth login`:
+
+Fly's remote builders run out of memory bundling the web client, so pack the
+server on your own machine and let Fly install that package:
+
+```bash
+THREADLINES_TELEMETRY_ENABLED=false vp run --filter @threadlines/server build
+node scripts/prepare-server-npm-package.ts
+rm -rf docker/demo/prebuilt && mkdir docker/demo/prebuilt
+(cd release/npm-server && npm pack --pack-destination ../../docker/demo/prebuilt)
+
+fly apps create threadlines-demo
+fly volumes create demo_home --app threadlines-demo --region iad --size 1 --yes
+fly deploy . -c docker/demo/fly.toml --dockerfile docker/demo/Dockerfile \
+  --ignorefile docker/demo/prebuilt.dockerignore --build-arg SERVER_FROM=prebuilt
+```
+
+`docker/demo/prebuilt/` is ignored by git. Repeat the first four lines for
+each deploy that should pick up new server code. Run the other commands with `fly ssh console --app threadlines-demo -C
+"threadlines-demo status"` (or `reset`, `ready`), and read its log with
+`fly logs --app threadlines-demo`. Fly's health check covers only the server;
+`ready` is the one that says the fake data is there.
+
 ## Resets
 
 ```bash

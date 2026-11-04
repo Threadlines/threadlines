@@ -1,0 +1,9 @@
+# For `--build-arg SERVER_FROM=prebuilt`: the server comes packed, so the
+# build reads only the demo's own files. An allowlist, like Dockerfile.dockerignore.
+*
+!scripts/demo-computer/demo-agent.ts
+!scripts/demo-computer/demo-fixtures.ts
+!scripts/demo-computer/threadlinesClient.ts
+!scripts/demo-computer/agentFolders.ts
+!docker/demo/entrypoint.sh
+!docker/demo/prebuilt

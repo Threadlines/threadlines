@@ -15,6 +15,7 @@
 !scripts
 !oxlint-plugin-threadlines
 !docker/demo/entrypoint.sh
+!docker/demo/prebuilt
 
 # Inside those, local installs and outputs stay out...
 **/node_modules

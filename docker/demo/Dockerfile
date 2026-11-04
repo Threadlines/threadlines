@@ -9,9 +9,18 @@
 #
 # The published npm package is stable only, and stable lacks the assistants
 # door, so the server is built from source here and installed the way npm
-# would install it.
+# would install it. Where the build machine is too small for the web bundle
+# (Fly's remote builders run out of memory on it), pack the server on a
+# bigger machine and install that instead (README, "Run it on Fly.io"):
+#
+#   docker build -f docker/demo/Dockerfile --build-arg SERVER_FROM=prebuilt ...
+#
+# with the package at docker/demo/prebuilt/threadlines-server-*.tgz.
 
-FROM node:24-bookworm AS build
+ARG SERVER_FROM=source
+
+# The server package, built here from the repository.
+FROM node:24-bookworm AS server-source
 WORKDIR /src
 # Nothing in the build may carry an analytics key into the bundle.
 ENV THREADLINES_TELEMETRY_ENABLED=false \
@@ -21,17 +30,26 @@ RUN corepack enable
 # Only what the build needs comes in (Dockerfile.dockerignore is an allowlist).
 COPY . .
 RUN pnpm install --frozen-lockfile
+RUN pnpm exec vp run --filter @threadlines/server build \
+  && node scripts/prepare-server-npm-package.ts \
+  && mkdir /tmp/pack \
+  && cd release/npm-server \
+  && npm pack --pack-destination /tmp/pack
+
+# The server package, packed elsewhere the same way.
+FROM node:24-bookworm AS server-prebuilt
+COPY docker/demo/prebuilt/threadlines-server-*.tgz /tmp/pack/
+
+FROM server-${SERVER_FROM} AS server-package
+
+FROM node:24-bookworm AS build
+COPY --from=server-package /tmp/pack /tmp/pack
 # --allow-scripts: npm 11 skips install scripts otherwise, and node-pty
 # builds its native part in one. The last step deletes the Claude Agent SDK's
 # bundled Claude CLI (its optional per-platform package, about 320 MB): no
 # provider runs here, and the SDK's own code loads without it. (npm 11 keeps
 # it even with --omit=optional on a global install.)
-RUN pnpm exec vp run --filter @threadlines/server build \
-  && node scripts/prepare-server-npm-package.ts \
-  && mkdir /tmp/pack \
-  && cd release/npm-server \
-  && npm pack --pack-destination /tmp/pack \
-  && npm install -g --allow-scripts=node-pty --prefix /opt/threadlines /tmp/pack/*.tgz \
+RUN npm install -g --allow-scripts=node-pty --prefix /opt/threadlines /tmp/pack/*.tgz \
   && rm -rf /opt/threadlines/lib/node_modules/@threadlines/server/node_modules/@anthropic-ai/claude-agent-sdk-*
 
 FROM node:24-bookworm-slim
@@ -67,7 +85,9 @@ RUN echo '{ "type": "module", "private": true }' > /opt/threadlines-demo/package
 RUN userdel -r node \
   && useradd --create-home --uid 1000 --user-group threadlines
 
-USER threadlines
+# No USER line: the entrypoint starts as root only to give the home folder to
+# this user (a Fly.io volume is mounted owned by root), then runs everything,
+# server and agents included, as `threadlines`. `docker exec` lands there too.
 WORKDIR /home/threadlines
 
 # No provider CLI is installed, and the settings the entrypoint writes turn
