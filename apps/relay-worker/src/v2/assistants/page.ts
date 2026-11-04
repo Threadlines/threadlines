@@ -39,7 +39,7 @@ export function signInPageResponse(input: {
 <p>${escapeHtml(INSTRUCTION)}</p>
 <label for="code">Code</label>
 <div class="row">
-<input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="16" placeholder="K4D8-2PQX" aria-describedby="message" required>
+<input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="16" aria-describedby="message" required>
 <button id="continue" type="submit">Continue</button>
 </div>
 </form>
@@ -211,7 +211,7 @@ async function poll() {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const code = normalize(input.value);
-  if (!code) { show("Codes have 8 letters and numbers, like K4D8-2PQX.", "error"); input.focus(); return; }
+  if (!code) { show("Type the 8 letters and numbers Threadlines shows.", "error"); input.focus(); return; }
   ready(false);
   show("Checking the code…");
   try {
