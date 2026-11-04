@@ -37,6 +37,12 @@ function readers(overrides: Partial<GuideToolDeps> = {}) {
       ]),
     ),
     providers: Effect.suspend(counted("providers", [])),
+    modelChoices: Effect.suspend(
+      counted("modelChoices", [
+        { value: "codex/gpt-test", name: "GPT Test" },
+        { value: "claudeAgent/opus-test", name: "Opus Test" },
+      ]),
+    ),
     outsideAgents: Effect.suspend(counted("outsideAgents", [])),
     scheduledTasks: Effect.suspend(counted("scheduledTasks", { active: 0, paused: 0 })),
     ...overrides,
@@ -67,6 +73,14 @@ describe("app_guide", () => {
     reads.length = 0;
     await Effect.runPromise(guide({ query: "dark mode" }));
     expect(reads).toEqual([]);
+  });
+
+  it("names the models a default can take, once however many rows it shows", async () => {
+    const { guide } = readers();
+    const { answer } = await Effect.runPromise(guide({ query: "writing model" }));
+    expect(answer).toContain('place "threads.writingModel"');
+    expect(answer).toContain('place "threads.backupWritingModel"');
+    expect(answer.split('"codex/gpt-test" (GPT Test)')).toHaveLength(2);
   });
 
   it("says what each linked computer allows in both directions, and when a value is old", async () => {

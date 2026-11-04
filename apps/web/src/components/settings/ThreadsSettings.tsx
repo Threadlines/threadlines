@@ -12,6 +12,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   AGENT_INVITES_LABELS,
   AGENT_THREADS_LABELS,
+  NEW_WORKTREE_BASE_LABELS,
   THREAD_ENV_MODE_LABELS,
 } from "@threadlines/shared/appPlaces";
 import { createModelSelection } from "@threadlines/shared/model";
@@ -357,17 +358,17 @@ export function DefaultThreadEnvModeRow() {
 const NEW_WORKTREE_BASE_OPTIONS = [
   {
     value: "default",
-    label: "Default branch",
+    label: NEW_WORKTREE_BASE_LABELS.default,
     description: "Each new worktree starts from the project's default branch, usually main.",
   },
   {
     value: "current",
-    label: "Current branch",
+    label: NEW_WORKTREE_BASE_LABELS.current,
     description: "Each new worktree starts from the branch your project folder is on.",
   },
   {
     value: "named",
-    label: "Another branch",
+    label: NEW_WORKTREE_BASE_LABELS.named,
     description:
       "Each new worktree starts from this branch, or the default branch where it's missing.",
   },

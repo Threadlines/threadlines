@@ -6,7 +6,13 @@ import {
 import * as Duration from "effect/Duration";
 import { describe, expect, it } from "vite-plus/test";
 
-import { APP_PLACES, type EditControl, type EditValue, type PlaceId } from "./appPlaces.ts";
+import {
+  APP_PLACES,
+  type EditControl,
+  type EditValue,
+  NO_MODEL,
+  type PlaceId,
+} from "./appPlaces.ts";
 import { applyServerSettingsPatch } from "./serverSettings.ts";
 import {
   type CheckedEdit,
@@ -24,13 +30,25 @@ const valuesOf = (control: EditControl): ReadonlyArray<EditValue> => {
       return Object.keys(control.options);
     case "count":
       return [control.min, control.max, ...(control.offAtZero === true ? [0] : [])];
+    case "model":
+      return [
+        "codex/gpt-test",
+        "gateway/vendor/model-with-a-slash",
+        ...(control.noneLabel !== undefined ? [NO_MODEL] : []),
+      ];
   }
 };
 
-/** The dotted settings a patch touches, one level into nested settings. */
-const leavesOf = (patch: object): ReadonlyArray<string> =>
+/**
+ * The dotted settings a patch touches, one level into nested settings unless
+ * the place declares the whole setting as its leaf.
+ */
+const leavesOf = (patch: object, declared: ReadonlyArray<string>): ReadonlyArray<string> =>
   Object.entries(patch).flatMap(([key, value]) =>
-    typeof value === "object" && value !== null && !Duration.isDuration(value)
+    !declared.includes(key) &&
+    typeof value === "object" &&
+    value !== null &&
+    !Duration.isDuration(value)
       ? Object.keys(value).map((leaf) => `${key}.${leaf}`)
       : [key],
   );
@@ -56,13 +74,13 @@ describe("agents' settings changes", () => {
       for (const value of valuesOf(edit.control)) {
         if (edit.lands === "computer") {
           const patch = edit.patch(value);
-          expect(leavesOf(patch), id).toEqual(edit.leaves);
+          expect(leavesOf(patch, edit.leaves), id).toEqual(edit.leaves);
           expect(edit.read(applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, patch)), id).toBe(
             value,
           );
         } else {
           const patch = edit.patch(value);
-          expect(leavesOf(patch), id).toEqual(edit.leaves);
+          expect(leavesOf(patch, edit.leaves), id).toEqual(edit.leaves);
           const next: ClientSettings = { ...DEFAULT_CLIENT_SETTINGS, ...patch };
           expect(edit.read(next), id).toBe(value);
         }
@@ -95,6 +113,19 @@ describe("agents' settings changes", () => {
       ]),
     ).toBe("bad_value");
     expect(refused([{ place: "sourceControl.fetchInterval", value: 0 }])).toBeNull();
+    // "Another branch" needs a branch picked on the row; the writing model always has one.
+    expect(refused([{ place: "threads.worktreesFrom", value: "named" }])).toBe("bad_value");
+    expect(refused([{ place: "threads.writingModel", value: NO_MODEL }])).toBe("bad_value");
+    expect(refused([{ place: "threads.agent", value: "no-model-named" }])).toBe("bad_value");
+    expect(refused([{ place: "threads.agent", value: "codex/gpt-test" }])).toBeNull();
+    expect(refused([{ place: "threads.agent", value: NO_MODEL }])).toBeNull();
+    // Alerts need a phone or browser, these rows the desktop app: no card could be accepted.
+    expect(
+      refused([
+        { place: "general.alertFailed", value: false },
+        { place: "general.openLinksIn", value: "external" },
+      ]),
+    ).toBe("no_one_app");
   });
 
   it("writes two changes under one setting together, keeping the rest of it", () => {
@@ -122,6 +153,10 @@ describe("agents' settings changes", () => {
     expect(describeEditValue("sourceControl.fetchInterval", 0)).toBe("Off");
     // A value agents can't pick still reads as its row shows it.
     expect(describeEditValue("sourceControl.writingStyle", "custom")).toBe("Custom instructions");
+    expect(describeEditValue("threads.agent", NO_MODEL)).toBe("Last used");
+    expect(describeEditValue("threads.agent", "codex/gpt-test")).toBe("gpt-test");
+    // A size typed by hand reads as its dimensions, not as a choice.
+    expect(describeEditValue("general.browserPageSize", "1000 × 700")).toBe("1000 × 700");
   });
 
   it("keeps a computer patch to computer changes", () => {

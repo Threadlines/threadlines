@@ -55,6 +55,7 @@ import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
 import { makeGuideToolHandler } from "./guideToolHandlers.ts";
 import { GuideToolkit } from "./guideTools.ts";
+import { offeredModels } from "../settingsChanges/modelChoices.ts";
 import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
 import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
 import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
@@ -344,6 +345,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           })),
         ),
       ),
+      modelChoices: providers.getProviders.pipe(Effect.map(offeredModels)),
       // The Agents group as Settings shows it: its first snapshot is now.
       outsideAgents: Option.isSome(outsideAgents)
         ? orUndefined(
@@ -372,6 +374,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       engine,
       readThread,
       settings: settings.readStored.pipe(Effect.orElseSucceed(() => undefined)),
+      providers: providers.getProviders,
     });
     const caller = requestService(McpRoomInvocation);
     type Refused = { readonly outcome: "refused"; readonly detail: string };

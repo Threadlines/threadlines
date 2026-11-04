@@ -16,7 +16,6 @@ import {
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
-  type LinkOpenTarget,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -24,7 +23,12 @@ import {
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { placeById, THEME_LABELS, TIMESTAMP_FORMAT_LABELS } from "@threadlines/shared/appPlaces";
+import {
+  OPEN_LINKS_IN_LABELS,
+  placeById,
+  THEME_LABELS,
+  TIMESTAMP_FORMAT_LABELS,
+} from "@threadlines/shared/appPlaces";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   PROVIDER_ACCOUNT_DRIVER_KINDS,
@@ -181,11 +185,6 @@ const THEME_OPTIONS = (["system", "light", "dark"] as const).map((value) => ({
   value,
   label: THEME_LABELS[value],
 }));
-
-const OPEN_LINKS_IN_LABELS = {
-  "browser-panel": "Built-in browser",
-  external: "External browser",
-} as const satisfies Record<LinkOpenTarget, string>;
 
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
