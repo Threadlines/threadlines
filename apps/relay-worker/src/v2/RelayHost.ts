@@ -57,6 +57,7 @@ import {
 import { assistantCodeShardName } from "./assistants/codes.ts";
 import { ASSISTANTS_OFF_CODE, assistantsConfig, assistantsInfo } from "./assistants/config.ts";
 import { AssistantDoor, type AssistantDoorRequest, parseHostFrame } from "./assistants/door.ts";
+import { AssistantPresence } from "./assistants/presence.ts";
 import {
   AssistantHostCore,
   parseRevokeRequest,
@@ -177,6 +178,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private readonly core: HostCore;
   private readonly assistants: AssistantHostCore;
   private readonly door: AssistantDoor;
+  /** Holds a request a moment while the computer's sockets come back (presence.ts). */
+  private readonly presence = new AssistantPresence();
   /** Sign-ins whose decision is being passed to their shard right now. */
   private readonly decidingSignIns = new Set<string>();
   private readonly reservations = new Map<string, PipeReservation>();
@@ -252,8 +255,17 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       // Not (or no longer) registered here: the credential can't work again.
       return input.route === "mcp" ? mcpUnauthorized(config.origin, true) : invalidGrant();
     }
-    const now = Date.now();
-    const live = this.liveAssistantSocket(now);
+    let now = Date.now();
+    let live = this.liveAssistantSocket(now);
+    if (
+      !live &&
+      !this.assistants.isRevoked(input.connectionId) &&
+      this.presence.mayComeBack(now, this.hasLeasedControlSocket(now))
+    ) {
+      // A reconnect in progress: wait a moment rather than say it's offline.
+      live = await this.presence.wait(() => this.liveAssistantSocket(Date.now()));
+      now = Date.now();
+    }
     const answer = await this.door.request(input, {
       now,
       origin: config.origin,
@@ -404,6 +416,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       { role: "control", connectedAt: now, leaseAt: now },
       request,
     );
+    // Its lease starts now: a request waiting for the computer may go.
+    this.presence.changed();
 
     const pending = this.core.pendingRequests(now);
     await this.applyEffects(pending.effects);
@@ -654,6 +668,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     for (const signIn of this.assistants.signIns(now)) {
       this.sendAssistant(server, { type: "signin", signIn });
     }
+    this.presence.changed();
     return upgradeResponse(client, request);
   }
 
@@ -1361,6 +1376,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       // undo anything saved since (like the ledger's latest answer).
       const current = readAttachment(ws) ?? attachment;
       ws.serializeAttachment({ ...current, leaseAt: now } satisfies SocketAttachment);
+      this.presence.changed();
       if (typeof parsed.hostLabel === "string" && parsed.hostLabel.trim()) {
         this.core.setLabel(parsed.hostLabel.trim().slice(0, 120));
       }
@@ -1394,6 +1410,15 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private handleSocketGone(ws: WebSocket): void {
     const attachment = readAttachment(ws);
     if (!attachment) return;
+    const now = Date.now();
+    if (
+      // An assistant socket while the computer is there, or a control socket
+      // still leased (one whose lease lapsed went quiet long ago: not a blip).
+      (attachment.role === "assistant" && this.hasLeasedControlSocket(now)) ||
+      (attachment.role === "control" && now - (attachment.leaseAt ?? 0) <= HOST_LEASE_MS)
+    ) {
+      this.presence.socketGone(now);
+    }
     if (attachment.role === "assistant") {
       // Requests waiting on this socket can't be answered any more: 502 now.
       if (attachment.socketId) this.door.dropSocket(attachment.socketId);
@@ -1473,6 +1498,22 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       }
     }
     return null;
+  }
+
+  /**
+   * Whether the computer's control socket is open with a fresh lease, without
+   * closing a lapsed one (liveControlSocket does that): the computer is there
+   * and only its assistant socket is missing. A sleeping computer's lease has
+   * lapsed, so it never counts.
+   */
+  private hasLeasedControlSocket(now: number): boolean {
+    return this.ctx
+      .getWebSockets("control")
+      .some(
+        (socket) =>
+          socket.readyState === WebSocket.OPEN &&
+          now - (readAttachment(socket)?.leaseAt ?? 0) <= HOST_LEASE_MS,
+      );
   }
 
   private isHostOnline(now: number): boolean {
