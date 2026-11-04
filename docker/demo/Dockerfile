@@ -18,14 +18,21 @@ ENV THREADLINES_TELEMETRY_ENABLED=false \
   ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
   CI=true
 RUN corepack enable
+# Only what the build needs comes in (Dockerfile.dockerignore is an allowlist).
 COPY . .
 RUN pnpm install --frozen-lockfile
+# --allow-scripts: npm 11 skips install scripts otherwise, and node-pty
+# builds its native part in one. The last step deletes the Claude Agent SDK's
+# bundled Claude CLI (its optional per-platform package, about 320 MB): no
+# provider runs here, and the SDK's own code loads without it. (npm 11 keeps
+# it even with --omit=optional on a global install.)
 RUN pnpm exec vp run --filter @threadlines/server build \
   && node scripts/prepare-server-npm-package.ts \
   && mkdir /tmp/pack \
   && cd release/npm-server \
   && npm pack --pack-destination /tmp/pack \
-  && npm install -g --allow-scripts=node-pty --prefix /opt/threadlines /tmp/pack/*.tgz
+  && npm install -g --allow-scripts=node-pty --prefix /opt/threadlines /tmp/pack/*.tgz \
+  && rm -rf /opt/threadlines/lib/node_modules/@threadlines/server/node_modules/@anthropic-ai/claude-agent-sdk-*
 
 FROM node:24-bookworm-slim
 
@@ -52,7 +59,7 @@ COPY --from=build /opt/threadlines /opt/threadlines
 RUN ln -s /opt/threadlines/bin/threadlines /usr/local/bin/threadlines
 
 # The scripted agent and the fixtures: plain Node, no dependencies.
-COPY scripts/demo-computer/demo-agent.ts scripts/demo-computer/demo-fixtures.ts scripts/demo-computer/threadlinesClient.ts /opt/threadlines-demo/
+COPY scripts/demo-computer/demo-agent.ts scripts/demo-computer/demo-fixtures.ts scripts/demo-computer/threadlinesClient.ts scripts/demo-computer/agentFolders.ts /opt/threadlines-demo/
 COPY docker/demo/entrypoint.sh /usr/local/bin/threadlines-demo
 RUN echo '{ "type": "module", "private": true }' > /opt/threadlines-demo/package.json \
   && chmod 755 /opt/threadlines-demo/demo-agent.ts /usr/local/bin/threadlines-demo
@@ -74,7 +81,8 @@ ENV THREADLINES_HOME=/home/threadlines/.threadlines \
   THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false \
   THREADLINES_TELEMETRY_ENABLED=false \
   THREADLINES_ASSISTANT_REVIEW_COMPUTER=1 \
-  DEMO_REPOS_DIR=/home/threadlines/demo-repos
+  DEMO_REPOS_DIR=/home/threadlines/demo-repos \
+  DEMO_AGENT_RUN_DIR=/tmp/threadlines-demo-agents
 
 EXPOSE 3773
 
@@ -82,5 +90,8 @@ EXPOSE 3773
 ENTRYPOINT ["tini", "-g", "--", "threadlines-demo"]
 CMD ["serve"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
-  CMD curl -fsS "http://127.0.0.1:${THREADLINES_PORT}/api/auth/session" || exit 1
+# Healthy means the server answers and the last reset of the fake data
+# succeeded: a container whose fixtures failed reports itself unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s \
+  CMD curl -fsS "http://127.0.0.1:${THREADLINES_PORT}/api/auth/session" >/dev/null \
+    && threadlines-demo ready || exit 1

@@ -79,6 +79,8 @@ export async function connectThreadlines(input: {
   const issued = await fetch(`${base}/api/auth/ws-token`, {
     method: "POST",
     headers: { authorization: `Bearer ${input.token}` },
+  }).catch((cause: unknown) => {
+    throw new Error(`Couldn't reach Threadlines at ${base}: ${String(cause)}`);
   });
   if (!issued.ok) {
     throw new Error(

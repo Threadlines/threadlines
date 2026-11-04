@@ -10,12 +10,20 @@
  *   demo-fixtures.ts settings --agent <path> --out <settings.json>
  *       The server settings: every real provider off, the scripted agent on.
  *       Write it before the server starts.
+ *   demo-fixtures.ts boot [--reset-pending]
+ *       At container start, before the server: clears what a previous run
+ *       left (its reset lock, its agents' folder records) and, when a reset
+ *       is about to run, the ready marker.
  *   demo-fixtures.ts reset
  *       Deletes the demo projects (and so their threads) with the app's own
- *       `project.delete`, removes the sample repos and their worktrees, then
- *       builds everything again. On an empty computer it just builds.
+ *       `project.delete`, waits for their agents to exit, removes the sample
+ *       repos and their worktrees, then builds everything again. On an empty
+ *       computer it just builds. One reset at a time: a second one waits.
+ *       The ready marker is gone while it runs and back once it succeeds.
  *   demo-fixtures.ts status
  *       Prints each demo project's threads and how they're doing.
+ *   demo-fixtures.ts ready
+ *       Exits 0 when the last reset succeeded (the container's health check).
  *
  * A reset never touches what makes the computer itself: its settings, its
  * secrets folder (signing keys, relay identity), its environment id, and the
@@ -29,7 +37,8 @@
  *   with `$DEMO_THREADLINES_CLI auth session issue` (default `threadlines`)
  *   for this run and revoked after.
  * - DEMO_REPOS_DIR: where the sample repos live (default $THREADLINES_HOME/demo-repos).
- *   A reset deletes this folder, so it must hold nothing else.
+ *   A reset deletes this folder, so it must hold nothing else. The reset
+ *   lock and the ready marker sit beside it (`<dir>.lock`, `<dir>.ready`).
  * - DEMO_AGENT_INSTANCE: the scripted agent's provider instance (default `demo`).
  * - DEMO_PR_REPO_URL, DEMO_PR_BRANCH: the pull request hook. A public sample
  *   repo's clone URL and a branch with an open pull request there. When both
@@ -43,6 +52,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { agentsWorkingIn, clearAgentRecords, isAlive, isWithin } from "./agentFolders.ts";
 import { connectThreadlines, statusOf, type ThreadlinesClient } from "./threadlinesClient.ts";
 
 const REPOS_MARKER = ".threadlines-demo-repos";
@@ -59,11 +69,15 @@ const SAMPLE_DATE = "2026-10-01T09:00:00Z";
 
 const home = () =>
   process.env.THREADLINES_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".threadlines");
-const reposDir = () => process.env.DEMO_REPOS_DIR?.trim() || NodePath.join(home(), "demo-repos");
+const reposDir = () =>
+  NodePath.resolve(process.env.DEMO_REPOS_DIR?.trim() || NodePath.join(home(), "demo-repos"));
+const lockPath = () => `${reposDir()}.lock`;
+const readyPath = () => `${reposDir()}.ready`;
 const serverUrl = () =>
   process.env.THREADLINES_URL?.trim() ||
   `http://127.0.0.1:${process.env.THREADLINES_PORT?.trim() || "3773"}`;
 const nowIso = () => new Date().toISOString();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function log(message: string): void {
   console.log(`[demo] ${message}`);
@@ -436,16 +450,27 @@ function ownerToken(): OwnerToken {
 // Projects and threads
 // ---------------------------------------------------------------------------
 
-const isInside = (path: string, root: string) => {
-  const relative = NodePath.relative(NodePath.resolve(root), NodePath.resolve(path));
-  return relative === "" || (!relative.startsWith("..") && !NodePath.isAbsolute(relative));
-};
+const AGENT_EXIT_TIMEOUT_MS = 60_000;
 
+/**
+ * Deletes the demo projects (and their threads), then waits until no agent
+ * process works in the sample repos or those threads' worktrees: Threadlines
+ * stops a deleted thread's agent after the thread leaves the shell, and the
+ * folders go next.
+ */
 async function deleteDemoProjects(client: ThreadlinesClient, root: string): Promise<void> {
   const shell = await client.shell();
   const demo = [...shell.projects.values()].filter((project) =>
-    isInside(project.workspaceRoot, root),
+    isWithin(project.workspaceRoot, root),
   );
+  const folders = [
+    root,
+    ...[...shell.threads.values()].flatMap((thread) =>
+      demo.some((project) => project.id === thread.projectId) && thread.worktreePath !== null
+        ? [thread.worktreePath]
+        : [],
+    ),
+  ];
   for (const project of demo) {
     log(`deleting project "${project.title}" and its threads`);
     await client.dispatch({
@@ -461,6 +486,25 @@ async function deleteDemoProjects(client: ThreadlinesClient, root: string): Prom
       ? true
       : undefined,
   );
+  const started = Date.now();
+  const deadline = started + AGENT_EXIT_TIMEOUT_MS;
+  let waitedFor = 0;
+  for (;;) {
+    const working = agentsWorkingIn(folders);
+    if (working.length === 0) {
+      if (waitedFor > 0) {
+        log(`waited ${Date.now() - started}ms for ${waitedFor} agent(s) to exit`);
+      }
+      return;
+    }
+    waitedFor = Math.max(waitedFor, working.length);
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Agents still running in the demo folders after ${AGENT_EXIT_TIMEOUT_MS / 1000}s (pids ${working.join(", ")}); left the files alone. Run the reset again.`,
+      );
+    }
+    await sleep(250);
+  }
 }
 
 async function createProject(
@@ -640,52 +684,145 @@ async function seedPullRequestProject(client: ThreadlinesClient, root: string): 
   );
 }
 
-async function reset(): Promise<void> {
-  const root = reposDir();
+/** Runs `work` signed in as the owner; the session is revoked however it ends. */
+async function asOwner<T>(work: (client: ThreadlinesClient) => Promise<T>): Promise<T> {
   const owner = ownerToken();
-  const client = await connectThreadlines({ serverUrl: serverUrl(), token: owner.token });
+  let client: ThreadlinesClient | undefined;
   try {
-    await deleteDemoProjects(client, root);
-    removeSampleRepos(root);
-    NodeFS.mkdirSync(root, { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(root, REPOS_MARKER),
-      "Sample repos for the Threadlines demo computer. A fixtures reset deletes this folder.\n",
-    );
-    for (const fixture of FIXTURES) {
-      const dir = buildSampleRepo(root, fixture.repo);
-      const projectId = await createProject(client, fixture.repo.title, dir);
-      log(`project "${fixture.repo.title}" (${dir})`);
-      for (const thread of fixture.threads) {
-        await startThread(client, { id: projectId, root: dir }, thread);
-      }
-    }
-    await seedPullRequestProject(client, root);
-    log("reset done");
+    client = await connectThreadlines({ serverUrl: serverUrl(), token: owner.token });
+    return await work(client);
   } finally {
-    client.close();
+    client?.close();
     owner.revoke();
   }
 }
 
+// ---------------------------------------------------------------------------
+// One reset at a time
+// ---------------------------------------------------------------------------
+
+/** Longer than any reset takes: a lock this old was left by one that died. */
+const LOCK_STALE_MS = 30 * 60_000;
+const LOCK_WAIT_MS = 20 * 60_000;
+
+interface LockHolder {
+  readonly pid: number;
+  readonly startedAt: string;
+}
+
+function readLock(): { readonly raw: string; readonly holder: LockHolder | undefined } | undefined {
+  let raw: string;
+  try {
+    raw = NodeFS.readFileSync(lockPath(), "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    return { raw, holder: JSON.parse(raw) as LockHolder };
+  } catch {
+    return { raw, holder: undefined };
+  }
+}
+
+/**
+ * Runs `work` holding the reset lock (`<repos dir>.lock`, created with
+ * O_EXCL). A second reset waits for the first; a lock whose process is gone,
+ * or that is older than any reset, is taken over. `boot` clears it at
+ * container start, when no reset can be running.
+ */
+async function withResetLock<T>(work: () => Promise<T>): Promise<T> {
+  const mine = JSON.stringify({ pid: process.pid, startedAt: nowIso() } satisfies LockHolder);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let toldWaiting = false;
+  NodeFS.mkdirSync(NodePath.dirname(lockPath()), { recursive: true });
+  for (;;) {
+    try {
+      NodeFS.writeFileSync(lockPath(), mine, { flag: "wx" });
+      break;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+    }
+    const current = readLock();
+    if (current === undefined) continue;
+    const { holder } = current;
+    const stale =
+      holder === undefined ||
+      !isAlive(holder.pid) ||
+      Date.now() - Date.parse(holder.startedAt) > LOCK_STALE_MS;
+    if (stale) {
+      // Only the lock we judged stale, not one another waiter just took.
+      if (readLock()?.raw === current.raw) NodeFS.rmSync(lockPath(), { force: true });
+      log(`took over a reset lock left by ${holder ? `pid ${holder.pid}` : "an unreadable file"}`);
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Another reset (pid ${holder.pid}, started ${holder.startedAt}) is still running; gave up waiting.`,
+      );
+    }
+    if (!toldWaiting) {
+      log(`another reset is running (pid ${holder.pid}); waiting for it to finish`);
+      toldWaiting = true;
+    }
+    await sleep(1_000);
+  }
+  try {
+    return await work();
+  } finally {
+    if (readLock()?.raw === mine) NodeFS.rmSync(lockPath(), { force: true });
+  }
+}
+
+async function reset(): Promise<void> {
+  await withResetLock(async () => {
+    // Unhealthy from here until the new data is all in.
+    NodeFS.rmSync(readyPath(), { force: true });
+    await asOwner(rebuild);
+    NodeFS.writeFileSync(readyPath(), `${nowIso()}\n`);
+    log("reset done");
+  });
+}
+
+async function rebuild(client: ThreadlinesClient): Promise<void> {
+  const root = reposDir();
+  await deleteDemoProjects(client, root);
+  removeSampleRepos(root);
+  NodeFS.mkdirSync(root, { recursive: true });
+  NodeFS.writeFileSync(
+    NodePath.join(root, REPOS_MARKER),
+    "Sample repos for the Threadlines demo computer. A fixtures reset deletes this folder.\n",
+  );
+  for (const fixture of FIXTURES) {
+    const dir = buildSampleRepo(root, fixture.repo);
+    const projectId = await createProject(client, fixture.repo.title, dir);
+    log(`project "${fixture.repo.title}" (${dir})`);
+    for (const thread of fixture.threads) {
+      await startThread(client, { id: projectId, root: dir }, thread);
+    }
+  }
+  await seedPullRequestProject(client, root);
+}
+
+/** At container start, before the server: nothing of a previous run is still going. */
+function boot(resetPending: boolean): void {
+  NodeFS.rmSync(lockPath(), { force: true });
+  clearAgentRecords();
+  if (resetPending) NodeFS.rmSync(readyPath(), { force: true });
+}
+
 async function status(): Promise<void> {
   const root = reposDir();
-  const owner = ownerToken();
-  const client = await connectThreadlines({ serverUrl: serverUrl(), token: owner.token });
-  try {
+  await asOwner(async (client) => {
     const shell = await client.shell();
     for (const project of shell.projects.values()) {
-      if (!isInside(project.workspaceRoot, root)) continue;
+      if (!isWithin(project.workspaceRoot, root)) continue;
       console.log(`${project.title}  (${project.workspaceRoot})`);
       for (const thread of shell.threads.values()) {
         if (thread.projectId !== project.id) continue;
         console.log(`  ${statusOf(thread).padEnd(26)} ${thread.title}  [${thread.branch ?? "-"}]`);
       }
     }
-  } finally {
-    client.close();
-    owner.revoke();
-  }
+  });
 }
 
 function flag(args: ReadonlyArray<string>, name: string): string | undefined {
@@ -709,13 +846,19 @@ async function main(args: ReadonlyArray<string>): Promise<void> {
       log(`wrote ${out}`);
       return;
     }
+    case "boot":
+      boot(rest.includes("--reset-pending"));
+      return;
     case "reset":
       return reset();
     case "status":
       return status();
+    case "ready":
+      process.exitCode = NodeFS.existsSync(readyPath()) ? 0 : 1;
+      return;
     default:
       console.error(
-        "Usage: demo-fixtures.ts settings --agent <path> --out <file> | reset | status",
+        "Usage: demo-fixtures.ts settings --agent <path> --out <file> | boot [--reset-pending] | reset | status | ready",
       );
       process.exitCode = 2;
   }

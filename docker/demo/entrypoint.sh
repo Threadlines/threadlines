@@ -6,8 +6,9 @@
 #                             once it answers (DEMO_RESET_ON_START=0 skips that)
 #   threadlines-demo reset    rebuild the fake projects and threads now
 #   threadlines-demo status   list the fake projects' threads and their states
+#   threadlines-demo ready    exit 0 when the last reset succeeded
 #
-# Run the last two with `docker exec <container> threadlines-demo reset`.
+# Run the others with `docker exec <container> threadlines-demo reset`.
 set -eu
 
 DEMO_DIR=/opt/threadlines-demo
@@ -18,13 +19,18 @@ fixtures() {
 }
 
 case "${1:-serve}" in
-  reset)
-    fixtures reset
-    ;;
-  status)
-    fixtures status
+  reset | status | ready)
+    fixtures "$1"
     ;;
   serve)
+    reset_on_start="${DEMO_RESET_ON_START:-1}"
+    # Nothing from the last run is still going: its reset lock and its
+    # agents' records go, and so does the ready marker when a reset follows.
+    if [ "$reset_on_start" = "1" ]; then
+      fixtures boot --reset-pending
+    else
+      fixtures boot
+    fi
     # Written on every start, so every real provider stays off whatever was
     # changed in the app.
     fixtures settings --agent "$DEMO_DIR/demo-agent.ts" --out "$SETTINGS"
@@ -42,9 +48,11 @@ case "${1:-serve}" in
     done
 
     # A restart ends every live agent session, so the threads that were
-    # waiting or working would come back idle: rebuild them.
-    if [ "${DEMO_RESET_ON_START:-1}" = "1" ]; then
-      fixtures reset || echo "[demo] the fixtures failed; the server keeps running. Retry with: threadlines-demo reset" >&2
+    # waiting or working would come back idle: rebuild them. Until that
+    # succeeds the container reports itself unhealthy (`ready`), while the
+    # server keeps running.
+    if [ "$reset_on_start" = "1" ]; then
+      fixtures reset || echo "[demo] the fixtures failed; the server keeps running, unhealthy. Retry with: threadlines-demo reset" >&2
     fi
 
     code=0
@@ -56,7 +64,7 @@ case "${1:-serve}" in
     exit "$code"
     ;;
   *)
-    echo "Usage: threadlines-demo [serve|reset|status]" >&2
+    echo "Usage: threadlines-demo [serve|reset|status|ready]" >&2
     exit 2
     ;;
 esac

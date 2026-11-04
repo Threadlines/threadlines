@@ -14,7 +14,8 @@ Node script (`scripts/demo-computer/demo-agent.ts`), not a language model.
 - **What it does:** it reads your message, picks one of a few fixed changes by
   keywords (below), really edits the files in the thread's checkout, and
   replies with what it changed. Every reply ends with a note saying it is
-  scripted. It never runs tests.
+  scripted. It never runs tests, and it never reads, writes or deletes
+  anything outside the thread's folder, whatever path a message names.
 - **Why:** a review shouldn't run up a model bill, and the computer shouldn't
   hold real code or real sign-ins.
 - **What it stands in for:** the coding agents a real user runs in
@@ -92,9 +93,15 @@ port above is only open on the VPS itself; use an SSH tunnel to open the app
 | `DEMO_AGENT_WATCH_MINUTES`           | How long the "watch" thread keeps working if nobody stops it (default 1440).                                            |
 
 The image sets `THREADLINES_TELEMETRY_ENABLED=false` and
-`THREADLINES_ASSISTANT_REVIEW_COMPUTER=1`. It installs no provider CLI, and on
-every start it writes a settings file that turns every real provider off and
-the scripted agent on.
+`THREADLINES_ASSISTANT_REVIEW_COMPUTER=1`. It installs no provider CLI, and
+deletes the Claude CLI that the server's Claude Agent SDK package brings
+along. On every start it writes a settings file that turns every real
+provider off and the scripted agent on.
+
+The container counts as healthy only when the server answers **and** the last
+reset of the fake data succeeded (`threadlines-demo ready`). If seeding fails,
+the server keeps running and Docker shows the container as unhealthy until a
+reset succeeds, so a monitor on the health status catches both.
 
 ## Resets
 
@@ -104,9 +111,11 @@ docker exec threadlines-demo threadlines-demo status   # list the fake threads a
 ```
 
 A reset deletes the demo projects with the app's own "delete project"
-command (their threads go with them, including any a reviewer started),
-deletes the sample repos and their worktrees, and builds everything again. A
-daily reset from the host's cron keeps the data fresh:
+command (their threads go with them, including any a reviewer started), waits
+for those threads' agents to exit, deletes the sample repos and their
+worktrees, and builds everything again. One reset runs at a time: a second one
+waits for the first to finish. A daily reset from the host's cron keeps the
+data fresh:
 
 ```cron
 0 6 * * * docker exec threadlines-demo threadlines-demo reset

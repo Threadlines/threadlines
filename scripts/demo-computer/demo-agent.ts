@@ -21,12 +21,15 @@
  * Environment:
  * - DEMO_AGENT_STEP_MS: pause between steps, so a watcher sees it working (default 400).
  * - DEMO_AGENT_WATCH_MINUTES: how long a "keep working" turn lasts if nobody stops it (default 1440).
+ * - DEMO_AGENT_RUN_DIR: where it records the folders it works in (agentFolders.ts).
  */
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { createInterface } from "node:readline";
+
+import { forgetThisAgent, recordAgentFolders } from "./agentFolders.ts";
 
 const AGENT_NAME = "Demo agent (scripted)";
 const AGENT_VERSION = "1.0.0";
@@ -166,6 +169,7 @@ async function handleRequest(method: string, params: JsonObject): Promise<unknow
         onCancel: new Set(),
       };
       sessions.set(session.id, session);
+      recordAgentFolders([process.cwd(), ...[...sessions.values()].map((entry) => entry.cwd)]);
       return { sessionId: session.id, configOptions: configOptions(session) };
     }
     case "session/set_config_option": {
@@ -354,9 +358,9 @@ function pickPlan(message: string, repo: RepoKind): Plan {
 }
 
 function repoKindOf(cwd: string): RepoKind {
-  if (NodeFS.existsSync(NodePath.join(cwd, "package.json"))) return "javascript";
+  if (exists(cwd, "package.json")) return "javascript";
   if (
-    NodeFS.existsSync(NodePath.join(cwd, "pyproject.toml")) ||
+    exists(cwd, "pyproject.toml") ||
     NodeFS.readdirSync(cwd).some((name) => name.endsWith(".py"))
   ) {
     return "python";
@@ -525,16 +529,63 @@ const DOC_PAGES: ReadonlyArray<{
   },
 ];
 
-function readText(cwd: string, path: string): string | null {
+/**
+ * Where `path` (relative to the session's folder) really is, or undefined
+ * when that is outside the folder: `..` and absolute paths, and symlinks
+ * (followed through every part that exists) leading out of it. Every read,
+ * write and delete goes through this, since paths can come from the message.
+ */
+function insideFolder(cwd: string, path: string): string | undefined {
+  let root: string;
   try {
-    return NodeFS.readFileSync(NodePath.join(cwd, path), "utf8");
+    root = NodeFS.realpathSync(cwd);
+  } catch {
+    return undefined;
+  }
+  // The deepest part that exists (a link counts, dangling or not), then the rest.
+  const missing: Array<string> = [];
+  let existing = NodePath.resolve(root, path);
+  for (;;) {
+    try {
+      NodeFS.lstatSync(existing);
+      break;
+    } catch {
+      const parent = NodePath.dirname(existing);
+      if (parent === existing) return undefined;
+      missing.unshift(NodePath.basename(existing));
+      existing = parent;
+    }
+  }
+  let real: string;
+  try {
+    real = NodeFS.realpathSync(existing);
+  } catch {
+    // A dangling link: writing through it would land wherever it points.
+    return undefined;
+  }
+  const resolved = NodePath.join(real, ...missing);
+  const relative = NodePath.relative(root, resolved);
+  const outside =
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${NodePath.sep}`) ||
+    NodePath.isAbsolute(relative);
+  return outside ? undefined : resolved;
+}
+
+function readText(cwd: string, path: string): string | null {
+  const real = insideFolder(cwd, path);
+  if (real === undefined) return null;
+  try {
+    return NodeFS.readFileSync(real, "utf8");
   } catch {
     return null;
   }
 }
 
 function exists(cwd: string, path: string): boolean {
-  return NodeFS.existsSync(NodePath.join(cwd, path));
+  const real = insideFolder(cwd, path);
+  return real !== undefined && NodeFS.existsSync(real);
 }
 
 /** A short, one-line version of the user's request, for notes in files. */
@@ -568,9 +619,7 @@ function pickHelper(cwd: string, repo: RepoKind, message: string): Helper | unde
 function pythonPackageOf(cwd: string): string {
   const folder = NodeFS.readdirSync(cwd, { withFileTypes: true }).find(
     (entry) =>
-      entry.isDirectory() &&
-      entry.name !== "tests" &&
-      NodeFS.existsSync(NodePath.join(cwd, entry.name, "__init__.py")),
+      entry.isDirectory() && entry.name !== "tests" && exists(cwd, `${entry.name}/__init__.py`),
   );
   return folder?.name ?? ".";
 }
@@ -668,7 +717,13 @@ function pageChanges(cwd: string): { readonly changes: Array<FileChange>; readon
 async function applyChanges(session: Session, changes: ReadonlyArray<FileChange>): Promise<void> {
   for (const change of changes) {
     if (session.cancelled) return;
-    const absolute = NodePath.join(session.cwd, change.path);
+    const absolute = insideFolder(session.cwd, change.path);
+    if (absolute === undefined) {
+      throw new RpcFailure(
+        INTERNAL_ERROR,
+        `Demo agent: refused to touch ${change.path}, which is outside this thread's folder.`,
+      );
+    }
     const toolCallId = `edit-${randomUUID()}`;
     const title = change.after === null ? `Delete ${change.path}` : `Edit ${change.path}`;
     update(session, {
@@ -959,14 +1014,23 @@ async function askPermission(
   return allowed;
 }
 
-/** The file a removal is about: one the message names, else the sample's outdated page. */
+/**
+ * The file a removal is about: one the message names, else the sample's
+ * outdated page. Only a regular file inside the thread's folder qualifies.
+ */
 function removalTarget(cwd: string, message: string): string | undefined {
+  const isFile = (path: string) => {
+    const real = insideFolder(cwd, path);
+    return (
+      real !== undefined && NodeFS.statSync(real, { throwIfNoEntry: false })?.isFile() === true
+    );
+  };
   const named = message
     .split(/\s+/u)
     .map((word) => word.replace(/^[`'"(]+|[`'",.;:)]+$/gu, ""))
-    .find((word) => word.includes(".") && !word.startsWith("..") && exists(cwd, word));
+    .find((word) => word.includes(".") && isFile(word));
   if (named) return named;
-  return ["docs/old-install.md", "OLD_NOTES.md"].find((path) => exists(cwd, path));
+  return ["docs/old-install.md", "OLD_NOTES.md"].find(isFile);
 }
 
 async function removeWithApproval(
@@ -1115,6 +1179,12 @@ function answerTextGeneration(session: Session, text: string): PromptResult {
 
 function main(argv: ReadonlyArray<string>): void {
   if (argv.includes("acp")) {
+    // The fixtures wait for this record to go before deleting the folders in it.
+    recordAgentFolders([process.cwd()]);
+    process.on("exit", forgetThisAgent);
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+      process.on(signal, () => process.exit(0));
+    }
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
     lines.on("line", handleLine);
     lines.on("close", () => process.exit(0));
