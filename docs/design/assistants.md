@@ -2222,6 +2222,27 @@ out of date where they differ from this section.
   which real providers it stands in for; so does the video. An agent that only pretended
   would mislead, and fail "test every tool".
 - About $5 a month. The provider is the developer's choice.
+- **As built (Nov 4), `docker/demo/` and `scripts/demo-computer/`:**
+  - The agent is a plain Node ACP script on a provider instance of the Cursor driver,
+    named "Demo agent (scripted)" (`displayName`); assistants see that name and never the
+    driver. Cursor's driver because questions that `thread_answer` can answer only come
+    through a descriptor hook (`cursor/ask_question`); the generic core turns every
+    `session/request_permission` into an approval. It reports an account ("No account
+    (scripted demo)") because threads only go to signed-in providers.
+  - It commits only when asked to: `thread_changes` measures uncommitted work, so a
+    commit would empty the diff. The earlier line above about committing was wrong.
+  - Seven threads across three sample repos: finished with changes, a question, an
+    approval, failed, finished without changes, and one working until stopped. A pull
+    request sample is optional (`DEMO_PR_REPO_URL`, `GH_TOKEN`, read-only).
+  - Live states don't survive a restart, so the fixtures are rebuilt on every start
+    (`DEMO_RESET_ON_START`), through the app's own commands. A reset keeps the secrets
+    folder, the environment id, settings and every connection row; checked by
+    fingerprinting before and after, and with a live connection that kept working.
+  - Connections need all-projects grants, since project ids change on each reset; review
+    approvals give exactly that.
+  - Found on the way, not fixed: after a commit, `thread_changes` lists the files with
+    totals of 0 until the baseline catches up; a stopped ACP turn reads `completed`, not
+    `interrupted`.
 
 ### Tools
 
