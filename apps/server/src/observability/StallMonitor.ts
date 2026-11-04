@@ -26,6 +26,12 @@
  * freeze that long without the CPU to show for it goes unreported: the price
  * of never calling a sleep a freeze.
  *
+ * It watches only from `start`, which `server.ts` calls once startup has
+ * built the server's services, its database migrations included. Before that
+ * the server is starting, not frozen: a long migration holds the loop just
+ * like a freeze, no client is being served yet, and the desktop already says
+ * the update is running.
+ *
  * Only the latest freeze is kept, and only reported for ten minutes after it
  * ended. Sampling reads clocks and counters only; the load average is read
  * once a gap is found (`os.cpus()` is too slow on some Linux machines to read
@@ -195,6 +201,11 @@ export function reportableStall(
 export interface StallMonitorShape {
   /** The latest freeze if it ended within the report window, then each new one. */
   readonly stalls: Stream.Stream<ServerStall>;
+  /**
+   * Starts watching for freezes, from now. Called once startup is past the
+   * migrations (see the module comment); later calls do nothing.
+   */
+  readonly start: Effect.Effect<void>;
 }
 
 export class StallMonitor extends Context.Service<StallMonitor, StallMonitorShape>()(
@@ -202,9 +213,11 @@ export class StallMonitor extends Context.Service<StallMonitor, StallMonitorShap
 ) {}
 
 const make = Effect.gen(function* () {
+  const scope = yield* Effect.scope;
   const runId = randomUUID().slice(0, 8);
   let sequence = 0;
   const latest = yield* SubscriptionRef.make<Option.Option<RecordedStall>>(Option.none());
+  let started = false;
   let previous = readSample();
 
   // A freeze too old to report is dropped for good, so a clock set back
@@ -216,7 +229,7 @@ const make = Effect.gen(function* () {
       : Effect.void,
   );
 
-  yield* Effect.sync(() => {
+  const watch = Effect.sync(() => {
     const next = readSample();
     const stall = classifyStall(previous, next, readMachineLoad);
     previous = next;
@@ -242,10 +255,19 @@ const make = Effect.gen(function* () {
         : expireOld,
     ),
     Effect.repeat(Schedule.spaced(Duration.millis(STALL_SAMPLE_INTERVAL_MS))),
-    Effect.forkScoped,
   );
 
+  // The first gap is measured from the start, not from when the monitor was
+  // built: the migrations run in between.
+  const start = Effect.suspend(() => {
+    if (started) return Effect.void;
+    started = true;
+    previous = readSample();
+    return Effect.asVoid(Effect.forkIn(watch, scope));
+  });
+
   return StallMonitor.of({
+    start,
     stalls: SubscriptionRef.changes(latest).pipe(
       Stream.map((recorded) =>
         Option.isSome(recorded)
