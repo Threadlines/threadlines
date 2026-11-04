@@ -7,6 +7,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import { assertOwnMigrationHistory } from "../MigrationHistory.ts";
 import { runMigrations } from "../Migrations.ts";
+import { readDatabaseFileAhead } from "../readDatabaseFileAhead.ts";
 import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
@@ -32,26 +33,28 @@ const makeRuntimeSqliteLayer = Effect.fn("makeRuntimeSqliteLayer")(function* (
   return clientModule.layer(config);
 }, Layer.unwrap);
 
-const setup = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA journal_mode = WAL;`;
-    // NORMAL is the recommended pairing with WAL: commits skip the per-commit
-    // fsync (expensive on Windows/laptop disks) while remaining crash-safe;
-    // only an OS/power failure can lose the most recent commits, never
-    // corrupt the database.
-    yield* sql`PRAGMA synchronous = NORMAL;`;
-    yield* sql`PRAGMA busy_timeout = 5000;`;
-    yield* sql`PRAGMA foreign_keys = ON;`;
-    // 32 MiB of page cache instead of SQLite's 2 MiB default. A big install's
-    // database runs to gigabytes, and the default let one chat open evict the
-    // pages the next one needed: repeated thread loads on payload-heavy chats
-    // took about twice as long.
-    yield* sql`PRAGMA cache_size = -32768;`;
-    yield* runMigrations();
-    yield* Effect.addFinalizer(() => Effect.ignore(sql`PRAGMA optimize;`));
-  }),
-);
+/** Pragmas, then migrations. `readAhead` warms the file for the heavy ones (`runMigrations`). */
+const setup = (readAhead?: Effect.Effect<void>) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA journal_mode = WAL;`;
+      // NORMAL is the recommended pairing with WAL: commits skip the per-commit
+      // fsync (expensive on Windows/laptop disks) while remaining crash-safe;
+      // only an OS/power failure can lose the most recent commits, never
+      // corrupt the database.
+      yield* sql`PRAGMA synchronous = NORMAL;`;
+      yield* sql`PRAGMA busy_timeout = 5000;`;
+      yield* sql`PRAGMA foreign_keys = ON;`;
+      // 32 MiB of page cache instead of SQLite's 2 MiB default. A big install's
+      // database runs to gigabytes, and the default let one chat open evict the
+      // pages the next one needed: repeated thread loads on payload-heavy chats
+      // took about twice as long.
+      yield* sql`PRAGMA cache_size = -32768;`;
+      yield* runMigrations({ readAhead });
+      yield* Effect.addFinalizer(() => Effect.ignore(sql`PRAGMA optimize;`));
+    }),
+  );
 
 export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(function* (
   dbPath: string,
@@ -68,7 +71,7 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
   }
 
   return Layer.provideMerge(
-    setup,
+    setup(readDatabaseFileAhead(fs, dbPath)),
     makeRuntimeSqliteLayer({
       filename: dbPath,
       spanAttributes: {
@@ -80,7 +83,7 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
 }, Layer.unwrap);
 
 export const SqlitePersistenceMemory = Layer.provideMerge(
-  setup,
+  setup(),
   makeRuntimeSqliteLayer({ filename: ":memory:" }),
 );
 

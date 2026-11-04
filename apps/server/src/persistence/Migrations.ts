@@ -13,6 +13,7 @@ import {
   MIGRATION_RUNNING_LOG_PREFIX,
 } from "@threadlines/contracts";
 import * as Migrator from "effect/sql/Migrator";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Layer from "effect/Layer";
@@ -239,35 +240,70 @@ export const migrationEntries = [
 const latestMigrationId = migrationEntries.reduce((latest, [id]) => Math.max(latest, id), 0);
 
 /**
+ * Migrations that read a whole large table (`orchestration_events` or
+ * `projection_thread_activities`): an index built over one, or an update or
+ * lookup no index narrows. Before the first one pending, the runner reads the
+ * database file ahead (`readDatabaseFileAhead.ts`), which took migration 099
+ * from 16 s to 2.8 s on a big install. Add a new migration's id when it does
+ * the same.
+ */
+const WHOLE_TABLE_MIGRATION_IDS: ReadonlySet<number> = new Set([
+  8, 11, 16, 24, 25, 26, 29, 47, 48, 50, 68, 70, 99,
+]);
+
+/** A duration for the logs, to the millisecond. */
+const formatMillis = (millis: number) =>
+  millis < 1 ? "under 1ms" : Duration.format(Duration.millis(Math.round(millis)));
+
+const readCpuMillis = () => {
+  const usage = process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
+};
+
+interface MigrationRunHooks {
+  /** Runs before each migration in WHOLE_TABLE_MIGRATION_IDS. */
+  readonly beforeWholeTableRead: Effect.Effect<void>;
+  readonly onFinished: Effect.Effect<void>;
+}
+
+/**
  * Wraps one migration so a slow one is attributable in the logs. The SQLite
  * driver is synchronous, so a long statement freezes the whole backend: without
  * these lines a busy process looks exactly like a hung one, both in support
  * logs and to the desktop's readiness watchdog, which reads them back out of
- * the backend's stdout.
+ * the backend's stdout. Its CPU time beside the duration tells a migration
+ * that computed from one that waited on the disk.
  */
 const withMigrationLogging = <E>(
   id: number,
   name: string,
   migration: Effect.Effect<void, E, SqlClient.SqlClient>,
+  hooks: MigrationRunHooks,
 ) =>
   Effect.gen(function* () {
     yield* Effect.log(
       `${MIGRATION_RUNNING_LOG_PREFIX}${id}_${name} (${id} of ${latestMigrationId})`,
     );
+    // After the line above, so the desktop counts the read as this
+    // migration's work.
+    if (WHOLE_TABLE_MIGRATION_IDS.has(id)) yield* hooks.beforeWholeTableRead;
+    const cpuBefore = readCpuMillis();
     const [duration] = yield* Effect.timed(migration);
+    const cpuMillis = readCpuMillis() - cpuBefore;
     yield* Effect.log(
-      `${MIGRATION_FINISHED_LOG_PREFIX}${id}_${name} in ${Duration.format(duration)}`,
+      `${MIGRATION_FINISHED_LOG_PREFIX}${id}_${name} in ${formatMillis(Duration.toMillis(duration))} (CPU ${formatMillis(cpuMillis)})`,
     );
+    yield* hooks.onFinished;
   });
 
-export const makeMigrationLoader = (throughId?: number) =>
+const makeMigrationLoader = (throughId: number | undefined, hooks: MigrationRunHooks) =>
   Migrator.fromRecord(
     Object.fromEntries(
       migrationEntries
         .filter(([id]) => throughId === undefined || id <= throughId)
         .map(([id, name, migration]) => [
           `${id}_${name}`,
-          withMigrationLogging(id, name, migration),
+          withMigrationLogging(id, name, migration, hooks),
         ]),
     ),
   );
@@ -280,6 +316,12 @@ const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
+  /**
+   * Brings the database file into the system's file cache
+   * (`readDatabaseFileAhead.ts`). Runs at most once, before the first pending
+   * migration in WHOLE_TABLE_MIGRATION_IDS. An in-memory database has none.
+   */
+  readonly readAhead?: Effect.Effect<void> | undefined;
 }
 
 /**
@@ -294,14 +336,34 @@ export interface RunMigrationsOptions {
  */
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
+  readAhead,
 }: RunMigrationsOptions = {}) {
   yield* Effect.log(
     toMigrationInclusive === undefined
       ? "Running all migrations..."
       : `Running migrations 1 through ${toMigrationInclusive}...`,
   );
-  const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
-  yield* Effect.log("Migrations ran successfully").pipe(
+  const readAheadOnce = yield* Effect.cached(readAhead ?? Effect.void);
+  // Every pending migration runs in one transaction, so the time from the
+  // last one finishing to the run returning is mostly its commit, which
+  // writes out all their pages (tens of megabytes for an index build).
+  let lastFinishedAt = yield* Clock.currentTimeMillis;
+  const [duration, executedMigrations] = yield* Effect.timed(
+    run({
+      loader: makeMigrationLoader(toMigrationInclusive, {
+        beforeWholeTableRead: readAheadOnce,
+        onFinished: Effect.map(Clock.currentTimeMillis, (now) => {
+          lastFinishedAt = now;
+        }),
+      }),
+    }),
+  );
+  const commitMillis = (yield* Clock.currentTimeMillis) - lastFinishedAt;
+  yield* Effect.log(
+    executedMigrations.length === 0
+      ? "Migrations ran successfully"
+      : `Migrations ran successfully in ${formatMillis(Duration.toMillis(duration))}, the commit ${formatMillis(commitMillis)}`,
+  ).pipe(
     Effect.annotateLogs({ migrations: executedMigrations.map(([id, name]) => `${id}_${name}`) }),
   );
   return executedMigrations;
