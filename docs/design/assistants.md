@@ -2243,6 +2243,14 @@ out of date where they differ from this section.
   - Found on the way, not fixed: after a commit, `thread_changes` lists the files with
     totals of 0 until the baseline catches up; a stopped ACP turn reads `completed`, not
     `interrupted`.
+  - Sol's review (Nov 4), seven findings, all fixed: a path like `./../x` let the agent
+    delete outside its folder (one realpath guard now covers every read, write and
+    delete); untracked secrets could enter the build context (the ignore file is an
+    allowlist); overlapping resets (a lock); worktrees removed under live agents (each
+    agent records its folders, and a reset waits for them to exit); the Claude SDK's
+    native CLI in the image (deleted after install, `--omit=optional` didn't drop it); an
+    owner session left unrevoked when connecting failed; a failed seed still healthy (a
+    ready marker the health check needs).
 
 ### Tools
 
