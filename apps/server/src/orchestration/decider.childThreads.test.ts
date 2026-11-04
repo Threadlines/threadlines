@@ -1260,18 +1260,23 @@ describe("decider on a child's computer", () => {
     createdAt: at(10),
   });
 
-  it("marks a thread's answer handed back only while that turn is its newest and has ended", async () => {
+  it("marks a thread's answer handed back only while that turn is its newest", async () => {
     const ended = readModel([thread(CHILD, { latestTurn: latestTurn("turn-2", "completed") })]);
     const handedBack = await run(ended, record("turn-2", "hand-back-2"));
     expect(threadIn(handedBack.model, CHILD)).toMatchObject({
       handedBackTurnId: "turn-2",
       handedBackAt: at(10),
     });
-    // An older turn's answer, arriving late, never takes back the newer one's.
+    // An older turn's answer, arriving late, never takes back the newer one's,
+    // and a retried ack records nothing more.
     expect(await refused(handedBack.model, record("turn-1", "hand-back-1"))).toBe(true);
-    // Nor is a turn still running marked.
-    const running = readModel([thread(CHILD, { latestTurn: latestTurn("turn-3", "running") })]);
-    expect(await refused(running, record("turn-3", "hand-back-3"))).toBe(true);
+    expect(await refused(handedBack.model, record("turn-2", "hand-back-2-again"))).toBe(true);
+    // The answer goes back before the turn's checkpoint ends it, so an ack
+    // that lands while the turn still reads as running is recorded too.
+    const finishing = readModel([thread(CHILD, { latestTurn: latestTurn("turn-3", "running") })]);
+    expect(
+      threadIn((await run(finishing, record("turn-3", "hand-back-3"))).model, CHILD),
+    ).toMatchObject({ handedBackTurnId: "turn-3" });
   });
 
   it("takes a Wrap up from the parent's computer as a visit, and never over a newer word", async () => {

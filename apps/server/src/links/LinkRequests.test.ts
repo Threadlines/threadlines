@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  CheckpointRef,
   ChildRequestId,
   CommandId,
   EnvironmentId,
@@ -646,6 +647,100 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.deepEqual(
           yield* service.wrapThread(link(), { threadId: ThreadId.make("not-the-links"), override }),
           { status: "not_yours" },
+        );
+      }),
+  );
+
+  it.effect(
+    "an answer acked before its turn's checkpoint is handed back, and the asking computer hears it once the turn ends",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.startReactor();
+        const turnId = TurnId.make("child-turn-1");
+        const setSession = (status: "running" | "ready") =>
+          computer.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`child-session-${status}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "auto",
+              activeTurnId: status === "running" ? turnId : null,
+              lastError: null,
+              updatedAt: AT,
+            },
+            createdAt: AT,
+          });
+        yield* setSession("running");
+        // Its words are final and its session is ready, so the answer goes
+        // back before the checkpoint ends the turn.
+        yield* setSession("ready");
+        const child = (yield* computer.thread(threadId))!;
+        yield* service.onTurnEnd({
+          child: {
+            ...child,
+            messages: [
+              ...child.messages,
+              {
+                id: MessageId.make("answer"),
+                role: "assistant",
+                text: "The changelog is written.",
+                turnId,
+                streaming: false,
+                createdAt: AT,
+                updatedAt: AT,
+              },
+            ],
+          },
+          end: { turnId, outcome: "completed" },
+          pendingMessageId: linkMessageId(DEVICE, "request-1"),
+          createdAt: AT,
+        });
+        const answered = yield* computer.request("request-1");
+        assert.equal(answered.status, "answered");
+        assert.isNotNull(answered.reportId);
+
+        const heard: Array<PeerWatchEvent> = [];
+        yield* service.watch(link(), { threads: [threadId] }).pipe(
+          Stream.runForEach((event) => Effect.sync(() => heard.push(event))),
+          Effect.forkChild,
+        );
+        // The asking computer wrote it into its parent while the turn here
+        // still reads as running.
+        yield* service.ack(link(), { reportId: answered.reportId!, delivered: true });
+        assert.equal((yield* computer.thread(threadId))?.handedBackTurnId, turnId);
+
+        yield* computer.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make("child-checkpoint"),
+          threadId,
+          turnId,
+          completedAt: AT,
+          checkpointRef: CheckpointRef.make("refs/threadlines/checkpoints/child/turn/1"),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: 1,
+          completesTurn: true,
+          createdAt: AT,
+        });
+        yield* eventually(
+          Effect.sync(() =>
+            heard.some(
+              (event) =>
+                event.type === "thread" &&
+                event.threadId === threadId &&
+                event.status === "idle" &&
+                event.filing !== undefined &&
+                event.filing.handedBackAt !== null,
+            ),
+          ),
+          "the asking computer hears it idle and handed back",
         );
       }),
   );

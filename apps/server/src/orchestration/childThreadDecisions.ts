@@ -942,9 +942,12 @@ export function decideRemoteChildDoneOverride(
 /**
  * On a child's computer: the parent's computer wrote this thread's answer from
  * `turnId` into the parent (`thread.remote-handed-back.record`). Like a local
- * child's delivered answer, it is recorded on the thread, but only while that
- * turn is still its newest and has ended: an answer from an older turn, or
- * one a retried ack brings again, leaves the thread as it is (refused).
+ * child's delivered answer, it is recorded on the thread while that turn is
+ * still its newest: an answer from an older turn, or one a retried ack brings
+ * again, leaves the thread as it is (refused). The answer goes back before
+ * the turn's checkpoint ends it, so the ack often lands while the turn still
+ * reads as running; it is recorded then too, and `isHandedBackCompletion`
+ * counts it once the turn has ended.
  */
 export function decideRemoteHandedBackRecord(
   thread: OrchestrationThread,
@@ -955,12 +958,9 @@ export function decideRemoteHandedBackRecord(
   if (
     latest === null ||
     latest.turnId !== command.turnId ||
-    latest.state === "running" ||
     thread.handedBackTurnId === command.turnId
   ) {
-    return refuse(
-      "That answer is not the thread's newest finished turn, or it is already recorded.",
-    );
+    return refuse("That answer is not from the thread's newest turn, or it is already recorded.");
   }
   return [
     {

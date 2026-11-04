@@ -1899,8 +1899,10 @@ const make = Effect.gen(function* () {
         case "thread.session-set":
           yield* onSession(event.payload.threadId);
           return;
-        // Everything the asking computer files the thread by.
+        // Everything the asking computer files the thread by. A turn ends on
+        // `thread.turn-completed`, or on its checkpoint when it has one.
         case "thread.turn-completed":
+        case "thread.turn-diff-completed":
         case "thread.activity-appended":
         case "thread.done-override-set":
         case "thread.handed-back":
