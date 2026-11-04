@@ -711,6 +711,9 @@ export const makeServerLayer = Layer.unwrap(
         yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup;
         yield* startup.markHttpListening;
+        // Freezes count from here: the migrations before this are startup,
+        // which the desktop already shows, not a freeze anyone was waiting on.
+        yield* (yield* StallMonitor.StallMonitor).start;
         // Startup has compiled nearly every module by now.
         scheduleServerCompileCacheFlush();
       }),
