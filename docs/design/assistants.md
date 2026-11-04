@@ -2263,8 +2263,9 @@ out of date where they differ from this section.
   `mcp.json`, `skills/threadlines/SKILL.md`, a README and logo. OpenAI's ZIP is built
   from it with the listing metadata and test cases. No secrets in either; reviewer
   credentials go in the portals.
-- **The Cursor package, as built:** drafted in `listings/cursor-plugin/` until its public
-  repo exists, then moved out so there's one copy. Checked against Cursor's own schema
+- **The Cursor package, as built:** its own public repo,
+  [Threadlines/cursor-plugin](https://github.com/Threadlines/cursor-plugin) (Nov 4), the
+  only copy. Checked against Cursor's own schema
   (`cursor/plugins`, `schemas/plugin.schema.json`). `mcp.json` uses `"type": "http"`, as
   listed remote plugins do. Before submitting: the guide and privacy pages it links must be
   live, and it needs a real install in Cursor (their checklist asks for a local test).
