@@ -2229,7 +2229,10 @@ out of date where they differ from this section.
   `/Users/will/...`, a personal identifier nobody needs on this door. On
   `door: "assistant"` it's the folder's own name. Paths also turn up in setup errors,
   approvals and agents' messages, so this door replaces the home folder with `~` in every
-  string of every tool answer (`scrubText`, `scrubUserPaths`). The local door is unchanged.
+  string of every tool answer (`scrubText`, `scrubUserPaths`). Only the whole path counts, so
+  `/home/alice` and a branch named `fix/root-parser` are left alone, and `thread_answer` puts
+  the home folder back so an answer naming a shown option still matches. The local door is
+  unchanged.
 - **Audit real responses** for internal ids and debug fields. Thread ids stay;
   they're how every other tool names a thread. Timestamps that the answer is about
   stay.
@@ -2260,6 +2263,11 @@ out of date where they differ from this section.
   `mcp.json`, `skills/threadlines/SKILL.md`, a README and logo. OpenAI's ZIP is built
   from it with the listing metadata and test cases. No secrets in either; reviewer
   credentials go in the portals.
+- **The Cursor package, as built:** drafted in `listings/cursor-plugin/` until its public
+  repo exists, then moved out so there's one copy. Checked against Cursor's own schema
+  (`cursor/plugins`, `schemas/plugin.schema.json`). `mcp.json` uses `"type": "http"`, as
+  listed remote plugins do. Before submitting: the guide and privacy pages it links must be
+  live, and it needs a real install in Cursor (their checklist asks for a local test).
 - **Five positive and three negative cases**, run against the demo computer, in a file
   next to the package.
 - **Demo video:** recorded on the demo computer with real ChatGPT.

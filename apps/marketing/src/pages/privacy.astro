@@ -1,0 +1,166 @@
+---
+import ProseLayout from "../layouts/ProseLayout.astro";
+---
+
+<ProseLayout
+  title="Privacy policy | Threadlines"
+  heading="Privacy policy"
+  description="What Threadlines keeps on your computer, what leaves it, and how to turn off what you don't want."
+  canonicalPath="/privacy"
+  updated="November 2, 2026"
+>
+  <p>
+    Threadlines is built by Wilfredo Leon. It runs on your own computer, and there's no Threadlines
+    account. Most of what it handles never reaches me. This page says what does leave your computer,
+    where it goes and why.
+  </p>
+
+  <h2>What stays on your computer</h2>
+  <p>
+    Your threads, messages, settings and Threadlines' own keys are stored in the Threadlines data folder on your
+    computer. Your code stays in your project folders, and your coding agents keep their sign-ins where they
+    normally do, such as in their own folders or your Mac's keychain. I can't see any of this. Deleting the
+    Threadlines data folder removes what Threadlines stored, but not your projects or those sign-ins.
+  </p>
+
+  <h2>Your coding agents</h2>
+  <p>
+    Threadlines runs coding agents you choose, such as Codex and Claude, using your own accounts. What you send them,
+    including your prompts and the code they read, goes to the company behind that agent under its terms and privacy
+    policy. Threadlines also uses your own sign-in to ask some of them for your usage limits, so it can show them to
+    you.
+  </p>
+
+  <h2>Other services the app contacts</h2>
+  <p>
+    These calls are how the app does its job. Each one shows the service your IP address, like any web request, and
+    none of them comes to me.
+  </p>
+  <ul>
+    <li>
+      <strong>GitHub:</strong> through your own sign-in, it asks about your repositories, branches and pull requests.
+      The desktop app also checks GitHub for updates, every few minutes, and the app reads release notes from it.
+    </li>
+    <li>
+      <strong>Package registries:</strong> npm and Homebrew, to see whether your coding agents have updates.
+    </li>
+    <li>
+      <strong>Model lists and icons:</strong> Vercel's AI Gateway for some agents' model lists, and jsDelivr for file
+      icons.
+    </li>
+  </ul>
+
+  <h2>Usage analytics</h2>
+  <p>
+    Official builds send anonymous usage events to PostHog, in the US, so I can tell which features get
+    used and what breaks. You can turn this off in Settings. It's on by default.
+  </p>
+  <ul>
+    <li>
+      <strong>What's sent:</strong> events such as the app starting or a message being sent, which agents
+      are set up, how long things took, model names when they're public, basic counts, your operating
+      system and your Threadlines version.
+    </li>
+    <li>
+      <strong>What these events never include:</strong> your prompts or agent replies, code, diffs, file names or
+      paths, repository names, terminal text, API keys or other secrets, or your accounts with other services.
+    </li>
+    <li>
+      <strong>Who it's tied to:</strong> a random id made on your computer, and only a hash of it is sent.
+      Deleting the data folder resets it. Your IP address isn't added to events, and PostHog is set to
+      discard it after a rough location lookup.
+    </li>
+    <li>
+      <strong>When the desktop app fails to start:</strong> under the same setting, it sends the reason and the last
+      2,000 characters of the server's output. That's different from the events above: it can include file names and
+      other error text. Your home folder and common credential formats are removed first.
+    </li>
+    <li><strong>How long:</strong> PostHog keeps events for up to 7 years, depending on the plan.</li>
+  </ul>
+  <p>
+    The full list is in <a href="https://github.com/Threadlines/threadlines/blob/main/docs/telemetry.md"
+      >the telemetry notes</a
+    >.
+  </p>
+
+  <h2>The relay</h2>
+  <p>
+    The relay runs on Cloudflare and lets your other devices and your assistants reach your computer when it isn't on
+    the same network. So that it can route them, it stores your computer's name and id, your paired devices' names,
+    platforms and public keys, and daily usage counts, for as long as your computer stays registered. Cloudflare also
+    keeps its operational logs, with request paths and errors but no message bodies, for a limited time.
+  </p>
+  <ul>
+    <li>
+      <strong>Phones and other computers:</strong> their traffic is encrypted end to end. The relay can't read it.
+    </li>
+    <li>
+      <strong>Always-on assistants:</strong> their traffic isn't end to end encrypted, because the assistant connects
+      as an ordinary web service. It's encrypted on the way, but the relay handles it in plain text in order to route
+      it. That includes thread titles, messages, tool results and sign-in credentials. The relay doesn't store or log
+      the requests and answers themselves.
+    </li>
+    <li>
+      <strong>Connecting an assistant:</strong> a sign-in in progress stores the assistant's name and return address, a
+      hash of its IP address, and roughly where the sign-in page was opened, from Cloudflare's request data, which
+      Threadlines shows you so you can tell it's yours. It expires after 10 minutes and is deleted about 10 minutes
+      later.
+    </li>
+    <li>
+      <strong>Event tasks you set up:</strong> the relay sees what's sent to a task's address, then stores it sealed so
+      only your computer can read it, until your computer collects it or 24 hours pass, then deletes it.
+    </li>
+  </ul>
+
+  <h2>Assistants you connect</h2>
+  <p>
+    If you connect an always-on assistant such as Grok Bot, a ChatGPT dot or Claude, it can see what you
+    allow: the projects you pick, and those projects' threads, including titles, messages and what changed.
+    That reaches the company behind the assistant under its terms and privacy policy, not mine. General
+    Chats are never shared. You choose its access when you click Allow, and you can change or remove it
+    any time under Settings, Connections, Assistants.
+  </p>
+  <p>
+    While an assistant is connected or an alert is on, your computer keeps a list of what needed you,
+    finished or failed, for 7 days.
+  </p>
+
+  <h2>Alerts</h2>
+  <ul>
+    <li>
+      <strong>To a web address or an assistant's subscription:</strong> your computer sends the kind of alert,
+      why it happened, ids for the thread and project, the project's name, your computer's name, a link and the
+      time. Never a thread's title or what its agents wrote.
+    </li>
+    <li>
+      <strong>To your phone:</strong> your computer encrypts the alert so only your phone can read it. It travels through the relay, which keeps your phone's push address, and your phone browser's push service.
+    </li>
+  </ul>
+
+  <h2>This website and the hosted app</h2>
+  <p>
+    threadlines.dev and app.threadlines.dev are hosted on Vercel, which sees ordinary web request data such as IP addresses. This website also uses Vercel Web Analytics to count visits, without cookies. Vercel keeps this data for a limited time set by its plans. The hosted app opens in your browser and talks to your own computer.
+  </p>
+
+  <h2>Who gets your data</h2>
+  <p>
+    Only the services named on this page, and the coding agents and assistants you choose, for the reasons given. I don't sell data, and I don't use it for
+    advertising.
+  </p>
+
+  <h2>Children</h2>
+  <p>Threadlines is a tool for developers and isn't meant for anyone under 13.</p>
+
+  <h2>Your choices</h2>
+  <p>
+    You can turn analytics off in Settings, remove an assistant or a paired device at any time, and delete the
+    Threadlines data folder. To have what the relay stores about your computer removed, write to the address below.
+  </p>
+
+  <h2>Changes and questions</h2>
+  <p>
+    If this page changes, the date at the top changes too, and the history is public in
+    <a href="https://github.com/Threadlines/threadlines">the repository</a>. Questions go to
+    <a href="mailto:support@threadlines.dev">support@threadlines.dev</a>.
+  </p>
+</ProseLayout>

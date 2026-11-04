@@ -1,0 +1,90 @@
+---
+import ProseLayout from "../../layouts/ProseLayout.astro";
+---
+
+<ProseLayout
+  title="Connect an always-on assistant to Threadlines"
+  heading="Connect an always-on assistant"
+  description="Let Grok Bot, a ChatGPT dot, Claude or Muse check on your Threadlines threads, start new ones and hear when one needs you."
+  canonicalPath="/docs/assistants"
+>
+  <p>
+    Threadlines runs coding agents on your computer. An always-on assistant runs in its maker's cloud. Connecting
+    them lets the assistant tell you what needs you, what finished and what changed, and start work when you ask.
+  </p>
+
+  <h2>What you need</h2>
+  <ul>
+    <li>Threadlines on a computer that's on.</li>
+    <li>An assistant that can add a custom connector or plugin. Some need a paid plan.</li>
+  </ul>
+
+  <h2>Connect it</h2>
+  <ol>
+    <li>
+      In your assistant, add a custom connector with this address:
+      <code>https://connect.threadlines.dev/mcp</code>
+    </li>
+    <li>Its sign-in page asks for a code. In Threadlines, open Settings, Connections, Assistants and choose
+      Connect an assistant.</li>
+    <li>Type the code into the page. Only type it into a page your own assistant just opened.</li>
+    <li>
+      Threadlines asks you to allow the assistant. Pick its projects, what it can do and its highest access, then
+      choose Allow.
+    </li>
+  </ol>
+  <p>
+    Muse takes a key instead of signing in. Choose Create a key under Add an assistant and give it to Muse along
+    with the address.
+  </p>
+
+  <h2>What it can do</h2>
+  <ul>
+    <li><strong>See threads:</strong> your projects, agents, and each thread's status and messages.</li>
+    <li><strong>Start threads:</strong> that, plus start threads and message or stop the ones it started.</li>
+    <li>
+      <strong>Work with all threads:</strong> that, plus message, stop and answer agents' questions in other
+      threads in its projects, up to the highest access you set.
+    </li>
+  </ul>
+  <p>
+    Assistants never answer approvals or plans. Those wait for you in Threadlines. General Chats are never shared.
+    You can change an assistant's access or remove it under Settings, Connections, Assistants.
+  </p>
+
+  <h2>Hear about things as they happen</h2>
+  <p>
+    ChatGPT dots and Work chats can subscribe to a thread needing you, finishing or failing. Ask them to. Their
+    replies can take a while to start: in our tests, 10 to 25 minutes after the alert. For other assistants, Alerts
+    to a web address under the same settings sends a signed alert to an address you add, such as a Grok routine's
+    webhook.
+  </p>
+
+  <h2>Good to know</h2>
+  <ul>
+    <li>
+      <strong>Your computer has to be on.</strong> While it's asleep or Threadlines is closed, assistants are told
+      it's offline.
+    </li>
+    <li>
+      <strong>The relay can read assistant traffic in transit.</strong> It doesn't store or log what tools
+      return. <a href="/privacy">The privacy policy</a> has the details.
+    </li>
+    <li>
+      <strong>Agents write thread text.</strong> Your assistant should treat it as information, not instructions.
+    </li>
+  </ul>
+
+  <h2>If it won't connect</h2>
+  <ul>
+    <li>
+      <strong>Stuck waiting after you choose Allow:</strong> reopen the sign-in from your assistant and try again
+      with a new code.
+    </li>
+    <li><strong>The code is refused:</strong> codes work once and last 10 minutes. Make a new one.</li>
+    <li>
+      <strong>It says the computer is offline:</strong> open Threadlines on that computer and check that it's awake.
+    </li>
+  </ul>
+  <p>Still stuck? <a href="/support">Get in touch</a>.</p>
+</ProseLayout>
