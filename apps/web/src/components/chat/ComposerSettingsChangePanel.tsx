@@ -2,13 +2,17 @@ import type { OrchestrationSettingsChangeRequest, ScopedThreadRef } from "@threa
 import { type PlaceId, placeById, placeHref } from "@threadlines/shared/appPlaces";
 import { memo, useMemo, useState } from "react";
 
+import { isElectron } from "~/env";
+
 import {
   isPrimaryEnvironmentOnThisComputer,
   usePrimaryEnvironmentDescriptor,
 } from "~/environments/primary";
+import { useEnvironmentProviders } from "~/hooks/useEnvironmentProviders";
 import { useSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
 import { describeThisBrowser } from "~/relayDevice";
+import { pushAlertsSupport, usePushAlertsStore } from "~/pushAlerts/pushAlerts";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
 import { PlaceLink } from "./PlaceLink";
@@ -37,19 +41,37 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
   const { theme } = useTheme();
   const computerLabel = useComputerLabel();
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
+  const providersOf = useEnvironmentProviders();
+  const providers = providersOf(threadRef.environmentId);
+  const alertKinds = usePushAlertsStore((state) => state.kinds);
+  const alertsQuiet = usePushAlertsStore((state) => state.quietAtComputer);
+  const alertsOn = usePushAlertsStore((state) => state.enabled && state.permission === "granted");
 
   // Device values are this app's, read live; computer ones are what the
   // computer had when the agent asked.
   const lines = useMemo(
     () =>
-      settingsChangeLines(request, (placeId: PlaceId) => {
-        const edit = placeById(placeId).edit;
-        if (edit === undefined || edit.lands !== "device") return undefined;
-        return "store" in edit ? theme : edit.read(settings);
-      }),
-    [request, settings, theme],
+      settingsChangeLines(
+        request,
+        (placeId: PlaceId) => {
+          const edit = placeById(placeId).edit;
+          if (edit === undefined || edit.lands !== "device") return undefined;
+          if (!("store" in edit)) return edit.read(settings);
+          if (edit.store === "theme") return theme;
+          return edit.alert === "quietAtComputer" ? alertsQuiet : alertKinds[edit.alert];
+        },
+        providers,
+      ),
+    [alertKinds, alertsQuiet, providers, request, settings, theme],
   );
-  const deviceCheck = useMemo(() => checkDeviceChanges(request), [request]);
+  const deviceCheck = useMemo(
+    () =>
+      checkDeviceChanges(request, {
+        desktopApp: isElectron,
+        alerts: pushAlertsSupport() !== "supported" ? "unsupported" : alertsOn ? "on" : "off",
+      }),
+    [alertsOn, request],
+  );
   const claimed = request.status === "claimed";
   const computerName = computerLabel(threadRef.environmentId, "its computer");
 
@@ -89,7 +111,7 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
           {lines.map((line) => (
             <li
               key={line.place}
-              className="flex min-w-0 items-center gap-2 text-sm"
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
               data-testid="settings-change-panel-line"
               data-lands={line.lands}
             >
@@ -106,7 +128,7 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
               ) : (
                 <span className="shrink-0 text-foreground">{line.name}</span>
               )}
-              <span className="min-w-0 truncate text-muted-foreground" data-settings-change-value>
+              <span className="min-w-0 text-muted-foreground" data-settings-change-value>
                 {line.from === null
                   ? `to ${line.to}`
                   : line.from === line.to
@@ -127,6 +149,14 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
             Update Threadlines on this device to make these changes.
           </p>
         ) : null}
+        {deviceCheck.kind === "elsewhere" ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="settings-change-panel-elsewhere"
+          >
+            {deviceCheck.note}
+          </p>
+        ) : null}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <Button
@@ -140,7 +170,7 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
         <Button
           size="sm"
           variant="default"
-          disabled={responding || claimed || deviceCheck.kind === "update"}
+          disabled={responding || claimed || deviceCheck.kind !== "ready"}
           onClick={() => void respond(true)}
         >
           {claimed ? "Changing…" : "Change"}

@@ -17,6 +17,7 @@ import {
   APP_PLACES,
   type AppPlace,
   COMPUTER_LINK_ACCESS_LABELS,
+  NO_MODEL,
   type PlaceId,
   placeChain,
   placeMarkdownLink,
@@ -56,6 +57,8 @@ export interface GuideValues {
     readonly enabled: boolean;
     readonly signedIn: boolean | null;
   }>;
+  /** The models a model setting can take here (modelChoices.ts). */
+  readonly modelChoices?: ReadonlyArray<{ readonly value: string; readonly name: string }>;
   readonly outsideAgents?: ReadonlyArray<{ readonly name: string }>;
   readonly scheduledTasks?: { readonly active: number; readonly paused: number };
 }
@@ -81,6 +84,7 @@ export type GuidePlan =
 export interface GuideNeeds {
   readonly settings: boolean;
   readonly states: ReadonlySet<GuideState>;
+  readonly modelChoices: boolean;
 }
 
 const MAX_PLACES = 6;
@@ -96,13 +100,17 @@ const STOP_WORDS = new Set(
 const tokens = (text: string): ReadonlyArray<string> =>
   searchWords(text).filter((word) => word.length > 1 && !STOP_WORDS.has(word));
 
+/** "dark mode" isn't about models, however alike they start. */
+const isModeAndModel = (left: string, right: string) =>
+  left === "mode" && right.startsWith("model");
+
 /** Whether a query word names a word of the text (prefixes count both ways, from 4 letters). */
 const mentions = (words: ReadonlyArray<string>, word: string) =>
   words.some(
     (candidate) =>
       candidate === word ||
-      (word.length >= 4 && candidate.startsWith(word)) ||
-      (candidate.length >= 4 && word.startsWith(candidate)),
+      (word.length >= 4 && candidate.startsWith(word) && !isModeAndModel(word, candidate)) ||
+      (candidate.length >= 4 && word.startsWith(candidate) && !isModeAndModel(candidate, word)),
   );
 
 interface Weighted {
@@ -195,12 +203,14 @@ const shownPlaces = (plan: GuidePlan): ReadonlyArray<AppPlace> =>
 export function guideNeeds(plan: GuidePlan): GuideNeeds {
   const states = new Set<GuideState>();
   let settings = false;
+  let modelChoices = false;
   for (const place of shownPlaces(plan)) {
+    if ("edit" in place && place.edit?.control.kind === "model") modelChoices = true;
     if (!("value" in place)) continue;
     if (place.value.kind === "state") states.add(place.value.state);
     else settings = true;
   }
-  return { settings, states };
+  return { settings, states, modelChoices };
 }
 
 // ----- writing the answer --------------------------------------------------------
@@ -222,6 +232,11 @@ function valueWords(place: AppPlace, values: GuideValues): string | null {
       const current = value.read(values.settings);
       return (value.options as Readonly<Record<string, string>>)[current] ?? current;
     }
+    case "model": {
+      if (values.settings === undefined) return null;
+      const current = value.read(values.settings);
+      return current === NO_MODEL ? (value.noneLabel ?? current) : current;
+    }
     case "count": {
       if (values.settings === undefined) return null;
       const current = value.read(values.settings);
@@ -232,10 +247,26 @@ function valueWords(place: AppPlace, values: GuideValues): string | null {
   }
 }
 
+/** The models a model setting can take here, said once for an answer that shows any. */
+function modelChoiceBlock(places: ReadonlyArray<AppPlace>, values: GuideValues): string | null {
+  const shown = places.some((place) => "edit" in place && place.edit?.control.kind === "model");
+  if (!shown || values.modelChoices === undefined) return null;
+  return values.modelChoices.length === 0
+    ? "**Models you can pick:** none right now. Providers that may bill per use are the user's to choose."
+    : `**Models you can pick:** ${values.modelChoices.map((choice) => `"${choice.value}" (${choice.name})`).join(", ")}.`;
+}
+
 /** Who may change a place: an agent through `settings_change`, or only the user. */
 function changeWords(place: AppPlace): string | null {
   if ("edit" in place && place.edit !== undefined) {
-    const where = place.edit.lands === "device" ? " It changes in the app they accept it in." : "";
+    const where =
+      place.edit.lands !== "device"
+        ? ""
+        : "store" in place.edit && place.edit.store === "alerts"
+          ? " It changes in the app they accept it in, which needs alerts turned on: a phone or a browser, not the desktop app."
+          : "appliesWhen" in place && place.appliesWhen === "desktop"
+            ? " It changes in the desktop app, so they accept it there."
+            : " It changes in the app they accept it in.";
     return `You can change it for the user with ${SETTINGS_CHANGE_TOOL_NAME} (place "${place.id}", value ${describeEditControl(place.edit.control)}); they accept it on a card first.${where}`;
   }
   return "widensAgents" in place && place.widensAgents === true
@@ -347,10 +378,12 @@ export function renderGuide(plan: GuidePlan, values: GuideValues): string {
       return `Nothing in the guide matches "${plan.query}". Try other words, or call app_guide with no arguments for the pages and topics.`;
     case "matches": {
       const [first, ...more] = plan.topics;
+      const modelChoices = modelChoiceBlock(plan.places, values);
       return [
         ...(plan.places.length > 0
           ? ["**Places**", plan.places.map((place) => placeLine(place, values)).join("\n")]
           : []),
+        ...(modelChoices !== null ? [modelChoices] : []),
         ...(first !== undefined ? [`## ${first.title}`, expandPlaces(first.body)] : []),
         ...(more.length > 0
           ? [`More: ${more.map((topic) => `topic \`${topic.id}\` (${topic.title})`).join(", ")}.`]

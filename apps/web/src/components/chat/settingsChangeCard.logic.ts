@@ -6,12 +6,20 @@
  */
 import type {
   OrchestrationSettingsChangeRequest,
+  ServerProvider,
   SettingsChangeAnswer,
   SettingsChangeDeviceReport,
   SettingsChangeItem,
   SettingsChangeValue,
 } from "@threadlines/contracts";
-import { type EditValue, isPlaceId, type PlaceId, placeById } from "@threadlines/shared/appPlaces";
+import {
+  type EditValue,
+  isPlaceId,
+  NO_MODEL,
+  parseModelEditValue,
+  type PlaceId,
+  placeById,
+} from "@threadlines/shared/appPlaces";
 import { type CheckedEdit, checkEdits, describeEditValue } from "@threadlines/shared/settingsEdits";
 
 /** Where a change lands: the thread's computer, or the app the user answers in. */
@@ -30,11 +38,35 @@ export function settingsChangeLands(change: SettingsChangeItem): SettingsChangeL
   return change.from !== undefined ? "computer" : "device";
 }
 
-/** A value as its row shows it; a place this app doesn't know gets plain words. */
-function valueLabel(placeId: PlaceId | null, value: SettingsChangeValue): string {
+/**
+ * A value as its row shows it; a place this app doesn't know gets plain words.
+ * A model reads by its name on the thread's computer, if that computer lists it.
+ */
+function valueLabel(
+  placeId: PlaceId | null,
+  value: SettingsChangeValue,
+  providers: ReadonlyArray<ServerProvider>,
+): string {
+  if (placeId !== null && value !== NO_MODEL && placeById(placeId).edit?.control.kind === "model") {
+    const parsed = parseModelEditValue(value);
+    const model = providers
+      .find(({ instanceId }) => instanceId === parsed?.instanceId)
+      ?.models.find(({ slug }) => slug === parsed?.model);
+    if (model !== undefined) return model.shortName ?? model.name;
+  }
   if (placeId !== null) return describeEditValue(placeId, value);
   if (typeof value === "boolean") return value ? "On" : "Off";
   return String(value);
+}
+
+/** Which provider account a model setting's value is on, as Settings names it. */
+function modelAccountName(
+  value: SettingsChangeValue,
+  providers: ReadonlyArray<ServerProvider>,
+): string {
+  const instanceId = parseModelEditValue(value)?.instanceId ?? String(value);
+  const provider = providers.find((entry) => entry.instanceId === instanceId);
+  return provider?.displayName ?? provider?.auth.label ?? instanceId;
 }
 
 export interface SettingsChangeLine {
@@ -53,11 +85,12 @@ export interface SettingsChangeLine {
 /**
  * The card's lines. `readDevice` reads a device setting's value in this app
  * now (client settings or the theme store); computer values are the ones the
- * computer had when the agent asked.
+ * computer had when the agent asked. `providers` are the thread's computer's.
  */
 export function settingsChangeLines(
   request: Pick<OrchestrationSettingsChangeRequest, "changes">,
   readDevice: (placeId: PlaceId) => EditValue | undefined,
+  providers: ReadonlyArray<ServerProvider> = [],
 ): ReadonlyArray<SettingsChangeLine> {
   return request.changes.map((change) => {
     const place = change.place.trim();
@@ -65,13 +98,20 @@ export function settingsChangeLines(
     const lands = settingsChangeLands(change);
     const from =
       lands === "computer" ? change.from : placeId !== null ? readDevice(placeId) : undefined;
+    const spec = placeId !== null ? placeById(placeId) : null;
+    const fromLabel = from === undefined ? null : valueLabel(placeId, from, providers);
+    const toLabel = valueLabel(placeId, change.value, providers);
+    // The same model on another account: its name alone would read as no change.
+    const sameName = from !== undefined && from !== change.value && fromLabel === toLabel;
+    const named = (value: SettingsChangeValue, label: string) =>
+      sameName ? `${label} (${modelAccountName(value, providers)})` : label;
     return {
       place: change.place,
       placeId,
-      name: placeId !== null ? placeById(placeId).title : place,
+      name: spec === null ? place : "editName" in spec ? spec.editName : spec.title,
       lands,
-      from: from === undefined ? null : valueLabel(placeId, from),
-      to: valueLabel(placeId, change.value),
+      from: from === undefined || fromLabel === null ? null : named(from, fromLabel),
+      to: named(change.value, toLabel),
     };
   });
 }
@@ -80,19 +120,51 @@ export function settingsChangeLines(
  * Whether this app can make the request's device changes: each must be a
  * place this app's catalog lets agents change, with a value its row takes.
  * `update`: an older app; it can't take the request, so Change waits for an
- * update.
+ * update. `elsewhere`: this app can't hold one of them, so Change waits for
+ * the app that can, or for alerts to be on here.
  */
 export type SettingsChangeDeviceCheck =
   | { readonly kind: "ready"; readonly edits: ReadonlyArray<CheckedEdit> }
-  | { readonly kind: "update" };
+  | { readonly kind: "update" }
+  | { readonly kind: "elsewhere"; readonly note: string };
+
+/** What this app can hold: whether it's the desktop app, and how its phone alerts stand. */
+export interface SettingsChangeDevice {
+  readonly desktopApp: boolean;
+  readonly alerts: "on" | "off" | "unsupported";
+}
 
 export function checkDeviceChanges(
   request: Pick<OrchestrationSettingsChangeRequest, "changes">,
+  device: SettingsChangeDevice,
 ): SettingsChangeDeviceCheck {
-  const device = request.changes.filter((change) => settingsChangeLands(change) === "device");
-  if (device.length === 0) return { kind: "ready", edits: [] };
-  const checked = checkEdits(device.map(({ place, value }) => ({ place, value })));
-  return "edits" in checked ? { kind: "ready", edits: checked.edits } : { kind: "update" };
+  const changes = request.changes.filter((change) => settingsChangeLands(change) === "device");
+  if (changes.length === 0) return { kind: "ready", edits: [] };
+  const checked = checkEdits(changes.map(({ place, value }) => ({ place, value })));
+  if (!("edits" in checked)) return { kind: "update" };
+  const needsDesktop = checked.edits.some(({ place }) => {
+    const spec = placeById(place);
+    return "appliesWhen" in spec && spec.appliesWhen === "desktop";
+  });
+  if (needsDesktop && !device.desktopApp) {
+    return {
+      kind: "elsewhere",
+      note: "Open this thread in the desktop app to make these changes.",
+    };
+  }
+  const needsAlerts = checked.edits.some(
+    ({ edit }) => edit.lands === "device" && "store" in edit && edit.store === "alerts",
+  );
+  if (needsAlerts && device.alerts !== "on") {
+    return {
+      kind: "elsewhere",
+      note:
+        device.alerts === "off"
+          ? "Turn on alerts on this device to make these changes."
+          : "Open this thread where you get alerts, on your phone or in a browser, to make these changes.",
+    };
+  }
+  return { kind: "ready", edits: checked.edits };
 }
 
 /**

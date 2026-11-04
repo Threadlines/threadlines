@@ -8,12 +8,13 @@ import {
   CommandId,
   type OrchestrationSettingsChangeRequest,
   type OrchestrationThread,
+  type ServerProvider,
   type ServerSettings,
   SettingsChangeRequestId,
   type SettingsChangeItem,
   type ThreadId,
 } from "@threadlines/contracts";
-import { placeMarkdownLink, placePathLabel } from "@threadlines/shared/appPlaces";
+import { modelEditValue, placeMarkdownLink, placePathLabel } from "@threadlines/shared/appPlaces";
 import {
   type CheckedEdit,
   type SettingsChangeInput,
@@ -25,6 +26,7 @@ import * as Effect from "effect/Effect";
 
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
+import { modelChangesProblem } from "../settingsChanges/modelChoices.ts";
 import { dispatchOutcome } from "../threads/threadOperations.ts";
 import { latchCallerTurn } from "./callerTurn.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
@@ -36,6 +38,8 @@ export interface SettingsChangeToolDeps {
   readonly readThread: (threadId: ThreadId) => Effect.Effect<OrchestrationThread | undefined>;
   /** This computer's stored settings, for what each computer change would change from; undefined when unreadable. */
   readonly settings: Effect.Effect<ServerSettings | undefined>;
+  /** This computer's providers, for the models a model setting can take. */
+  readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
 }
 
 const ASKED =
@@ -97,6 +101,10 @@ export function makeSettingsChangeToolHandler(deps: SettingsChangeToolDeps) {
           outcome: "refused" as const,
           detail: "This computer's settings couldn't be read. Try again in a moment.",
         };
+      }
+      if (checked.edits.some(({ edit }) => edit.control.kind === "model")) {
+        const problem = modelChangesProblem(checked.edits, stored, yield* deps.providers);
+        if (problem !== null) return { outcome: "refused" as const, detail: problem };
       }
       // Computer changes already in place are left off the card.
       const items: Array<{

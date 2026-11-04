@@ -35,7 +35,7 @@ export const SettingsChangeResult = Schema.Struct({
 export type SettingsChangeResult = typeof SettingsChangeResult.Type;
 
 export const SettingsChangeTool = Tool.make(SETTINGS_CHANGE_TOOL_NAME, {
-  description: `Change Threadlines settings the user asked you to change: the theme, streaming replies, diff wrapping, the terminal's text size and the like. It shows the user a card above their message box with the changes, and nothing changes until they accept it; their answer reaches you at your next turn, so don't ask again meanwhile. Only settings ${GUIDE_TOOL_NAME} marks as ones an agent can change: look the setting up there first for its place id and the values it takes. Settings that give agents more reach (starting threads, rooms, access, linked computers, plugins) are the user's alone: give them the link instead. Use it only for a change the user asked for, never on your own initiative.`,
+  description: `Change Threadlines settings the user asked you to change: the theme, streaming replies, the model new threads start with, alert switches and the like. It shows the user a card above their message box with the changes, and nothing changes until they accept it; their answer reaches you at your next turn, so don't ask again meanwhile. Only settings ${GUIDE_TOOL_NAME} marks as ones an agent can change: look the setting up there first for its place id and the values it takes. Settings that give agents more reach (starting threads, rooms, access, linked computers, plugins) are the user's alone: give them the link instead. Use it only for a change the user asked for, never on your own initiative.`,
   parameters: Schema.Struct({
     changes: Schema.Array(
       Schema.Struct({

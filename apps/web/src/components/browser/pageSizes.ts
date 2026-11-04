@@ -8,6 +8,17 @@
  */
 
 import { MAX_BROWSER_PAGE_DIMENSION } from "@threadlines/contracts";
+import {
+  BROWSER_PAGE_SIZE_PRESETS,
+  RESPONSIVE_PAGE_SIZE_ID,
+  RESPONSIVE_PAGE_SIZE_LABEL,
+} from "@threadlines/shared/browserPageSizes";
+
+export {
+  BROWSER_PAGE_SIZE_PRESETS,
+  RESPONSIVE_PAGE_SIZE_ID,
+  RESPONSIVE_PAGE_SIZE_LABEL,
+} from "@threadlines/shared/browserPageSizes";
 
 /** null dimensions mean the page fills the panel and reflows with it. */
 export interface BrowserViewport {
@@ -16,29 +27,6 @@ export interface BrowserViewport {
 }
 
 export const RESPONSIVE_VIEWPORT: BrowserViewport = Object.freeze({ width: null, height: null });
-
-export interface BrowserPageSizePreset {
-  readonly id: string;
-  readonly label: string;
-  readonly width: number;
-  readonly height: number;
-}
-
-/**
- * One size per kind of screen. What a size check usually asks is which layout
- * a page switches to, and devices of one kind sit within a few dozen pixels of
- * each other, so more of them would lengthen the menu without showing more.
- */
-export const BROWSER_PAGE_SIZE_PRESETS: ReadonlyArray<BrowserPageSizePreset> = [
-  { id: "phone", label: "Phone", width: 402, height: 874 },
-  { id: "tablet", label: "Tablet", width: 820, height: 1180 },
-  { id: "laptop", label: "Laptop", width: 1280, height: 800 },
-  { id: "desktop", label: "Desktop", width: 1920, height: 1080 },
-];
-
-/** The choice id for a page that fills the panel. */
-export const RESPONSIVE_PAGE_SIZE_ID = "responsive";
-export const RESPONSIVE_PAGE_SIZE_LABEL = "Responsive";
 
 const PRESETS = BROWSER_PAGE_SIZE_PRESETS;
 

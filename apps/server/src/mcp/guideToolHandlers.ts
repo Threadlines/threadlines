@@ -22,6 +22,7 @@ export interface GuideToolDeps {
   readonly settings: Effect.Effect<ServerSettings | undefined>;
   readonly linkedComputers: Effect.Effect<ReadonlyArray<GuideLinkedComputer> | undefined>;
   readonly providers: Effect.Effect<GuideValues["providers"]>;
+  readonly modelChoices: Effect.Effect<GuideValues["modelChoices"]>;
   readonly outsideAgents: Effect.Effect<GuideValues["outsideAgents"]>;
   readonly scheduledTasks: Effect.Effect<GuideValues["scheduledTasks"]>;
 }
@@ -38,12 +39,13 @@ export function makeGuideToolHandler(deps: GuideToolDeps) {
     Effect.gen(function* () {
       const plan = planGuide(input);
       const needs = guideNeeds(plan);
-      const [settings, linkedComputers, providers, outsideAgents, scheduledTasks] =
+      const [settings, linkedComputers, providers, modelChoices, outsideAgents, scheduledTasks] =
         yield* Effect.all(
           [
             readIf(needs.settings, deps.settings),
             readIf(needs.states.has("linkedComputers"), deps.linkedComputers),
             readIf(needs.states.has("providers"), deps.providers),
+            readIf(needs.modelChoices, deps.modelChoices),
             readIf(needs.states.has("outsideAgents"), deps.outsideAgents),
             readIf(needs.states.has("scheduledTasks"), deps.scheduledTasks),
           ],
@@ -54,6 +56,7 @@ export function makeGuideToolHandler(deps: GuideToolDeps) {
         ...(settings !== undefined ? { settings } : {}),
         ...(linkedComputers !== undefined ? { linkedComputers } : {}),
         ...(providers !== undefined ? { providers } : {}),
+        ...(modelChoices !== undefined ? { modelChoices } : {}),
         ...(outsideAgents !== undefined ? { outsideAgents } : {}),
         ...(scheduledTasks !== undefined ? { scheduledTasks } : {}),
       };

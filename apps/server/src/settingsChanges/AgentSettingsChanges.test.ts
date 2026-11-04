@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   type OrchestrationSettingsChangeRequest,
+  type ServerProvider,
   type ServerSettings,
   type ServerSettingsError,
   SettingsChangeRequestId,
@@ -38,6 +39,20 @@ const waiting = (
 
 const STREAM_OFF = { place: "general.streamReplies", value: false, from: true } as const;
 const THEME_LIGHT = { place: "general.theme", value: "light" } as const;
+
+/** Codex, since switched to an API key: billed per use by the time the user answers. */
+const PROVIDERS = [
+  {
+    instanceId: "codex",
+    driver: "codex",
+    enabled: true,
+    installed: true,
+    status: "ready",
+    availability: "available",
+    auth: { status: "authenticated", type: "apiKey" },
+    models: [{ slug: "gpt-test", name: "GPT Test" }],
+  },
+] as unknown as ReadonlyArray<ServerProvider>;
 
 /**
  * The service over one thread's requests, an engine that keeps them the way
@@ -94,6 +109,7 @@ function run<A, E>(
   });
   const program = Effect.gen(function* () {
     const service = yield* make({
+      providers: Effect.succeed(PROVIDERS),
       request: (_threadId, requestId) =>
         Effect.sync(() => state.find((entry) => entry.requestId === requestId)),
       claimed: Effect.sync(() =>
@@ -293,4 +309,23 @@ describe("answering an agent's settings change", () => {
     const mix = await outcome({ enableAssistantStreaming: false });
     expect(mix?.status).toBe("uncertain");
   });
+
+  it("checks a model again when the user accepts: its provider may bill per use by now", () =>
+    run(
+      [waiting([{ place: "threads.agent", value: "codex/gpt-test", from: "none" }])],
+      ServerSettingsService.layerTest(),
+      (service) =>
+        Effect.gen(function* () {
+          const answer = yield* service.respond({
+            threadId: THREAD,
+            requestId: REQUEST,
+            allow: true,
+            claim,
+          });
+          expect(answer.outcome).toBe("failed");
+          expect(answer.detail).toContain("billed per use");
+          const settings = yield* ServerSettingsService;
+          expect((yield* settings.getSettings).newThreadModelSelection).toBeNull();
+        }),
+    ));
 });

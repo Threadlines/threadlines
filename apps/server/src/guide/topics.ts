@@ -271,8 +271,18 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
   {
     id: "changing-settings",
     title: "Agents changing settings",
-    keywords: ["change setting", "turn on", "turn off", "switch", "theme", "dark mode", "card"],
-    body: `An agent can change some settings when you ask: the theme, streaming replies, diff wrapping, the terminal's text size and a few more (the guide says which, place by place). It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
+    keywords: [
+      "change setting",
+      "turn on",
+      "turn off",
+      "switch",
+      "theme",
+      "dark mode",
+      "card",
+      "default model",
+      "alerts",
+    ],
+    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
 
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },

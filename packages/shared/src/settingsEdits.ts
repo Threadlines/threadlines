@@ -12,8 +12,10 @@ import {
   type AppPlaceEdit,
   type EditControl,
   type EditValue,
+  NO_MODEL,
   type PlaceId,
   isPlaceId,
+  parseModelEditValue,
   placeById,
   placeMarkdownLink,
   placePathLabel,
@@ -40,7 +42,8 @@ export type EditRefusalReason =
   | "user_only"
   | "not_editable"
   | "duplicate"
-  | "bad_value";
+  | "bad_value"
+  | "no_one_app";
 
 export interface EditRefusal {
   readonly reason: EditRefusalReason;
@@ -53,7 +56,11 @@ export function placeEdit(place: PlaceId): AppPlaceEdit | null {
   return placeById(place).edit ?? null;
 }
 
-/** Whether `value` is one the control takes: a boolean, an offered choice, or a whole number in range. */
+/**
+ * Whether `value` is one the control takes: a boolean, an offered choice, a
+ * whole number in range, or a model's name. Whether this computer offers that
+ * model is for the tool to check (modelChoices.ts).
+ */
 export function editValueFits(control: EditControl, value: unknown): value is EditValue {
   switch (control.kind) {
     case "switch":
@@ -67,6 +74,10 @@ export function editValueFits(control: EditControl, value: unknown): value is Ed
         ((value >= control.min && value <= control.max) ||
           (control.offAtZero === true && value === 0))
       );
+    case "model":
+      return value === NO_MODEL
+        ? control.noneLabel !== undefined
+        : parseModelEditValue(value) !== null;
   }
 }
 
@@ -82,6 +93,10 @@ export function describeEditControl(control: EditControl): string {
     case "count":
       return `a whole number of ${control.unit} from ${control.min} to ${control.max}${
         control.offAtZero === true ? ", or 0 for off" : ""
+      }`;
+    case "model":
+      return `"<instanceId>/<model>" for a model this computer offers, at its default reasoning${
+        control.noneLabel !== undefined ? `, or "${NO_MODEL}" for ${control.noneLabel}` : ""
       }`;
   }
 }
@@ -149,6 +164,20 @@ export function checkEdits(
     }
     edits.push({ place, value: change.value, edit: spec.edit });
   }
+  // Alerts need a phone or browser and these rows the desktop app: no one app can accept both.
+  const alert = edits.find(({ edit }) => "store" in edit && edit.store === "alerts");
+  const desktop = edits.find(({ place }) => {
+    const spec = placeById(place);
+    return "appliesWhen" in spec && spec.appliesWhen === "desktop";
+  });
+  if (alert !== undefined && desktop !== undefined) {
+    return {
+      refused: {
+        reason: "no_one_app",
+        detail: `${placePathLabel(alert.place)} changes on a phone or in a browser and ${placePathLabel(desktop.place)} in the desktop app, so no one app can accept both. Ask for them separately.`,
+      },
+    };
+  }
   return { edits };
 }
 
@@ -162,6 +191,12 @@ export function describeEditValue(place: PlaceId, value: EditValue): string {
       return value === 0 && control.offAtZero === true ? "Off" : `${value} ${control.unit}`;
     }
     return String(value);
+  }
+  const control = spec.edit?.control;
+  if (control?.kind === "model") {
+    return value === NO_MODEL
+      ? (control.noneLabel ?? value)
+      : (parseModelEditValue(value)?.model ?? value);
   }
   // The guide's labels cover every value a setting takes; an agent's options
   // may offer fewer (a current value can still be one agents can't pick).

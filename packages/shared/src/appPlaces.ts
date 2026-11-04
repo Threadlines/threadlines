@@ -19,6 +19,10 @@ import type {
   ClientSettings,
   ClientSettingsPatch,
   ComputerLinkAccess,
+  LinkOpenTarget,
+  ModelSelection,
+  NewWorktreeBaseFrom,
+  PushAlertKinds,
   ServerSettings,
   ServerSettingsPatch,
   SourceControlWritingStyleMode,
@@ -27,6 +31,11 @@ import type {
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 
+import {
+  BROWSER_PAGE_SIZE_PRESETS,
+  RESPONSIVE_PAGE_SIZE_ID,
+  RESPONSIVE_PAGE_SIZE_LABEL,
+} from "./browserPageSizes.ts";
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
 
 /** Where a page lives in the app, and which computer it can show. */
@@ -58,6 +67,12 @@ export type AppPlaceValue =
       readonly read: (settings: ServerSettings) => string;
       /** Each value's label, exactly as the screen's menu shows it. */
       readonly options: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly kind: "model";
+      /** As `modelEditValue` words it: a model's own name is the provider's to give. */
+      readonly read: (settings: ServerSettings) => string;
+      readonly noneLabel?: string;
     }
   | {
       readonly kind: "count";
@@ -98,6 +113,8 @@ interface AppPlaceSpec {
    * whole allowlist.
    */
   readonly edit?: AppPlaceEdit;
+  /** What a settings card calls it, when its title alone says too little ("Failed"). */
+  readonly editName?: string;
 }
 
 /** The control an agent's change fills in, as the row's own control takes it. */
@@ -116,6 +133,17 @@ export type EditControl =
       readonly unit: string;
       /** 0 is also allowed, and means off. */
       readonly offAtZero?: true;
+    }
+  | {
+      /**
+       * A model this computer offers, as "<instanceId>/<model>": which ones
+       * depends on its providers, so the tool checks that (modelChoices.ts).
+       */
+      readonly kind: "model";
+      /** Which model setting this is: writing and its backup must stay on different providers. */
+      readonly role: "newThreads" | "writing" | "backupWriting" | "sourceControl";
+      /** The row's way to pick no model, which `NO_MODEL` asks for. Absent: it always has one. */
+      readonly noneLabel?: string;
     };
 
 export type EditValue = boolean | string | number;
@@ -146,6 +174,13 @@ export type AppPlaceEdit =
       readonly control: EditControl;
       /** Kept outside client settings, by the app's own store. */
       readonly store: "theme";
+    }
+  | {
+      readonly lands: "device";
+      readonly control: EditControl;
+      /** Kept with this device's phone alerts, which only an app with alerts on can change. */
+      readonly store: "alerts";
+      readonly alert: keyof PushAlertKinds | "quietAtComputer";
     };
 
 const onOff = (read: (settings: ServerSettings) => boolean): AppPlaceValue => ({
@@ -203,6 +238,63 @@ const editableDeviceSwitch = <K extends KeysOfType<ClientSettings, boolean>>(key
     patch: (value) => ({ [key]: value === true }) as ClientSettingsPatch,
   }) satisfies AppPlaceEdit;
 
+/** A model setting's value when the row picks no model. */
+export const NO_MODEL = "none";
+
+/** A model setting's value as agents and cards carry it. */
+export const modelEditValue = (selection: ModelSelection | null): string =>
+  selection === null ? NO_MODEL : `${selection.instanceId}/${selection.model}`;
+
+const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/u;
+
+/** The provider and model in a model setting's value, or null when it names none. */
+export function parseModelEditValue(
+  value: unknown,
+): { readonly instanceId: string; readonly model: string } | null {
+  if (typeof value !== "string") return null;
+  // An instance id never holds a slash; a model's slug may.
+  const slash = value.indexOf("/");
+  if (slash < 1) return null;
+  const instanceId = value.slice(0, slash);
+  const model = value.slice(slash + 1);
+  return INSTANCE_ID_PATTERN.test(instanceId) && model.length > 0 && model.trim() === model
+    ? { instanceId, model }
+    : null;
+}
+
+type ModelSettingKey = {
+  [K in keyof ServerSettings]-?: ServerSettings[K] extends ModelSelection | null ? K : never;
+}[keyof ServerSettings];
+
+/**
+ * A computer's model setting agents may change: the model at its default
+ * reasoning, since a level means nothing on another model.
+ */
+const editableServerModel = (
+  key: ModelSettingKey,
+  control: Omit<Extract<EditControl, { kind: "model" }>, "kind">,
+) => {
+  const read = (settings: ServerSettings): string => modelEditValue(settings[key]);
+  return {
+    value: {
+      kind: "model",
+      read,
+      ...(control.noneLabel !== undefined ? { noneLabel: control.noneLabel } : {}),
+    },
+    edit: {
+      lands: "computer",
+      control: { kind: "model", ...control },
+      leaves: [key],
+      read,
+      patch: (value) => ({ [key]: parseModelEditValue(value) }) as ServerSettingsPatch,
+    },
+  } satisfies Pick<AppPlaceSpec, "value" | "edit">;
+};
+
+/** A device's phone alert switch agents may change, on a device with alerts on. */
+const editableAlert = (alert: keyof PushAlertKinds | "quietAtComputer") =>
+  ({ lands: "device", control: { kind: "switch" }, store: "alerts", alert }) satisfies AppPlaceEdit;
+
 /** Fetch interval in whole seconds, as its row shows it. */
 const fetchIntervalSeconds = (settings: ServerSettings): number =>
   Math.round(Duration.toSeconds(settings.automaticGitFetchInterval));
@@ -211,6 +303,25 @@ const fetchIntervalSeconds = (settings: ServerSettings): number =>
 export const THREAD_ENV_MODE_LABELS: Readonly<Record<ThreadEnvMode, string>> = {
   local: "Local",
   worktree: "New worktree",
+};
+
+/** "New worktrees from", as its menu words each choice. */
+export const NEW_WORKTREE_BASE_LABELS: Readonly<Record<NewWorktreeBaseFrom, string>> = {
+  default: "Default branch",
+  current: "Current branch",
+  named: "Another branch",
+};
+
+/** "Open links in", as its menu words each choice. */
+export const OPEN_LINKS_IN_LABELS: Readonly<Record<LinkOpenTarget, string>> = {
+  "browser-panel": "Built-in browser",
+  external: "External browser",
+};
+
+/** "Browser page size": Responsive and the named sizes, as its menu words them. */
+const BROWSER_PAGE_SIZE_LABELS: Readonly<Record<string, string>> = {
+  [RESPONSIVE_PAGE_SIZE_ID]: RESPONSIVE_PAGE_SIZE_LABEL,
+  ...Object.fromEntries(BROWSER_PAGE_SIZE_PRESETS.map((size) => [size.id, size.label])),
 };
 
 /** "Time format", as its menu words each choice. */
@@ -756,6 +867,8 @@ const ROWS = [
     about: "An approval, a question, a plan to review or a settings change.",
     keywords: ["approval", "question", "notifications"],
     scope: "device",
+    edit: editableAlert("needs_you"),
+    editName: "Alerts: Needs you",
   },
   {
     id: "general.alertFinished",
@@ -765,6 +878,8 @@ const ROWS = [
     about: "An agent finished its work.",
     keywords: ["done", "notifications"],
     scope: "device",
+    edit: editableAlert("finished"),
+    editName: "Alerts: Finished",
   },
   {
     id: "general.alertFailed",
@@ -774,6 +889,8 @@ const ROWS = [
     about: "A turn stopped with an error, or couldn't start.",
     keywords: ["error", "notifications"],
     scope: "device",
+    edit: editableAlert("failed"),
+    editName: "Alerts: Failed",
   },
   {
     id: "general.alertsQuietAtComputer",
@@ -784,6 +901,7 @@ const ROWS = [
       "No alerts while you're using Threadlines on a computer. Anything that still needs you when you step away comes through.",
     keywords: ["notifications", "push", "desktop", "mute"],
     scope: "device",
+    edit: editableAlert("quietAtComputer"),
   },
   // General › Appearance
   {
@@ -969,6 +1087,13 @@ const ROWS = [
     keywords: ["browser", "built-in browser", "external browser"],
     scope: "device",
     appliesWhen: "desktop",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: OPEN_LINKS_IN_LABELS },
+      leaves: ["openLinksIn"],
+      read: (settings) => settings.openLinksIn,
+      patch: (value) => ({ openLinksIn: value as LinkOpenTarget }),
+    },
   },
   {
     id: "general.browserPageSize",
@@ -980,6 +1105,25 @@ const ROWS = [
     keywords: ["browser", "viewport", "device", "responsive", "laptop", "desktop", "phone"],
     scope: "device",
     appliesWhen: "desktop",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: BROWSER_PAGE_SIZE_LABELS },
+      leaves: ["browserNewTabSize"],
+      // A size typed by hand isn't a choice; it reads as its dimensions.
+      read: ({ browserNewTabSize: size }) =>
+        size === null
+          ? RESPONSIVE_PAGE_SIZE_ID
+          : (BROWSER_PAGE_SIZE_PRESETS.find(
+              (preset) => preset.width === size.width && preset.height === size.height,
+            )?.id ?? `${size.width} × ${size.height}`),
+      patch: (value) => {
+        const preset = BROWSER_PAGE_SIZE_PRESETS.find((size) => size.id === value);
+        return {
+          browserNewTabSize:
+            preset === undefined ? null : { width: preset.width, height: preset.height },
+        };
+      },
+    },
   },
   {
     id: "general.sitesAgentsCanVisit",
@@ -1076,7 +1220,10 @@ const ROWS = [
     title: "Agent",
     about: "The agent and model new threads start with.",
     keywords: ["default model"],
-    widensAgents: true,
+    ...editableServerModel("newThreadModelSelection", {
+      role: "newThreads",
+      noneLabel: "Last used",
+    }),
   },
   {
     id: "threads.room",
@@ -1102,6 +1249,25 @@ const ROWS = [
     title: "New worktrees from",
     about: "The branch new worktrees start from.",
     keywords: ["base branch"],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.newWorktreeBase.from,
+      options: NEW_WORKTREE_BASE_LABELS,
+    },
+    edit: {
+      lands: "computer",
+      // Not Another branch: that needs a branch picked on the row.
+      control: {
+        kind: "choice",
+        options: {
+          default: NEW_WORKTREE_BASE_LABELS.default,
+          current: NEW_WORKTREE_BASE_LABELS.current,
+        },
+      },
+      leaves: ["newWorktreeBase.from"],
+      read: (settings) => settings.newWorktreeBase.from,
+      patch: (value) => ({ newWorktreeBase: { from: value as NewWorktreeBaseFrom } }),
+    },
   },
   {
     id: "threads.agentThreads",
@@ -1224,6 +1390,7 @@ const ROWS = [
     title: "Writing model",
     about: "Writes thread titles. Also commit and PR text, unless Source Control picks its own.",
     keywords: ["title model", "text generation"],
+    ...editableServerModel("textGenerationModelSelection", { role: "writing" }),
   },
   {
     id: "threads.backupWritingModel",
@@ -1232,6 +1399,10 @@ const ROWS = [
     title: "Backup writing model",
     about: "Takes over when the writing model's provider fails.",
     keywords: ["fallback"],
+    ...editableServerModel("textGenerationBackupModelSelection", {
+      role: "backupWriting",
+      noneLabel: "None",
+    }),
   },
   // Threads › When a thread is done
   {
@@ -1408,6 +1579,10 @@ const ROWS = [
     about:
       "Optional model override for commit messages, PR titles and descriptions, and branch names. Off uses the writing model from Settings › Threads.",
     keywords: ["commit message", "model"],
+    ...editableServerModel("sourceControlWriterModelSelection", {
+      role: "sourceControl",
+      noneLabel: "Off",
+    }),
   },
   // Connections › Devices that can use this computer
   {

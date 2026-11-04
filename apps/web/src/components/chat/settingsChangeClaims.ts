@@ -27,6 +27,11 @@ import { readEnvironmentConnection } from "~/environments/runtime";
 import { updateClientSettingsAndPersist } from "~/hooks/useSettings";
 import { setThemePreference, type Theme } from "~/hooks/useTheme";
 import { randomUUID } from "~/lib/utils";
+import {
+  setPushAlertKind,
+  setPushAlertsQuietAtComputer,
+  usePushAlertsStore,
+} from "~/pushAlerts/pushAlerts";
 import { describeUnknownError } from "~/rpc/transportError";
 import { selectEnvironmentState, useStore } from "~/store";
 import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
@@ -84,7 +89,7 @@ function failureDetail(error: unknown): string {
 
 /**
  * Makes the device changes, each store awaited on its own: the client
- * settings in one write, then the theme. Says which landed and which didn't.
+ * settings in one write, then the theme and alerts. Says which landed and which didn't.
  */
 async function makeDeviceChanges(
   edits: ReadonlyArray<CheckedEdit>,
@@ -102,10 +107,21 @@ async function makeDeviceChanges(
     }
   }
   for (const { place, edit, value } of edits) {
-    if (!(edit.lands === "device" && "store" in edit && edit.store === "theme")) continue;
+    if (!(edit.lands === "device" && "store" in edit)) continue;
     try {
-      if (!isTheme(value)) throw new Error(`"${String(value)}" isn't a theme`);
-      setThemePreference(value);
+      if (edit.store === "theme") {
+        if (!isTheme(value)) throw new Error(`"${String(value)}" isn't a theme`);
+        setThemePreference(value);
+      } else {
+        // Another window may have turned them off since Change was pressed.
+        const alerts = usePushAlertsStore.getState();
+        if (!alerts.enabled || alerts.permission !== "granted") {
+          throw new Error("alerts are off on this device");
+        }
+        await (edit.alert === "quietAtComputer"
+          ? setPushAlertsQuietAtComputer(value === true)
+          : setPushAlertKind(edit.alert, value === true));
+      }
       applied.push(place);
     } catch (error) {
       failed.push({ place, detail: failureDetail(error) });
