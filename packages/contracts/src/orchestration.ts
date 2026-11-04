@@ -3262,6 +3262,12 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   sentFrom: Schema.optional(MessageSentFrom),
   /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * Server only: a steer that could not reach its turn, queued for the next
+   * one. The user already sent it, so it is not their newest word on the
+   * thread (a question asked since stays open).
+   */
+  requeued: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 

@@ -3333,6 +3333,7 @@ const make = Effect.gen(function* () {
         // Still the words the user wrote: the next turn sends them as typed.
         ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
         ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
+        requeued: true,
         createdAt: event.payload.createdAt,
       })
       .pipe(Effect.asVoid);
