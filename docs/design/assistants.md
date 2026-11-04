@@ -2198,7 +2198,12 @@ out of date where they differ from this section.
   once, review sign-ins are approved in a fork (logged), their connections use
   `repository.insert` instead of `insertReplacing`, and Settings › Assistants shows a
   row saying so (`reviewComputer` in the assistants state). Tested in `signIns.test.ts`
-  and `Assistants.test.ts`, each checked by breaking the code it covers.
+  and `Assistants.test.ts`, each checked by breaking the code it covers. Sol's review (Nov 4), three
+  findings, all fixed: a sign-in sent again after a reconnect replaced the entry an Allow in
+  flight checks, and a failed route tag was never retried (a replay now keeps its entry, and
+  review approvals retry while the sign-in waits); whether a connection replaces others now
+  follows the relay's mark, not the computer's flag, so a restart without the flag can't let
+  a reviewer end the scan's connection; the review host must be a real UUID.
 
 ### The demo computer
 

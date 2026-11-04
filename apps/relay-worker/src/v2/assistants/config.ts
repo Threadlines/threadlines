@@ -79,7 +79,8 @@ export async function assistantsConfig(env: RelayV2Env): Promise<AssistantsConfi
   };
 }
 
-const HOST_ID = /^[0-9a-f-]{36}$/u;
+/** A host id as the relay issues them: a lowercase UUID. */
+const HOST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /** Both settings, or no reviewer sign-in at all: a code with nowhere to go, or a host with no code, is off. */
 export function reviewSignIn(

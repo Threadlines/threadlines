@@ -9,6 +9,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   OutsideAgentRequestId,
   type RelayAssistantHostFrame,
+  type RelayAssistantRelayFrame,
   type RelayAssistantRequestFrame,
   type RelayAssistantResponseFrame,
   type RelayAssistantSignIn,
@@ -22,6 +23,7 @@ import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -52,6 +54,7 @@ import { makeAssistantMcp } from "./AssistantMcp.ts";
 import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
 import {
   AssistantRelay,
+  AssistantRelayError,
   type AssistantRelayEvent,
   type AssistantRelayShape,
 } from "./AssistantRelay.ts";
@@ -84,13 +87,28 @@ const makeFakeRelay = Effect.gen(function* () {
   const answers = new Map<string, Deferred.Deferred<RelayAssistantResponseFrame>>();
   const revoked: Array<string> = [];
   const state = { wanted: false };
+  /** Route tags: held until `hold` is done, and failing `failures` times first. */
+  const routeTags = {
+    calls: 0,
+    failures: 0,
+    hold: null as Deferred.Deferred<void> | null,
+  };
   const relay: AssistantRelayShape = {
     available: true,
     hostId: Effect.succeed(HOST),
     info: () => Effect.succeed({ address: RESOURCE, enabled: true }),
     createCode: Effect.succeed({ code: "K4D82PQX", expiresAt: "2099-01-01T00:00:00.000Z" }),
     cancelCode: Effect.void,
-    routeTag: () => Effect.sync(() => ({ hostId: HOST, routeTag: randomAssistantSecret() })),
+    routeTag: () =>
+      Effect.gen(function* () {
+        routeTags.calls += 1;
+        if (routeTags.hold !== null) yield* Deferred.await(routeTags.hold);
+        if (routeTags.failures > 0) {
+          routeTags.failures -= 1;
+          return yield* new AssistantRelayError({ reason: "unreachable", detail: "offline" });
+        }
+        return { hostId: HOST, routeTag: randomAssistantSecret() };
+      }),
     revoke: ({ connectionIds }) =>
       Effect.sync(() => {
         revoked.push(...connectionIds);
@@ -128,7 +146,7 @@ const makeFakeRelay = Effect.gen(function* () {
       };
     });
   const push = (event: AssistantRelayEvent) => Effect.sync(() => Queue.offerUnsafe(events, event));
-  return { relay, sent, revoked, state, ask, push };
+  return { relay, sent, revoked, state, routeTags, ask, push };
 });
 type FakeRelay = Effect.Success<typeof makeFakeRelay>;
 
@@ -512,13 +530,16 @@ describe("assistants: sign-in", () => {
           door.fake.sent.find(
             (frame) => frame.type === "signin.decision" && frame.signInId === signInId,
           );
-        const reviewSignIn = (door: Door, signInId: string) =>
+        const reviewSignIn = (
+          door: Door,
+          signInId: string,
+          meanwhile: (frame: RelayAssistantRelayFrame) => Effect.Effect<void> = () => Effect.void,
+        ) =>
           Effect.gen(function* () {
             const { verifier, challenge } = pkce();
-            yield* door.fake.push({
-              type: "frame",
-              frame: yield* signInFrame(signInId, { codeChallenge: challenge, review: true }),
-            });
+            const frame = yield* signInFrame(signInId, { codeChallenge: challenge, review: true });
+            yield* door.fake.push({ type: "frame", frame });
+            yield* meanwhile(frame);
             const decision = yield* until(
               Effect.sync(() => decisionFor(door, signInId)),
               (found) => found !== undefined,
@@ -553,6 +574,48 @@ describe("assistants: sign-in", () => {
                 maxRuntimeMode: "full-access",
                 projectIds: null,
               });
+
+              // The relay out of reach for a moment: Allow is tried again while the sign-in waits.
+              door.fake.routeTags.failures = 1;
+              const retried = yield* reviewSignIn(door, "reviewer-3", () =>
+                Effect.gen(function* () {
+                  yield* until(
+                    Effect.sync(() => door.fake.routeTags.failures),
+                    (failures) => failures === 0,
+                  );
+                  yield* TestClock.adjust(Duration.seconds(5));
+                }),
+              );
+              expect(retried.status).toBe(200);
+
+              // Sent again, as after a reconnect, while Allow waits on the relay: the same sign-in,
+              // so the Allow on its way still counts, once.
+              const hold = yield* Deferred.make<void>();
+              door.fake.routeTags.hold = hold;
+              const callsBefore = door.fake.routeTags.calls;
+              const replayed = yield* reviewSignIn(door, "reviewer-4", (frame) =>
+                Effect.gen(function* () {
+                  yield* until(
+                    Effect.sync(() => door.fake.routeTags.calls),
+                    (calls) => calls > callsBefore,
+                  );
+                  yield* door.fake.push({ type: "frame", frame });
+                  for (let turn = 0; turn < 20; turn += 1) yield* Effect.yieldNow;
+                  door.fake.routeTags.hold = null;
+                  yield* Deferred.succeed(hold, undefined);
+                }),
+              );
+              expect(replayed.status).toBe(200);
+              const allowed = new Set(
+                door.fake.sent.flatMap((frame) =>
+                  frame.type === "signin.decision" &&
+                  frame.signInId === "reviewer-4" &&
+                  frame.decision === "allow"
+                    ? [frame.authorizationCode]
+                    : [],
+                ),
+              );
+              expect(allowed.size).toBe(1);
 
               // A sign-in with a computer's code still waits for Allow.
               yield* door.fake.push({ type: "frame", frame: yield* signInFrame("ordinary") });

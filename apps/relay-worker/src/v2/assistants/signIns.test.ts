@@ -176,6 +176,7 @@ describe("typing the app's code into the page", () => {
     });
     expect(reviewSignIn(REVIEW_CODE, undefined)).toBeNull();
     expect(reviewSignIn(CODE, HOST)).toBeNull();
+    expect(reviewSignIn(REVIEW_CODE, "-".repeat(36))).toBeNull();
     const plain = makeWorld();
     plain.signIns.create(newSignIn("1.a"), T0);
     expect(await plain.type("1.a", REVIEW_CODE)).toEqual({

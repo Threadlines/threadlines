@@ -64,6 +64,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -160,7 +161,7 @@ interface IssuedCode {
   readonly resource: string;
   readonly grant: OutsideAgentGrant;
   readonly expiresAt: number;
-  /** A review sign-in on the demo computer: its connection joins the others instead of replacing them. */
+  /** A review sign-in (only the demo computer gets them): its connection joins the others instead of replacing them. */
   readonly review: boolean;
 }
 
@@ -228,6 +229,8 @@ export const makeAssistants = Effect.gen(function* () {
   let lastStateReadAt = 0;
   let code: { readonly code: string; readonly expiresAt: number } | null = null;
   const signIns = new Map<string, WaitingSignIn>();
+  /** Review sign-ins the demo computer is allowing right now. */
+  const approvingReview = new Set<string>();
   const decided = new Map<
     string,
     { readonly frame: RelayAssistantDecisionFrame; readonly until: number }
@@ -583,16 +586,22 @@ export const makeAssistants = Effect.gen(function* () {
       }
       if (quietUntil !== null && quietUntil > now) return yield* deny();
       const requestId = OutsideAgentRequestId.make(signIn.signInId);
-      const existing = signIns.get(requestId);
+      const existing = waitingEntry(requestId, now);
+      if (existing !== undefined) {
+        // Sent again after a reconnect, still waiting: the same entry, so an
+        // Allow already on its way stays valid.
+        yield* reviewIfMarked(existing);
+        return;
+      }
       const waitingNow = [...signIns.values()].filter((entry) => entry.expiresAt > now).length;
-      if (existing === undefined && waitingNow >= MAX_WAITING) return yield* deny();
+      if (waitingNow >= MAX_WAITING) return yield* deny();
       const expiresAt = Math.min(millisOf(signIn.expiresAt), now + ASSISTANT_SIGN_IN_TTL_MS);
       if (expiresAt <= now) return;
       const entry: WaitingSignIn = {
         requestId,
         signIn,
         name: displayText(signIn.clientName, NAME_MAX) || UNNAMED,
-        createdAt: existing?.createdAt ?? now,
+        createdAt: now,
         expiresAt,
       };
       signIns.set(requestId, entry);
@@ -601,40 +610,55 @@ export const makeAssistants = Effect.gen(function* () {
       yield* scheduleSignInExpiry(entry, now);
       yield* reconsiderSocket;
       yield* notify;
-      if (existing === undefined && reviewComputer && signIn.review === true) {
-        yield* approveForReview(entry);
-      }
+      yield* reviewIfMarked(entry);
     });
 
   /**
    * The demo computer's answer to a review sign-in: all projects, full
    * access, and Work, or See when it asked only to see (never more than it
-   * asked). Forked: Allow asks the relay for a route tag.
+   * asked). Forked, since Allow asks the relay for a route tag, and tried a
+   * few times while the sign-in waits; a later replay of the sign-in tries
+   * again after that.
    */
-  const approveForReview = (entry: WaitingSignIn) => {
-    const access: OutsideAgentAccess =
-      requestedAccessOf(entry.signIn.scopes) === "see" ? "see" : "work";
-    return approve({
-      requestId: entry.requestId,
-      access,
-      maxRuntimeMode: "full-access",
-      projectIds: null,
-    }).pipe(
-      Effect.tap(() =>
-        Effect.logInfo("assistants: approved a directory review sign-in", {
-          client: entry.name,
-          access,
+  const reviewIfMarked = (entry: WaitingSignIn) =>
+    Effect.suspend(() => {
+      if (!reviewComputer || entry.signIn.review !== true || approvingReview.has(entry.requestId)) {
+        return Effect.void;
+      }
+      approvingReview.add(entry.requestId);
+      const access: OutsideAgentAccess =
+        requestedAccessOf(entry.signIn.scopes) === "see" ? "see" : "work";
+      return approve({
+        requestId: entry.requestId,
+        access,
+        maxRuntimeMode: "full-access",
+        projectIds: null,
+      }).pipe(
+        Effect.retry({
+          times: 4,
+          schedule: Schedule.exponential(Duration.seconds(1)),
+          while: () =>
+            Effect.map(
+              Clock.currentTimeMillis,
+              (now) => waitingEntry(entry.requestId, now) !== undefined,
+            ),
         }),
-      ),
-      Effect.tapError((error) =>
-        Effect.logWarning("assistants: couldn't approve a directory review sign-in", {
-          client: entry.name,
-          detail: error.detail,
-        }),
-      ),
-      forkInScope,
-    );
-  };
+        Effect.tap(() =>
+          Effect.logInfo("assistants: approved a directory review sign-in", {
+            client: entry.name,
+            access,
+          }),
+        ),
+        Effect.tapError((error) =>
+          Effect.logWarning("assistants: couldn't approve a directory review sign-in", {
+            client: entry.name,
+            detail: error.detail,
+          }),
+        ),
+        Effect.ensuring(Effect.sync(() => approvingReview.delete(entry.requestId))),
+        forkInScope,
+      );
+    });
 
   const onSignInGone = (signInId: string) =>
     Effect.gen(function* () {
@@ -715,7 +739,8 @@ export const makeAssistants = Effect.gen(function* () {
         resource: entry.signIn.resource,
         grant,
         expiresAt: now + ASSISTANT_AUTHORIZATION_CODE_TTL_MS,
-        review: reviewComputer && entry.signIn.review === true,
+        // The relay's mark, not this computer's flag: a review connection never replaces the scan's.
+        review: entry.signIn.review === true,
       });
       const sent = yield* sendDecision(
         {
