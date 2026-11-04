@@ -98,8 +98,9 @@ const statusOf = (word: Exclude<ThreadStatusWord, "needs the user">): ThreadStat
 /**
  * How a thread is doing, in the words the sidebar uses: blocked on the user
  * first (an approval, including a card asking about its agent's
- * scheduled-task or settings change, then a question), then running, then
- * waiting on background or child work, then how its last turn ended. `wrapped` is only
+ * scheduled-task or settings change, then a question that pauses the agent),
+ * then running, then a question it asked while working, then waiting on
+ * background or child work, then how its last turn ended. `wrapped` is only
  * the user's explicit Mark done; a plan its last turn left for the user to
  * act on comes after it (the user who filed the thread has decided). The
  * sidebar's automatic filing rules live in the client.
@@ -117,7 +118,9 @@ export function threadStatus(
   ) {
     return needsTheUser("approval");
   }
-  if (thread.hasPendingUserInput) {
+  // A question that pauses the agent needs the user now; one it asked in
+  // passing, while it keeps working, needs them once the work stops.
+  if (thread.hasBlockingUserInput ?? thread.hasPendingUserInput) {
     return needsTheUser("question");
   }
   const session = thread.session;
@@ -129,6 +132,10 @@ export function threadStatus(
         session.status === "starting"))
   ) {
     return statusOf("working");
+  }
+  // Like the sidebar, an agent answering on the side is still work going on.
+  if (thread.hasPendingUserInput && (thread.sideTurn ?? null) === null) {
+    return needsTheUser("question");
   }
   const awaitedTasks = session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount;
   if ((awaitedTasks ?? 0) > 0 || thread.awaitedChildThreadCount > 0) {

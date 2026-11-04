@@ -457,6 +457,30 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("asks for a non-blocking question's answer once the agent stops, opened or not", () => {
+    const stopped = (lastVisitedAt?: string) => ({
+      hasActionableProposedPlan: false,
+      hasPendingApprovals: false,
+      hasPendingUserInput: true,
+      hasBlockingUserInput: false,
+      interactionMode: "default" as const,
+      latestTurn: makeLatestTurn(),
+      latestUserMessageAt: null,
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+      },
+      ...(lastVisitedAt ? { lastVisitedAt } : {}),
+    });
+    for (const thread of [stopped(), stopped("2026-03-09T10:10:00.000Z")]) {
+      const pill = resolveThreadStatusPill({ thread });
+      expect(pill).toMatchObject({ label: "Awaiting Input", pulse: false });
+      expect(resolveThreadAttention(thread, pill)).toBe("needs-you");
+      expect(canMarkThreadDone(thread, { now: "2026-03-09T10:20:00.000Z" })).toBe(false);
+    }
+  });
+
   it("shows working from the orchestration running status even if the legacy status lags", () => {
     expect(
       resolveThreadStatusPill({

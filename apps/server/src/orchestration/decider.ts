@@ -115,6 +115,7 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
+import { questionsClosedByUserMessage } from "./userInput.ts";
 import {
   SETTINGS_CHANGE_CANCELLED,
   type SettingsChangeDecision,
@@ -634,6 +635,37 @@ function hasThreadStarted(thread: OrchestrationThread): boolean {
 }
 
 /**
+ * The user typed a message to `agentId`: its open questions that take a
+ * message for an answer close with it (see questionsClosedByUserMessage).
+ */
+function closeQuestionsForUserMessage(
+  thread: OrchestrationThread,
+  input: {
+    readonly commandId: OrchestrationCommand["commandId"];
+    readonly agentId: ThreadParticipantId | null;
+    readonly messageId: MessageId;
+    readonly createdAt: string;
+  },
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  return questionsClosedByUserMessage({
+    thread,
+    agentId: input.agentId,
+    messageId: input.messageId,
+    createdAt: input.createdAt,
+  }).map(({ requestId, activity }) => ({
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: thread.id,
+      occurredAt: input.createdAt,
+      commandId: input.commandId,
+      metadata: { requestId },
+    }),
+    type: "thread.activity-appended" as const,
+    payload: { threadId: thread.id, activity },
+  }));
+}
+
+/**
  * A message for the agent at work: steers into its turn when it can, else waits
  * in the queue for its agent, like a message the user typed while it worked.
  */
@@ -649,6 +681,17 @@ function decideFollowUpSubmit(
       command.participantId !== undefined
         ? command.participantId
         : sessionSlotParticipantId(targetThread.session);
+    // A steer that missed its turn, queued again, was written before any
+    // question asked since: it closed the older ones when the user sent it.
+    const closedQuestions =
+      command.composer !== undefined && command.requeued !== true
+        ? closeQuestionsForUserMessage(targetThread, {
+            commandId: command.commandId,
+            agentId: addressedAgentId,
+            messageId: command.message.messageId,
+            createdAt: command.createdAt,
+          })
+        : [];
     const canSteer =
       (command.delivery ?? "steer") === "steer" &&
       targetThread.session?.status === "running" &&
@@ -681,6 +724,7 @@ function decideFollowUpSubmit(
         [
           ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
           ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
+          ...closedQuestions,
         ],
         {
           ...userBase(),
@@ -721,6 +765,7 @@ function decideFollowUpSubmit(
       [
         ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
         ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
+        ...closedQuestions,
       ],
       {
         ...steerBase(),
@@ -1833,10 +1878,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           modelSelection: answerModel,
         },
       };
-      // The user wrote: agents may make requests again.
+      // The user wrote: agents may make requests again, and the questions
+      // the agent asked to be answered with a message close.
       return [
         messageSent,
         started,
+        ...closeQuestionsForUserMessage(thread, {
+          commandId: command.commandId,
+          agentId: command.participantId,
+          messageId: command.message.messageId,
+          createdAt: command.createdAt,
+        }),
         ...resetAgentRequestsForUser(
           thread,
           () =>
@@ -3033,6 +3085,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ...resetChildRequestsForUser(targetThread, turnBase, command.createdAt),
               ...settleCandidateBeforeUserTurn(readModel, targetThread, command),
             ]
+          : []),
+        // Words the user typed now, not a message they queued earlier, which
+        // closed the older questions when it was queued.
+        ...(command.composer !== undefined &&
+        !(targetThread.queuedFollowUps ?? []).some(
+          (queued) => queued.messageId === command.message.messageId,
+        )
+          ? closeQuestionsForUserMessage(targetThread, {
+              commandId: command.commandId,
+              agentId: participantId,
+              messageId: command.message.messageId,
+              createdAt: command.createdAt,
+            })
           : []),
       ];
     }

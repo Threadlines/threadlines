@@ -529,6 +529,36 @@ describe("decider rooms", () => {
       });
     });
 
+    it("closes the asked agent's questions answered with a message, not another's", async () => {
+      const asked = (requestId: string, participantId?: ThreadParticipantId) => ({
+        id: EventId.make(`activity-${requestId}`),
+        tone: "info" as const,
+        kind: "user-input.requested",
+        summary: "User input requested",
+        payload: { requestId, questions: [], isBlocking: false, responseMode: "message" },
+        turnId: TurnId.make("turn-0"),
+        ...(participantId !== undefined ? { participantId } : {}),
+        createdAt: now,
+      });
+      const events = await decideEvents(
+        ask(astraId),
+        readModel({ session: working, activities: [asked("astra-q", astraId), asked("own-q")] }),
+      );
+      expect(
+        events.flatMap((event) =>
+          event.type === "thread.activity-appended" && "activity" in event.payload
+            ? [event.payload.activity]
+            : [],
+        ),
+      ).toMatchObject([
+        {
+          kind: "user-input.resolved",
+          participantId: astraId,
+          payload: { requestId: "astra-q", reason: "user-message" },
+        },
+      ]);
+    });
+
     it("refuses a side answer from the agent holding the thread, or a second one", async () => {
       // The thread's own agent holds it: that is a normal message.
       expect(Exit.isFailure(await decide(ask(null), readModel({ session: working })))).toBe(true);

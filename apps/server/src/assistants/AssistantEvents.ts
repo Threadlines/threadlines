@@ -37,6 +37,7 @@ import type {
 import {
   PENDING_REQUEST_EXPIRED_REASON,
   PENDING_REQUEST_INTERRUPTED_REASON,
+  PENDING_REQUEST_USER_MESSAGE_REASON,
 } from "@threadlines/shared/pendingRequests";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -139,7 +140,9 @@ const requestCloseReason = (event: OrchestrationEvent): string => {
     typeof activity.payload === "object" && activity.payload !== null
       ? (activity.payload as { readonly reason?: unknown }).reason
       : undefined;
-  return reason === PENDING_REQUEST_EXPIRED_REASON || reason === PENDING_REQUEST_INTERRUPTED_REASON
+  return reason === PENDING_REQUEST_EXPIRED_REASON ||
+    reason === PENDING_REQUEST_INTERRUPTED_REASON ||
+    reason === PENDING_REQUEST_USER_MESSAGE_REASON
     ? "closed"
     : "answered";
 };
