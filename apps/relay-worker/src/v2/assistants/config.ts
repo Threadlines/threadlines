@@ -1,4 +1,7 @@
-import { importAssistantRouteKey } from "@threadlines/shared/assistantCredentials";
+import {
+  importAssistantRouteKey,
+  normalizeAssistantReviewCode,
+} from "@threadlines/shared/assistantCredentials";
 import { fromBase64Url } from "@threadlines/shared/relaySecure";
 
 import { ASSISTANT_MCP_PATH } from "@threadlines/contracts/relayAssistants";
@@ -24,12 +27,24 @@ export type AssistantsConfig =
       readonly clientKey: CryptoKey;
       /** Requests each computer forwards per UTC day. */
       readonly dailyRequests: number;
+      /**
+       * The directory reviewers' sign-in, when both of its settings are there
+       * and sound: their code (`ASSISTANT_REVIEW_CODE`, a secret) signs in to
+       * the demo computer (`ASSISTANT_REVIEW_HOST`) and to no other.
+       */
+      readonly review: AssistantReviewSignIn | null;
     }
   | {
       readonly enabled: false;
       /** The configured origin when it is valid, for the info route's address. */
       readonly origin: string | null;
     };
+
+export interface AssistantReviewSignIn {
+  /** Normalized: 26 characters, no dashes. */
+  readonly code: string;
+  readonly hostId: string;
+}
 
 export const DEFAULT_ASSISTANT_DAILY_REQUESTS = 20_000;
 /** Host routes' error code while the door is off (like `hooks-off`). */
@@ -60,7 +75,20 @@ export async function assistantsConfig(env: RelayV2Env): Promise<AssistantsConfi
       env.THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS,
       DEFAULT_ASSISTANT_DAILY_REQUESTS,
     ),
+    review: reviewSignIn(env.ASSISTANT_REVIEW_CODE, env.ASSISTANT_REVIEW_HOST),
   };
+}
+
+const HOST_ID = /^[0-9a-f-]{36}$/u;
+
+/** Both settings, or no reviewer sign-in at all: a code with nowhere to go, or a host with no code, is off. */
+export function reviewSignIn(
+  codeSetting: string | undefined,
+  hostSetting: string | undefined,
+): AssistantReviewSignIn | null {
+  const code = normalizeAssistantReviewCode(codeSetting?.trim() ?? "");
+  const hostId = hostSetting?.trim().toLowerCase() ?? "";
+  return code !== null && HOST_ID.test(hostId) ? { code, hostId } : null;
 }
 
 /**

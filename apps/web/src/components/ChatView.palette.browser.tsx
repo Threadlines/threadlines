@@ -126,6 +126,7 @@ describe("ChatView (full app): command palette and search", () => {
         code: null,
         signIns: [],
         alertTargets: [],
+        reviewComputer: false,
       },
     };
     setPrimaryOutsideAgentsSnapshot(outsideAgents);

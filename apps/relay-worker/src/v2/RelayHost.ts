@@ -273,22 +273,36 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   /**
-   * From a sign-in shard: a page typed this host's code. The sign-in waits
-   * here for the computer's decision; it goes out on the assistant socket
-   * now if there is one, and again after every reconnect until it ends.
+   * From a sign-in shard: a page typed this host's code, or the reviewers'
+   * code when this is the demo computer (`code` null, the sign-in marked
+   * `review`). The sign-in waits here for the computer's decision; it goes out
+   * on the assistant socket now if there is one, and again after every
+   * reconnect until it ends.
    */
   async beginAssistantSignIn(input: {
     readonly hostId: string;
     readonly signIn: RelayAssistantSignIn;
-    readonly code: string;
+    readonly code: string | null;
   }): Promise<void> {
     const host = this.core.host();
     if (!host || host.host_id !== input.hostId) {
       throw new Error("This computer isn't registered with the relay.");
     }
-    // The code must still be this host's live one: a cancelled or replaced
-    // code whose shard didn't hear yet starts nothing.
-    if (!this.assistants.claimCode(input.code, Date.now())) {
+    if (input.code === null) {
+      // Checked here too: only the computer the relay names takes a review sign-in.
+      const config = await assistantsConfig(this.env);
+      if (
+        input.signIn.review !== true ||
+        !config.enabled ||
+        config.review?.hostId !== input.hostId
+      ) {
+        throw new Error("This computer doesn't take review sign-ins.");
+      }
+    } else if (input.signIn.review === true) {
+      throw new Error("A sign-in with a computer's code can't be a review sign-in.");
+    } else if (!this.assistants.claimCode(input.code, Date.now())) {
+      // The code must still be this host's live one: a cancelled or replaced
+      // code whose shard didn't hear yet starts nothing.
       throw new Error("That code was cancelled or replaced.");
     }
     this.assistants.addSignIn(input.signIn);

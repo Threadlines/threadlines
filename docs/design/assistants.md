@@ -2188,6 +2188,17 @@ out of date where they differ from this section.
   connection OpenAI's daily scan uses. On the review path it adds a row instead.
 - **A leak:** rotate the secret **and** remove the demo computer's connections; old
   tokens don't depend on the code. The computer holds fake data and no credentials.
+- **As built (Nov 3):** the code is 26 characters of the sign-in alphabet (130 bits),
+  typed as `XXXX-XXXX-…-XX` into the same box, which now takes 32 characters
+  (`normalizeAssistantReviewCode`, `generateAssistantReviewCode`). The relay reads both
+  settings or neither (`reviewSignIn` in `config.ts`); a matched review code skips the
+  code shards, and `RelayHost.beginAssistantSignIn` checks again that it's the named
+  host. On the computer, `THREADLINES_ASSISTANT_REVIEW_COMPUTER` is read once at start
+  (`AssistantsLive`): the socket is wanted from the start and the computer registers at
+  once, review sign-ins are approved in a fork (logged), their connections use
+  `repository.insert` instead of `insertReplacing`, and Settings › Assistants shows a
+  row saying so (`reviewComputer` in the assistants state). Tested in `signIns.test.ts`
+  and `Assistants.test.ts`, each checked by breaking the code it covers.
 
 ### The demo computer
 

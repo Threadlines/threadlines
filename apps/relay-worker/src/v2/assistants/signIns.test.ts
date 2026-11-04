@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { makeTestSql } from "../testSql.ts";
 import { AssistantCodeShardCore } from "./codes.ts";
+import { type AssistantReviewSignIn, reviewSignIn } from "./config.ts";
 import { AssistantHostCore, MAX_REVOKED_CONNECTIONS } from "./hostAssistants.ts";
 import {
   MAX_PENDING_SIGN_INS_PER_IP,
@@ -19,6 +20,7 @@ const T0 = Date.UTC(2026, 9, 30, 12, 0, 0);
 const ORIGIN = "https://connect.test";
 const HOST = "8911ad8a-f546-45e5-a2e8-7a6a8adfc65c";
 const CODE = "K4D82PQX";
+const REVIEW_CODE = "7QJ4M2X9KD0RT5VW8HC3NPZB6A";
 
 function newSignIn(signInId: string, overrides: Partial<NewSignIn> = {}): NewSignIn {
   return {
@@ -40,7 +42,7 @@ function newSignIn(signInId: string, overrides: Partial<NewSignIn> = {}): NewSig
 }
 
 /** One sign-in shard, one code shard and one computer, wired the way the objects are. */
-function makeWorld() {
+function makeWorld(options: { readonly review?: AssistantReviewSignIn } = {}) {
   let now = T0;
   const signIns = new SignInCore(makeTestSql());
   const codes = new AssistantCodeShardCore(makeTestSql());
@@ -49,12 +51,19 @@ function makeWorld() {
   const deps = {
     takeCode: async (code: string) => codes.take(code, now),
     // What RelayHost.beginAssistantSignIn does.
-    handToHost: async (hostId: string, signIn: RelayAssistantSignIn, code: string) => {
+    handToHost: async (hostId: string, signIn: RelayAssistantSignIn, code: string | null) => {
       expect(hostId).toBe(HOST);
-      if (!host.claimCode(code, now)) throw new Error("That code was cancelled or replaced.");
+      if (code === null) {
+        if (signIn.review !== true || options.review?.hostId !== hostId) {
+          throw new Error("This computer doesn't take review sign-ins.");
+        }
+      } else if (!host.claimCode(code, now)) {
+        throw new Error("That code was cancelled or replaced.");
+      }
       host.addSignIn(signIn);
       handed.push(signIn);
     },
+    review: options.review ?? null,
     now: () => now,
   };
   /** What `POST .../assistants/code` does: one live code per computer. */
@@ -135,6 +144,45 @@ describe("typing the app's code into the page", () => {
     expect(world.signIns.status("1.other", "page-1.other", world.now()).state).toBe(
       "waiting-for-code",
     );
+  });
+
+  it("takes the reviewers' code for the demo computer only, marked review, and keeps it usable", async () => {
+    const world = makeWorld({ review: { code: REVIEW_CODE, hostId: HOST } });
+    world.signIns.create(newSignIn("1.first"), T0);
+    world.signIns.create(newSignIn("1.second"), T0);
+    world.signIns.create(newSignIn("1.guess"), T0);
+
+    // No live code on the computer: the reviewers' code doesn't need one, and isn't used up.
+    expect(await world.type("1.first", "7qj4-m2x9-kd0r-t5vw-8hc3-npzb-6a")).toEqual({
+      status: { state: "waiting-for-approval" },
+    });
+    expect(await world.type("1.second", REVIEW_CODE)).toEqual({
+      status: { state: "waiting-for-approval" },
+    });
+    expect(world.handed.map((signIn) => [signIn.signInId, signIn.review])).toEqual([
+      ["1.first", true],
+      ["1.second", true],
+    ]);
+    // A wrong code of the same shape is a try like any other.
+    expect(await world.type("1.guess", `${REVIEW_CODE.slice(0, -1)}B`)).toEqual({
+      status: { state: "waiting-for-code", triesLeft: 2 },
+      mismatch: true,
+    });
+
+    // Without both of the relay's review settings, the same code is nothing.
+    expect(reviewSignIn(" 7qj4-m2x9-kd0r-t5vw-8hc3-npzb-6a ", HOST.toUpperCase())).toEqual({
+      code: REVIEW_CODE,
+      hostId: HOST,
+    });
+    expect(reviewSignIn(REVIEW_CODE, undefined)).toBeNull();
+    expect(reviewSignIn(CODE, HOST)).toBeNull();
+    const plain = makeWorld();
+    plain.signIns.create(newSignIn("1.a"), T0);
+    expect(await plain.type("1.a", REVIEW_CODE)).toEqual({
+      status: { state: "waiting-for-code", triesLeft: 2 },
+      mismatch: true,
+    });
+    expect(plain.handed).toEqual([]);
   });
 
   it("gives each sign-in 3 tries, malformed codes included", async () => {

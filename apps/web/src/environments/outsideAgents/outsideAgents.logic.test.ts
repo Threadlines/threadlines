@@ -313,6 +313,7 @@ describe("waitingOutsideAgentSignIns", () => {
         code: null,
         signIns: [assistant("grok", "2026-10-23T11:59:00.000Z")],
         alertTargets: [],
+        reviewComputer: false,
       },
     });
     expect(waiting.map((signIn) => [signIn.kind, signIn.requestId])).toEqual([

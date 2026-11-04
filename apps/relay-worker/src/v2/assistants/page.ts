@@ -39,7 +39,7 @@ export function signInPageResponse(input: {
 <p>${escapeHtml(INSTRUCTION)}</p>
 <label for="code">Code</label>
 <div class="row">
-<input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="16" placeholder="K4D8-2PQX" aria-describedby="message" required>
+<input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="32" placeholder="K4D8-2PQX" aria-describedby="message" required>
 <button id="continue" type="submit">Continue</button>
 </div>
 </form>
@@ -155,7 +155,8 @@ const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 let polling = false;
 function normalize(value) {
   const code = value.toUpperCase().replace(/[\\s-]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
-  if (code.length !== 8) return null;
+  // 8: the app's code. 26: a directory reviewer's (relay setting), checked like any other.
+  if (code.length !== 8 && code.length !== 26) return null;
   for (const char of code) if (!ALPHABET.includes(char)) return null;
   return code;
 }

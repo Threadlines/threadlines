@@ -7,11 +7,15 @@ import {
   type RelayAssistantPlace,
   type RelayAssistantSignIn,
 } from "@threadlines/contracts/relayAssistants";
-import { normalizeAssistantSignInCode } from "@threadlines/shared/assistantCredentials";
+import {
+  normalizeAssistantReviewCode,
+  normalizeAssistantSignInCode,
+} from "@threadlines/shared/assistantCredentials";
 import { randomBytes, sha256, toBase64Url, utf8 } from "@threadlines/shared/relaySecure";
 
 import { timingSafeEqualString } from "../../crypto.ts";
 import { type SqlLike, sqlRows } from "../sql.ts";
+import type { AssistantReviewSignIn } from "./config.ts";
 
 /**
  * Pending assistant sign-ins (docs/design/assistants.md, "Authorize"), kept
@@ -21,6 +25,10 @@ import { type SqlLike, sqlRows } from "../sql.ts";
  * hash of the IP that opened the page, so one shard can hold every sign-in
  * waiting from one network and count them (at most 10); every later call
  * finds the shard from the id alone, whatever network the page is on by then.
+ *
+ * The reviewers' code (`AssistantReviewSignIn`) is typed into the same form,
+ * with the same tries and limits, but it isn't any computer's live code: it
+ * binds the sign-in to the demo computer, marked `review`, and stays usable.
  *
  * Its life: waiting for a code (3 tries) → waiting for the computer's
  * decision (once a code matched; the shard records the host) → done (the
@@ -225,14 +233,16 @@ export class SignInCore {
   /**
    * Starts checking a typed code: uses up a try before anything waits, so
    * racing requests can't get more than three. `check` hands back the code to
-   * look up; anything else is already the answer.
+   * look up, `review` the reviewers' sign-in it matched; anything else is
+   * already the answer.
    */
   beginCodeCheck(
     signInId: string,
     pageSecretHash: string,
     typed: string,
     now: number,
-  ): { readonly check: string } | CodeTypingOutcome {
+    review: AssistantReviewSignIn | null = null,
+  ): { readonly check: string } | { readonly review: AssistantReviewSignIn } | CodeTypingOutcome {
     const row = this.pageRow(signInId, pageSecretHash);
     if (!row) return { status: { state: "unknown" } };
     const current = statusOf(row, now);
@@ -240,12 +250,17 @@ export class SignInCore {
     if (this.checking.has(signInId)) return { status: current, busy: true };
     const triesLeft = row.tries_left - 1;
     const code = normalizeAssistantSignInCode(typed);
+    const reviewing = code === null && review !== null && isReviewCode(typed, review);
     this.sql.exec(
       "UPDATE sign_ins SET tries_left = ?, status = ? WHERE sign_in_id = ?",
       triesLeft,
-      code === null && triesLeft <= 0 ? "over" : "waiting-for-code",
+      code === null && !reviewing && triesLeft <= 0 ? "over" : "waiting-for-code",
       signInId,
     );
+    if (reviewing) {
+      this.checking.add(signInId);
+      return { review: review! };
+    }
     if (code === null) {
       return { status: this.statusById(signInId, now), mismatch: true };
     }
@@ -379,6 +394,12 @@ export class SignInCore {
   }
 }
 
+/** In constant time: the code is a long-lived secret, so a typed guess learns nothing from timing. */
+function isReviewCode(typed: string, review: AssistantReviewSignIn): boolean {
+  const normalized = normalizeAssistantReviewCode(typed);
+  return normalized !== null && timingSafeEqualString(normalized, review.code);
+}
+
 function statusOf(row: SignInRow, now: number): SignInStatus {
   const waiting = row.status === "waiting-for-code" || row.status === "waiting-for-approval";
   if (waiting && row.expires_at <= now) return { state: "expired" };
@@ -421,12 +442,18 @@ function toSignIn(row: SignInRow): RelayAssistantSignIn {
 export interface CodeTypingDeps {
   /** Uses the code up in its code shard: the host it belonged to, or null. */
   readonly takeCode: (code: string) => Promise<string | null>;
-  /** Gives the matched sign-in to its computer's object, which shows it to the computer. */
+  /**
+   * Gives the matched sign-in to its computer's object, which shows it to the
+   * computer. `code` is the live code it matched; null for the reviewers' code
+   * (the sign-in is marked `review`).
+   */
   readonly handToHost: (
     hostId: string,
     signIn: RelayAssistantSignIn,
-    code: string,
+    code: string | null,
   ) => Promise<void>;
+  /** The reviewers' sign-in while the relay has one set up. */
+  readonly review: AssistantReviewSignIn | null;
   readonly now: () => number;
 }
 
@@ -440,18 +467,33 @@ export async function typeAssistantCode(
   deps: CodeTypingDeps,
   input: { readonly signInId: string; readonly pageSecretHash: string; readonly code: string },
 ): Promise<CodeTypingOutcome> {
-  const begun = core.beginCodeCheck(input.signInId, input.pageSecretHash, input.code, deps.now());
-  if (!("check" in begun)) return begun;
+  const begun = core.beginCodeCheck(
+    input.signInId,
+    input.pageSecretHash,
+    input.code,
+    deps.now(),
+    deps.review,
+  );
+  if ("status" in begun) return begun;
   let hostId: string | null;
-  try {
-    hostId = await deps.takeCode(begun.check);
-  } catch {
-    return core.abortCodeCheck(input.signInId, deps.now());
+  if ("review" in begun) {
+    // Not any computer's code, so nothing to take: it stays usable.
+    hostId = begun.review.hostId;
+  } else {
+    try {
+      hostId = await deps.takeCode(begun.check);
+    } catch {
+      return core.abortCodeCheck(input.signInId, deps.now());
+    }
   }
   const finished = core.finishCodeCheck(input.signInId, hostId, deps.now());
   if (!finished.matched) return finished.outcome;
   try {
-    await deps.handToHost(hostId!, finished.signIn, begun.check);
+    if ("review" in begun) {
+      await deps.handToHost(hostId!, { ...finished.signIn, review: true }, null);
+    } else {
+      await deps.handToHost(hostId!, finished.signIn, begun.check);
+    }
   } catch {
     core.failHandOff(input.signInId);
     return { status: { state: "failed" } };

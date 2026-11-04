@@ -198,6 +198,11 @@ export const OutsideAgentAssistantsState = Schema.Struct({
   alertTargets: Schema.Array(AssistantAlertTarget).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * This is a directory reviewers' demo computer (`THREADLINES_ASSISTANT_REVIEW_COMPUTER`):
+   * sign-ins the relay marked for review are approved without a click. Settings warns while it's on.
+   */
+  reviewComputer: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OutsideAgentAssistantsState = typeof OutsideAgentAssistantsState.Type;
 

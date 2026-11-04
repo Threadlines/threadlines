@@ -57,6 +57,7 @@ import {
 } from "@threadlines/shared/assistantCredentials";
 import { assistantDisplayName, assistantOfSignInHost } from "@threadlines/shared/knownAssistants";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -125,6 +126,16 @@ const IDLE_SWEEP_EVERY = Duration.hours(6);
 const NAME_MAX = 60;
 const UNNAMED = "Unnamed assistant";
 
+/**
+ * Set to 1 only on the directory reviewers' demo computer
+ * (docs/design/assistants.md, "The reviewer's code"): it keeps the assistant
+ * socket open, and approves sign-ins the relay marked `review` without a
+ * click. Any other sign-in still waits for Allow, so on a real computer the
+ * flag gives nobody anything: only the relay marks a sign-in `review`, and
+ * only for the one computer it names.
+ */
+export const ASSISTANT_REVIEW_COMPUTER_ENV = "THREADLINES_ASSISTANT_REVIEW_COMPUTER";
+
 const UNREACHABLE_DETAIL =
   "Threadlines couldn't reach the relay. Check this computer's connection and try again.";
 
@@ -149,6 +160,8 @@ interface IssuedCode {
   readonly resource: string;
   readonly grant: OutsideAgentGrant;
   readonly expiresAt: number;
+  /** A review sign-in on the demo computer: its connection joins the others instead of replacing them. */
+  readonly review: boolean;
 }
 
 const isoAt = (millis: number): string => DateTime.formatIso(DateTime.makeUnsafe(millis));
@@ -195,6 +208,10 @@ const frameBytes = (frame: unknown) => Buffer.byteLength(JSON.stringify(frame), 
 export const makeAssistants = Effect.gen(function* () {
   const relay = yield* AssistantRelay;
   const repository = yield* OutsideAgentConnectionRepository;
+  const reviewComputer = yield* Config.Boolean(ASSISTANT_REVIEW_COMPUTER_ENV).pipe(
+    Config.withDefault(false),
+    Effect.orElseSucceed(() => false),
+  );
   const secretStore = yield* ServerSecretStore;
   const signer = makeAssistantSigner(
     yield* secretStore.getOrCreateRandom(SERVER_SIGNING_SECRET_NAME, SERVER_SIGNING_SECRET_BYTES),
@@ -251,7 +268,12 @@ export const makeAssistants = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     yield* relay.setWanted(
       relay.available &&
-        (liveConnections > 0 || codeShowing(now) || signIns.size > 0 || codeOutstanding(now)),
+        // The demo computer listens from the start: a sign-in waiting at the relay can't wake a closed socket.
+        (reviewComputer ||
+          liveConnections > 0 ||
+          codeShowing(now) ||
+          signIns.size > 0 ||
+          codeOutstanding(now)),
     );
   });
 
@@ -474,6 +496,7 @@ export const makeAssistants = Effect.gen(function* () {
           ? { code: code.code, expiresAt: isoAt(code.expiresAt) }
           : null,
       signIns: waiting,
+      reviewComputer,
     };
   });
 
@@ -578,7 +601,40 @@ export const makeAssistants = Effect.gen(function* () {
       yield* scheduleSignInExpiry(entry, now);
       yield* reconsiderSocket;
       yield* notify;
+      if (existing === undefined && reviewComputer && signIn.review === true) {
+        yield* approveForReview(entry);
+      }
     });
+
+  /**
+   * The demo computer's answer to a review sign-in: all projects, full
+   * access, and Work, or See when it asked only to see (never more than it
+   * asked). Forked: Allow asks the relay for a route tag.
+   */
+  const approveForReview = (entry: WaitingSignIn) => {
+    const access: OutsideAgentAccess =
+      requestedAccessOf(entry.signIn.scopes) === "see" ? "see" : "work";
+    return approve({
+      requestId: entry.requestId,
+      access,
+      maxRuntimeMode: "full-access",
+      projectIds: null,
+    }).pipe(
+      Effect.tap(() =>
+        Effect.logInfo("assistants: approved a directory review sign-in", {
+          client: entry.name,
+          access,
+        }),
+      ),
+      Effect.tapError((error) =>
+        Effect.logWarning("assistants: couldn't approve a directory review sign-in", {
+          client: entry.name,
+          detail: error.detail,
+        }),
+      ),
+      forkInScope,
+    );
+  };
 
   const onSignInGone = (signInId: string) =>
     Effect.gen(function* () {
@@ -659,6 +715,7 @@ export const makeAssistants = Effect.gen(function* () {
         resource: entry.signIn.resource,
         grant,
         expiresAt: now + ASSISTANT_AUTHORIZATION_CODE_TTL_MS,
+        review: reviewComputer && entry.signIn.review === true,
       });
       const sent = yield* sendDecision(
         {
@@ -885,7 +942,10 @@ export const makeAssistants = Effect.gen(function* () {
         removedAt: null,
         removedReason: null,
       };
-      const saved = yield* repository.insertReplacing(row).pipe(Effect.result);
+      // A reviewer signing in mustn't end the connection a directory's daily scan uses.
+      const saved = yield* (
+        issued.review ? repository.insert(row) : repository.insertReplacing(row)
+      ).pipe(Effect.result);
       if (saved._tag === "Failure") {
         yield* Effect.logWarning("assistants: couldn't save a connection", {
           cause: saved.failure,
@@ -1201,11 +1261,17 @@ export const makeAssistants = Effect.gen(function* () {
   // Startup: what a restart left (connections, pending revocations), then
   // the unused sweep every few hours.
   yield* recountConnections;
+  if (reviewComputer) {
+    yield* Effect.logWarning(
+      `assistants: ${ASSISTANT_REVIEW_COMPUTER_ENV} is on, so directory review sign-ins are approved without a click`,
+    );
+  }
   yield* forkInScope(
     Effect.gen(function* () {
       yield* sweepUnused;
       yield* flushRevocations;
-      if ((yield* relay.hostId) !== null) yield* refreshInfo(false);
+      // The demo computer registers at once, so its socket can open before anyone signs in.
+      if (reviewComputer || (yield* relay.hostId) !== null) yield* refreshInfo(reviewComputer);
     }),
   );
   yield* sweepUnused.pipe(Effect.delay(IDLE_SWEEP_EVERY), Effect.forever, forkInScope);

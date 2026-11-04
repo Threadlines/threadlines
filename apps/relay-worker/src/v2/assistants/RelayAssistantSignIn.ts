@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { RelayV2Env } from "../env.ts";
 import { assistantCodeShardName } from "./codes.ts";
+import { assistantsConfig } from "./config.ts";
 import {
   type CodeTypingOutcome,
   type NewSignIn,
@@ -46,6 +47,7 @@ export class RelayAssistantSignIn extends DurableObject<RelayV2Env> {
     readonly pageSecretHash: string;
     readonly code: string;
   }): Promise<CodeTypingOutcome> {
+    const config = await assistantsConfig(this.env);
     return typeAssistantCode(
       this.core,
       {
@@ -53,6 +55,7 @@ export class RelayAssistantSignIn extends DurableObject<RelayV2Env> {
           this.env.RELAY_CODE_SHARD.getByName(assistantCodeShardName(code)).takeAssistantCode(code),
         handToHost: (hostId, signIn, code) =>
           this.env.RELAY_HOST.getByName(hostId).beginAssistantSignIn({ hostId, signIn, code }),
+        review: config.enabled ? config.review : null,
         now: () => Date.now(),
       },
       input,
