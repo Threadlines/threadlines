@@ -10,6 +10,7 @@
 import {
   CommandId,
   type OrchestrationSettingsChangeRequest,
+  type ServerProvider,
   type ServerSettings,
   type SettingsChangeAnswer,
   SettingsChangeError,
@@ -37,7 +38,9 @@ import * as Semaphore from "effect/Semaphore";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { modelChangesProblem } from "./modelChoices.ts";
 
 export interface AgentSettingsChangesShape {
   /** Not now, or Change for the app holding `claim`. */
@@ -67,6 +70,8 @@ export interface AgentSettingsChangesReads {
       readonly request: OrchestrationSettingsChangeRequest;
     }>
   >;
+  /** This computer's providers now: a model may have become unavailable or per use since asked. */
+  readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
 }
 
 /** A computer setting that moved since the agent asked. */
@@ -74,6 +79,12 @@ interface Stale {
   readonly _tag: "Stale";
   readonly place: PlaceId;
   readonly now: CheckedEdit["value"];
+}
+
+/** A model the computer can't take anymore, said for the agent. */
+interface ModelRefused {
+  readonly _tag: "ModelRefused";
+  readonly detail: string;
 }
 
 const commandId = (requestId: SettingsChangeRequestId, step: string) =>
@@ -221,6 +232,9 @@ export const make = (reads: AgentSettingsChangesReads) =>
           return { outcome: "changed" as const, makeDeviceChanges: true };
         }
         const asked = new Map(request.changes.map((change) => [change.place, change.from]));
+        const providers = computer.some(({ edit }) => edit.control.kind === "model")
+          ? yield* reads.providers
+          : null;
         const written = yield* settings
           .updateSettingsChecked((current) => {
             for (const edit of computer) {
@@ -228,10 +242,18 @@ export const make = (reads: AgentSettingsChangesReads) =>
               const now = edit.edit.read(current);
               const from = asked.get(edit.place);
               if (from !== undefined && now !== from) {
-                return Effect.fail<Stale>({ _tag: "Stale", place: edit.place, now });
+                return Effect.fail<Stale | ModelRefused>({
+                  _tag: "Stale",
+                  place: edit.place,
+                  now,
+                });
               }
             }
-            return Effect.succeed(composeServerPatch(computer));
+            const problem =
+              providers === null ? null : modelChangesProblem(computer, current, providers);
+            return problem !== null
+              ? Effect.fail<Stale | ModelRefused>({ _tag: "ModelRefused", detail: problem })
+              : Effect.succeed(composeServerPatch(computer));
           })
           .pipe(Effect.result);
         if (Result.isSuccess(written) || written.failure.written) {
@@ -247,7 +269,9 @@ export const make = (reads: AgentSettingsChangesReads) =>
         const detail =
           "_tag" in cause && cause._tag === "Stale"
             ? `${placePathLabel(cause.place)} was changed to ${describeEditValue(cause.place, cause.now)} since the agent asked, so nothing on this computer changed.`
-            : `This computer's settings couldn't be saved: ${cause.message}`;
+            : "_tag" in cause && cause._tag === "ModelRefused"
+              ? `Nothing on this computer changed. ${cause.detail}`
+              : `This computer's settings couldn't be saved: ${cause.message}`;
         yield* settle(threadId, request, "failed", detail);
         return { outcome: "failed" as const, detail, makeDeviceChanges: true };
       });
@@ -354,7 +378,9 @@ export const layer = Layer.effect(
   AgentSettingsChanges,
   Effect.gen(function* () {
     const snapshots = yield* ProjectionSnapshotQuery;
+    const registry = yield* ProviderRegistry;
     return yield* make({
+      providers: registry.getProviders,
       request: (threadId, requestId) =>
         snapshots.getThreadDetailById(threadId).pipe(
           Effect.map((thread) =>

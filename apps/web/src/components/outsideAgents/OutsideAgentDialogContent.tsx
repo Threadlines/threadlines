@@ -471,7 +471,8 @@ function CreateKeyContent({ onClose }: { readonly onClose: () => void }) {
         <DialogHeader>
           <DialogTitle>Key for {made.connection.name}</DialogTitle>
           <DialogDescription className="text-[12.5px] leading-[18px]">
-            You won&apos;t see this key again. Paste both into your assistant.
+            You won&apos;t see this key again. Give both to your assistant, the key only where it
+            asks for one (Muse has its own box), never in a chat.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-3">

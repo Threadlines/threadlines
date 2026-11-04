@@ -156,7 +156,7 @@ What it can do is up to you: See threads, Start threads (and message or stop the
     ],
     body: `Always-on assistants run in their makers' cloud. Through the relay they can see projects and threads, start threads, and message or stop the ones they started. With Work with all threads, which only you grant, they can also message, stop and answer questions in any thread in their projects. Checking in, they see what needs you (approvals, questions and plans), what finished or failed since they last looked, and what a thread changed, with its pull request's checks and review. This computer keeps that record of finished and failed for 7 days, only while an assistant is connected or an alert address is on.
 
-To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant, type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and its highest access. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once.
+To connect one, paste {place:connections.assistantAddress} into the assistant as a custom connector. Its sign-in page asks for a code: choose {place:connections.addAssistant}'s Connect an assistant, type the code it shows into that page, then allow the assistant in the window that opens, choosing what it can do and its highest access. Only type the code into a page your own assistant just opened. An assistant that takes a key instead of signing in (Muse) gets one from Create a key, shown once with the address. For Muse, ask it in a chat to add a custom connector with that address, then enter the key in the box Muse opens for it, never in the chat, and choose Always allow when Muse asks to reach threadlines.dev: Muse holds each request until it's allowed and gives up after about 45 seconds.
 
 {place:connections.assistantsUsingThis} lists each assistant you let in, to change its access or remove it. Each shows by what it is, with its mark: Grok Bot signs in as Cursor, so Threadlines guesses from how an assistant signs in, and you pick another in the approval dialog or with Change. Assistants never answer approvals or plans; those wait for you. Once an assistant's work runs in a thread, that thread's agent gets read-only Threadlines tools and no browser panel until it starts fresh (your next message there, or Start fresh on the thread's notice).
 
@@ -271,8 +271,18 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
   {
     id: "changing-settings",
     title: "Agents changing settings",
-    keywords: ["change setting", "turn on", "turn off", "switch", "theme", "dark mode", "card"],
-    body: `An agent can change some settings when you ask: the theme, streaming replies, diff wrapping, the terminal's text size and a few more (the guide says which, place by place). It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
+    keywords: [
+      "change setting",
+      "turn on",
+      "turn off",
+      "switch",
+      "theme",
+      "dark mode",
+      "card",
+      "default model",
+      "alerts",
+    ],
+    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
 
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },

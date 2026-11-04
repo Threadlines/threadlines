@@ -355,6 +355,10 @@
       "types": "./src/placeSearch.ts",
       "import": "./src/placeSearch.ts"
     },
+    "./browserPageSizes": {
+      "types": "./src/browserPageSizes.ts",
+      "import": "./src/browserPageSizes.ts"
+    },
     "./settingsEdits": {
       "types": "./src/settingsEdits.ts",
       "import": "./src/settingsEdits.ts"

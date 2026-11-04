@@ -6102,7 +6102,11 @@ describe("Agents outside Threadlines", () => {
       .element(made.getByTestId("assistant-key-address"))
       .toHaveTextContent(ASSISTANT_ADDRESS);
     await expect
-      .element(made.getByText("You won't see this key again. Paste both into your assistant."))
+      .element(
+        made.getByText(
+          "You won't see this key again. Give both to your assistant, the key only where it asks for one (Muse has its own box), never in a chat.",
+        ),
+      )
       .toBeVisible();
     await made.getByRole("button", { name: "Done" }).click();
     await expect.element(page.getByTestId("assistant-key-made")).not.toBeInTheDocument();

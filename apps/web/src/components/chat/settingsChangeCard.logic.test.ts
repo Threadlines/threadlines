@@ -1,3 +1,4 @@
+import type { ServerProvider } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,6 +8,11 @@ import {
   settingsChangeNothingNotice,
   settingsChangeResultNotice,
 } from "./settingsChangeCard.logic";
+
+/** The desktop app, which has no phone alerts of its own. */
+const DESKTOP = { desktopApp: true, alerts: "unsupported" } as const;
+const PHONE_ALERTS_ON = { desktopApp: false, alerts: "on" } as const;
+const PHONE_ALERTS_OFF = { desktopApp: false, alerts: "off" } as const;
 
 const request = {
   changes: [
@@ -28,6 +34,57 @@ describe("settingsChangeLines", () => {
     ]);
   });
 
+  it("names a model as its computer does, and an alert with what it's about", () => {
+    const providers = [
+      {
+        instanceId: "claudeAgent",
+        models: [{ slug: "claude-opus-5-5", name: "Claude Opus 5.5", shortName: "Opus 5.5" }],
+      },
+    ] as unknown as ReadonlyArray<ServerProvider>;
+    const lines = settingsChangeLines(
+      {
+        changes: [
+          { place: "threads.agent", value: "claudeAgent/claude-opus-5-5", from: "none" },
+          {
+            place: "threads.writingModel",
+            value: "codex/gone",
+            from: "claudeAgent/claude-opus-5-5",
+          },
+          { place: "general.alertFailed", value: false },
+        ],
+      },
+      () => true,
+      providers,
+    );
+    expect(lines.map(({ name, from, to }) => ({ name, from, to }))).toEqual([
+      { name: "Agent", from: "Last used", to: "Opus 5.5" },
+      { name: "Writing model", from: "Opus 5.5", to: "gone" },
+      { name: "Alerts: Failed", from: "On", to: "Off" },
+    ]);
+  });
+
+  it("says which account when a model moves to the same model on another one", () => {
+    const account = (instanceId: string, displayName: string) => ({
+      instanceId,
+      displayName,
+      auth: {},
+      models: [{ slug: "gpt-test", name: "GPT Test" }],
+    });
+    const [line] = settingsChangeLines(
+      {
+        changes: [
+          { place: "threads.agent", value: "codex-work/gpt-test", from: "codex-home/gpt-test" },
+        ],
+      },
+      () => undefined,
+      [
+        account("codex-home", "Home"),
+        account("codex-work", "Work"),
+      ] as unknown as ReadonlyArray<ServerProvider>,
+    );
+    expect(line).toMatchObject({ from: "GPT Test (Home)", to: "GPT Test (Work)" });
+  });
+
   it("keeps a place this app doesn't know: the computer's when it carries a value as asked", () => {
     const [line] = settingsChangeLines(
       { changes: [{ place: "general.newerSwitch", value: true, from: false }] },
@@ -39,14 +96,14 @@ describe("settingsChangeLines", () => {
 
 describe("checkDeviceChanges", () => {
   it("checks only the device changes, with this app's catalog", () => {
-    const check = checkDeviceChanges(request);
+    const check = checkDeviceChanges(request, DESKTOP);
     expect(check.kind).toBe("ready");
     expect(check.kind === "ready" ? check.edits.map((edit) => edit.place) : []).toEqual([
       "general.theme",
       "general.timeFormat",
     ]);
     // Only computer changes: nothing for this app to make.
-    expect(checkDeviceChanges({ changes: [request.changes[0]!] })).toEqual({
+    expect(checkDeviceChanges({ changes: [request.changes[0]!] }, DESKTOP)).toEqual({
       kind: "ready",
       edits: [],
     });
@@ -55,10 +112,30 @@ describe("checkDeviceChanges", () => {
   it("asks for an update when a device change is one this app can't make", () => {
     // A device place a newer app knows, and a value the row doesn't take.
     expect(
-      checkDeviceChanges({ changes: [{ place: "general.newerSwitch", value: true }] }),
+      checkDeviceChanges({ changes: [{ place: "general.newerSwitch", value: true }] }, DESKTOP),
     ).toEqual({ kind: "update" });
-    expect(checkDeviceChanges({ changes: [{ place: "general.theme", value: "sepia" }] })).toEqual({
-      kind: "update",
+    expect(
+      checkDeviceChanges({ changes: [{ place: "general.theme", value: "sepia" }] }, DESKTOP),
+    ).toEqual({ kind: "update" });
+  });
+
+  it("waits for the app that can hold a change, saying which", () => {
+    const links = { changes: [{ place: "general.openLinksIn", value: "external" }] };
+    expect(checkDeviceChanges(links, DESKTOP).kind).toBe("ready");
+    expect(checkDeviceChanges(links, PHONE_ALERTS_ON)).toMatchObject({
+      kind: "elsewhere",
+      note: expect.stringContaining("desktop app"),
+    });
+
+    const alerts = { changes: [{ place: "general.alertFinished", value: false }] };
+    expect(checkDeviceChanges(alerts, PHONE_ALERTS_ON).kind).toBe("ready");
+    expect(checkDeviceChanges(alerts, PHONE_ALERTS_OFF)).toMatchObject({
+      kind: "elsewhere",
+      note: expect.stringContaining("Turn on alerts"),
+    });
+    expect(checkDeviceChanges(alerts, DESKTOP)).toMatchObject({
+      kind: "elsewhere",
+      note: expect.stringContaining("on your phone or in a browser"),
     });
   });
 });

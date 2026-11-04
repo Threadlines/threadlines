@@ -4,6 +4,8 @@ import {
   type OrchestrationThread,
   ProjectId,
   ProviderInstanceId,
+  type ServerProvider,
+  type ServerSettings,
   SideTurnId,
   ThreadId,
   TurnId,
@@ -53,8 +55,34 @@ const mainCaller = (): McpInvocationScope => ({
   roomTools: new Set(roomToolsFor(undefined)),
 });
 
+const provider = (
+  instanceId: string,
+  driver: string,
+  authType: string,
+  ...slugs: ReadonlyArray<string>
+) =>
+  ({
+    instanceId,
+    driver,
+    enabled: true,
+    installed: true,
+    status: "ready",
+    availability: "available",
+    auth: { status: "authenticated", type: authType },
+    models: slugs.map((slug) => ({ slug, name: slug.toUpperCase() })),
+  }) as unknown as ServerProvider;
+
+const providers: ReadonlyArray<ServerProvider> = [
+  provider("codex", "codex", "chatgpt", "gpt-test"),
+  provider("claudeAgent", "claudeAgent", "oauth", "opus-test"),
+  provider("claude-api", "claudeAgent", "apiKey", "opus-test"),
+  provider("grok-key", "grok", "api_key", "grok-test"),
+  provider("pi", "pi", "piProviders", "pi-test"),
+  provider("community", "acpRegistry", "none", "their-model"),
+];
+
 /** The tool over an engine that keeps receipts by command id and records requests as the decider would. */
-function harness() {
+function harness(settings: Partial<ServerSettings> = {}) {
   let thread = makeThread();
   const dispatched: OrchestrationCommand[] = [];
   const receipts = new Set<string>();
@@ -83,7 +111,12 @@ function harness() {
         }),
     },
     readThread: () => Effect.sync(() => thread),
-    settings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, enableAssistantStreaming: true }),
+    settings: Effect.succeed({
+      ...DEFAULT_SERVER_SETTINGS,
+      enableAssistantStreaming: true,
+      ...settings,
+    }),
+    providers: Effect.succeed(providers),
   });
   return { handler, dispatched, thread: () => thread };
 }
@@ -164,5 +197,73 @@ describe("settings_change", () => {
       ),
     );
     expect(result.outcome).toBe("not_allowed");
+  });
+
+  const askFor = (changes: ReadonlyArray<{ place: string; value: string }>) => {
+    const { handler } = harness();
+    return Effect.runPromise(handler(mainCaller(), { changes }));
+  };
+
+  it("offers only models this computer can run on a plan it knows about", async () => {
+    const picked = await askFor([{ place: "threads.agent", value: "claudeAgent/opus-test" }]);
+    expect(picked.outcome).toBe("asked_user");
+    expect(picked.changes?.[0]).toMatchObject({ from: "Last used", to: "opus-test" });
+    // A card can't move someone's default onto per-use billing, nor where we can't tell.
+    for (const value of [
+      "claude-api/opus-test",
+      "grok-key/grok-test",
+      "pi/pi-test",
+      "community/their-model",
+    ]) {
+      const refused = await askFor([{ place: "threads.agent", value }]);
+      expect(refused.outcome, value).toBe("refused");
+      expect(refused.detail, value).toContain("billed per use");
+    }
+    for (const value of ["nowhere/gpt-test", "codex/not-a-model"]) {
+      expect((await askFor([{ place: "threads.agent", value }])).outcome, value).toBe("refused");
+    }
+  });
+
+  it("keeps the writing model and its backup on different providers", async () => {
+    const writing = { place: "threads.writingModel", value: "codex/gpt-test" };
+    const onCodex = { place: "threads.backupWritingModel", value: "codex/gpt-test" };
+    const onClaude = { place: "threads.backupWritingModel", value: "claudeAgent/opus-test" };
+    expect((await askFor([writing, onCodex])).outcome).toBe("refused");
+    expect((await askFor([writing, onClaude])).outcome).toBe("asked_user");
+  });
+
+  it("won't let a writing model change quietly swap a backup that's turned off", async () => {
+    const { handler } = harness({
+      textGenerationBackupModelSelection: {
+        instanceId: ProviderInstanceId.make("gone"),
+        model: "gone-model",
+      },
+    });
+    const writing = { place: "threads.writingModel", value: "codex/gpt-test" };
+    const asked = (changes: ReadonlyArray<{ place: string; value: string }>) =>
+      Effect.runPromise(handler(mainCaller(), { changes }));
+    expect((await asked([writing])).outcome).toBe("refused");
+    expect(
+      (await asked([writing, { place: "threads.backupWritingModel", value: "none" }])).outcome,
+    ).toBe("asked_user");
+  });
+
+  it("won't turn off a source control model when that leaves a per-use writing model", async () => {
+    const { handler } = harness({
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("claude-api"),
+        model: "opus-test",
+      },
+      sourceControlWriterModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-test",
+      },
+    });
+    const result = await Effect.runPromise(
+      handler(mainCaller(), {
+        changes: [{ place: "sourceControl.writerModel", value: "none" }],
+      }),
+    );
+    expect(result.outcome).toBe("refused");
   });
 });

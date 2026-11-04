@@ -86,14 +86,41 @@ Rules for what may get an `edit` (a unit test enforces the first):
 - nothing that turns on sharing (Usage analytics);
 - no free text that ends up in prompts (Custom instructions for commit and PR
   writing): a planted instruction would outlive the turn;
-- nothing that needs more than a value: model pickers, branch names,
-  downloads, permission prompts (alerts), sizes;
-- desktop-only rows (`appliesWhen: "desktop"`) wait for a later version: the
-  card can't promise them on a phone or the web app.
+- nothing that needs more than a value: branch names, downloads, permission
+  prompts (turning alerts on), sizes typed by hand;
+- nothing that writes a model's reasoning: a level means nothing on another
+  model, so a picked model starts at its default.
 
 The catalog marks two more places `widensAgents`, so the guide says only the
 user changes them: Claude workflow size ("Any" means no limit on agents) and
 Continue after usage limits (agents carry on alone after a limit).
+
+Three kinds of row came later, after the first list (Nov 2026):
+
+- **Models.** Agent (new threads), Writing model, Backup writing model and
+  Source control writer model take `"<instanceId>/<model>"`, or `"none"` where
+  the row has no model. `checkEdits` only checks the shape, since which models
+  exist is the computer's: `modelChoices.ts` decides, when the agent asks and
+  again inside the write when the user accepts (a provider can switch to an API
+  key in between), and the guide lists what's left once per answer. It offers
+  only providers whose sign-in we know is a plan (Codex, Claude, Cursor, Grok,
+  Muse, Antigravity), never one billed per use or one we can't tell about (Pi,
+  OpenCode, fx, community agents). The writing model and backup stay on
+  different providers, since Threadlines would otherwise swap the backup at
+  read time without saying so, and Off for the source control model is refused
+  when the writing model it falls back to isn't on a plan. Last used stays
+  allowed: it's the user's own last pick on their device. A model already set
+  stays as it is, reasoning included; a card's write replaces the reasoning on
+  purpose (the user accepted that model at its default). Agent was marked
+  `widensAgents` until then; Will moved it (Nov 2). Access levels are untouched.
+- **Alerts.** Needs you, Finished, Failed and Quiet while I'm at a computer
+  land in the device's alert store. They only mean something where alerts are
+  on, so Change waits with a note until they are: on a desktop app, which has
+  no phone alerts, it says to answer on the phone or in a browser. Turning
+  alerts on stays with the user, since it needs the permission prompt.
+- **Desktop-only.** Open links in and Browser page size: Change waits with a
+  note in any other app, instead of writing a value nothing reads. One request
+  can't hold both these and alerts, since no one app could accept it.
 
 The first list:
 
@@ -117,6 +144,11 @@ The first list:
 | Hold to record                                    | device   | switch                                               | `dictationHoldToRecord`                                                                |
 | Wrap up idle / merged / finished child threads    | device   | switch                                               | `wrapUpIdleThreads`, `wrapUpThreadsOnPullRequestSettled`, `wrapUpChildThreadsOnFinish` |
 | Open panel by default (source control)            | device   | switch                                               | `sourceControlPanelDefaultOpen`                                                        |
+| Agent, Writing model, Backup, Writer model        | computer | model, or none (not Writing model)                   | `newThreadModelSelection`, `textGeneration*ModelSelection`, `sourceControlWriter*`     |
+| New worktrees from                                | computer | choice: Default branch, Current branch               | `newWorktreeBase.from`                                                                 |
+| Alerts: Needs you, Finished, Failed, Quiet        | device   | switch                                               | alert store                                                                            |
+| Open links in                                     | device   | choice: Built-in browser, External browser           | `openLinksIn`                                                                          |
+| Browser page size                                 | device   | choice: Responsive, Phone, Tablet, Laptop, Desktop   | `browserNewTabSize`                                                                    |
 
 The wrap-up switches only change how each app files its own thread lists
 (Wrapped is reversible filing, not archiving).
@@ -147,7 +179,8 @@ type AppPlaceEdit =
       read: (c: ClientSettings) => EditValue;
       patch: (v: EditValue) => ClientSettingsPatch;
     }
-  | { lands: "device"; control: EditControl; store: "theme" };
+  | { lands: "device"; control: EditControl; store: "theme" }
+  | { lands: "device"; control: EditControl; store: "alerts"; alert: AlertSwitch };
 ```
 
 - Helpers build `value` and `edit` together for computer switches and

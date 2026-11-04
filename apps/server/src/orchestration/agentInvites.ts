@@ -26,8 +26,19 @@ import { offersSelectedReasoning } from "@threadlines/shared/model";
  */
 export const INVITABLE_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
-/** Sign-ins billed per use rather than by a plan's limits (lowercased). */
-const PER_USE_AUTH_TYPES: ReadonlySet<string> = new Set(["apikey", "amazonbedrock"]);
+/**
+ * Sign-ins billed per use rather than by a plan's limits, as `perUseAuthType`
+ * spells them: providers write "apiKey", "api_key" and "gemini-api-key".
+ */
+const PER_USE_AUTH_TYPES: ReadonlySet<string> = new Set([
+  "apikey",
+  "amazonbedrock",
+  "geminiapikey",
+  "agentplatform",
+]);
+
+const perUseAuthType = (type: string | undefined): string =>
+  (type ?? "").toLowerCase().replace(/[\s_-]+/gu, "");
 
 const DRIVER_NAMES: Readonly<Record<string, string>> = {
   codex: "Codex",
@@ -57,7 +68,7 @@ export function inviteBilling(provider: ServerProvider): RoomAgentInviteBilling 
   return {
     instanceId: provider.instanceId,
     label: provider.auth.label !== undefined ? `${name} · ${provider.auth.label}` : name,
-    perUse: PER_USE_AUTH_TYPES.has(provider.auth.type?.toLowerCase() ?? ""),
+    perUse: PER_USE_AUTH_TYPES.has(perUseAuthType(provider.auth.type)),
   };
 }
 
