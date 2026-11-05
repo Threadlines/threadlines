@@ -1967,7 +1967,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         ];
         for (const server of servers) {
           yield* runOpenCode("mcp.add", (signal) =>
-            ctx.client.mcp.add(
+            ctx.client.experimental.mcp.add(
               {
                 server: server.name,
                 location: { directory: ctx.directory },
@@ -1982,7 +1982,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             Effect.suspend(() =>
               toolServerOwners.get(server.name) === ctx
                 ? runOpenCode("mcp.remove", (signal) =>
-                    ctx.client.mcp.remove(
+                    ctx.client.experimental.mcp.remove(
                       { server: server.name, location: { directory: ctx.directory } },
                       { signal },
                     ),
@@ -2355,7 +2355,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           );
           yield* runOpenCode("instructions.put", (signal) =>
-            client.session.instructions.entry.put(
+            client.experimental.session.instructions.entry.put(
               {
                 sessionID: rootSessionId!,
                 key: "threadlines",

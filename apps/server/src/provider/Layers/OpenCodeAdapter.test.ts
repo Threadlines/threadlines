@@ -63,10 +63,10 @@ function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) =
       })),
     },
     model: { list: call("model.list", () => ({ data: [] })) },
-    mcp: {
-      add: call("mcp.add"),
-      remove: call("mcp.remove"),
-      list: call("mcp.list", () => ({ data: [] })),
+    mcp: { list: call("mcp.list", () => ({ data: [] })) },
+    experimental: {
+      mcp: { add: call("mcp.add"), remove: call("mcp.remove") },
+      session: { instructions: { entry: { put: call("instructions.put") } } },
     },
     command: { list: call("command.list", () => ({ data: [] })) },
     permission: { reply: call("permission.reply"), list: call("permission.list", () => []) },
@@ -83,7 +83,6 @@ function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) =
       switchAgent: call("session.switchAgent"),
       switchModel: call("session.switchModel"),
       inbox: { list: call("session.inbox.list", () => []), cancel: call("session.inbox.cancel") },
-      instructions: { entry: { put: call("instructions.put") } },
       form: {
         list: call("form.list", () => []),
         reply: call("form.reply"),
