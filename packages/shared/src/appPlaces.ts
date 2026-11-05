@@ -788,7 +788,7 @@ const SECTIONS = [
     parent: "settings.connections",
     title: "Alerts to a web address",
     about:
-      "Web addresses (a Grok routine's webhook, say) this computer sends a signed alert to when a thread needs you, finishes or fails, each with the kinds and projects it gets. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote.",
+      "Web addresses (a Grok routine's webhook, say) this computer sends a signed alert to when a thread needs you, finishes or fails, each with the kinds and projects it gets; Finished can be only the turns you ask an agent to alert about. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote.",
     route: { to: "/settings/connections", search: { section: "assistants" } },
     keywords: ["webhook", "grok routine", "routine", "notify", "signed", "authorization"],
     // It sends word of threads off this computer, to any address it's given.

@@ -40,8 +40,15 @@ export const GUIDE_TOOL_NAME = "app_guide";
 /** Asking to change Threadlines settings, on a card the user answers (settingsChangeTools.ts). */
 export const SETTINGS_CHANGE_TOOL_NAME = "settings_change";
 
+/** Alerting the user's assistants when the turn ends, when asked to (alertAssistantsTools.ts). */
+export const ALERT_ASSISTANTS_TOOL_NAME = "alert_assistants";
+
 /** The app's own tools: every local thread's own runtime gets them, room tools or not. */
-export const APP_TOOL_NAMES = [GUIDE_TOOL_NAME, SETTINGS_CHANGE_TOOL_NAME] as const;
+export const APP_TOOL_NAMES = [
+  GUIDE_TOOL_NAME,
+  SETTINGS_CHANGE_TOOL_NAME,
+  ALERT_ASSISTANTS_TOOL_NAME,
+] as const;
 
 export const ROOM_TOOL_NAMES = [
   "room_agents",

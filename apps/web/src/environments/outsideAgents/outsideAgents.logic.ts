@@ -404,13 +404,20 @@ export const ASSISTANT_ALERT_KIND_LABELS: Record<AssistantAlertKind, string> = {
 
 /**
  * The kinds a web address gets, in their usual order, as its row says them:
- * "Needs you, finished and failed", "Finished and failed", "Needs you".
+ * "Needs you, finished and failed", "Finished when you ask and failed",
+ * "Needs you".
  */
-export function describeAssistantAlertKinds(kinds: ReadonlyArray<AssistantAlertKind>): string {
+export function describeAssistantAlertKinds(
+  kinds: ReadonlyArray<AssistantAlertKind>,
+  options: { readonly finishedWhenAsked?: boolean } = {},
+): string {
   const words = AssistantAlertKind.literals
     .filter((kind) => kinds.includes(kind))
     .map((kind, index) => {
-      const label = ASSISTANT_ALERT_KIND_LABELS[kind];
+      const label =
+        kind === "finished" && options.finishedWhenAsked === true
+          ? `${ASSISTANT_ALERT_KIND_LABELS.finished} when you ask`
+          : ASSISTANT_ALERT_KIND_LABELS[kind];
       return index === 0 ? label : label.toLowerCase();
     });
   if (words.length <= 1) return words[0] ?? "";
@@ -530,13 +537,16 @@ export type AssistantAlertAuthorizationDraft =
 export interface AssistantAlertTargetDraft extends OutsideAgentProjectsChoice {
   readonly url: string;
   readonly kinds: ReadonlySet<AssistantAlertKind>;
+  /** Finished only for turns the user asks an agent to alert about. */
+  readonly finishedWhenAsked: boolean;
   readonly skipViewed: boolean;
   readonly authorization: AssistantAlertAuthorizationDraft;
 }
 
 /**
  * Where the dialog starts: a web address's own choices for Edit; for Add,
- * every kind, all projects, and skipping threads you're looking at.
+ * every kind (finished on every turn), all projects, and skipping threads
+ * you're looking at.
  */
 export function initialAssistantAlertTargetDraft(
   target: AssistantAlertTarget | null,
@@ -545,6 +555,7 @@ export function initialAssistantAlertTargetDraft(
     return {
       url: "",
       kinds: new Set(AssistantAlertKind.literals),
+      finishedWhenAsked: false,
       allProjects: true,
       projectIds: new Set(),
       skipViewed: true,
@@ -554,6 +565,7 @@ export function initialAssistantAlertTargetDraft(
   return {
     url: target.url,
     kinds: new Set(target.kinds),
+    finishedWhenAsked: target.finishedWhenAsked,
     allProjects: target.projectIds === null,
     projectIds: new Set(target.projectIds ?? []),
     skipViewed: target.skipViewed,
@@ -574,7 +586,14 @@ function assistantAlertTargetFields(
   const kinds = AssistantAlertKind.literals.filter((kind) => draft.kinds.has(kind));
   const projectIds = chosenProjectIds(draft, availableProjectIds);
   if (url.length === 0 || kinds.length === 0 || projectIds?.length === 0) return null;
-  return { url, kinds, projectIds, skipViewed: draft.skipViewed };
+  return {
+    url,
+    kinds,
+    projectIds,
+    skipViewed: draft.skipViewed,
+    // Only says something while Finished is ticked.
+    finishedWhenAsked: draft.finishedWhenAsked && draft.kinds.has("finished"),
+  };
 }
 
 /** The header's value as typed, trimmed; null when nothing is. */

@@ -27,6 +27,8 @@ import type {
   OutsideAgentConnectionId,
   OutsideAgentError,
   ProjectId,
+  ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -130,6 +132,19 @@ export interface AssistantAlertsShape {
   readonly unsubscribe: (
     input: AssistantSubscriptionKey,
   ) => Effect.Effect<void, AssistantSubscriptionError>;
+  /**
+   * An agent was asked to alert about this turn (`alert_assistants`). When
+   * the turn finishes, its finished alert goes to every address and
+   * subscription that takes finished alerts for the project, "only when I
+   * ask" ones included, even while someone looks at the thread. `receivers`
+   * 0: nobody takes it, and nothing is remembered. `already`: this turn was
+   * asked about before.
+   */
+  readonly ask: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly projectId: ProjectId;
+  }) => Effect.Effect<{ readonly receivers: number; readonly already: boolean }, OutsideAgentError>;
   /** Sends until the scope closes. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
 }
