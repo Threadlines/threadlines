@@ -6,6 +6,7 @@
  */
 import type {
   AgentsResult,
+  ComputersResult,
   OutsideThreadReadResult,
   OutsideThreadStartResult,
   OutsideThreadStopResult,
@@ -20,6 +21,7 @@ import { EXIT, type ExitCode } from "./connectExit.ts";
 
 /** Every outcome a tool can answer that means Threadlines refused the call. */
 const REFUSED_OUTCOMES: ReadonlySet<string> = new Set([
+  "offline",
   "not_allowed",
   "not_found",
   "not_yours",
@@ -33,7 +35,8 @@ const REFUSED_OUTCOMES: ReadonlySet<string> = new Set([
 
 /** The exit code for a call's outcome alone: worked, refused or failed. */
 export function exitCodeForOutcome(outcome: string): ExitCode {
-  if (outcome === "failed") return EXIT.failed;
+  // A message taken back unsent ends like a stopped turn.
+  if (outcome === "failed" || outcome === "taken_back") return EXIT.failed;
   return REFUSED_OUTCOMES.has(outcome) ? EXIT.refused : EXIT.done;
 }
 
@@ -77,7 +80,7 @@ export function describeRefusal(result: {
         ? "Too many calls for now. Try again later."
         : `Too many calls for now. Try again in ${Math.ceil(result.retryAfterSeconds)} seconds.`;
     case "busy":
-      return "The thread is working. Wait for it (threadlines thread wait), then send again.";
+      return "The thread can't take it now: it waits on you in Threadlines, is still being set up, or already holds a message from this command. Wait for it (threadlines thread wait), then send again.";
     case "conflict":
       return "That request id was already used for a different call.";
     case "unavailable_agent":
@@ -105,6 +108,24 @@ function columns(rows: ReadonlyArray<ReadonlyArray<string>>): string {
         .trimEnd(),
     )
     .join("\n");
+}
+
+export function formatComputers(result: ComputersResult): string {
+  return columns(
+    result.computers.map((computer) => [
+      computer.name,
+      computer.id,
+      computer.here
+        ? "this computer"
+        : computer.allowed === "yes"
+          ? "allowed"
+          : computer.allowed === "asked"
+            ? "waiting for you to allow it there"
+            : computer.allowed === "unknown"
+              ? "offline"
+              : "not allowed (allow it in Threadlines > Settings > Connections)",
+    ]),
+  );
 }
 
 export function formatProjects(result: ProjectsResult): string {
@@ -190,6 +211,11 @@ export function formatThreadRead(result: OutsideThreadReadResult): string {
       : threadStatusLines(result.thread, result.waitingOn, result.waiting);
   for (const message of result.messages) {
     lines.push("", `${message.author}:`, message.text);
+    if (message.clipped === true && message.offset === undefined) {
+      lines.push(
+        `(All of it: threadlines thread read ${result.thread?.threadId ?? "<thread>"} --message ${message.messageId})`,
+      );
+    }
   }
   if (result.more && result.next !== null) {
     lines.push("", `More messages follow. Read them with --after ${result.next}.`);

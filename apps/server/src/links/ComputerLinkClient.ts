@@ -111,6 +111,8 @@ export interface ComputerLinkClientShape {
   readonly withPeer: <A>(
     environmentId: EnvironmentId,
     use: (client: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
+    /** How long the call may take; 30 s when left out. */
+    options?: { readonly timeout?: Duration.Duration },
   ) => Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError>;
   /** A stream from the linked computer; the connection stays open while it runs. */
   readonly peerStream: <A>(
@@ -522,9 +524,14 @@ const make = Effect.gen(function* () {
   const withPeer = <A>(
     environmentId: EnvironmentId,
     use: (client: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
+    options?: { readonly timeout?: Duration.Duration },
   ): Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError> =>
     Effect.flatMap(connectionFor(environmentId), (connection) =>
-      callOn(connection, use, REQUEST_TIMEOUT_MS),
+      callOn(
+        connection,
+        use,
+        options?.timeout === undefined ? REQUEST_TIMEOUT_MS : Duration.toMillis(options.timeout),
+      ),
     );
 
   const peerStream = <A>(

@@ -7,6 +7,7 @@ import {
   type OutsideAgentGrant,
   OutsideAgentIdentity,
   OutsideAgentSignInMethod,
+  OutsideAgentVia,
   ProjectId,
   RuntimeMode,
 } from "@threadlines/contracts";
@@ -93,6 +94,12 @@ export const OutsideAgentConnectionRow = Schema.Struct({
   keyHash: Schema.NullOr(Schema.String),
   /** Which known assistant the user said it is (`none`: none of them); null: not picked, the guess stands. */
   assistantPick: Schema.NullOr(AssistantPick),
+  /**
+   * Connected on a linked computer (`sign_in = 'linked'`, migration 103): that
+   * computer, its connection there, and the inbound link its calls come over.
+   */
+  via: Schema.NullOr(OutsideAgentVia),
+  viaLinkDeviceId: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
   removedAt: Schema.NullOr(IsoDateTime),
@@ -126,12 +133,18 @@ const OutsideAgentConnectionDbRow = Schema.Struct({
   refreshSeenGeneration: Schema.NullOr(Schema.Int),
   keyHash: Schema.NullOr(Schema.String),
   assistantPick: Schema.NullOr(AssistantPick),
+  viaLinkDeviceId: Schema.NullOr(Schema.String),
+  viaEnvironmentId: Schema.NullOr(Schema.String),
+  viaConnectionId: Schema.NullOr(Schema.String),
+  viaComputer: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
   removedAt: Schema.NullOr(IsoDateTime),
   removedReason: Schema.NullOr(OutsideAgentRemovedReason),
 });
 type OutsideAgentConnectionDbRow = typeof OutsideAgentConnectionDbRow.Type;
+
+const decodeVia = Schema.decodeUnknownOption(OutsideAgentVia);
 
 /**
  * How a level is stored: Work as `start` with `work_level = 1`, so a build
@@ -175,11 +188,28 @@ const fromDb = (row: OutsideAgentConnectionDbRow): OutsideAgentConnectionRow => 
         },
   keyHash: row.keyHash,
   assistantPick: row.assistantPick,
+  via:
+    row.viaLinkDeviceId === null
+      ? null
+      : Option.getOrNull(
+          decodeVia({
+            environmentId: row.viaEnvironmentId,
+            computer: row.viaComputer,
+            connectionId: row.viaConnectionId,
+          }),
+        ),
+  viaLinkDeviceId: row.viaLinkDeviceId,
   createdAt: row.createdAt,
   lastUsedAt: row.lastUsedAt,
   removedAt: row.removedAt,
   removedReason: row.removedReason,
 });
+
+/**
+ * Whether a removed row still has to be revoked at the relay: an assistant
+ * that signed in through it. One connected on a linked computer never did.
+ */
+const RELAY_REVOKE_PENDING = `CASE WHEN kind = 'assistant' AND via_link_device_id IS NULL THEN 1 ELSE 0 END`;
 
 export class OutsideAgentConnectionRepositoryError extends Data.TaggedError(
   "OutsideAgentConnectionRepositoryError",
@@ -248,6 +278,28 @@ export interface OutsideAgentConnectionRepositoryShape {
     readonly reason: OutsideAgentRemovedReason;
     readonly now: string;
   }) => Effect.Effect<boolean, OutsideAgentConnectionRepositoryError>;
+  /** The live row of an agent connected on a linked computer, by its link and its connection there. */
+  readonly findVia: (input: {
+    readonly linkDeviceId: string;
+    readonly viaConnectionId: OutsideAgentConnectionId;
+  }) => Effect.Effect<
+    Option.Option<OutsideAgentConnectionRow>,
+    OutsideAgentConnectionRepositoryError
+  >;
+  /** Removes every live row a link brings (it was unlinked); their ids. */
+  readonly removeVia: (input: {
+    readonly linkDeviceId: string;
+    readonly now: string;
+  }) => Effect.Effect<
+    ReadonlyArray<OutsideAgentConnectionId>,
+    OutsideAgentConnectionRepositoryError
+  >;
+  /** A linked computer's agent was renamed there (or the user picked what it is): its name here follows. */
+  readonly setViaName: (input: {
+    readonly connectionId: OutsideAgentConnectionId;
+    readonly clientName: string;
+    readonly assistantPick: AssistantPick;
+  }) => Effect.Effect<void, OutsideAgentConnectionRepositoryError>;
   /** Removes (`unused`) live connections of `kind` unused since `before`; their ids. */
   readonly removeUnusedSince: (input: {
     readonly kind: OutsideAgentConnectionRow["kind"];
@@ -330,6 +382,10 @@ const make = Effect.gen(function* () {
       refresh_seen_generation AS "refreshSeenGeneration",
       key_hash AS "keyHash",
       assistant_pick AS "assistantPick",
+      via_link_device_id AS "viaLinkDeviceId",
+      via_environment_id AS "viaEnvironmentId",
+      via_connection_id AS "viaConnectionId",
+      via_computer AS "viaComputer",
       created_at AS "createdAt",
       last_used_at AS "lastUsedAt",
       removed_at AS "removedAt",
@@ -374,7 +430,8 @@ const make = Effect.gen(function* () {
           resource, access, work_level, max_runtime_mode, project_ids_json, token_generation,
           identity_host, identity_verified, identity_known, host_id, route_tag,
           refresh_generation, refresh_rotated_at, refresh_seen_generation, key_hash,
-          assistant_pick, created_at, last_used_at, removed_at, removed_reason,
+          assistant_pick, via_link_device_id, via_environment_id, via_connection_id,
+          via_computer, created_at, last_used_at, removed_at, removed_reason,
           relay_revoke_pending
         ) VALUES (
           ${row.connectionId}, ${row.kind}, ${row.signIn}, ${row.clientIdHash}, ${row.clientName},
@@ -385,6 +442,8 @@ const make = Effect.gen(function* () {
           ${flag(row.identity?.known)}, ${row.hostId}, ${row.routeTag},
           ${row.refresh?.generation ?? null}, ${row.refresh?.rotatedAt ?? null},
           ${row.refresh?.seenGeneration ?? null}, ${row.keyHash}, ${row.assistantPick},
+          ${row.viaLinkDeviceId}, ${row.via?.environmentId ?? null},
+          ${row.via?.connectionId ?? null}, ${row.via?.computer ?? null},
           ${row.createdAt}, ${row.lastUsedAt}, ${row.removedAt}, ${row.removedReason}, 0
         )
       `;
@@ -396,7 +455,7 @@ const make = Effect.gen(function* () {
         SET
           removed_at = ${row.createdAt},
           removed_reason = 'replaced',
-          relay_revoke_pending = CASE WHEN kind = 'assistant' THEN 1 ELSE 0 END
+          relay_revoke_pending = ${sql.unsafe(RELAY_REVOKE_PENDING)}
         WHERE client_id_hash = ${row.clientIdHash} AND kind = ${row.kind} AND removed_at IS NULL
         RETURNING connection_id AS "connectionId"
       `;
@@ -431,7 +490,7 @@ const make = Effect.gen(function* () {
       SET
         removed_at = ${input.now},
         removed_reason = ${input.reason},
-        relay_revoke_pending = CASE WHEN kind = 'assistant' THEN 1 ELSE 0 END
+        relay_revoke_pending = ${sql.unsafe(RELAY_REVOKE_PENDING)}
       WHERE connection_id = ${input.connectionId} AND removed_at IS NULL
       RETURNING connection_id AS "connectionId"
     `.pipe(
@@ -439,13 +498,46 @@ const make = Effect.gen(function* () {
       wrap("markRemoved"),
     );
 
+  const findViaRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ linkDeviceId: Schema.String, viaConnectionId: Schema.String }),
+    Result: OutsideAgentConnectionDbRow,
+    execute: (input) =>
+      sql.unsafe(
+        `${selectRow} WHERE via_link_device_id = ? AND via_connection_id = ? AND removed_at IS NULL`,
+        [input.linkDeviceId, input.viaConnectionId],
+      ),
+  });
+
+  const findVia: OutsideAgentConnectionRepositoryShape["findVia"] = (input) =>
+    findViaRow(input).pipe(Effect.map(Option.map(fromDb)), wrap("findVia"));
+
+  const removeVia: OutsideAgentConnectionRepositoryShape["removeVia"] = (input) =>
+    sql<{ readonly connectionId: OutsideAgentConnectionId }>`
+      UPDATE outside_agent_connections
+      SET removed_at = ${input.now}, removed_reason = 'removed', relay_revoke_pending = 0
+      WHERE via_link_device_id = ${input.linkDeviceId} AND removed_at IS NULL
+      RETURNING connection_id AS "connectionId"
+    `.pipe(
+      Effect.map((rows) => rows.map((entry) => entry.connectionId)),
+      wrap("removeVia"),
+    );
+
+  const setViaName: OutsideAgentConnectionRepositoryShape["setViaName"] = (input) =>
+    sql`
+      UPDATE outside_agent_connections
+      SET client_name = ${input.clientName}, assistant_pick = ${input.assistantPick}
+      WHERE connection_id = ${input.connectionId}
+        AND via_link_device_id IS NOT NULL
+        AND removed_at IS NULL
+    `.pipe(Effect.asVoid, wrap("setViaName"));
+
   const removeUnusedSince: OutsideAgentConnectionRepositoryShape["removeUnusedSince"] = (input) =>
     sql<{ readonly connectionId: OutsideAgentConnectionId }>`
       UPDATE outside_agent_connections
       SET
         removed_at = ${input.now},
         removed_reason = 'unused',
-        relay_revoke_pending = CASE WHEN kind = 'assistant' THEN 1 ELSE 0 END
+        relay_revoke_pending = ${sql.unsafe(RELAY_REVOKE_PENDING)}
       WHERE kind = ${input.kind}
         AND removed_at IS NULL
         AND COALESCE(last_used_at, created_at) < ${input.before}
@@ -518,6 +610,9 @@ const make = Effect.gen(function* () {
     insert,
     setGrant,
     markRemoved,
+    findVia,
+    removeVia,
+    setViaName,
     removeUnusedSince,
     touch,
     setRefresh,

@@ -66,6 +66,7 @@ import {
   isUsableLink,
 } from "./ComputerLinkRepository.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
+import { OutsideAgentLinks } from "../outsideAgents/OutsideAgentLinks.ts";
 import { LinkMoves } from "./LinkMoves.ts";
 import { LinkRequests, PEER_LINK_REMOVED, type PeerLink, peerLinkOf } from "./LinkRequests.ts";
 
@@ -169,6 +170,8 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment;
   const linkRequests = yield* LinkRequests;
   const linkMoves = yield* LinkMoves;
+  // Outside agents from linked computers, when this server takes them.
+  const outsideAgentLinks = yield* Effect.serviceOption(OutsideAgentLinks);
   const sql = yield* SqlClient.SqlClient;
   const descriptor = yield* environment.getDescriptor;
   const changed = yield* PubSub.sliding<void>(1);
@@ -620,6 +623,8 @@ const make = Effect.gen(function* () {
         ...turnsBefore,
       });
       yield* linkMoves.dropLink(link.deviceId);
+      // Outside agents that link brought here go with it (docs/design/assistants.md, "Other computers").
+      if (Option.isSome(outsideAgentLinks)) yield* outsideAgentLinks.value.dropLink(link.deviceId);
       // Revoking the session takes it off the relay and closes its connection.
       if (link.sessionId !== null) {
         yield* sessions

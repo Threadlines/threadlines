@@ -733,6 +733,9 @@ importers:
       '@threadlines/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      builder-util-runtime:
+        specifier: 9.7.0
+        version: 9.7.0
       effect:
         specifier: 4.1.2
         version: 4.1.2

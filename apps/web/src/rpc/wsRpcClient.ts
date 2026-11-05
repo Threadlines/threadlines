@@ -312,6 +312,10 @@ export interface WsRpcClient {
     >;
     readonly startGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverStartGitHubAuth>;
     readonly cancelGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverCancelGitHubAuth>;
+    readonly getReportProblemAccount: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetReportProblemAccount
+    >;
+    readonly reportProblem: RpcUnaryMethod<typeof WS_METHODS.serverReportProblem>;
     readonly getTraceDiagnostics: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetTraceDiagnostics>;
     readonly getProcessDiagnostics: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverGetProcessDiagnostics
@@ -466,6 +470,10 @@ export interface WsRpcClient {
     readonly resumeRequests: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsResumeRequests>;
     readonly update: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsUpdate>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsRemove>;
+    /** A connection's linked computers (docs/design/assistants.md, "Other computers"): asked live. */
+    readonly reach: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsReach>;
+    readonly reachAsk: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsReachAsk>;
+    readonly reachRemove: RpcUnaryMethod<typeof WS_METHODS.outsideAgentsReachRemove>;
     /** Assistants (docs/design/assistants.md): a sign-in code to show, and a key-signed connection. */
     readonly assistantCode: RpcUnaryNoArgMethod<typeof WS_METHODS.outsideAgentsAssistantCode>;
     readonly assistantCodeCancel: RpcUnaryNoArgMethod<
@@ -979,6 +987,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverStartGitHubAuth]({})),
       cancelGitHubAuth: () =>
         transport.request((client) => client[WS_METHODS.serverCancelGitHubAuth]({})),
+      getReportProblemAccount: () =>
+        transport.request((client) => client[WS_METHODS.serverGetReportProblemAccount]({})),
+      reportProblem: (input) =>
+        transport.request((client) => client[WS_METHODS.serverReportProblem](input)),
       getTraceDiagnostics: () =>
         transport.request((client) =>
           client[WS_METHODS.serverGetTraceDiagnostics]({}).pipe(Effect.withTracerEnabled(false)),
@@ -1303,6 +1315,11 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.outsideAgentsUpdate](input)),
       remove: (input) =>
         transport.request((client) => client[WS_METHODS.outsideAgentsRemove](input)),
+      reach: (input) => transport.request((client) => client[WS_METHODS.outsideAgentsReach](input)),
+      reachAsk: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsReachAsk](input)),
+      reachRemove: (input) =>
+        transport.request((client) => client[WS_METHODS.outsideAgentsReachRemove](input)),
       assistantCode: () =>
         transport.request((client) => client[WS_METHODS.outsideAgentsAssistantCode]({})),
       assistantCodeCancel: () =>

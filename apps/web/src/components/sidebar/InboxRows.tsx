@@ -10,7 +10,6 @@ import {
   MonitorUpIcon,
   GitForkIcon,
   PinIcon,
-  PlugIcon,
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
@@ -36,10 +35,8 @@ import { SwipeableRow, threadRowSwipeAction } from "./SwipeableRow";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunLabel } from "../../lib/scheduledTasksState";
 import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
-import {
-  outsideOriginDescription,
-  outsideOriginLabel,
-} from "../../environments/outsideAgents/outsideAgents.logic";
+import { outsideOriginDescription } from "../../environments/outsideAgents/outsideAgents.logic";
+import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
 import { isThreadSessionStarting } from "../../lib/threadSort";
 import { isSidebarThreadRunning, selectProjectByRef, useStore } from "../../store";
 import { useWatchPullRequestsWhileShown } from "../../lib/pullRequestWatch";
@@ -1030,19 +1027,6 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     />
                     <span className="min-w-0 truncate">{scheduledRunLabel}</span>
                   </span>
-                ) : thread.outsideOrigin ? (
-                  // An outside agent's thread names the agent, in the project
-                  // name's place.
-                  <span
-                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
-                    title={outsideOriginDescription(thread.outsideOrigin)}
-                    data-testid={`thread-outside-origin-${thread.id}`}
-                  >
-                    <PlugIcon aria-hidden className="size-2.5 shrink-0" />
-                    <span className="min-w-0 truncate">
-                      {outsideOriginLabel(thread.outsideOrigin)}
-                    </span>
-                  </span>
                 ) : remoteParent !== null ? (
                   // Started from another computer and standing on its own: the
                   // thread that started it, and where that thread runs.
@@ -1169,6 +1153,21 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   // No tooltip on the title: the hover card already carries the
                   // full one, and two popups racing the same hover is the bug.
                   <>
+                    {/* Started from outside Threadlines: its mark leads the
+                    title, like the room icon, and the hover card names it. */}
+                    {thread.outsideOrigin ? (
+                      <span
+                        role="img"
+                        aria-label={outsideOriginDescription(thread.outsideOrigin)}
+                        data-testid={`thread-outside-origin-${thread.id}`}
+                        className="inline-flex shrink-0 items-center"
+                      >
+                        <OutsideOriginMark
+                          origin={thread.outsideOrigin}
+                          className="size-3 text-muted-foreground/70"
+                        />
+                      </span>
+                    ) : null}
                     {isRoom(thread) ? (
                       <UsersRoundIcon
                         aria-label="Room"
@@ -2151,7 +2150,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 data-testid={`done-outside-origin-${thread.id}`}
                 className="inline-flex shrink-0 items-center text-muted-foreground/60"
               >
-                <PlugIcon className="size-3" />
+                <OutsideOriginMark origin={thread.outsideOrigin} className="size-3" />
               </span>
             ) : null}
             {/* A child standing here apart from its parent's family: the

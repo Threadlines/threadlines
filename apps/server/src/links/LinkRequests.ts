@@ -109,7 +109,12 @@ import { findProjectByPlace } from "../project/projectPlace.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { readThreadPage, summarizeThread, threadStatus } from "../threads/threadOperations.ts";
+import {
+  READ_MESSAGE_NOT_FOUND,
+  readThreadPage,
+  summarizeThread,
+  threadStatus,
+} from "../threads/threadOperations.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
 import { linkBootstrapKey, linkCommandId, linkMessageId, linkThreadId } from "./linkIds.ts";
@@ -1333,6 +1338,17 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
       const titles = new Map<string, string>();
+      const { missing, ...page } = readThreadPage(target, {
+        providers: all,
+        titles,
+        after: input.after,
+        limit: input.limit,
+        messageId: input.messageId,
+        offset: input.offset,
+      });
+      if (missing) {
+        return { outcome: "refused", detail: READ_MESSAGE_NOT_FOUND, ...none } as const;
+      }
       return {
         outcome: "ok",
         ...(shell !== undefined
@@ -1340,12 +1356,7 @@ const make = Effect.gen(function* () {
               thread: summarizeThread(shell, { providers: all, titleOf: () => undefined }),
             }
           : {}),
-        ...readThreadPage(target, {
-          providers: all,
-          titles,
-          after: input.after,
-          limit: input.limit,
-        }),
+        ...page,
       } satisfies AgentThreadReadResult;
     });
 

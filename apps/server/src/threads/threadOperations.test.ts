@@ -63,6 +63,28 @@ describe("threadStatus", () => {
       ),
     ).toEqual({ word: "needs the user", waitingOn: "approval" });
   });
+
+  it("puts a question asked while working after the work, and one that pauses it before", () => {
+    const running = { latestTurn: { ...shell().latestTurn!, state: "running" as const } };
+    const nonBlocking = { hasPendingUserInput: true, hasBlockingUserInput: false };
+    expect(threadStatus(shell({ ...nonBlocking, ...running })).word).toBe("working");
+    expect(threadStatus(shell(nonBlocking))).toEqual({
+      word: "needs the user",
+      waitingOn: "question",
+    });
+    // Another agent in the room still answering on the side.
+    expect(
+      threadStatus(
+        shell({
+          ...nonBlocking,
+          sideTurn: { status: "running" } as OrchestrationThreadShell["sideTurn"],
+        }),
+      ).word,
+    ).not.toBe("needs the user");
+    expect(
+      threadStatus(shell({ hasPendingUserInput: true, hasBlockingUserInput: true, ...running })),
+    ).toEqual({ word: "needs the user", waitingOn: "question" });
+  });
 });
 
 describe("watchThreadStatus", () => {

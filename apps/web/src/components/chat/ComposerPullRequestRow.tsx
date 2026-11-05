@@ -19,6 +19,7 @@ import type {
   PullRequestMergeQueueRemoval,
   PullRequestRef,
 } from "@threadlines/contracts";
+import type { PullRequestAutomationHold } from "@threadlines/shared/pullRequestAutoMerge";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ExternalLinkIcon, WrenchIcon, XIcon } from "lucide-react";
@@ -101,8 +102,11 @@ export interface ComposerPullRequest {
    */
   readonly autoMerge: PullRequestMergeMethod | null;
   readonly onAutoMergeChange: (next: PullRequestMergeMethod | null) => void;
-  /** The agent is mid-turn. The server holds a merge until it finishes, since it may push. */
-  readonly agentWorking: boolean;
+  /**
+   * What about the thread holds a server merge back: the agent mid-turn (it
+   * may push) or waiting on the user. See `composerPullRequestThreadHold`.
+   */
+  readonly threadHold: PullRequestAutomationHold | null;
   /** Commits on the thread's branch the host has not seen; the server waits for them too. */
   readonly unpushedCommits: number;
   /**
@@ -519,7 +523,7 @@ function ComposerPullRequestAutoMergeSection({
     detail,
     threadAutoMerge: pullRequest.autoMerge,
     autoFix: pullRequest.autoFix.checked,
-    agentWorking: pullRequest.agentWorking,
+    threadHold: pullRequest.threadHold,
     unpushedCommits: pullRequest.unpushedCommits,
     pushedHead: pullRequest.pushedHead,
     now: openedAt,

@@ -634,6 +634,15 @@ export const ThreadScheduledRun = Schema.Struct({
 export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 /**
+ * Always-on assistants Threadlines knows by name and mark
+ * (docs/design/assistants.md). Several sign in through someone else's
+ * service (Grok Bot through Cursor's), so which one it is is a guess from
+ * its sign-in until the user picks.
+ */
+export const KnownAssistant = Schema.Literals(["grok-bot", "chatgpt", "claude", "muse", "cursor"]);
+export type KnownAssistant = typeof KnownAssistant.Type;
+
+/**
  * An outside agent (docs/design/outside-agents.md): a coding agent running
  * outside Threadlines that signed in to this computer's `/mcp/connect`. On a
  * thread it started (`outsideOrigin`, set once at creation) and on each
@@ -644,6 +653,13 @@ export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 export const OutsideAgentRef = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
   name: TrimmedNonEmptyString,
+  /**
+   * Which known assistant it was when this was written, for its mark (a
+   * thread it started shows it in the sidebar and header). Absent for local
+   * agents, for an assistant Threadlines couldn't place, and on refs written
+   * before it was kept.
+   */
+  assistant: Schema.optionalKey(KnownAssistant),
 });
 export type OutsideAgentRef = typeof OutsideAgentRef.Type;
 
@@ -1795,6 +1811,14 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * it runs in the thread's own interaction mode.
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * Sent by an outside agent while a turn ran (docs/design/outside-agents.md,
+   * "Queued sends"). Never the user's: it waits behind their queued messages,
+   * is taken back by Stop or a turn that doesn't finish, and when it goes it
+   * is checked again against the connection's grant as it is then, and runs
+   * with the thread's own settings.
+   */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /**
    * The user's message sent while the "Continue where you left off." message
    * named here was still starting its turn. The user wins: if that message
@@ -3217,6 +3241,13 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * busy rule passes over that one question.
    */
   answering: Schema.optional(ApprovalRequestId),
+  /**
+   * Server only: this outside turn sends a message that waited in the queue
+   * (OrchestrationQueuedFollowUp.fromOutside). The queue sends it only once
+   * the turn before it ended, so that turn's record still reading running
+   * (its checkpoint not yet taken) doesn't make it wait; a live session does.
+   */
+  fromOutsideQueue: Schema.optional(Schema.Literal(true)),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom (server only: set from the connection's sign-in). */
@@ -3262,6 +3293,17 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   sentFrom: Schema.optional(MessageSentFrom),
   /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * Server only: an outside agent's message for a thread at work, always
+   * queued, never steered (see OrchestrationQueuedFollowUp.fromOutside).
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
+  /**
+   * Server only: a steer that could not reach its turn, queued for the next
+   * one. The user already sent it, so it is not their newest word on the
+   * thread (a question asked since stays open).
+   */
+  requeued: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -4166,6 +4208,12 @@ const ThreadFollowUpSendQueuedCommand = Schema.Struct({
    * Stop has raised it since, so a send prepared before Stop never runs after.
    */
   ifChainEpoch: Schema.optional(NonNegativeInt),
+  /**
+   * An outside agent's queued message: its connection's grant as the server
+   * read it just now. Without it, or for another connection, the message is
+   * taken back instead of sent.
+   */
+  outsideOrigin: Schema.optional(OutsideTurnOrigin),
   createdAt: IsoDateTime,
 });
 

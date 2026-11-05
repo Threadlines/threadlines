@@ -96,6 +96,8 @@ import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
+import { OtherComputersLive } from "./outsideAgents/OtherComputers.ts";
+import { OutsideToolRunnerLive } from "./outsideAgents/OutsideToolRunner.ts";
 import { AssistantRelayLive } from "./assistants/AssistantRelayLive.ts";
 import { AssistantAlertsLive } from "./assistants/AssistantAlertsLive.ts";
 import { AssistantEventsLive } from "./assistants/AssistantEventsLive.ts";
@@ -130,6 +132,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
 import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import * as ProblemReports from "./sourceControl/ProblemReports.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -643,11 +646,23 @@ const AssistantAlertsLayerLive = AssistantAlertsLive.pipe(
   Layer.provideMerge(RuntimeDependenciesLive),
 );
 
+const ThreadSearchLayerLive = ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive));
+
 const RuntimeServicesLive = Layer.mergeAll(
   Layer.mergeAll(ServerRuntimeStartupLive, ProviderReadinessTelemetryLive).pipe(
     Layer.provideMerge(AssistantAlertsLayerLive),
   ),
-  ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
+  ThreadSearchLayerLive,
+  // Outside agents across computers (docs/design/assistants.md, "Other
+  // computers"): the computers this one's agents may also work on (the doors
+  // forward to them, Settings asks them), and one set of handlers for the
+  // server that runs, through `/peer`, the tools of agents connected on a
+  // linked computer, whichever connection a call came over.
+  OtherComputersLive.pipe(Layer.provide(AssistantAlertsLayerLive)),
+  OutsideToolRunnerLive.pipe(
+    Layer.provide(ThreadSearchLayerLive),
+    Layer.provide(AssistantAlertsLayerLive),
+  ),
   // Usage reads provider transcripts straight off disk, so it needs only
   // settings (for the resolved provider homes) plus the platform services and
   // HTTP client provided further out.
@@ -693,6 +708,10 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Build setup services once for the HTTP server, not once per WebSocket.
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
+  // One for the server: it remembers reports posted and posts GitHub may have taken.
+  Layer.provide(
+    ProblemReports.layer.pipe(Layer.provide(GitHubCli.layer), Layer.provide(VcsProcess.layer)),
+  ),
   Layer.provide(ProviderMaintenanceRunner.layer),
   // One registry for the whole server: a retried bootstrap turn start must
   // find the run in flight even when it arrives on a different socket. The

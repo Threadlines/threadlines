@@ -11,6 +11,7 @@ import {
   type OrchestrationSession,
   type OrchestrationSessionUsageLimit,
   type OrchestrationThread,
+  type OutsideTurnOrigin,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
   TurnId,
@@ -115,6 +116,7 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
+import { questionsClosedByUserMessage } from "./userInput.ts";
 import {
   SETTINGS_CHANGE_CANCELLED,
   type SettingsChangeDecision,
@@ -127,9 +129,11 @@ import {
 } from "./settingsChangeDecisions.ts";
 import {
   outsideAnswerDecision,
+  outsideQueueRefusal,
   outsideWorkOf,
   outsideStopRefusal,
   outsideTurnRefusal,
+  type OutsideTurnRefusal,
 } from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -634,6 +638,37 @@ function hasThreadStarted(thread: OrchestrationThread): boolean {
 }
 
 /**
+ * The user typed a message to `agentId`: its open questions that take a
+ * message for an answer close with it (see questionsClosedByUserMessage).
+ */
+function closeQuestionsForUserMessage(
+  thread: OrchestrationThread,
+  input: {
+    readonly commandId: OrchestrationCommand["commandId"];
+    readonly agentId: ThreadParticipantId | null;
+    readonly messageId: MessageId;
+    readonly createdAt: string;
+  },
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  return questionsClosedByUserMessage({
+    thread,
+    agentId: input.agentId,
+    messageId: input.messageId,
+    createdAt: input.createdAt,
+  }).map(({ requestId, activity }) => ({
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: thread.id,
+      occurredAt: input.createdAt,
+      commandId: input.commandId,
+      metadata: { requestId },
+    }),
+    type: "thread.activity-appended" as const,
+    payload: { threadId: thread.id, activity },
+  }));
+}
+
+/**
  * A message for the agent at work: steers into its turn when it can, else waits
  * in the queue for its agent, like a message the user typed while it worked.
  */
@@ -643,12 +678,26 @@ function decideFollowUpSubmit(
   options?: { readonly overtakes?: MessageId },
 ): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   return Effect.gen(function* () {
+    if (command.fromOutside !== undefined) {
+      return yield* decideOutsideFollowUpQueue(targetThread, command, command.fromOutside);
+    }
     // In a room only the agent at work can be steered; a message for any
     // other agent waits for its turn in the queue.
     const addressedAgentId =
       command.participantId !== undefined
         ? command.participantId
         : sessionSlotParticipantId(targetThread.session);
+    // A steer that missed its turn, queued again, was written before any
+    // question asked since: it closed the older ones when the user sent it.
+    const closedQuestions =
+      command.composer !== undefined && command.requeued !== true
+        ? closeQuestionsForUserMessage(targetThread, {
+            commandId: command.commandId,
+            agentId: addressedAgentId,
+            messageId: command.message.messageId,
+            createdAt: command.createdAt,
+          })
+        : [];
     const canSteer =
       (command.delivery ?? "steer") === "steer" &&
       targetThread.session?.status === "running" &&
@@ -681,6 +730,7 @@ function decideFollowUpSubmit(
         [
           ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
           ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
+          ...closedQuestions,
         ],
         {
           ...userBase(),
@@ -721,6 +771,7 @@ function decideFollowUpSubmit(
       [
         ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
         ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
+        ...closedQuestions,
       ],
       {
         ...steerBase(),
@@ -741,6 +792,61 @@ function decideFollowUpSubmit(
         },
       },
     );
+  });
+}
+
+/**
+ * An outside agent's message for a thread at work (docs/design/outside-agents.md,
+ * "Queued sends"): always queued for the thread's own agent, never steered,
+ * one per connection per thread, and only where it could send now but for
+ * the running turn. It isn't the user writing, so nothing of theirs moves.
+ */
+function decideOutsideFollowUpQueue(
+  targetThread: OrchestrationThread,
+  command: Extract<OrchestrationCommand, { readonly type: "thread.follow-up.submit" }>,
+  origin: OutsideTurnOrigin,
+): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
+  return Effect.gen(function* () {
+    const refused = (refusal: OutsideTurnRefusal) =>
+      new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: refusal.detail,
+        ...(refusal.refusal !== undefined ? { refusal: refusal.refusal } : {}),
+      });
+    const refusal = outsideQueueRefusal(targetThread, origin);
+    if (refusal !== null) return yield* refused(refusal);
+    if (
+      targetThread.messages.some((message) => message.id === command.message.messageId) ||
+      (targetThread.queuedFollowUps ?? []).some(
+        (queued) => queued.messageId === command.message.messageId,
+      )
+    ) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
+      });
+    }
+    return {
+      ...withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      }),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: command.threadId,
+        followUp: {
+          messageId: command.message.messageId,
+          text: command.message.text,
+          attachments: [],
+          fromOutside: { connectionId: origin.connectionId, name: origin.name },
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
+    };
   });
 }
 
@@ -1833,10 +1939,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           modelSelection: answerModel,
         },
       };
-      // The user wrote: agents may make requests again.
+      // The user wrote: agents may make requests again, and the questions
+      // the agent asked to be answered with a message close.
       return [
         messageSent,
         started,
+        ...closeQuestionsForUserMessage(thread, {
+          commandId: command.commandId,
+          agentId: command.participantId,
+          messageId: command.message.messageId,
+          createdAt: command.createdAt,
+        }),
         ...resetAgentRequestsForUser(
           thread,
           () =>
@@ -2698,6 +2811,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           targetThread,
           command.fromOutside,
           command.answering,
+          command.fromOutsideQueue === true,
         );
         if (outsideRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
@@ -3034,6 +3148,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ...settleCandidateBeforeUserTurn(readModel, targetThread, command),
             ]
           : []),
+        // Words the user typed now, not a message they queued earlier, which
+        // closed the older questions when it was queued.
+        ...(command.composer !== undefined &&
+        !(targetThread.queuedFollowUps ?? []).some(
+          (queued) => queued.messageId === command.message.messageId,
+        )
+          ? closeQuestionsForUserMessage(targetThread, {
+              commandId: command.commandId,
+              agentId: participantId,
+              messageId: command.message.messageId,
+              createdAt: command.createdAt,
+            })
+          : []),
       ];
     }
 
@@ -3277,6 +3404,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // An outside agent's message goes only under its connection's grant as
+      // the server read it just now, and only where that would let it send
+      // now; otherwise it is taken back, so the queue moves on. It runs with
+      // the thread's own settings, like a send it made itself.
+      if (queued.fromOutside !== undefined) {
+        const origin = command.outsideOrigin;
+        if (command.steerIntoTurnId !== undefined || command.steeredTurnId !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "An outside agent's queued message is never steered into a turn.",
+          });
+        }
+        if (
+          origin === undefined ||
+          origin.connectionId !== queued.fromOutside.connectionId ||
+          outsideTurnRefusal(targetThread, origin, undefined, true) !== null
+        ) {
+          return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+        }
+        const outsideTurn = yield* decideCommandSequence({
+          readModel,
+          commands: [
+            {
+              type: "thread.turn.start",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              message: {
+                messageId: queued.messageId,
+                role: "user",
+                text: queued.text,
+                attachments: [],
+              },
+              runtimeMode: targetThread.runtimeMode,
+              interactionMode: targetThread.interactionMode,
+              fromOutside: origin,
+              fromOutsideQueue: true,
+              createdAt: command.createdAt,
+            },
+          ],
+        });
+        return [unqueuedEvent, ...outsideTurn];
+      }
       // A message an agent queued (a hand-off, a routed reply, or a child
       // thread's report or request) goes only to the agent it was for. If that
       // agent left, it is taken back and its request cancelled, never handed

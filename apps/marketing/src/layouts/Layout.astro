@@ -167,6 +167,10 @@ const siteStructuredData = {
             <a href="/agents">Agents</a>
             <a href="/compare">Compare</a>
             <a href="/changelog">Changelog</a>
+            <a href="/docs/assistants">Assistants</a>
+            <a href="/support">Support</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
             <a href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
             <a href="https://github.com/sponsors/Threadlines" target="_blank" rel="noopener noreferrer">Sponsor</a>
           </div>
@@ -192,6 +196,22 @@ const siteStructuredData = {
         document.dispatchEvent(new CustomEvent("tl-themechange"));
       });
       syncToggle();
+    </script>
+    <script>
+      import { track } from "@vercel/analytics";
+
+      import { linkSource, withoutLinkSource } from "../lib/linkSource";
+
+      const here = new URL(location.href);
+      const source = linkSource(here);
+      if (source) {
+        // The analytics component sets up this queue too; this covers running first.
+        window.va ??= (event, properties) => {
+          (window.vaq ??= []).push([event, properties]);
+        };
+        track("Arrived from link", { source, page: here.pathname });
+        history.replaceState(history.state, "", withoutLinkSource(here));
+      }
     </script>
   </body>
 </html>
@@ -543,7 +563,8 @@ const siteStructuredData = {
 
   .footer-links {
     display: flex;
-    gap: 20px;
+    flex-wrap: wrap;
+    gap: 8px 20px;
   }
 
   .footer-links a {

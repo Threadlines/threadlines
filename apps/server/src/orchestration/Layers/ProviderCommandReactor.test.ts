@@ -94,6 +94,10 @@ import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
 import {
+  OutsideAgentConnections,
+  type OutsideAgentConnectionsShape,
+} from "../../outsideAgents/OutsideAgentConnections.ts";
+import {
   ScheduledTaskNotes,
   type ScheduledTaskNotesShape,
 } from "../Services/ScheduledTaskNotes.ts";
@@ -211,6 +215,8 @@ describe("ProviderCommandReactor", () => {
     readonly removedInstanceIds?: ReadonlyArray<string>;
     /** Computer links' check on a linked computer's queued messages. */
     readonly remoteRequestGate?: RemoteRequestGateShape;
+    /** Outside agents' live grants (their queued messages, their answers). */
+    readonly outsideConnections?: OutsideAgentConnectionsShape;
     /** Scheduled tasks' answers for agents. */
     readonly scheduledTaskNotes?: ScheduledTaskNotesShape;
     /** The reactor's reads of a thread fail while this says so. */
@@ -601,6 +607,11 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         input?.scheduledTaskNotes !== undefined
           ? Layer.succeed(ScheduledTaskNotes, input.scheduledTaskNotes)
+          : Layer.empty,
+      ),
+      Layer.provideMerge(
+        input?.outsideConnections !== undefined
+          ? Layer.succeed(OutsideAgentConnections, input.outsideConnections)
           : Layer.empty,
       ),
       // No checkpoint reactor here to report captures done: hand over at once.
@@ -4889,6 +4900,97 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.messages.find((entry) => entry.id === first)).toMatchObject({
         role: "user",
         text: "then write tests",
+      });
+    });
+
+    describe("an outside agent's messages", () => {
+      const kept = OutsideAgentConnectionId.make("connection-kept");
+      const removed = OutsideAgentConnectionId.make("connection-removed");
+      const outsideConnections: OutsideAgentConnectionsShape = {
+        authenticate: () => Effect.succeed(null),
+        grant: (connectionId) =>
+          Effect.succeed(
+            connectionId === kept
+              ? {
+                  connectionId,
+                  name: "Grok Bot",
+                  access: "work",
+                  maxRuntimeMode: "full-access",
+                  projectIds: null,
+                }
+              : null,
+          ),
+      };
+      const queueOutside = (
+        harness: Awaited<ReturnType<typeof createHarness>>,
+        messageId: MessageId,
+        connectionId: OutsideAgentConnectionId,
+      ) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.follow-up.submit",
+            commandId: CommandId.make(`cmd-outside-${messageId}`),
+            threadId,
+            turnId,
+            message: { messageId, role: "user", text: `from ${connectionId}`, attachments: [] },
+            delivery: "queue",
+            fromOutside: {
+              connectionId,
+              name: "Grok Bot",
+              access: "work",
+              maxRuntimeMode: "full-access",
+            },
+            createdAt: "2026-01-01T00:00:02.000Z",
+          }),
+        );
+
+      it("sends one under its connection's grant as it is then, and takes back one whose connection was removed", async () => {
+        const harness = await createHarness({ outsideConnections });
+        const gone = asMessageId("outside-gone");
+        const sent = asMessageId("outside-sent");
+        await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+        await queueOutside(harness, gone, removed);
+        await queueOutside(harness, sent, kept);
+        await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 2);
+        expect(harness.steerTurn).not.toHaveBeenCalled();
+
+        // The session is free before the turn's record says how it ended
+        // (its checkpoint comes after): the message waits for that.
+        await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+        await Effect.runPromise(Effect.sleep("100 millis"));
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.complete",
+            commandId: CommandId.make("cmd-outside-turn-complete"),
+            threadId,
+            turnId,
+            state: "completed",
+            completedAt: "2026-01-01T00:00:03.500Z",
+            createdAt: "2026-01-01T00:00:03.500Z",
+          }),
+        );
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ threadId, messageId: sent });
+        const thread = await readThread(harness);
+        expect(thread?.queuedFollowUps ?? []).toEqual([]);
+        expect(thread?.messages.find((entry) => entry.id === sent)).toMatchObject({
+          fromOutside: { connectionId: kept },
+        });
+        expect(thread?.messages.some((entry) => entry.id === gone)).toBe(false);
+      });
+
+      it("takes them back when the turn they wait on doesn't finish", async () => {
+        const harness = await createHarness({ outsideConnections });
+        await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+        await queueOutside(harness, asMessageId("outside-waiting"), kept);
+        await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+
+        await setSession(harness, "interrupted", "2026-01-01T00:00:03.000Z");
+        await waitFor(
+          async () => ((await readThread(harness))?.queuedFollowUps ?? []).length === 0,
+        );
+        expect(harness.sendTurn).not.toHaveBeenCalled();
       });
     });
 

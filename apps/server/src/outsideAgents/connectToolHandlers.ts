@@ -62,6 +62,7 @@ import {
   type OrchestrationThreadSearchInput,
   ApprovalRequestId,
   type OutsideAgentAccess,
+  type OutsideAgentReach,
   type OutsideAgentConnectionId,
   type OutsideTurnOrigin,
   type ProjectId,
@@ -71,6 +72,7 @@ import {
   type ScheduledTaskRequest,
   type ServerProvider,
   ThreadId,
+  OrchestrationDispatchCommandError,
 } from "@threadlines/contracts";
 import {
   APPROVAL_ACTIVITY_KINDS,
@@ -87,6 +89,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/ai";
 
@@ -102,7 +105,14 @@ import {
 } from "../orchestration/childThreadAgents.ts";
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns.ts";
-import { outsideCeilingDetail, outsideTurnBusy } from "../orchestration/outsideTurns.ts";
+import { ForwardedGrantCap } from "./forwardedCalls.ts";
+import { type FoundComputer, type OtherComputersShape, peerAgentOf } from "./OtherComputers.ts";
+import {
+  OUTSIDE_ALREADY_QUEUED,
+  outsideCeilingDetail,
+  outsideQueuedOf,
+  outsideTurnBusy,
+} from "../orchestration/outsideTurns.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type {
   ThreadBootstrapShape,
@@ -110,20 +120,21 @@ import type {
 } from "../orchestration/Services/ThreadBootstrap.ts";
 import {
   agentForCaller,
-  clipText,
+  clipMessageText,
   defaultThreadAgent,
   listThreadAgents,
   modelLabel,
+  READ_MESSAGE_NOT_FOUND,
   readThreadPage,
   relatedThreadTitles,
   requestedAgent,
   summarizeThread,
   THREAD_PROMPT_CHAR_LIMIT,
-  THREAD_READ_MESSAGE_CHAR_LIMIT,
   THREAD_TITLE_CHAR_LIMIT,
   threadLastTurn,
   threadStatus,
   type ThreadStatusFeed,
+  type ThreadStatusReading,
   watchThreadStatus,
 } from "../threads/threadOperations.ts";
 import {
@@ -143,6 +154,9 @@ import {
 import {
   type AgentsResult,
   type AgentsTool,
+  type ComputersResult,
+  ConnectToolkit,
+  type ProjectsTool,
   INBOX_EVENTS_LIMIT,
   type InboxEvent,
   type InboxNeedsYou,
@@ -285,6 +299,8 @@ export interface ConnectToolDeps {
   readonly record?: Pick<AssistantEventsShape, "position" | "since">;
   /** The pull request records the app keeps (PullRequestService). Absent: none. */
   readonly pullRequests?: Pick<PullRequestServiceShape, "list" | "lookup">;
+  /** The linked computers calls may name (`computer`, OtherComputers). Absent: none. */
+  readonly otherComputers?: Pick<OtherComputersShape, "here" | "find" | "reach" | "call">;
 }
 
 /** A project as these tools see it. */
@@ -315,6 +331,67 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * pruned, and new for each attempt, since a refused one leaves a rejected
  * receipt under its command id.
  */
+/** The tools a call can send to another computer: all but `computers`. */
+type ForwardedTool = Exclude<keyof typeof ConnectToolkit.tools, "computers">;
+type ForwardedInput<Name extends ForwardedTool> = Tool.Parameters<
+  (typeof ConnectToolkit.tools)[Name]
+>;
+type ForwardedResult<Name extends ForwardedTool> = Tool.Success<
+  (typeof ConnectToolkit.tools)[Name]
+>;
+
+/** The level a tool needs, checked here before it goes to another computer. */
+const FORWARDED_LEVEL: Readonly<Record<ForwardedTool, OutsideAgentAccess>> = {
+  projects: "see",
+  agents: "see",
+  threads_list: "see",
+  thread_read: "see",
+  thread_wait: "see",
+  inbox: "see",
+  thread_changes: "see",
+  thread_start: "start",
+  thread_send: "start",
+  thread_stop: "start",
+  thread_answer: "work",
+};
+
+/** Tools that change something there: a lost answer may hide one that was made. */
+const FORWARD_CHANGES: ReadonlySet<ForwardedTool> = new Set([
+  "thread_start",
+  "thread_send",
+  "thread_stop",
+  "thread_answer",
+]);
+
+/** What every answer of a tool must have besides its outcome, for one this computer gives itself. */
+const EMPTY_ANSWERS: Readonly<Record<ForwardedTool, object>> = {
+  projects: { projects: [] },
+  agents: { agents: [], default: null, unavailable: [] },
+  threads_list: { threads: [] },
+  thread_read: { messages: [], next: null, more: false },
+  thread_wait: {},
+  inbox: { needsYou: [], finished: [], failed: [], more: false, recordKept: false },
+  thread_changes: {},
+  thread_start: {},
+  thread_send: {},
+  thread_stop: {},
+  thread_answer: {},
+};
+
+/** How much sooner a wait on another computer ends than this door's longest, for the trip back. */
+const FORWARD_WAIT_MARGIN_SECONDS = 5;
+
+/** How long a forwarded call may take: a wait its seconds and the trip; a local start its setup. */
+const forwardTimeout = (name: ForwardedTool, input: object): Duration.Duration =>
+  name === "thread_wait"
+    ? Duration.seconds(((input as { readonly seconds?: number }).seconds ?? 0) + 15)
+    : name === "thread_start"
+      ? Duration.minutes(10)
+      : Duration.seconds(60);
+
+/** The start of a queued send's command id, which an answer after a restart tells apart. */
+const OUTSIDE_QUEUE_COMMAND_PREFIX = "server:outside-queue:";
+
 const freshRequestIds = () => ({
   threadId: ThreadId.make(crypto.randomUUID()),
   messageId: MessageId.make(crypto.randomUUID()),
@@ -367,14 +444,46 @@ export const findProject = <Project extends ConnectProject>(
   };
 };
 
-/** The newest reply in a thread, clipped; null when it has none. */
-const newestReply = (thread: OrchestrationThread | undefined): string | null => {
+/**
+ * The newest reply in a thread, clipped, with its message (thread_read's
+ * `messageId`) and, when clipped, its whole length; nulls when it has none.
+ */
+const newestReply = (
+  thread: OrchestrationThread | undefined,
+  shownText: (text: string) => string,
+  /** Only this turn's reply (a followed message's); null: the thread's newest. */
+  turnId: string | null = null,
+): Pick<ThreadWaitResult, "reply" | "replyMessageId" | "replyLength"> => {
   const reply = thread?.messages.findLast(
-    (message) => message.role === "assistant" && message.text.trim().length > 0,
+    (message) =>
+      message.role === "assistant" &&
+      message.text.trim().length > 0 &&
+      (turnId === null || message.turnId === turnId),
   );
-  return reply === undefined
-    ? null
-    : clipText(reply.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT).text;
+  if (reply === undefined) return { reply: null, replyMessageId: null };
+  const clipped = clipMessageText(shownText(reply.text.trim()));
+  return {
+    reply: clipped.text,
+    replyMessageId: reply.id,
+    ...(clipped.clipped ? { replyLength: clipped.length } : {}),
+  };
+};
+
+/** What thread_wait says of a followed message that left the queue unsent. */
+const TAKEN_BACK =
+  "Your message was taken back before it was sent: the user pressed Stop or removed it, its turn didn't finish, or you may no longer send there. Read the thread, then send again if it still makes sense.";
+
+/** Whether `messageId` is neither in the thread nor waiting in its queue. */
+const messageTakenBack = (thread: OrchestrationThread, messageId: string) =>
+  !thread.messages.some((message) => message.id === messageId) &&
+  !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+
+/** The caller's messages waiting in the thread's queue, for a result; nothing when none. */
+const queuedOf = (caller: OutsideAgentCaller, thread: OrchestrationThread | undefined) => {
+  const queued = thread === undefined ? [] : outsideQueuedOf(thread, caller.connectionId);
+  return queued.length === 0
+    ? {}
+    : { queued: queued.map((entry) => ({ messageId: entry.messageId, at: entry.createdAt })) };
 };
 
 /** Whether a thread has a turn Stop can end. */
@@ -387,11 +496,21 @@ const hasRunningTurn = (thread: OrchestrationThread) =>
 
 export const makeConnectToolHandlers = (
   deps: ConnectToolDeps,
-  options: { readonly door?: ConnectToolDoor } = {},
+  options: {
+    readonly door?: ConnectToolDoor;
+    /**
+     * Applied to a message's whole text before a read clips it or cuts it into
+     * parts (the assistants door scrubs the home folder), so no part can
+     * start or end inside what it hides.
+     */
+    readonly scrubText?: (text: string) => string;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const door = options.door ?? "local";
     const assistant = door === "assistant";
+    /** What a message's text reads as here: whole, with the door's scrub applied first. */
+    const shownText = options.scrubText ?? ((text: string) => text);
     /** Where an assistant's setups run on after their answers: the handlers' own scope. */
     const scope = yield* Effect.scope;
     /** An assistant's starts still being set up (or failed before their thread existed), by thread id. */
@@ -584,7 +703,12 @@ export const makeConnectToolHandlers = (
         });
         const names = new Map<string, string | null>();
         for (const thread of own) {
-          if (countsAsRunning(thread) || inFlight.has(thread.id)) {
+          // A message of its own waiting in the queue holds the thread's place.
+          if (
+            countsAsRunning(thread) ||
+            inFlight.has(thread.id) ||
+            outsideQueuedOf(thread, caller.connectionId).length > 0
+          ) {
             names.set(thread.id, grantsProject(grant, thread.projectId) ? thread.title : null);
           }
         }
@@ -611,7 +735,10 @@ export const makeConnectToolHandlers = (
     // projects, agents
     // -------------------------------------------------------------------------
 
-    const projects = (caller: OutsideAgentCaller): Effect.Effect<ProjectsResult> =>
+    const projects = (
+      caller: OutsideAgentCaller,
+      _input?: Tool.Parameters<typeof ProjectsTool>,
+    ): Effect.Effect<ProjectsResult> =>
       Effect.gen(function* () {
         const gated = yield* gate(caller, "see");
         if ("refusal" in gated) return { ...gated.refusal, projects: [] };
@@ -787,6 +914,16 @@ export const makeConnectToolHandlers = (
         }
         const providers = yield* deps.providers;
         const titles = yield* relatedThreadTitles(target, deps.status.readShell);
+        const { missing, ...page } = readThreadPage(target, {
+          providers,
+          titles,
+          after: input.after,
+          limit: input.limit,
+          messageId: input.messageId,
+          offset: input.offset,
+          shownText,
+        });
+        if (missing) return { outcome: "not_found", detail: READ_MESSAGE_NOT_FOUND, ...none };
         const waiting = (yield* deps.status.scheduleAnswerWaiting).has(target.id);
         return {
           outcome: "ok",
@@ -797,7 +934,8 @@ export const makeConnectToolHandlers = (
             titleOf: (threadId) => titles.get(threadId),
           }),
           ...(yield* waitingOnOf(visible.shell, waiting, target)),
-          ...readThreadPage(target, { providers, titles, after: input.after, limit: input.limit }),
+          ...queuedOf(caller, target),
+          ...page,
         } satisfies OutsideThreadReadResult;
       });
 
@@ -838,8 +976,38 @@ export const makeConnectToolHandlers = (
           }
           seconds = Math.max(0, seconds - ((yield* nowMillis) - startedAt) / 1000);
         }
+        // Following one message: it may have left the queue unsent already.
+        const followed = input.messageId?.trim();
+        const isFollowed = (queued: { readonly messageId: string }) =>
+          queued.messageId === followed;
+        if (followed !== undefined && followed.length > 0) {
+          const before = yield* deps.readThread(visible.shell.id);
+          if (before !== undefined && messageTakenBack(before, followed)) {
+            return { outcome: "taken_back", detail: TAKEN_BACK };
+          }
+        }
+        // Done once it isn't working and none of the caller's messages still
+        // waits in its queue to start the next turn. Following one message:
+        // done once that message's turn ended (its turn is the newest one
+        // when it leaves the queue), even if another turn starts right after.
+        const following = followed !== undefined && followed.length > 0;
+        let followedTurn: string | null = null;
+        const isDone = (reading: ThreadStatusReading) => {
+          const shell = reading.shell;
+          if (shell === undefined) return true;
+          if (!following) {
+            return (
+              reading.status?.word !== "working" &&
+              outsideQueuedOf(shell, caller.connectionId).length === 0
+            );
+          }
+          if ((shell.queuedFollowUps ?? []).some(isFollowed)) return false;
+          followedTurn ??= shell.latestTurn?.turnId ?? null;
+          if (followedTurn !== null && shell.latestTurn?.turnId !== followedTurn) return true;
+          return reading.status?.word !== "working";
+        };
         const settled = yield* watchThreadStatus(deps.status, visible.shell.id).pipe(
-          Stream.filter((reading) => reading.status?.word !== "working"),
+          Stream.filter(isDone),
           Stream.runHead,
           Effect.timeoutOption(Duration.millis(seconds * 1000)),
           Effect.map(Option.flatten),
@@ -855,8 +1023,15 @@ export const makeConnectToolHandlers = (
           : (yield* deps.status.scheduleAnswerWaiting).has(shell.id);
         const providers = yield* deps.providers;
         const thread = yield* deps.readThread(shell.id);
+        const takenBack =
+          Option.isSome(settled) &&
+          followed !== undefined &&
+          followed.length > 0 &&
+          thread !== undefined &&
+          messageTakenBack(thread, followed);
         return {
-          outcome: Option.isSome(settled) ? "done" : "still_working",
+          outcome: takenBack ? "taken_back" : Option.isSome(settled) ? "done" : "still_working",
+          ...(takenBack ? { detail: TAKEN_BACK } : {}),
           thread: outsideSummary(caller, shell, {
             projectName: still.project.title,
             providers,
@@ -864,7 +1039,8 @@ export const makeConnectToolHandlers = (
             titleOf: () => undefined,
           }),
           ...(yield* waitingOnOf(shell, waiting, thread)),
-          reply: newestReply(thread),
+          ...newestReply(thread, shownText, following && !takenBack ? followedTurn : null),
+          ...queuedOf(caller, thread),
         } satisfies ThreadWaitResult;
       });
 
@@ -1290,6 +1466,15 @@ export const makeConnectToolHandlers = (
               };
         }
         if (row.tool === "thread_send") {
+          // A restart takes back what was queued and not yet sent.
+          if (reached && row.commandId?.startsWith(OUTSIDE_QUEUE_COMMAND_PREFIX) === true) {
+            return {
+              outcome: "failed" as const,
+              detail:
+                "Threadlines restarted after this message was queued, and a restart takes queued messages back. Read the thread to see whether it went, then send again with a new requestId.",
+              ...(row.threadId !== null ? { threadId: row.threadId } : {}),
+            };
+          }
           return reached
             ? { outcome: "sent" as const, detail: "Sent.", threadId: row.threadId ?? undefined }
             : {
@@ -1586,7 +1771,11 @@ export const makeConnectToolHandlers = (
               interactionMode: "default",
               branch: placement.kind === "worktree" ? placement.baseBranch : placement.branch,
               worktreePath: null,
-              outsideOrigin: { connectionId: caller.connectionId, name: caller.name },
+              outsideOrigin: {
+                connectionId: caller.connectionId,
+                name: caller.name,
+                ...(caller.assistant !== undefined ? { assistant: caller.assistant } : {}),
+              },
               createdAt,
             },
             ...(placement.kind === "worktree"
@@ -1697,7 +1886,21 @@ export const makeConnectToolHandlers = (
             }
             yield* Deferred.succeed(entry.settled, undefined);
           });
-        const setUpLater = deps.bootstrap.runTurnStart(command).pipe(
+        // The setup runs after the answer: a connection removed (or, through
+        // another computer, unlinked) before it begins starts nothing.
+        const stillAllowed = Effect.map(
+          deps.connections.grant(caller.connectionId),
+          (live) => live !== null && live.access !== "see",
+        );
+        const setUpLater = Effect.flatMap(stillAllowed, (allowed) =>
+          allowed
+            ? deps.bootstrap.runTurnStart(command)
+            : Effect.fail(
+                new OrchestrationDispatchCommandError({
+                  message: `${caller.name} was removed in Threadlines before this thread was set up.`,
+                }),
+              ),
+        ).pipe(
           Effect.matchEffect({
             onSuccess: () => setupEnded(started, "started"),
             onFailure: (error) =>
@@ -1881,12 +2084,35 @@ export const makeConnectToolHandlers = (
             threadId: thread.id,
           };
         }
-        const busy = (inFlight: ReadonlySet<ThreadId>, current: OrchestrationThread) =>
-          inFlight.has(current.id)
-            ? "It's still being set up. Wait for it with thread_wait, then send again."
-            : outsideTurnBusy(current);
-        const early = busy(deps.limits.inFlight(caller.connectionId), thread);
-        if (early !== null) return { outcome: "busy", detail: early, threadId: thread.id };
+        // A send that came from another computer never waits in the queue
+        // here: it would run later, when that computer can no longer say no.
+        const forwarded = (yield* ForwardedGrantCap.useSync((cap) => cap)) !== null;
+        // Idle: a turn now. At work: its next turn, queued (one per
+        // connection per thread). Waiting on the user, or being set up: busy.
+        const route = (inFlight: ReadonlySet<ThreadId>, current: OrchestrationThread) => {
+          if (inFlight.has(current.id)) {
+            return {
+              type: "busy" as const,
+              detail: "It's still being set up. Wait for it with thread_wait, then send again.",
+            };
+          }
+          const busy = outsideTurnBusy(current);
+          if (busy === null) return { type: "send" as const };
+          if (busy.kind !== "working" || forwarded) {
+            return { type: "busy" as const, detail: busy.detail };
+          }
+          if (outsideQueuedOf(current, caller.connectionId).length > 0) {
+            return { type: "busy" as const, detail: OUTSIDE_ALREADY_QUEUED };
+          }
+          const turnId = current.session?.activeTurnId ?? current.latestTurn?.turnId ?? null;
+          return turnId === null
+            ? { type: "busy" as const, detail: busy.detail }
+            : { type: "queue" as const, turnId };
+        };
+        const early = route(deps.limits.inFlight(caller.connectionId), thread);
+        if (early.type === "busy") {
+          return { outcome: "busy", detail: early.detail, threadId: thread.id };
+        }
         // A start a restart cut off left it without its first turn, and maybe
         // without its worktree: it is the user's to delete, not to work in.
         if (!thread.messages.some((message) => message.role === "user")) {
@@ -1899,30 +2125,59 @@ export const makeConnectToolHandlers = (
         }
 
         const ids = freshRequestIds();
-        const { commandId } = ids;
+        const queueing = early.type === "queue";
+        // A queued send's command id says so, for an answer after a restart.
+        const commandId = queueing
+          ? CommandId.make(`${OUTSIDE_QUEUE_COMMAND_PREFIX}${crypto.randomUUID()}`)
+          : ids.commandId;
         const now = yield* nowMillis;
         const createdAt = isoOf(now);
-        const command: OrchestrationCommand = {
-          type: "thread.turn.start",
-          commandId,
-          threadId: thread.id,
-          message: { messageId: ids.messageId, role: "user", text: input.text, attachments: [] },
-          runtimeMode: thread.runtimeMode,
-          interactionMode: thread.interactionMode,
-          fromOutside: outsideOrigin(caller, grant),
-          createdAt,
+        const origin = outsideOrigin(caller, grant);
+        const message = {
+          messageId: ids.messageId,
+          role: "user" as const,
+          text: input.text,
+          attachments: [],
         };
+        const command: OrchestrationCommand =
+          early.type === "queue"
+            ? {
+                type: "thread.follow-up.submit",
+                commandId,
+                threadId: thread.id,
+                turnId: early.turnId,
+                message,
+                delivery: "queue",
+                fromOutside: origin,
+                createdAt,
+              }
+            : {
+                type: "thread.turn.start",
+                commandId,
+                threadId: thread.id,
+                message,
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                fromOutside: origin,
+                createdAt,
+              };
         const admitted = yield* deps.limits.admit({
           connectionId: caller.connectionId,
           threadId: thread.id,
           decide: (inFlight) =>
             Effect.gen(function* () {
-              const stillBusy = busy(inFlight, thread);
-              if (stillBusy !== null) {
-                return { outcome: "busy" as const, detail: stillBusy, threadId: thread.id };
+              const now = route(inFlight, thread);
+              if (now.type === "busy") {
+                return { outcome: "busy" as const, detail: now.detail, threadId: thread.id };
               }
+              // Queued behind a running thread of its own, it adds none.
+              const addsRunning = !(
+                queueing && thread.outsideOrigin?.connectionId === caller.connectionId
+              );
               const running = yield* runningThreads(caller, grant, inFlight);
-              if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
+              if (addsRunning && running.length >= CONNECT_RUNNING_THREADS) {
+                return runningLimit(running);
+              }
               return yield* claim(caller, {
                 connectionId: caller.connectionId,
                 requestId,
@@ -1936,11 +2191,24 @@ export const makeConnectToolHandlers = (
           work: deps.engine.dispatch(command).pipe(
             Effect.matchEffect({
               onSuccess: () =>
-                remember(caller, requestId, {
-                  outcome: "sent" as const,
-                  detail: "Sent. It's working on it; use thread_wait to follow it.",
-                  threadId: thread.id,
-                }),
+                remember(
+                  caller,
+                  requestId,
+                  queueing
+                    ? {
+                        outcome: "queued" as const,
+                        detail:
+                          "It's working, so your message waits and goes as its next turn. thread_wait with this messageId follows it.",
+                        threadId: thread.id,
+                        messageId: ids.messageId,
+                      }
+                    : {
+                        outcome: "sent" as const,
+                        detail: "Sent. It's working on it; use thread_wait to follow it.",
+                        threadId: thread.id,
+                        messageId: ids.messageId,
+                      },
+                ),
               onFailure: (error) =>
                 forget(caller, requestId).pipe(
                   Effect.as(
@@ -2222,7 +2490,146 @@ export const makeConnectToolHandlers = (
         );
       });
 
-    return {
+    // -------------------------------------------------------------------------
+    // Other computers (docs/design/assistants.md, "Other computers")
+    // -------------------------------------------------------------------------
+
+    /** The user's computers this connection may work on: this one, and the linked ones, asked live. */
+    const computers = (caller: OutsideAgentCaller): Effect.Effect<ComputersResult> =>
+      Effect.gen(function* () {
+        const gated = yield* gate(caller, "see");
+        if ("refusal" in gated) return { ...gated.refusal, computers: [] };
+        const other = deps.otherComputers;
+        const self = other === undefined ? null : yield* other.here;
+        const here = {
+          id: self?.environmentId ?? "here",
+          name: self?.label ?? "This computer",
+          here: true,
+          allowed: "yes" as const,
+          online: true,
+        };
+        // One that came through another computer works only here.
+        if (other === undefined || gated.grant.linked === true) {
+          return { outcome: "ok", computers: [here] };
+        }
+        const reach = yield* other
+          .reach(caller.connectionId)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<OutsideAgentReach> => []));
+        return {
+          outcome: "ok",
+          computers: [
+            here,
+            ...reach.map((entry) => ({
+              id: entry.environmentId,
+              name: entry.computer,
+              here: false,
+              allowed:
+                entry.state === "allowed"
+                  ? ("yes" as const)
+                  : entry.state === "asked"
+                    ? ("asked" as const)
+                    : entry.state === "offline"
+                      ? ("unknown" as const)
+                      : ("no" as const),
+              online: entry.state !== "offline",
+            })),
+          ],
+        };
+      });
+
+    /**
+     * A call naming another computer: checked against this connection's grant
+     * here first, then run there (`peer.outside.call`) as what that computer
+     * allowed, never above what it may do here. What that computer answers is
+     * this tool's answer; when it can't be reached, `offline`.
+     */
+    const elsewhere = <Name extends ForwardedTool>(
+      name: Name,
+      caller: OutsideAgentCaller,
+      input: ForwardedInput<Name>,
+      computerName: string,
+      /** The call as this computer runs it, when `computer` names this one. */
+      runHere: Effect.Effect<ForwardedResult<Name>>,
+    ): Effect.Effect<ForwardedResult<Name>> =>
+      Effect.gen(function* () {
+        const empty = EMPTY_ANSWERS[name] as ForwardedResult<Name>;
+        const answer = (outcome: string, detail: string) =>
+          ({ ...empty, outcome, detail }) as ForwardedResult<Name>;
+        const other = deps.otherComputers;
+        const found: FoundComputer =
+          other === undefined ? { kind: "none" } : yield* other.find(computerName);
+        if (found.kind === "here") return yield* runHere;
+        const gated = yield* gate(caller, FORWARDED_LEVEL[name]);
+        if ("refusal" in gated) return { ...empty, ...gated.refusal } as ForwardedResult<Name>;
+        if (gated.grant.linked === true) {
+          return answer("not_allowed", "From this computer you can only work here.");
+        }
+        if (found.kind === "ambiguous") {
+          return answer(
+            "not_found",
+            `More than one linked computer is called "${computerName}". Pass its id from computers.`,
+          );
+        }
+        if (other === undefined || found.kind === "none") {
+          return answer(
+            "not_found",
+            `No linked computer is called "${computerName}". computers lists the ones you can use.`,
+          );
+        }
+        const computer = found.computer;
+        const tool = ConnectToolkit.tools[name];
+        const { computer: _computer, ...rest } = input;
+        // A wait there ends in time for its answer to come back through here.
+        const forwarded =
+          name === "thread_wait"
+            ? {
+                ...rest,
+                seconds: Math.max(
+                  0,
+                  Math.min(
+                    waitMaxSeconds - FORWARD_WAIT_MARGIN_SECONDS,
+                    (rest as { readonly seconds?: number }).seconds ?? waitDefaultSeconds,
+                  ),
+                ),
+              }
+            : rest;
+        const encoded = yield* Schema.encodeEffect(tool.parametersSchema as Schema.Codec<unknown>)(
+          forwarded,
+        ).pipe(Effect.orDie);
+        const result = yield* other
+          .call(
+            computer,
+            {
+              agent: peerAgentOf(gated.grant, door),
+              tool: name,
+              input: encoded,
+            },
+            forwardTimeout(name, forwarded),
+          )
+          .pipe(Effect.result);
+        if (result._tag === "Failure") {
+          return answer(
+            "offline",
+            FORWARD_CHANGES.has(name)
+              ? `${computer.label} couldn't be reached (${result.failure.detail}). It may have got this before it went: call again with the same requestId, which never does it twice.`
+              : `${computer.label} couldn't be reached (${result.failure.detail}). Try again when it's on.`,
+          );
+        }
+        if (result.success.outcome === "refused") {
+          return answer("not_allowed", result.success.detail);
+        }
+        const decoded = yield* Schema.decodeUnknownEffect(
+          tool.successSchema as Schema.Codec<unknown>,
+        )(result.success.result).pipe(Effect.result);
+        return decoded._tag === "Success"
+          ? (decoded.success as ForwardedResult<Name>)
+          : answer(
+              "failed",
+              `${computer.label} answered in a way this computer can't read. Update Threadlines on both.`,
+            );
+      });
+
+    const local = {
       projects,
       agents,
       threads_list: threadsList,
@@ -2234,6 +2641,36 @@ export const makeConnectToolHandlers = (
       thread_send: threadSend,
       thread_stop: threadStop,
       thread_answer: threadAnswer,
+    };
+    /** Each tool: here, or on the computer its `computer` names. */
+    const routed = <Name extends ForwardedTool>(name: Name): (typeof local)[Name] => {
+      // The handler here takes the same parameters and answers the same result as the tool.
+      const here = local[name] as unknown as (
+        caller: OutsideAgentCaller,
+        input: ForwardedInput<Name>,
+      ) => Effect.Effect<ForwardedResult<Name>>;
+      const run = (caller: OutsideAgentCaller, input: ForwardedInput<Name>) => {
+        const computer = (input as { readonly computer?: string } | undefined)?.computer?.trim();
+        return computer === undefined || computer.length === 0
+          ? here(caller, input)
+          : elsewhere(name, caller, input, computer, here(caller, input));
+      };
+      return run as unknown as (typeof local)[Name];
+    };
+
+    return {
+      computers,
+      projects: routed("projects"),
+      agents: routed("agents"),
+      threads_list: routed("threads_list"),
+      thread_read: routed("thread_read"),
+      thread_wait: routed("thread_wait"),
+      inbox: routed("inbox"),
+      thread_changes: routed("thread_changes"),
+      thread_start: routed("thread_start"),
+      thread_send: routed("thread_send"),
+      thread_stop: routed("thread_stop"),
+      thread_answer: routed("thread_answer"),
     };
   });
 

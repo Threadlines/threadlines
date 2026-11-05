@@ -9,6 +9,7 @@ import type {
   OutsideAgentAccess,
   OutsideAgentConnection,
   OutsideAgentGrant,
+  OutsideAgentRef,
 } from "@threadlines/contracts";
 import {
   assistantDisplayName,
@@ -47,6 +48,18 @@ export const connectionNameOf = (row: NamedRow) =>
     ? row.clientName
     : assistantDisplayName(assistantOfRow(row), row.clientName);
 
+/** Who a call comes from, as threads and messages remember it: id, name and, when known, which assistant. */
+export const connectionRefOf = (
+  row: NamedRow & Pick<OutsideAgentConnectionRow, "connectionId">,
+): OutsideAgentRef => {
+  const assistant = assistantOfRow(row);
+  return {
+    connectionId: row.connectionId,
+    name: connectionNameOf(row),
+    ...(assistant !== null ? { assistant } : {}),
+  };
+};
+
 export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentConnection => ({
   connectionId: row.connectionId,
   name: connectionNameOf(row),
@@ -55,6 +68,7 @@ export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentCon
   kind: row.kind,
   signIn: row.signIn,
   identity: row.identity,
+  via: row.via,
   access: row.access,
   maxRuntimeMode: row.maxRuntimeMode,
   projectIds: row.projectIds,

@@ -60,7 +60,7 @@ import {
 } from "../net/outboundHttps.ts";
 import { READ_RETRY_MS } from "../pushAlerts/alertChecks.ts";
 import { PushAlerts } from "../pushAlerts/PushAlerts.ts";
-import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from "../pushAlerts/pushAlertRules.ts";
+import { MAX_DELIVERY_ATTEMPTS, retryDelayMs, turnAlertId } from "../pushAlerts/pushAlertRules.ts";
 import { connectionNameOf } from "../outsideAgents/connectionShapes.ts";
 import {
   OutsideAgentConnectionRepository,
@@ -152,6 +152,8 @@ const CHECK_LOOKUP_WAIT_MS = 3_000;
 const LOCK_WAIT_MS = 5_000;
 
 const KIND_ORDER: ReadonlyArray<AssistantAlertKind> = ["needs_you", "finished", "failed"];
+/** A finished event about a turn has this subject, then the turn's id (pushAlertRules). */
+const TURN_SUBJECT_PREFIX = turnAlertId("");
 const KIND_OF_NAME: Record<AssistantEventName, AssistantAlertKind> = {
   "thread.needs_you": "needs_you",
   "thread.finished": "finished",
@@ -244,15 +246,31 @@ export const answerVerdict = (status: number): AnswerVerdict => {
   return { type: "failed", detail: `The receiver turned the alert down (${status}).` };
 };
 
-/** An Authorization value that can go in a header as typed. */
-const checkAuthorization = (value: string) =>
-  value.length > AUTHORIZATION_MAX_LENGTH
-    ? Effect.fail(failure("That Authorization value is too long."))
-    : /[^\t\x20-\x7e]/u.test(value)
-      ? Effect.fail(
-          failure("The Authorization value can only have plain letters, numbers and symbols."),
-        )
-      : Effect.succeed(value);
+/**
+ * What goes in the Authorization header for what the user pasted. Grok shows a
+ * routine's key as a whole header line, "Authorization: Bearer crsr_…", so a
+ * leading "Authorization:" is dropped, and a bare `crsr_` key gets the Bearer
+ * Grok needs. Used when a value is saved and again when one is sent, so values
+ * saved before this also work.
+ */
+const authorizationHeaderValue = (typed: string) => {
+  const value = typed.replace(/^\s*authorization\s*:\s*/iu, "").trim();
+  return value.startsWith("crsr_") ? `Bearer ${value}` : value;
+};
+
+/** An Authorization value that can go in a header, as it will be sent. */
+const checkAuthorization = (typed: string) => {
+  const value = authorizationHeaderValue(typed);
+  return value === ""
+    ? Effect.fail(failure("That's only the header name. Paste its value too, like Bearer crsr_…."))
+    : value.length > AUTHORIZATION_MAX_LENGTH
+      ? Effect.fail(failure("That Authorization value is too long."))
+      : /[^\t\x20-\x7e]/u.test(value)
+        ? Effect.fail(
+            failure("The Authorization value can only have plain letters, numbers and symbols."),
+          )
+        : Effect.succeed(value);
+};
 
 const toContract = (
   row: AlertTargetRow,
@@ -266,6 +284,7 @@ const toContract = (
         kinds: row.names.map((name) => KIND_OF_NAME[name]),
         projectIds: row.projectIds,
         skipViewed: row.skipViewed,
+        finishedWhenAsked: row.finishedWhenAsked,
         state: row.state,
         hasAuthorization: row.authorizationSecret !== null,
         refusedSince: row.refusedSince,
@@ -477,6 +496,7 @@ const make = (transport: AlertTransport) =>
               targetId,
               ...fields,
               skipViewed: input.skipViewed,
+              finishedWhenAsked: input.finishedWhenAsked,
               authorizationSecret,
               startSeq: position.lastSeq,
               now,
@@ -531,6 +551,7 @@ const make = (transport: AlertTransport) =>
                 targetId: row.targetId,
                 ...fields,
                 skipViewed: input.skipViewed,
+                finishedWhenAsked: input.finishedWhenAsked ?? row.finishedWhenAsked,
                 ...(credentialsChanged ? { authorizationSecret: nextSecret } : {}),
                 newCredentials: credentialsChanged || fields.url !== row.url,
                 now,
@@ -673,7 +694,11 @@ const make = (transport: AlertTransport) =>
             body,
           }),
           ...(authorization !== null
-            ? { authorization: Buffer.from(authorization).toString("utf8") }
+            ? {
+                authorization: authorizationHeaderValue(
+                  Buffer.from(authorization).toString("utf8"),
+                ),
+              }
             : {}),
           ...(row.subscriptionId !== null ? { "x-mcp-subscription-id": row.subscriptionId } : {}),
         };
@@ -721,6 +746,52 @@ const make = (transport: AlertTransport) =>
             ),
             Effect.orElseSucceed(() => "unknown" as const),
           );
+
+    /**
+     * Whether an agent was asked to alert about the turn this finished or
+     * failed event is about; "unknown" when that couldn't be read.
+     */
+    const askedAbout = (event: AssistantEvent, subjectKey: string) => {
+      const turnId =
+        event.name !== "thread.needs_you" && subjectKey.startsWith(TURN_SUBJECT_PREFIX)
+          ? subjectKey.slice(TURN_SUBJECT_PREFIX.length)
+          : null;
+      return turnId === null
+        ? Effect.succeed(false)
+        : repo
+            .isAsked({ threadId: event.threadId, turnId })
+            .pipe(Effect.orElseSucceed(() => "unknown" as const));
+    };
+
+    const ask: AssistantAlertsShape["ask"] = (input) =>
+      Effect.gen(function* () {
+        const rows = yield* repo.list.pipe(stored("read the alert addresses"));
+        const now = yield* Clock.currentTimeMillis;
+        // The same rules the sender applies to a finished event of this project.
+        let receivers = 0;
+        for (const row of rows) {
+          if (row.state !== "on" || !row.names.includes("thread.finished")) continue;
+          if (row.projectIds !== null && !row.projectIds.includes(input.projectId)) continue;
+          if (row.kind === "subscription") {
+            if (row.expiresAt !== null && row.expiresAt <= iso(now)) continue;
+            const connection = yield* connectionOf(row);
+            if (connection === "removed") continue;
+            if (
+              connection !== "unknown" &&
+              connection.projectIds !== null &&
+              !connection.projectIds.includes(input.projectId)
+            ) {
+              continue;
+            }
+          }
+          receivers += 1;
+        }
+        if (receivers === 0) return { receivers, already: false };
+        const added = yield* repo
+          .addAsk({ threadId: input.threadId, turnId: input.turnId, now: iso(now) })
+          .pipe(stored("remember to send the alert"));
+        return { receivers, already: !added };
+      });
 
     /** One delivery, start to answer; "gone" when the target ended with it. */
     const deliver = (row: AlertTargetRow, delivery: AlertDeliveryRow) =>
@@ -774,12 +845,24 @@ const make = (transport: AlertTransport) =>
           }
         }
         // Edited since it was queued (other kinds or projects), General Chats,
-        // or a thread someone is looking at: not for this address now.
+        // or a thread someone is looking at: not for this address now. A turn
+        // an agent was asked to alert about goes out even while it's looked
+        // at (finished or failed), and is the only finished turn an "only when
+        // I ask" address takes.
         const wanted =
           !current.generalChat &&
           row.names.includes(current.event.name) &&
           (row.projectIds === null || row.projectIds.includes(current.event.projectId));
-        if (!wanted || (row.skipViewed && (yield* isViewed(current.event.threadId)))) {
+        const asked = wanted ? yield* askedAbout(current.event, current.subjectKey) : false;
+        if (asked === "unknown") {
+          yield* settle({ state: "pending", nextAttemptAt: iso(now + READ_RETRY_MS) });
+          return "done" as const;
+        }
+        if (
+          !wanted ||
+          (row.finishedWhenAsked && current.event.name === "thread.finished" && !asked) ||
+          (row.skipViewed && !asked && (yield* isViewed(current.event.threadId)))
+        ) {
           yield* settle({ state: "dropped" });
           return "done" as const;
         }
@@ -1363,6 +1446,7 @@ const make = (transport: AlertTransport) =>
       secret,
       subscribe,
       unsubscribe,
+      ask,
       start,
     });
   });

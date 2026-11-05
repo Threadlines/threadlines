@@ -34,6 +34,10 @@ export const GET: APIRoute = async () => {
       urlEntry(comparisonPath(comparison), new Date(comparison.checkedOn)),
     ),
     urlEntry("/changelog"),
+    urlEntry("/docs/assistants"),
+    urlEntry("/support"),
+    urlEntry("/privacy"),
+    urlEntry("/terms"),
     ...changelogEntries.map((entry) => urlEntry(changelogEntryPath(entry), entry.data.date)),
   ];
   const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join("")}</urlset>`;

@@ -1,8 +1,11 @@
-import type {
-  PullRequestCheck,
-  PullRequestDetail,
-  PullRequestMergeMethod,
+import {
+  ProviderDriverKind,
+  TurnId,
+  type PullRequestCheck,
+  type PullRequestDetail,
+  type PullRequestMergeMethod,
 } from "@threadlines/contracts";
+import type { PullRequestAutomationHold } from "@threadlines/shared/pullRequestAutoMerge";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
@@ -14,6 +17,7 @@ import {
   composerPullRequestChecksNotice,
   composerPullRequestChip,
   composerPullRequestRow,
+  composerPullRequestThreadHold,
 } from "./composerPullRequest.logic";
 
 const THREAD_PULL_REQUEST: ThreadPullRequest = {
@@ -349,7 +353,7 @@ function control(
   thread: {
     readonly threadAutoMerge?: PullRequestMergeMethod | null;
     readonly autoFix?: boolean;
-    readonly agentWorking?: boolean;
+    readonly threadHold?: PullRequestAutomationHold | null;
     readonly unpushedCommits?: number;
     readonly pushedHead?: string | null;
   } = {},
@@ -358,7 +362,7 @@ function control(
     detail: value,
     threadAutoMerge: thread.threadAutoMerge ?? null,
     autoFix: thread.autoFix ?? false,
-    agentWorking: thread.agentWorking ?? false,
+    threadHold: thread.threadHold ?? null,
     unpushedCommits: thread.unpushedCommits ?? 0,
     pushedHead: thread.pushedHead ?? null,
     now: NOW,
@@ -425,15 +429,26 @@ describe("composerAutoMergeControl", () => {
   it("does not promise a merge the server would hold back for the thread", () => {
     const ready = detail({ mergeGate: "clear", checks: [check("success", "build")] });
     // The agent may be about to push, so the server waits for its turn to end.
-    expect(control(ready, { agentWorking: true })).toEqual({
+    expect(control(ready, { threadHold: "turn" })).toEqual({
       kind: "server",
       checked: false,
       status: null,
     });
-    expect(control(ready, { agentWorking: true, threadAutoMerge: "squash" })).toEqual({
+    expect(control(ready, { threadHold: "turn", threadAutoMerge: "squash" })).toEqual({
       kind: "server",
       checked: true,
       status: "Waiting for the agent to finish",
+    });
+    // Or the agent waits on the user, who may ask for more first.
+    expect(control(ready, { threadHold: "question", threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for your answer",
+    });
+    expect(control(ready, { threadHold: "plan", threadAutoMerge: "squash" })).toEqual({
+      kind: "server",
+      checked: true,
+      status: "Waiting for you to review the plan",
     });
     expect(control(ready, { unpushedCommits: 1, threadAutoMerge: "squash" })).toEqual({
       kind: "server",
@@ -537,6 +552,53 @@ describe("composerAutoMergeControl", () => {
     expect(control(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } }))).toEqual({
       kind: "queued",
     });
+  });
+});
+
+describe("composerPullRequestThreadHold", () => {
+  function holdOf(thread: {
+    readonly turn: "running" | "completed";
+    readonly question?: boolean;
+    readonly plan?: boolean;
+    readonly childApproval?: boolean;
+    /** The session still names a turn, as one that failed can. */
+    readonly sessionTurn?: boolean;
+  }) {
+    return composerPullRequestThreadHold({
+      session: thread.sessionTurn
+        ? {
+            provider: ProviderDriverKind.make("claudeAgent"),
+            status: "error",
+            orchestrationStatus: "error",
+            activeTurnId: TurnId.make("turn-1"),
+            createdAt: "2026-09-01T01:00:00.000Z",
+            updatedAt: "2026-09-01T01:05:00.000Z",
+          }
+        : null,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: thread.turn,
+        requestedAt: "2026-09-01T01:00:00.000Z",
+        startedAt: "2026-09-01T01:00:00.000Z",
+        completedAt: thread.turn === "running" ? null : "2026-09-01T01:05:00.000Z",
+        assistantMessageId: null,
+      },
+      hasPendingApprovals: false,
+      pendingChildApproval: thread.childApproval ?? false,
+      hasPendingUserInput: thread.question ?? false,
+      hasActionableProposedPlan: thread.plan ?? false,
+    });
+  }
+
+  it("holds for what the user has to answer, mid-turn or after it, and for a plan once the turn is over", () => {
+    expect(holdOf({ turn: "completed" })).toBeNull();
+    expect(holdOf({ turn: "completed", question: true })).toBe("question");
+    expect(holdOf({ turn: "running", question: true })).toBe("question");
+    expect(holdOf({ turn: "completed", plan: true })).toBe("plan");
+    expect(holdOf({ turn: "running", plan: true })).toBe("turn");
+    // The server counts these the same way, though the open thread keeps them apart.
+    expect(holdOf({ turn: "completed", childApproval: true })).toBe("approval");
+    expect(holdOf({ turn: "completed", sessionTurn: true })).toBe("turn");
   });
 });
 

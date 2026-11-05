@@ -36,6 +36,7 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import { formatChildThreadCount, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
 import {
   PreviewCard,
   PreviewCardPopup,
@@ -280,6 +281,13 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
         {lineage?.startedBy ? (
           <HoverCardDetailRow icon={<CornerDownRightIcon className="size-3.5" />}>
             Started by {lineage.startedBy}
+          </HoverCardDetailRow>
+        ) : null}
+        {thread.outsideOrigin ? (
+          <HoverCardDetailRow
+            icon={<OutsideOriginMark origin={thread.outsideOrigin} className="size-3.5" />}
+          >
+            Started by {thread.outsideOrigin.name}
           </HoverCardDetailRow>
         ) : null}
         {lineage?.threads ? (

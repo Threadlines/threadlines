@@ -16,7 +16,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -46,6 +46,12 @@ import {
   ConnectComputerDialogHost,
   preloadConnectComputerDialog,
 } from "../components/settings/connections/JoinComputerDialog";
+import {
+  preloadReportProblemDialog,
+  ReportProblemDialog,
+  ReportProblemDialogHost,
+  useReportProblemMenuAction,
+} from "../components/ReportProblemDialog";
 import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
 import {
   preloadProviderSignInDialog,
@@ -84,8 +90,6 @@ import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useSettings } from "../hooks/useSettings";
 import { isUnreadFinishedWork } from "../components/Sidebar.logic";
 import { toSortableTimestamp } from "../lib/threadSort";
-import { openExternalUrl } from "../lib/externalLinks";
-import { reportIssueUrl } from "../lib/reportIssue";
 import type { SidebarThreadSummary } from "../types";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -261,6 +265,7 @@ function RootRouteView() {
         <DeviceRenameDialogHost />
         <ConnectComputerDialogHost />
         <WhatsNewDialogHost />
+        <ReportProblemDialogHost />
         <ExpandedImageViewerHost />
         <ProviderSignInDialogHost />
         {primaryEnvironmentAuthenticated ? <OutsideAgentsHost /> : null}
@@ -632,6 +637,10 @@ function StaleBuildErrorView() {
 function RouteErrorView({ error, reset }: ErrorComponentProps) {
   const message = errorMessage(error);
   const details = errorDetails(error);
+  // This screen replaces the root and its dialog host, so it keeps its own.
+  const [reporting, setReporting] = useState(false);
+  const startReport = useCallback(() => setReporting(true), []);
+  useReportProblemMenuAction(startReport);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
@@ -656,7 +665,7 @@ function RouteErrorView({ error, reset }: ErrorComponentProps) {
           <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
             Reload app
           </Button>
-          <Button size="sm" variant="outline" onClick={() => openExternalUrl(reportIssueUrl())}>
+          <Button size="sm" variant="outline" onClick={startReport}>
             Report this
           </Button>
         </div>
@@ -671,6 +680,7 @@ function RouteErrorView({ error, reset }: ErrorComponentProps) {
           </pre>
         </details>
       </section>
+      <ReportProblemDialog open={reporting} onOpenChange={setReporting} errorText={message} />
     </div>
   );
 }
@@ -848,6 +858,7 @@ function AppShellIdlePreloads() {
       void preloadProviderSignInDialog();
       void preloadOutsideAgentDialog();
       void preloadWhatsNewDialog();
+      void preloadReportProblemDialog();
     });
   }, [router, workspaceLoaded]);
 

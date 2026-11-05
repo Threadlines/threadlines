@@ -53,17 +53,38 @@ export const THREAD_TITLE_CHAR_LIMIT = 80;
 /** A prompt or message to a thread, at most this long. */
 export const THREAD_PROMPT_CHAR_LIMIT = 50_000;
 /** What a read returns of one message. */
-export const THREAD_READ_MESSAGE_CHAR_LIMIT = 4_000;
+const THREAD_READ_MESSAGE_CHAR_LIMIT = 4_000;
+/** What a read of one message by its id (`messageId`) returns of it at a time. */
+export const THREAD_READ_PART_CHAR_LIMIT = 20_000;
 const THREAD_READ_DEFAULT_LIMIT = 20;
 const THREAD_READ_MAX_LIMIT = 50;
 /** How many models an agent list shows per provider before "and N more". */
 const MODELS_LISTED_PER_PROVIDER = 12;
 
-/** `text` cut at `limit` characters, saying so. */
-export const clipText = (text: string, limit: number) =>
-  text.length > limit
-    ? { text: `${text.slice(0, limit)}\n[clipped; read the rest in the thread]`, clipped: true }
-    : { text, clipped: false };
+/** A read by `messageId` that names no message in the thread. */
+export const READ_MESSAGE_NOT_FOUND =
+  "This thread has no message with that messageId. Read the thread without one to list its messages.";
+
+/** Where to cut `text` at `at` or just before, so a character outside the BMP stays whole. */
+const cutAt = (text: string, at: number) => {
+  const code = text.charCodeAt(at - 1);
+  return at > 0 && at < text.length && code >= 0xd800 && code <= 0xdbff ? at - 1 : at;
+};
+
+/**
+ * A message's text as a read returns it: the first THREAD_READ_MESSAGE_CHAR_LIMIT
+ * characters, and when that cut it, how long it is and how to read the rest
+ * (thread_read with its `messageId`).
+ */
+export const clipMessageText = (text: string) => {
+  if (text.length <= THREAD_READ_MESSAGE_CHAR_LIMIT) return { text, clipped: false } as const;
+  const end = cutAt(text, THREAD_READ_MESSAGE_CHAR_LIMIT);
+  return {
+    text: `${text.slice(0, end)}\n[clipped: the first ${end.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters. thread_read with this messageId reads the rest.]`,
+    clipped: true,
+    length: text.length,
+  } as const;
+};
 
 /** A model's name as the model picker shows it. */
 export const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<ServerProvider>) => {
@@ -98,8 +119,9 @@ const statusOf = (word: Exclude<ThreadStatusWord, "needs the user">): ThreadStat
 /**
  * How a thread is doing, in the words the sidebar uses: blocked on the user
  * first (an approval, including a card asking about its agent's
- * scheduled-task or settings change, then a question), then running, then
- * waiting on background or child work, then how its last turn ended. `wrapped` is only
+ * scheduled-task or settings change, then a question that pauses the agent),
+ * then running, then a question it asked while working, then waiting on
+ * background or child work, then how its last turn ended. `wrapped` is only
  * the user's explicit Mark done; a plan its last turn left for the user to
  * act on comes after it (the user who filed the thread has decided). The
  * sidebar's automatic filing rules live in the client.
@@ -117,7 +139,9 @@ export function threadStatus(
   ) {
     return needsTheUser("approval");
   }
-  if (thread.hasPendingUserInput) {
+  // A question that pauses the agent needs the user now; one it asked in
+  // passing, while it keeps working, needs them once the work stops.
+  if (thread.hasBlockingUserInput ?? thread.hasPendingUserInput) {
     return needsTheUser("question");
   }
   const session = thread.session;
@@ -129,6 +153,10 @@ export function threadStatus(
         session.status === "starting"))
   ) {
     return statusOf("working");
+  }
+  // Like the sidebar, an agent answering on the side is still work going on.
+  if (thread.hasPendingUserInput && (thread.sideTurn ?? null) === null) {
+    return needsTheUser("question");
   }
   const awaitedTasks = session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount;
   if ((awaitedTasks ?? 0) > 0 || thread.awaitedChildThreadCount > 0) {
@@ -377,7 +405,11 @@ export const agentForCaller = ({
 
 /**
  * A page of a thread's messages, oldest first, as thread_read returns it
- * here and peer.thread.read returns it to a linked computer.
+ * here and peer.thread.read returns it to a linked computer. Each message is
+ * clipped (clipMessageText). With `messageId`, the page is that one message,
+ * from `offset` (default 0), THREAD_READ_PART_CHAR_LIMIT characters at a
+ * time with `nextOffset` while more follows; `missing` when the thread has
+ * no such message to read.
  */
 export function readThreadPage(
   target: OrchestrationThread,
@@ -386,8 +418,18 @@ export function readThreadPage(
     readonly titles: ReadonlyMap<string, string>;
     readonly after?: number | undefined;
     readonly limit?: number | undefined;
+    readonly messageId?: string | undefined;
+    readonly offset?: number | undefined;
+    /**
+     * What a reader is shown of each message's text, applied to the whole text
+     * before it is clipped or cut into parts (the assistants door scrubs the
+     * home folder), so offsets and lengths are of what it reads.
+     */
+    readonly shownText?: ((text: string) => string) | undefined;
   },
-): Pick<ThreadReadResult, "messages" | "next" | "more"> {
+): Pick<ThreadReadResult, "messages" | "next" | "more"> & { readonly missing?: true } {
+  const shown = (text: string) =>
+    input.shownText === undefined ? text.trim() : input.shownText(text.trim());
   const entries = roomAgentEntries(target, modelLabel(target.modelSelection, input.providers));
   const remoteOrigin = target.remoteOrigin ?? null;
   const names = {
@@ -410,6 +452,30 @@ export function readThreadPage(
       (left, right) =>
         sequenceOf(left) - sequenceOf(right) || left.createdAt.localeCompare(right.createdAt),
     );
+  const entryOf = (message: (typeof readable)[number], text: ThreadReadMessageText) => {
+    const { author, origin } = messageAuthor(message, names);
+    return {
+      messageId: message.id,
+      sequence: sequenceOf(message),
+      at: message.createdAt,
+      role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+      author,
+      origin,
+      ...text,
+      ...(message.streaming ? { streaming: true } : {}),
+    };
+  };
+  const wanted = input.messageId?.trim();
+  if (wanted !== undefined && wanted.length > 0) {
+    const index = readable.findIndex((message) => message.id === wanted);
+    const message = readable[index];
+    if (message === undefined) return { messages: [], next: null, more: false, missing: true };
+    return {
+      messages: [entryOf(message, messagePart(shown(message.text), input.offset))],
+      next: sequenceOf(message),
+      more: index < readable.length - 1,
+    };
+  }
   const limit = Math.max(
     1,
     Math.min(
@@ -428,22 +494,42 @@ export function readThreadPage(
   const last = page.at(-1);
   return {
     messages: page.map((message) => {
-      const { author, origin } = messageAuthor(message, names);
-      const clipped = clipText(message.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT);
-      return {
-        messageId: message.id,
-        sequence: sequenceOf(message),
-        at: message.createdAt,
-        role: message.role === "user" ? ("user" as const) : ("assistant" as const),
-        author,
-        origin,
+      const clipped = clipMessageText(shown(message.text));
+      return entryOf(message, {
         text: clipped.text,
-        ...(clipped.clipped ? { clipped: true } : {}),
-        ...(message.streaming ? { streaming: true } : {}),
-      };
+        ...(clipped.clipped ? { clipped: true, length: clipped.length } : {}),
+      });
     }),
     next: last !== undefined ? sequenceOf(last) : (after ?? null),
     more: after !== undefined && newer.length > page.length,
+  };
+}
+
+/** A read message's text and, when that's only part of it, where the part sits. */
+interface ThreadReadMessageText {
+  readonly text: string;
+  readonly clipped?: true;
+  readonly length?: number;
+  readonly offset?: number;
+  readonly nextOffset?: number;
+}
+
+/** `text` from `offset`, THREAD_READ_PART_CHAR_LIMIT characters at most. */
+function messagePart(text: string, rawOffset: number | undefined): ThreadReadMessageText {
+  const offset =
+    rawOffset !== undefined && Number.isFinite(rawOffset)
+      ? Math.min(text.length, Math.max(0, Math.floor(rawOffset)))
+      : 0;
+  if (offset === 0 && text.length <= THREAD_READ_PART_CHAR_LIMIT) return { text };
+  const end = cutAt(text, Math.min(text.length, offset + THREAD_READ_PART_CHAR_LIMIT));
+  // A cut that would leave nothing (one wide character right at the limit) takes it whole.
+  const stop = end > offset ? end : Math.min(text.length, offset + 2);
+  return {
+    text: text.slice(offset, stop),
+    clipped: true,
+    length: text.length,
+    offset,
+    ...(stop < text.length ? { nextOffset: stop } : {}),
   };
 }
 

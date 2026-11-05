@@ -40,6 +40,11 @@ export const USER_INPUT_ACTIVITY_KINDS: PendingRequestActivityKinds = {
  */
 export const PENDING_REQUEST_EXPIRED_REASON = "session-stopped";
 export const PENDING_REQUEST_INTERRUPTED_REASON = "turn-interrupted";
+/**
+ * A question answered with a message (Codex's, asked while it works), closed
+ * because the user wrote to its agent instead of using the question's card.
+ */
+export const PENDING_REQUEST_USER_MESSAGE_REASON = "user-message";
 
 const STALE_PENDING_REQUEST_DETAIL_MARKERS = [
   "no active provider session",

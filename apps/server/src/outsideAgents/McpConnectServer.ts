@@ -144,7 +144,12 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
     const counted = yield* makeToolCallCounts;
     const caller = requestService(McpConnectInvocation);
     return {
-      projects: () => counted("projects", Effect.flatMap(caller, handlers.projects)),
+      computers: () => counted("computers", Effect.flatMap(caller, handlers.computers)),
+      projects: (input) =>
+        counted(
+          "projects",
+          Effect.flatMap(caller, (connection) => handlers.projects(connection, input)),
+        ),
       agents: (input) =>
         counted(
           "agents",

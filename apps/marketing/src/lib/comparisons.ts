@@ -20,6 +20,32 @@ export interface ComparisonRow {
   other: ComparisonCell;
 }
 
+/**
+ * News about the other app that changes whether people can keep using it (an acquisition, a
+ * shutdown), told in its maker's own dates and linked to its own announcement.
+ */
+export interface ComparisonStatus {
+  heading: string;
+  /** Two or three plain sentences. */
+  text: string;
+  /** Short date labels, like "Nov 13" or "Early 2027", with what happens then. */
+  timeline: { date: string; text: string }[];
+  /** A few words for the /compare grid, like "Joining Meta". */
+  label: string;
+  announcement: { label: string; url: string };
+}
+
+/**
+ * How to move from the other app, every step checked against both apps. Step and list text may
+ * wrap code (a file name, a variable) in backticks; the page sets it in mono.
+ */
+export interface ComparisonSwitching {
+  heading: string;
+  steps: { title: string; text: string }[];
+  leftBehindHeading: string;
+  leftBehind: string[];
+}
+
 export interface Comparison {
   slug: string;
   name: string;
@@ -30,9 +56,11 @@ export interface Comparison {
   intro: string;
   /** One line for the /compare grid. */
   summary: string;
+  status?: ComparisonStatus;
   rows: ComparisonRow[];
   pickThreadlines: string[];
   pickOther: string[];
+  switching?: ComparisonSwitching;
   faq: { question: string; answer: string }[];
   /** The day the facts about the other app were last checked, as YYYY-MM-DD. */
   checkedOn: string;
@@ -75,27 +103,54 @@ export const COMPARISONS: readonly Comparison[] = [
   {
     slug: "conductor",
     name: "Conductor",
-    maker: "Melty Labs",
-    title: "Conductor alternative for Windows and Linux | Threadlines",
+    maker: "Meta",
+    title: "Conductor app alternative for Claude Code and Codex | Threadlines",
     description:
-      "Conductor runs only on macOS. Threadlines is a free, open-source desktop app for Mac, Windows and Linux that runs Claude Code, Codex and other coding agents.",
-    headline: "A Conductor alternative for Windows and Linux",
+      "Conductor is joining Meta and stopped new sign-ups. Threadlines is a free, open-source app for Mac, Windows and Linux that runs Claude Code, Codex and more.",
+    headline: "A free, open-source Conductor alternative",
     summary:
-      "A Mac app with paid cloud workspaces. Threadlines also runs on Windows and Linux, and it's open source.",
+      "A Mac app that's joining Meta and closed to new users. Threadlines is free, open source, and runs on Mac, Windows and Linux.",
     intro:
-      "Conductor is a polished Mac app for running coding agents side by side, each in its own Git worktree. Threadlines does that on Mac, Windows and Linux, it's open source, and two agents can share one conversation.",
+      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way, on Mac, Windows and Linux, and two agents can share one thread. It's free and MIT-licensed, so the code stays public whatever happens to the project.",
+    status: {
+      heading: "Conductor is joining Meta",
+      text: "On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups and downloads. If you already use it, the Mac app keeps working for now, and Pro users keep Pro features for free.",
+      timeline: [
+        {
+          date: "Nov 4",
+          text: "No new sign-ups or downloads. Pro users keep Pro features for free.",
+        },
+        {
+          date: "Nov 13",
+          text: "Conductor Cloud goes read-only. Active subscribers get a refund.",
+        },
+        {
+          date: "Nov 20",
+          text: "Conductor Cloud shuts down, and Conductor starts deleting its data.",
+        },
+        {
+          date: "Early 2027",
+          text: "New models and critical fixes for the Mac app end, and it starts winding down.",
+        },
+      ],
+      label: "Joining Meta",
+      announcement: {
+        label: "Read Conductor's announcement",
+        url: "https://www.conductor.build/announcement",
+      },
+    },
     rows: [
+      {
+        icon: "download",
+        label: "Availability",
+        threadlines: { mark: "yes", text: "Free download" },
+        other: { mark: "partial", text: "Existing users only, since Nov 4" },
+      },
       {
         icon: "monitor",
         label: "Platforms",
         threadlines: THREADLINES_DESKTOP,
-        other: { mark: "partial", text: "macOS only, Windows and Linux waitlist" },
-      },
-      {
-        icon: "dollar",
-        label: "Price",
-        threadlines: { mark: "yes", text: "Free" },
-        other: { mark: "partial", text: "Free locally, Pro is $50 a month" },
+        other: { mark: "partial", text: "macOS only" },
       },
       {
         icon: "code",
@@ -108,7 +163,7 @@ export const COMPARISONS: readonly Comparison[] = [
         label: "Agents",
         threadlines: THREADLINES_AGENTS,
         other: {
-          text: "Claude Code, Codex, OpenCode, Cursor. Local Cursor runs need a Cursor API key.",
+          text: "Claude Code, Codex, OpenCode, Cursor, Pi. Local Cursor runs need a Cursor API key.",
         },
       },
       {
@@ -121,19 +176,19 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "computers",
         label: "Your other computers",
         threadlines: THREADLINES_COMPUTERS,
-        other: { mark: "no", text: "Its own cloud machines on Pro, not yours" },
+        other: { mark: "no", text: "Its own cloud machines, until Nov 13" },
       },
       {
         icon: "clock",
         label: "Scheduled and event tasks",
         threadlines: THREADLINES_TASKS,
-        other: { mark: "yes", text: "Routines in the cloud, on Pro" },
+        other: { mark: "partial", text: "Routines in the cloud, until Nov 13" },
       },
       {
         icon: "terminal",
         label: "Agents in your terminal",
         threadlines: THREADLINES_TERMINAL_AGENTS,
-        other: { mark: "partial", text: "MCP and a CLI for cloud work, on Pro" },
+        other: { mark: "partial", text: "MCP and a CLI for cloud work, until Nov 13" },
       },
       {
         icon: "branch",
@@ -142,54 +197,113 @@ export const COMPARISONS: readonly Comparison[] = [
         other: { mark: "yes", text: "Per workspace" },
       },
       {
+        icon: "sliders",
+        label: "Setup scripts",
+        threadlines: { mark: "yes", text: "Per project, in each new worktree" },
+        other: { mark: "yes", text: "Shared in a repo file, plus files to copy" },
+      },
+      {
         icon: "pullRequest",
         label: "Pull requests and CI",
-        threadlines: { mark: "yes", text: "Beside the thread" },
+        threadlines: { mark: "yes", text: "Beside the thread, with fix and merge switches" },
         other: { mark: "yes", text: "Plus GitHub stacks and Graphite" },
+      },
+      {
+        icon: "eye",
+        label: "Review in the diff",
+        threadlines: { mark: "partial", text: "Comment on pull requests, hand fixes to agents" },
+        other: { mark: "yes", text: "Edit and comment right in the diff" },
+      },
+      {
+        icon: "target",
+        label: "Start from an issue",
+        threadlines: { mark: "partial", text: "GitHub issue events start tasks" },
+        other: { mark: "yes", text: "GitHub and Linear issues" },
       },
       {
         icon: "globe",
         label: "Built-in browser",
         threadlines: { mark: "yes", text: "Built in" },
-        other: { mark: "partial", text: "Experimental" },
+        other: { mark: "yes", text: "Built-in previews" },
       },
       {
         icon: "cloud",
         label: "Cloud agents",
-        threadlines: { mark: "no", text: "Agents run on your computer" },
-        other: { mark: "yes", text: "On Pro" },
+        threadlines: { mark: "no", text: "Agents run on your computers" },
+        other: { mark: "partial", text: "Read-only Nov 13, closes Nov 20" },
+      },
+      {
+        icon: "accounts",
+        label: "Teams",
+        threadlines: { mark: "no", text: "Made for one person" },
+        other: { mark: "partial", text: "Shared cloud workspaces, until Nov 13" },
       },
       {
         icon: "phone",
         label: "Phone",
         threadlines: THREADLINES_PHONE,
-        other: { mark: "yes", text: "iPhone app, listed under Pro" },
-      },
-      {
-        icon: "account",
-        label: "Accounts",
-        threadlines: { mark: "yes", text: "None needed, GitHub optional" },
-        other: { mark: "partial", text: "GitHub, plus a sign-in for cloud and phone" },
+        other: { mark: "yes", text: "iPhone app that controls your Mac" },
       },
     ],
     pickThreadlines: [
-      "You work on Windows or Linux.",
-      "You want open source with no paid tier.",
-      "You want Codex to check Claude's work in the same chat.",
+      "You want an app that's free and open source.",
+      "You want Codex to check Claude's work in the same thread.",
+      "You work on Windows or Linux, or move between computers.",
       "You want your own Windows PC or Linux box to share the work.",
       "You use Antigravity or fx.",
     ],
     pickOther: [
-      "You want agents to keep working in the cloud.",
-      "Your team shares chats live or needs SSO.",
+      "You already use it, and the Mac app keeps working into early 2027.",
       "You use GitHub stacks or Graphite.",
-      "You want routines that keep running in the cloud with your computer off.",
+      "You start work from Linear issues.",
+      "You like editing code right in the diff.",
     ],
+    switching: {
+      heading: "Coming from Conductor",
+      steps: [
+        {
+          title: "Bring cloud workspaces to your Mac",
+          text: "In Conductor, right-click a cloud workspace and choose Transfer to local before November 20. Settings › Account › Export data saves an archive of the rest.",
+        },
+        {
+          title: "Add your repo",
+          text: "Each Conductor workspace is a Git worktree on its own branch, so there's nothing to convert. In Threadlines, click Add project at the top of the sidebar and pick your repo's main folder.",
+        },
+        {
+          title: "Pick up a workspace",
+          text: "If the line under the message box says a new worktree, switch it to Current checkout. Then click the branch name and choose the workspace's branch, marked worktree. The thread works in the worktree Conductor already made.",
+        },
+        {
+          title: "Move your setup script",
+          text: "Click Add action in the top bar, paste the command and turn on Run automatically on worktree creation. Use `$THREADLINES_PROJECT_ROOT` where your local script used `$CONDUCTOR_ROOT_PATH`, and copy `.env` files in the script.",
+        },
+        {
+          title: "Sign in with the same accounts",
+          text: "Conductor ran its own copies of Claude Code and Codex. In Settings › Providers, install them if they're missing, then sign in with your Claude or ChatGPT account. If they're already signed in on this computer, Threadlines uses that.",
+        },
+      ],
+      leftBehindHeading: "What stays in Conductor",
+      leftBehind: [
+        "Chats and their history. Export data in Conductor keeps a copy.",
+        "Workspaces as Conductor lists them. Their worktrees and branches stay in your repo.",
+        "Linear links, Graphite stacks and team sharing, which Threadlines doesn't have.",
+      ],
+    },
     faq: [
       {
-        question: "Is Conductor available for Windows or Linux?",
+        question: "Is Conductor shutting down?",
         answer:
-          "Not yet. Conductor's install guide says it isn't available for Windows or Linux and offers a waitlist. Threadlines has a Windows installer and a Linux AppImage today.",
+          "Partly. On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups. Conductor Cloud goes read-only on November 13 and shuts down on November 20. The Mac app keeps getting new models and critical fixes until early 2027, then starts winding down.",
+      },
+      {
+        question: "Can I still download Conductor?",
+        answer:
+          "Not as a new user. Since November 4, new users can't sign up for Conductor or download it. If you already have it, it keeps working, and Pro users keep Pro features for free.",
+      },
+      {
+        question: "Will my Conductor workspaces open in Threadlines?",
+        answer:
+          "Their code will. Each workspace is a Git worktree and branch in your repo, and a Threadlines thread set to Current checkout can work in it when you pick its branch under the message box. Chats stay in Conductor.",
       },
       {
         question: "Does Threadlines use my Claude and ChatGPT plans, like Conductor?",
@@ -197,21 +311,199 @@ export const COMPARISONS: readonly Comparison[] = [
           "Yes. Both apps run the agents with your own sign-ins, and neither resells model usage.",
       },
       {
+        question: "Does Threadlines run on Windows and Linux?",
+        answer:
+          "Yes. Threadlines has a Mac app, a Windows installer and a Linux AppImage. Conductor runs only on macOS.",
+      },
+      {
         question: "Does Threadlines have cloud workspaces?",
         answer:
           "No. Threadlines runs agents on your own computer. You can reach it from your phone or another computer, but the work happens on your machine.",
       },
     ],
-    checkedOn: "2026-10-29",
+    checkedOn: "2026-11-04",
     sources: [
-      { label: "Conductor's install guide", url: "https://www.conductor.build/docs/installation" },
-      { label: "pricing page", url: "https://www.conductor.build/pricing" },
-      { label: "docs and terms", url: "https://www.conductor.build/llms-full.txt" },
-      { label: "API and MCP docs", url: "https://www.conductor.build/docs/api" },
+      { label: "Conductor's announcement", url: "https://www.conductor.build/announcement" },
       {
-        label: "Remote Control release notes",
-        url: "https://www.conductor.build/changelog/0.92.0-remote-control",
+        label: "0.93.0 release notes",
+        url: "https://www.conductor.build/changelog/0.93.0-conductor-is-joining-meta",
       },
+      {
+        label: "TechCrunch's report",
+        url: "https://techcrunch.com/2026/11/04/meta-acquires-ai-coding-startup-conductor/",
+      },
+      { label: "install guide", url: "https://www.conductor.build/docs/installation" },
+      { label: "docs", url: "https://www.conductor.build/llms-full.txt" },
+      { label: "changelog", url: "https://www.conductor.build/changelog" },
+    ],
+  },
+  {
+    slug: "jules",
+    name: "Jules",
+    maker: "Google",
+    title: "Jules alternative with Gemini, Claude Code and Codex | Threadlines",
+    description:
+      "Google's Jules winds down on December 31, 2026. Threadlines is a free, open-source app that runs Antigravity's Gemini agent, Claude Code and Codex on your computer.",
+    headline: "A Jules alternative that runs on your computer",
+    summary:
+      "Google's cloud coding agent, winding down Dec 31. Threadlines runs Gemini, Claude Code and Codex on your own computers.",
+    intro:
+      "Jules is Google's coding agent that works on your GitHub repos in its own cloud machines, and Google is winding it down. Threadlines runs agents on your own computer instead. That includes Antigravity's agent with Gemini models, next to Claude Code and Codex, and the app is free and MIT-licensed.",
+    status: {
+      heading: "Jules is winding down",
+      text: "On October 29, 2026, Google said it's winding down Jules as part of its work to unify its agentic coding efforts. Google says what it learned from Jules is shaping products including Google Antigravity.",
+      timeline: [
+        { date: "Nov 11", text: "Last day to finish sessions. Jules is read-only after that." },
+        { date: "Dec 31", text: "Jules winds down." },
+      ],
+      label: "Winding down Dec 31",
+      announcement: {
+        label: "Read Google's notice",
+        url: "https://jules.google/docs/changelog/2026-10-29/",
+      },
+    },
+    rows: [
+      {
+        icon: "download",
+        label: "Availability",
+        threadlines: { mark: "yes", text: "Free download" },
+        other: { mark: "partial", text: "Read-only after Nov 11, ends Dec 31" },
+      },
+      {
+        icon: "cloud",
+        label: "Cloud agents",
+        threadlines: { mark: "no", text: "Agents run on your computers" },
+        other: { mark: "yes", text: "Each task in a fresh cloud machine" },
+      },
+      {
+        icon: "monitor",
+        label: "Platforms",
+        threadlines: THREADLINES_DESKTOP,
+        other: { mark: "yes", text: "A web app, plus a CLI" },
+      },
+      {
+        icon: "dollar",
+        label: "Price",
+        threadlines: { mark: "yes", text: "Free app, your own plans" },
+        other: { mark: "yes", text: "Free tier, more with Google AI Pro or Ultra" },
+      },
+      {
+        icon: "code",
+        label: "Open source",
+        threadlines: { mark: "yes", text: "MIT license" },
+        other: { mark: "no", text: "Closed source" },
+      },
+      {
+        icon: "agents",
+        label: "Agents",
+        threadlines: THREADLINES_AGENTS,
+        other: { text: "Jules, on Gemini models" },
+      },
+      {
+        icon: "message",
+        label: "Two agents in one chat",
+        threadlines: { mark: "yes", text: "One can review the other's work" },
+        other: { mark: "partial", text: "Jules, checked by its own critic" },
+      },
+      {
+        icon: "folder",
+        label: "Repos",
+        threadlines: { mark: "yes", text: "Any Git repo on your computer" },
+        other: { mark: "partial", text: "GitHub repos" },
+      },
+      {
+        icon: "sliders",
+        label: "Setup scripts",
+        threadlines: { mark: "yes", text: "Per project, in each new worktree" },
+        other: { mark: "yes", text: "Per repo, in each cloud machine" },
+      },
+      {
+        icon: "clock",
+        label: "Scheduled and event tasks",
+        threadlines: THREADLINES_TASKS,
+        other: { mark: "yes", text: "Schedules, plus tasks from labeled GitHub issues" },
+      },
+      {
+        icon: "pullRequest",
+        label: "Pull requests and CI",
+        threadlines: { mark: "yes", text: "Beside the thread, with fix and merge switches" },
+        other: { mark: "yes", text: "Opens pull requests and fixes failing CI" },
+      },
+    ],
+    pickThreadlines: [
+      "You want agents to work on your own computer, with your own tools.",
+      "You want Gemini, Claude Code and Codex in one app.",
+      "You want two agents in the same thread.",
+      "Your code isn't on GitHub.",
+    ],
+    pickOther: [
+      "You're wrapping up sessions already in Jules, before it turns read-only on November 11.",
+      "You need a task to keep running in the cloud with your laptop closed, before November 11.",
+    ],
+    switching: {
+      heading: "Coming from Jules",
+      steps: [
+        {
+          title: "Export what's in Jules",
+          text: "Google's notice has an export that saves setup scripts, environment variables, scheduled tasks, memories and every session to a folder on your computer.",
+        },
+        {
+          title: "Clone your repo and add it",
+          text: "Your code, branches and pull requests are on GitHub already. Clone the repo, then click Add project at the top of the Threadlines sidebar and pick its folder.",
+        },
+        {
+          title: "Move your setup script",
+          text: "Click Add action in the top bar, paste the script and turn on Run automatically on worktree creation. Put exported environment variables where your project reads them, like a `.env` file the script copies in.",
+        },
+        {
+          title: "Recreate scheduled tasks",
+          text: "Open Scheduled and add each task with its prompt and timing. Tasks run while Threadlines is running on that computer.",
+        },
+        {
+          title: "Pick an agent",
+          text: "Install Antigravity from Settings › Providers to keep using Gemini models, or use Claude Code, Codex or another agent.",
+        },
+      ],
+      leftBehindHeading: "What stays in Jules",
+      leftBehind: [
+        "Sessions, with their plans and logs. The export keeps a copy.",
+        "Memories. Put what matters in `AGENTS.md` or `CLAUDE.md`, under Settings › Agent Instructions.",
+        "Cloud machines. Agents in Threadlines work on your computer.",
+      ],
+    },
+    faq: [
+      {
+        question: "When does Jules shut down?",
+        answer:
+          "Google says you can finish sessions until November 11, 2026. After that Jules is read-only, and it winds down on December 31, 2026.",
+      },
+      {
+        question: "How do I export my Jules data?",
+        answer:
+          "Install Jules Tools, sign in, and paste the export prompt from Google's notice into a command-line agent like Claude Code. Your code, branches and pull requests are already on GitHub.",
+      },
+      {
+        question: "Can Threadlines run Gemini models?",
+        answer:
+          "Yes. Threadlines installs Google Antigravity's agent from Settings › Providers. You sign in with a Google account, Gemini Enterprise, an API key or Vertex AI.",
+      },
+      {
+        question: "Does Threadlines work while my computer is off?",
+        answer:
+          "No. Agents run on your own computers, so the computer has to be on with Threadlines running. A scheduled task missed in the last 7 days gets one catch-up run when it's back.",
+      },
+    ],
+    checkedOn: "2026-11-04",
+    sources: [
+      { label: "Google's notice", url: "https://jules.google/docs/changelog/2026-10-29/" },
+      { label: "Jules FAQ", url: "https://jules.google/docs/faq/" },
+      { label: "limits and plans", url: "https://jules.google/docs/usage-limits/" },
+      { label: "scheduled tasks", url: "https://jules.google/docs/scheduled-tasks/" },
+      {
+        label: "GitHub issues",
+        url: "https://jules.google/docs/changelog/2025-06-26/",
+      },
+      { label: "CI fixes", url: "https://jules.google/docs/changelog/2026-02-19/" },
     ],
   },
   {
@@ -837,7 +1129,7 @@ export const COMPARISONS: readonly Comparison[] = [
     ],
     pickThreadlines: [
       "You work on Windows or Linux.",
-      "You want an MIT-licensed app with no paid tier.",
+      "You want a free, MIT-licensed app.",
       "You want two agents in the same thread.",
       "You want phone alerts today.",
     ],

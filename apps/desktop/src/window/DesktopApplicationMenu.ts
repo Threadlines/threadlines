@@ -5,7 +5,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import type * as Electron from "electron";
-import { buildReportIssueUrl, nodePlatformLabel } from "@threadlines/shared/reportIssue";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -174,16 +173,10 @@ const make = Effect.gen(function* () {
     const openGitHubClick = () => {
       runMenuEffect("open-github", openExternalHelpUrl(GITHUB_REPOSITORY_URL));
     };
-    const reportIssueClick = () => {
+    const reportProblemClick = () => {
       runMenuEffect(
-        "report-issue",
-        openExternalHelpUrl(
-          buildReportIssueUrl({
-            version: environment.appVersion,
-            app: "desktop app",
-            operatingSystem: nodePlatformLabel(environment.platform),
-          }),
-        ),
+        DesktopWindow.OPEN_REPORT_PROBLEM_MENU_ACTION,
+        dispatchMenuAction(DesktopWindow.OPEN_REPORT_PROBLEM_MENU_ACTION),
       );
     };
     const whatsNewClick = () => {
@@ -299,8 +292,8 @@ const make = Effect.gen(function* () {
             click: openGitHubClick,
           },
           {
-            label: "Report an Issue",
-            click: reportIssueClick,
+            label: "Report a Problem...",
+            click: reportProblemClick,
           },
           { type: "separator" },
           { label: "What's New", click: whatsNewClick },

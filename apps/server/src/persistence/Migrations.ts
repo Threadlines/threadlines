@@ -121,6 +121,8 @@ import Migration0098 from "./Migrations/098_ProjectionThreadSettingsRequests.ts"
 import Migration0099 from "./Migrations/099_ProjectionThreadActivityTurnIndex.ts";
 import Migration0100 from "./Migrations/100_PhoneAlertControls.ts";
 import Migration0101 from "./Migrations/101_AssistantEventSubscriptions.ts";
+import Migration0102 from "./Migrations/102_AssistantAlertAsks.ts";
+import Migration0103 from "./Migrations/103_OutsideAgentVia.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -234,6 +236,8 @@ export const migrationEntries = [
   [99, "ProjectionThreadActivityTurnIndex", Migration0099],
   [100, "PhoneAlertControls", Migration0100],
   [101, "AssistantEventSubscriptions", Migration0101],
+  [102, "AssistantAlertAsks", Migration0102],
+  [103, "OutsideAgentVia", Migration0103],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -65,6 +65,7 @@ import {
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
   WsOwnerRequiredError,
+  OutsideAgentError,
 } from "@threadlines/contracts";
 import type { AuthClientMetadata } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
@@ -163,6 +164,7 @@ import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentit
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
+import { OtherComputers } from "./outsideAgents/OtherComputers.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
@@ -180,6 +182,7 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
 import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import * as ProblemReports from "./sourceControl/ProblemReports.ts";
 import { refreshWindowsPath } from "@threadlines/shared/shell";
 import { sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
@@ -463,6 +466,11 @@ const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
       const requireOwner = ownerOnly(role);
       const outsideAgents = yield* OutsideAgentSignIn;
       const assistantAlerts = yield* AssistantAlerts;
+      // Other computers its agents may use (docs/design/assistants.md, "Other computers").
+      const otherComputers = yield* Effect.serviceOption(OtherComputers);
+      const noOtherComputers = new OutsideAgentError({
+        detail: "This computer has no linked computers.",
+      });
       return WsOutsideAgentsRpcGroup.of({
         // Outside agents (docs/design/outside-agents.md): managing who may
         // use this computer is owner only, like the device list.
@@ -529,6 +537,52 @@ const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
             WS_METHODS.outsideAgentsRemove,
             requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
               Effect.andThen(outsideAgents.remove(input)),
+              // Its linked computers forget it too, as far as they can be told now.
+              Effect.tap(() =>
+                Option.isSome(otherComputers)
+                  ? otherComputers.value
+                      .forgetEverywhere(input.connectionId)
+                      .pipe(Effect.forkDetach)
+                  : Effect.void,
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReach]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReach,
+            requireOwner(WS_METHODS.outsideAgentsReach).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? Effect.map(otherComputers.value.reach(input.connectionId), (computers) => ({
+                      computers,
+                    }))
+                  : Effect.succeed({ computers: [] }),
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReachAsk]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReachAsk,
+            requireOwner(WS_METHODS.outsideAgentsReachAsk).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? otherComputers.value.ask(input.connectionId, input.environmentId)
+                  : Effect.fail(noOtherComputers),
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReachRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReachRemove,
+            requireOwner(WS_METHODS.outsideAgentsReachRemove).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? otherComputers.value.remove(input.connectionId, input.environmentId)
+                  : Effect.fail(noOtherComputers),
+              ),
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),
@@ -701,6 +755,7 @@ const makeCoreRpcLayer = (
       const sourceControlToolMaintenance =
         yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
       const githubAuth = yield* GitHubAuth.GitHubAuth;
+      const problemReports = yield* ProblemReports.ProblemReports;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -1737,6 +1792,14 @@ const makeCoreRpcLayer = (
           }),
         [WS_METHODS.serverStartGitHubAuth]: () => githubAuth.start,
         [WS_METHODS.serverCancelGitHubAuth]: () => githubAuth.cancel,
+        [WS_METHODS.serverGetReportProblemAccount]: () =>
+          observeRpcEffect(WS_METHODS.serverGetReportProblemAccount, problemReports.account, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverReportProblem]: (input) =>
+          observeRpcEffect(WS_METHODS.serverReportProblem, problemReports.submit(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverUpdateSourceControlTool]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSourceControlTool,
@@ -3333,6 +3396,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
     const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
+    const problemReports = yield* ProblemReports.ProblemReports;
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
     const pushAlerts = yield* PushAlerts;
@@ -3365,6 +3429,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(GitHubAuth.GitHubAuth, githubSignIn)),
+              Layer.provide(Layer.succeed(ProblemReports.ProblemReports, problemReports)),
               Layer.provide(Layer.succeed(ThreadBootstrap, threadBootstrap)),
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(

@@ -74,6 +74,7 @@ import {
   dispatchOutcome,
   listThreadAgents,
   modelLabel,
+  READ_MESSAGE_NOT_FOUND,
   readThreadPage,
   relatedThreadTitles,
   requestedAgent,
@@ -158,6 +159,8 @@ export interface ThreadToolLinks {
       readonly threadId: ThreadId;
       readonly after?: number | undefined;
       readonly limit?: number | undefined;
+      readonly messageId?: string | undefined;
+      readonly offset?: number | undefined;
     },
   ) => Effect.Effect<ThreadReadResult | { readonly unavailable: string }>;
   /** The repository's canonical key for a project folder, how another computer finds its copy. */
@@ -1256,6 +1259,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       readonly threadId: string;
       readonly after?: number | undefined;
       readonly limit?: number | undefined;
+      readonly messageId?: string | undefined;
+      readonly offset?: number | undefined;
     },
   ): Effect.Effect<ThreadReadResult> =>
     Effect.gen(function* () {
@@ -1280,6 +1285,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 threadId: remoteChild.threadId,
                 after: input.after,
                 limit: input.limit,
+                messageId: input.messageId,
+                offset: input.offset,
               });
         if ("unavailable" in read) {
           return {
@@ -1314,6 +1321,21 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         deps.readThreadShell,
         new Map([[caller.id, caller.title]]),
       );
+      const { missing, ...page } = readThreadPage(target, {
+        providers,
+        titles,
+        after: input.after,
+        limit: input.limit,
+        messageId: input.messageId,
+        offset: input.offset,
+      });
+      if (missing) {
+        return {
+          outcome: "refused",
+          detail: READ_MESSAGE_NOT_FOUND,
+          ...none,
+        } satisfies ThreadReadResult;
+      }
       const shell = yield* deps.readThreadShell(target.id);
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
@@ -1328,7 +1350,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               }),
             }
           : {}),
-        ...readThreadPage(target, { providers, titles, after: input.after, limit: input.limit }),
+        ...page,
       } satisfies ThreadReadResult;
     });
 

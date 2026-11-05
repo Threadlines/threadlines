@@ -95,7 +95,9 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
 /**
  * One queued message. The user's own can go back to the box or be removed.
  * One an agent queued (a room hand-off, a reply, or another thread's request
- * or answer) names who queued it and stays as it is: Stop cancels it.
+ * or answer) names who queued it and stays as it is: Stop cancels it. An
+ * outside agent's names it too and can be removed, but not edited: the words
+ * are its, not the user's.
  */
 function QueuedFollowUpLine({
   followUp,
@@ -118,15 +120,18 @@ function QueuedFollowUpLine({
     roomAgents?.get(roomAgentKey(participantId))?.name ?? "an agent";
   const fromAgent = followUp.fromAgent;
   const fromThread = followUp.fromThread;
+  const fromOutside = followUp.fromOutside;
   const fromThreadTitle = useThreadTitle(environmentId, fromThread?.threadId);
   const byAgent = isAgentOrigin(followUp);
   const queuedBy = fromAgent
     ? ` from ${nameOf(fromAgent.participantId)} for ${nameOf(followUp.participantId)}`
     : fromThread
       ? ` from ${fromThreadTitle ?? unnamedThreadOrigin(fromThread)}`
-      : roomAgents !== null
-        ? ` for ${nameOf(followUp.participantId)}`
-        : null;
+      : fromOutside
+        ? ` from ${fromOutside.name}`
+        : roomAgents !== null
+          ? ` for ${nameOf(followUp.participantId)}`
+          : null;
   return (
     <li
       className="flex min-w-0 items-center gap-2 py-0.5 text-xs"
@@ -139,9 +144,11 @@ function QueuedFollowUpLine({
         title={
           paused
             ? "The last reply stopped, so this waits until the next reply finishes."
-            : byAgent
-              ? "An agent queued this. It sends when the current work finishes; Stop cancels it."
-              : "Sends when the current work finishes."
+            : fromOutside
+              ? `${fromOutside.name} sent this from outside Threadlines. It sends when the current work finishes; Stop or Remove cancels it.`
+              : byAgent
+                ? "An agent queued this. It sends when the current work finishes; Stop cancels it."
+                : "Sends when the current work finishes."
         }
       >
         {paused ? "Paused" : "Queued"}
@@ -155,17 +162,19 @@ function QueuedFollowUpLine({
       >
         {describeQueuedFollowUp(followUp, attachmentOnlyPrompt)}
       </span>
-      {byAgent ? null : (
+      {byAgent && !fromOutside ? null : (
         <>
-          <button
-            type="button"
-            className={ACTION_CLASS}
-            aria-label="Edit queued message"
-            title="Move back to the message box"
-            onClick={() => onEdit(followUp)}
-          >
-            <PencilIcon className="size-3" />
-          </button>
+          {fromOutside ? null : (
+            <button
+              type="button"
+              className={ACTION_CLASS}
+              aria-label="Edit queued message"
+              title="Move back to the message box"
+              onClick={() => onEdit(followUp)}
+            >
+              <PencilIcon className="size-3" />
+            </button>
+          )}
           <button
             type="button"
             className={ACTION_CLASS}

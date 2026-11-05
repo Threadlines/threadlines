@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   AssistantAlertTargetId,
+  EnvironmentId,
   IsoDateTime,
   NonNegativeInt,
   OutsideAgentConnectionId,
@@ -11,7 +12,12 @@ import {
   ProjectId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { OutsideAgentAccess, OutsideAgentRef, RuntimeMode } from "./orchestration.ts";
+import {
+  KnownAssistant,
+  OutsideAgentAccess,
+  OutsideAgentRef,
+  RuntimeMode,
+} from "./orchestration.ts";
 
 /**
  * Outside agents (docs/design/outside-agents.md): coding agents running
@@ -43,8 +49,12 @@ export type OutsideAgentGrant = typeof OutsideAgentGrant.Type;
 export const OutsideAgentConnectionKind = Schema.Literals(["local", "assistant"]);
 export type OutsideAgentConnectionKind = typeof OutsideAgentConnectionKind.Type;
 
-/** How it signs in: OAuth with the approval dialog, or a key made in Settings (assistants only). */
-export const OutsideAgentSignInMethod = Schema.Literals(["oauth", "key"]);
+/**
+ * How it signs in: OAuth with the approval dialog, a key made in Settings
+ * (assistants only), or `linked`: it signed in on a linked computer, whose
+ * calls bring it here (OutsideAgentVia).
+ */
+export const OutsideAgentSignInMethod = Schema.Literals(["oauth", "key", "linked"]);
 export type OutsideAgentSignInMethod = typeof OutsideAgentSignInMethod.Type;
 
 /**
@@ -61,13 +71,19 @@ export const OutsideAgentIdentity = Schema.Struct({
 export type OutsideAgentIdentity = typeof OutsideAgentIdentity.Type;
 
 /**
- * Always-on assistants Threadlines knows by name and mark
- * (docs/design/assistants.md). Several sign in through someone else's
- * service (Grok Bot through Cursor's), so which one it is is a guess from
- * its sign-in until the user picks.
+ * A connection that reaches this computer through another one
+ * (docs/design/assistants.md, "Other computers"): an agent connected on a
+ * linked computer, which that computer's calls bring here once this
+ * computer's user let it in. It never holds a credential of its own here.
  */
-export const KnownAssistant = Schema.Literals(["grok-bot", "chatgpt", "claude", "muse", "cursor"]);
-export type KnownAssistant = typeof KnownAssistant.Type;
+export const OutsideAgentVia = Schema.Struct({
+  /** The computer it is connected on, and that computer's name. */
+  environmentId: EnvironmentId,
+  computer: TrimmedNonEmptyString,
+  /** Its connection there. */
+  connectionId: OutsideAgentConnectionId,
+});
+export type OutsideAgentVia = typeof OutsideAgentVia.Type;
 
 export const OutsideAgentConnection = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
@@ -86,6 +102,8 @@ export const OutsideAgentConnection = Schema.Struct({
   signIn: OutsideAgentSignInMethod,
   /** Assistants signed in with OAuth; null for local agents and keys. */
   identity: Schema.NullOr(OutsideAgentIdentity),
+  /** Connected on a linked computer, which brings it here; null: it connects here itself. */
+  via: Schema.NullOr(OutsideAgentVia).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   ...OutsideAgentGrant.fields,
   createdAt: IsoDateTime,
   /** When it last called a tool; null: not yet. Updated at most once a minute. */
@@ -135,6 +153,63 @@ export const OutsideAgentAssistantSignIn = Schema.Struct({
 });
 export type OutsideAgentAssistantSignIn = typeof OutsideAgentAssistantSignIn.Type;
 
+/**
+ * A linked computer asking for an agent connected there to use this computer
+ * too (docs/design/assistants.md, "Other computers"): its user asked there,
+ * and the answer is this computer's user's, in the same dialog as a sign-in.
+ * Approve and Deny take its `requestId`. Kept in memory: a restart drops it,
+ * and the other computer can ask again.
+ */
+export const OutsideAgentLinkedAsk = Schema.Struct({
+  requestId: OutsideAgentRequestId,
+  /** What Threadlines calls it there ("Grok Bot"). */
+  name: TrimmedNonEmptyString,
+  givenName: Schema.NullOr(TrimmedNonEmptyString),
+  assistant: Schema.NullOr(KnownAssistant),
+  kind: OutsideAgentConnectionKind,
+  /** The computer it is connected on, which asks. */
+  fromEnvironmentId: EnvironmentId,
+  fromComputer: TrimmedNonEmptyString,
+  /** What it may do there: approving here can't grant more. */
+  requestedAccess: OutsideAgentAccess,
+  maxRuntimeMode: RuntimeMode,
+  createdAt: IsoDateTime,
+  expiresAt: IsoDateTime,
+});
+export type OutsideAgentLinkedAsk = typeof OutsideAgentLinkedAsk.Type;
+
+/**
+ * Another computer an agent connected here may use, as Settings shows it on
+ * its row (docs/design/assistants.md, "Other computers"):
+ * - `allowed`: that computer's user let it in, with what it may do there;
+ * - `asked`: waiting for them to answer there;
+ * - `none`: not asked yet, or they said no or removed it;
+ * - `offline`: it couldn't be asked just now;
+ * - `unsupported`: its Threadlines is too old for this.
+ */
+export const OutsideAgentReach = Schema.Struct({
+  environmentId: EnvironmentId,
+  computer: TrimmedNonEmptyString,
+  state: Schema.Literals(["allowed", "asked", "none", "offline", "unsupported"]),
+  access: Schema.optional(OutsideAgentAccess),
+  maxRuntimeMode: Schema.optional(RuntimeMode),
+  /** How many of that computer's projects it may use; null: all of them. */
+  projectCount: Schema.optional(Schema.NullOr(NonNegativeInt)),
+});
+export type OutsideAgentReach = typeof OutsideAgentReach.Type;
+
+export const OutsideAgentReachList = Schema.Struct({
+  computers: Schema.Array(OutsideAgentReach),
+});
+export type OutsideAgentReachList = typeof OutsideAgentReachList.Type;
+
+/** One connection here and one linked computer: ask there, or take it away there. */
+export const OutsideAgentReachInput = Schema.Struct({
+  connectionId: OutsideAgentConnectionId,
+  environmentId: EnvironmentId,
+});
+export type OutsideAgentReachInput = typeof OutsideAgentReachInput.Type;
+
 /** What an alert is about (docs/design/assistants.md, step 4): `thread.<kind>` events. */
 export const AssistantAlertKind = Schema.Literals(["needs_you", "finished", "failed"]);
 export type AssistantAlertKind = typeof AssistantAlertKind.Type;
@@ -153,6 +228,12 @@ export const AssistantAlertTarget = Schema.Struct({
   projectIds: Schema.NullOr(Schema.Array(ProjectId)),
   /** Skip threads someone is looking at in Threadlines. */
   skipViewed: Schema.Boolean,
+  /**
+   * Finished goes out only for turns the user asked an agent to alert about
+   * (the agent's `alert_assistants`), even while the thread is being looked
+   * at; false: every finished turn.
+   */
+  finishedWhenAsked: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   state: Schema.Literals(["on", "off", "gone"]),
   /** An Authorization header is set (its value is never sent to the app). */
   hasAuthorization: Schema.Boolean,
@@ -214,6 +295,10 @@ export const OutsideAgentsSnapshot = Schema.Struct({
   connections: Schema.Array(OutsideAgentConnection),
   /** Local agents' sign-ins waiting for the user, oldest first. */
   pending: Schema.Array(OutsideAgentPendingRequest),
+  /** Linked computers asking for their agents to use this one too, oldest first. */
+  linkedAsks: Schema.Array(OutsideAgentLinkedAsk).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   /** After Deny all: new sign-ins of both kinds are turned away until then. Null: taking them. */
   quietUntil: Schema.NullOr(IsoDateTime),
   assistants: OutsideAgentAssistantsState,
@@ -274,6 +359,8 @@ const AssistantAlertTargetFields = {
 
 export const AssistantAlertTargetCreateInput = Schema.Struct({
   ...AssistantAlertTargetFields,
+  /** Finished only for turns the user asked an agent to alert about. Left out: every finished turn. */
+  finishedWhenAsked: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The Authorization header's whole value (`Bearer crsr_…`); null: none. */
   authorization: Schema.NullOr(TrimmedNonEmptyString),
 });
@@ -282,6 +369,8 @@ export type AssistantAlertTargetCreateInput = typeof AssistantAlertTargetCreateI
 export const AssistantAlertTargetUpdateInput = Schema.Struct({
   targetId: AssistantAlertTargetId,
   ...AssistantAlertTargetFields,
+  /** Finished only for turns the user asked an agent to alert about. Left out (an older app): as it is. */
+  finishedWhenAsked: Schema.optional(Schema.Boolean),
   /** Keep the Authorization header as it is, replace it, or clear it. */
   authorization: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("keep") }),

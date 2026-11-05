@@ -34,6 +34,12 @@ const checkedOn = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 }).format(new Date(comparison.checkedOn));
 
+const { status, switching } = comparison;
+
+/** Splits text on backticks so the code inside them can be set in mono. */
+const codeSpans = (text: string) =>
+  text.split("`").map((part, index) => ({ text: part, code: index % 2 === 1 }));
+
 const markIcon: Record<ComparisonMark, IconName> = { yes: "check", partial: "partial", no: "minus" };
 const markLabel: Record<ComparisonMark, string> = { yes: "Yes", partial: "Partly", no: "No" };
 const cells = (row: Comparison["rows"][number]): ComparisonCell[] => [row.threadlines, row.other];
@@ -53,6 +59,15 @@ const structuredData = [
       creator: { "@type": "Organization", name: comparison.maker },
     },
     publisher: { "@id": ORGANIZATION_ID },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: comparison.faq.map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: { "@type": "Answer", text: item.answer },
+    })),
   },
   {
     "@context": "https://schema.org",
@@ -93,13 +108,59 @@ const structuredData = [
           <a class="primary-action" href="/download">
             <Icon name="download" /> Download Threadlines
           </a>
+          {
+            switching && (
+              <a href="#switching">
+                How to move from {comparison.name} <span aria-hidden="true">↓</span>
+              </a>
+            )
+          }
           <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
             View the source on GitHub <span aria-hidden="true">↗</span>
           </a>
         </div>
       </header>
 
+      <figure class="compare-shot">
+        <img
+          src="/Screenshots/app/two-agents.webp"
+          alt="Threadlines with a full sidebar of projects and threads, and two agents working on the same bug in one thread"
+          width="2400"
+          height="1401"
+          decoding="async"
+        />
+        <figcaption>
+          Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
+        </figcaption>
+      </figure>
+
+      {
+        status && (
+          <section class="compare-section compare-status">
+            <h2>{status.heading}</h2>
+            <p class="compare-status-text">{status.text}</p>
+            <ol class="compare-timeline">
+              {status.timeline.map((item) => (
+                <li>
+                  <span class="compare-timeline-date">{item.date}</span>
+                  <span>{item.text}</span>
+                </li>
+              ))}
+            </ol>
+            <a
+              class="compare-status-link"
+              href={status.announcement.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {status.announcement.label} <span aria-hidden="true">↗</span>
+            </a>
+          </section>
+        )
+      }
+
       <section class="compare-section">
+        <h2>Feature by feature</h2>
         <div class="compare-table-wrap">
           <table class="compare-table">
             <thead>
@@ -174,19 +235,34 @@ const structuredData = [
         </div>
       </section>
 
-      <figure class="compare-shot">
-        <img
-          src="/Screenshots/app/two-agents.webp"
-          alt="Threadlines with a full sidebar of projects and threads, and two agents working on the same bug in one thread"
-          width="2400"
-          height="1401"
-          loading="lazy"
-          decoding="async"
-        />
-        <figcaption>
-          Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
-        </figcaption>
-      </figure>
+      {
+        switching && (
+          <section class="compare-section compare-switching" id="switching">
+            <h2>{switching.heading}</h2>
+            <ol class="compare-steps">
+              {switching.steps.map((step) => (
+                <li>
+                  <h3>{step.title}</h3>
+                  <p>
+                    {codeSpans(step.text).map((span) => (span.code ? <code>{span.text}</code> : span.text))}
+                  </p>
+                </li>
+              ))}
+            </ol>
+            <h3 class="compare-left-heading">{switching.leftBehindHeading}</h3>
+            <ul class="compare-left">
+              {switching.leftBehind.map((item) => (
+                <li>
+                  <Icon name="minus" class="compare-left-icon" />
+                  <span>
+                    {codeSpans(item).map((span) => (span.code ? <code>{span.text}</code> : span.text))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )
+      }
 
       <section class="compare-section">
         <h2>Questions</h2>
@@ -348,6 +424,132 @@ const structuredData = [
     margin-bottom: 14px;
     font-size: 19px;
     letter-spacing: -0.015em;
+  }
+
+  .compare-status-text {
+    max-width: 640px;
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.55;
+    text-wrap: pretty;
+  }
+
+  .compare-timeline {
+    max-width: 640px;
+    margin: 14px 0 16px;
+    list-style: none;
+  }
+
+  .compare-timeline li {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .compare-timeline li:first-child {
+    border-top: 1px solid var(--border);
+  }
+
+  .compare-timeline-date {
+    padding-top: 1px;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .compare-status-link {
+    color: var(--fg-muted);
+    font-size: 14px;
+    text-decoration: underline;
+    text-decoration-color: var(--underline);
+    text-underline-offset: 3px;
+    transition: color 0.2s ease;
+  }
+
+  .compare-status-link:hover {
+    color: var(--fg);
+  }
+
+  .compare-steps {
+    display: grid;
+    gap: 14px;
+    max-width: 680px;
+    list-style: none;
+    counter-reset: step;
+  }
+
+  .compare-steps li {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    counter-increment: step;
+  }
+
+  .compare-steps li::before {
+    grid-row: span 2;
+    padding-top: 2px;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    content: counter(step);
+  }
+
+  .compare-steps h3 {
+    margin-bottom: 3px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .compare-steps p,
+  .compare-left li {
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.5;
+    text-wrap: pretty;
+  }
+
+  /* The hero's jump link lands here; keep the heading clear of the sticky nav. */
+  .compare-switching {
+    scroll-margin-top: 72px;
+  }
+
+  .compare-switching code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--surface-hover);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 0.84em;
+    overflow-wrap: anywhere;
+  }
+
+  .compare-left-heading {
+    margin: 24px 0 10px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .compare-left {
+    display: grid;
+    gap: 8px;
+    max-width: 680px;
+    list-style: none;
+  }
+
+  .compare-left li {
+    display: flex;
+    gap: 10px;
+  }
+
+  .compare-left :global(.compare-left-icon) {
+    flex: none;
+    margin-top: 3px;
+    color: var(--fg-faint);
+    font-size: 17px;
   }
 
   .compare-table-wrap {
@@ -523,6 +725,10 @@ const structuredData = [
 
     .compare-table :global(.compare-label-icon) {
       display: none;
+    }
+
+    .compare-timeline li {
+      grid-template-columns: 80px minmax(0, 1fr);
     }
   }
 </style>

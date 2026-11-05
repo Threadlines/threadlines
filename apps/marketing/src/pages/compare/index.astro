@@ -4,11 +4,10 @@ import Layout from "../../layouts/Layout.astro";
 import { comparisonPath, COMPARISONS } from "../../lib/comparisons";
 import { absoluteSiteUrl, ORGANIZATION_ID } from "../../lib/site";
 
-const title = "Threadlines compared with other coding agent apps";
-const otherNames = new Intl.ListFormat("en", { type: "conjunction" }).format(
-  COMPARISONS.map((comparison) => comparison.name),
-);
-const description = `How Threadlines compares with ${otherNames}, side by side. Each page is checked against the other app's own site.`;
+// Search snippets cut off long lists, so the title and description name the first few apps.
+const leadNames = COMPARISONS.slice(0, 3).map((comparison) => comparison.name);
+const title = `Alternatives to ${leadNames.slice(0, 2).join(", ")} and more | Threadlines`;
+const description = `Alternatives to ${leadNames.join(", ")} and ${COMPARISONS.length - leadNames.length} more coding agent apps, side by side with Threadlines, including where they're ahead.`;
 const formatDate = (isoDate: string) =>
   new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -48,10 +47,11 @@ const structuredData = [
     <div class="container compare-index-wrap">
       <header class="compare-index-header">
         <p class="eyebrow">Compare</p>
-        <h1 class="display">Threadlines, side by side</h1>
+        <h1 class="display">Coding agent app alternatives, side by side</h1>
         <p>
           How Threadlines stacks up against other apps for running coding agents, including where
-          they're ahead. We check every page against the other app's own site.
+          they're ahead. We check every page against the other app's own site, and the ones that
+          are changing hands or winding down say what happens and when.
         </p>
       </header>
 
@@ -66,7 +66,10 @@ const structuredData = [
                   <span class="compare-tile-name">{comparison.name}</span>
                 </span>
                 <span class="compare-tile-summary">{comparison.summary}</span>
-                <span class="compare-tile-checked">Checked {formatDate(comparison.checkedOn)}</span>
+                <span class="compare-tile-checked">
+                  {comparison.status && `${comparison.status.label} · `}
+                  Checked {formatDate(comparison.checkedOn)}
+                </span>
               </a>
             </li>
           ))
@@ -97,6 +100,7 @@ const structuredData = [
   .compare-index-header h1 {
     margin: 12px 0 14px;
     font-size: clamp(30px, 5vw, 40px);
+    text-wrap: balance;
   }
 
   .compare-index-header > p:last-child {

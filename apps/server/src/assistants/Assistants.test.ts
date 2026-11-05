@@ -730,7 +730,11 @@ describe("assistants: credentials", () => {
             signIn: "key",
             identity: null,
           });
-          expect(yield* authenticate(door, made.key)).toMatchObject({ name: "Muse" });
+          // Its label places it, so threads it starts carry Muse's mark.
+          expect(yield* authenticate(door, made.key)).toMatchObject({
+            name: "Muse",
+            assistant: "muse",
+          });
           const parsed = parseAssistantCredential(made.key);
           if (parsed?.kind !== "key") return yield* Effect.die(new Error("not a key"));
           const forged = formatAssistantCredential({ ...parsed, secret: randomAssistantSecret() });
@@ -1211,6 +1215,7 @@ describe("AssistantMcp", () => {
         ((body?.result?.tools ?? []) as Array<{ readonly name: string }>).map((tool) => tool.name);
       const see = yield* rpc(handler, { jsonrpc: "2.0", id: 1, method: "tools/list" });
       expect(names(see.body)).toEqual([
+        "computers",
         "projects",
         "agents",
         "threads_list",
@@ -1226,6 +1231,7 @@ describe("AssistantMcp", () => {
         "start-token",
       );
       expect(names(start.body)).toEqual([
+        "computers",
         "projects",
         "agents",
         "threads_list",

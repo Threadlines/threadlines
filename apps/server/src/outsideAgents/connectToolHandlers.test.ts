@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   EventId,
   OrchestrationDispatchCommandError,
   type OrchestrationCommand,
@@ -8,6 +9,8 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadSearchInput,
   type OrchestrationThreadShell,
+  type PeerOutsideCallInput,
+  type PeerOutsideCallResult,
   type PullRequestListEntry,
   type ScheduledTaskRequest,
   OutsideAgentConnectionId as ConnectionId,
@@ -39,7 +42,13 @@ import { hasActionableProposedPlan } from "../orchestration/proposedPlans.ts";
 import type { PullRequestServiceShape } from "../pullRequest/PullRequestService.ts";
 import type { ThreadTurnStartCommand } from "../orchestration/Services/ThreadBootstrap.ts";
 import { makeConnectLimits } from "./connectLimits.ts";
-import { type ConnectToolDoor, makeConnectToolHandlers } from "./connectToolHandlers.ts";
+import {
+  type ConnectToolDeps,
+  type ConnectToolDoor,
+  makeConnectToolHandlers,
+} from "./connectToolHandlers.ts";
+import { ForwardedGrantCap } from "./forwardedCalls.ts";
+import { findComputer, OtherComputerUnreachable } from "./OtherComputers.ts";
 import type { OutsideAgentCaller, OutsideAgentLiveGrant } from "./OutsideAgentConnections.ts";
 import type { OutsideAgentRequestRow, OutsideAgentRequestsShape } from "./OutsideAgentRequests.ts";
 
@@ -248,6 +257,10 @@ const makeWorld = (
     readonly record?: Pick<AssistantEventsShape, "position" | "since">;
     /** The pull request records, for `thread_changes`. */
     readonly pullRequests?: Pick<PullRequestServiceShape, "list" | "lookup">;
+    /** Linked computers calls may name (`computer`). */
+    readonly otherComputers?: ConnectToolDeps["otherComputers"];
+    /** What the door hides in text it shows (the assistants door: the home folder). */
+    readonly scrubText?: (text: string) => string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -405,8 +418,12 @@ const makeWorld = (
         threadLink: (threadId) => Effect.succeed(`https://app.threadlines.dev/env-mac/${threadId}`),
         ...(options.record !== undefined ? { record: options.record } : {}),
         ...(options.pullRequests !== undefined ? { pullRequests: options.pullRequests } : {}),
+        ...(options.otherComputers !== undefined ? { otherComputers: options.otherComputers } : {}),
       },
-      { door: options.door ?? "local" },
+      {
+        door: options.door ?? "local",
+        ...(options.scrubText !== undefined ? { scrubText: options.scrubText } : {}),
+      },
     );
     return {
       handlers,
@@ -603,6 +620,15 @@ describe("connect tools: access", () => {
       }),
   );
 
+  it.effect("labels a thread an assistant started with which assistant it is", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld();
+      const grok: OutsideAgentCaller = { ...CALLER, name: "Grok Bot", assistant: "grok-bot" };
+      expect((yield* world.handlers.thread_start(grok, start())).outcome).toBe("started");
+      expect(world.bootstrapped[0]?.bootstrap?.createThread?.outsideOrigin).toEqual(grok);
+    }),
+  );
+
   it.effect("sends only to threads this connection started", () =>
     Effect.gen(function* () {
       const world = yield* makeWorld({ threads: [makeThread({}), ownThread("mine")] });
@@ -641,12 +667,27 @@ describe("connect tools: access", () => {
 
 describe("connect tools: busy and limits", () => {
   it.effect(
-    "answers busy while a turn runs or an approval waits, and when the decider says so",
+    "queues a send while a turn runs, one per thread, and answers busy while an approval waits or when the decider says so",
     () =>
       Effect.gen(function* () {
+        const workingSession = { ...running!, threadId: ThreadId.make("working") };
         const world = yield* makeWorld({
           threads: [
-            ownThread("working", { session: { ...running!, threadId: ThreadId.make("working") } }),
+            ownThread("working", { session: workingSession }),
+            ownThread("holding", {
+              session: { ...running!, threadId: ThreadId.make("holding") },
+              queuedFollowUps: [
+                {
+                  messageId: "held" as never,
+                  text: "earlier",
+                  attachments: [],
+                  fromOutside: { connectionId: CONNECTION, name: "Claude Code" },
+                  runtimeMode: "auto-accept-edits",
+                  interactionMode: "default",
+                  createdAt: AT,
+                },
+              ],
+            }),
             ownThread("asking", {
               activities: [
                 {
@@ -666,12 +707,27 @@ describe("connect tools: busy and limits", () => {
           threadId: "working",
           message: "x",
         });
+        expect(working).toMatchObject({ outcome: "queued", threadId: "working" });
+        expect(world.dispatched).toEqual([
+          expect.objectContaining({
+            type: "thread.follow-up.submit",
+            turnId: "turn-running",
+            delivery: "queue",
+            message: expect.objectContaining({ messageId: working.messageId, text: "x" }),
+            fromOutside: expect.objectContaining({ connectionId: CONNECTION }),
+          }),
+        ]);
+        const holding = yield* world.handlers.thread_send(CALLER, {
+          threadId: "holding",
+          message: "x",
+        });
         const asking = yield* world.handlers.thread_send(CALLER, {
           threadId: "asking",
           message: "x",
         });
-        expect([working.outcome, asking.outcome]).toEqual(["busy", "busy"]);
-        expect(world.dispatched).toHaveLength(0);
+        expect([holding.outcome, asking.outcome]).toEqual(["busy", "busy"]);
+        expect(holding.detail).toContain("earlier message is still queued");
+        expect(world.dispatched).toHaveLength(1);
 
         // The user's own send landed in between: the decider refuses, by type.
         const raced = yield* makeWorld({
@@ -1430,6 +1486,293 @@ describe("thread_changes", () => {
 });
 
 describe("what a thread waits on", () => {
+  describe("other computers", () => {
+    const MAC = { environmentId: EnvironmentId.make("env-mac"), label: "Mac" };
+    const WINDOWS = { environmentId: EnvironmentId.make("env-windows"), label: "Windows PC" };
+    const fakeComputers = (
+      answer: PeerOutsideCallResult | "unreachable",
+      linked: ReadonlyArray<typeof WINDOWS> = [WINDOWS],
+    ) => {
+      const calls: Array<PeerOutsideCallInput> = [];
+      const otherComputers: NonNullable<ConnectToolDeps["otherComputers"]> = {
+        here: Effect.succeed(MAC),
+        find: (nameOrId) =>
+          Effect.succeed(findComputer({ nameOrId, here: MAC, computers: linked })),
+        reach: () =>
+          Effect.succeed([
+            {
+              ...WINDOWS,
+              computer: WINDOWS.label,
+              state: "allowed" as const,
+              access: "start" as const,
+            },
+            {
+              environmentId: EnvironmentId.make("env-mini"),
+              computer: "Mac mini",
+              state: "offline" as const,
+            },
+          ]),
+        call: (_computer, input) =>
+          Effect.suspend(() => {
+            calls.push(input);
+            return answer === "unreachable"
+              ? Effect.fail(new OtherComputerUnreachable({ detail: "no route" }))
+              : Effect.succeed(answer);
+          }),
+      };
+      return { otherComputers, calls };
+    };
+
+    it.effect("lists this computer and the linked ones, as each one answered", () =>
+      Effect.gen(function* () {
+        const { otherComputers } = fakeComputers({ outcome: "refused", detail: "x" });
+        const world = yield* makeWorld({ otherComputers });
+        expect((yield* world.handlers.computers(CALLER)).computers).toEqual([
+          { id: "env-mac", name: "Mac", here: true, allowed: "yes", online: true },
+          { id: "env-windows", name: "Windows PC", here: false, allowed: "yes", online: true },
+          { id: "env-mini", name: "Mac mini", here: false, allowed: "unknown", online: false },
+        ]);
+      }),
+    );
+
+    it.effect(
+      "sends a call naming another computer there, with what it may do here, and gives back its answer",
+      () =>
+        Effect.gen(function* () {
+          const { otherComputers, calls } = fakeComputers({
+            outcome: "ok",
+            result: {
+              outcome: "queued",
+              detail: "Queued there.",
+              threadId: "t-win",
+              messageId: "m-1",
+            },
+          });
+          const world = yield* makeWorld({ otherComputers, door: "assistant" });
+          const sent = yield* world.handlers.thread_send(CALLER, {
+            threadId: "t-win",
+            message: "also run the tests",
+            requestId: "send-1",
+            computer: "windows pc",
+          });
+          expect(sent).toMatchObject({ outcome: "queued", threadId: "t-win", messageId: "m-1" });
+          expect(calls).toEqual([
+            {
+              agent: expect.objectContaining({
+                connectionId: CONNECTION,
+                kind: "assistant",
+                access: "start",
+                maxRuntimeMode: "auto-accept-edits",
+              }),
+              tool: "thread_send",
+              input: { threadId: "t-win", message: "also run the tests", requestId: "send-1" },
+            },
+          ]);
+          // Nothing ran here.
+          expect(world.dispatched).toEqual([]);
+
+          // A wait there ends in time to come back through this door.
+          yield* world.handlers.thread_wait(CALLER, { threadId: "t-win", computer: "Windows PC" });
+          expect(calls.at(-1)?.input).toMatchObject({ seconds: 20 });
+        }),
+    );
+
+    it.effect(
+      "answers for a computer it can't use: unknown, not allowed there, unreachable, or above its level here",
+      () =>
+        Effect.gen(function* () {
+          const unknown = yield* makeWorld({
+            otherComputers: fakeComputers({ outcome: "refused", detail: "x" }).otherComputers,
+          });
+          expect(
+            (yield* unknown.handlers.projects(CALLER, { computer: "Linux box" })).outcome,
+          ).toBe("not_found");
+
+          const refused = yield* makeWorld({
+            otherComputers: fakeComputers({
+              outcome: "refused",
+              detail: "This computer hasn't allowed Claude Code to use it.",
+            }).otherComputers,
+          });
+          expect(
+            yield* refused.handlers.threads_list(CALLER, { computer: "Windows PC" }),
+          ).toMatchObject({ outcome: "not_allowed", threads: [] });
+
+          const offline = yield* makeWorld({
+            otherComputers: fakeComputers("unreachable").otherComputers,
+          });
+          const stopped = yield* offline.handlers.thread_stop(CALLER, {
+            threadId: "t-win",
+            requestId: "stop-1",
+            computer: "Windows PC",
+          });
+          expect(stopped.outcome).toBe("offline");
+          expect(stopped.detail).toContain("same requestId");
+
+          // Its level here is checked before anything goes there.
+          const seeOnly = fakeComputers({ outcome: "ok", result: {} });
+          const looking = yield* makeWorld({
+            grant: { access: "see" },
+            otherComputers: seeOnly.otherComputers,
+          });
+          expect(
+            (yield* looking.handlers.thread_start(
+              CALLER,
+              start({ requestId: "start-1", computer: "Windows PC" }),
+            )).outcome,
+          ).toBe("not_allowed");
+          expect(seeOnly.calls).toEqual([]);
+        }),
+    );
+
+    it.effect(
+      "never lets a linked computer's chosen name take a call meant for another one, or for this one",
+      () =>
+        Effect.gen(function* () {
+          // A linked computer calling itself what another one is called, and this one.
+          const impostor = { environmentId: EnvironmentId.make("env-other"), label: "Windows PC" };
+          const posing = { environmentId: EnvironmentId.make("env-posing"), label: "Mac" };
+          const { otherComputers, calls } = fakeComputers({ outcome: "ok", result: {} }, [
+            WINDOWS,
+            impostor,
+            posing,
+          ]);
+          const world = yield* makeWorld({ otherComputers });
+          const shared = yield* world.handlers.threads_list(CALLER, { computer: "Windows PC" });
+          expect(shared.outcome).toBe("not_found");
+          expect(shared.detail).toContain("Pass its id");
+          // This computer's own name stays here.
+          expect((yield* world.handlers.projects(CALLER, { computer: "mac" })).outcome).toBe("ok");
+          expect(calls).toEqual([]);
+          // An id names exactly one.
+          yield* world.handlers.threads_list(CALLER, { computer: "env-windows" });
+          expect(calls).toHaveLength(1);
+        }),
+    );
+
+    it.effect("never queues a send forwarded from another computer", () =>
+      Effect.gen(function* () {
+        const busy = ownThread("busy", {
+          session: { ...running!, threadId: ThreadId.make("busy") },
+        });
+        const world = yield* makeWorld({ threads: [busy] });
+        const sent = yield* world.handlers
+          .thread_send(CALLER, { threadId: "busy", message: "x" })
+          .pipe(
+            Effect.provideService(ForwardedGrantCap, {
+              connectionId: CONNECTION,
+              access: "start",
+              maxRuntimeMode: "auto-accept-edits",
+            }),
+          );
+        expect(sent.outcome).toBe("busy");
+        expect(world.dispatched).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("reads a long reply in full by its message id, part after part", () =>
+    Effect.gen(function* () {
+      // An emoji (two UTF-16 units) straddles the first part's end.
+      const reply = `${"a".repeat(19_999)}😀${"b".repeat(25_000)}`;
+      const thread = ownThread("long");
+      const world = yield* makeWorld({
+        threads: [
+          {
+            ...thread,
+            messages: [
+              ...thread.messages,
+              {
+                id: "long-reply" as never,
+                role: "assistant",
+                text: reply,
+                turnId: null,
+                streaming: false,
+                createdAt: AT,
+                updatedAt: AT,
+              },
+            ],
+          },
+        ],
+      });
+      const page = yield* world.handlers.thread_read(CALLER, { threadId: "long" });
+      expect(page.messages.at(-1)).toMatchObject({
+        messageId: "long-reply",
+        clipped: true,
+        length: reply.length,
+      });
+      expect(yield* world.handlers.thread_wait(CALLER, { threadId: "long" })).toMatchObject({
+        outcome: "done",
+        replyMessageId: "long-reply",
+        replyLength: reply.length,
+      });
+
+      let text = "";
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const at: number = offset;
+        const part = yield* world.handlers.thread_read(CALLER, {
+          threadId: "long",
+          messageId: "long-reply",
+          offset: at,
+        });
+        expect(part.messages).toHaveLength(1);
+        const message = part.messages[0]!;
+        expect(message.offset).toBe(at);
+        text += message.text;
+        offset = message.nextOffset;
+      }
+      expect(text).toBe(reply);
+      expect(
+        (yield* world.handlers.thread_read(CALLER, { threadId: "long", messageId: "nope" }))
+          .outcome,
+      ).toBe("not_found");
+    }),
+  );
+
+  it.effect("hides what the door hides before it cuts a message into parts", () =>
+    Effect.gen(function* () {
+      // The home folder would straddle the first part's end.
+      const reply = `${"a".repeat(19_995)}/Users/private-name/notes.md`;
+      const thread = ownThread("paths");
+      const world = yield* makeWorld({
+        door: "assistant",
+        scrubText: (text) => text.replaceAll("/Users/private-name", "~"),
+        threads: [
+          {
+            ...thread,
+            messages: [
+              ...thread.messages,
+              {
+                id: "paths-reply" as never,
+                role: "assistant",
+                text: reply,
+                turnId: null,
+                streaming: false,
+                createdAt: AT,
+                updatedAt: AT,
+              },
+            ],
+          },
+        ],
+      });
+      const parts: Array<string> = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const at: number = offset;
+        const part = yield* world.handlers.thread_read(CALLER, {
+          threadId: "paths",
+          messageId: "paths-reply",
+          offset: at,
+        });
+        parts.push(part.messages[0]!.text);
+        offset = part.messages[0]!.nextOffset;
+      }
+      expect(parts.join("")).toBe(`${"a".repeat(19_995)}~/notes.md`);
+      expect(parts.some((text) => text.includes("private"))).toBe(false);
+    }),
+  );
+
   it.effect("details an approval, a question and a plan, in thread_read and thread_wait", () =>
     Effect.gen(function* () {
       const command = `npm run test -- ${"x".repeat(400)}`;

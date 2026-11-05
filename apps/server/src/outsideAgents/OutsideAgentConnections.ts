@@ -12,7 +12,9 @@
  *   Change and Remove apply to the next call. Null: removed.
  */
 import type {
+  KnownAssistant,
   OutsideAgentConnectionId,
+  OutsideAgentConnectionKind,
   OutsideAgentGrant,
   OutsideAgentRef,
 } from "@threadlines/contracts";
@@ -93,6 +95,12 @@ export type OutsideAgentCaller = OutsideAgentRef;
 export interface OutsideAgentLiveGrant extends OutsideAgentGrant {
   readonly connectionId: OutsideAgentConnectionId;
   readonly name: string;
+  /** Who it is, as a linked computer is told when it asks for it (docs/design/assistants.md, "Other computers"). */
+  readonly givenName?: string | null;
+  readonly assistant?: KnownAssistant | null;
+  readonly kind?: OutsideAgentConnectionKind;
+  /** It came through another computer (OutsideAgentVia): it never goes on to a third. */
+  readonly linked?: boolean;
 }
 
 export interface OutsideAgentConnectionsShape {

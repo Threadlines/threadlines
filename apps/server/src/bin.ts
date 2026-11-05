@@ -15,6 +15,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { authCommand } from "./cli/auth.ts";
 import {
   agentsCommand,
+  computersCommand,
   connectCommand,
   disconnectCommand,
   projectsCommand,
@@ -44,6 +45,7 @@ export const cli = Command.make("threadlines", { ...sharedServerCommandFlags }).
     projectCommand,
     connectCommand,
     disconnectCommand,
+    computersCommand,
     projectsCommand,
     agentsCommand,
     threadCommand,

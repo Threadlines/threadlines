@@ -282,6 +282,29 @@ it with `GITHUB_TOKEN`, and GitHub doesn't start workflows from that token's
 `workflow_dispatch` and `repository_dispatch` are exempt, which is why the npm
 Package workflow dispatches the Docker Image workflow directly.
 
+## WinGet
+
+Windows users can install with `winget install Threadlines.Threadlines`. After
+a stable release publishes with a Windows build, release.yml starts the
+**WinGet** workflow (dispatched for the same `GITHUB_TOKEN` reason as Docker).
+It hashes that release's `Threadlines-<version>-win-x64.exe`, writes the
+manifests with `scripts/winget-manifests.ts`, and has
+[Komac](https://github.com/russellbanks/Komac) open a pull request on
+`microsoft/winget-pkgs`. Microsoft's bot installs it on a test machine, and the
+version shows up in winget once a moderator merges it. The listing text
+(`winget show`) lives in that script.
+
+Setup, once:
+
+- Add a `WINGET_TOKEN` repository secret: a classic GitHub token with the
+  `public_repo` scope. Pull requests open from that account's fork of
+  winget-pkgs, which the first run creates.
+- On that account's first winget-pkgs pull request, agree to Microsoft's CLA
+  with the comment the CLA bot asks for.
+
+To retry a version, or to check the manifests without opening a pull request,
+run **WinGet** by hand with that version (tick "dry run" for the check).
+
 ## Windows Publisher Name
 
 There are two different Windows publisher surfaces:

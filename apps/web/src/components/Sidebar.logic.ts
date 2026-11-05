@@ -291,6 +291,15 @@ export function isContextMenuPointerDown(input: {
   return input.isMac && input.button === 0 && input.ctrlKey;
 }
 
+function awaitingInputPill(): ThreadStatusPill {
+  return {
+    label: "Awaiting Input",
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+    pulse: false,
+  };
+}
+
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
   /**
@@ -319,13 +328,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // A question that pauses the agent needs the user right away. One it asked
+  // in passing (it keeps working) needs them once the work below stops.
   if (thread.hasBlockingUserInput ?? thread.hasPendingUserInput) {
-    return {
-      label: "Awaiting Input",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: THREAD_STATUS_DOT_CLASSES.amber,
-      pulse: false,
-    };
+    return awaitingInputPill();
   }
 
   const inFlightStatus = getThreadInFlightStatus(thread);
@@ -356,6 +362,12 @@ export function resolveThreadStatusPill(input: {
       dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,
     };
+  }
+
+  // The work stopped with a question still open: it waits on the user's
+  // answer (or their next message, which closes it) like a blocking one.
+  if (thread.hasPendingUserInput) {
+    return awaitingInputPill();
   }
 
   // A usage limit stopped it and it continues once the limit resets: the row

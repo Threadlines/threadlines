@@ -17,6 +17,9 @@ import {
   AssistantAlertTargetTestResult,
   AssistantAlertTargetUpdateInput,
   OutsideAgentError,
+  OutsideAgentReach,
+  OutsideAgentReachInput,
+  OutsideAgentReachList,
   OutsideAgentRequestInput,
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
@@ -452,6 +455,12 @@ import {
   SourceControlProviderError,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  ReportProblemAccount,
+  ReportProblemError,
+  ReportProblemInput,
+  ReportProblemResult,
+} from "./reportProblem.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -592,6 +601,8 @@ export const WS_METHODS = {
   serverGetSourceControlSetup: "server.getSourceControlSetup",
   serverStartGitHubAuth: "server.startGitHubAuth",
   serverCancelGitHubAuth: "server.cancelGitHubAuth",
+  serverGetReportProblemAccount: "server.getReportProblemAccount",
+  serverReportProblem: "server.reportProblem",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
@@ -725,6 +736,9 @@ export const WS_METHODS = {
   outsideAgentsResumeRequests: "outsideAgents.resumeRequests",
   outsideAgentsUpdate: "outsideAgents.update",
   outsideAgentsRemove: "outsideAgents.remove",
+  outsideAgentsReach: "outsideAgents.reach",
+  outsideAgentsReachAsk: "outsideAgents.reachAsk",
+  outsideAgentsReachRemove: "outsideAgents.reachRemove",
   outsideAgentsAssistantCode: "outsideAgents.assistantCode",
   outsideAgentsAssistantCodeCancel: "outsideAgents.assistantCodeCancel",
   outsideAgentsCreateKey: "outsideAgents.createKey",
@@ -906,6 +920,21 @@ export const WsServerStartGitHubAuthRpc = Rpc.make(WS_METHODS.serverStartGitHubA
 export const WsServerCancelGitHubAuthRpc = Rpc.make(WS_METHODS.serverCancelGitHubAuth, {
   payload: Schema.Struct({}),
   success: Schema.Void,
+});
+
+/** Who "Report a problem" would post as on this computer. */
+export const WsServerGetReportProblemAccountRpc = Rpc.make(
+  WS_METHODS.serverGetReportProblemAccount,
+  {
+    payload: Schema.Struct({}),
+    success: ReportProblemAccount,
+  },
+);
+/** Posts a bug report to GitHub from this computer's GitHub account. */
+export const WsServerReportProblemRpc = Rpc.make(WS_METHODS.serverReportProblem, {
+  payload: ReportProblemInput,
+  success: ReportProblemResult,
+  error: ReportProblemError,
 });
 
 export const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDiagnostics, {
@@ -2288,6 +2317,30 @@ export const WsOutsideAgentsRemoveRpc = Rpc.make(WS_METHODS.outsideAgentsRemove,
 });
 
 /**
+ * The linked computers a connection here may use, or could be asked to
+ * (docs/design/assistants.md, "Other computers"), each asked live.
+ */
+export const WsOutsideAgentsReachRpc = Rpc.make(WS_METHODS.outsideAgentsReach, {
+  payload: OutsideAgentConnectionInput,
+  success: OutsideAgentReachList,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Asks a linked computer's user to let a connection here use that computer too. */
+export const WsOutsideAgentsReachAskRpc = Rpc.make(WS_METHODS.outsideAgentsReachAsk, {
+  payload: OutsideAgentReachInput,
+  success: OutsideAgentReach,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Takes a linked computer away from a connection here (and drops an ask still waiting there). */
+export const WsOutsideAgentsReachRemoveRpc = Rpc.make(WS_METHODS.outsideAgentsReachRemove, {
+  payload: OutsideAgentReachInput,
+  success: OutsideAgentReach,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/**
  * Shows a sign-in code for an assistant (docs/design/assistants.md): the user
  * types it into the page the assistant opened. Replaces any code showing; the
  * snapshot's `assistants.code` carries it too.
@@ -2389,6 +2442,9 @@ export const WsOutsideAgentsRpcGroup = RpcGroup.make(
   WsOutsideAgentsResumeRequestsRpc,
   WsOutsideAgentsUpdateRpc,
   WsOutsideAgentsRemoveRpc,
+  WsOutsideAgentsReachRpc,
+  WsOutsideAgentsReachAskRpc,
+  WsOutsideAgentsReachRemoveRpc,
   WsOutsideAgentsAssistantCodeRpc,
   WsOutsideAgentsAssistantCodeCancelRpc,
   WsOutsideAgentsCreateKeyRpc,
@@ -2427,6 +2483,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetSourceControlSetupRpc,
   WsServerStartGitHubAuthRpc,
   WsServerCancelGitHubAuthRpc,
+  WsServerGetReportProblemAccountRpc,
+  WsServerReportProblemRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,

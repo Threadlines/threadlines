@@ -93,7 +93,21 @@ describe("ChatHeader", () => {
 
     expect(markup).toContain('data-testid="chat-header-outside-origin"');
     expect(markup).toContain("Started by Claude Code, an agent outside Threadlines");
+    expect(markup).toContain('data-testid="outside-origin-plug"');
     expect(renderChatHeader()).not.toContain("chat-header-outside-origin");
+  });
+
+  it("shows the mark of a known assistant that started the thread", () => {
+    const markup = renderChatHeader({
+      outsideOrigin: {
+        connectionId: OutsideAgentConnectionId.make("connection-grok"),
+        name: "Grok Bot",
+        assistant: "grok-bot",
+      },
+    });
+
+    expect(markup).toContain('data-testid="assistant-mark-grok-bot"');
+    expect(markup).toContain("Started by Grok Bot, an assistant outside Threadlines");
   });
 
   it("renders an actionable continue-in-project control by default", () => {

@@ -34,33 +34,43 @@ export interface OutsideTurnRefusal {
 
 /**
  * Why a thread can't take a turn from outside now, or null when it can: a
- * turn running or about to start, or one waiting on the user (an approval,
- * a question, a plan). Sends never queue, so these are refused, not held.
+ * turn running or about to start (`working`: a send can wait in the queue for
+ * it instead), or one waiting on the user (an approval, a question, a plan),
+ * which only the user moves on.
  */
+export interface OutsideTurnBusy {
+  readonly kind: "working" | "approval" | "question" | "plan";
+  readonly detail: string;
+}
+
 export function outsideTurnBusy(
   thread: Pick<OrchestrationThread, "session" | "latestTurn" | "activities" | "proposedPlans">,
   /** The open question this turn answers (`answering`): not a reason to wait. */
   answering?: ApprovalRequestId,
-): string | null {
-  const session = thread.session;
-  if (
-    thread.latestTurn?.state === "running" ||
-    (session !== null &&
-      (session.activeTurnId !== null ||
-        session.status === "running" ||
-        session.status === "starting"))
-  ) {
-    return "It's working on a turn. Wait for it with thread_wait, then send again.";
+  /** A queued message's turn: only a live session counts as working (see outsideTurnWorking). */
+  queued?: boolean,
+): OutsideTurnBusy | null {
+  if (outsideTurnWorking(thread, queued)) {
+    return {
+      kind: "working",
+      detail: "It's working on a turn. Wait for it with thread_wait, then send again.",
+    };
   }
   if (collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0) {
-    return "It's waiting for the user to approve something in Threadlines.";
+    return {
+      kind: "approval",
+      detail: "It's waiting for the user to approve something in Threadlines.",
+    };
   }
   if (
     collectOpenPendingRequests(thread.activities, USER_INPUT_ACTIVITY_KINDS).some(
       (open) => open.requestId !== answering,
     )
   ) {
-    return "It's waiting for the user to answer a question in Threadlines.";
+    return {
+      kind: "question",
+      detail: "It's waiting for the user to answer a question in Threadlines.",
+    };
   }
   if (
     hasActionableProposedPlan({
@@ -69,10 +79,76 @@ export function outsideTurnBusy(
       idOf: (plan) => plan.id,
     })
   ) {
-    return "Its plan is waiting for the user in Threadlines.";
+    return { kind: "plan", detail: "Its plan is waiting for the user in Threadlines." };
   }
   return null;
 }
+
+/**
+ * Whether the thread has a turn running or about to start. With `sessionOnly`
+ * (a queued message, sent once the turn before it ended), the latest turn's
+ * record still reading running doesn't count: it stays so until its
+ * checkpoint is taken, after the session is free.
+ */
+export function outsideTurnWorking(
+  thread: Pick<OrchestrationThread, "session" | "latestTurn">,
+  sessionOnly?: boolean,
+): boolean {
+  const session = thread.session;
+  return (
+    (sessionOnly !== true && thread.latestTurn?.state === "running") ||
+    (session !== null &&
+      (session.activeTurnId !== null ||
+        session.status === "running" ||
+        session.status === "starting"))
+  );
+}
+
+/** The connection's messages waiting in a thread's queue. */
+export const outsideQueuedOf = <
+  Queued extends { readonly fromOutside?: { readonly connectionId: string } | undefined },
+>(
+  thread: { readonly queuedFollowUps?: ReadonlyArray<Queued> | undefined },
+  connectionId: string,
+): ReadonlyArray<Queued> =>
+  (thread.queuedFollowUps ?? []).filter(
+    (queued) => queued.fromOutside?.connectionId === connectionId,
+  );
+
+/**
+ * Why the decider refuses to queue an outside agent's message in `thread`, or
+ * null: the Stop rules; a thread that isn't at work (send it instead) or
+ * that waits on the user; or one already holding this connection's message.
+ */
+export function outsideQueueRefusal(
+  thread: Pick<
+    OrchestrationThread,
+    | "runtimeMode"
+    | "outsideOrigin"
+    | "session"
+    | "latestTurn"
+    | "activities"
+    | "proposedPlans"
+    | "queuedFollowUps"
+  >,
+  origin: OutsideTurnOrigin,
+): OutsideTurnRefusal | null {
+  const stop = outsideStopRefusal(thread, origin);
+  if (stop !== null) return stop;
+  const busy = outsideTurnBusy(thread);
+  if (busy === null) {
+    return { refusal: "thread_busy", detail: "It isn't working anymore. Send again." };
+  }
+  if (busy.kind !== "working") return { refusal: "thread_busy", detail: busy.detail };
+  if (outsideQueuedOf(thread, origin.connectionId).length > 0) {
+    return { refusal: "thread_busy", detail: OUTSIDE_ALREADY_QUEUED };
+  }
+  return null;
+}
+
+/** A second message from the same connection while its first still waits. */
+export const OUTSIDE_ALREADY_QUEUED =
+  "Your earlier message is still queued here; it goes when the current turn finishes. Wait for it (thread_wait), then send again.";
 
 /**
  * Why the decider refuses an outside agent's Stop in `thread`, or null: a
@@ -103,11 +179,13 @@ export function outsideTurnRefusal(
   >,
   origin: OutsideTurnOrigin,
   answering?: ApprovalRequestId,
+  /** A queued message's turn (outsideTurnWorking's `sessionOnly`). */
+  queued?: boolean,
 ): OutsideTurnRefusal | null {
   const stop = outsideStopRefusal(thread, origin);
   if (stop !== null) return stop;
-  const busy = outsideTurnBusy(thread, answering);
-  return busy === null ? null : { refusal: "thread_busy", detail: busy };
+  const busy = outsideTurnBusy(thread, answering, queued);
+  return busy === null ? null : { refusal: "thread_busy", detail: busy.detail };
 }
 
 /**
