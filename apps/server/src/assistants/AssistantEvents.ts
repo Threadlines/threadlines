@@ -264,6 +264,8 @@ export interface AssistantEventsShape {
   readonly current: (seq: number) => Effect.Effect<
     {
       readonly event: AssistantEvent;
+      /** What it is about: `turn:<turnId>` for a finished turn (pushAlertRules' alert ids). */
+      readonly subjectKey: string;
       readonly stands: boolean | "unknown";
       readonly project: string | null;
       readonly generalChat: boolean;

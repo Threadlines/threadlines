@@ -356,11 +356,12 @@ const make = Effect.gen(function* () {
       const shell = yield* projections.getProjectShellById(event.projectId).pipe(Effect.result);
       // Not knowing the project isn't knowing it isn't General Chats: nothing goes out yet.
       if (shell._tag === "Failure") {
-        return { event, project: null, generalChat: false, stands: "unknown" as const };
+        return { event, subjectKey, project: null, generalChat: false, stands: "unknown" as const };
       }
       const project = shell.success;
       return {
         event,
+        subjectKey,
         project: Option.isSome(project) ? project.value.title : null,
         generalChat: Option.isSome(project) && project.value.kind === "general-chat",
         stands: yield* standsNow(event, subjectKey),

@@ -162,6 +162,27 @@ export function AssistantAlertTargetDialogContent({
           {draft.kinds.size === 0 ? <p className={HINT_CLASS}>Tick at least one.</p> : null}
         </div>
 
+        {draft.kinds.has("finished") ? (
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 space-y-0.5">
+              <span className={FIELD_LABEL_CLASS} id={`${fieldId}-when-asked`}>
+                Finished only when I ask
+              </span>
+              <p className={HINT_CLASS}>
+                Tell the agent in a thread, like &quot;let Grok know when you&apos;re done&quot;,
+                and only that turn&apos;s end is sent.
+              </p>
+            </div>
+            <Switch
+              checked={draft.finishedWhenAsked}
+              disabled={busy}
+              aria-labelledby={`${fieldId}-when-asked`}
+              onCheckedChange={(checked) => update({ finishedWhenAsked: checked })}
+              data-testid="assistant-alert-finished-when-asked"
+            />
+          </div>
+        ) : null}
+
         <OutsideAgentProjectsField
           labelId={`${fieldId}-projects`}
           projects={projects}
@@ -177,7 +198,7 @@ export function AssistantAlertTargetDialogContent({
             </span>
             <p className={HINT_CLASS}>
               Grok and others run a model for every alert, so you aren&apos;t billed for threads you
-              already have open.
+              already have open, except a turn you asked an agent to alert about.
             </p>
           </div>
           <Switch

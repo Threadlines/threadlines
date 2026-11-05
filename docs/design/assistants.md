@@ -1802,6 +1802,34 @@ Sol's review of the build (Oct 31), three findings, all fixed:
   timed out as "may have arrived" and was never retried. An answer keeps its
   status once its headers come.
 
+### Alerts when asked (Nov 5)
+
+Finished goes out at the end of every turn (after its 8 s hold), so a user
+running four threads at once got an alert every few minutes. An address can
+now take **Finished only when I ask** (`finishedWhenAsked`):
+
+- The user tells a thread's agent "let Grok know when you're done". The agent
+  calls `alert_assistants` (one of the app's own tools, with `app_guide` and
+  `settings_change`; no arguments). It marks the caller's running turn in
+  `assistant_alert_asks` (thread and turn; migration 102), only when some
+  address or subscription takes finished alerts for the project; otherwise it
+  answers `no_receiver` with where to set one up. Once per turn.
+- Nothing new is recorded: the turn's ordinary finished event, with its hold
+  and its checks for work still going, is what goes out. The sender looks the
+  event's turn up (`subjectKey` `turn:<id>`): an "only when I ask" address
+  drops a finished event whose turn wasn't asked about, and an asked turn
+  skips "Skip threads I'm looking at" on every address, since the user asked.
+- Sol's review of a first plan (a new `asked` kind, recorded from a thread
+  activity) found it woke the assistant mid-turn, before the final reply;
+  could be dropped by skip-viewed; and could lose the request to activity
+  cleanup before the record read it. Riding the finished event avoids all
+  three.
+- Limits: agents without the room endpoint (ACP agents with no HTTP MCP, fx on
+  Windows) don't get the tool, nor do threads another computer, an outside
+  agent or an assistant started, which are fenced off from every app tool
+  (ProviderCommandReactor). An agent can call it without being asked; the alert carries no text,
+  once per turn at most.
+
 ## Build plan: step 5 (MCP Events)
 
 Written Nov 2 on main (`c5dd57cce`). Will has a dot on his ChatGPT account, so

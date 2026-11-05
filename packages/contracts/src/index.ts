@@ -26,6 +26,7 @@ export * from "./settings.ts";
 export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";
+export * from "./reportProblem.ts";
 export * from "./pullRequest.ts";
 export * from "./workflow.ts";
 export * from "./orchestration.ts";

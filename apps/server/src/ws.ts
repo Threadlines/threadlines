@@ -180,6 +180,7 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
 import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import * as ProblemReports from "./sourceControl/ProblemReports.ts";
 import { refreshWindowsPath } from "@threadlines/shared/shell";
 import { sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
 import { SourceControlRepositoryService } from "./sourceControl/SourceControlRepositoryService.ts";
@@ -701,6 +702,7 @@ const makeCoreRpcLayer = (
       const sourceControlToolMaintenance =
         yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
       const githubAuth = yield* GitHubAuth.GitHubAuth;
+      const problemReports = yield* ProblemReports.ProblemReports;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.automaticGitFetchInterval),
         Effect.catch((cause) =>
@@ -1737,6 +1739,14 @@ const makeCoreRpcLayer = (
           }),
         [WS_METHODS.serverStartGitHubAuth]: () => githubAuth.start,
         [WS_METHODS.serverCancelGitHubAuth]: () => githubAuth.cancel,
+        [WS_METHODS.serverGetReportProblemAccount]: () =>
+          observeRpcEffect(WS_METHODS.serverGetReportProblemAccount, problemReports.account, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverReportProblem]: (input) =>
+          observeRpcEffect(WS_METHODS.serverReportProblem, problemReports.submit(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverUpdateSourceControlTool]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSourceControlTool,
@@ -3333,6 +3343,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
     const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
+    const problemReports = yield* ProblemReports.ProblemReports;
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
     const pushAlerts = yield* PushAlerts;
@@ -3365,6 +3376,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(GitHubAuth.GitHubAuth, githubSignIn)),
+              Layer.provide(Layer.succeed(ProblemReports.ProblemReports, problemReports)),
               Layer.provide(Layer.succeed(ThreadBootstrap, threadBootstrap)),
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(

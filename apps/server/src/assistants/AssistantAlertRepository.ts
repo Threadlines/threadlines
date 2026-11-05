@@ -15,6 +15,7 @@ import {
   OutsideAgentConnectionId,
   ProjectId,
   type ProjectId as ProjectIdType,
+  type ThreadId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -52,6 +53,7 @@ const AlertTargetDbRow = Schema.Struct({
   names: Schema.fromJsonString(Schema.Array(AssistantEventNameSchema)),
   projectIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(ProjectId))),
   skipViewed: Schema.Number,
+  finishedWhenAsked: Schema.Number,
   authorizationSecret: Schema.NullOr(Schema.String),
   state: AlertTargetState,
   scannedSeq: Schema.Number,
@@ -84,6 +86,8 @@ export interface AlertTargetRow {
   /** Null: every project. */
   readonly projectIds: ReadonlyArray<ProjectIdType> | null;
   readonly skipViewed: boolean;
+  /** Finished only for turns the user asked an agent to alert about (always false for a subscription). */
+  readonly finishedWhenAsked: boolean;
   /** The secret store entry holding its Authorization value; null: none. */
   readonly authorizationSecret: string | null;
   readonly state: AlertTargetState;
@@ -148,6 +152,7 @@ export interface AssistantAlertRepositoryShape {
     readonly names: ReadonlyArray<AssistantEventName>;
     readonly projectIds: ReadonlyArray<ProjectIdType> | null;
     readonly skipViewed: boolean;
+    readonly finishedWhenAsked: boolean;
     readonly authorizationSecret: string | null;
     /** The record's last `seq` when it was made: nothing before it is sent. */
     readonly startSeq: number;
@@ -197,6 +202,7 @@ export interface AssistantAlertRepositoryShape {
     readonly names: ReadonlyArray<AssistantEventName>;
     readonly projectIds: ReadonlyArray<ProjectIdType> | null;
     readonly skipViewed: boolean;
+    readonly finishedWhenAsked: boolean;
     /** The entry its Authorization value is in now; left out: as it is. */
     readonly authorizationSecret?: string | null;
     readonly newCredentials: boolean;
@@ -272,7 +278,21 @@ export interface AssistantAlertRepositoryShape {
     readonly detail: string;
     readonly now: string;
   }) => Effect.Effect<void, AssistantAlertRepositoryError>;
-  /** Forgets final deliveries queued before `before`. */
+  /**
+   * Remembers that an agent was asked to alert about this turn; true when it
+   * wasn't already (a repeat of the same turn adds nothing).
+   */
+  readonly addAsk: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: string;
+    readonly now: string;
+  }) => Effect.Effect<boolean, AssistantAlertRepositoryError>;
+  /** Whether an agent was asked to alert about this turn. */
+  readonly isAsked: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: string;
+  }) => Effect.Effect<boolean, AssistantAlertRepositoryError>;
+  /** Forgets final deliveries queued, and asks made, before `before`. */
   readonly prune: (before: string) => Effect.Effect<void, AssistantAlertRepositoryError>;
 }
 
@@ -284,6 +304,7 @@ export class AssistantAlertRepository extends Context.Service<
 const fromDb = (row: typeof AlertTargetDbRow.Type): AlertTargetRow => ({
   ...row,
   skipViewed: row.skipViewed !== 0,
+  finishedWhenAsked: row.finishedWhenAsked !== 0,
 });
 
 const make = Effect.gen(function* () {
@@ -309,6 +330,7 @@ const make = Effect.gen(function* () {
       t.names_json AS "names",
       t.project_ids_json AS "projectIds",
       t.skip_viewed AS "skipViewed",
+      t.finished_when_asked AS "finishedWhenAsked",
       t.authorization_secret AS "authorizationSecret",
       t.state AS "state",
       t.scanned_seq AS "scannedSeq",
@@ -368,11 +390,13 @@ const make = Effect.gen(function* () {
     sql`
       INSERT INTO assistant_targets (
         target_id, kind, connection_id, url, names_json, project_ids_json, skip_viewed,
-        authorization_secret, state, scanned_seq, watermark, created_at, updated_at
+        finished_when_asked, authorization_secret, state, scanned_seq, watermark, created_at,
+        updated_at
       ) VALUES (
         ${input.targetId}, 'webhook', NULL, ${input.url}, ${JSON.stringify(input.names)},
         ${projectIdsJson(input.projectIds)}, ${input.skipViewed ? 1 : 0},
-        ${input.authorizationSecret}, 'on', ${input.startSeq}, ${input.startSeq},
+        ${input.finishedWhenAsked ? 1 : 0}, ${input.authorizationSecret}, 'on', ${input.startSeq},
+        ${input.startSeq},
         ${input.now}, ${input.now}
       )
     `.pipe(Effect.asVoid, wrap("insert"));
@@ -442,7 +466,8 @@ const make = Effect.gen(function* () {
       UPDATE assistant_targets
       SET url = ${input.url}, names_json = ${JSON.stringify(input.names)},
         project_ids_json = ${projectIdsJson(input.projectIds)},
-        skip_viewed = ${input.skipViewed ? 1 : 0}, updated_at = ${input.now}
+        skip_viewed = ${input.skipViewed ? 1 : 0},
+        finished_when_asked = ${input.finishedWhenAsked ? 1 : 0}, updated_at = ${input.now}
         ${
           input.authorizationSecret !== undefined
             ? sql`, authorization_secret = ${input.authorizationSecret}`
@@ -648,11 +673,34 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.asVoid, wrap("failInFlight"));
 
+  const addAsk: AssistantAlertRepositoryShape["addAsk"] = (input) =>
+    sql<{ readonly turnId: string }>`
+      INSERT INTO assistant_alert_asks (thread_id, turn_id, asked_at)
+      VALUES (${input.threadId}, ${input.turnId}, ${input.now})
+      ON CONFLICT (thread_id, turn_id) DO NOTHING
+      RETURNING turn_id AS "turnId"
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      wrap("addAsk"),
+    );
+
+  const isAsked: AssistantAlertRepositoryShape["isAsked"] = (input) =>
+    sql<{ readonly found: number }>`
+      SELECT 1 AS "found" FROM assistant_alert_asks
+      WHERE thread_id = ${input.threadId} AND turn_id = ${input.turnId}
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      wrap("isAsked"),
+    );
+
   const prune: AssistantAlertRepositoryShape["prune"] = (before) =>
-    sql`
-      DELETE FROM assistant_deliveries
-      WHERE state IN ('sent', 'dropped', 'failed') AND queued_at < ${before}
-    `.pipe(Effect.asVoid, wrap("prune"));
+    Effect.gen(function* () {
+      yield* sql`
+        DELETE FROM assistant_deliveries
+        WHERE state IN ('sent', 'dropped', 'failed') AND queued_at < ${before}
+      `;
+      yield* sql`DELETE FROM assistant_alert_asks WHERE asked_at < ${before}`;
+    }).pipe(wrap("prune"));
 
   return AssistantAlertRepository.of({
     list,
@@ -674,6 +722,8 @@ const make = Effect.gen(function* () {
     settle,
     note,
     failInFlight,
+    addAsk,
+    isAsked,
     prune,
   });
 });
