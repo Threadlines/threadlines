@@ -939,12 +939,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* Deferred.succeed(agentTurn.ended, undefined);
       });
 
-    /** Closes an agent turn whose end notice never came, after a long quiet. */
+    /**
+     * Closes an agent turn whose end notice never came, after a long quiet.
+     * One waiting on the user's approval or answer isn't quiet: it stays open.
+     */
     const watchAgentTurnQuiet = (ctx: AcpSessionContext, turnId: TurnId) =>
       Effect.gen(function* () {
         while (ctx.agentTurn?.turnId === turnId) {
           yield* Effect.sleep(ACP_AGENT_TURN_QUIET_CHECK);
           if (ctx.agentTurn?.turnId !== turnId) return;
+          if (ctx.pendingApprovals.size > 0 || ctx.pendingUserInputs.size > 0) {
+            ctx.agentTurnLastActivityMs = Date.now();
+            continue;
+          }
           if (
             Date.now() - ctx.agentTurnLastActivityMs >=
             Duration.toMillis(ACP_AGENT_TURN_QUIET_LIMIT)

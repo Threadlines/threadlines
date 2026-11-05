@@ -183,13 +183,19 @@ export class AssistantDoor {
  * was replaced but never finished closing (the computer's end was already
  * gone): it reads open again once the object wakes from hibernation, and
  * requests sent on it go nowhere. Those come back as `replaced`, to close again.
+ * Newest is the highest `generation`, then the latest `connectedAt` for
+ * sockets from before generations; the listing order never decides.
  */
-export function currentAssistantSocket<T extends { readonly connectedAt: number }>(
-  open: ReadonlyArray<T>,
-): { readonly current: T | null; readonly replaced: ReadonlyArray<T> } {
+export function currentAssistantSocket<
+  T extends { readonly connectedAt: number; readonly generation?: number },
+>(open: ReadonlyArray<T>): { readonly current: T | null; readonly replaced: ReadonlyArray<T> } {
+  const newer = (a: T, b: T) =>
+    (a.generation ?? 0) !== (b.generation ?? 0)
+      ? (a.generation ?? 0) > (b.generation ?? 0)
+      : a.connectedAt > b.connectedAt;
   let current: T | null = null;
   for (const candidate of open) {
-    if (current === null || candidate.connectedAt >= current.connectedAt) current = candidate;
+    if (current === null || newer(candidate, current)) current = candidate;
   }
   return { current, replaced: open.filter((candidate) => candidate !== current) };
 }

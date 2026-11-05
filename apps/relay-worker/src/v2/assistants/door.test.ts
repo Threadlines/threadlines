@@ -201,6 +201,11 @@ describe("the assistants door with the computer there", () => {
     expect(currentAssistantSocket([replaced, current])).toEqual({ current, replaced: [replaced] });
     expect(currentAssistantSocket([current, replaced])).toEqual({ current, replaced: [replaced] });
     expect(currentAssistantSocket([])).toEqual({ current: null, replaced: [] });
+    // Two in one millisecond: the generation decides, never the listing order.
+    const before = { socketId: "before", connectedAt: T0, generation: 1 };
+    const after = { socketId: "after", connectedAt: T0, generation: 2 };
+    expect(currentAssistantSocket([after, before])).toEqual({ current: after, replaced: [before] });
+    expect(currentAssistantSocket([before, after])).toEqual({ current: after, replaced: [before] });
   });
 
   it("times out a computer that never answers with 504, and a late answer finds nothing", async () => {

@@ -130,6 +130,12 @@ interface SocketAttachment {
   readonly requestId?: string;
   /** Assistant sockets only: which socket a forwarded request went out on. */
   readonly socketId?: string;
+  /**
+   * Assistant sockets only: one more than any assistant socket the host still
+   * listed when this one connected, so the newest is known even when two share
+   * a millisecond (currentAssistantSocket).
+   */
+  readonly generation?: number;
   /** Assistant sockets only: requests forwarded and not yet committed to today's allowance. */
   readonly pendingRequests?: number;
   /** Control sockets only: last lease frame, kept on the socket so it survives hibernation. */
@@ -672,7 +678,9 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     if (!(await this.requireHostSecret(request, true))) return badHostSecret();
     if (!(await assistantsConfig(this.env)).enabled) return assistantsOff();
     const now = Date.now();
+    let generation = 1;
     for (const socket of this.ctx.getWebSockets("assistant")) {
+      generation = Math.max(generation, (readAttachment(socket)?.generation ?? 0) + 1);
       this.closeAssistantSocket(
         socket,
         RELAY_CLOSE_CODE_REPLACED,
@@ -681,7 +689,13 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
     const { client, server } = this.accept(
       ["assistant"],
-      { role: "assistant", connectedAt: now, socketId: crypto.randomUUID(), lastCommitAt: now },
+      {
+        role: "assistant",
+        connectedAt: now,
+        generation,
+        socketId: crypto.randomUUID(),
+        lastCommitAt: now,
+      },
       request,
     );
     for (const signIn of this.assistants.signIns(now)) {
@@ -810,12 +824,22 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     now: number,
   ): { readonly socket: WebSocket; readonly socketId: string } | null {
     if (!this.liveControlSocket(now)) return null;
-    const open: Array<{ socket: WebSocket; socketId: string; connectedAt: number }> = [];
+    const open: Array<{
+      socket: WebSocket;
+      socketId: string;
+      connectedAt: number;
+      generation?: number;
+    }> = [];
     for (const socket of this.ctx.getWebSockets("assistant")) {
       if (socket.readyState !== WebSocket.OPEN) continue;
       const attachment = readAttachment(socket);
       if (attachment?.socketId) {
-        open.push({ socket, socketId: attachment.socketId, connectedAt: attachment.connectedAt });
+        open.push({
+          socket,
+          socketId: attachment.socketId,
+          connectedAt: attachment.connectedAt,
+          ...(attachment.generation !== undefined ? { generation: attachment.generation } : {}),
+        });
       }
     }
     const { current, replaced } = currentAssistantSocket(open);
