@@ -104,14 +104,14 @@ export const COMPARISONS: readonly Comparison[] = [
     slug: "conductor",
     name: "Conductor",
     maker: "Meta",
-    title: "Conductor alternative for Mac, Windows and Linux | Threadlines",
+    title: "Conductor app alternative for Claude Code and Codex | Threadlines",
     description:
       "Conductor is joining Meta and stopped new sign-ups. Threadlines is a free, open-source app for Mac, Windows and Linux that runs Claude Code, Codex and more.",
     headline: "A Conductor alternative for Mac, Windows and Linux",
     summary:
       "A Mac app that's joining Meta and closed to new users. Threadlines is free, open source, and runs on Mac, Windows and Linux.",
     intro:
-      "Conductor is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way on Mac, Windows and Linux. It's free and MIT-licensed, and two agents can share one thread.",
+      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way on Mac, Windows and Linux. It's free and MIT-licensed, and two agents can share one thread.",
     status: {
       heading: "Conductor is joining Meta",
       text: "On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups and downloads. If you already use it, the Mac app keeps working for now, and Pro users keep Pro features for free.",
