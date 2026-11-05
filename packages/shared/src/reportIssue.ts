@@ -57,9 +57,22 @@ export function reportIssueMarker(submissionId: string): string {
 
 /** A code block whose fence no run of backticks inside the text can close. */
 function fenced(text: string): string {
-  const longestRun = Math.max(0, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length));
+  let longestRun = 0;
+  for (const match of text.matchAll(/`+/g)) longestRun = Math.max(longestRun, match[0].length);
   const fence = "`".repeat(Math.max(3, longestRun + 1));
   return `${fence}text\n${text}\n${fence}`;
+}
+
+/**
+ * Pasted error text without blank lines above it or trailing space, keeping
+ * the first line's indent. No regex: the text is the person's, and a pattern
+ * like `\s+$` takes quadratic time on a long run of spaces.
+ */
+function trimPastedText(text: string): string {
+  const lines = text.trimEnd().split("\n");
+  let first = 0;
+  while (first < lines.length && lines[first]!.trim().length === 0) first += 1;
+  return lines.slice(first).join("\n");
 }
 
 /**
@@ -83,7 +96,7 @@ export function buildReportIssueBody(input: {
   if (draft.expected.trim().length > 0) {
     sections.push(["What did you expect instead?", draft.expected.trim()]);
   }
-  const errorText = draft.errorText.replace(/^\s*\n|\s+$/g, "");
+  const errorText = trimPastedText(draft.errorText);
   if (errorText.length > 0) {
     sections.push(["Error text or logs", fenced(errorText)]);
   }
