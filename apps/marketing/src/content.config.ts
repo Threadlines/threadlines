@@ -16,6 +16,8 @@ const changelog = defineCollection({
     reviewRequired: z.literal(true).optional(),
     date: z.coerce.date(),
     title: z.string().min(1).max(90),
+    /** A few words naming the release, for the homepage's "New in" badge. */
+    headline: z.string().min(1).max(32).optional(),
     summary: z.string().min(1).max(280),
     githubRelease: z.url(),
     highlights: z
