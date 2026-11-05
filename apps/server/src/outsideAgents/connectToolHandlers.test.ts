@@ -1478,15 +1478,17 @@ describe("what a thread waits on", () => {
       let text = "";
       let offset: number | undefined = 0;
       while (offset !== undefined) {
+        const at: number = offset;
         const part = yield* world.handlers.thread_read(CALLER, {
           threadId: "long",
           messageId: "long-reply",
-          offset,
+          offset: at,
         });
         expect(part.messages).toHaveLength(1);
-        expect(part.messages[0]!.offset).toBe(offset);
-        text += part.messages[0]!.text;
-        offset = part.messages[0]!.nextOffset;
+        const message = part.messages[0]!;
+        expect(message.offset).toBe(at);
+        text += message.text;
+        offset = message.nextOffset;
       }
       expect(text).toBe(reply);
       expect(
