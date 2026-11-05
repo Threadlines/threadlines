@@ -177,6 +177,23 @@ export class AssistantDoor {
   }
 }
 
+/**
+ * The computer's assistant socket among the host's open ones: the newest,
+ * since each new socket replaces the older ones. An older one that reads open
+ * was replaced but never finished closing (the computer's end was already
+ * gone): it reads open again once the object wakes from hibernation, and
+ * requests sent on it go nowhere. Those come back as `replaced`, to close again.
+ */
+export function currentAssistantSocket<T extends { readonly connectedAt: number }>(
+  open: ReadonlyArray<T>,
+): { readonly current: T | null; readonly replaced: ReadonlyArray<T> } {
+  let current: T | null = null;
+  for (const candidate of open) {
+    if (current === null || candidate.connectedAt >= current.connectedAt) current = candidate;
+  }
+  return { current, replaced: open.filter((candidate) => candidate !== current) };
+}
+
 /** The computer's answer as the assistant gets it: its status, allowed headers and body. */
 function computerAnswer(
   route: "mcp" | "token",

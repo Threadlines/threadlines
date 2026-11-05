@@ -56,7 +56,12 @@ import {
 } from "./assistants/answers.ts";
 import { assistantCodeShardName } from "./assistants/codes.ts";
 import { ASSISTANTS_OFF_CODE, assistantsConfig, assistantsInfo } from "./assistants/config.ts";
-import { AssistantDoor, type AssistantDoorRequest, parseHostFrame } from "./assistants/door.ts";
+import {
+  AssistantDoor,
+  type AssistantDoorRequest,
+  currentAssistantSocket,
+  parseHostFrame,
+} from "./assistants/door.ts";
 import { AssistantPresence } from "./assistants/presence.ts";
 import {
   AssistantHostCore,
@@ -796,20 +801,32 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   /**
-   * The open assistant socket, when the computer is there: its control
+   * The computer's assistant socket, when the computer is there: its control
    * socket's lease is fresh too (a sleeping computer's sockets can look open
-   * for a while; its lease lapses in 150 s).
+   * for a while; its lease lapses in 150 s). Older sockets that read open
+   * again are closed again (currentAssistantSocket).
    */
   private liveAssistantSocket(
     now: number,
   ): { readonly socket: WebSocket; readonly socketId: string } | null {
     if (!this.liveControlSocket(now)) return null;
+    const open: Array<{ socket: WebSocket; socketId: string; connectedAt: number }> = [];
     for (const socket of this.ctx.getWebSockets("assistant")) {
       if (socket.readyState !== WebSocket.OPEN) continue;
-      const socketId = readAttachment(socket)?.socketId;
-      if (socketId) return { socket, socketId };
+      const attachment = readAttachment(socket);
+      if (attachment?.socketId) {
+        open.push({ socket, socketId: attachment.socketId, connectedAt: attachment.connectedAt });
+      }
     }
-    return null;
+    const { current, replaced } = currentAssistantSocket(open);
+    for (const stale of replaced) {
+      this.closeAssistantSocket(
+        stale.socket,
+        RELAY_CLOSE_CODE_REPLACED,
+        "Replaced by a newer connection.",
+      );
+    }
+    return current;
   }
 
   /** Fails what's in flight on the socket, keeps its tally, and closes it. */

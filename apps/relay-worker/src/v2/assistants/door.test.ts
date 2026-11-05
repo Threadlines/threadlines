@@ -11,6 +11,7 @@ import {
   type AssistantDoorRequest,
   type AssistantDoorSocket,
   type AssistantDoorState,
+  currentAssistantSocket,
   parseHostFrame,
 } from "./door.ts";
 import { AssistantHostCore } from "./hostAssistants.ts";
@@ -190,6 +191,16 @@ describe("the assistants door with the computer there", () => {
     const answer = await pending;
     expect(answer.status).toBe(502);
     expect(JSON.parse(answer.body)).toMatchObject({ jsonrpc: "2.0", id: 7 });
+  });
+
+  it("sends requests on the newest open socket, and gives back the replaced ones to close", () => {
+    // A replaced socket whose close never finished reads open again after the
+    // object wakes from hibernation, and the object may list it first.
+    const replaced = { socketId: "replaced", connectedAt: T0 };
+    const current = { socketId: "current", connectedAt: T0 + 60_000 };
+    expect(currentAssistantSocket([replaced, current])).toEqual({ current, replaced: [replaced] });
+    expect(currentAssistantSocket([current, replaced])).toEqual({ current, replaced: [replaced] });
+    expect(currentAssistantSocket([])).toEqual({ current: null, replaced: [] });
   });
 
   it("times out a computer that never answers with 504, and a late answer finds nothing", async () => {

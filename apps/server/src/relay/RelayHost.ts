@@ -542,6 +542,23 @@ const make = Effect.gen(function* () {
     ]);
     control = socket;
     let opened = false;
+    // Counted from now, not from `open`: a handshake whose answer never
+    // comes doesn't time out on its own, and would hold the link forever.
+    lastPongAt = Date.now();
+    controlTimers.push(
+      setInterval(() => {
+        if (Date.now() - lastPongAt > PONG_TIMEOUT_MS) {
+          // The network went quiet without a close: start over.
+          dropControl("Relay heartbeat timed out.");
+          setStatus("offline", "Lost the connection to the relay. Reconnecting.");
+          scheduleReconnect();
+          return;
+        }
+        if (control === socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(RELAY_HEARTBEAT_PING_FRAME);
+        }
+      }, PING_INTERVAL_MS),
+    );
 
     socket.addEventListener("open", () => {
       if (control !== socket) return;
@@ -555,18 +572,6 @@ const make = Effect.gen(function* () {
           () => sendControl({ type: "lease", hostLabel: hostLabel() }),
           LEASE_INTERVAL_MS,
         ),
-        setInterval(() => {
-          if (Date.now() - lastPongAt > PONG_TIMEOUT_MS) {
-            // The network went quiet without a close: start over.
-            dropControl("Relay heartbeat timed out.");
-            setStatus("offline", "Lost the connection to the relay. Reconnecting.");
-            scheduleReconnect();
-            return;
-          }
-          if (control === socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(RELAY_HEARTBEAT_PING_FRAME);
-          }
-        }, PING_INTERVAL_MS),
       );
     });
     socket.addEventListener("message", (event: MessageEvent) => {
