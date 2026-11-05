@@ -78,7 +78,14 @@ export const AgentThreadReadResult = Schema.Struct({
        */
       origin: Schema.Literals(["user", "agent", "thread_request", "thread_report"]),
       text: Schema.String,
+      /** `text` is only part of the message. */
       clipped: Schema.optional(Schema.Boolean),
+      /** The whole message's length in characters, when `text` is only part of it. */
+      length: Schema.optional(Schema.Number),
+      /** Read by `messageId`: where `text` starts in the message. */
+      offset: Schema.optional(Schema.Number),
+      /** Read by `messageId`: pass as `offset` to read on. Absent: `text` reaches the end. */
+      nextOffset: Schema.optional(Schema.Number),
       streaming: Schema.optional(Schema.Boolean),
     }),
   ),
@@ -290,6 +297,9 @@ export const PeerThreadReadInput = Schema.Struct({
   threadId: ThreadId,
   after: Schema.optional(Schema.Number),
   limit: Schema.optional(Schema.Number),
+  /** Read this one message from `offset` (thread_read's `messageId`). An older server ignores both. */
+  messageId: Schema.optional(Schema.String),
+  offset: Schema.optional(Schema.Number),
 });
 export type PeerThreadReadInput = typeof PeerThreadReadInput.Type;
 

@@ -252,14 +252,30 @@ export const ThreadListTool = readsThreads(
   }).annotate(Tool.Title, "List threads"),
 );
 
+/** thread_read's way to read one message in full, the same for Threadlines' agents and outside ones. */
+export const ThreadReadMessageFields = {
+  messageId: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Read this one message (a `messageId` from an earlier read) instead of a page: its text from `offset`.",
+    }),
+  ),
+  offset: Schema.optional(
+    Schema.Number.annotate({
+      description: "With `messageId`: where to start, in characters. Default 0.",
+    }),
+  ),
+};
+
 export const ThreadReadTool = readsThreads(
   Tool.make("thread_read", {
     description:
-      "Read another thread in this project, or one you started on a linked computer: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
+      "Read another thread in this project, or one you started on a linked computer: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters (`clipped`, with the whole `length`); pass one's `messageId` to read all of it, 20,000 characters at a time, passing `nextOffset` as `offset` while it has one. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       after: Schema.optional(Schema.Number),
       limit: Schema.optional(Schema.Number),
+      ...ThreadReadMessageFields,
     }),
     success: ThreadReadResult,
   }).annotate(Tool.Title, "Read a thread"),

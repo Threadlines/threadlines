@@ -1439,6 +1439,63 @@ describe("thread_changes", () => {
 });
 
 describe("what a thread waits on", () => {
+  it.effect("reads a long reply in full by its message id, part after part", () =>
+    Effect.gen(function* () {
+      // An emoji (two UTF-16 units) straddles the first part's end.
+      const reply = `${"a".repeat(19_999)}😀${"b".repeat(25_000)}`;
+      const thread = ownThread("long");
+      const world = yield* makeWorld({
+        threads: [
+          {
+            ...thread,
+            messages: [
+              ...thread.messages,
+              {
+                id: "long-reply" as never,
+                role: "assistant",
+                text: reply,
+                turnId: null,
+                streaming: false,
+                createdAt: AT,
+                updatedAt: AT,
+              },
+            ],
+          },
+        ],
+      });
+      const page = yield* world.handlers.thread_read(CALLER, { threadId: "long" });
+      expect(page.messages.at(-1)).toMatchObject({
+        messageId: "long-reply",
+        clipped: true,
+        length: reply.length,
+      });
+      expect(yield* world.handlers.thread_wait(CALLER, { threadId: "long" })).toMatchObject({
+        outcome: "done",
+        replyMessageId: "long-reply",
+        replyLength: reply.length,
+      });
+
+      let text = "";
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const part = yield* world.handlers.thread_read(CALLER, {
+          threadId: "long",
+          messageId: "long-reply",
+          offset,
+        });
+        expect(part.messages).toHaveLength(1);
+        expect(part.messages[0]!.offset).toBe(offset);
+        text += part.messages[0]!.text;
+        offset = part.messages[0]!.nextOffset;
+      }
+      expect(text).toBe(reply);
+      expect(
+        (yield* world.handlers.thread_read(CALLER, { threadId: "long", messageId: "nope" }))
+          .outcome,
+      ).toBe("not_found");
+    }),
+  );
+
   it.effect("details an approval, a question and a plan, in thread_read and thread_wait", () =>
     Effect.gen(function* () {
       const command = `npm run test -- ${"x".repeat(400)}`;

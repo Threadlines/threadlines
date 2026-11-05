@@ -57,9 +57,28 @@ export function makeThreadToolLinks(input: {
             threadId: request.threadId,
             ...(request.after !== undefined ? { after: request.after } : {}),
             ...(request.limit !== undefined ? { limit: request.limit } : {}),
+            ...(request.messageId !== undefined ? { messageId: request.messageId } : {}),
+            ...(request.offset !== undefined ? { offset: request.offset } : {}),
           }),
         )
-        .pipe(Effect.catch((error) => Effect.succeed({ unavailable: error.message }))),
+        .pipe(
+          Effect.map((read) =>
+            // An older computer ignores `messageId` and answers with a page instead.
+            request.messageId !== undefined &&
+            read.outcome === "ok" &&
+            !read.messages.every((message) => message.messageId === request.messageId)
+              ? {
+                  outcome: "refused" as const,
+                  detail:
+                    "That computer's Threadlines is too old to read one message in full. Update it, then try again.",
+                  messages: [],
+                  next: null,
+                  more: false,
+                }
+              : read,
+          ),
+          Effect.catch((error) => Effect.succeed({ unavailable: error.message })),
+        ),
     projectPlace: (workspaceRoot) => resolveProjectPlace(identities, workspaceRoot),
   };
 }
