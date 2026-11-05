@@ -3,6 +3,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -220,6 +221,149 @@ describe("decider follow-up flows", () => {
         }),
       ),
     ).rejects.toThrow(/not queued/);
+  });
+
+  describe("an outside agent's message for a thread at work", () => {
+    const connectionId = OutsideAgentConnectionId.make("connection-grok");
+    const origin = {
+      connectionId,
+      name: "Grok Bot",
+      access: "start" as const,
+      maxRuntimeMode: "auto-accept-edits" as const,
+    };
+    const [base] = readModelAfterProviderDelivery.threads;
+    const withThread = (patch: Partial<NonNullable<typeof base>>): OrchestrationReadModel => ({
+      ...readModelAfterProviderDelivery,
+      threads: [{ ...base!, outsideOrigin: { connectionId, name: "Grok Bot" }, ...patch }],
+    });
+    const working = withThread({
+      session: { ...base!.session!, status: "running", activeTurnId: TurnId.make("turn-running") },
+    });
+    const queued = {
+      messageId: MessageId.make("message-outside"),
+      text: "also update the changelog",
+      attachments: [],
+      fromOutside: { connectionId, name: "Grok Bot" },
+      runtimeMode: "approval-required" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: "2026-01-01T00:00:04.500Z",
+    };
+    const submit = (messageId: string) =>
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.follow-up.submit",
+          commandId: CommandId.make(`cmd-${messageId}`),
+          threadId: ThreadId.make("thread-follow-up"),
+          turnId: TurnId.make("turn-running"),
+          message: {
+            messageId: MessageId.make(messageId),
+            role: "user",
+            text: "also update the changelog",
+            attachments: [],
+          },
+          delivery: "queue",
+          fromOutside: origin,
+          createdAt: "2026-01-01T00:00:05.000Z",
+        },
+        readModel: working,
+      });
+    const sendQueued = (readModel: OrchestrationReadModel, outsideOrigin?: typeof origin) =>
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.follow-up.send-queued",
+            commandId: CommandId.make("cmd-send-outside"),
+            threadId: ThreadId.make("thread-follow-up"),
+            messageId: queued.messageId,
+            ...(outsideOrigin !== undefined ? { outsideOrigin } : {}),
+            createdAt: "2026-01-01T00:00:06.000Z",
+          },
+          readModel,
+        }),
+      ).then((decided) => (Array.isArray(decided) ? decided : [decided]));
+
+    it("queues it behind the running turn, one per connection, never as the user's", async () => {
+      const decided = await Effect.runPromise(submit("message-outside"));
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events.map((event) => event.type)).toEqual(["thread.follow-up-queued"]);
+      expect(events[0]).toMatchObject({
+        payload: { followUp: { messageId: "message-outside", fromOutside: { connectionId } } },
+      });
+      await expect(
+        Effect.runPromise(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.follow-up.submit",
+              commandId: CommandId.make("cmd-second"),
+              threadId: ThreadId.make("thread-follow-up"),
+              turnId: TurnId.make("turn-running"),
+              message: {
+                messageId: MessageId.make("message-second"),
+                role: "user",
+                text: "and the docs",
+                attachments: [],
+              },
+              delivery: "queue",
+              fromOutside: origin,
+              createdAt: "2026-01-01T00:00:05.500Z",
+            },
+            readModel: withThread({ ...working.threads[0]!, queuedFollowUps: [queued] }),
+          }),
+        ),
+      ).rejects.toThrow(/still queued/);
+      // Nothing to wait behind: it sends instead.
+      await expect(
+        Effect.runPromise(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.follow-up.submit",
+              commandId: CommandId.make("cmd-idle"),
+              threadId: ThreadId.make("thread-follow-up"),
+              turnId: TurnId.make("turn-follow-up"),
+              message: {
+                messageId: MessageId.make("message-idle"),
+                role: "user",
+                text: "x",
+                attachments: [],
+              },
+              delivery: "queue",
+              fromOutside: origin,
+              createdAt: "2026-01-01T00:00:05.500Z",
+            },
+            readModel: withThread({}),
+          }),
+        ),
+      ).rejects.toThrow(/isn't working anymore/);
+    });
+
+    it("sends it under the grant read at send time, or takes it back", async () => {
+      const idle = withThread({ queuedFollowUps: [queued] });
+      const sent = await sendQueued(idle, origin);
+      expect(sent.map((event) => event.type)).toContain("thread.turn-start-requested");
+      expect(sent[0]).toMatchObject({
+        type: "thread.follow-up-unqueued",
+        payload: { reason: "sent" },
+      });
+      expect(sent.find((event) => event.type === "thread.message-sent")).toMatchObject({
+        payload: { messageId: queued.messageId, fromOutside: { connectionId } },
+      });
+
+      // No grant read (removed), and a thread raised above the ceiling since.
+      for (const taken of [
+        await sendQueued(idle),
+        await sendQueued(
+          withThread({ queuedFollowUps: [queued], runtimeMode: "full-access" }),
+          origin,
+        ),
+      ]) {
+        expect(taken).toEqual([
+          expect.objectContaining({
+            type: "thread.follow-up-unqueued",
+            payload: expect.objectContaining({ reason: "cancelled" }),
+          }),
+        ]);
+      }
+    });
   });
 
   describe("questions answered with a message", () => {

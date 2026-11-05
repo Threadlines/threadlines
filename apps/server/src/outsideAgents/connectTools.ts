@@ -172,6 +172,13 @@ export const ThreadsListResult = Schema.Struct({
 });
 export type ThreadsListResult = typeof ThreadsListResult.Type;
 
+/** One of your messages waiting in a thread's queue for its turn to finish. */
+export const OutsideQueuedMessage = Schema.Struct({
+  messageId: Schema.String,
+  /** When you sent it. */
+  at: Schema.String,
+});
+
 export const OutsideThreadReadResult = Schema.Struct({
   ...AgentThreadReadResult.fields,
   /** `starting` / `failed` (assistants): a thread it started that is still being set up, or never was. */
@@ -181,18 +188,23 @@ export const OutsideThreadReadResult = Schema.Struct({
   waitingOn: Schema.optional(OutsideWaitingOn),
   /** Each thing it waits on the user for, in detail, `waitingOn`'s kind first. */
   waiting: Schema.optional(Schema.Array(OutsideWaitingItem)),
+  /** Your messages waiting in its queue; absent: none. */
+  queued: Schema.optional(Schema.Array(OutsideQueuedMessage)),
 });
 export type OutsideThreadReadResult = typeof OutsideThreadReadResult.Type;
 
 export const ThreadWaitResult = Schema.Struct({
   /**
-   * `done`: it left `working`. `still_working`: the wait ran out first (or,
-   * for an assistant, it is still being set up); wait again. `failed`
-   * (assistants): its setup failed before it existed.
+   * `done`: it left `working`, with none of your messages left in its queue.
+   * `still_working`: the wait ran out first (or, for an assistant, it is still
+   * being set up); wait again. `failed` (assistants): its setup failed before
+   * it existed. `taken_back`: the message you waited on (`messageId`) left
+   * the queue unsent.
    */
   outcome: Schema.Literals([
     "done",
     "still_working",
+    "taken_back",
     "failed",
     "not_allowed",
     "not_found",
@@ -210,6 +222,8 @@ export const ThreadWaitResult = Schema.Struct({
   replyMessageId: Schema.optional(Schema.NullOr(Schema.String)),
   /** The whole reply's length in characters, when `reply` is clipped. */
   replyLength: Schema.optional(Schema.Number),
+  /** Your messages still waiting in its queue; absent: none. */
+  queued: Schema.optional(Schema.Array(OutsideQueuedMessage)),
 });
 export type ThreadWaitResult = typeof ThreadWaitResult.Type;
 
@@ -240,9 +254,14 @@ export const OutsideThreadStartResult = Schema.Struct({
 export type OutsideThreadStartResult = typeof OutsideThreadStartResult.Type;
 
 export const OutsideThreadSendResult = Schema.Struct({
-  /** `busy`: it has a turn running (or waiting on the user); wait, then send again. */
+  /**
+   * `queued`: it's working, so the message waits and goes as its next turn.
+   * `busy`: it waits on the user, is being set up, or already holds a message
+   * of yours; wait, then send again.
+   */
   outcome: Schema.Literals([
     "sent",
+    "queued",
     "busy",
     "not_yours",
     "not_allowed",
@@ -254,6 +273,8 @@ export const OutsideThreadSendResult = Schema.Struct({
   detail: Detail,
   retryAfterSeconds: RetryAfter,
   threadId: Schema.optional(Schema.String),
+  /** The message it sent or queued: thread_wait's `messageId` follows it. */
+  messageId: Schema.optional(Schema.String),
 });
 export type OutsideThreadSendResult = typeof OutsideThreadSendResult.Type;
 
@@ -461,10 +482,16 @@ export const OutsideThreadReadTool = readsThreads(
 
 export const ThreadWaitTool = readsThreads(
   Tool.make("thread_wait", {
-    description: `Wait for a thread to stop working, for up to \`seconds\` (default ${THREAD_WAIT_DEFAULT_SECONDS}, at most ${THREAD_WAIT_MAX_SECONDS}). Returns at once if it isn't working. \`done\` comes with its status and newest reply (clipped at 4,000 characters: thread_read with \`replyMessageId\` reads all of it); \`still_working\` means wait again. When it needs the user, \`waiting\` says what for. Approvals and plans are the user's: tell them to answer in Threadlines. With Work with all threads you may answer a question with thread_answer.`,
+    description: `Wait for a thread to stop working, for up to \`seconds\` (default ${THREAD_WAIT_DEFAULT_SECONDS}, at most ${THREAD_WAIT_MAX_SECONDS}). Returns at once if it isn't working and holds none of your queued messages. \`done\` comes with its status and newest reply (clipped at 4,000 characters: thread_read with \`replyMessageId\` reads all of it); \`still_working\` means wait again. When it needs the user, \`waiting\` says what for. Approvals and plans are the user's: tell them to answer in Threadlines. With Work with all threads you may answer a question with thread_answer.`,
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       seconds: Schema.optional(Schema.Number),
+      messageId: Schema.optional(
+        Schema.String.annotate({
+          description:
+            "A message you sent or queued (thread_send's `messageId`): wait for the turn it starts, or `taken_back` if it leaves the queue unsent.",
+        }),
+      ),
     }),
     success: ThreadWaitResult,
   }).annotate(Tool.Title, "Wait for a thread"),
@@ -534,7 +561,7 @@ export const OutsideThreadStartTool = drivesThreads(
 export const OutsideThreadSendTool = drivesThreads(
   Tool.make("thread_send", {
     description:
-      "Send a message to a thread you started (with Work with all threads, to any thread in your projects): more work, a correction or a question. It starts a new turn, so the thread must not be working: `busy` means wait (thread_wait) and send again. Refused when the thread's access is above what you may use.",
+      "Send a message to a thread you started (with Work with all threads, to any thread in your projects): more work, a correction or a question. It starts a new turn; while the thread is working it waits in the queue (`queued`) and goes as its next turn, one of yours per thread at a time. `busy` means it waits on the user, is being set up, or already holds your message: wait (thread_wait) and send again. Pass the result's `messageId` to thread_wait to follow your message. Refused when the thread's access is above what you may use.",
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       message: Schema.String.annotate({ description: "What you want it to do or answer." }),

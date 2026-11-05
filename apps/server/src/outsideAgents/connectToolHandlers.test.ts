@@ -650,12 +650,27 @@ describe("connect tools: access", () => {
 
 describe("connect tools: busy and limits", () => {
   it.effect(
-    "answers busy while a turn runs or an approval waits, and when the decider says so",
+    "queues a send while a turn runs, one per thread, and answers busy while an approval waits or when the decider says so",
     () =>
       Effect.gen(function* () {
+        const workingSession = { ...running!, threadId: ThreadId.make("working") };
         const world = yield* makeWorld({
           threads: [
-            ownThread("working", { session: { ...running!, threadId: ThreadId.make("working") } }),
+            ownThread("working", { session: workingSession }),
+            ownThread("holding", {
+              session: { ...running!, threadId: ThreadId.make("holding") },
+              queuedFollowUps: [
+                {
+                  messageId: "held" as never,
+                  text: "earlier",
+                  attachments: [],
+                  fromOutside: { connectionId: CONNECTION, name: "Claude Code" },
+                  runtimeMode: "auto-accept-edits",
+                  interactionMode: "default",
+                  createdAt: AT,
+                },
+              ],
+            }),
             ownThread("asking", {
               activities: [
                 {
@@ -675,12 +690,27 @@ describe("connect tools: busy and limits", () => {
           threadId: "working",
           message: "x",
         });
+        expect(working).toMatchObject({ outcome: "queued", threadId: "working" });
+        expect(world.dispatched).toEqual([
+          expect.objectContaining({
+            type: "thread.follow-up.submit",
+            turnId: "turn-running",
+            delivery: "queue",
+            message: expect.objectContaining({ messageId: working.messageId, text: "x" }),
+            fromOutside: expect.objectContaining({ connectionId: CONNECTION }),
+          }),
+        ]);
+        const holding = yield* world.handlers.thread_send(CALLER, {
+          threadId: "holding",
+          message: "x",
+        });
         const asking = yield* world.handlers.thread_send(CALLER, {
           threadId: "asking",
           message: "x",
         });
-        expect([working.outcome, asking.outcome]).toEqual(["busy", "busy"]);
-        expect(world.dispatched).toHaveLength(0);
+        expect([holding.outcome, asking.outcome]).toEqual(["busy", "busy"]);
+        expect(holding.detail).toContain("earlier message is still queued");
+        expect(world.dispatched).toHaveLength(1);
 
         // The user's own send landed in between: the decider refuses, by type.
         const raced = yield* makeWorld({
@@ -1478,15 +1508,17 @@ describe("what a thread waits on", () => {
       let text = "";
       let offset: number | undefined = 0;
       while (offset !== undefined) {
+        const at: number = offset;
         const part = yield* world.handlers.thread_read(CALLER, {
           threadId: "long",
           messageId: "long-reply",
-          offset,
+          offset: at,
         });
         expect(part.messages).toHaveLength(1);
-        expect(part.messages[0]!.offset).toBe(offset);
-        text += part.messages[0]!.text;
-        offset = part.messages[0]!.nextOffset;
+        const message = part.messages[0]!;
+        expect(message.offset).toBe(at);
+        text += message.text;
+        offset = message.nextOffset;
       }
       expect(text).toBe(reply);
       expect(

@@ -102,7 +102,12 @@ import {
 } from "../orchestration/childThreadAgents.ts";
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns.ts";
-import { outsideCeilingDetail, outsideTurnBusy } from "../orchestration/outsideTurns.ts";
+import {
+  OUTSIDE_ALREADY_QUEUED,
+  outsideCeilingDetail,
+  outsideQueuedOf,
+  outsideTurnBusy,
+} from "../orchestration/outsideTurns.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type {
   ThreadBootstrapShape,
@@ -315,6 +320,9 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * pruned, and new for each attempt, since a refused one leaves a rejected
  * receipt under its command id.
  */
+/** The start of a queued send's command id, which an answer after a restart tells apart. */
+const OUTSIDE_QUEUE_COMMAND_PREFIX = "server:outside-queue:";
+
 const freshRequestIds = () => ({
   threadId: ThreadId.make(crypto.randomUUID()),
   messageId: MessageId.make(crypto.randomUUID()),
@@ -384,6 +392,23 @@ const newestReply = (
     replyMessageId: reply.id,
     ...(clipped.clipped ? { replyLength: clipped.length } : {}),
   };
+};
+
+/** What thread_wait says of a followed message that left the queue unsent. */
+const TAKEN_BACK =
+  "Your message was taken back before it was sent: the user pressed Stop or removed it, its turn didn't finish, or you may no longer send there. Read the thread, then send again if it still makes sense.";
+
+/** Whether `messageId` is neither in the thread nor waiting in its queue. */
+const messageTakenBack = (thread: OrchestrationThread, messageId: string) =>
+  !thread.messages.some((message) => message.id === messageId) &&
+  !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+
+/** The caller's messages waiting in the thread's queue, for a result; nothing when none. */
+const queuedOf = (caller: OutsideAgentCaller, thread: OrchestrationThread | undefined) => {
+  const queued = thread === undefined ? [] : outsideQueuedOf(thread, caller.connectionId);
+  return queued.length === 0
+    ? {}
+    : { queued: queued.map((entry) => ({ messageId: entry.messageId, at: entry.createdAt })) };
 };
 
 /** Whether a thread has a turn Stop can end. */
@@ -593,7 +618,12 @@ export const makeConnectToolHandlers = (
         });
         const names = new Map<string, string | null>();
         for (const thread of own) {
-          if (countsAsRunning(thread) || inFlight.has(thread.id)) {
+          // A message of its own waiting in the queue holds the thread's place.
+          if (
+            countsAsRunning(thread) ||
+            inFlight.has(thread.id) ||
+            outsideQueuedOf(thread, caller.connectionId).length > 0
+          ) {
             names.set(thread.id, grantsProject(grant, thread.projectId) ? thread.title : null);
           }
         }
@@ -815,6 +845,7 @@ export const makeConnectToolHandlers = (
             titleOf: (threadId) => titles.get(threadId),
           }),
           ...(yield* waitingOnOf(visible.shell, waiting, target)),
+          ...queuedOf(caller, target),
           ...page,
         } satisfies OutsideThreadReadResult;
       });
@@ -856,8 +887,28 @@ export const makeConnectToolHandlers = (
           }
           seconds = Math.max(0, seconds - ((yield* nowMillis) - startedAt) / 1000);
         }
+        // Following one message: it may have left the queue unsent already.
+        const followed = input.messageId?.trim();
+        const isFollowed = (queued: { readonly messageId: string }) =>
+          queued.messageId === followed;
+        if (followed !== undefined && followed.length > 0) {
+          const before = yield* deps.readThread(visible.shell.id);
+          if (before !== undefined && messageTakenBack(before, followed)) {
+            return { outcome: "taken_back", detail: TAKEN_BACK };
+          }
+        }
+        // Done once it isn't working and none of the caller's messages (or
+        // the one it follows) still waits in its queue to start the next turn.
+        const holds = (shell: OrchestrationThreadShell) =>
+          followed !== undefined && followed.length > 0
+            ? (shell.queuedFollowUps ?? []).some(isFollowed)
+            : outsideQueuedOf(shell, caller.connectionId).length > 0;
         const settled = yield* watchThreadStatus(deps.status, visible.shell.id).pipe(
-          Stream.filter((reading) => reading.status?.word !== "working"),
+          Stream.filter(
+            (reading) =>
+              reading.shell === undefined ||
+              (reading.status?.word !== "working" && !holds(reading.shell)),
+          ),
           Stream.runHead,
           Effect.timeoutOption(Duration.millis(seconds * 1000)),
           Effect.map(Option.flatten),
@@ -873,8 +924,15 @@ export const makeConnectToolHandlers = (
           : (yield* deps.status.scheduleAnswerWaiting).has(shell.id);
         const providers = yield* deps.providers;
         const thread = yield* deps.readThread(shell.id);
+        const takenBack =
+          Option.isSome(settled) &&
+          followed !== undefined &&
+          followed.length > 0 &&
+          thread !== undefined &&
+          messageTakenBack(thread, followed);
         return {
-          outcome: Option.isSome(settled) ? "done" : "still_working",
+          outcome: takenBack ? "taken_back" : Option.isSome(settled) ? "done" : "still_working",
+          ...(takenBack ? { detail: TAKEN_BACK } : {}),
           thread: outsideSummary(caller, shell, {
             projectName: still.project.title,
             providers,
@@ -883,6 +941,7 @@ export const makeConnectToolHandlers = (
           }),
           ...(yield* waitingOnOf(shell, waiting, thread)),
           ...newestReply(thread),
+          ...queuedOf(caller, thread),
         } satisfies ThreadWaitResult;
       });
 
@@ -1308,6 +1367,15 @@ export const makeConnectToolHandlers = (
               };
         }
         if (row.tool === "thread_send") {
+          // A restart takes back what was queued and not yet sent.
+          if (reached && row.commandId?.startsWith(OUTSIDE_QUEUE_COMMAND_PREFIX) === true) {
+            return {
+              outcome: "failed" as const,
+              detail:
+                "Threadlines restarted after this message was queued, and a restart takes queued messages back. Read the thread to see whether it went, then send again with a new requestId.",
+              ...(row.threadId !== null ? { threadId: row.threadId } : {}),
+            };
+          }
           return reached
             ? { outcome: "sent" as const, detail: "Sent.", threadId: row.threadId ?? undefined }
             : {
@@ -1903,12 +1971,30 @@ export const makeConnectToolHandlers = (
             threadId: thread.id,
           };
         }
-        const busy = (inFlight: ReadonlySet<ThreadId>, current: OrchestrationThread) =>
-          inFlight.has(current.id)
-            ? "It's still being set up. Wait for it with thread_wait, then send again."
-            : outsideTurnBusy(current);
-        const early = busy(deps.limits.inFlight(caller.connectionId), thread);
-        if (early !== null) return { outcome: "busy", detail: early, threadId: thread.id };
+        // Idle: a turn now. At work: its next turn, queued (one per
+        // connection per thread). Waiting on the user, or being set up: busy.
+        const route = (inFlight: ReadonlySet<ThreadId>, current: OrchestrationThread) => {
+          if (inFlight.has(current.id)) {
+            return {
+              type: "busy" as const,
+              detail: "It's still being set up. Wait for it with thread_wait, then send again.",
+            };
+          }
+          const busy = outsideTurnBusy(current);
+          if (busy === null) return { type: "send" as const };
+          if (busy.kind !== "working") return { type: "busy" as const, detail: busy.detail };
+          if (outsideQueuedOf(current, caller.connectionId).length > 0) {
+            return { type: "busy" as const, detail: OUTSIDE_ALREADY_QUEUED };
+          }
+          const turnId = current.session?.activeTurnId ?? current.latestTurn?.turnId ?? null;
+          return turnId === null
+            ? { type: "busy" as const, detail: busy.detail }
+            : { type: "queue" as const, turnId };
+        };
+        const early = route(deps.limits.inFlight(caller.connectionId), thread);
+        if (early.type === "busy") {
+          return { outcome: "busy", detail: early.detail, threadId: thread.id };
+        }
         // A start a restart cut off left it without its first turn, and maybe
         // without its worktree: it is the user's to delete, not to work in.
         if (!thread.messages.some((message) => message.role === "user")) {
@@ -1921,30 +2007,59 @@ export const makeConnectToolHandlers = (
         }
 
         const ids = freshRequestIds();
-        const { commandId } = ids;
+        const queueing = early.type === "queue";
+        // A queued send's command id says so, for an answer after a restart.
+        const commandId = queueing
+          ? CommandId.make(`${OUTSIDE_QUEUE_COMMAND_PREFIX}${crypto.randomUUID()}`)
+          : ids.commandId;
         const now = yield* nowMillis;
         const createdAt = isoOf(now);
-        const command: OrchestrationCommand = {
-          type: "thread.turn.start",
-          commandId,
-          threadId: thread.id,
-          message: { messageId: ids.messageId, role: "user", text: input.text, attachments: [] },
-          runtimeMode: thread.runtimeMode,
-          interactionMode: thread.interactionMode,
-          fromOutside: outsideOrigin(caller, grant),
-          createdAt,
+        const origin = outsideOrigin(caller, grant);
+        const message = {
+          messageId: ids.messageId,
+          role: "user" as const,
+          text: input.text,
+          attachments: [],
         };
+        const command: OrchestrationCommand =
+          early.type === "queue"
+            ? {
+                type: "thread.follow-up.submit",
+                commandId,
+                threadId: thread.id,
+                turnId: early.turnId,
+                message,
+                delivery: "queue",
+                fromOutside: origin,
+                createdAt,
+              }
+            : {
+                type: "thread.turn.start",
+                commandId,
+                threadId: thread.id,
+                message,
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                fromOutside: origin,
+                createdAt,
+              };
         const admitted = yield* deps.limits.admit({
           connectionId: caller.connectionId,
           threadId: thread.id,
           decide: (inFlight) =>
             Effect.gen(function* () {
-              const stillBusy = busy(inFlight, thread);
-              if (stillBusy !== null) {
-                return { outcome: "busy" as const, detail: stillBusy, threadId: thread.id };
+              const now = route(inFlight, thread);
+              if (now.type === "busy") {
+                return { outcome: "busy" as const, detail: now.detail, threadId: thread.id };
               }
+              // Queued behind a running thread of its own, it adds none.
+              const addsRunning = !(
+                queueing && thread.outsideOrigin?.connectionId === caller.connectionId
+              );
               const running = yield* runningThreads(caller, grant, inFlight);
-              if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
+              if (addsRunning && running.length >= CONNECT_RUNNING_THREADS) {
+                return runningLimit(running);
+              }
               return yield* claim(caller, {
                 connectionId: caller.connectionId,
                 requestId,
@@ -1958,11 +2073,24 @@ export const makeConnectToolHandlers = (
           work: deps.engine.dispatch(command).pipe(
             Effect.matchEffect({
               onSuccess: () =>
-                remember(caller, requestId, {
-                  outcome: "sent" as const,
-                  detail: "Sent. It's working on it; use thread_wait to follow it.",
-                  threadId: thread.id,
-                }),
+                remember(
+                  caller,
+                  requestId,
+                  queueing
+                    ? {
+                        outcome: "queued" as const,
+                        detail:
+                          "It's working, so your message waits and goes as its next turn. thread_wait with this messageId follows it.",
+                        threadId: thread.id,
+                        messageId: ids.messageId,
+                      }
+                    : {
+                        outcome: "sent" as const,
+                        detail: "Sent. It's working on it; use thread_wait to follow it.",
+                        threadId: thread.id,
+                        messageId: ids.messageId,
+                      },
+                ),
               onFailure: (error) =>
                 forget(caller, requestId).pipe(
                   Effect.as(

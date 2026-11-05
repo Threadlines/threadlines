@@ -27,6 +27,8 @@ import {
   type ProviderSessionForkFrom,
   type ProviderInstanceId,
   type OrchestrationWarmUpTurnInput,
+  type OutsideAgentConnectionId,
+  type OutsideAgentRef,
   type OutsideTurnOrigin,
   type RuntimeMode,
   ThreadAccessRaiseDeferredActivityKind,
@@ -5071,9 +5073,106 @@ const make = Effect.gen(function* () {
       });
 
   /**
+   * The origin an outside agent's queued message goes with: its connection's
+   * grant as it is now (docs/design/outside-agents.md, "Queued sends"). Null
+   * takes it back: the connection was removed, may no longer start threads,
+   * or no longer has the thread's project (or this server has no outside
+   * agents). The decider checks the rest in order with the user's sends.
+   */
+  const outsideQueuedOrigin = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    connectionId: OutsideAgentConnectionId,
+  ) {
+    if (Option.isNone(outsideConnections)) return null;
+    const grant = yield* outsideConnections.value.grant(connectionId);
+    if (grant === null || grant.access === "see") return null;
+    if (grant.projectIds !== null && !grant.projectIds.includes(thread.projectId)) return null;
+    return {
+      connectionId: grant.connectionId,
+      name: grant.name,
+      access: grant.access,
+      maxRuntimeMode: grant.maxRuntimeMode,
+    } satisfies OutsideTurnOrigin;
+  });
+
+  /** Takes a queued message back unsent; one already gone is fine. */
+  const takeBackQueued = (threadId: ThreadId, messageId: MessageId, createdAt: string) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.follow-up.unqueue",
+        commandId: serverCommandId("follow-up-outside-taken-back"),
+        threadId,
+        messageId,
+        createdAt,
+      })
+      .pipe(Effect.ignore);
+
+  /**
+   * Sends an outside agent's queued message as a turn, with its connection's
+   * grant as it is now and the Stop epoch seen here, or takes it back. True
+   * when its turn started.
+   */
+  const sendOutsideQueued = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    queued: OrchestrationQueuedFollowUp & { readonly fromOutside: OutsideAgentRef },
+    createdAt: string,
+  ) {
+    const origin = yield* outsideQueuedOrigin(thread, queued.fromOutside.connectionId);
+    if (origin !== null) {
+      const sent = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: serverCommandId("follow-up-send-outside-queued"),
+          threadId: thread.id,
+          messageId: queued.messageId,
+          ifChainEpoch: thread.agentRequests.chainEpoch,
+          outsideOrigin: origin,
+          createdAt,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not send an outside agent's message", {
+              threadId: thread.id,
+              messageId: queued.messageId,
+              detail: String(error),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      // The decider takes it back itself when the grant or the thread says no.
+      if (sent) {
+        const after = yield* resolveThread(thread.id);
+        if (after?.messages.some((message) => message.id === queued.messageId) === true) {
+          return true;
+        }
+      }
+    }
+    yield* takeBackQueued(thread.id, queued.messageId, createdAt);
+    return false;
+  });
+
+  /**
+   * An outside agent's messages waiting in a thread whose turn didn't finish
+   * (an error, a restart): taken back, as Stop takes them back, so nothing
+   * of theirs goes out later on its own.
+   */
+  const takeBackOutsideQueued = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    createdAt: string,
+  ) {
+    const thread = yield* resolveThread(threadId);
+    for (const queued of thread?.queuedFollowUps ?? []) {
+      if (queued.fromOutside !== undefined) {
+        yield* takeBackQueued(threadId, queued.messageId, createdAt);
+      }
+    }
+  });
+
+  /**
    * Starts a queued message's turn. Losing a race with Remove is fine. A
    * linked computer's message taken back there leaves the queue unsent and
-   * the next one goes instead (see remoteRequestVerdict).
+   * the next one goes instead (see remoteRequestVerdict); so does an outside
+   * agent's that may not go anymore (sendOutsideQueued).
    */
   const sendQueuedFollowUp = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -5084,9 +5183,19 @@ const make = Effect.gen(function* () {
     while (candidate !== undefined) {
       const current: MessageId = candidate;
       const thread = yield* resolveThread(threadId);
-      const origin = thread?.queuedFollowUps?.find(
-        (entry) => entry.messageId === current,
-      )?.fromThread;
+      const entry = thread?.queuedFollowUps?.find((queued) => queued.messageId === current);
+      if (thread !== undefined && entry?.fromOutside !== undefined) {
+        if (
+          yield* sendOutsideQueued(thread, { ...entry, fromOutside: entry.fromOutside }, createdAt)
+        ) {
+          return;
+        }
+        const latest = yield* resolveThread(threadId);
+        const next = latest ? nextQueuedFollowUp(latest) : undefined;
+        candidate = next !== undefined && next.messageId !== current ? next.messageId : undefined;
+        continue;
+      }
+      const origin = entry?.fromThread;
       const verdict = yield* remoteRequestVerdict(threadId, current, origin);
       if (verdict === "unknown") {
         yield* holdRemoteTurn(threadId, retryHeldQueue(threadId));
@@ -5231,6 +5340,16 @@ const make = Effect.gen(function* () {
     }
     const turnFinished =
       previousStatus === "running" && session.status === "ready" && !session.activeTurnId;
+    // A turn that ended any other way sends nothing on its own: an outside
+    // agent's message waiting for it is taken back, as Stop takes it back.
+    if (
+      previousStatus === "running" &&
+      (session.status === "error" ||
+        session.status === "interrupted" ||
+        session.status === "stopped")
+    ) {
+      yield* takeBackOutsideQueued(threadId, event.occurredAt);
+    }
     // In a room, a message queued for another agent can not take the slot
     // while the agent that just worked is still waiting on background work;
     // it goes out once that work is done.
@@ -6215,6 +6334,7 @@ const make = Effect.gen(function* () {
           },
           createdAt,
         });
+        yield* takeBackOutsideQueued(thread.id, createdAt);
         yield* appendProviderFailureActivity({
           threadId: thread.id,
           kind: "provider.session.restart-interrupted",

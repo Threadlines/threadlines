@@ -17,7 +17,7 @@ Its tools:
 | `inbox`          | What needs you right now, and what finished or failed since it last looked.                                                                                                    | See    |
 | `thread_changes` | A thread's branch, the files it changed, and its pull request's checks and review.                                                                                             | See    |
 | `thread_start`   | Starts a thread.                                                                                                                                                               | Start  |
-| `thread_send`    | Sends more work to a thread it started. At Work, to any thread in its projects.                                                                                                | Start  |
+| `thread_send`    | Sends more work to a thread it started (queued while it works). At Work, to any thread in its projects.                                                                        | Start  |
 | `thread_stop`    | Stops a thread it started. At Work, any thread in its projects.                                                                                                                | Start  |
 | `thread_answer`  | Answers an agent's question in a thread. Never an approval.                                                                                                                    | Work   |
 
@@ -121,8 +121,11 @@ or delete `/usr/local/bin/threadlines` (macOS), `~/.local/bin/threadlines`
   thread in its projects. Either way, only while the thread's access is at or
   below its highest access. If you raise a thread above it, the agent can read
   that thread but no longer drive it.
-- It sends one message at a time: while the thread is working or waiting for
-  you, a send answers "busy" and the agent waits.
+- While a thread is working, a message it sends waits in the thread's queue
+  and goes as the next turn, one per thread at a time. You see it above the
+  message box as "Queued from" its name, and can remove it. Stop, or a turn
+  that ends in an error, takes it back. While a thread waits on you, a send
+  answers "busy".
 - It never answers approvals, plans or forms. At Work it can answer an
   agent's questions; the rest waits for you in Threadlines, and the agent sees
   what's waiting and can tell you.

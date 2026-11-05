@@ -33,7 +33,8 @@ const REFUSED_OUTCOMES: ReadonlySet<string> = new Set([
 
 /** The exit code for a call's outcome alone: worked, refused or failed. */
 export function exitCodeForOutcome(outcome: string): ExitCode {
-  if (outcome === "failed") return EXIT.failed;
+  // A message taken back unsent ends like a stopped turn.
+  if (outcome === "failed" || outcome === "taken_back") return EXIT.failed;
   return REFUSED_OUTCOMES.has(outcome) ? EXIT.refused : EXIT.done;
 }
 
@@ -77,7 +78,7 @@ export function describeRefusal(result: {
         ? "Too many calls for now. Try again later."
         : `Too many calls for now. Try again in ${Math.ceil(result.retryAfterSeconds)} seconds.`;
     case "busy":
-      return "The thread is working. Wait for it (threadlines thread wait), then send again.";
+      return "The thread can't take it now: it waits on you in Threadlines, is still being set up, or already holds a message from this command. Wait for it (threadlines thread wait), then send again.";
     case "conflict":
       return "That request id was already used for a different call.";
     case "unavailable_agent":
