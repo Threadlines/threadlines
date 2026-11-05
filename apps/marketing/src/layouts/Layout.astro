@@ -95,7 +95,7 @@ const siteStructuredData = {
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
@@ -120,29 +120,21 @@ const siteStructuredData = {
             <span class="nav-brand-name">Threadlines</span>
           </a>
           <div class="nav-right">
-            <a class="nav-link" href="/changelog">Changelog</a>
+            <a class="nav-link nav-text" href="/agents">Agents</a>
+            <a class="nav-link nav-text" href="/changelog">Changelog</a>
             <a
-              class="nav-link"
-              href="https://github.com/sponsors/Threadlines"
-              target="_blank"
-              rel="noopener noreferrer">Sponsor</a
-            >
-            <button class="nav-theme" id="tl-theme-toggle" type="button" aria-label="Switch to light theme">
-              <svg class="nav-theme-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-              <svg class="nav-theme-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-            </button>
-            <a
-              class="nav-gh"
-              href="https://github.com/Threadlines/threadlines"
+              class="nav-link nav-gh"
+              href={SITE_GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="Threadlines on GitHub"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"/>
               </svg>
               <span>GitHub</span>
             </a>
-            <a class="nav-dl" href="/download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M4.5 19.5h15"/></svg><span>Download</span></a>
+            <a class="nav-dl" href="/download">Download</a>
           </div>
         </div>
       </nav>
@@ -164,6 +156,7 @@ const siteStructuredData = {
             </span>
           </div>
           <div class="footer-links">
+            <a href="/download">Download</a>
             <a href="/agents">Agents</a>
             <a href="/compare">Compare</a>
             <a href="/changelog">Changelog</a>
@@ -171,8 +164,13 @@ const siteStructuredData = {
             <a href="/support">Support</a>
             <a href="/privacy">Privacy</a>
             <a href="/terms">Terms</a>
-            <a href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a href={SITE_X_URL} target="_blank" rel="noopener noreferrer">X</a>
             <a href="https://github.com/sponsors/Threadlines" target="_blank" rel="noopener noreferrer">Sponsor</a>
+            <button class="footer-theme" id="tl-theme-toggle" type="button" aria-label="Switch to light theme">
+              <svg class="theme-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+              <svg class="theme-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
           </div>
         </div>
       </footer>
@@ -223,7 +221,7 @@ const siteStructuredData = {
     --bg-card: #111113;
     --fg: #fafafa;
     --fg-muted: #a1a1aa;
-    --fg-dim: #71717a;
+    --fg-dim: #7a7a84;
     --fg-faint: #52525b;
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.14);
@@ -233,6 +231,7 @@ const siteStructuredData = {
     --accent-dim: oklch(0.62 0.19 var(--accent-h) / 0.14);
     --accent-soft: oklch(0.62 0.19 var(--accent-h) / 0.4);
     --accent-contrast: #0b0d10;
+    --accent-hover: oklch(0.76 0.15 var(--accent-h));
     --surface: rgba(255, 255, 255, 0.015);
     --surface-hover: rgba(255, 255, 255, 0.04);
     --line-strong: rgba(255, 255, 255, 0.32);
@@ -243,7 +242,7 @@ const siteStructuredData = {
     --underline: rgba(255, 255, 255, 0.18);
     --ok: oklch(0.72 0.16 150);
     --warn: oklch(0.76 0.15 75);
-    --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-sans: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     --radius: 12px;
     --radius-sm: 8px;
@@ -265,6 +264,7 @@ const siteStructuredData = {
     --accent-dim: oklch(0.52 0.19 var(--accent-h) / 0.1);
     --accent-soft: oklch(0.52 0.19 var(--accent-h) / 0.45);
     --accent-contrast: #ffffff;
+    --accent-hover: oklch(0.48 0.18 var(--accent-h));
     --surface: rgba(0, 0, 0, 0.025);
     --surface-hover: rgba(0, 0, 0, 0.05);
     --line-strong: rgba(0, 0, 0, 0.4);
@@ -301,17 +301,6 @@ const siteStructuredData = {
     line-height: 1.5;
   }
 
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    background-repeat: repeat;
-    background-size: 256px 256px;
-    z-index: 9999;
-  }
 
   a {
     color: inherit;
@@ -391,7 +380,7 @@ const siteStructuredData = {
   .nav-inner {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 18px 32px;
+    padding: 14px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -410,49 +399,19 @@ const siteStructuredData = {
     color: var(--fg);
   }
 
-  .nav-theme {
+  .nav-link {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: transparent;
+    gap: 7px;
+    padding: 6px 10px;
     color: var(--fg-muted);
-    cursor: pointer;
-    transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-  }
-
-  .nav-theme:hover {
-    color: var(--fg);
-    background: var(--surface-hover);
-    border-color: var(--border-strong);
-  }
-
-  .nav-link {
-    padding: 7px 8px;
-    color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    transition: color 0.2s ease;
+    font-size: 14px;
+    font-weight: 500;
+    transition: color 0.15s ease;
   }
 
   .nav-link:hover {
     color: var(--fg);
-  }
-
-  .nav-theme-moon {
-    display: none;
-  }
-
-  html[data-theme="light"] .nav-theme-sun {
-    display: none;
-  }
-
-  html[data-theme="light"] .nav-theme-moon {
-    display: block;
   }
 
   /* The glyph's accent node stands in for the wordmark's period — never both. */
@@ -472,54 +431,25 @@ const siteStructuredData = {
   .nav-right {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-  }
-
-  .nav-gh {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 7px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-  }
-
-  .nav-gh:hover {
-    color: var(--fg);
-    background: var(--surface-hover);
-    border-color: var(--border-strong);
+    gap: 2px;
   }
 
   .nav-dl {
     display: inline-flex;
     align-items: center;
-    /* the icon glyph has ~2px of built-in viewBox padding on its right edge,
-       so the rendered gap reads wider than this value */
-    gap: 4px;
-    padding: 7px 14px;
-    border-radius: 8px;
+    height: 32px;
+    margin-left: 6px;
+    padding: 0 14px;
+    border-radius: 7px;
     background: var(--accent-bright);
     color: var(--accent-contrast);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
-    transition: filter 0.2s ease;
+    transition: background 0.15s ease;
   }
 
   .nav-dl:hover {
-    filter: brightness(1.08);
-  }
-
-  .nav-dl svg {
-    width: 12px;
-    height: 12px;
-    /* optical correction: sized and nudged so the arrow sits within the
-       text's x-height band instead of poking above the ascenders, with the
-       tray landing on the baseline */
-    transform: translateY(0.5px);
+    background: var(--accent-hover);
   }
 
   .main {
@@ -531,7 +461,7 @@ const siteStructuredData = {
   .footer {
     margin-top: auto;
     border-top: 1px solid var(--border);
-    padding: 28px 0;
+    padding: 32px 0 40px;
   }
 
   .footer-inner {
@@ -540,7 +470,7 @@ const siteStructuredData = {
     padding: 0 32px;
     display: flex;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 16px 32px;
     align-items: center;
     justify-content: space-between;
   }
@@ -554,7 +484,7 @@ const siteStructuredData = {
 
   .footer-brand a {
     color: inherit;
-    transition: color 0.2s ease;
+    transition: color 0.15s ease;
   }
 
   .footer-brand a:hover {
@@ -564,17 +494,49 @@ const siteStructuredData = {
   .footer-links {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px 20px;
   }
 
   .footer-links a {
     font-size: 13px;
     color: var(--fg-dim);
-    transition: color 0.2s ease;
+    transition: color 0.15s ease;
   }
 
   .footer-links a:hover {
     color: var(--fg);
+  }
+
+  .footer-theme {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-dim);
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+
+  .footer-theme:hover {
+    color: var(--fg);
+  }
+
+  .theme-moon {
+    display: none;
+  }
+
+  html[data-theme="light"] .theme-sun {
+    display: none;
+  }
+
+  html[data-theme="light"] .theme-moon {
+    display: block;
   }
 
   @media (max-width: 820px) {
@@ -583,15 +545,17 @@ const siteStructuredData = {
       padding-left: 20px;
       padding-right: 20px;
     }
+  }
 
+  @media (max-width: 640px) {
+    .nav-text,
     .nav-gh span {
       display: none;
     }
-  }
 
-  @media (max-width: 620px) {
-    .nav-link {
-      display: none;
+    .footer-inner {
+      flex-direction: column-reverse;
+      align-items: flex-start;
     }
   }
 </style>

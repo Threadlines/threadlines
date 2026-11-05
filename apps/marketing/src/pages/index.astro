@@ -2,9 +2,16 @@
 import { getCollection } from "astro:content";
 
 import AgentMark from "../components/AgentMark.astro";
+import Icon from "../components/Icon.astro";
 import Layout from "../layouts/Layout.astro";
 import { agentPath, AGENTS, isInStableRelease } from "../lib/agents";
-import { latestStableVersion } from "../lib/changelog";
+import {
+  changelogEntryPath,
+  formatReleaseDate,
+  latestStableVersion,
+  sortChangelogEntries,
+} from "../lib/changelog";
+import type { IconName } from "../lib/icons";
 import {
   absoluteSiteUrl,
   APPLICATION_ID,
@@ -15,11 +22,15 @@ import {
   SITE_X_URL,
 } from "../lib/site";
 
-const L = "/Screenshots/stable-launch";
-const styledScenes = new Set(["inbox", "pull-requests", "source-control", "browser", "context"]);
-const mediaName = (name: string) => styledScenes.has(name) ? `spotlight-${name}` : name;
+const changelog = await getCollection("changelog");
 
-const stableVersion = latestStableVersion(await getCollection("changelog"));
+// The hero names three agents and counts the rest of the logo row, in words.
+const NUMBER_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+const otherCount = AGENTS.length - 3;
+const otherAgents = `${NUMBER_WORDS[otherCount] ?? otherCount} ${otherCount === 1 ? "other" : "others"}`;
+const stableVersion = latestStableVersion(changelog);
+const latestRelease = sortChangelogEntries(changelog)[0]!;
+
 const appStructuredData = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -53,88 +64,97 @@ const appStructuredData = {
   sameAs: [SITE_GITHUB_URL, SITE_X_URL],
 };
 
-/** A tab in a homepage showcase: a looping clip, or a still from public/Screenshots/app when `image` is set. */
-interface ShowcaseClip {
-  name: string;
-  tab: string;
+/** A recorded demo: `<base>.mp4` and `<base>.webp` for wide screens, `<base>-tall.*` for phones. */
+interface Demo {
+  base: string;
+  seconds: number;
   label: string;
-  image?: string;
 }
 
-const showcases: { id: string; kicker: string; title: string; description: string; clips: ShowcaseClip[] }[] = [
+/** 46 -> "0:46" */
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
+const demos = {
+  rooms: {
+    base: "/Screenshots/rooms/rooms",
+    seconds: 46,
+    label:
+      "A Threadlines room. Opus 5.5 can't find why some customers are charged twice, so the user adds GPT-6.1-Sol. Sol finds the cause, Opus fixes it, and Sol checks the fix.",
+  },
+  threads: {
+    base: "/Screenshots/threads/threads",
+    seconds: 44,
+    label:
+      "Opus 5.5 asks to start three threads to find out why checkout got slow: Sonnet 5.5 times the payment service, GPT-6.1-Sol counts the database queries, and Opus 5.5 measures the page. The answers come back to Opus, and it fixes the cause.",
+  },
+  fleet: {
+    base: "/Screenshots/fleet/fleet",
+    seconds: 45,
+    label:
+      "Opus 5.5 on a MacBook Pro can't test a Windows-only screenshot bug, so it asks to start a thread on the Windows PC. GPT-6.1-Sol runs a probe there, Fleet shows both computers at work, and the answer comes back and changes Opus's plan.",
+  },
+} satisfies Record<string, Demo>;
+
+const ideas: { name: string; icon: IconName; text: string; demo: Demo }[] = [
   {
-    id: "inbox",
-    kicker: "Across your projects",
-    title: "Know which thread needs you next",
-    description:
-      "See every project's threads in one sidebar, or tick a few projects to focus on. A thread another computer runs sits under the thread that started it, finished work goes to Wrapped, and one menu does the same things wherever you open it.",
-    clips: [
-      { name: "inbox-sidebar", tab: "Thread inbox", image: "sidebar", label: "The sidebar beside a thread, with threads from four projects, a thread running on a Windows PC under the Mac thread that started it, and Wrapped at the bottom" },
-      { name: "inbox-projects", tab: "A few projects", image: "projects", label: "The project picker with two projects ticked, so the sidebar shows only their threads" },
-      { name: "inbox-menu", tab: "Thread menu", image: "thread-menu", label: "A thread's menu with Rename, Pin, Wrap up, Move to another computer, Copy path, Archive and Delete" },
-      { name: "activity", tab: "Tasks and activity", label: "The activity panel beside a thread, showing tasks, subagents, and background work" },
-    ],
+    name: "Rooms",
+    icon: "agents",
+    text: "Add a second model to the thread. It catches up on the conversation, and the two can ask each other questions.",
+    demo: demos.rooms,
   },
   {
-    id: "review",
-    kicker: "Code review and pull requests",
-    title: "Follow the work through review",
-    description:
-      "Review a GitHub pull request beside its thread, check CI above the composer, and send feedback back to the agent. Open file diffs and Git history without losing the conversation.",
-    clips: [
-      { name: "pull-requests", tab: "Pull requests and CI", label: "A thread with an open pull request and its CI checks above the composer" },
-      { name: "source-control", tab: "Changed files", label: "Reviewing changed files and staged changes in the source-control panel" },
-      { name: "git-history", tab: "Git history", label: "Opening commits in the Git history panel beside the agent conversation" },
-    ],
+    name: "Threads",
+    icon: "branch",
+    text: "An agent can hand part of the job to a new thread, on the model it picks, and keep working until the answer arrives.",
+    demo: demos.threads,
   },
   {
-    id: "browser",
-    kicker: "Built-in browser",
-    title: "Bring the page into your thread",
-    description:
-      "Open your site inside Threadlines, search the page, and attach a screenshot to your next message.",
-    clips: [
-      { name: "browser", tab: "Browser", label: "Finding text on the FACP Manuals homepage and attaching a browser screenshot to the thread" },
-    ],
-  },
-  {
-    id: "context",
-    kicker: "Files and context",
-    title: "Show the agent the lines you mean",
-    description:
-      "Browse and edit project files, then attach selected code, terminal output, or a note on a reply to your next message.",
-    clips: [
-      { name: "files", tab: "Project files", label: "Browsing project files and opening a file in the editor beside the thread" },
-      { name: "context", tab: "Exact context", label: "Selecting specific content and attaching it to the chat composer" },
-    ],
-  },
-  {
-    id: "tasks",
-    kicker: "Scheduled tasks",
-    title: "Hand off the work that repeats",
-    description:
-      "Write a prompt once, and an agent starts on it at the times you pick or when an issue on GitHub gets a label, while Threadlines is running on that computer. Agents you run in a terminal, like Claude Code or Codex, can start and follow threads here too.",
-    clips: [
-      { name: "tasks-scheduled", tab: "Scheduled tasks", image: "scheduled", label: "Scheduled tasks on two computers: a weekday commit review, a weekly dependency check, a task for new bug reports on GitHub, and nightly Windows tests" },
-      { name: "tasks-outside", tab: "Agents outside", image: "connections", label: "Settings › Connections, with this computer's name, a linked Windows PC, and the address and command that connect Claude Code, Codex, Gemini CLI or Cursor" },
-    ],
-  },
-  {
-    id: "agents",
-    kicker: "Every agent you use",
-    title: "Pick your agents, then switch any time",
-    description:
-      "Choose your agents during setup. Every thread's model picker has a tab for each one, and a thread can change agents without losing the conversation or your changes.",
-    clips: [
-      { name: "agents-setup", tab: "Setup", image: "onboarding", label: "Threadlines setup asking which agents you use, with Codex, Claude, fx, Cursor, OpenCode, Antigravity, Muse Code, Grok and Pi to pick from" },
-      { name: "agents-claude", tab: "Claude Code", image: "picker-claude", label: "The model picker on a Claude thread, showing Claude's models and a tab for each agent" },
-      { name: "agents-cursor", tab: "Cursor", image: "picker-cursor", label: "The model picker showing Cursor's models, with Auto at the top" },
-      { name: "agents-fx", tab: "fx", image: "picker-fx", label: "The model picker showing fx's AI Gateway models with their prices" },
-    ],
+    name: "Fleet",
+    icon: "computers",
+    text: "Link your Mac, Windows PC or Linux box. An agent on one can start a thread on another, and Fleet shows what each is running.",
+    demo: demos.fleet,
   },
 ];
 
-const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="pv-ico-play"><path d="M8 5.2v13.6L19 12z"/></svg><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="pv-ico-pause"><path d="M7 5h3.6v14H7zM13.4 5H17v14h-3.6z"/></svg>`;
+const tools: { name: string; icon: IconName; text: string }[] = [
+  {
+    name: "Pull requests and CI",
+    icon: "pullRequest",
+    text: "Open the pull request beside its thread. Checks show above the message box, and you can merge once they pass.",
+  },
+  {
+    name: "Built-in browser",
+    icon: "globe",
+    text: "Run your site in a panel next to the chat, so you and the agent look at the same page.",
+  },
+  {
+    name: "Git changes and history",
+    icon: "fork",
+    text: "See what each turn changed, stage and commit it, and read the history without leaving the thread.",
+  },
+  {
+    name: "Files and context",
+    icon: "code",
+    text: "Select lines in a file, the terminal or a reply, and attach them to your next message.",
+  },
+  {
+    name: "Scheduled and event tasks",
+    icon: "clock",
+    text: "Run a prompt every weekday at 9, or whenever an issue on GitHub gets a label.",
+  },
+  {
+    name: "Switch agents mid-thread",
+    icon: "refresh",
+    text: "Move a thread from Claude to Codex and keep the conversation and your changes.",
+  },
+];
+
+const playIcon = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z"/></svg>`;
+const pauseIcon = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 3h3v10H4zM9 3h3v10H9z"/></svg>`;
+const appleIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>`;
+const windowsIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg>`;
+const linuxIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.94 4.3 4 3.06a.9.9 0 0 1 0 1.43l-4 3.06a.9.9 0 1 1-1.1-1.43L9 11.07 5.84 8.73A.9.9 0 1 1 6.94 7.3ZM12.5 14.4h4.7a.9.9 0 1 1 0 1.8h-4.7a.9.9 0 1 1 0-1.8Z"/></svg>`;
+const githubIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>`;
 ---
 
 <Layout
@@ -143,368 +163,320 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   canonicalPath="/"
   structuredData={[appStructuredData]}
 >
-  <section class="pv-hero">
-    <div class="pv-glow pv-glow-hero" aria-hidden="true"></div>
-    <div class="pv-wrap">
+  <section class="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="wrap hero-head">
       <svg
-        class="pv-figure"
+        class="hero-figure"
         viewBox="0 48 960 152"
         fill="none"
         role="img"
-        aria-label="A git graph of agent threads: branches diverge from a main line and merge back; one branch stays open, ending in a glowing node"
+        aria-label="A git graph of agent threads: branches leave a main line and come back; one branch stays open, ending in a glowing node"
       >
         <defs>
-          <linearGradient
-            id="pv-live-stroke"
-            gradientUnits="userSpaceOnUse"
-            x1="432"
-            y1="128"
-            x2="816"
-            y2="180"
-          >
+          <linearGradient id="hero-live-stroke" gradientUnits="userSpaceOnUse" x1="432" y1="128" x2="816" y2="180">
             <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.35"></stop>
             <stop offset="1" stop-color="var(--accent-bright)" stop-opacity="0.9"></stop>
           </linearGradient>
         </defs>
         <g stroke-linecap="round" stroke-width="1.25">
-          <path
-            class="pv-line" vector-effect="non-scaling-stroke"
-            d="M -8 128 L 968 128"
-            pathLength="1"
-            stroke="var(--line-dim)"
-            style="--pv-delay: 0.2s"></path>
-          <path
-            class="pv-line" vector-effect="non-scaling-stroke"
-            d="M 256 128 C 282 128 282 76 308 76 L 600 76 C 626 76 626 128 652 128"
-            pathLength="1"
-            stroke="var(--line-faint)"
-            style="--pv-delay: 0.7s; animation-duration: 0.8s"></path>
-          <path
-            class="pv-line" vector-effect="non-scaling-stroke"
-            d="M 432 128 C 458 128 458 180 484 180 L 812 180"
-            pathLength="1"
-            stroke="url(#pv-live-stroke)"
-            style="--pv-delay: 0.95s; animation-duration: 0.8s"></path>
+          <path class="hero-line" vector-effect="non-scaling-stroke" d="M -8 128 L 968 128" pathLength="1" stroke="var(--line-dim)" style="--d: 0.2s"></path>
+          <path class="hero-line" vector-effect="non-scaling-stroke" d="M 256 128 C 282 128 282 76 308 76 L 600 76 C 626 76 626 128 652 128" pathLength="1" stroke="var(--line-faint)" style="--d: 0.7s; animation-duration: 0.8s"></path>
+          <path class="hero-line" vector-effect="non-scaling-stroke" d="M 432 128 C 458 128 458 180 484 180 L 812 180" pathLength="1" stroke="url(#hero-live-stroke)" style="--d: 0.95s; animation-duration: 0.8s"></path>
         </g>
         <g fill="var(--node)">
-          <circle class="pv-node" cx="140" cy="128" r="3" style="--pv-delay: 0.45s"></circle>
-          <circle class="pv-node" cx="256" cy="128" r="3.5" style="--pv-delay: 0.6s"></circle>
-          <circle class="pv-node" cx="432" cy="128" r="3.5" style="--pv-delay: 0.8s"></circle>
-          <circle class="pv-node" cx="452" cy="76" r="3" style="--pv-delay: 1.2s"></circle>
-          <circle class="pv-node" cx="652" cy="128" r="3.5" style="--pv-delay: 1.4s"></circle>
-          <circle class="pv-node" cx="744" cy="128" r="3" style="--pv-delay: 1.3s"></circle>
-          <circle class="pv-node" cx="896" cy="128" r="3" style="--pv-delay: 1.5s"></circle>
+          <circle class="hero-node" cx="140" cy="128" r="3" style="--d: 0.45s"></circle>
+          <circle class="hero-node" cx="256" cy="128" r="3.5" style="--d: 0.6s"></circle>
+          <circle class="hero-node" cx="432" cy="128" r="3.5" style="--d: 0.8s"></circle>
+          <circle class="hero-node" cx="452" cy="76" r="3" style="--d: 1.2s"></circle>
+          <circle class="hero-node" cx="652" cy="128" r="3.5" style="--d: 1.4s"></circle>
+          <circle class="hero-node" cx="744" cy="128" r="3" style="--d: 1.3s"></circle>
+          <circle class="hero-node" cx="896" cy="128" r="3" style="--d: 1.5s"></circle>
         </g>
-        <circle class="pv-halo" cx="816" cy="180" r="6" fill="var(--accent-bright)"></circle>
-        <circle
-          class="pv-node pv-node-live"
-          cx="816"
-          cy="180"
-          r="4"
-          fill="var(--accent-bright)"
-          style="--pv-delay: 1.6s"></circle>
+        <circle cx="816" cy="180" r="6" fill="var(--accent-bright)" opacity="0.2"></circle>
+        <circle class="hero-node" cx="816" cy="180" r="4" fill="var(--accent-bright)" style="--d: 1.6s"></circle>
       </svg>
 
-      <a class="pv-new pv-rise" style="--pv-d: 0.15s" href="/changelog/v0.8.0"
-        ><span class="pv-new-tag">New in 0.8.0</span><span>Fleet</span><span aria-hidden="true">&rarr;</span></a
+      <a class="release rise" style="--d: 0.15s" href={changelogEntryPath(latestRelease)}
+        ><span class="release-tag">New in {latestRelease.data.version}</span><span
+          >{latestRelease.data.headline ?? "See what's new"}</span
+        ><span aria-hidden="true">&rarr;</span></a
       >
-      <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Your coding agents,<br />together in one thread.</h1>
-      <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
-        Threadlines is an open-source ADE (agentic development environment) for Claude&nbsp;Code,
-        Codex, OpenCode, and more.{" "}
-        <span class="pv-accent">Add&nbsp;another&nbsp;model</span> to a thread, let agents start their
-        own threads, and keep pull requests, the browser, and Git changes beside the chat.
+      <h1 class="hero-title rise" style="--d: 0.25s">
+        A desktop app for every<br class="hero-break" /> coding agent you use.
+      </h1>
+      <p class="hero-sub rise" style="--d: 0.4s">
+        Run Claude&nbsp;Code, Codex, OpenCode and {otherAgents} from one window.{" "}
+        <strong class="hero-em">Any thread can hold more than one model</strong>, and the app is free and
+        open source.
       </p>
-      <div class="pv-cta-row pv-rise" style="--pv-d: 0.55s">
-        <a class="pv-cta pv-cta-primary" id="pv-download" href="/download"><span class="pv-cta-ico" id="pv-dl-mac" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span><span class="pv-cta-ico" id="pv-dl-win" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg></span><span id="pv-dl-label">Download Threadlines</span></a>
-        <a
-          class="pv-cta"
-          href="https://github.com/Threadlines/threadlines"
-          target="_blank"
-          rel="noopener noreferrer">View on GitHub</a
+      <div class="actions rise" style="--d: 0.55s">
+        <a class="button" id="pv-download" href="/download"
+          ><span class="button-ico" id="pv-dl-mac" hidden set:html={appleIcon} /><span
+            class="button-ico"
+            id="pv-dl-win"
+            hidden
+            set:html={windowsIcon}
+          /><span id="pv-dl-label">Download Threadlines</span></a
+        >
+        <a class="button button-quiet" href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer"
+          ><span class="button-ico" set:html={githubIcon} />View on GitHub</a
         >
       </div>
-      <p class="pv-note pv-rise" style="--pv-d: 0.7s">
-        Free and open source · Use the accounts you already have · Runs locally
+      <p class="hero-note rise" style="--d: 0.7s">
+        <span>Use the accounts you already have ·</span>{" "}<span>Runs locally</span>
       </p>
-      <div class="pv-providers pv-rise" style="--pv-d: 0.8s">
-        <span class="pv-providers-label">Runs the agents you already use</span>
+      <div class="agents rise" style="--d: 0.8s">
+        <p class="agents-label">Runs the agents you already use</p>
+        <ul class="agents-list">
+          {
+            AGENTS.map((agent) => (
+              <li>
+                <a
+                  class="agent"
+                  href={agentPath(agent)}
+                  aria-label={agent.markIsWordmark ? agent.name : undefined}
+                >
+                  <span class="agent-mark">
+                    <AgentMark slug={agent.slug} />
+                  </span>
+                  {!agent.markIsWordmark && agent.name}
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </div>
+
+    <figure class="hero-media rise" style="--d: 0.95s">
+      <div class="frame frame-swap" data-player>
+        <video
+          class="clip-wide"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster={`${demos.rooms.base}.webp`}
+          width="1600"
+          height="934"
+          aria-label={demos.rooms.label}
+        >
+          <source src={`${demos.rooms.base}.mp4`} type="video/mp4" />
+        </video>
+        <video
+          class="clip-tall"
+          muted
+          playsinline
+          loop
+          preload="none"
+          poster={`${demos.rooms.base}-tall.webp`}
+          width="800"
+          height="1000"
+          aria-label={demos.rooms.label}
+        >
+          <source src={`${demos.rooms.base}-tall.mp4`} type="video/mp4" />
+        </video>
+        <button class="play" type="button" aria-label="Play the demo"
+          ><span class="play-ico" set:html={playIcon} /><span class="pause-ico" set:html={pauseIcon} /></button
+        >
+      </div>
+      <figcaption>
+        A {demos.rooms.seconds}-second demo: Opus can't find why some customers are
+        charged twice, so you add GPT-6.1-Sol to the thread. A recreated conversation in the current app.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="section" aria-labelledby="spread-title">
+    <div class="wrap spread">
+      <header class="spread-head">
+        <p class="kicker">How it works</p>
+        <h2 id="spread-title">Get help without losing the thread</h2>
+        <p class="lede">
+          When an agent gets stuck, add another model, split the work into new threads, or send part
+          of it to another computer. Every answer comes back to the thread you started in.
+        </p>
+      </header>
+
+      <figure class="spread-graph">
+        <div class="graph-panel">
+        <ol class="graph" aria-label="An example thread, Double charges at checkout">
+          <li class="g-row g-start g-ring">
+            <span class="g-thread">Double charges at checkout</span>
+            <span class="g-chip"><span class="g-chip-ico" set:html={appleIcon} />MacBook Pro</span>
+          </li>
+          <li class="g-row">
+            <span class="g-who"><span class="g-mark"><AgentMark slug="claude-code" /></span>Opus 5.5</span>
+            <span class="g-text">Double clicks are blocked and the tests pass. I can't reproduce it.</span>
+          </li>
+          <li class="g-row g-ring">
+            <span class="g-event">You add GPT-6.1-Sol to the thread</span>
+            <span class="g-tag"><Icon name="agents" />Rooms</span>
+          </li>
+          <li class="g-row">
+            <span class="g-who"><span class="g-mark"><AgentMark slug="codex" /></span>GPT-6.1-Sol</span>
+            <span class="g-text">The payment goes through, but its reply times out, and the retry charges again.</span>
+          </li>
+          <li class="g-branch">
+            <div class="g-fork">
+              <svg class="g-curve" viewBox="0 0 40 30" aria-hidden="true"><path d="M8 0C8 16 30 14 30 30"></path></svg>
+              <span class="g-event">Opus starts a thread</span>
+              <span class="g-tag"><Icon name="branch" />Threads</span>
+            </div>
+            <div class="g-row g-child">
+              <span class="g-who"><span class="g-mark"><AgentMark slug="claude-code" /></span>Sonnet 5.5</span>
+              <span class="g-text">Last week's logs show 41 double charges, each one right after a timeout.</span>
+            </div>
+            <div class="g-join">
+              <svg class="g-curve" viewBox="0 0 40 30" aria-hidden="true"><path d="M30 0C30 16 8 14 8 30"></path></svg>
+              <span class="g-event">The answer comes back</span>
+            </div>
+          </li>
+          <li class="g-branch">
+            <div class="g-fork">
+              <svg class="g-curve" viewBox="0 0 40 30" aria-hidden="true"><path d="M8 0C8 16 30 14 30 30"></path></svg>
+              <span class="g-event"
+                >Opus starts a thread on <span class="g-chip"
+                  ><span class="g-chip-ico" set:html={windowsIcon} />Windows PC</span
+                ></span
+              >
+              <span class="g-tag"><Icon name="computers" />Fleet</span>
+            </div>
+            <div class="g-row g-child">
+              <span class="g-who"><span class="g-mark"><AgentMark slug="claude-code" /></span>Opus 5.5</span>
+              <span class="g-text">Every checkout test passes in Edge with the fix.</span>
+            </div>
+            <div class="g-join">
+              <svg class="g-curve" viewBox="0 0 40 30" aria-hidden="true"><path d="M30 0C30 16 8 14 8 30"></path></svg>
+              <span class="g-event">The answer comes back</span>
+            </div>
+          </li>
+          <li class="g-row g-end">
+            <span class="g-who"><span class="g-mark"><AgentMark slug="claude-code" /></span>Opus 5.5</span>
+            <span class="g-text">Fixed. The retry reuses the first payment's key, so it can't charge twice.</span>
+          </li>
+        </ol>
+        </div>
+        <figcaption>An example thread. By default, an agent asks you before it starts a thread.</figcaption>
+      </figure>
+
+      <dl class="spread-notes">
         {
-          AGENTS.map((agent) => (
-            <a
-              class="pv-provider"
-              href={agentPath(agent)}
-              aria-label={agent.markIsWordmark ? agent.name : undefined}
-            >
-              <AgentMark slug={agent.slug} />
-              {!agent.markIsWordmark && agent.name}
-            </a>
+          ideas.map((idea) => (
+            <div class="note">
+              <dt>
+                <Icon name={idea.icon} class="note-ico" />
+                {idea.name}
+              </dt>
+              <dd>
+                <p>{idea.text}</p>
+                <button
+                  class="watch"
+                  type="button"
+                  data-demo={idea.demo.base}
+                  data-label={idea.demo.label}
+                  data-title={`${idea.name}, ${clock(idea.demo.seconds)}`}
+                >
+                  <span class="watch-ico" set:html={playIcon} />
+                  Watch {idea.name}{" "}
+                  <span class="watch-time">{clock(idea.demo.seconds)}</span>
+                </button>
+              </dd>
+            </div>
           ))
         }
-      </div>
+      </dl>
     </div>
-    <figure class="pv-app-frame pv-rise" style="--pv-d: 0.95s">
-      <div
-        class="pv-frame pv-frame-swap"
+  </section>
+
+  <section class="section" aria-labelledby="tools-title">
+    <div class="wrap">
+      <p class="kicker">Built in</p>
+      <h2 id="tools-title">Everything else, beside the chat</h2>
+      <ul class="tools">
+        {
+          tools.map((tool) => (
+            <li>
+              <Icon name={tool.icon} class="tool-ico" />
+              <h3>{tool.name}</h3>
+              <p>{tool.text}</p>
+            </li>
+          ))
+        }
+      </ul>
+      <a class="text-link tools-more" href="/changelog"
+        >See what changed in every release <span aria-hidden="true">&rarr;</span></a
       >
-        <video
-          class="pv-video pv-clip-wide"
-          muted
-          playsinline
-          loop
-          preload="metadata"
-          poster="/Screenshots/rooms/rooms.webp"
-          width="1600"
-          height="934"
-          aria-label="A Threadlines room. Opus 5.5 can't find why some customers are charged twice, so the user adds GPT-6.1-Sol. Sol finds the cause, Opus fixes it, and Sol checks the fix."
-        >
-          <source src="/Screenshots/rooms/rooms.mp4" type="video/mp4" />
-        </video>
-        <video
-          class="pv-video pv-clip-tall"
-          muted
-          playsinline
-          loop
-          preload="none"
-          poster="/Screenshots/rooms/rooms-tall.webp"
-          width="800"
-          height="1000"
-          aria-label="A Threadlines room. Opus 5.5 can't find why some customers are charged twice, so the user adds GPT-6.1-Sol. Sol finds the cause, Opus fixes it, and Sol checks the fix."
-        >
-          <source src="/Screenshots/rooms/rooms-tall.mp4" type="video/mp4" />
-        </video>
-        <button class="pv-expand" type="button" aria-label="Expand the Rooms demo"><span>Expand</span></button>
-        <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
-      </div>
-      <figcaption>
-        A 46-second demo: Opus and Sol track down a double-charge bug in one thread. A recreated
-        conversation in the current app.
-      </figcaption>
-    </figure>
-  </section>
-
-  <section class="pv-section" id="fleet">
-    <div class="pv-wrap pv-center pv-reveal">
-      <p class="pv-kicker">Fleet</p>
-      <h2>Your computers work as one</h2>
-      <p class="pv-lede">
-        Link every computer you use, like a Mac mini, a Linux box or a Windows PC, and an agent on one
-        can start a thread on another when it needs to. By default it asks you first, the thread shows
-        up in your sidebar, and its answer comes back. Fleet shows every computer and what it's running.
-      </p>
-    </div>
-    <figure class="pv-showcase pv-reveal">
-      <div class="pv-frame pv-frame-swap">
-        <video
-          class="pv-video pv-clip-wide"
-          muted
-          playsinline
-          loop
-          preload="none"
-          poster="/Screenshots/fleet/fleet.webp"
-          width="1600"
-          height="934"
-          aria-label="Opus 5.5 on a MacBook Pro can't test a Windows-only screenshot bug, so it asks to start a thread on the Windows PC. GPT-6.1-Sol runs a probe there, Fleet shows both computers at work, and the answer comes back and changes Opus's plan."
-        >
-          <source src="/Screenshots/fleet/fleet.mp4" type="video/mp4" />
-        </video>
-        <video
-          class="pv-video pv-clip-tall"
-          muted
-          playsinline
-          loop
-          preload="none"
-          poster="/Screenshots/fleet/fleet-tall.webp"
-          width="800"
-          height="1000"
-          aria-label="Opus 5.5 on a MacBook Pro can't test a Windows-only screenshot bug, so it asks to start a thread on the Windows PC. GPT-6.1-Sol runs a probe there, Fleet shows both computers at work, and the answer comes back and changes Opus's plan."
-        >
-          <source src="/Screenshots/fleet/fleet-tall.mp4" type="video/mp4" />
-        </video>
-        <button class="pv-expand" type="button" aria-label="Expand the Fleet demo"><span>Expand</span></button>
-        <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
-      </div>
-      <figcaption>
-        A 45-second demo: Opus on a MacBook asks the Windows PC to check a Windows-only bug, and
-        the answer changes its plan. A recreated conversation in the current app.
-      </figcaption>
-    </figure>
-  </section>
-
-  <section class="pv-section" id="threads">
-    <div class="pv-wrap pv-center pv-reveal">
-      <p class="pv-kicker">Agents start threads</p>
-      <h2>Split a big job across threads</h2>
-      <p class="pv-lede">
-        An agent can hand parts of a job to new threads, each on the model it picks, and carry on as
-        their answers come back. By default it asks you first, and the new threads sit under it in
-        the sidebar.
-      </p>
-    </div>
-    <figure class="pv-showcase pv-reveal">
-      <div class="pv-frame pv-frame-swap">
-        <video
-          class="pv-video pv-clip-wide"
-          muted
-          playsinline
-          loop
-          preload="none"
-          poster="/Screenshots/threads/threads.webp"
-          width="1600"
-          height="934"
-          aria-label="Opus 5.5 asks to start three threads to find out why checkout got slow: Sonnet 5.5 times the payment service, GPT-6.1-Sol counts the database queries, and Opus 5.5 measures the page. The answers come back to Opus, and it fixes the cause."
-        >
-          <source src="/Screenshots/threads/threads.mp4" type="video/mp4" />
-        </video>
-        <video
-          class="pv-video pv-clip-tall"
-          muted
-          playsinline
-          loop
-          preload="none"
-          poster="/Screenshots/threads/threads-tall.webp"
-          width="800"
-          height="1000"
-          aria-label="Opus 5.5 asks to start three threads to find out why checkout got slow: Sonnet 5.5 times the payment service, GPT-6.1-Sol counts the database queries, and Opus 5.5 measures the page. The answers come back to Opus, and it fixes the cause."
-        >
-          <source src="/Screenshots/threads/threads-tall.mp4" type="video/mp4" />
-        </video>
-        <button class="pv-expand" type="button" aria-label="Expand the threads demo"><span>Expand</span></button>
-        <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
-      </div>
-      <figcaption>
-        A 44-second demo: Opus starts three threads to find out why checkout got slow, and
-        their answers come back. A recreated conversation in the current app.
-      </figcaption>
-    </figure>
-  </section>
-
-  {
-    showcases.map((showcase) => (
-      <section class="pv-section" id={showcase.id}>
-        <div class="pv-wrap pv-center pv-reveal">
-          <p class="pv-kicker">{showcase.kicker}</p>
-          <h2>{showcase.title}</h2>
-          <p class="pv-lede">{showcase.description}</p>
-        </div>
-        <div class="pv-showcase pv-reveal" data-tabset>
-          {showcase.clips.length > 1 && (
-            <div class="pv-steps" role="tablist" aria-label={`${showcase.kicker} demos`}>
-              {showcase.clips.map((clip, i) => (
-                <button
-                  class:list={["pv-step", i === 0 && "pv-active"]}
-                  id={`tab-${clip.name}`}
-                  aria-controls={`clip-${clip.name}`}
-                  role="tab"
-                  aria-selected={i === 0 ? "true" : "false"}
-                  tabindex={i === 0 ? 0 : -1}
-                  type="button"
-                >
-                  {clip.tab}
-                </button>
-              ))}
-            </div>
-          )}
-          <div class="pv-frame">
-            {showcase.clips.map((clip, i) =>
-              clip.image ? (
-                <img
-                  class:list={["pv-still", "pv-pane", i === 0 && "pv-active"]}
-                  id={`clip-${clip.name}`}
-                  role={showcase.clips.length > 1 ? "tabpanel" : undefined}
-                  aria-labelledby={showcase.clips.length > 1 ? `tab-${clip.name}` : undefined}
-                  aria-hidden={i !== 0}
-                  src={`/Screenshots/app/${clip.image}.webp`}
-                  alt={clip.label}
-                  width="2400"
-                  height="1401"
-                  loading="lazy"
-                  decoding="async"
-                />
-              ) : (
-                <video
-                  class:list={["pv-video", "pv-pane", i === 0 && "pv-active"]}
-                  id={`clip-${clip.name}`}
-                  role={showcase.clips.length > 1 ? "tabpanel" : undefined}
-                  aria-labelledby={showcase.clips.length > 1 ? `tab-${clip.name}` : undefined}
-                  aria-hidden={i !== 0}
-                  muted
-                  playsinline
-                  loop
-                  preload="none"
-                  poster={`${L}/${mediaName(clip.name)}.webp`}
-                  width="1600"
-                  height="934"
-                  aria-label={clip.label}
-                >
-                  <source src={`${L}/${mediaName(clip.name)}.mp4`} type="video/mp4" />
-                </video>
-              ),
-            )}
-            <button class="pv-expand" type="button" aria-label={`Expand ${showcase.kicker.toLowerCase()} demo`}>
-              <span>Expand</span>
-            </button>
-            {showcase.clips.some((clip) => !clip.image) && (
-              <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
-            )}
-          </div>
-        </div>
-      </section>
-    ))
-  }
-
-  <section class="pv-section">
-    <div class="pv-wrap">
-      <div class="pv-reveal pv-center">
-        <p class="pv-kicker">Daily work</p>
-        <h2>Pick up where you left off</h2>
-      </div>
-      <div class="pv-grid">
-        <div class="pv-card pv-reveal">
-          <h3>Resume a thread</h3>
-          <p>Reopen the app and continue with the conversation and work history in place.</p>
-        </div>
-        <div class="pv-card pv-reveal">
-          <h3>Try another direction</h3>
-          <p>Fork a conversation to explore another approach with its context.</p>
-        </div>
-        <div class="pv-card pv-reveal">
-          <h3>Separate the work</h3>
-          <p>Give a thread its own Git worktree so agents can work in separate checkouts.</p>
-        </div>
-      </div>
     </div>
   </section>
 
-  <section class="pv-section pv-oss">
-    <div class="pv-wrap pv-center pv-reveal">
-      <p class="pv-kicker">Free and open source</p>
-      <h2>Your projects, on your machine</h2>
-      <p class="pv-lede">
-        Threadlines runs locally with your own agent accounts. The app is MIT-licensed,
-        with its source and full history on GitHub. It began as a fork of T3 Code.
-      </p>
-      <div class="pv-cta-row">
-        <a class="pv-cta pv-cta-primary" href="/download">Download Threadlines</a>
-        <a class="pv-cta" href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">View source</a>
+  <section class="section" aria-labelledby="own-title">
+    <div class="wrap own">
+      <div class="own-copy">
+        <p class="kicker">Free and open source</p>
+        <h2 id="own-title">Your machine, your accounts</h2>
+        <p class="lede">
+          Threadlines runs on your computer and uses the Claude, Codex and other agent accounts you
+          already pay for. There's no Threadlines account to make. The code is MIT-licensed and
+          began as a fork of T3&nbsp;Code.
+        </p>
+        <div class="actions">
+          <a class="button" href="/download">Download Threadlines</a>
+          <a class="text-link" href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer"
+            >View source <span aria-hidden="true">&rarr;</span></a
+          >
+        </div>
       </div>
-      <p class="pv-note">macOS 13+ &middot; Windows &middot; Linux</p>
+      <dl class="specs">
+        <div>
+          <dt>Latest</dt>
+          <dd>
+            <a href={changelogEntryPath(latestRelease)}
+              >{latestRelease.data.version}, {formatReleaseDate(latestRelease.data.date)}</a
+            >
+          </dd>
+        </div>
+        <div>
+          <dt>Runs on</dt>
+          <dd class="os">
+            <span><span class="os-ico" set:html={appleIcon} />macOS 13 or later</span>
+            <span><span class="os-ico" set:html={windowsIcon} />Windows</span>
+            <span><span class="os-ico" set:html={linuxIcon} />Linux</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Price</dt>
+          <dd>Free</dd>
+        </div>
+        <div>
+          <dt>License</dt>
+          <dd>MIT</dd>
+        </div>
+        <div>
+          <dt>Source</dt>
+          <dd>
+            <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer"
+              >github.com/<wbr />Threadlines/<wbr />threadlines</a
+            >
+          </dd>
+        </div>
+      </dl>
     </div>
   </section>
 
-  <div class="pv-lightbox" id="pv-lightbox" role="dialog" aria-modal="true" aria-label="Expanded product demo" hidden>
-    <button class="pv-lightbox-close" type="button" aria-label="Close preview">×</button>
-    <button class="pv-lightbox-nav pv-lightbox-prev" type="button" aria-label="Previous">‹</button>
-    <div class="pv-lightbox-stage"></div>
-    <button class="pv-lightbox-nav pv-lightbox-next" type="button" aria-label="Next">›</button>
-  </div>
+  <dialog class="viewer" id="demo-viewer" aria-label="Product demo">
+    <form method="dialog" class="viewer-bar">
+      <span class="viewer-title"></span>
+      <button class="viewer-close" type="submit" aria-label="Close">Close</button>
+    </form>
+    <div class="viewer-stage"></div>
+  </dialog>
 </Layout>
 
 <script>
   import { detectDevice, detectMacArch, isTouchOnly, type MacArch } from "../lib/platform";
   import { classifyAssets, fetchLatestRelease, pickInstaller } from "../lib/releases";
-
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const dl = document.getElementById("pv-download") as HTMLAnchorElement | null;
   if (dl) {
@@ -537,543 +509,1023 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     }
   }
 
-  const targets = document.querySelectorAll(".pv-reveal");
-  if (reduced || !("IntersectionObserver" in window)) {
-    for (const el of targets) el.classList.add("pv-in");
-  } else {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("pv-in");
-            observer.unobserve(entry.target);
-          }
-        }
-      },
-      { threshold: 0.15, rootMargin: "0px 0px -40px 0px" },
-    );
-    for (const el of targets) observer.observe(el);
-  }
+  // Phones get the tall cut of each demo.
+  const tall = window.matchMedia("(max-width: 640px)");
+  const viewer = document.getElementById("demo-viewer") as HTMLDialogElement | null;
+  /** Re-checks every hero player, e.g. after the demo dialog closes. */
+  const resyncPlayers: (() => void)[] = [];
 
-  // Play visible clips unless the visitor pauses them or requests reduced motion.
-  const inView = new WeakSet<Element>();
-  const manuallyPaused = new WeakSet<HTMLVideoElement>();
-  const videos = [...document.querySelectorAll<HTMLVideoElement>("video.pv-video")];
-  // A tab's active pane, or the clip this screen width shows (the hero and the
-  // threads demo have a wide clip and a tall one for phones; the other is display: none).
-  const shown = (element: Element) => element.getClientRects().length > 0;
-  const activeVideo = (frame: HTMLElement) =>
-    frame.querySelector<HTMLVideoElement>("video.pv-active") ??
-    [...frame.querySelectorAll<HTMLVideoElement>("video")].find(shown) ??
-    frame.querySelector<HTMLVideoElement>("video");
-  const syncPlayButton = (video: HTMLVideoElement) => {
-    const frame = video.closest<HTMLElement>(".pv-frame");
-    if (!frame || activeVideo(frame) !== video) return;
-    const button = frame.querySelector<HTMLButtonElement>(".pv-play");
-    button?.classList.toggle("pv-playing", !video.paused);
-    button?.setAttribute("aria-label", video.paused ? "Play video" : "Pause video");
-  };
-  const syncVideo = (video: HTMLVideoElement) => {
-    const active = !video.classList.contains("pv-pane") || video.classList.contains("pv-active");
-    if (!active || !inView.has(video) || !lightbox.hidden) video.pause();
-    else if (!reduced && !manuallyPaused.has(video)) video.play().catch(() => {});
-  };
-  for (const video of videos) {
-    video.addEventListener("play", () => syncPlayButton(video));
-    video.addEventListener("pause", () => syncPlayButton(video));
-  }
-  if ("IntersectionObserver" in window) {
-    const playObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) inView.add(entry.target);
-          else inView.delete(entry.target);
-          syncVideo(entry.target as HTMLVideoElement);
-        }
-      },
-      { threshold: 0.25 },
-    );
-    for (const video of videos) playObserver.observe(video);
-  }
-  for (const button of document.querySelectorAll<HTMLButtonElement>(".pv-play")) {
-    button.addEventListener("click", () => {
-      const frame = button.closest<HTMLElement>(".pv-frame");
-      const video = frame && activeVideo(frame);
-      if (!video) return;
-      if (video.paused) {
-        manuallyPaused.delete(video);
-        video.play().catch(() => {});
-      } else {
-        manuallyPaused.add(video);
-        video.pause();
+  // The hero demo plays while at least a quarter of it is on screen, unless the
+  // visitor paused it. With reduced motion it never starts by itself: only the
+  // Play button starts it, and anything else can only pause it.
+  const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  for (const player of document.querySelectorAll<HTMLElement>("[data-player]")) {
+    const button = player.querySelector<HTMLButtonElement>(".play");
+    const videos = [...player.querySelectorAll<HTMLVideoElement>("video")];
+    let inView = false;
+    let pausedByVisitor = false;
+    const shown = () => player.querySelector<HTMLVideoElement>(tall.matches ? ".clip-tall" : ".clip-wide");
+    const sync = (byVisitor = false) => {
+      const active = shown();
+      const allowed = inView && !pausedByVisitor && !viewer?.open;
+      for (const video of videos) {
+        if (video === active && allowed && (byVisitor || !motion.matches)) video.play().catch(() => {});
+        else if (video !== active || !allowed) video.pause();
       }
-    });
-  }
-
-  for (const set of document.querySelectorAll<HTMLElement>("[data-tabset]")) {
-    const panes = [...set.querySelectorAll<HTMLElement>(".pv-pane")];
-    const steps = [...set.querySelectorAll<HTMLButtonElement>(".pv-step")];
-    const select = (index: number) => {
-      set.dataset.current = String(index);
-      panes.forEach((pane, i) => {
-        pane.classList.toggle("pv-active", index === i);
-        pane.setAttribute("aria-hidden", String(index !== i));
-        if (pane instanceof HTMLVideoElement) syncVideo(pane);
-      });
-      steps.forEach((step, i) => {
-        step.classList.toggle("pv-active", index === i);
-        step.setAttribute("aria-selected", String(index === i));
-        step.tabIndex = index === i ? 0 : -1;
-      });
-      const pane = panes[index];
-      if (pane instanceof HTMLVideoElement) syncPlayButton(pane);
     };
-    steps.forEach((step, i) => {
-      step.addEventListener("click", () => select(i));
-      step.addEventListener("keydown", (event) => {
-        let next: number;
-        if (event.key === "ArrowRight") next = (i + 1) % steps.length;
-        else if (event.key === "ArrowLeft") next = (i - 1 + steps.length) % steps.length;
-        else if (event.key === "Home") next = 0;
-        else if (event.key === "End") next = steps.length - 1;
-        else return;
-        event.preventDefault();
-        select(next);
-        steps[next]?.focus();
+    const label = () => {
+      const active = shown();
+      const playing = !!active && !active.paused;
+      player.classList.toggle("is-playing", playing);
+      button?.setAttribute("aria-label", playing ? "Pause the demo" : "Play the demo");
+    };
+    for (const video of videos) {
+      video.addEventListener("play", label);
+      video.addEventListener("pause", label);
+    }
+    button?.addEventListener("click", () => {
+      const playing = !(shown()?.paused ?? true);
+      pausedByVisitor = playing;
+      if (playing) sync();
+      else {
+        inView = true;
+        sync(true);
+      }
+    });
+    tall.addEventListener("change", () => sync());
+    motion.addEventListener("change", () => sync());
+    resyncPlayers.push(() => sync());
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(
+        ([entry]) => {
+          inView = !!entry && entry.isIntersecting && entry.intersectionRatio >= 0.25;
+          sync();
+        },
+        { threshold: [0, 0.25] },
+      ).observe(player);
+    }
+  }
+
+  // The other demos open in a dialog, so the page itself stays still.
+  const stage = viewer?.querySelector<HTMLElement>(".viewer-stage");
+  const title = viewer?.querySelector<HTMLElement>(".viewer-title");
+  if (viewer && stage && title) {
+    for (const watch of document.querySelectorAll<HTMLButtonElement>(".watch")) {
+      watch.addEventListener("click", () => {
+        const base = `${watch.dataset.demo}${tall.matches ? "-tall" : ""}`;
+        const video = document.createElement("video");
+        video.className = "viewer-video";
+        video.muted = true;
+        video.playsInline = true;
+        video.controls = true;
+        video.poster = `${base}.webp`;
+        video.setAttribute("aria-label", watch.dataset.label ?? "");
+        const source = document.createElement("source");
+        source.src = `${base}.mp4`;
+        source.type = "video/mp4";
+        video.append(source);
+        stage.replaceChildren(video);
+        title.textContent = watch.dataset.title ?? "";
+        viewer.showModal();
+        for (const sync of resyncPlayers) sync();
+        video.play().catch(() => {});
       });
+    }
+    viewer.addEventListener("click", (event) => {
+      if (event.target === viewer) viewer.close();
+    });
+    viewer.addEventListener("close", () => {
+      stage.replaceChildren();
+      for (const sync of resyncPlayers) sync();
     });
   }
-
-  // --- lightbox (images and videos) ------------------------------------------
-  const lightbox = document.getElementById("pv-lightbox")!;
-  const lbStage = lightbox.querySelector<HTMLElement>(".pv-lightbox-stage")!;
-  const lbClose = lightbox.querySelector<HTMLButtonElement>(".pv-lightbox-close")!;
-  const lbPrev = lightbox.querySelector<HTMLButtonElement>(".pv-lightbox-prev")!;
-  const lbNext = lightbox.querySelector<HTMLButtonElement>(".pv-lightbox-next")!;
-  let lbItems: (HTMLImageElement | HTMLVideoElement)[] = [];
-  let lbIndex = 0;
-  let lbTrigger: HTMLElement | null = null;
-  const lbShow = (i: number) => {
-    lbIndex = (i + lbItems.length) % lbItems.length;
-    const item = lbItems[lbIndex];
-    lbStage.replaceChildren();
-    if (item instanceof HTMLVideoElement) {
-      const video = document.createElement("video");
-      video.className = "pv-lightbox-media";
-      video.controls = true;
-      video.tabIndex = 0;
-      video.muted = true;
-      video.loop = true;
-      video.playsInline = true;
-      video.poster = item.poster;
-      video.setAttribute("aria-label", item.getAttribute("aria-label") ?? "");
-      for (const source of item.querySelectorAll("source")) {
-        video.append(source.cloneNode());
-      }
-      lbStage.append(video);
-      if (!reduced) video.play().catch(() => {});
-    } else {
-      const img = document.createElement("img");
-      img.className = "pv-lightbox-media";
-      img.src = item.currentSrc || item.src;
-      img.alt = item.alt;
-      lbStage.append(img);
-    }
-    const solo = lbItems.length < 2;
-    lbPrev.hidden = solo;
-    lbNext.hidden = solo;
-  };
-  const lbOpen = (items: (HTMLImageElement | HTMLVideoElement)[], i: number) => {
-    if (!items.length) return;
-    lbTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    for (const video of videos) video.pause();
-    lbItems = items;
-    lbShow(i);
-    lightbox.hidden = false;
-    document.documentElement.style.overflow = "hidden";
-    lbClose.focus();
-  };
-  const closeLightbox = () => {
-    lightbox.hidden = true;
-    lbStage.replaceChildren();
-    document.documentElement.style.overflow = "";
-    lbTrigger?.focus();
-    for (const video of videos) syncVideo(video);
-  };
-  lightbox.addEventListener("click", (e) => {
-    if (e.target === lightbox) closeLightbox();
-  });
-  lbClose.addEventListener("click", closeLightbox);
-  lbPrev.addEventListener("click", () => lbShow(lbIndex - 1));
-  lbNext.addEventListener("click", () => lbShow(lbIndex + 1));
-  document.addEventListener("keydown", (e) => {
-    if (lightbox.hidden) return;
-    if (e.key === "Escape") closeLightbox();
-    if (e.key === "Tab") {
-      const controls = [...lightbox.querySelectorAll<HTMLElement>("button:not([hidden]), video[controls]")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
-    }
-    const onVideo = e.target instanceof HTMLVideoElement;
-    if (!onVideo && lbItems.length > 1) {
-      if (e.key === "ArrowLeft") lbShow(lbIndex - 1);
-      if (e.key === "ArrowRight") lbShow(lbIndex + 1);
-    }
-  });
-  let lbWheelAt = 0;
-  lightbox.addEventListener(
-    "wheel",
-    (e) => {
-      e.preventDefault();
-      if (lbItems.length < 2) return;
-      const now = Date.now();
-      if (now - lbWheelAt < 350 || Math.abs(e.deltaY) < 12) return;
-      lbWheelAt = now;
-      lbShow(lbIndex + (e.deltaY > 0 ? 1 : -1));
-    },
-    { passive: false },
-  );
-
-  for (const trigger of document.querySelectorAll<HTMLButtonElement>(".pv-expand")) {
-    trigger.addEventListener("click", () => {
-      const frame = trigger.closest<HTMLElement>(".pv-frame");
-      if (!frame) return;
-      const all = [...frame.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video")];
-      const set = frame.closest<HTMLElement>("[data-tabset]");
-      // Tabs keep every pane; elsewhere only the clip this screen shows.
-      const media = set ? all : all.filter(shown);
-      lbOpen(media, set ? Number(set.dataset.current || 0) : 0);
-    });
-  }
-
 </script>
 
 <style>
-  .pv-wrap {
-    max-width: 1040px;
+  .wrap {
+    max-width: 1100px;
     margin: 0 auto;
-    padding: 0 24px;
-    position: relative;
+    padding: 0 32px;
   }
 
-  .pv-hero {
+  h2 {
+    font-size: 1.5rem;
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .kicker {
+    margin-bottom: 8px;
+    color: var(--accent-bright);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+  }
+
+  .lede {
+    margin-top: 12px;
+    max-width: 34em;
+    color: var(--fg-muted);
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+
+  /* ---- shared controls ------------------------------------------------- */
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 24px;
+    margin-top: 24px;
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 8px;
+    background: var(--accent-bright);
+    color: var(--accent-contrast);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    transition: background 0.15s ease;
+  }
+
+  .button:hover {
+    background: var(--accent-hover);
+  }
+
+  .button-quiet {
+    background: transparent;
+    color: var(--fg);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+
+  .button-quiet:hover {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--accent-bright);
+  }
+
+  .button-ico {
+    display: inline-flex;
+  }
+
+  .button-ico[hidden] {
+    display: none;
+  }
+
+  .button-ico :global(svg) {
+    width: 15px;
+    height: 15px;
+  }
+
+  .text-link {
+    color: var(--fg);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    transition: color 0.15s ease;
+  }
+
+  .text-link span {
+    display: inline-block;
+    margin-left: 2px;
+    color: var(--fg-muted);
+    transition: color 0.15s ease;
+  }
+
+  .text-link:hover,
+  .text-link:hover span {
+    color: var(--accent-bright);
+  }
+
+  /* ---- hero ------------------------------------------------------------ */
+
+  .hero {
     position: relative;
     overflow: hidden;
-    padding: 32px 0 36px;
-    text-align: center;
+    padding: 24px 0 72px;
   }
 
-  .pv-glow {
+  .hero-glow {
     position: absolute;
+    top: 2%;
+    right: 6%;
+    width: 600px;
+    height: 460px;
     pointer-events: none;
     background: radial-gradient(closest-side, var(--accent-dim), transparent 72%);
   }
 
-  .pv-glow-hero {
-    top: 4%;
-    right: 8%;
-    width: 560px;
-    height: 440px;
+  .hero-head {
+    position: relative;
+    text-align: center;
   }
 
-  .pv-figure {
-    width: min(720px, 100%);
-    margin: 0 auto 8px;
+  .hero-figure {
     display: block;
+    width: min(720px, 100%);
+    margin: 0 auto 4px;
   }
 
-  .pv-line {
+  .hero-line {
     stroke-dasharray: 1;
     stroke-dashoffset: 1;
-    animation: pv-draw 1.1s ease-out forwards;
-    animation-delay: var(--pv-delay, 0s);
+    animation: hero-draw 1.1s ease-out forwards;
+    animation-delay: var(--d, 0s);
   }
 
-  .pv-node {
+  .hero-node,
+  .rise {
     opacity: 0;
-    animation: pv-pop 0.5s ease-out forwards;
-    animation-delay: var(--pv-delay, 0s);
+    animation: hero-in 0.6s ease-out forwards;
+    animation-delay: var(--d, 0s);
   }
 
-  .pv-halo { opacity: 0.2; }
-  @keyframes pv-draw { to { stroke-dashoffset: 0; } }
-  @keyframes pv-pop { to { opacity: 1; } }
-
-  .pv-rise {
-    opacity: 0;
-    animation: pv-pop 0.7s ease-out forwards;
-    animation-delay: var(--pv-d, 0s);
+  @keyframes hero-draw {
+    to {
+      stroke-dashoffset: 0;
+    }
   }
 
-  .pv-display {
-    font-size: clamp(1.9rem, 4vw, 2.5rem);
-    line-height: 1.08;
-    letter-spacing: -0.03em;
+  @keyframes hero-in {
+    to {
+      opacity: 1;
+    }
   }
 
-  .pv-sub,
-  .pv-lede {
-    color: var(--fg-muted);
-    font-size: 1rem;
-    max-width: 680px;
-    margin: 16px auto 0;
-  }
-
-  .pv-lede { margin-top: 0; }
-  .pv-accent { color: var(--accent-bright); font-weight: 600; }
-  .pv-center { text-align: center; }
-
-  .pv-cta-row {
-    display: flex;
-    gap: 12px;
-    justify-content: center;
-    margin-top: 24px;
-    flex-wrap: wrap;
-  }
-
-  .pv-cta {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 18px;
-    font-weight: 600;
-    color: inherit;
-    text-decoration: none;
-    transition: border-color 0.2s ease;
-  }
-
-  .pv-cta:hover { border-color: var(--accent-bright); }
-  .pv-cta-primary {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--accent-bright);
-    border-color: transparent;
-    color: var(--accent-contrast);
-  }
-
-  .pv-cta-ico { display: inline-flex; }
-  .pv-cta-ico[hidden] { display: none; }
-  .pv-cta-ico svg { width: 15px; height: 15px; }
-  .pv-note { margin-top: 16px; font-size: 0.85rem; color: var(--fg-muted); }
-
-  .pv-providers {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 20px;
-    margin-top: 20px;
-    flex-wrap: wrap;
-  }
-
-  .pv-providers-label { flex-basis: 100%; font-size: 0.8rem; color: var(--fg-muted); }
-  .pv-provider {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--fg-muted);
-    transition: color 0.2s ease;
-  }
-  .pv-provider:hover { color: var(--fg); }
-  .pv-provider :global(svg),
-  .pv-provider :global(img) { width: 20px; height: 20px; }
-  .pv-frame .pv-clip-tall { display: none; }
-
-  .pv-new {
+  .release {
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 18px;
-    padding: 5px 12px 5px 5px;
-    border: 1px solid var(--border);
+    margin-bottom: 20px;
+    padding: 4px 12px 4px 4px;
     border-radius: 999px;
-    font-size: 0.85rem;
-    font-weight: 600;
+    box-shadow: inset 0 0 0 1px var(--border-strong);
     color: var(--fg-muted);
-    text-decoration: none;
-    transition: color 0.2s ease, border-color 0.2s ease;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition:
+      color 0.15s ease,
+      box-shadow 0.15s ease;
   }
-  .pv-new:hover { color: var(--fg); border-color: var(--accent-bright); }
-  .pv-new-tag {
+
+  .release:hover {
+    color: var(--fg);
+    box-shadow: inset 0 0 0 1px var(--accent-soft);
+  }
+
+  .release-tag {
+    flex: none;
+    white-space: nowrap;
     padding: 3px 9px;
     border-radius: 999px;
     background: var(--accent-bright);
     color: var(--accent-contrast);
     font-family: var(--font-mono);
-    font-size: 0.72rem;
-    letter-spacing: 0.04em;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
 
-  .pv-app-frame { width: min(1400px, 94vw); margin: 32px auto 0; padding: 0; }
-  .pv-app-frame figcaption,
-  .pv-showcase figcaption { margin-top: 12px; font-size: 0.85rem; color: var(--fg-muted); }
-  .pv-showcase { width: min(1240px, 94vw); margin: 24px auto 0; }
-  .pv-frame {
+  .hero-title {
+    font-size: clamp(2.125rem, 4.4vw, 2.875rem);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    text-wrap: balance;
+  }
+
+  .hero-sub {
+    max-width: 36em;
+    margin: 18px auto 0;
+    color: var(--fg-muted);
+    font-size: 1.0625rem;
+    line-height: 1.55;
+    text-wrap: pretty;
+  }
+
+  .hero-em {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  /* the headline breaks after "every" where there's room, and balances on phones */
+  @media (max-width: 640px) {
+    .hero-break {
+      display: none;
+    }
+  }
+
+  .hero-head .actions {
+    justify-content: center;
+    gap: 12px;
+    margin-top: 28px;
+  }
+
+  .hero-note {
+    margin-top: 16px;
+    color: var(--fg-dim);
+    font-size: 0.8125rem;
+  }
+
+  .hero-note span {
+    white-space: nowrap;
+  }
+
+  .agents {
+    margin-top: 28px;
+  }
+
+  .agents-label {
+    margin-bottom: 14px;
+    color: var(--fg-dim);
+    font-size: 0.8125rem;
+  }
+
+  .agents-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 12px 26px;
+    list-style: none;
+  }
+
+  .agent {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg-muted);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    transition: color 0.15s ease;
+  }
+
+  .agent:hover {
+    color: var(--fg);
+  }
+
+  .agent-mark {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+  }
+
+  .agent-mark :global(svg),
+  .agent-mark :global(img) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .hero-media {
+    width: min(1200px, calc(100vw - 48px));
+    margin: 44px auto 0;
+  }
+
+  .hero-media figcaption,
+  .spread-graph figcaption {
+    margin-top: 12px;
+    color: var(--fg-dim);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+
+  .hero-media figcaption {
+    text-align: center;
+  }
+
+  .frame {
     position: relative;
     aspect-ratio: 1600 / 934;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--surface);
     overflow: hidden;
+    border-radius: 12px;
+    background: var(--bg-card);
+    box-shadow: 0 0 0 1px var(--border-strong);
   }
 
-  .pv-frame video,
-  .pv-frame .pv-still {
+  .frame video {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
     display: block;
-    pointer-events: none;
   }
-  .pv-frame .pv-pane { visibility: hidden; }
-  .pv-frame .pv-pane.pv-active { visibility: visible; }
-  .pv-expand {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    border: 0;
-    background: transparent;
-    color: #fff;
-    cursor: zoom-in;
-    z-index: 1;
+
+  .frame .clip-tall {
+    display: none;
   }
-  .pv-expand span {
+
+  .play {
     position: absolute;
-    bottom: 12px;
-    right: 64px;
-    padding: 8px 12px;
-    background: rgba(5, 7, 10, 0.88);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 999px;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-  }
-  .pv-play {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
-    width: 40px;
-    height: 40px;
+    right: 14px;
+    bottom: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 0;
     border-radius: 999px;
-    background: rgba(5, 7, 10, 0.88);
-    color: #fff;
+    background: rgba(9, 9, 11, 0.86);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+    color: #fafafa;
     cursor: pointer;
-    z-index: 2;
+    transition: box-shadow 0.15s ease;
   }
-  .pv-play :global(svg) { width: 20px; height: 20px; }
-  .pv-play :global(.pv-ico-pause) { display: none; }
-  .pv-play.pv-playing :global(.pv-ico-play) { display: none; }
-  .pv-play.pv-playing :global(.pv-ico-pause) { display: block; }
-  .pv-play:hover,
-  .pv-expand:hover span { border-color: var(--accent-bright); }
-  .pv-expand:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: -4px; }
-  .pv-play:focus-visible,
-  .pv-step:focus-visible,
-  .pv-cta:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; }
 
-  .pv-section { position: relative; padding: 36px 0; border-top: 1px solid var(--border); }
-  .pv-kicker {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
+  .play:hover {
+    box-shadow: 0 0 0 1px var(--accent-bright);
+  }
+
+  .play-ico,
+  .pause-ico {
+    display: inline-flex;
+  }
+
+  .play :global(svg) {
+    width: 14px;
+    height: 14px;
+  }
+
+  .pause-ico,
+  .is-playing .play-ico {
+    display: none;
+  }
+
+  .is-playing .pause-ico {
+    display: inline-flex;
+  }
+
+  /* ---- sections -------------------------------------------------------- */
+
+  .section {
+    padding: 80px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ---- how work spreads ------------------------------------------------ */
+
+  .spread {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    grid-template-areas:
+      "head graph"
+      "notes graph";
+    grid-template-rows: auto 1fr;
+    column-gap: 64px;
+  }
+
+  .spread-head {
+    grid-area: head;
+  }
+
+  .spread-graph {
+    grid-area: graph;
+  }
+
+  .spread-notes {
+    grid-area: notes;
+    margin-top: 40px;
+    display: grid;
+    gap: 24px;
+    align-content: start;
+  }
+
+  .note dt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9375rem;
+    font-weight: 600;
+  }
+
+  .note dt :global(.note-ico) {
+    width: 17px;
+    height: 17px;
     color: var(--accent-bright);
   }
-  .pv-section h2 { font-size: 1.25rem; letter-spacing: -0.02em; margin: 8px 0 12px; }
-  .pv-steps {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    margin-bottom: 12px;
-    flex-wrap: wrap;
+
+  .note dd p {
+    margin-top: 4px;
+    color: var(--fg-muted);
+    font-size: 0.9375rem;
+    line-height: 1.55;
   }
-  .pv-step {
+
+  .watch {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 8px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+
+  .watch:hover {
+    color: var(--accent-bright);
+  }
+
+  .watch-ico {
+    display: inline-flex;
+    color: var(--accent-bright);
+  }
+
+  .watch-ico :global(svg) {
+    width: 10px;
+    height: 10px;
+  }
+
+  .watch-time {
     font-family: var(--font-mono);
     font-size: 0.75rem;
-    color: var(--fg-muted);
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 8px 12px;
-    cursor: pointer;
-    transition: color 0.2s ease, border-color 0.2s ease;
+    color: var(--fg-dim);
   }
-  .pv-step:hover { color: inherit; border-color: var(--accent-soft); }
-  .pv-step.pv-active { color: var(--accent-bright); border-color: var(--accent-bright); }
-  .pv-reveal { opacity: 0; transition: opacity 0.4s ease; }
-  .pv-reveal.pv-in { opacity: 1; }
-  .pv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 24px; }
-  .pv-card { padding: 16px 0 0; border-top: 1px solid var(--border); text-align: left; }
-  .pv-card h3 { font-size: 1rem; margin-bottom: 8px; }
-  .pv-card p { color: var(--fg-muted); font-size: 0.95rem; }
 
-  .pv-lightbox {
-    position: fixed;
-    inset: 0;
-    z-index: 10000;
+  /*
+   * The example thread, drawn like a commit graph. The main thread runs down
+   * x = 8px and a started thread down x = 30px. Lines are background
+   * gradients, so rows can wrap to any height; the fork and join curves are
+   * fixed 40x30 SVGs drawn on the same two lanes.
+   */
+  .graph {
+    --main: 8px;
+    --side: 30px;
+    --line: var(--line-dim);
+    --line-side: var(--accent-soft);
+    --dot: var(--fg-dim);
+    list-style: none;
+    font-size: 0.875rem;
+    line-height: 22px;
+  }
+
+  .g-row,
+  .g-fork,
+  .g-join {
+    position: relative;
+    padding-left: 52px;
+  }
+
+  .g-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 10px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    background: linear-gradient(var(--line), var(--line)) no-repeat calc(var(--main) - 0.5px) 0 / 1px 100%;
+  }
+
+  .g-start {
+    background-position-y: 18px;
+  }
+
+  .g-end {
+    background-size: 1px 18px;
+  }
+
+  /* the message's node */
+  .g-row::after {
+    content: "";
+    position: absolute;
+    top: 14px;
+    left: calc(var(--main) - 4px);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dot);
+  }
+
+  .g-ring::after {
+    background: var(--bg);
+    box-shadow: inset 0 0 0 1.5px var(--dot);
+  }
+
+  .g-end::after {
+    background: var(--accent-bright);
+    box-shadow: 0 0 0 4px var(--accent-dim);
+  }
+
+  .g-child {
+    background:
+      linear-gradient(var(--line), var(--line)) no-repeat calc(var(--main) - 0.5px) 0 / 1px 100%,
+      linear-gradient(var(--line-side), var(--line-side)) no-repeat calc(var(--side) - 0.5px) 0 / 1px 100%;
+  }
+
+  .g-child::after {
+    left: calc(var(--side) - 4px);
+    background: var(--accent-bright);
+  }
+
+  /* A wrapped label makes these rows taller than the 30px curve; the side
+     lane fills the rest (below the fork's curve, above the join's). */
+  .g-fork,
+  .g-join {
     display: flex;
     align-items: center;
-    justify-content: center;
-    background: rgba(5, 7, 10, 0.88);
+    gap: 10px;
+    min-height: 30px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    background:
+      linear-gradient(var(--line), var(--line)) no-repeat calc(var(--main) - 0.5px) 0 / 1px 100%,
+      linear-gradient(var(--line-side), var(--line-side)) no-repeat calc(var(--side) - 0.5px) 30px /
+        1px calc(100% - 30px);
   }
-  .pv-lightbox[hidden] { display: none; }
-  .pv-lightbox-stage { display: flex; align-items: center; justify-content: center; max-width: 92vw; max-height: 88vh; }
-  .pv-lightbox-stage :global(.pv-lightbox-media) {
-    max-width: 92vw;
-    max-height: 88vh;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 12px;
-  }
-  .pv-lightbox-close,
-  .pv-lightbox-nav {
-    position: fixed;
-    font-family: var(--font-mono);
-    color: #fff;
-    background: rgba(5, 7, 10, 0.88);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 999px;
-    cursor: pointer;
-    z-index: 1;
-  }
-  .pv-lightbox-close:hover,
-  .pv-lightbox-nav:hover { border-color: var(--accent-bright); }
-  .pv-lightbox-close { top: 16px; right: 16px; width: 40px; height: 40px; font-size: 20px; }
-  .pv-lightbox-nav { top: 50%; transform: translateY(-50%); width: 44px; height: 44px; font-size: 24px; }
-  .pv-lightbox-nav[hidden] { display: none; }
-  .pv-lightbox-prev { left: 12px; }
-  .pv-lightbox-next { right: 12px; }
 
-  @media (max-width: 820px) {
-    .pv-showcase,
-    .pv-app-frame { width: calc(100vw - 32px); }
-    .pv-grid { grid-template-columns: 1fr; gap: 16px; }
+  .g-join {
+    background-position:
+      calc(var(--main) - 0.5px) 0,
+      calc(var(--side) - 0.5px) 0;
   }
-  @media (max-width: 640px) {
-    .pv-frame-swap { aspect-ratio: 800 / 1000; }
-    .pv-frame .pv-clip-wide { display: none; }
-    .pv-frame .pv-clip-tall { display: block; }
+
+  /* the curve out to the started thread, and back */
+  .g-curve {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 40px;
+    height: 30px;
+    fill: none;
+    stroke: var(--line-side);
+    stroke-width: 1;
   }
-  @media (max-width: 520px) {
-    .pv-wrap { padding: 0 16px; }
-    .pv-providers { gap: 10px 16px; }
-    .pv-app-frame figcaption,
-    .pv-showcase figcaption { padding: 0 8px; }
+
+  .g-join .g-curve {
+    top: auto;
+    bottom: 0;
   }
+
+  .g-thread {
+    font-weight: 600;
+  }
+
+  .g-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 7px;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+
+  .g-chip-ico {
+    display: inline-flex;
+  }
+
+  .g-chip-ico :global(svg) {
+    width: 11px;
+    height: 11px;
+  }
+
+  .g-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .g-mark {
+    display: inline-flex;
+    width: 13px;
+    height: 13px;
+  }
+
+  .g-mark :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .g-text {
+    flex: 1 1 18em;
+    color: var(--fg-muted);
+  }
+
+  .g-event {
+    color: var(--fg-dim);
+    font-size: 0.8125rem;
+  }
+
+  .g-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--accent-dim);
+    color: var(--accent-bright);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .g-tag :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+
+  .graph-panel {
+    padding: 18px 22px 16px 18px;
+    border-radius: 12px;
+    background: var(--bg-card);
+    box-shadow: 0 0 0 1px var(--border);
+  }
+
+  .graph .g-row.g-ring::after {
+    background: var(--bg-card);
+  }
+
+  .spread-graph figcaption {
+    margin-top: 12px;
+  }
+
+  /* ---- everything else ------------------------------------------------- */
+
+  .tools {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 40px;
+    margin-top: 32px;
+    list-style: none;
+  }
+
+  .tools li {
+    padding: 20px 0 24px;
+    border-top: 1px solid var(--border);
+  }
+
+  .tools :global(.tool-ico) {
+    width: 20px;
+    height: 20px;
+    margin-bottom: 10px;
+    color: var(--accent-bright);
+  }
+
+  .tools h3 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+  }
+
+  .tools p {
+    margin-top: 6px;
+    color: var(--fg-muted);
+    font-size: 0.9375rem;
+    line-height: 1.55;
+  }
+
+  .tools-more {
+    display: inline-block;
+    margin-top: 12px;
+  }
+
+  /* ---- yours ----------------------------------------------------------- */
+
+  .own {
+    display: grid;
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+    column-gap: 64px;
+    align-items: start;
+  }
+
+  .specs {
+    border-top: 1px solid var(--border);
+  }
+
+  .specs div {
+    display: grid;
+    grid-template-columns: 7.5em minmax(0, 1fr);
+    gap: 16px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.875rem;
+  }
+
+  .specs dt {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.75;
+    color: var(--fg-dim);
+  }
+
+  .specs dd {
+    color: var(--fg);
+  }
+
+  .specs .os {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+
+  .os > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .os-ico {
+    display: inline-flex;
+    color: var(--fg-muted);
+  }
+
+  .os-ico :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+
+  .specs a {
+    text-decoration: underline;
+    text-decoration-color: var(--underline);
+    text-underline-offset: 3px;
+    transition: text-decoration-color 0.15s ease, color 0.15s ease;
+  }
+
+  .specs a:hover {
+    color: var(--accent-bright);
+    text-decoration-color: currentColor;
+  }
+
+  /* ---- demo viewer ----------------------------------------------------- */
+
+  .viewer {
+    margin: auto;
+    padding: 0;
+    width: min(1280px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    border: 0;
+    border-radius: 12px;
+    background: #09090b;
+    color: #fafafa;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.14),
+      0 24px 64px rgba(0, 0, 0, 0.5);
+  }
+
+  .viewer::backdrop {
+    background: rgba(5, 7, 10, 0.82);
+  }
+
+  .viewer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 12px 10px 16px;
+    font-size: 0.875rem;
+  }
+
+  .viewer-close {
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #fafafa;
+    font: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .viewer-close:hover {
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .viewer-stage :global(.viewer-video) {
+    display: block;
+    width: 100%;
+    max-height: calc(100vh - 96px);
+    background: #000;
+  }
+
+  .play:focus-visible {
+    outline: 2px solid var(--accent-bright);
+    outline-offset: -2px;
+  }
+
+  .watch:focus-visible,
+  .viewer-close:focus-visible {
+    outline: 2px solid var(--accent-bright);
+    outline-offset: 2px;
+  }
+
+  /* ---- smaller screens ------------------------------------------------- */
+
+  @media (max-width: 900px) {
+    .own {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .spread {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas:
+        "head"
+        "graph"
+        "notes";
+    }
+
+    .spread-graph {
+      margin-top: 32px;
+    }
+
+    .tools {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .specs {
+      margin-top: 40px;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .pv-rise,
-    .pv-line,
-    .pv-node { animation: none; opacity: 1; stroke-dashoffset: 0; }
-    .pv-reveal { opacity: 1; transition: none; }
+    .hero-line,
+    .hero-node,
+    .rise {
+      animation: none;
+      opacity: 1;
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .wrap {
+      padding: 0 20px;
+    }
+
+    .hero {
+      padding: 12px 0 56px;
+    }
+
+    .hero-glow {
+      right: -30%;
+      width: 420px;
+      height: 360px;
+    }
+
+    .agents-list {
+      gap: 10px 18px;
+    }
+
+    .release {
+      max-width: 100%;
+      font-size: 0.8125rem;
+      text-align: left;
+    }
+
+    .hero-media {
+      width: calc(100vw - 32px);
+      margin-top: 32px;
+    }
+
+    .frame-swap {
+      aspect-ratio: 800 / 1000;
+    }
+
+    .frame .clip-wide {
+      display: none;
+    }
+
+    .frame .clip-tall {
+      display: block;
+    }
+
+    .hero-media figcaption {
+      padding: 0 4px;
+    }
+
+    .section {
+      padding: 64px 0;
+    }
+
+    .tools {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .g-row,
+    .g-fork,
+    .g-join {
+      padding-left: 44px;
+    }
+
+    .graph-panel {
+      padding: 14px 14px 12px 12px;
+    }
   }
 </style>

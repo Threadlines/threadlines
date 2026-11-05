@@ -163,7 +163,9 @@ before a changelog or PR is created. Remove an exclusion when the feature become
 publicly available.
 
 Review the copy in the PR, edit the generated changelog file as needed, and use
-the Vercel Preview check to inspect the rendered page. Merging the PR approves
+the Vercel Preview check to inspect the rendered page. Add a `headline` of a few
+words (for example `headline: Fleet`); the homepage's "New in" badge shows it, and
+falls back to "See what's new" without one. Merging the PR approves
 the marketing and GitHub release copy. The X draft links to the GitHub release
 so X renders GitHub's release card. It never posts to social media.
 
