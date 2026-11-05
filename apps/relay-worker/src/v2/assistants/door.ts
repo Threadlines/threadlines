@@ -197,7 +197,13 @@ export function currentAssistantSocket<
   for (const candidate of open) {
     if (current === null || newer(candidate, current)) current = candidate;
   }
-  return { current, replaced: open.filter((candidate) => candidate !== current) };
+  // Only what is surely older gets closed: a tie (two sockets from before
+  // generations, in one millisecond) can't tell which one is live.
+  const chosen = current;
+  return {
+    current,
+    replaced: chosen === null ? [] : open.filter((candidate) => newer(chosen, candidate)),
+  };
 }
 
 /** The computer's answer as the assistant gets it: its status, allowed headers and body. */

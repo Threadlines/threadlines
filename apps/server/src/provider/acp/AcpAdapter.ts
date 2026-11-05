@@ -1346,8 +1346,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   });
                 }),
               );
-              const resolved = yield* Deferred.await(answers);
-              pendingUserInputs.delete(requestId);
+              const resolved = yield* Deferred.await(answers).pipe(
+                Effect.ensuring(Effect.sync(() => pendingUserInputs.delete(requestId))),
+              );
               const turnId = yield* Deferred.await(shown);
               yield* offerRuntimeEvent({
                 type: "user-input.resolved",
@@ -1553,8 +1554,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                   }),
                 );
-                const resolved = yield* Deferred.await(decision);
-                pendingApprovals.delete(requestId);
+                // Gone however the wait ends (an interrupted handler included),
+                // or the quiet watch would hold the agent's turn open forever.
+                const resolved = yield* Deferred.await(decision).pipe(
+                  Effect.ensuring(Effect.sync(() => pendingApprovals.delete(requestId))),
+                );
                 const turnId = yield* Deferred.await(shown);
                 yield* offerRuntimeEvent(
                   makeAcpRequestResolvedEvent({

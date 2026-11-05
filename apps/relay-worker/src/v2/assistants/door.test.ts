@@ -206,6 +206,10 @@ describe("the assistants door with the computer there", () => {
     const after = { socketId: "after", connectedAt: T0, generation: 2 };
     expect(currentAssistantSocket([after, before])).toEqual({ current: after, replaced: [before] });
     expect(currentAssistantSocket([before, after])).toEqual({ current: after, replaced: [before] });
+    // Two from before generations in one millisecond: neither is surely stale, so neither is closed.
+    const tiedA = { socketId: "a", connectedAt: T0 };
+    const tiedB = { socketId: "b", connectedAt: T0 };
+    expect(currentAssistantSocket([tiedA, tiedB]).replaced).toEqual([]);
   });
 
   it("times out a computer that never answers with 504, and a late answer finds nothing", async () => {
