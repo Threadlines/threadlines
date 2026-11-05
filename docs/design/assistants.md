@@ -17,7 +17,7 @@ Always-on assistants run in their makers' clouds and work for the user around
 the clock:
 
 - Grok Bot (SpaceXAI, on Cursor's cloud);
-- dots (OpenAI);
+- Dots (OpenAI);
 - Muse (Meta, launched Sep 8);
 - Claude Duet (Anthropic, research preview since Oct 21).
 
@@ -40,7 +40,7 @@ per-assistant work is a listing.
 
 ## What the assistants accept (research, Oct 25-29)
 
-|                  | Grok Bot                                                                                                                                                                                                | dots                                                                                              | Muse                                                                                                                                  | Claude Duet                                                                                                                                                                                        |
+|                  | Grok Bot                                                                                                                                                                                                | Dots                                                                                              | Muse                                                                                                                                  | Claude Duet                                                                                                                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Adding tools** | Cursor marketplace plugins (its Connect Apps list), or a custom remote MCP server by https URL. Grok says that takes OAuth with DCR, a pre-registered client or static headers (not confirmed in docs). | Plugins and apps; custom MCP apps in developer mode.                                              | No URL field: Muse writes its own MCP client on its VM from a URL, an OpenAPI doc or a CLI. Bearer header; no OAuth for custom tools. | Claude Marketplace connectors and plugins; custom connectors. An early review says scheduled runs can't use custom connectors.                                                                     |
 | **Events**       | Routine webhook: a POST URL plus a `crsr_` Bearer key. The body becomes the run's input. No retries.                                                                                                    | MCP Events (OpenAI's): `events/*` on MCP 2026-07-28, Standard Webhooks to a callback it supplies. | Unknown. It can run crons on its VM.                                                                                                  | Unknown. It "checks connected accounts every few hours".                                                                                                                                           |
@@ -111,7 +111,7 @@ Sources:
    - Paste a URL, plus an Authorization header if the receiver needs one
      (Grok's `Bearer crsr_…`).
    - Pick needs you, finished and failed.
-   - Assistants with MCP Events (dots) subscribe on their own; their
+   - Assistants with MCP Events (Dots) subscribe on their own; their
      subscriptions show under their connection.
 
 Phones show nothing in v1 (see Open questions).
@@ -711,7 +711,7 @@ The shared payload (`data`), all written by Threadlines or named by the user:
   - 410 turns the target off, and Settings shows that;
   - repeated 401 or 403 shows as "refused by the receiver".
 
-### MCP Events (dots, ChatGPT Work)
+### MCP Events (Dots, ChatGPT Work)
 
 - **2026-07-28 only.** `server/discover` advertises `events`.
 - **`events/list`:**
@@ -844,7 +844,7 @@ with step 2):
     Change and Remove;
   - alert web addresses and subscriptions;
   - the address to paste;
-  - short setup notes for Grok, dots, Muse and Duet.
+  - short setup notes for Grok, Dots, Muse and Duet.
 - **The approval dialog:** the identity line, the browser line, three access
   levels, and one line explaining Work with all threads.
 - **The command palette:** "Connect an assistant".
@@ -959,7 +959,7 @@ with step 2):
    - `thread_answer`.
 4. **Alerts out:** targets, watermarks, webhooks and their Settings.
 5. **MCP Events:** `events/*`, subscriptions, callback checks. Live test with
-   dots, which needs an account that has it.
+   Dots, which needs an account that has it.
 6. **Listings:** the demo computer, the Cursor plugin, the Anthropic and
    OpenAI submissions, the docs pages.
 
@@ -1061,7 +1061,7 @@ turning into the dialog with its identity line, browser line and Work level.
 - a real Claude custom connector;
 - a real Grok custom connector;
 - Muse with a key;
-- dots for events, when an account allows it.
+- Dots for events, when an account allows it.
 
 ## Open questions for Will
 
@@ -1230,7 +1230,7 @@ Live checks (Oct 30), all with a stand-in agent and a throwaway home:
   command from another home with `connect --url --key` and `THREADLINES_URL`
   (projects, `thread start --wait`).
 
-Not yet: a real hosted assistant (Grok Bot, Claude, dots, Muse) against the
+Not yet: a real hosted assistant (Grok Bot, Claude, Dots, Muse) against the
 staging relay; a nicer address than the relay's own; the relay's
 production deploy and its secrets.
 
@@ -1877,7 +1877,7 @@ later). Where they disagree, ChatGPT is the client, so OpenAI's guide wins.
   survives restarts.
 - **Access:** same OAuth token as the tools; re-check access while the
   subscription lives and stop when it's revoked.
-- **Who uses it:** ChatGPT Work chats and dots (Pro 100/200/500, Business
+- **Who uses it:** ChatGPT Work chats and Dots (Pro 100/200/500, Business
   Premium; Enterprise if the admin turns on "Allow event-triggered scheduled
   tasks"). A custom MCP server is added as a plugin; its events show on the
   plugin page next to its tools.
@@ -1963,7 +1963,7 @@ the method only to word its offline answer. So no relay change.
   secret to copy: the secret is the assistant's.
 - Contracts: `AssistantAlertTarget` gains `addedBy` (null, or the connection's
   id and name) and `expiresAt`, both defaulting to null for older servers.
-- The app guide's assistants topic says what dots and ChatGPT Work can
+- The app guide's assistants topic says what Dots and ChatGPT Work can
   subscribe to.
 
 ### Tests

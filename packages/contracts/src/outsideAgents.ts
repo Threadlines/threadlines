@@ -246,7 +246,7 @@ export const AssistantAlertTarget = Schema.Struct({
   retrying: NonNegativeInt,
   createdAt: IsoDateTime,
   /**
-   * The assistant that subscribed it through MCP Events (dots, ChatGPT Work);
+   * The assistant that subscribed it through MCP Events (Dots, ChatGPT Work);
    * null: the user added it. A subscription's only action is Remove, and its
    * secret is the assistant's, never shown.
    */

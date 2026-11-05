@@ -97,7 +97,7 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
     >
       <SettingsSection
         place="connections.assistants"
-        description="Always-on assistants like Grok Bot, dots, Muse and Claude Duet can use Threadlines from their own cloud."
+        description="Always-on assistants like Grok Bot, Dots, Muse and Claude Duet can use Threadlines from their own cloud."
       >
         {snapshot === null || assistants === null ? (
           <div className={ROW_CLASS} role="status" aria-label="Loading assistants">

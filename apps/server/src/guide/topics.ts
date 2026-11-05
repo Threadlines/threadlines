@@ -142,7 +142,7 @@ It can work on your other computers linked to this one in Fleet too, through thi
   },
   {
     id: "assistants",
-    title: "Assistants: Grok Bot, dots, Muse and Claude Duet",
+    title: "Assistants: Grok Bot, Dots, Muse and Claude Duet",
     keywords: [
       "assistant",
       "always-on",

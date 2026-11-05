@@ -4,7 +4,7 @@ import { IsoDateTime, OutsideAgentConnectionId, TrimmedNonEmptyString } from "./
 
 /**
  * Assistants (docs/design/assistants.md): always-on agents in their makers'
- * clouds (Grok Bot, dots, Muse, Claude Duet) reach a user's computer through
+ * clouds (Grok Bot, Dots, Muse, Claude Duet) reach a user's computer through
  * the relay's public door. These are the shapes between the relay and the
  * computer. Credentials and sign-in codes are formatted in
  * `@threadlines/shared/assistantCredentials`.

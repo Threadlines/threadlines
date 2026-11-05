@@ -163,7 +163,7 @@ doesn't know gets `404` with code `unknown-host`, a wrong secret `401` with
 
 ## Assistants
 
-Always-on assistants in their makers' clouds (Grok Bot, dots, Muse, Claude
+Always-on assistants in their makers' clouds (Grok Bot, Dots, Muse, Claude
 Duet) reach a user's computer through a public door on the relay: MCP over
 HTTPS, with OAuth sign-in (docs/design/assistants.md). The relay routes,
 refuses and answers for an offline computer; the computer approves every

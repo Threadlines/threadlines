@@ -12,7 +12,7 @@ import { ClaudeAI, CursorIcon, GrokBotIcon, type Icon, MuseIcon, OpenAI } from "
 
 /**
  * Each assistant's own mark: Grok Bot's face (not xAI's mark, which is Grok
- * Build's), ChatGPT's knot (dots are ChatGPT's agents and sign in through it),
+ * Build's), ChatGPT's knot (Dots are ChatGPT's agents and sign in through it),
  * Claude's (Claude Duet signs in through claude.ai), Muse's and Cursor's.
  */
 const MARKS: Record<KnownAssistant, Icon> = {

@@ -765,7 +765,7 @@ const SECTIONS = [
     parent: "settings.connections",
     title: "Assistants",
     about:
-      "Always-on assistants (Grok Bot, dots, Muse, Claude Duet) using this computer from their own cloud, through the relay. Each can see threads, start threads or work with all threads, as far as you allow.",
+      "Always-on assistants (Grok Bot, Dots, Muse, Claude Duet) using this computer from their own cloud, through the relay. Each can see threads, start threads or work with all threads, as far as you allow.",
     route: { to: "/settings/connections", search: { section: "assistants" } },
     keywords: ["grok bot", "dots", "muse", "claude duet", "connector", "always-on", "mcp"],
     widensAgents: true,
