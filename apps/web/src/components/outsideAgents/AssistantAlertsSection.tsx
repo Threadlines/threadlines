@@ -352,7 +352,11 @@ function AlertTargetRow({
     <AlertRowLayout
       target={target}
       title={title}
-      line={[describeAssistantAlertKinds(target.kinds), projects, status.quiet]
+      line={[
+        describeAssistantAlertKinds(target.kinds, { finishedWhenAsked: target.finishedWhenAsked }),
+        projects,
+        status.quiet,
+      ]
         .filter((part) => part !== null)
         .join(" · ")}
       warning={status.warning}

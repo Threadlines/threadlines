@@ -144,7 +144,7 @@ describe("McpSessionRegistry", () => {
       registry.credentialFor({ sessionKey: THREAD, browser: true, room: true, guideOnly: true }),
     );
     expect([...((await Effect.runPromise(registry.resolve(main.token)))?.roomTools ?? [])]).toEqual(
-      ["app_guide", "settings_change"],
+      ["app_guide", "settings_change", "alert_assistants"],
     );
     const side = await Effect.runPromise(
       registry.credentialFor({
@@ -448,6 +448,7 @@ describe("MCP endpoints", () => {
             "room_diff",
           ]);
           expect("tools" in result.guideOnlyRoom ? result.guideOnlyRoom.tools : []).toEqual([
+            "alert_assistants",
             "app_guide",
             "settings_change",
           ]);
