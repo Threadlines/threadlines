@@ -32,7 +32,8 @@ interface SourceControlDiscoveryTargetInput {
   readonly environmentId?: EnvironmentId | null | undefined;
 }
 
-function readSourceControlServer(
+/** The server whose Git and GitHub tools act: the primary computer's, or the one named. */
+export function readSourceControlServer(
   input?: SourceControlDiscoveryTargetInput,
 ): LocalApi["server"] | null {
   const target = sourceControlDiscoveryTarget(input);

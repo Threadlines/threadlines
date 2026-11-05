@@ -1,0 +1,30 @@
+name: App Issue Labels
+
+# Reports from the app's "Report a problem" form are posted through GitHub's
+# API from the reporter's own account, so the bug form's labels don't apply,
+# and GitHub drops labels a reporter without push access tries to set. This
+# adds them to issues that end with the form's hidden line
+# (packages/shared/src/reportIssue.ts, REPORT_ISSUE_MARKER_PREFIX).
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    name: Label app reports
+    if: contains(github.event.issue.body, '<!-- threadlines:report-a-problem')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Add bug and needs-triage
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ["bug", "needs-triage"],
+            });

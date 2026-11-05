@@ -133,8 +133,6 @@ import {
 } from "../lib/projectPaths";
 import { waitForProjectInStore } from "../lib/waitForProject";
 import { getLatestThreadForProject } from "../lib/threadSort";
-import { openExternalUrl } from "../lib/externalLinks";
-import { reportIssueUrl } from "../lib/reportIssue";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -179,6 +177,7 @@ import { editorLabel } from "./EditorOpenOptions";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { openThreadMoveDialog } from "./ThreadMoveDialog";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { openReportProblemDialog } from "./ReportProblemDialog";
 import { openWhatsNewDialog } from "./WhatsNewDialog";
 import { APP_VERSION } from "../branding";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
@@ -1792,10 +1791,10 @@ export function OpenCommandPaletteDialog() {
     value: "action:report-problem",
     searchTerms: ["report a problem", "report", "bug", "issue", "feedback", "github", "crash"],
     title: "Report a problem",
-    description: "Open a GitHub form with your version and setup filled in",
+    description: "Write a bug report and post it to GitHub",
     icon: <MessageCircleWarningIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      openExternalUrl(reportIssueUrl());
+      openReportProblemDialog();
     },
   });
   actionItems.push({

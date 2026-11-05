@@ -1201,7 +1201,8 @@ const ROWS = [
     kind: "row",
     parent: "general.about",
     title: "Report a problem",
-    about: "Opens a GitHub form with your version and setup filled in, ready for you to finish.",
+    about:
+      "Write a bug report here and post it to GitHub from your own GitHub account, or finish it on GitHub's form.",
     keywords: ["bug", "issue", "feedback", "github", "help", "crash"],
   },
   {

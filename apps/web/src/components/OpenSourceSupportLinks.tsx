@@ -1,6 +1,6 @@
 import { HeartIcon, MessageCircleWarningIcon, StarIcon } from "lucide-react";
 
-import { reportIssueUrl } from "../lib/reportIssue";
+import { openReportProblemDialog } from "./ReportProblemDialog";
 import { riseDelay } from "./ThreadlinesFigure";
 
 interface OpenSourceSupportLinksProps {
@@ -32,15 +32,14 @@ export function OpenSourceSupportLinks({ delay = "0.34s" }: OpenSourceSupportLin
         <HeartIcon className="size-3.5" />
         Sponsor
       </a>
-      <a
+      <button
+        type="button"
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"
-        href={reportIssueUrl()}
-        target="_blank"
-        rel="noopener noreferrer"
+        onClick={openReportProblemDialog}
       >
         <MessageCircleWarningIcon className="size-3.5" />
         Report a problem
-      </a>
+      </button>
     </div>
   );
 }
