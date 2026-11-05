@@ -1129,7 +1129,7 @@ export const COMPARISONS: readonly Comparison[] = [
     ],
     pickThreadlines: [
       "You work on Windows or Linux.",
-      "You want an MIT-licensed app with no paid tier.",
+      "You want a free, MIT-licensed app.",
       "You want two agents in the same thread.",
       "You want phone alerts today.",
     ],
