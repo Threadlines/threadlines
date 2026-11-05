@@ -1,22 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { Command, CliError } from "effect/cli";
 import { parse as parseYaml } from "yaml";
 
-import { electronBuilderProductCode, wingetManifestsCommand } from "./winget-manifests.ts";
+import { wingetManifestsCommand } from "./winget-manifests.ts";
 
 const runCli = Command.runWith(wingetManifestsCommand, { version: "0.0.0" });
 const SHA256 = "b7d0479a548a785dbb5a7b2d5d403b489dcf1a78834c477c109ec4c5d30255a8";
-
-describe("electronBuilderProductCode", () => {
-  it("matches the uninstall id winget-pkgs lists for another electron-builder app", () => {
-    // Obsidian.Obsidian 1.15.0 in microsoft/winget-pkgs, app id md.obsidian.
-    assert.equal(electronBuilderProductCode("md.obsidian"), "bd400747-f0c1-5638-a859-982036102edf");
-  });
-});
 
 it.layer(NodeServices.layer)("winget-manifests cli", (it) => {
   it.effect("writes one package version in winget-pkgs' layout", () =>
@@ -71,6 +64,9 @@ it.layer(NodeServices.layer)("winget-manifests cli", (it) => {
       );
       const installer = manifests.get("Threadlines.Threadlines.installer.yaml");
       assert.equal(installer?.ReleaseDate, "2026-11-06");
+      // The uninstall entry every install so far registered. If it changed,
+      // winget would stop matching installs to the package.
+      assert.equal(installer?.ProductCode, "a94f47f8-9cf3-5101-967f-32696ecbfc60");
       assert.deepStrictEqual(installer?.Installers, [
         {
           Architecture: "x64",

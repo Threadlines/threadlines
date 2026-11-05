@@ -6,8 +6,6 @@
  * stable release. The listing text below is what `winget search` and
  * `winget show` print, so it follows the copy rules for the site.
  */
-import { createHash } from "node:crypto";
-
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -15,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/cli";
+import { UUID } from "builder-util-runtime";
 import { stringify as stringifyYaml } from "yaml";
 
 import { APP_THREAD_LINK_SCHEMES } from "@threadlines/shared/appThreadLinks";
@@ -25,8 +24,8 @@ const WINGET_MANIFEST_VERSION = "1.28.0";
 const RELEASES_URL = "https://github.com/Threadlines/threadlines/releases/download";
 const SITE_URL = "https://www.threadlines.dev";
 
-/** electron-builder names its NSIS uninstall entry with a v5 UUID of the app id in this namespace. */
-const ELECTRON_BUILDER_UUID_NAMESPACE = "50e065bc-3134-11e6-9bab-38c9862bdaf3";
+/** The namespace electron-builder's NSIS target names install entries in (app-builder-lib NsisTarget). */
+const ELECTRON_BUILDER_NSIS_NAMESPACE = UUID.parse("50e065bc-3134-11e6-9bab-38c9862bdaf3");
 
 export interface WingetRelease {
   /** Plain stable version, like `0.9.0`. */
@@ -43,23 +42,13 @@ export interface WingetManifestFile {
 }
 
 /**
- * The uninstall entry the Windows installer registers for `appId`. winget
+ * The uninstall entry the Windows installer registers for `appId`, computed
+ * with electron-builder's own UUID code the way its NSIS target does. winget
  * matches an existing install to the package by it, so `winget upgrade` finds
  * installs that came from the website too.
  */
-export function electronBuilderProductCode(appId: string): string {
-  const namespace = Buffer.from(ELECTRON_BUILDER_UUID_NAMESPACE.replaceAll("-", ""), "hex");
-  const hash = createHash("sha1").update(namespace).update(appId, "utf8").digest();
-  hash.writeUInt8((hash.readUInt8(6) & 0x0f) | 0x50, 6);
-  hash.writeUInt8((hash.readUInt8(8) & 0x3f) | 0x80, 8);
-  const hex = hash.subarray(0, 16).toString("hex");
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join("-");
+function electronBuilderProductCode(appId: string): string {
+  return String(UUID.v5(appId, ELECTRON_BUILDER_NSIS_NAMESPACE));
 }
 
 function manifestFile(
