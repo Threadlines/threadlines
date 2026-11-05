@@ -420,8 +420,16 @@ export function readThreadPage(
     readonly limit?: number | undefined;
     readonly messageId?: string | undefined;
     readonly offset?: number | undefined;
+    /**
+     * What a reader is shown of each message's text, applied to the whole text
+     * before it is clipped or cut into parts (the assistants door scrubs the
+     * home folder), so offsets and lengths are of what it reads.
+     */
+    readonly shownText?: ((text: string) => string) | undefined;
   },
 ): Pick<ThreadReadResult, "messages" | "next" | "more"> & { readonly missing?: true } {
+  const shown = (text: string) =>
+    input.shownText === undefined ? text.trim() : input.shownText(text.trim());
   const entries = roomAgentEntries(target, modelLabel(target.modelSelection, input.providers));
   const remoteOrigin = target.remoteOrigin ?? null;
   const names = {
@@ -463,7 +471,7 @@ export function readThreadPage(
     const message = readable[index];
     if (message === undefined) return { messages: [], next: null, more: false, missing: true };
     return {
-      messages: [entryOf(message, messagePart(message.text.trim(), input.offset))],
+      messages: [entryOf(message, messagePart(shown(message.text), input.offset))],
       next: sequenceOf(message),
       more: index < readable.length - 1,
     };
@@ -486,7 +494,7 @@ export function readThreadPage(
   const last = page.at(-1);
   return {
     messages: page.map((message) => {
-      const clipped = clipMessageText(message.text.trim());
+      const clipped = clipMessageText(shown(message.text));
       return entryOf(message, {
         text: clipped.text,
         ...(clipped.clipped ? { clipped: true, length: clipped.length } : {}),

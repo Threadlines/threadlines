@@ -584,7 +584,8 @@ schema has no such fields, and the Normalizer refuses them.
   - The thread's `outsideOrigin` is never copied onto a fork or an imported
     thread. Ownership is local; who wrote what is history.
 
-No queued outside messages exist, so the follow-up queue needs no change.
+An outside message that waits in the follow-up queue (Nov 4, "Sends") carries
+`fromOutside` there too, and keeps it when it is sent.
 
 **Labels.** `outsideOrigin` keeps which known assistant it was (`assistant`)
 when Threadlines could place it. The sidebar row leads the title with that

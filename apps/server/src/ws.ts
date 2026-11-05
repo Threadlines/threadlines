@@ -65,6 +65,7 @@ import {
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
   WsOwnerRequiredError,
+  OutsideAgentError,
 } from "@threadlines/contracts";
 import type { AuthClientMetadata } from "@threadlines/contracts";
 import { clamp } from "effect/Number";
@@ -163,6 +164,7 @@ import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentit
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
+import { OtherComputers } from "./outsideAgents/OtherComputers.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
@@ -463,6 +465,11 @@ const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
       const requireOwner = ownerOnly(role);
       const outsideAgents = yield* OutsideAgentSignIn;
       const assistantAlerts = yield* AssistantAlerts;
+      // Other computers its agents may use (docs/design/assistants.md, "Other computers").
+      const otherComputers = yield* Effect.serviceOption(OtherComputers);
+      const noOtherComputers = new OutsideAgentError({
+        detail: "This computer has no linked computers.",
+      });
       return WsOutsideAgentsRpcGroup.of({
         // Outside agents (docs/design/outside-agents.md): managing who may
         // use this computer is owner only, like the device list.
@@ -529,6 +536,52 @@ const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
             WS_METHODS.outsideAgentsRemove,
             requireOwner(WS_METHODS.outsideAgentsRemove).pipe(
               Effect.andThen(outsideAgents.remove(input)),
+              // Its linked computers forget it too, as far as they can be told now.
+              Effect.tap(() =>
+                Option.isSome(otherComputers)
+                  ? otherComputers.value
+                      .forgetEverywhere(input.connectionId)
+                      .pipe(Effect.forkDetach)
+                  : Effect.void,
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReach]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReach,
+            requireOwner(WS_METHODS.outsideAgentsReach).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? Effect.map(otherComputers.value.reach(input.connectionId), (computers) => ({
+                      computers,
+                    }))
+                  : Effect.succeed({ computers: [] }),
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReachAsk]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReachAsk,
+            requireOwner(WS_METHODS.outsideAgentsReachAsk).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? otherComputers.value.ask(input.connectionId, input.environmentId)
+                  : Effect.fail(noOtherComputers),
+              ),
+            ),
+            { "rpc.aggregate": "outsideAgents" },
+          ),
+        [WS_METHODS.outsideAgentsReachRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.outsideAgentsReachRemove,
+            requireOwner(WS_METHODS.outsideAgentsReachRemove).pipe(
+              Effect.andThen(
+                Option.isSome(otherComputers)
+                  ? otherComputers.value.remove(input.connectionId, input.environmentId)
+                  : Effect.fail(noOtherComputers),
+              ),
             ),
             { "rpc.aggregate": "outsideAgents" },
           ),

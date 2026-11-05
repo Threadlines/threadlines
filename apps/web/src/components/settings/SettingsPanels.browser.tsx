@@ -23,7 +23,9 @@ import {
   type OutsideAgentAssistantSignIn,
   type OutsideAgentAssistantsState,
   type OutsideAgentConnection,
+  type OutsideAgentLinkedAsk,
   type OutsideAgentPendingRequest,
+  type OutsideAgentReach,
   type OutsideAgentsSnapshot,
   ProjectId,
   ProviderDriverKind,
@@ -491,6 +493,9 @@ const outsideAgentsHarness = vi.hoisted(() => {
     resumeRequests: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    reach: vi.fn(),
+    reachAsk: vi.fn(),
+    reachRemove: vi.fn(),
     assistantCode: vi.fn(),
     assistantCodeCancel: vi.fn(),
     createKey: vi.fn(),
@@ -508,6 +513,8 @@ const outsideAgentsHarness = vi.hoisted(() => {
     reset() {
       snapshot = null;
       listeners.clear();
+      // No linked computers unless a test says so.
+      client.reach.mockReset().mockResolvedValue({ computers: [] });
       for (const call of [
         client.approve,
         client.deny,
@@ -515,6 +522,8 @@ const outsideAgentsHarness = vi.hoisted(() => {
         client.resumeRequests,
         client.update,
         client.remove,
+        client.reachAsk,
+        client.reachRemove,
         client.assistantCode,
         client.assistantCodeCancel,
         client.createKey,
@@ -5455,11 +5464,33 @@ describe("Agents outside Threadlines", () => {
       kind: "local",
       signIn: "oauth",
       identity: null,
+      via: null,
       access: "start",
       maxRuntimeMode: "approval-required",
       projectIds: [WEB],
       createdAt: new Date(Date.now() - 86_400_000).toISOString(),
       lastUsedAt: new Date(Date.now() - 2 * 60_000 - 5_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  /** The Mac, where an agent is connected, asking for it to use this computer too. */
+  function linkedAsk(
+    id: string,
+    overrides: Partial<OutsideAgentLinkedAsk> = {},
+  ): OutsideAgentLinkedAsk {
+    return {
+      requestId: OutsideAgentRequestId.make(id),
+      name: "Grok Bot",
+      givenName: null,
+      assistant: "grok-bot",
+      kind: "assistant",
+      fromEnvironmentId: EnvironmentId.make("environment-mac"),
+      fromComputer: "Mac",
+      requestedAccess: "start",
+      maxRuntimeMode: "auto",
+      createdAt: new Date(Date.now() - 5_000).toISOString(),
+      expiresAt: new Date(Date.now() + 295_000).toISOString(),
       ...overrides,
     };
   }
@@ -5519,6 +5550,7 @@ describe("Agents outside Threadlines", () => {
       address: ADDRESS,
       connections: [],
       pending: [],
+      linkedAsks: [],
       quietUntil: null,
       assistants: { status: "off", address: null, code: null, signIns: [], alertTargets: [] },
       ...parts,
@@ -5750,6 +5782,204 @@ describe("Agents outside Threadlines", () => {
     await expect
       .element(page.getByTestId(`outside-agent-row-${claude.connectionId}`))
       .not.toBeInTheDocument();
+  });
+
+  it("lets an agent connected on a linked computer in here, never with more than it has there", async () => {
+    outsideAgentsHarness.emit(
+      snapshot({ linkedAsks: [linkedAsk("ask-mac", { requestedAccess: "start" })] }),
+    );
+    outsideAgentsHarness.client.approve.mockResolvedValue(
+      assistantConnection("connection-grok-via-mac"),
+    );
+    await mountConnectionsWithHost();
+
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByRole("heading", { name: "Grok Bot wants to use this computer too" }))
+      .toBeVisible();
+    await expect.element(dialog.getByTestId("assistant-mark-grok-bot")).toBeInTheDocument();
+    await expect
+      .element(dialog.getByTestId("outside-agent-identity"))
+      .toHaveTextContent(
+        "It's connected to Threadlines on Mac. Allowing it here lets it work on this computer through Mac.",
+      );
+    // Its sign-in was on Mac: nothing here to pick or match.
+    await expect.element(dialog.getByTestId("outside-agent-assistant")).not.toBeInTheDocument();
+    await expect.element(dialog.getByTestId("outside-agent-code")).not.toBeInTheDocument();
+    // It may start threads on Mac, not work with all of them.
+    await expect
+      .element(dialog.getByTestId("outside-agent-access-work"))
+      .toHaveAttribute("aria-disabled", "true");
+    await expect.element(dialog.getByText("It can't do this on Mac.")).toBeVisible();
+
+    await dialog.getByTestId("outside-agent-access-start").click();
+    await expect
+      .element(dialog.getByTestId("outside-agent-ceiling-limit"))
+      .toHaveTextContent("It has at most Auto on Mac.");
+    await dialog.getByTestId("outside-agent-ceiling").click();
+    await expect
+      .element(page.getByRole("option", { name: "Full access" }))
+      .toHaveAttribute("aria-disabled", "true");
+    await page.getByRole("option", { name: "Auto", exact: true }).click();
+    await dialog.getByTestId("outside-agent-allow").click();
+
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.approve).toHaveBeenCalledWith({
+        requestId: "ask-mac",
+        access: "start",
+        maxRuntimeMode: "auto",
+        projectIds: null,
+        assistant: "grok-bot",
+      });
+    });
+    await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+  });
+
+  it("says which linked computer brings a connection, and keeps its Change to this computer", async () => {
+    const grok = assistantConnection("connection-grok-via-mac", {
+      signIn: "linked",
+      identity: null,
+      via: {
+        environmentId: EnvironmentId.make("environment-mac"),
+        computer: "Mac",
+        connectionId: OutsideAgentConnectionId.make("connection-grok"),
+      },
+      access: "start",
+      lastUsedAt: new Date(Date.now() - 2 * 60_000 - 5_000).toISOString(),
+    });
+    const muse = assistantConnection("connection-muse", {
+      name: "Muse",
+      assistant: "muse",
+      signIn: "key",
+      identity: null,
+    });
+    outsideAgentsHarness.emit(
+      snapshot({ connections: [grok, muse], assistants: assistantsState() }),
+    );
+    await mountConnectionsWithHost();
+
+    const row = page.getByTestId(`outside-agent-row-${grok.connectionId}`);
+    await expect
+      .element(row)
+      .toMatchTextContent("Through Mac · Starts threads · Supervised · All projects · Used 2m ago");
+    await row.getByRole("button", { name: "Change", exact: true }).click();
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByTestId("outside-agent-identity"))
+      .toHaveTextContent(
+        "It's connected to Threadlines on Mac. It gets the change on its next call.",
+      );
+    // Mac names it, and its own linked computers are Mac's to ask.
+    await expect.element(dialog.getByTestId("outside-agent-assistant")).not.toBeInTheDocument();
+    await expect
+      .element(dialog.getByTestId("outside-agent-other-computers"))
+      .not.toBeInTheDocument();
+    expect(outsideAgentsHarness.client.reach).not.toHaveBeenCalled();
+  });
+
+  it("shows where else a connection may work, and asks, cancels and removes there", async () => {
+    const grok = assistantConnection("connection-grok", { access: "start" });
+    const reach = (
+      id: string,
+      computer: string,
+      state: OutsideAgentReach["state"],
+      parts: Partial<OutsideAgentReach> = {},
+    ): OutsideAgentReach => ({
+      environmentId: EnvironmentId.make(id),
+      computer,
+      state,
+      ...parts,
+    });
+    const windows = reach("environment-windows", "Windows PC", "none");
+    const studio = reach("environment-studio", "Studio", "allowed", {
+      access: "start",
+      maxRuntimeMode: "approval-required",
+      projectCount: 2,
+    });
+    const laptop = reach("environment-laptop", "Laptop", "asked");
+    outsideAgentsHarness.client.reach.mockResolvedValue({
+      computers: [
+        windows,
+        studio,
+        laptop,
+        reach("environment-old", "Old Mac mini", "unsupported"),
+        reach("environment-travel", "Travel laptop", "offline"),
+      ],
+    });
+    outsideAgentsHarness.client.reachAsk.mockResolvedValue({ ...windows, state: "asked" });
+    outsideAgentsHarness.client.reachRemove.mockImplementation(
+      async (input: { environmentId: EnvironmentId }) => {
+        if (input.environmentId === laptop.environmentId) {
+          throw new Error("Laptop didn't answer.");
+        }
+        return reach("environment-studio", "Studio", "none");
+      },
+    );
+    outsideAgentsHarness.emit(snapshot({ connections: [grok], assistants: assistantsState() }));
+    await mountConnectionsWithHost();
+
+    await page
+      .getByTestId(`outside-agent-row-${grok.connectionId}`)
+      .getByRole("button", { name: "Change", exact: true })
+      .click();
+    const section = page.getByTestId("outside-agent-other-computers");
+    const row = (environmentId: EnvironmentId) =>
+      section.getByTestId(`outside-agent-reach-${environmentId}`);
+    await expect
+      .element(section)
+      .toMatchTextContent(
+        "Let it work on your linked computers too. Each one asks you there first.",
+      );
+    await expect.element(row(windows.environmentId)).toMatchTextContent("Windows PCNot allowed");
+    await expect
+      .element(row(studio.environmentId))
+      .toMatchTextContent("Starts threads · Supervised · 2 projects");
+    await expect
+      .element(row(laptop.environmentId))
+      .toMatchTextContent("Waiting for you to allow it on Laptop");
+    await expect
+      .element(row(EnvironmentId.make("environment-old")))
+      .toMatchTextContent("Update Threadlines on Old Mac mini to use this.");
+    await expect
+      .element(row(EnvironmentId.make("environment-travel")))
+      .toMatchTextContent("Offline. Try again when it's on.");
+    await expect
+      .element(row(EnvironmentId.make("environment-travel")).getByRole("button"))
+      .not.toBeInTheDocument();
+    expect(outsideAgentsHarness.client.reach).toHaveBeenCalledWith({
+      connectionId: grok.connectionId,
+    });
+    await row(windows.environmentId).getByRole("button", { name: "Ask" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.reachAsk).toHaveBeenCalledWith({
+        connectionId: grok.connectionId,
+        environmentId: windows.environmentId,
+      });
+    });
+    await expect
+      .element(row(windows.environmentId))
+      .toMatchTextContent("Waiting for you to allow it on Windows PC");
+    await expect
+      .element(row(windows.environmentId).getByRole("button", { name: "Cancel" }))
+      .toBeVisible();
+
+    await row(studio.environmentId).getByRole("button", { name: "Remove" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.reachRemove).toHaveBeenCalledWith({
+        connectionId: grok.connectionId,
+        environmentId: studio.environmentId,
+      });
+    });
+    await expect.element(row(studio.environmentId)).toMatchTextContent("Not allowed");
+
+    // A computer that doesn't answer says so, and its row stays as it was.
+    await row(laptop.environmentId).getByRole("button", { name: "Cancel" }).click();
+    await expect
+      .element(section.getByTestId("outside-agent-reach-error"))
+      .toHaveTextContent("Laptop didn't answer.");
+    await expect
+      .element(row(laptop.environmentId))
+      .toMatchTextContent("Waiting for you to allow it on Laptop");
   });
 
   it("installs the desktop app's threadlines command over another copy, and Cancel on Remove keeps it", async () => {

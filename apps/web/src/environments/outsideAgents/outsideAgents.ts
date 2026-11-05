@@ -7,7 +7,10 @@
  * Assistants (docs/design/assistants.md) come in through the relay but are
  * approved here the same way: the same stream carries their door's state,
  * the sign-in code showing, their sign-ins waiting and the web addresses
- * their alerts go to (without secrets).
+ * their alerts go to (without secrets). Linked computers' asks for their own
+ * agents to use this computer too wait in it beside the sign-ins
+ * (docs/design/assistants.md, "Other computers"); the other way round, a
+ * connection here asks a linked computer through `outsideAgents.reach*`.
  *
  * The stream stays open while anything holds it (useOutsideAgentsSync): the
  * app-wide host that shows the approval dialog, and Settings' Agents and
@@ -24,6 +27,8 @@ import type {
   OutsideAgentConnectionId,
   OutsideAgentCreateKeyInput,
   OutsideAgentCreateKeyResult,
+  OutsideAgentReach,
+  OutsideAgentReachInput,
   OutsideAgentRequestId,
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
@@ -167,7 +172,7 @@ export function describeOutsideAgentFailure(error: unknown, fallback: string): s
   return describeComputerLinkFailure(error, fallback);
 }
 
-/** The snapshot without one waiting sign-in, a local agent's or an assistant's. */
+/** The snapshot without one waiting sign-in: a local agent's, an assistant's or a linked computer's ask. */
 function withoutSignIn(
   snapshot: OutsideAgentsSnapshot,
   requestId: OutsideAgentRequestId,
@@ -175,6 +180,7 @@ function withoutSignIn(
   return {
     ...snapshot,
     pending: snapshot.pending.filter((request) => request.requestId !== requestId),
+    linkedAsks: snapshot.linkedAsks.filter((ask) => ask.requestId !== requestId),
     assistants: {
       ...snapshot.assistants,
       signIns: snapshot.assistants.signIns.filter((signIn) => signIn.requestId !== requestId),
@@ -185,6 +191,8 @@ function withoutSignIn(
 /**
  * Allows a waiting sign-in with what the user picked; the agent's browser
  * page (or, for an assistant, the page that typed the code) then finishes it.
+ * A linked computer's ask is answered the same way, and its agent's next call
+ * through that computer gets in.
  */
 export async function approveOutsideAgent(
   input: OutsideAgentApproveInput,
@@ -199,12 +207,16 @@ export async function denyOutsideAgent(requestId: OutsideAgentRequestId): Promis
   patchSnapshot((snapshot) => withoutSignIn(snapshot, requestId));
 }
 
-/** Denies every waiting sign-in, of both kinds, and turns new ones away for a while. */
+/**
+ * Denies every waiting sign-in, of both kinds, and linked computers' asks,
+ * and turns new sign-ins away for a while.
+ */
 export async function denyAllOutsideAgents(): Promise<void> {
   await readClient().denyAll();
   patchSnapshot((snapshot) => ({
     ...snapshot,
     pending: [],
+    linkedAsks: [],
     assistants: { ...snapshot.assistants, signIns: [] },
   }));
 }
@@ -238,6 +250,28 @@ export async function removeOutsideAgent(connectionId: OutsideAgentConnectionId)
       (connection) => connection.connectionId !== connectionId,
     ),
   }));
+}
+
+/**
+ * The linked computers a connection here may use, or could be asked to
+ * (docs/design/assistants.md, "Other computers"). The server asks each one
+ * live, so nothing here keeps the answer: the Change dialog asks on open.
+ */
+export async function readOutsideAgentReach(
+  connectionId: OutsideAgentConnectionId,
+): Promise<ReadonlyArray<OutsideAgentReach>> {
+  const { computers } = await readClient().reach({ connectionId });
+  return computers;
+}
+
+/** Asks a linked computer's user to let a connection here use it too; their answer is theirs, there. */
+export function askOutsideAgentReach(input: OutsideAgentReachInput): Promise<OutsideAgentReach> {
+  return readClient().reachAsk(input);
+}
+
+/** Takes a linked computer away from a connection here, or drops an ask still waiting there. */
+export function removeOutsideAgentReach(input: OutsideAgentReachInput): Promise<OutsideAgentReach> {
+  return readClient().reachRemove(input);
 }
 
 /**

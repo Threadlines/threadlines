@@ -1,4 +1,4 @@
-import { OutsideAgentConnectionId, ProjectId } from "@threadlines/contracts";
+import { EnvironmentId, OutsideAgentConnectionId, ProjectId } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -34,6 +34,8 @@ const row: OutsideAgentConnectionRow = {
   refresh: null,
   keyHash: null,
   assistantPick: null,
+  via: null,
+  viaLinkDeviceId: null,
   createdAt: "2026-10-30T10:00:00.000Z",
   lastUsedAt: null,
   removedAt: null,
@@ -70,6 +72,46 @@ it.layer(OutsideAgentConnectionRepositoryLive.pipe(Layer.provideMerge(SqlitePers
         yield* sql`UPDATE outside_agent_connections SET access = 'start' WHERE connection_id = ${CONNECTION}`;
         assert.strictEqual(yield* access(), "start");
       }),
+    );
+
+    it.effect(
+      "keeps an agent from a linked computer apart, gone with its link, and never owed to the relay",
+      () =>
+        Effect.gen(function* () {
+          const repo = yield* OutsideAgentConnectionRepository;
+          const viaId = OutsideAgentConnectionId.make("connection-via");
+          const there = OutsideAgentConnectionId.make("connection-on-mac");
+          yield* repo.insertReplacing({
+            ...row,
+            connectionId: viaId,
+            signIn: "linked",
+            clientIdHash: "via:device-mac:connection-on-mac",
+            resource: "linked",
+            via: {
+              environmentId: EnvironmentId.make("env-mac"),
+              computer: "Mac",
+              connectionId: there,
+            },
+            viaLinkDeviceId: "device-mac",
+          });
+          const found = yield* repo.findVia({ linkDeviceId: "device-mac", viaConnectionId: there });
+          assert.deepStrictEqual(Option.getOrThrow(found).via, {
+            environmentId: EnvironmentId.make("env-mac"),
+            computer: "Mac",
+            connectionId: there,
+          });
+          assert.deepStrictEqual(
+            yield* repo.removeVia({ linkDeviceId: "device-mac", now: "2026-10-30T11:00:00.000Z" }),
+            [viaId],
+          );
+          assert.isTrue(
+            Option.isNone(
+              yield* repo.findVia({ linkDeviceId: "device-mac", viaConnectionId: there }),
+            ),
+          );
+          // An assistant's own row is owed to the relay once removed; this one never signed in there.
+          assert.deepStrictEqual(yield* repo.pendingRevocations(10), []);
+        }),
     );
   },
 );

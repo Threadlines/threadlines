@@ -752,6 +752,10 @@ describe("outside agents' connections", () => {
         assert.deepStrictEqual(yield* server.connections.grant(connection!.connectionId), {
           connectionId: connection!.connectionId,
           name: "Codex",
+          givenName: null,
+          assistant: null,
+          kind: "local",
+          linked: false,
           access: "see",
           maxRuntimeMode: "auto",
           projectIds: [ProjectId.make("project-1")],

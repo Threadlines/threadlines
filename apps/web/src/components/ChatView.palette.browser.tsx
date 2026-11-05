@@ -119,6 +119,7 @@ describe("ChatView (full app): command palette and search", () => {
           expiresAt: new Date(Date.now() + 295_000).toISOString(),
         },
       ],
+      linkedAsks: [],
       quietUntil: null,
       assistants: {
         status: "ready",

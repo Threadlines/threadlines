@@ -36,6 +36,7 @@ import { parseAssistantCredential } from "@threadlines/shared/assistantCredentia
 import packageJson from "../../package.json" with { type: "json" };
 import {
   AgentsTool,
+  ComputersTool,
   OutsideThreadReadTool,
   OutsideThreadSendTool,
   OutsideThreadStartTool,
@@ -79,6 +80,7 @@ import {
   exitCodeForOutcome,
   exitCodeForThread,
   formatAgents,
+  formatComputers,
   formatProjects,
   formatStart,
   formatStop,
@@ -114,7 +116,22 @@ interface SharedFlags {
   readonly baseDir: Option.Option<string>;
   readonly dev: boolean;
   readonly json: boolean;
+  /** Another of the user's computers the command works on (`--computer`). */
+  readonly computer?: Option.Option<string>;
 }
+
+const computerFlag = Flag.String("computer").pipe(
+  Flag.withDescription(
+    "Do it on another of your computers linked to this one (a name from threadlines computers).",
+  ),
+  Flag.optional,
+);
+
+/** The `computer` a tool call goes with: the flag's, or none for the computer it's connected to. */
+const on = (flags: Pick<SharedFlags, "computer">) =>
+  flags.computer !== undefined && Option.isSome(flags.computer)
+    ? { computer: flags.computer.value }
+    : {};
 
 const threadIdArgument = Argument.String("thread").pipe(
   Argument.withDescription("The thread's id, from thread start or thread list."),
@@ -223,11 +240,19 @@ const withClient = <A, E, R>(
     );
   }).pipe(endOnConnectError);
 
-/** The request id a change goes with: the flag's, or (an assistants door requires one) a fresh one. */
-const requestIdFor = (requestId: Option.Option<string>, target: ConnectTarget) =>
+/**
+ * The request id a change goes with: the flag's, or a fresh one where it may
+ * be retried (an assistants door requires one; another computer's answer can
+ * be lost on the way back).
+ */
+const requestIdFor = (
+  requestId: Option.Option<string>,
+  target: ConnectTarget,
+  flags?: Pick<SharedFlags, "computer">,
+) =>
   Option.isSome(requestId)
     ? { requestId: requestId.value }
-    : target.remote
+    : target.remote || (flags !== undefined && "computer" in on(flags))
       ? { requestId: crypto.randomUUID() }
       : {};
 
@@ -281,12 +306,22 @@ const readText = (value: Option.Option<string>, what: string) =>
  * One message's whole text: thread_read by its id, part after part. The read
  * with the whole text as its one message, or the answer that stopped it.
  */
-const readWholeMessage = (client: ConnectClient, threadId: string, messageId: string) =>
+const readWholeMessage = (
+  client: ConnectClient,
+  flags: Pick<SharedFlags, "computer">,
+  threadId: string,
+  messageId: string,
+) =>
   Effect.gen(function* () {
     let text = "";
     let offset = 0;
     while (true) {
-      const result = yield* client.call(OutsideThreadReadTool, { threadId, messageId, offset });
+      const result = yield* client.call(OutsideThreadReadTool, {
+        threadId,
+        messageId,
+        offset,
+        ...on(flags),
+      });
       const message = result.outcome === "ok" ? result.messages[0] : undefined;
       if (message === undefined) return result;
       text += message.text;
@@ -305,12 +340,17 @@ const readWholeMessage = (client: ConnectClient, threadId: string, messageId: st
   });
 
 /** A finished wait with its whole reply, read in parts when it came clipped. */
-const withWholeReply = (client: ConnectClient, threadId: string, result: ThreadWaitResult) =>
+const withWholeReply = (
+  client: ConnectClient,
+  flags: Pick<SharedFlags, "computer">,
+  threadId: string,
+  result: ThreadWaitResult,
+) =>
   Effect.gen(function* () {
     if (result.replyLength === undefined || typeof result.replyMessageId !== "string") {
       return result;
     }
-    const read = yield* readWholeMessage(client, threadId, result.replyMessageId);
+    const read = yield* readWholeMessage(client, flags, threadId, result.replyMessageId);
     const whole = read.outcome === "ok" ? read.messages[0]?.text : undefined;
     if (whole === undefined) return result;
     const { replyLength: _length, ...rest } = result;
@@ -355,6 +395,7 @@ const waitForThread = (
         threadId,
         seconds,
         ...(messageId !== undefined ? { messageId } : {}),
+        ...on(flags),
       });
       const answered =
         last === null
@@ -383,7 +424,7 @@ const waitForThread = (
         continue;
       }
       if (reply.outcome !== "done") return yield* answer(flags, reply, formatWait);
-      const done = yield* withWholeReply(client, threadId, reply);
+      const done = yield* withWholeReply(client, flags, threadId, reply);
       yield* show(flags, done, formatWait(done));
       const code = exitCodeForThread(reply.thread);
       if (code !== EXIT.done) return yield* new CommandExit({ code });
@@ -399,7 +440,7 @@ const resolveAgent = (client: ConnectClient, flags: SharedFlags, raw: string) =>
   Effect.gen(function* () {
     const slash = raw.indexOf("/");
     if (slash > 0) return { instanceId: raw.slice(0, slash), model: raw.slice(slash + 1) };
-    const agents = yield* client.call(AgentsTool, { instanceId: raw });
+    const agents = yield* client.call(AgentsTool, { instanceId: raw, ...on(flags) });
     if (agents.outcome !== "ok")
       return yield* answer(flags, agents, formatAgents).pipe(Effect.as(null));
     const agent = agents.agents.find((candidate) => candidate.instanceId === raw);
@@ -541,23 +582,42 @@ export const disconnectCommand = Command.make("disconnect", sharedFlags).pipe(
   ),
 );
 
-export const projectsCommand = Command.make("projects", sharedFlags).pipe(
+export const computersCommand = Command.make("computers", sharedFlags).pipe(
+  Command.withDescription(
+    "List your computers this command may work on: this one, and the ones linked to it that allowed it.",
+  ),
+  Command.withHandler((flags) =>
+    withClient(flags, (client) =>
+      client
+        .call(ComputersTool, {})
+        .pipe(Effect.flatMap((result) => answer(flags, result, formatComputers))),
+    ),
+  ),
+);
+
+export const projectsCommand = Command.make("projects", {
+  ...sharedFlags,
+  computer: computerFlag,
+}).pipe(
   Command.withDescription("List the projects this command may use."),
   Command.withHandler((flags) =>
     withClient(flags, (client) =>
       client
-        .call(ProjectsTool, {})
+        .call(ProjectsTool, on(flags))
         .pipe(Effect.flatMap((result) => answer(flags, result, formatProjects))),
     ),
   ),
 );
 
-export const agentsCommand = Command.make("agents", sharedFlags).pipe(
+export const agentsCommand = Command.make("agents", {
+  ...sharedFlags,
+  computer: computerFlag,
+}).pipe(
   Command.withDescription("List the agents and models a thread can run on, and the default."),
   Command.withHandler((flags) =>
     withClient(flags, (client) =>
       client
-        .call(AgentsTool, {})
+        .call(AgentsTool, on(flags))
         .pipe(Effect.flatMap((result) => answer(flags, result, formatAgents))),
     ),
   ),
@@ -570,6 +630,7 @@ const statusWord = (choice: (typeof STATUS_CHOICES)[number]): AgentThreadStatusW
 
 const threadListCommand = Command.make("list", {
   ...sharedFlags,
+  computer: computerFlag,
   project: Flag.String("project").pipe(
     Flag.withDescription("Only this project (its id or name)."),
     Flag.optional,
@@ -588,6 +649,7 @@ const threadListCommand = Command.make("list", {
     withClient(flags, (client) =>
       client
         .call(ThreadsListTool, {
+          ...on(flags),
           ...Option.match(flags.project, {
             onNone: () => ({}),
             onSome: (project) => ({ project }),
@@ -605,6 +667,7 @@ const threadListCommand = Command.make("list", {
 
 const threadStartCommand = Command.make("start", {
   ...sharedFlags,
+  computer: computerFlag,
   project: Argument.String("project").pipe(
     Argument.withDescription("The project's id or name, from threadlines projects."),
   ),
@@ -643,13 +706,14 @@ const threadStartCommand = Command.make("start", {
           ? yield* resolveAgent(client, flags, flags.agent.value)
           : null;
         const result = yield* client.call(OutsideThreadStartTool, {
+          ...on(flags),
           project: flags.project,
           prompt,
           ...Option.match(flags.title, { onNone: () => ({}), onSome: (title) => ({ title }) }),
           ...(agent === null ? {} : { agent }),
           ...(flags.local ? { workspace: "project_folder" as const } : {}),
           ...Option.match(flags.access, { onNone: () => ({}), onSome: (access) => ({ access }) }),
-          ...requestIdFor(flags.requestId, target),
+          ...requestIdFor(flags.requestId, target, flags),
         } satisfies Tool.ParametersEncoded<typeof OutsideThreadStartTool>);
         yield* answer(flags, result, formatStart);
         if (flags.wait && result.thread !== undefined) {
@@ -662,6 +726,7 @@ const threadStartCommand = Command.make("start", {
 
 const threadSendCommand = Command.make("send", {
   ...sharedFlags,
+  computer: computerFlag,
   thread: threadIdArgument,
   message: Argument.String("message").pipe(
     Argument.withDescription(
@@ -681,9 +746,10 @@ const threadSendCommand = Command.make("send", {
       Effect.gen(function* () {
         const message = yield* readText(flags.message, "message");
         const result = yield* client.call(OutsideThreadSendTool, {
+          ...on(flags),
           threadId: flags.thread,
           message,
-          ...requestIdFor(flags.requestId, target),
+          ...requestIdFor(flags.requestId, target, flags),
         });
         yield* answer(flags, result, (sent) =>
           sent.outcome === "queued" ? "Queued: it goes as the thread's next turn." : "Sent.",
@@ -698,6 +764,7 @@ const threadSendCommand = Command.make("send", {
 
 const threadReadCommand = Command.make("read", {
   ...sharedFlags,
+  computer: computerFlag,
   thread: threadIdArgument,
   after: Flag.Int("after").pipe(
     Flag.withDescription("Only messages after this one (a read's `next`)."),
@@ -718,11 +785,12 @@ const threadReadCommand = Command.make("read", {
       Option.match(flags.message, {
         onNone: () =>
           client.call(OutsideThreadReadTool, {
+            ...on(flags),
             threadId: flags.thread,
             ...Option.match(flags.after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
             ...Option.match(flags.limit, { onNone: () => ({}), onSome: (limit) => ({ limit }) }),
           }),
-        onSome: (messageId) => readWholeMessage(client, flags.thread, messageId),
+        onSome: (messageId) => readWholeMessage(client, flags, flags.thread, messageId),
       }).pipe(Effect.flatMap((result) => answer(flags, result, formatThreadRead))),
     ),
   ),
@@ -730,6 +798,7 @@ const threadReadCommand = Command.make("read", {
 
 const threadWaitCommand = Command.make("wait", {
   ...sharedFlags,
+  computer: computerFlag,
   thread: threadIdArgument,
   timeout: timeoutFlag,
 }).pipe(
@@ -743,6 +812,7 @@ const threadWaitCommand = Command.make("wait", {
 
 const threadStopCommand = Command.make("stop", {
   ...sharedFlags,
+  computer: computerFlag,
   thread: threadIdArgument,
   requestId: requestIdFlag,
 }).pipe(
@@ -751,8 +821,9 @@ const threadStopCommand = Command.make("stop", {
     withClient(flags, (client, target) =>
       client
         .call(OutsideThreadStopTool, {
+          ...on(flags),
           threadId: flags.thread,
-          ...requestIdFor(flags.requestId, target),
+          ...requestIdFor(flags.requestId, target, flags),
         })
         .pipe(Effect.flatMap((result) => answer(flags, result, formatStop))),
     ),
@@ -761,6 +832,7 @@ const threadStopCommand = Command.make("stop", {
 
 const threadAnswerCommand = Command.make("answer", {
   ...sharedFlags,
+  computer: computerFlag,
   thread: threadIdArgument,
   waitingId: Argument.String("waiting-id").pipe(
     Argument.withDescription("The question's request id, from `thread read`'s waiting list."),
@@ -782,12 +854,13 @@ const threadAnswerCommand = Command.make("answer", {
     withClient(flags, (client, target) =>
       Effect.gen(function* () {
         const result = yield* client.call(OutsideThreadAnswerTool, {
+          ...on(flags),
           threadId: flags.thread,
           waitingId: flags.waitingId,
           answers: flags.answers.map((entry) =>
             entry.includes(" | ") ? entry.split(" | ").map((label) => label.trim()) : entry,
           ),
-          ...requestIdFor(flags.requestId, target),
+          ...requestIdFor(flags.requestId, target, flags),
         });
         yield* answer(flags, result, () => "Answered.");
         if (flags.wait) yield* waitForThread(client, flags, flags.thread, flags.timeout);

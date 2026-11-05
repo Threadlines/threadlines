@@ -6,7 +6,9 @@
  * first, with how many more wait behind it), and a system notification when
  * one arrives while nobody is looking at the window. An assistant's sign-in
  * arrives once its page took this computer's code: the dialog then takes the
- * place of the code on Settings' Assistants group.
+ * place of the code on Settings' Assistants group. A linked computer asking
+ * for one of its agents to use this computer too waits in the same line
+ * (docs/design/assistants.md, "Other computers").
  *
  * The dialog closes only through its answer: Escape and a click outside do
  * nothing, since a sign-in left unanswered would only come back.
@@ -43,12 +45,7 @@ export function OutsideAgentsHost() {
   );
   useSignInNotifications(waiting);
   const head = waiting[0] ?? null;
-  const subject: OutsideAgentDialogSubject | null =
-    head === null
-      ? null
-      : head.kind === "local"
-        ? { kind: "request", request: head, waitingBehind: waiting.length - 1 }
-        : { kind: "assistant", signIn: head, waitingBehind: waiting.length - 1 };
+  const subject = head === null ? null : dialogSubject(head, waiting.length - 1);
   return (
     <Dialog open={subject !== null} onOpenChange={ignoreClose} disablePointerDismissal>
       {head !== null && subject !== null ? (
@@ -62,6 +59,45 @@ export function OutsideAgentsHost() {
       ) : null}
     </Dialog>
   );
+}
+
+/** What the dialog shows for the sign-in or ask at the head of the line. */
+function dialogSubject(
+  head: OutsideAgentWaitingSignIn,
+  waitingBehind: number,
+): OutsideAgentDialogSubject {
+  switch (head.kind) {
+    case "local":
+      return { kind: "request", request: head, waitingBehind };
+    case "assistant":
+      return { kind: "assistant", signIn: head, waitingBehind };
+    case "linked":
+      return { kind: "linked", ask: head.ask, waitingBehind };
+  }
+}
+
+/** What a system notification says for a new sign-in or ask. */
+function notificationFor(signIn: OutsideAgentWaitingSignIn): {
+  readonly title: string;
+  readonly body: string;
+} {
+  switch (signIn.kind) {
+    case "local":
+      return {
+        title: `${signIn.name} wants to use Threadlines`,
+        body: `Check that its code is ${signIn.code}, then allow or deny it in Threadlines.`,
+      };
+    case "assistant":
+      return {
+        title: `${signIn.name} wants to use Threadlines`,
+        body: "Allow or deny it in Threadlines.",
+      };
+    case "linked":
+      return {
+        title: `${signIn.name} wants to use this computer too`,
+        body: `It's connected on ${signIn.ask.fromComputer}. Allow or deny it in Threadlines.`,
+      };
+  }
 }
 
 /** A system notification for each new sign-in nobody is looking at, at most one every 30 seconds. */
@@ -80,11 +116,7 @@ function useSignInNotifications(waiting: ReadonlyArray<OutsideAgentWaitingSignIn
     seenRef.current = next.seen;
     if (next.notify === null) return;
     const shown = showSystemNotification({
-      title: `${next.notify.name} wants to use Threadlines`,
-      body:
-        next.notify.kind === "local"
-          ? `Check that its code is ${next.notify.code}, then allow or deny it in Threadlines.`
-          : "Allow or deny it in Threadlines.",
+      ...notificationFor(next.notify),
       tag: "threadlines-outside-agent",
     });
     if (shown) lastNotifiedAtRef.current = nowMs;

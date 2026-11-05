@@ -184,7 +184,7 @@ const listingOf = (entry: AssistantMcpTool): JsonObject => {
 };
 
 /** The same value with `scrub` applied to every string inside it. */
-const mapStrings = (value: unknown, scrub: (text: string) => string): unknown => {
+export const mapStrings = (value: unknown, scrub: (text: string) => string): unknown => {
   if (typeof value === "string") return scrub(value);
   if (Array.isArray(value)) return value.map((item) => mapStrings(item, scrub));
   if (!isObject(value)) return value;

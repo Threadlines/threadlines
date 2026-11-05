@@ -1,8 +1,9 @@
 /**
  * The fields the outside-agent dialogs share: the approval and Change dialog
- * (OutsideAgentDialogContent) and the dialog for a web address assistants'
- * alerts go to (AssistantAlertTargetDialogContent). Labels, hints, the error
- * line, and the picker for all projects or only some.
+ * (OutsideAgentDialogContent, with its Other computers section) and the
+ * dialog for a web address assistants' alerts go to
+ * (AssistantAlertTargetDialogContent). Labels, hints, the error line, and the
+ * picker for all projects or only some.
  */
 import type { ProjectId } from "@threadlines/contracts";
 
@@ -14,9 +15,15 @@ export const OUTSIDE_AGENT_FIELD_LABEL_CLASS = "text-xs font-medium text-foregro
 export const OUTSIDE_AGENT_HINT_CLASS = "text-[12.5px] leading-[18px] text-muted-foreground";
 
 /** Why the last answer failed, in the server's words; nothing while none did. */
-export function OutsideAgentErrorLine({ error }: { readonly error: string | null }) {
+export function OutsideAgentErrorLine({
+  error,
+  testId = "outside-agent-error",
+}: {
+  readonly error: string | null;
+  readonly testId?: string;
+}) {
   return error !== null ? (
-    <p role="alert" className="text-[12.5px] text-destructive" data-testid="outside-agent-error">
+    <p role="alert" className="text-[12.5px] text-destructive" data-testid={testId}>
       {error}
     </p>
   ) : null;

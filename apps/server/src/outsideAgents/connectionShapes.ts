@@ -68,6 +68,7 @@ export const connectionOfRow = (row: OutsideAgentConnectionRow): OutsideAgentCon
   kind: row.kind,
   signIn: row.signIn,
   identity: row.identity,
+  via: row.via,
   access: row.access,
   maxRuntimeMode: row.maxRuntimeMode,
   projectIds: row.projectIds,

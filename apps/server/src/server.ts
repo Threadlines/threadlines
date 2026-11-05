@@ -96,6 +96,8 @@ import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
+import { OtherComputersLive } from "./outsideAgents/OtherComputers.ts";
+import { OutsideToolRunnerLive } from "./outsideAgents/OutsideToolRunner.ts";
 import { AssistantRelayLive } from "./assistants/AssistantRelayLive.ts";
 import { AssistantAlertsLive } from "./assistants/AssistantAlertsLive.ts";
 import { AssistantEventsLive } from "./assistants/AssistantEventsLive.ts";
@@ -643,11 +645,23 @@ const AssistantAlertsLayerLive = AssistantAlertsLive.pipe(
   Layer.provideMerge(RuntimeDependenciesLive),
 );
 
+const ThreadSearchLayerLive = ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive));
+
 const RuntimeServicesLive = Layer.mergeAll(
   Layer.mergeAll(ServerRuntimeStartupLive, ProviderReadinessTelemetryLive).pipe(
     Layer.provideMerge(AssistantAlertsLayerLive),
   ),
-  ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
+  ThreadSearchLayerLive,
+  // Outside agents across computers (docs/design/assistants.md, "Other
+  // computers"): the computers this one's agents may also work on (the doors
+  // forward to them, Settings asks them), and one set of handlers for the
+  // server that runs, through `/peer`, the tools of agents connected on a
+  // linked computer, whichever connection a call came over.
+  OtherComputersLive.pipe(Layer.provide(AssistantAlertsLayerLive)),
+  OutsideToolRunnerLive.pipe(
+    Layer.provide(ThreadSearchLayerLive),
+    Layer.provide(AssistantAlertsLayerLive),
+  ),
   // Usage reads provider transcripts straight off disk, so it needs only
   // settings (for the resolved provider homes) plus the platform services and
   // HTTP client provided further out.

@@ -23,6 +23,7 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { makeConnectLimits } from "./connectLimits.ts";
 import type { ConnectToolDeps } from "./connectToolHandlers.ts";
+import { OtherComputers } from "./OtherComputers.ts";
 import { OutsideAgentConnections } from "./OutsideAgentConnections.ts";
 import { OutsideAgentRequests } from "./OutsideAgentRequests.ts";
 
@@ -45,6 +46,8 @@ export const makeConnectToolDeps = Effect.gen(function* () {
   const environment = yield* Effect.serviceOption(ServerEnvironment);
   const record = yield* Effect.serviceOption(AssistantEvents);
   const pullRequests = yield* Effect.serviceOption(PullRequestService);
+  // Linked computers calls may name (`computer`), when this server has links.
+  const otherComputers = yield* Effect.serviceOption(OtherComputers);
   const appOrigin = hostedAppOrigin(packageJson.version);
   return {
     connections,
@@ -112,5 +115,6 @@ export const makeConnectToolDeps = Effect.gen(function* () {
         : Effect.succeed(null),
     ...(Option.isSome(record) ? { record: record.value } : {}),
     ...(Option.isSome(pullRequests) ? { pullRequests: pullRequests.value } : {}),
+    ...(Option.isSome(otherComputers) ? { otherComputers: otherComputers.value } : {}),
   } satisfies ConnectToolDeps;
 });

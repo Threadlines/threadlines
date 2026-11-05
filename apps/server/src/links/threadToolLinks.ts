@@ -63,10 +63,16 @@ export function makeThreadToolLinks(input: {
         )
         .pipe(
           Effect.map((read) =>
-            // An older computer ignores `messageId` and answers with a page instead.
+            // An older computer ignores `messageId` and answers with a page
+            // instead: its one message may even be the one asked for, but
+            // clipped, without the part's place in it.
             request.messageId !== undefined &&
             read.outcome === "ok" &&
-            !read.messages.every((message) => message.messageId === request.messageId)
+            !(
+              read.messages.length === 1 &&
+              read.messages[0]!.messageId === request.messageId &&
+              (read.messages[0]!.clipped !== true || read.messages[0]!.offset !== undefined)
+            )
               ? {
                   outcome: "refused" as const,
                   detail:
