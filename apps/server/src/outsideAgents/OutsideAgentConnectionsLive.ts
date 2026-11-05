@@ -18,12 +18,16 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  EnvironmentId,
   OutsideAgentConnectionId,
   OutsideAgentError,
   type OutsideAgentGrant,
+  type OutsideAgentLinkedAsk,
   type OutsideAgentPendingRequest,
   OutsideAgentRequestId,
+  type PeerOutsideAgent,
 } from "@threadlines/contracts";
+import { exceedsRuntimeMode } from "@threadlines/shared/runtimeMode";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -62,6 +66,8 @@ import {
   OutsideAgentConnectionRepository,
   OutsideAgentConnectionRepositoryLive,
 } from "./OutsideAgentConnectionRepository.ts";
+import { accessAbove } from "./forwardedCalls.ts";
+import { type OutsideAgentLink, OutsideAgentLinks } from "./OutsideAgentLinks.ts";
 import {
   OutsideAgentConnections,
   type OutsideAgentConnectionsShape,
@@ -103,6 +109,10 @@ const RATE_WINDOW = Duration.minutes(1);
 const REGISTRATIONS_PER_MINUTE = 20;
 const AUTHORIZATIONS_PER_MINUTE = 20;
 const MAX_WAITING = 5;
+/** How long a linked computer's ask waits for this computer's user (kept in memory). */
+const LINKED_ASK_WAIT = Duration.hours(24);
+/** At most this many asks wait at once, from all links. */
+const MAX_LINKED_ASKS = 20;
 
 type PendingOutcome =
   | { readonly kind: "waiting" }
@@ -246,6 +256,261 @@ const makeOutsideAgents = Effect.gen(function* () {
   // The Agents group
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Agents connected on linked computers (docs/design/assistants.md, "Other computers")
+  // ---------------------------------------------------------------------------
+
+  interface LinkedAskEntry {
+    readonly linkDeviceId: string;
+    /** The agent's connection on the asking computer. */
+    readonly connectionIdThere: OutsideAgentConnectionId;
+    readonly ask: OutsideAgentLinkedAsk;
+    readonly expiresAt: number;
+  }
+  /** Asks from linked computers waiting for the user, by request id; a restart drops them. */
+  const linkedAsks = new Map<OutsideAgentRequestId, LinkedAskEntry>();
+
+  const waitingLinkedAsks = (now: number): Array<OutsideAgentLinkedAsk> =>
+    [...linkedAsks.values()]
+      .filter((entry) => entry.expiresAt > now)
+      .map((entry) => entry.ask)
+      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+  const linkedAskOf = (linkDeviceId: string, connectionId: OutsideAgentConnectionId) =>
+    [...linkedAsks.values()].find(
+      (entry) => entry.linkDeviceId === linkDeviceId && entry.connectionIdThere === connectionId,
+    );
+
+  /** A linked computer's agent's row here, as it's stored: the name it gave, the pick of what it is. */
+  const viaNameOf = (agent: PeerOutsideAgent) => ({
+    clientName: agent.givenName ?? agent.name,
+    assistantPick: assistantPickOf(agent.assistant),
+  });
+
+  const linkedStore = <A, E>(effect: Effect.Effect<A, E>, fallback: A) =>
+    effect.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("outside agents: couldn't read or write a linked computer's agent").pipe(
+          Effect.annotateLogs({ cause: String(cause) }),
+          Effect.as(fallback),
+        ),
+      ),
+    );
+
+  const linkedAsk: OutsideAgentLinks["Service"]["ask"] = (link, agent) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const existing = yield* linkedStore(
+        repository.findVia({ linkDeviceId: link.deviceId, viaConnectionId: agent.connectionId }),
+        Option.none(),
+      );
+      if (Option.isSome(existing)) return { status: "allowed" as const };
+      const earlier = linkedAskOf(link.deviceId, agent.connectionId);
+      if (earlier !== undefined) linkedAsks.delete(earlier.ask.requestId);
+      for (const [requestId, entry] of linkedAsks) {
+        if (entry.expiresAt <= now) linkedAsks.delete(requestId);
+      }
+      // The oldest goes first when too many wait.
+      while (linkedAsks.size >= MAX_LINKED_ASKS) {
+        const oldest = waitingLinkedAsks(now)[0];
+        if (oldest === undefined) break;
+        linkedAsks.delete(oldest.requestId);
+      }
+      const requestId = OutsideAgentRequestId.make(randomUUID());
+      const expiresAt = now + Duration.toMillis(LINKED_ASK_WAIT);
+      linkedAsks.set(requestId, {
+        linkDeviceId: link.deviceId,
+        connectionIdThere: agent.connectionId,
+        expiresAt,
+        ask: {
+          requestId,
+          name: agent.name,
+          givenName: agent.givenName,
+          assistant: agent.assistant,
+          kind: agent.kind,
+          fromEnvironmentId: EnvironmentId.make(link.environmentId),
+          fromComputer: link.computer,
+          requestedAccess: agent.access,
+          maxRuntimeMode: agent.maxRuntimeMode,
+          createdAt: isoAt(now),
+          expiresAt: isoAt(expiresAt),
+        },
+      });
+      yield* notify;
+      return { status: "asked" as const };
+    });
+
+  const linkedStatus: OutsideAgentLinks["Service"]["status"] = (link, connectionIds) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const entries = yield* Effect.forEach(connectionIds, (connectionId) =>
+        Effect.gen(function* () {
+          const row = yield* linkedStore(
+            repository.findVia({ linkDeviceId: link.deviceId, viaConnectionId: connectionId }),
+            Option.none(),
+          );
+          if (Option.isSome(row)) {
+            return [
+              {
+                connectionId,
+                state: "allowed" as const,
+                access: row.value.access,
+                maxRuntimeMode: row.value.maxRuntimeMode,
+                projectCount: row.value.projectIds === null ? null : row.value.projectIds.length,
+              },
+            ];
+          }
+          const ask = linkedAskOf(link.deviceId, connectionId);
+          return ask !== undefined && ask.expiresAt > now
+            ? [{ connectionId, state: "asked" as const }]
+            : [];
+        }),
+      );
+      return { entries: entries.flat() };
+    });
+
+  const linkedForget: OutsideAgentLinks["Service"]["forget"] = (link, connectionId) =>
+    Effect.gen(function* () {
+      const ask = linkedAskOf(link.deviceId, connectionId);
+      if (ask !== undefined) linkedAsks.delete(ask.ask.requestId);
+      const row = yield* linkedStore(
+        repository.findVia({ linkDeviceId: link.deviceId, viaConnectionId: connectionId }),
+        Option.none(),
+      );
+      if (Option.isSome(row)) {
+        yield* linkedStore(
+          repository.markRemoved({
+            connectionId: row.value.connectionId,
+            reason: "removed",
+            now: isoAt(yield* Clock.currentTimeMillis),
+          }),
+          false,
+        );
+      }
+      yield* notify;
+    });
+
+  const linkedCallerFor: OutsideAgentLinks["Service"]["callerFor"] = (link, agent) =>
+    Effect.gen(function* () {
+      const found = yield* linkedStore(
+        repository.findVia({ linkDeviceId: link.deviceId, viaConnectionId: agent.connectionId }),
+        Option.none(),
+      );
+      if (Option.isNone(found)) {
+        return {
+          refused: `This computer hasn't allowed ${agent.name} to use it. The user can allow it from ${agent.name}'s row in Threadlines on ${link.computer} (Settings, Connections).`,
+        };
+      }
+      const row = found.value;
+      // Its name and what it is follow that computer's.
+      const named = viaNameOf(agent);
+      if (row.clientName !== named.clientName || row.assistantPick !== named.assistantPick) {
+        yield* linkedStore(
+          repository.setViaName({ connectionId: row.connectionId, ...named }),
+          undefined,
+        );
+        yield* notify;
+      }
+      const now = yield* Clock.currentTimeMillis;
+      if (
+        row.lastUsedAt === null ||
+        now - millisOf(row.lastUsedAt) >= Duration.toMillis(TOUCH_EVERY)
+      ) {
+        yield* linkedStore(
+          repository.touch({ connectionId: row.connectionId, now: isoAt(now) }),
+          undefined,
+        );
+        yield* notify;
+      }
+      return {
+        caller: {
+          connectionId: row.connectionId,
+          name: connectionNameOf({ ...row, ...named }),
+        },
+        kind: row.kind,
+        cap: {
+          connectionId: row.connectionId,
+          access: agent.access,
+          maxRuntimeMode: agent.maxRuntimeMode,
+        },
+      };
+    });
+
+  const linkedDrop: OutsideAgentLinks["Service"]["dropLink"] = (linkDeviceId) =>
+    Effect.gen(function* () {
+      for (const [requestId, entry] of linkedAsks) {
+        if (entry.linkDeviceId === linkDeviceId) linkedAsks.delete(requestId);
+      }
+      yield* linkedStore(
+        repository.removeVia({ linkDeviceId, now: isoAt(yield* Clock.currentTimeMillis) }),
+        [],
+      );
+      yield* notify;
+    });
+
+  /** Allows a linked computer's ask: a row here, never more than the agent has there. */
+  const approveLinked = (
+    entry: LinkedAskEntry,
+    input: Parameters<OutsideAgentSignInShape["approve"]>[0],
+  ) =>
+    Effect.gen(function* () {
+      const { ask } = entry;
+      const refusal = grantRefusal(input, null);
+      if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
+      if (accessAbove(input.access, ask.requestedAccess)) {
+        return yield* new OutsideAgentError({
+          detail: `${ask.name} can't do more here than it can on ${ask.fromComputer}.`,
+        });
+      }
+      if (exceedsRuntimeMode(input.maxRuntimeMode, ask.maxRuntimeMode)) {
+        return yield* new OutsideAgentError({
+          detail: `${ask.name}'s highest access here can't be above its highest access on ${ask.fromComputer}.`,
+        });
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const connectionId = OutsideAgentConnectionId.make(randomUUID());
+      const named = viaNameOf({
+        connectionId: entry.connectionIdThere,
+        name: ask.name,
+        givenName: ask.givenName,
+        assistant: input.assistant === undefined ? ask.assistant : input.assistant,
+        kind: ask.kind,
+        access: ask.requestedAccess,
+        maxRuntimeMode: ask.maxRuntimeMode,
+      });
+      const row = {
+        connectionId,
+        kind: ask.kind,
+        signIn: "linked" as const,
+        clientIdHash: `via:${entry.linkDeviceId}:${entry.connectionIdThere}`,
+        ...named,
+        softwareId: null,
+        redirectUri: "",
+        resource: "linked",
+        ...normalizedGrant(input),
+        tokenGeneration: 0,
+        identity: null,
+        hostId: null,
+        routeTag: null,
+        refresh: null,
+        keyHash: null,
+        via: {
+          environmentId: ask.fromEnvironmentId,
+          computer: ask.fromComputer,
+          connectionId: entry.connectionIdThere,
+        },
+        viaLinkDeviceId: entry.linkDeviceId,
+        createdAt: isoAt(now),
+        lastUsedAt: null,
+        removedAt: null,
+        removedReason: null,
+      };
+      yield* repository.insertReplacing(row).pipe(storeError("allow a linked computer's agent"));
+      linkedAsks.delete(ask.requestId);
+      yield* notify;
+      return connectionOfRow(row);
+    });
+
   const snapshot: Effect.Effect<OutsideAgentsSnapshotWithoutTargets, OutsideAgentError> =
     Effect.gen(function* () {
       const rows = yield* repository.listLive.pipe(storeError("read the connections"));
@@ -274,6 +539,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         address: `http://127.0.0.1:${config.port}${OUTSIDE_AGENT_MCP_PATH}`,
         connections: rows.map(connectionOfRow),
         pending: waiting,
+        linkedAsks: waitingLinkedAsks(now),
         quietUntil: quietUntil !== null && quietUntil > now ? isoAt(quietUntil) : null,
         assistants: yield* assistants.state,
       };
@@ -318,6 +584,10 @@ const makeOutsideAgents = Effect.gen(function* () {
   const approve: OutsideAgentSignInShape["approve"] = (input) =>
     Effect.gen(function* () {
       if (yield* assistants.isWaiting(input.requestId)) return yield* assistants.approve(input);
+      const linked = linkedAsks.get(input.requestId);
+      if (linked !== undefined && linked.expiresAt > (yield* Clock.currentTimeMillis)) {
+        return yield* approveLinked(linked, input);
+      }
       const now = yield* Clock.currentTimeMillis;
       const entry = waitingEntry(input.requestId, now);
       if (entry === undefined) {
@@ -340,6 +610,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         kind: "local",
         signIn: "oauth",
         identity: null,
+        via: null,
         ...grant,
         createdAt: isoAt(now),
         lastUsedAt: null,
@@ -351,6 +622,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       if (yield* assistants.isWaiting(input.requestId)) {
         return yield* assistants.deny(input.requestId);
       }
+      if (linkedAsks.delete(input.requestId)) return yield* notify;
       const entry = waitingEntry(input.requestId, yield* Clock.currentTimeMillis);
       if (entry === undefined) return;
       entry.outcome = { kind: "denied" };
@@ -362,6 +634,7 @@ const makeOutsideAgents = Effect.gen(function* () {
     for (const entry of pending.values()) {
       if (isWaiting(entry, now)) entry.outcome = { kind: "denied" };
     }
+    linkedAsks.clear();
     quietUntil = now + Duration.toMillis(QUIET_PERIOD);
     // Assistants' sign-ins too: the waiting ones now, new ones until it ends.
     yield* assistants.setQuiet(quietUntil);
@@ -638,6 +911,8 @@ const makeOutsideAgents = Effect.gen(function* () {
             routeTag: null,
             refresh: null,
             keyHash: null,
+            via: null,
+            viaLinkDeviceId: null,
             createdAt: isoAt(now),
             lastUsedAt: null,
             removedAt: null,
@@ -726,9 +1001,14 @@ const makeOutsideAgents = Effect.gen(function* () {
       Effect.map((found) => {
         const row = Option.getOrNull(found);
         if (row === null || row.removedAt !== null) return null;
+        const shown = connectionOfRow(row);
         return {
           connectionId: row.connectionId,
-          name: connectionNameOf(row),
+          name: shown.name,
+          givenName: shown.givenName,
+          assistant: shown.assistant,
+          kind: row.kind,
+          linked: row.via !== null,
           access: row.access,
           maxRuntimeMode: row.maxRuntimeMode,
           projectIds: row.projectIds,
@@ -742,7 +1022,16 @@ const makeOutsideAgents = Effect.gen(function* () {
       ),
     );
 
+  const links = OutsideAgentLinks.of({
+    ask: linkedAsk,
+    status: linkedStatus,
+    forget: linkedForget,
+    callerFor: linkedCallerFor,
+    dropLink: linkedDrop,
+  });
+
   return Context.make(OutsideAgentConnections, { authenticate, grant }).pipe(
+    Context.add(OutsideAgentLinks, links),
     Context.add(
       OutsideAgentSignIn,
       OutsideAgentSignIn.of({

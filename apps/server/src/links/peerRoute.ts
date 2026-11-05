@@ -38,6 +38,8 @@ import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { isLoopbackHost } from "../startupAccess.ts";
+import { OutsideAgentLinks } from "../outsideAgents/OutsideAgentLinks.ts";
+import { OutsideToolRunner } from "../outsideAgents/OutsideToolRunner.ts";
 import { ComputerLinks } from "./ComputerLinks.ts";
 import { LinkMoves } from "./LinkMoves.ts";
 import {
@@ -70,8 +72,39 @@ export const makePeerRpcLayer = (input: {
       const settings = yield* ServerSettingsService;
       const snapshots = yield* ProjectionSnapshotQuery;
       const identities = yield* RepositoryIdentityResolver;
+      // Outside agents from the asking computer, when this server runs them.
+      const outsideLinks = yield* Effect.serviceOption(OutsideAgentLinks);
+      const outsideTools = yield* Effect.serviceOption(OutsideToolRunner);
 
       const failed = (detail: string) => new PeerRpcError({ detail });
+
+      /**
+       * The link as outside agents use it (docs/design/assistants.md, "Other
+       * computers"): on, and naming the computer at its other end.
+       */
+      const outsideLink = Effect.gen(function* () {
+        if (Option.isNone(outsideLinks) || Option.isNone(outsideTools)) {
+          return yield* failed("This computer doesn't take outside agents from linked computers.");
+        }
+        const link = yield* currentLink;
+        if (link.access === "off") {
+          return yield* failed("This computer turned its link with yours off.");
+        }
+        if (link.environmentId === null) {
+          return yield* failed(
+            "This link doesn't know which computer it is for yet. Link them again.",
+          );
+        }
+        return {
+          link: {
+            deviceId: link.deviceId,
+            environmentId: link.environmentId,
+            computer: link.label,
+          },
+          links: outsideLinks.value,
+          tools: outsideTools.value,
+        };
+      });
 
       /** The link as it is now: its access can change while it is connected. */
       const currentLink = devices.getDevice(input.deviceId).pipe(
@@ -161,6 +194,7 @@ export const makePeerRpcLayer = (input: {
             projects,
             moves: true,
             threadFiling: true,
+            outsideAgents: true,
           } satisfies PeerDescriptor;
         });
 
@@ -222,6 +256,41 @@ export const makePeerRpcLayer = (input: {
           guarded(Effect.flatMap(currentLink, (link) => linkMoves.status(link, payload))),
         "peer.move.abort": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkMoves.abort(link, payload))),
+        // Outside agents connected on the asking computer (OutsideAgentLinks).
+        "peer.outside.ask": (payload) =>
+          guarded(Effect.flatMap(outsideLink, ({ link, links }) => links.ask(link, payload))),
+        "peer.outside.status": (payload) =>
+          guarded(
+            Effect.flatMap(outsideLink, ({ link, links }) =>
+              links.status(link, payload.connectionIds),
+            ),
+          ),
+        "peer.outside.forget": (payload) =>
+          guarded(
+            Effect.flatMap(outsideLink, ({ link, links }) =>
+              links.forget(link, payload.connectionId),
+            ),
+          ),
+        "peer.outside.call": (payload) =>
+          guarded(
+            Effect.gen(function* () {
+              const { link, links, tools } = yield* outsideLink;
+              const linked = yield* links.callerFor(link, payload.agent);
+              if ("refused" in linked) {
+                return { outcome: "refused" as const, detail: linked.refused };
+              }
+              const ran = yield* tools.run({
+                kind: linked.kind,
+                caller: linked.caller,
+                cap: linked.cap,
+                tool: payload.tool,
+                input: payload.input,
+              });
+              return "refused" in ran
+                ? { outcome: "refused" as const, detail: ran.refused }
+                : { outcome: "ok" as const, result: ran.result };
+            }),
+          ),
         // The other computer removed its link: what it still had open here is
         // cancelled (with `stopRunning`, its running threads stop too); with
         // `reverse` this computer's own link back to it goes as well. Then its

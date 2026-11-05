@@ -1,9 +1,10 @@
 /**
  * The connections signed in to this computer, one row each, in a group of
- * their own: name, how an assistant signs in, what it may do, where, and when
- * it last called; with Change (the approval dialog's choices, on its grant)
- * and Remove access (after asking). Settings' Agents group lists local agents
- * with it, the Assistants group assistants.
+ * their own: name, how an assistant signs in (or the linked computer that
+ * brings it here), what it may do, where, and when it last called; with
+ * Change (the approval dialog's choices, on its grant) and Remove access
+ * (after asking). Settings' Agents group lists local agents with it, the
+ * Assistants group assistants.
  */
 import type { OutsideAgentConnection, OutsideAgentConnectionId } from "@threadlines/contracts";
 import type { SettingsPlaceId } from "@threadlines/shared/appPlaces";
@@ -40,11 +41,19 @@ import { OutsideAgentDialog } from "./outsideAgentDialog";
 
 const ROW_CLASS = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
 
-/** What Remove access means for this connection: a sign-in comes back by signing in, a key doesn't. */
+/**
+ * What Remove access means for this connection: a sign-in comes back by
+ * signing in, a key doesn't, and one a linked computer brings comes back when
+ * that computer asks again.
+ */
 function describeRemoval(connection: OutsideAgentConnection): string {
+  const keeps = "Threads it started keep its name.";
+  if (connection.via !== null) {
+    return `It can't use this computer from its next call on, and ${connection.via.computer} has to ask you again to bring it back. ${keeps}`;
+  }
   return connection.signIn === "key"
-    ? "Its key stops working from its next call on. Threads it started keep its name."
-    : "It can't use Threadlines from its next call on, and has to sign in again to come back. Threads it started keep its name.";
+    ? `Its key stops working from its next call on. ${keeps}`
+    : `It can't use Threadlines from its next call on, and has to sign in again to come back. ${keeps}`;
 }
 
 /** Nothing while `connections` is empty. `place`: the group's app place, which gives its title. */

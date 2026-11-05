@@ -1,7 +1,8 @@
 # Assistants: always-on agents use Threadlines
 
-Rev 3, Oct 29 2026. Status: plan, not built. Sol reviewed rev 1 (14 findings)
-and rev 2 (9 findings); all were taken. See "Rev 2" and "Rev 3" at the end.
+Rev 3, Oct 29 2026, built Oct 30 to Nov 2 (steps 1 to 5 merged). Sol reviewed
+rev 1 (14 findings) and rev 2 (9 findings); all were taken. See "Rev 2" and
+"Rev 3" at the end. "Other computers" (Nov 4) is newer than the rest.
 
 Builds on:
 
@@ -908,9 +909,9 @@ with step 2):
 
 - **The relay sees plain text for this door.**
 - **A user can still be talked into reading out their code.**
-- **One computer per connection.** A user with several computers connects each
-  one. A listed app may allow one connection per account, which means one
-  computer. Pitch: route through Fleet.
+- **Other computers go through the home computer.** One connection reaches
+  the user's linked computers (see "Other computers"), but only while the
+  computer it signed in to is online: that computer holds its credential.
 - **No queued work while the computer sleeps.**
 - **Approvals stay in Threadlines.**
 - **The offline answer tells whether the computer is online** to anyone holding
@@ -2325,3 +2326,64 @@ sign-ins would break the scan's connection; a read-only fallback has no boundary
 eligibility should be faced before the infrastructure (it's now last, with the cheap
 directories first); a `threads:read` request can't be given Work; Cursor needs manifests
 at a repo's root.
+
+## Other computers (Nov 4 2026)
+
+T3 Code lets one outside connection work on linked machines; ours reached only
+the computer it signed in to, and the door is one fixed address, so a user may
+not be able to add a second computer to the same assistant at all. Now one
+connection reaches every computer linked to its home computer in Fleet, each
+one only once its own user said yes there. Sol reviewed the plan (14
+findings, taken as below).
+
+**Shape.** The home computer (A) forwards a call naming another computer (B)
+over the existing link (`/peer`, role `peer`). B runs the same tool handlers
+as its own doors, as a connection row of its own.
+
+- **On B, a row with `sign_in = 'linked'`** (migration 103: `via_link_device_id`,
+  `via_environment_id`, `via_connection_id`, `via_computer`; contracts
+  `OutsideAgentVia`). No credential: only that link's calls bring it. So its
+  grant, limits, labels, fence, inbox record, Settings row, Change and Remove
+  are the ones every connection has. Its `kind` is A's, so an assistant keeps
+  the assistants door's rules there.
+- **Asking.** In the agent's Change dialog on A, "Other computers" lists the
+  linked computers with where it stands on each (`outsideAgents.reach`, asked
+  live: allowed, asked, none, offline, unsupported). Ask sends
+  `peer.outside.ask`; B shows the sign-in dialog ("Grok Bot wants to use this
+  computer too"), owner only like every grant there, and Allow writes the row.
+  B never grants more than the agent has on A: level and highest access are
+  capped at what A said when it asked. Asks live in memory for 24 hours.
+- **Calling.** Every tool takes `computer`: an id from the new `computers`
+  tool, or a name only one computer has. An id matches first, and this
+  computer's own name means this computer, since a linked computer picks its
+  own name and could take another's (Vercel's security review, Nov 5). A checks the tool's level against its own grant first, then sends
+  `peer.outside.call` with the agent's current grant there. B finds the row
+  by (link, A's connection id) and runs the tool with its grant capped at
+  that (`ForwardedGrantCap`, a context reference the handlers' grant reads),
+  so lowering it on A applies on B at the next call.
+- **No delayed work on B.** A forwarded send never waits in B's queue: it
+  would run later, when A could no longer say no. B answers `busy` instead.
+- **No hops.** B refuses a forwarded call that names a computer, and a linked
+  row's `computers` lists only that computer.
+- **Privacy.** For an assistant, B scrubs its own home folder from the answer
+  and restores it in answers to questions, as its assistants door does.
+- **Waits** forwarded from A end 5 s under A's door's longest, so the answer
+  makes it back through the relay. A call that doesn't come back answers
+  `offline`; for a change it says to repeat it with the same `requestId`,
+  which B never does twice.
+- **Removal.** Removing the connection on A tells every linked computer that
+  is on to forget it. Removing it from A's "Other computers", or on B, ends it
+  there. Unlinking the two computers removes every row the link brought.
+- **CLI.** `threadlines computers`, and `--computer` on every command that
+  calls a tool.
+
+**Honest limits.**
+
+- A must be online: it holds the credential. An agent can't reach B while A
+  sleeps, even with B awake.
+- Alerts are per computer (add the same address on B). MCP Events
+  subscriptions cover the home computer only.
+- If B was off when the connection was removed on A, B keeps its row until
+  its user removes it; it can do nothing, since only A's calls bring it.
+- A is trusted as far as the link is: it could forward calls for any agent B
+  allowed through that link.

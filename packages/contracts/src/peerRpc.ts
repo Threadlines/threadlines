@@ -7,15 +7,19 @@ import {
   EnvironmentId,
   IsoDateTime,
   NonNegativeInt,
+  OutsideAgentConnectionId,
   ThreadId,
   ThreadMoveId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
+import { OutsideAgentConnectionKind } from "./outsideAgents.ts";
 import { ProviderOptionSelections } from "./model.ts";
 import {
+  KnownAssistant,
   ModelSelection,
   OrchestrationThreadActivity,
+  OutsideAgentAccess,
   OrchestrationThreadDoneOverride,
   ProviderInteractionMode,
   RemoteThreadFiling,
@@ -186,6 +190,11 @@ export const PeerDescriptor = Schema.Struct({
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
    */
   threadFiling: Schema.optional(Schema.Boolean),
+  /**
+   * Takes the caller's outside agents (`peer.outside.*`, docs/design/assistants.md,
+   * "Other computers"). Absent: an older server that can't.
+   */
+  outsideAgents: Schema.optional(Schema.Boolean),
 });
 export type PeerDescriptor = typeof PeerDescriptor.Type;
 
@@ -507,6 +516,73 @@ export type PeerMoveChunkInput = typeof PeerMoveChunkInput.Type;
 export const PeerMoveInput = Schema.Struct({ transferId: ThreadMoveId });
 export type PeerMoveInput = typeof PeerMoveInput.Type;
 
+// ----- outside agents across computers (docs/design/assistants.md, "Other computers") -----
+
+/**
+ * An agent connected on the asking computer, as that computer names it and
+ * what it may do there now. Shown to this computer's user when it asks; on
+ * every call, this computer never lets it do more than this.
+ */
+export const PeerOutsideAgent = Schema.Struct({
+  connectionId: OutsideAgentConnectionId,
+  name: TrimmedNonEmptyString,
+  givenName: Schema.NullOr(TrimmedNonEmptyString),
+  assistant: Schema.NullOr(KnownAssistant),
+  kind: OutsideAgentConnectionKind,
+  access: OutsideAgentAccess,
+  maxRuntimeMode: RuntimeMode,
+});
+export type PeerOutsideAgent = typeof PeerOutsideAgent.Type;
+
+/** `allowed`: it may use this computer already; `asked`: this computer's user was asked. */
+export const PeerOutsideAskResult = Schema.Struct({
+  status: Schema.Literals(["allowed", "asked"]),
+});
+export type PeerOutsideAskResult = typeof PeerOutsideAskResult.Type;
+
+export const PeerOutsideStatusInput = Schema.Struct({
+  connectionIds: Schema.Array(OutsideAgentConnectionId),
+});
+export type PeerOutsideStatusInput = typeof PeerOutsideStatusInput.Type;
+
+/** Each asked-about agent this computer let in or was asked about; one it never heard of is left out. */
+export const PeerOutsideStatusResult = Schema.Struct({
+  entries: Schema.Array(
+    Schema.Struct({
+      connectionId: OutsideAgentConnectionId,
+      state: Schema.Literals(["allowed", "asked"]),
+      access: Schema.optional(OutsideAgentAccess),
+      maxRuntimeMode: Schema.optional(RuntimeMode),
+      /** Null: all projects here. */
+      projectCount: Schema.optional(Schema.NullOr(NonNegativeInt)),
+    }),
+  ),
+});
+export type PeerOutsideStatusResult = typeof PeerOutsideStatusResult.Type;
+
+export const PeerOutsideForgetInput = Schema.Struct({ connectionId: OutsideAgentConnectionId });
+export type PeerOutsideForgetInput = typeof PeerOutsideForgetInput.Type;
+
+/**
+ * One of the outside agents' tools, run here for an agent connected on the
+ * asking computer. `input` is the tool's parameters and `result` its answer,
+ * both as the tool's own schema encodes them; this computer decodes `input`
+ * with that schema and never takes a `computer` in it (no hops).
+ */
+export const PeerOutsideCallInput = Schema.Struct({
+  agent: PeerOutsideAgent,
+  tool: TrimmedNonEmptyString,
+  input: Schema.Unknown,
+});
+export type PeerOutsideCallInput = typeof PeerOutsideCallInput.Type;
+
+/** `refused`: this computer doesn't let that agent in (or not that tool); `detail` says why. */
+export const PeerOutsideCallResult = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("ok"), result: Schema.Unknown }),
+  Schema.Struct({ outcome: Schema.Literal("refused"), detail: TrimmedNonEmptyString }),
+]);
+export type PeerOutsideCallResult = typeof PeerOutsideCallResult.Type;
+
 export class PeerRpcError extends Schema.TaggedError<PeerRpcError>()("PeerRpcError", {
   detail: TrimmedNonEmptyString,
 }) {
@@ -532,7 +608,36 @@ export const PEER_METHODS = {
   moveFinish: "peer.move.finish",
   moveStatus: "peer.move.status",
   moveAbort: "peer.move.abort",
+  outsideAsk: "peer.outside.ask",
+  outsideStatus: "peer.outside.status",
+  outsideForget: "peer.outside.forget",
+  outsideCall: "peer.outside.call",
 } as const;
+
+/** Ask this computer's user to let an agent connected on the asking computer use this one too. */
+export const PeerOutsideAskRpc = Rpc.make(PEER_METHODS.outsideAsk, {
+  payload: PeerOutsideAgent,
+  success: PeerOutsideAskResult,
+  error: PeerRpcError,
+});
+
+export const PeerOutsideStatusRpc = Rpc.make(PEER_METHODS.outsideStatus, {
+  payload: PeerOutsideStatusInput,
+  success: PeerOutsideStatusResult,
+  error: PeerRpcError,
+});
+
+/** The agent was removed on the asking computer, or its user took this computer away from it. */
+export const PeerOutsideForgetRpc = Rpc.make(PEER_METHODS.outsideForget, {
+  payload: PeerOutsideForgetInput,
+  error: PeerRpcError,
+});
+
+export const PeerOutsideCallRpc = Rpc.make(PEER_METHODS.outsideCall, {
+  payload: PeerOutsideCallInput,
+  success: PeerOutsideCallResult,
+  error: PeerRpcError,
+});
 
 export const PeerDescribeRpc = Rpc.make(PEER_METHODS.describe, {
   payload: Schema.Struct({ caller: PeerCaller }),
@@ -662,4 +767,8 @@ export const PeerRpcGroup = RpcGroup.make(
   PeerMoveFinishRpc,
   PeerMoveStatusRpc,
   PeerMoveAbortRpc,
+  PeerOutsideAskRpc,
+  PeerOutsideStatusRpc,
+  PeerOutsideForgetRpc,
+  PeerOutsideCallRpc,
 );

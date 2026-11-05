@@ -1070,6 +1070,7 @@ describe("AssistantMcp", () => {
         ((body?.result?.tools ?? []) as Array<{ readonly name: string }>).map((tool) => tool.name);
       const see = yield* rpc(handler, { jsonrpc: "2.0", id: 1, method: "tools/list" });
       expect(names(see.body)).toEqual([
+        "computers",
         "projects",
         "agents",
         "threads_list",
@@ -1085,6 +1086,7 @@ describe("AssistantMcp", () => {
         "start-token",
       );
       expect(names(start.body)).toEqual([
+        "computers",
         "projects",
         "agents",
         "threads_list",

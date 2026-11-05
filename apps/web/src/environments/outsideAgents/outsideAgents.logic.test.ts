@@ -1,9 +1,11 @@
 import {
   AssistantAlertTargetId,
+  EnvironmentId,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
   type OrchestrationOutsideWork,
   type OutsideAgentAssistantSignIn,
+  type OutsideAgentLinkedAsk,
   type OutsideAgentPendingRequest,
   ProjectId,
   ThreadParticipantId,
@@ -15,14 +17,17 @@ import {
   describeAssistantAlertRenewal,
   describeOutsideAgentAccess,
   describeOutsideAgentProjects,
+  describeOutsideAgentReach,
   describeOutsideAgentSignIn,
   describeOutsideWork,
   initialOutsideAgentDraft,
+  linkedAskGrantLimit,
   nextOutsideAgentNotification,
   nextShownAssistantCode,
   OUTSIDE_AGENT_NOTIFY_INTERVAL_MS,
   outsideAgentGrantFromDraft,
   outsideAgentQuietMinutesLeft,
+  signInGrantLimit,
   waitingOutsideAgentSignIns,
 } from "./outsideAgents.logic";
 
@@ -71,7 +76,7 @@ describe("outside agent wording", () => {
 
   it("says how an assistant signs in, checked or only claimed, and nothing for a local agent", () => {
     const identity = { host: "cursor.sh", verified: true, known: true };
-    const oauth = { kind: "assistant", signIn: "oauth", givenName: null } as const;
+    const oauth = { kind: "assistant", signIn: "oauth", givenName: null, via: null } as const;
     expect(describeOutsideAgentSignIn({ ...oauth, identity })).toBe("Signs in from cursor.sh");
     expect(
       describeOutsideAgentSignIn({ ...oauth, identity: { ...identity, verified: false } }),
@@ -90,16 +95,43 @@ describe("outside agent wording", () => {
         signIn: "key",
         identity: null,
         givenName: null,
+        via: null,
       }),
     ).toBe("Key");
+    const local = { kind: "local", signIn: "oauth", identity: null, givenName: null } as const;
+    expect(describeOutsideAgentSignIn({ ...local, via: null })).toBe(null);
+    // One a linked computer brings says which, local agent or assistant alike.
+    const via = {
+      environmentId: EnvironmentId.make("environment-mac"),
+      computer: "Mac",
+      connectionId: OutsideAgentConnectionId.make("connection-on-mac"),
+    };
+    expect(describeOutsideAgentSignIn({ ...local, signIn: "linked", via })).toBe("Through Mac");
+    expect(describeOutsideAgentSignIn({ ...oauth, signIn: "linked", identity: null, via })).toBe(
+      "Through Mac",
+    );
+  });
+
+  it("says what a connection may do on another computer, or why it can't yet", () => {
+    const mac = { computer: "Mac" };
     expect(
-      describeOutsideAgentSignIn({
-        kind: "local",
-        signIn: "oauth",
-        identity: null,
-        givenName: null,
+      describeOutsideAgentReach({
+        ...mac,
+        state: "allowed",
+        access: "start",
+        maxRuntimeMode: "approval-required",
+        projectCount: null,
       }),
-    ).toBe(null);
+    ).toBe("Starts threads · Supervised · All projects");
+    expect(
+      describeOutsideAgentReach({ ...mac, state: "allowed", access: "see", projectCount: 1 }),
+    ).toBe("Sees threads · 1 project");
+    expect(describeOutsideAgentReach({ ...mac, state: "asked" })).toBe(
+      "Waiting for you to allow it on Mac",
+    );
+    expect(describeOutsideAgentReach({ ...mac, state: "unsupported" })).toBe(
+      "Update Threadlines on Mac to use this.",
+    );
   });
 
   it("counts the quiet period down in whole minutes and drops it once over", () => {
@@ -176,34 +208,51 @@ describe("outsideAgentGrantFromDraft", () => {
       allProjects: false,
       projectIds: new Set([WEB, GONE]),
     };
+    const askedToSee = signInGrantLimit("see");
+    const askedToStart = signInGrantLimit("start");
     expect(
-      outsideAgentGrantFromDraft(draft, {
-        requestedAccess: "see",
-        availableProjectIds: [WEB, API],
-      }),
+      outsideAgentGrantFromDraft(draft, { limit: askedToSee, availableProjectIds: [WEB, API] }),
     ).toEqual({ access: "see", maxRuntimeMode: "approval-required", projectIds: [WEB] });
     expect(
-      outsideAgentGrantFromDraft(draft, {
-        requestedAccess: "start",
-        availableProjectIds: [WEB, API],
-      }),
+      outsideAgentGrantFromDraft(draft, { limit: askedToStart, availableProjectIds: [WEB, API] }),
     ).toEqual({ access: "start", maxRuntimeMode: "approval-required", projectIds: [WEB] });
     // No sign-in asks for Work: the user may give it to one that asked to
     // start threads, never to one that asked only to see them.
     const work = { ...draft, access: "work" as const };
     expect(
-      outsideAgentGrantFromDraft(work, { requestedAccess: "start", availableProjectIds: [WEB] }),
+      outsideAgentGrantFromDraft(work, { limit: askedToStart, availableProjectIds: [WEB] }),
     ).toEqual({ access: "work", maxRuntimeMode: "approval-required", projectIds: [WEB] });
     expect(
-      outsideAgentGrantFromDraft(work, { requestedAccess: "see", availableProjectIds: [WEB] }),
+      outsideAgentGrantFromDraft(work, { limit: askedToSee, availableProjectIds: [WEB] }),
     ).toEqual({ access: "see", maxRuntimeMode: "approval-required", projectIds: [WEB] });
     // Only some projects, none of them ticked: nothing to allow yet.
     expect(
       outsideAgentGrantFromDraft(
         { ...draft, projectIds: new Set([GONE]) },
-        { requestedAccess: "start", availableProjectIds: [WEB, API] },
+        { limit: askedToStart, availableProjectIds: [WEB, API] },
       ),
     ).toBeNull();
+  });
+
+  it("never gives a linked computer's agent more here than it has there", () => {
+    const limit = linkedAskGrantLimit({ requestedAccess: "start", maxRuntimeMode: "auto" });
+    const draft = {
+      ...initialOutsideAgentDraft(null),
+      access: "work" as const,
+      maxRuntimeMode: "full-access" as const,
+    };
+    expect(outsideAgentGrantFromDraft(draft, { limit, availableProjectIds: [WEB] })).toEqual({
+      access: "start",
+      maxRuntimeMode: "auto",
+      projectIds: null,
+    });
+    // Less than it has there stays as picked.
+    expect(
+      outsideAgentGrantFromDraft(
+        { ...draft, access: "see", maxRuntimeMode: "auto-accept-edits" },
+        { limit, availableProjectIds: [WEB] },
+      ),
+    ).toEqual({ access: "see", maxRuntimeMode: "auto-accept-edits", projectIds: null });
   });
 
   it("opens a Change on the connection's own grant, all projects as null", () => {
@@ -213,7 +262,10 @@ describe("outsideAgentGrantFromDraft", () => {
       projectIds: null,
     });
     expect(
-      outsideAgentGrantFromDraft(draft, { requestedAccess: "start", availableProjectIds: [WEB] }),
+      outsideAgentGrantFromDraft(draft, {
+        limit: signInGrantLimit("start"),
+        availableProjectIds: [WEB],
+      }),
     ).toEqual({ access: "start", maxRuntimeMode: "auto", projectIds: null });
   });
 });
@@ -289,7 +341,7 @@ describe("nextShownAssistantCode", () => {
 });
 
 describe("waitingOutsideAgentSignIns", () => {
-  it("puts local agents' and assistants' sign-ins in one line, oldest first", () => {
+  it("puts local agents' and assistants' sign-ins and linked computers' asks in one line, oldest first", () => {
     const assistant = (id: string, createdAt: string): OutsideAgentAssistantSignIn => ({
       requestId: OutsideAgentRequestId.make(id),
       name: "Grok Bot",
@@ -302,6 +354,19 @@ describe("waitingOutsideAgentSignIns", () => {
       createdAt,
       expiresAt: "2026-10-23T12:04:00.000Z",
     });
+    const linked: OutsideAgentLinkedAsk = {
+      requestId: OutsideAgentRequestId.make("from-mac"),
+      name: "dots",
+      givenName: null,
+      assistant: "chatgpt",
+      kind: "assistant",
+      fromEnvironmentId: EnvironmentId.make("environment-mac"),
+      fromComputer: "Mac",
+      requestedAccess: "start",
+      maxRuntimeMode: "auto",
+      createdAt: "2026-10-23T11:59:10.000Z",
+      expiresAt: "2026-10-23T12:04:00.000Z",
+    };
     const waiting = waitingOutsideAgentSignIns({
       pending: [
         { ...request("local-1"), createdAt: "2026-10-23T11:58:00.000Z" },
@@ -314,10 +379,12 @@ describe("waitingOutsideAgentSignIns", () => {
         signIns: [assistant("grok", "2026-10-23T11:59:00.000Z")],
         alertTargets: [],
       },
+      linkedAsks: [linked],
     });
     expect(waiting.map((signIn) => [signIn.kind, signIn.requestId])).toEqual([
       ["local", "local-1"],
       ["assistant", "grok"],
+      ["linked", "from-mac"],
       ["local", "local-2"],
     ]);
   });

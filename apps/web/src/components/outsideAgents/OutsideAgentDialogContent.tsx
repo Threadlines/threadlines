@@ -8,8 +8,12 @@
  * an assistant's comes with what the relay could tell about it (where it
  * signs in from, whether Threadlines knows it, roughly where its sign-in page
  * was opened). Then what it may do, in which projects and with how much
- * access, with Deny and Allow. Change opens the same choices on a
- * connection, with Save. Create a key opens them for a new key-signed
+ * access, with Deny and Allow. A linked computer asking for one of its agents
+ * to use this computer too (docs/design/assistants.md, "Other computers")
+ * gets the same choices, capped at what the agent may do on that computer.
+ * Change opens the same choices on a connection, with Save, and for one that
+ * connects here itself, the linked computers it may use too
+ * (OutsideAgentOtherComputers). Create a key opens them for a new key-signed
  * assistant connection, then shows the key once.
  *
  * A chunk of its own (outsideAgentDialog.tsx): the host at the root and
@@ -21,6 +25,7 @@ import {
   type OutsideAgentAssistantSignIn,
   type OutsideAgentConnection,
   type OutsideAgentCreateKeyResult,
+  type OutsideAgentLinkedAsk,
   type OutsideAgentPendingRequest,
   type ProjectId,
   RUNTIME_MODES,
@@ -45,11 +50,16 @@ import {
   describeAssistantIdentity,
   describeOutsideAgentsWaiting,
   initialOutsideAgentDraft,
+  linkedAskGrantLimit,
   OUTSIDE_AGENT_ACCESS_CHOICES,
   outsideAgentAccessAllowed,
   outsideAgentGrantFromDraft,
   type OutsideAgentGrantDraft,
+  type OutsideAgentGrantLimit,
+  outsideAgentRuntimeModeAllowed,
   pickedAssistant,
+  signInGrantLimit,
+  withinOutsideAgentGrantLimit,
 } from "../../environments/outsideAgents/outsideAgents.logic";
 import { cn } from "../../lib/utils";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
@@ -73,21 +83,28 @@ import {
   OutsideAgentErrorLine as ErrorLine,
   OutsideAgentProjectsField,
 } from "./OutsideAgentFields";
+import { OutsideAgentOtherComputers } from "./OutsideAgentOtherComputers";
 
 /**
  * What the dialog is about: a sign-in waiting for the user (a local agent's
- * or an assistant's), a connection to change, or a new assistant key.
+ * or an assistant's), a linked computer's ask for one of its agents, a
+ * connection to change, or a new assistant key.
  */
 export type OutsideAgentDialogSubject =
   | {
       readonly kind: "request";
       readonly request: OutsideAgentPendingRequest;
-      /** Sign-ins waiting behind this one, of both kinds. */
+      /** Sign-ins and asks waiting behind this one, of every kind. */
       readonly waitingBehind: number;
     }
   | {
       readonly kind: "assistant";
       readonly signIn: OutsideAgentAssistantSignIn;
+      readonly waitingBehind: number;
+    }
+  | {
+      readonly kind: "linked";
+      readonly ask: OutsideAgentLinkedAsk;
       readonly waitingBehind: number;
     }
   | { readonly kind: "change"; readonly connection: OutsideAgentConnection }
@@ -111,6 +128,9 @@ const CEILING_HINTS: Record<Exclude<OutsideAgentAccess, "see">, string> = {
 /** A key's name, as the server takes it. */
 const KEY_NAME_MAX_LENGTH = 60;
 
+/** A key asks as Start does, so every level is the user's to give. */
+const KEY_GRANT_LIMIT = signInGrantLimit("start");
+
 /**
  * The dialog's popup. `onClose` closes a Change or a new key (a sign-in's
  * dialog closes when its answer leaves the waiting list).
@@ -129,18 +149,29 @@ export function OutsideAgentDialogContent({
   );
 }
 
-/** What it says about a connection being changed: whose word its name is, and when the change lands. */
+/**
+ * What it says about a connection being changed: whose word its name is (or
+ * the linked computer it comes through), and when the change lands.
+ */
 function describeChange(connection: OutsideAgentConnection, givenName: string | null): string {
   const lands = "It gets the change on its next call.";
+  if (connection.via !== null) {
+    return `It's connected to Threadlines on ${connection.via.computer}. ${lands}`;
+  }
   if (connection.kind === "local") return `Name given by the agent. ${lands}`;
   if (connection.signIn === "key" || connection.identity === null) return lands;
   return `${describeAssistantIdentity(connection.identity, givenName)} ${lands}`;
 }
 
+/** What a linked computer's ask says under its title. */
+function describeLinkedAsk(ask: OutsideAgentLinkedAsk): string {
+  return `It's connected to Threadlines on ${ask.fromComputer}. Allowing it here lets it work on this computer through ${ask.fromComputer}.`;
+}
+
 /**
  * The assistant a sign-in or connection is about, for its picker: the name
  * it gave, and Threadlines' guess (or the user's earlier pick). Null for a
- * local agent's.
+ * local agent's, and for one a linked computer brings: that computer names it.
  */
 function assistantOf(subject: GrantSubject) {
   if (subject.kind === "assistant") {
@@ -150,7 +181,11 @@ function assistantOf(subject: GrantSubject) {
       keepsLabel: false,
     };
   }
-  if (subject.kind === "change" && subject.connection.kind === "assistant") {
+  if (
+    subject.kind === "change" &&
+    subject.connection.kind === "assistant" &&
+    subject.connection.via === null
+  ) {
     return {
       givenName: subject.connection.givenName ?? subject.connection.name,
       initial: subject.connection.assistant,
@@ -170,11 +205,20 @@ function GrantContent({
   readonly onClose: () => void;
 }) {
   const projects = useThisComputerProjects();
-  const signIn =
+  // What Deny and Allow answer: a sign-in, or a linked computer's ask.
+  const answering =
     subject.kind === "request"
       ? subject.request
       : subject.kind === "assistant"
         ? subject.signIn
+        : subject.kind === "linked"
+          ? subject.ask
+          : null;
+  const replaces =
+    subject.kind === "request"
+      ? subject.request.replaces
+      : subject.kind === "assistant"
+        ? subject.signIn.replaces
         : null;
   const assistant = assistantOf(subject);
   const [choice, setChoice] = useState<AssistantChoice>(() => assistant?.initial ?? "none");
@@ -182,10 +226,28 @@ function GrantContent({
   const name =
     assistant !== null && !assistant.keepsLabel
       ? choiceDisplayName(choice, assistant.givenName)
-      : (signIn?.name ?? (subject.kind === "change" ? subject.connection.name : ""));
+      : (answering?.name ?? (subject.kind === "change" ? subject.connection.name : ""));
   const givenName = assistant !== null && assistant.givenName !== name ? assistant.givenName : null;
-  const assistantInput = assistant !== null ? { assistant: pickedAssistant(choice) } : {};
-  const requestedAccess: OutsideAgentAccess = signIn?.requestedAccess ?? "start";
+  // One a linked computer brings keeps the assistant that computer says it is.
+  const fixedAssistant =
+    subject.kind === "linked"
+      ? subject.ask.assistant
+      : subject.kind === "change"
+        ? subject.connection.assistant
+        : null;
+  const mark = assistant !== null ? pickedAssistant(choice) : fixedAssistant;
+  const assistantInput =
+    assistant !== null
+      ? { assistant: pickedAssistant(choice) }
+      : subject.kind === "linked"
+        ? { assistant: subject.ask.assistant }
+        : {};
+  // A linked computer's ask never gets more here than the agent has there.
+  const limit: OutsideAgentGrantLimit =
+    subject.kind === "linked"
+      ? linkedAskGrantLimit(subject.ask)
+      : signInGrantLimit(answering?.requestedAccess ?? "start");
+  const limitedOn = subject.kind === "linked" ? subject.ask.fromComputer : null;
   const [draft, setDraft] = useState<OutsideAgentGrantDraft>(() =>
     initialOutsideAgentDraft(subject.kind === "change" ? subject.connection : null),
   );
@@ -196,7 +258,7 @@ function GrantContent({
   const focusRef = useRef<HTMLDivElement>(null);
 
   const grant = outsideAgentGrantFromDraft(draft, {
-    requestedAccess,
+    limit,
     availableProjectIds: projects.map((project) => project.id),
   });
   const update = (change: Partial<OutsideAgentGrantDraft>) => {
@@ -227,11 +289,13 @@ function GrantContent({
         <div ref={focusRef} tabIndex={-1} className="flex flex-col gap-2 outline-none">
           <div className="flex items-start justify-between gap-3">
             <DialogTitle className="flex items-center gap-2">
-              <AssistantMark assistant={pickedAssistant(choice)} className="size-4" />
+              <AssistantMark assistant={mark} className="size-4" />
               <span>
-                {signIn !== null
-                  ? `${name} wants to use Threadlines`
-                  : `Change what ${name} can do`}
+                {subject.kind === "linked"
+                  ? `${name} wants to use this computer too`
+                  : answering !== null
+                    ? `${name} wants to use Threadlines`
+                    : `Change what ${name} can do`}
               </span>
             </DialogTitle>
             {subject.kind === "request" ? (
@@ -252,7 +316,9 @@ function GrantContent({
               ? `Name given by the agent. It signs in on this computer (port ${subject.request.callbackPort}).`
               : subject.kind === "assistant"
                 ? describeAssistantIdentity(subject.signIn.identity, givenName)
-                : describeChange(subject.connection, givenName)}
+                : subject.kind === "linked"
+                  ? describeLinkedAsk(subject.ask)
+                  : describeChange(subject.connection, givenName)}
           </DialogDescription>
           {subject.kind === "assistant" && !subject.signIn.identity.known ? (
             <p
@@ -268,9 +334,9 @@ function GrantContent({
               The sign-in page was opened near {subject.signIn.place}.
             </p>
           ) : null}
-          {signIn !== null && signIn.replaces !== null ? (
+          {replaces !== null ? (
             <p className={HINT_CLASS} data-testid="outside-agent-replaces">
-              Replaces your earlier {signIn.replaces.name} connection.
+              Replaces your earlier {replaces.name} connection.
             </p>
           ) : null}
         </div>
@@ -290,14 +356,18 @@ function GrantContent({
         <GrantFields
           projects={projects}
           draft={draft}
-          requestedAccess={requestedAccess}
+          limit={limit}
+          limitedOn={limitedOn}
           disabled={disabled}
           onChange={update}
         />
+        {subject.kind === "change" && subject.connection.via === null ? (
+          <OutsideAgentOtherComputers connectionId={subject.connection.connectionId} />
+        ) : null}
         <ErrorLine error={error} />
       </DialogPanel>
       <DialogFooter>
-        {signIn !== null ? (
+        {answering !== null ? (
           <>
             {waitingBehind > 0 ? (
               <div className="flex items-center gap-2 sm:me-auto">
@@ -319,7 +389,7 @@ function GrantContent({
               variant="outline"
               size="sm"
               disabled={disabled}
-              onClick={() => void run("deny", () => denyOutsideAgent(signIn.requestId))}
+              onClick={() => void run("deny", () => denyOutsideAgent(answering.requestId))}
               data-testid="outside-agent-deny"
             >
               {busy === "deny" ? "Denying…" : "Deny"}
@@ -330,7 +400,11 @@ function GrantContent({
               onClick={() => {
                 if (grant === null) return;
                 void run("allow", () =>
-                  approveOutsideAgent({ requestId: signIn.requestId, ...grant, ...assistantInput }),
+                  approveOutsideAgent({
+                    requestId: answering.requestId,
+                    ...grant,
+                    ...assistantInput,
+                  }),
                 );
               }}
               data-testid="outside-agent-allow"
@@ -443,7 +517,7 @@ function CreateKeyContent({ onClose }: { readonly onClose: () => void }) {
   const nameId = useId();
 
   const grant = outsideAgentGrantFromDraft(draft, {
-    requestedAccess: "start",
+    limit: KEY_GRANT_LIMIT,
     availableProjectIds: projects.map((project) => project.id),
   });
   const trimmedName = name.trim();
@@ -521,7 +595,8 @@ function CreateKeyContent({ onClose }: { readonly onClose: () => void }) {
         <GrantFields
           projects={projects}
           draft={draft}
-          requestedAccess="start"
+          limit={KEY_GRANT_LIMIT}
+          limitedOn={null}
           disabled={busy}
           onChange={update}
         />
@@ -573,26 +648,38 @@ function SecretField({
 /**
  * What a connection may do (See only, if that's all it asked for), in which
  * projects, and the highest access a thread may have for it to start, send
- * or answer there.
+ * or answer there. Levels past `limit` are greyed out, saying why: the
+ * sign-in asked for less, or the agent has no more on `limitedOn`, the linked
+ * computer asking for it.
  */
 function GrantFields({
   projects,
   draft,
-  requestedAccess,
+  limit,
+  limitedOn,
   disabled,
   onChange,
 }: {
   readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly name: string }>;
   readonly draft: OutsideAgentGrantDraft;
-  readonly requestedAccess: OutsideAgentAccess;
+  readonly limit: OutsideAgentGrantLimit;
+  readonly limitedOn: string | null;
   readonly disabled: boolean;
   readonly onChange: (change: Partial<OutsideAgentGrantDraft>) => void;
 }) {
   const fieldId = useId();
-  // What it may do as the dialog shows it: only a level the sign-in allows.
-  const shownAccess = outsideAgentAccessAllowed(draft.access, requestedAccess)
-    ? draft.access
-    : "see";
+  // What it may do as the dialog shows it: only what the limit allows.
+  const shown = withinOutsideAgentGrantLimit(draft, limit);
+  const shownAccess = shown.access;
+  const unavailableHint =
+    limitedOn === null ? "It only asked to see threads." : `It can't do this on ${limitedOn}.`;
+  // Said only where the linked computer's highest access greys out a choice.
+  const ceilingNote =
+    limitedOn !== null &&
+    limit.maxRuntimeMode !== null &&
+    RUNTIME_MODES.some((mode) => !outsideAgentRuntimeModeAllowed(mode, limit))
+      ? `It has at most ${runtimeModeConfig[limit.maxRuntimeMode].label} on ${limitedOn}.`
+      : null;
   return (
     <>
       <div className="grid gap-1.5">
@@ -607,7 +694,7 @@ function GrantFields({
           className="gap-1"
         >
           {OutsideAgentAccess.literals.map((access) => {
-            const unavailable = !outsideAgentAccessAllowed(access, requestedAccess);
+            const unavailable = !outsideAgentAccessAllowed(access, limit);
             return (
               <label
                 key={access}
@@ -632,7 +719,7 @@ function GrantFields({
                     {OUTSIDE_AGENT_ACCESS_CHOICES[access]}
                   </span>
                   <span className={cn("block", HINT_CLASS)}>
-                    {unavailable ? "It only asked to see threads." : ACCESS_DETAILS[access]}
+                    {unavailable ? unavailableHint : ACCESS_DETAILS[access]}
                   </span>
                 </span>
               </label>
@@ -655,7 +742,7 @@ function GrantFields({
             Highest access
           </span>
           <Select
-            value={draft.maxRuntimeMode}
+            value={shown.maxRuntimeMode}
             disabled={disabled}
             onValueChange={(value) => onChange({ maxRuntimeMode: value as RuntimeMode })}
           >
@@ -665,11 +752,15 @@ function GrantFields({
               aria-labelledby={`${fieldId}-ceiling`}
               data-testid="outside-agent-ceiling"
             >
-              <SelectValue>{runtimeModeConfig[draft.maxRuntimeMode].label}</SelectValue>
+              <SelectValue>{runtimeModeConfig[shown.maxRuntimeMode].label}</SelectValue>
             </SelectTrigger>
             <SelectPopup alignItemWithTrigger={false}>
               {RUNTIME_MODES.map((mode) => (
-                <SelectItem key={mode} value={mode}>
+                <SelectItem
+                  key={mode}
+                  value={mode}
+                  disabled={!outsideAgentRuntimeModeAllowed(mode, limit)}
+                >
                   {runtimeModeConfig[mode].label}
                 </SelectItem>
               ))}
@@ -678,6 +769,11 @@ function GrantFields({
           <p className={HINT_CLASS} data-testid="outside-agent-ceiling-hint">
             {CEILING_HINTS[shownAccess]}
           </p>
+          {ceilingNote !== null ? (
+            <p className={HINT_CLASS} data-testid="outside-agent-ceiling-limit">
+              {ceilingNote}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </>

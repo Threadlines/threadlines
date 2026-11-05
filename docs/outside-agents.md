@@ -9,6 +9,7 @@ Its tools:
 
 | Tool             | What it does                                                                                                                                                                   | Access |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| `computers`      | This computer, and your linked computers it may also use.                                                                                                                      | See    |
 | `projects`       | The projects it may use.                                                                                                                                                       | See    |
 | `agents`         | The agents and models a thread can run on.                                                                                                                                     | See    |
 | `threads_list`   | Threads in its projects, with their status.                                                                                                                                    | See    |
@@ -59,6 +60,15 @@ dialog is the one the agent gave; Threadlines can't check it.
 Sign-in happens once. Later runs, including unattended ones like `claude -p` or
 `codex exec`, use it until you remove the agent or don't use it for 90 days.
 
+## Your other computers
+
+An agent connected here can work on your other computers too: the ones linked
+to this one in Fleet. Each tool takes `computer`, an id from `computers` (a name works when only one computer has it). In
+the agent's Change dialog (Settings → Connections), Other computers lists them;
+Ask puts the same approval in front of you on that computer, and it can never
+do more there than here. Remove there, or here, takes it away. This computer
+has to be on: the agent's calls go through it.
+
 ## The `threadlines` command
 
 For scripts, and for agents that run shell commands but don't speak MCP. In the
@@ -76,6 +86,8 @@ threadlines thread list --mine
 threadlines thread read <id>
 threadlines thread read <id> --message <messageId>   # all of one long message
 threadlines thread stop <id>
+threadlines computers                    # your linked computers it may use
+threadlines thread list --computer "Windows PC"
 ```
 
 Every command takes `--json`. `--wait` prints the thread's whole reply, however

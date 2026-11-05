@@ -1,13 +1,15 @@
 /**
  * Agents outside Threadlines (docs/design/outside-agents.md) and assistants
  * (docs/design/assistants.md), in the words the app shows them: what a
- * connection may do, where, how it signs in and when it last called; how each
- * client connects; the sign-ins waiting, oldest first; the choices the
- * approval dialog starts from and the grant they make; when a new sign-in
- * earns a system notification; what a thread says while their work limits
- * its agents' tools; and the web addresses assistants' alerts go to (the
- * user's, with their dialog's choices, and the subscriptions assistants
- * made). Pure, so Settings, the dialogs and the labels say it alike.
+ * connection may do, where, how it signs in (or which linked computer brings
+ * it) and when it last called; how each client connects; the sign-ins and
+ * linked computers' asks waiting, oldest first; the choices the approval
+ * dialog starts from, the most it may give and the grant they make; what a
+ * connection may do on the user's other computers; when a new sign-in earns a
+ * system notification; what a thread says while their work limits its
+ * agents' tools; and the web addresses assistants' alerts go to (the user's,
+ * with their dialog's choices, and the subscriptions assistants made). Pure,
+ * so Settings, the dialogs and the labels say it alike.
  */
 import {
   AssistantAlertKind,
@@ -16,23 +18,26 @@ import {
   type AssistantAlertTargetId,
   type AssistantAlertTargetUpdateInput,
 } from "@threadlines/contracts";
-import type {
-  KnownAssistant,
+import {
+  type KnownAssistant,
   OutsideAgentAccess,
-  OutsideAgentAssistantSignIn,
-  OutsideAgentConnection,
-  OutsideAgentGrant,
-  OutsideAgentIdentity,
-  OutsideAgentPendingRequest,
-  OutsideAgentRef,
-  OutsideAgentsSnapshot,
-  OrchestrationOutsideWork,
-  ProjectId,
-  RuntimeMode,
-  ThreadParticipantId,
+  type OutsideAgentAssistantSignIn,
+  type OutsideAgentConnection,
+  type OutsideAgentGrant,
+  type OutsideAgentIdentity,
+  type OutsideAgentLinkedAsk,
+  type OutsideAgentPendingRequest,
+  type OutsideAgentReach,
+  type OutsideAgentRef,
+  type OutsideAgentsSnapshot,
+  type OrchestrationOutsideWork,
+  type ProjectId,
+  type RuntimeMode,
+  type ThreadParticipantId,
 } from "@threadlines/contracts";
 import type { TimestampFormat } from "@threadlines/contracts/settings";
 import { assistantDisplayName } from "@threadlines/shared/knownAssistants";
+import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 
 import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { formatDateAndTime, formatRelativeTimeLabel } from "../../timestampFormat";
@@ -65,17 +70,62 @@ export function describeOutsideAgentAccess(
     : `${doing} · ${runtimeModeConfig[grant.maxRuntimeMode].label}`;
 }
 
+/** The most the approval dialog may give: what it may do, and its highest access (null: any). */
+export interface OutsideAgentGrantLimit {
+  readonly access: OutsideAgentAccess;
+  readonly maxRuntimeMode: RuntimeMode | null;
+}
+
 /**
- * Whether the dialog may give `access` to a sign-in that asked for
- * `requestedAccess`. One that asked only to see threads stays at See. One
- * that asked to start them may get any level: no sign-in asks for Work, only
- * the user grants it. Keys and Change ask as Start.
+ * The most a sign-in that asked for `requestedAccess` may get. One that asked
+ * only to see threads stays at See. One that asked to start them may get any
+ * level: no sign-in asks for Work, only the user grants it. Keys and Change
+ * ask as Start.
  */
+export function signInGrantLimit(requestedAccess: OutsideAgentAccess): OutsideAgentGrantLimit {
+  return { access: requestedAccess === "see" ? "see" : "work", maxRuntimeMode: null };
+}
+
+/**
+ * The most a linked computer's ask may get here: what the agent may do on
+ * that computer, so this one never gives it more.
+ */
+export function linkedAskGrantLimit(
+  ask: Pick<OutsideAgentLinkedAsk, "requestedAccess" | "maxRuntimeMode">,
+): OutsideAgentGrantLimit {
+  return { access: ask.requestedAccess, maxRuntimeMode: ask.maxRuntimeMode };
+}
+
+const accessRank = (access: OutsideAgentAccess) => OutsideAgentAccess.literals.indexOf(access);
+
+/** Whether the dialog may give `access` under `limit`. */
 export function outsideAgentAccessAllowed(
   access: OutsideAgentAccess,
-  requestedAccess: OutsideAgentAccess,
+  limit: OutsideAgentGrantLimit,
 ): boolean {
-  return access === "see" || requestedAccess !== "see";
+  return accessRank(access) <= accessRank(limit.access);
+}
+
+/** Whether the dialog may give `mode` as the highest access under `limit`. */
+export function outsideAgentRuntimeModeAllowed(
+  mode: RuntimeMode,
+  limit: OutsideAgentGrantLimit,
+): boolean {
+  return limit.maxRuntimeMode === null || !exceedsRuntimeMode(mode, limit.maxRuntimeMode);
+}
+
+/** What the dialog's choices give once lowered to what `limit` allows, as it shows and sends them. */
+export function withinOutsideAgentGrantLimit(
+  choice: Pick<OutsideAgentGrant, "access" | "maxRuntimeMode">,
+  limit: OutsideAgentGrantLimit,
+): Pick<OutsideAgentGrant, "access" | "maxRuntimeMode"> {
+  return {
+    access: outsideAgentAccessAllowed(choice.access, limit) ? choice.access : limit.access,
+    maxRuntimeMode:
+      limit.maxRuntimeMode === null
+        ? choice.maxRuntimeMode
+        : saferRuntimeMode(choice.maxRuntimeMode, limit.maxRuntimeMode),
+  };
 }
 
 /**
@@ -109,11 +159,14 @@ export function describeOutsideAgentLastUse(lastUsedAt: string | null, nowMs: nu
  * where its sign-in goes back to is known, "Key" for a key made in Settings.
  * When Threadlines shows it as another name than the one it gave (Grok Bot,
  * which signs in as Cursor), it says so: "Signs in as Cursor through
- * www.cursor.com". Null for local agents, which all sign in the same way.
+ * www.cursor.com". Null for local agents, which all sign in the same way. A
+ * connection a linked computer brings here, of either kind, says which:
+ * "Through Mac".
  */
 export function describeOutsideAgentSignIn(
-  connection: Pick<OutsideAgentConnection, "kind" | "signIn" | "identity" | "givenName">,
+  connection: Pick<OutsideAgentConnection, "kind" | "signIn" | "identity" | "givenName" | "via">,
 ): string | null {
+  if (connection.via !== null) return `Through ${connection.via.computer}`;
   if (connection.kind !== "assistant") return null;
   if (connection.signIn === "key") return "Key";
   if (connection.identity === null) return null;
@@ -153,18 +206,33 @@ export const pickedAssistant = (choice: AssistantChoice): KnownAssistant | null 
 export const choiceDisplayName = (choice: AssistantChoice, givenName: string) =>
   assistantDisplayName(pickedAssistant(choice), givenName);
 
-/** A sign-in waiting for the user: a local agent's, or an assistant's. */
+/**
+ * A sign-in waiting for the user: a local agent's, an assistant's, or a
+ * linked computer asking for one of its agents to use this computer too. An
+ * ask has a `kind` of its own (local or assistant), so it comes whole in `ask`.
+ */
 export type OutsideAgentWaitingSignIn =
   | (OutsideAgentPendingRequest & { readonly kind: "local" })
-  | (OutsideAgentAssistantSignIn & { readonly kind: "assistant" });
+  | (OutsideAgentAssistantSignIn & { readonly kind: "assistant" })
+  | (Pick<OutsideAgentLinkedAsk, "requestId" | "name" | "createdAt"> & {
+      readonly kind: "linked";
+      readonly ask: OutsideAgentLinkedAsk;
+    });
 
-/** Every sign-in waiting for the user, local agents' and assistants' together, oldest first. */
+/** Every sign-in and linked computer's ask waiting for the user, together, oldest first. */
 export function waitingOutsideAgentSignIns(
-  snapshot: Pick<OutsideAgentsSnapshot, "pending" | "assistants">,
+  snapshot: Pick<OutsideAgentsSnapshot, "pending" | "assistants" | "linkedAsks">,
 ): ReadonlyArray<OutsideAgentWaitingSignIn> {
   const waiting: Array<OutsideAgentWaitingSignIn> = [
     ...snapshot.pending.map((request) => ({ ...request, kind: "local" as const })),
     ...snapshot.assistants.signIns.map((signIn) => ({ ...signIn, kind: "assistant" as const })),
+    ...snapshot.linkedAsks.map((ask) => ({
+      requestId: ask.requestId,
+      name: ask.name,
+      createdAt: ask.createdAt,
+      kind: "linked" as const,
+      ask,
+    })),
   ];
   // Stable, so each kind keeps the server's order among equal times.
   return waiting.toSorted(
@@ -349,23 +417,80 @@ export function initialOutsideAgentDraft(grant: OutsideAgentGrant | null): Outsi
 
 /**
  * The grant the dialog's choices make, or null while they make none (some
- * projects, none of them picked). Only a level the sign-in allows
- * (outsideAgentAccessAllowed), and only projects this computer still has.
+ * projects, none of them picked). Never more than `limit` allows, and only
+ * projects this computer still has.
  */
 export function outsideAgentGrantFromDraft(
   draft: OutsideAgentGrantDraft,
   input: {
-    readonly requestedAccess: OutsideAgentAccess;
+    readonly limit: OutsideAgentGrantLimit;
     readonly availableProjectIds: ReadonlyArray<ProjectId>;
   },
 ): OutsideAgentGrant | null {
-  const access: OutsideAgentAccess = outsideAgentAccessAllowed(draft.access, input.requestedAccess)
-    ? draft.access
-    : "see";
   const projectIds = chosenProjectIds(draft, input.availableProjectIds);
-  return projectIds?.length === 0
-    ? null
-    : { access, maxRuntimeMode: draft.maxRuntimeMode, projectIds };
+  if (projectIds?.length === 0) return null;
+  return { ...withinOutsideAgentGrantLimit(draft, input.limit), projectIds };
+}
+
+/** "All projects", "1 project", "3 projects": how many of a computer's projects it may use. */
+function describeProjectCount(projectCount: number | null): string {
+  if (projectCount === null) return "All projects";
+  if (projectCount === 0) return "No projects";
+  return projectCount === 1 ? "1 project" : `${projectCount} projects`;
+}
+
+/**
+ * A connection's standing on another computer, as its row in the Change
+ * dialog says it: what it may do there ("Starts threads · Supervised · All
+ * projects"), the ask waiting there, or why there's nothing to do.
+ */
+export function describeOutsideAgentReach(
+  reach: Pick<
+    OutsideAgentReach,
+    "computer" | "state" | "access" | "maxRuntimeMode" | "projectCount"
+  >,
+): string {
+  switch (reach.state) {
+    case "allowed": {
+      const doing =
+        reach.access === undefined
+          ? "Allowed"
+          : describeOutsideAgentAccess({
+              access: reach.access,
+              maxRuntimeMode: reach.maxRuntimeMode ?? "approval-required",
+            });
+      return `${doing} · ${describeProjectCount(reach.projectCount ?? null)}`;
+    }
+    case "asked":
+      return `Waiting for you to allow it on ${reach.computer}`;
+    case "none":
+      return "Not allowed";
+    case "offline":
+      return "Offline. Try again when it's on.";
+    case "unsupported":
+      return `Update Threadlines on ${reach.computer} to use this.`;
+  }
+}
+
+/**
+ * What a computer's row offers: Ask one it may not use, Cancel an ask still
+ * waiting there, Remove one it may use. Nothing while the computer is offline
+ * or its Threadlines too old to ask.
+ */
+export function outsideAgentReachAction(
+  state: OutsideAgentReach["state"],
+): "ask" | "cancel" | "remove" | null {
+  switch (state) {
+    case "allowed":
+      return "remove";
+    case "asked":
+      return "cancel";
+    case "none":
+      return "ask";
+    case "offline":
+    case "unsupported":
+      return null;
+  }
 }
 
 /** At most one system notification for new sign-ins this often. */

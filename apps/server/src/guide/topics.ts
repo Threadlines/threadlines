@@ -136,7 +136,9 @@ A message it sends while a thread is working waits above the message box as "Que
 
 {place:connections.threadlinesCommand} (desktop app) puts the command on your PATH. Then, in a new terminal, \`threadlines connect\` signs the agent in: the browser shows a short code, and you approve the agent in the Threadlines window when the same code shows there, choosing what it can do and its highest access. After that: \`threadlines projects\`, \`threadlines thread start <project> "<prompt>" --wait\`, and \`threadlines thread list\`, \`read\`, \`send\`, \`wait\`, \`stop\`.
 
-{place:connections.agentsUsingThis} lists each agent you let in, to change its access or remove it. {place:connections.agents} also shows the address agents use.`,
+{place:connections.agentsUsingThis} lists each agent you let in, to change its access or remove it. {place:connections.agents} also shows the address agents use.
+
+It can work on your other computers linked to this one in Fleet too, through this one: in its Change dialog, Other computers asks each one, and you allow it on that computer. It never gets more there than here, and this computer has to be on. \`threadlines computers\` lists them; \`--computer <name>\` sends a command there.`,
   },
   {
     id: "assistants",
@@ -165,6 +167,8 @@ To connect one, paste {place:connections.assistantAddress} into the assistant as
 With {place:connections.assistantAlerts}, this computer wakes an assistant instead of waiting for it to check in: it sends a signed alert to a web address when a thread needs you, finishes or fails. An alert carries only the kind, the project, the computer and a link, never a thread's title or what its agents wrote. For a Grok routine, add its webhook URL with its key (\`Bearer crsr_…\`) as the Authorization header, so the routine runs and checks in to see what happened. Skip threads I'm looking at, on by default, holds back alerts for threads you have open, since the routine runs a model for each one. Finished only when I ask sends a finished alert just for turns where the user told the thread's agent to tell their assistant ("let Grok know when you're done"); the agent's alert_assistants tool marks that turn, and it goes out when the turn ends, even while the thread is open. Agents in threads another computer, an outside agent or an assistant started can't mark a turn, nor can community agents that don't take Threadlines' tools.
 
 Dots and ChatGPT Work chats can subscribe to those alerts themselves (MCP Events), for one kind of alert and every project they can see or just one. A subscription shows in that same list with the assistant that added it and when it must be renewed by. The assistant renews it on its own, at most a week at a time. Its only action is Remove, and the assistant can subscribe again while it's connected; remove the assistant to stop it for good. None of these alerts cover General Chats.
+
+An assistant connected here can work on your other computers linked to this one in Fleet: in its Change dialog, Other computers asks each one, and you allow it on that computer, never with more than it has here. Its calls go through this computer, so this one has to be on. Alerts are set on each computer.
 
 While this computer is asleep or Threadlines is closed, assistants are told it's offline. The relay passes their requests to this computer and can read them, unlike a phone's, which are end-to-end encrypted.`,
   },

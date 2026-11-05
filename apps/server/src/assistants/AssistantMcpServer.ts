@@ -28,6 +28,7 @@ import { makeConnectToolDeps } from "../outsideAgents/connectToolDeps.ts";
 import { makeConnectToolHandlers } from "../outsideAgents/connectToolHandlers.ts";
 import {
   AgentsTool,
+  ComputersTool,
   INBOX_EVENTS_LIMIT,
   InboxTool,
   listedToolsFor,
@@ -43,7 +44,7 @@ import {
 } from "../outsideAgents/connectTools.ts";
 import { OutsideAgentConnections } from "../outsideAgents/OutsideAgentConnections.ts";
 import { AssistantAlerts } from "./AssistantAlerts.ts";
-import { type AssistantMcpTool, makeAssistantMcp } from "./AssistantMcp.ts";
+import { type AssistantMcpTool, makeAssistantMcp, mapStrings } from "./AssistantMcp.ts";
 import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
 import { Assistants } from "./Assistants.ts";
 
@@ -71,7 +72,7 @@ const DRIVES_AN_AGENT = { destructive: true, openWorld: true };
 const STOPS_AN_AGENT = { destructive: true, openWorld: false };
 
 /** Answers name options as this door showed them, with the home folder scrubbed: back to what they say. */
-const withHomeRestored = (parameters: Tool.Parameters<typeof OutsideThreadAnswerTool>) => {
+export const withHomeRestored = (parameters: Tool.Parameters<typeof OutsideThreadAnswerTool>) => {
   const restore = (text: string) => restoreUserPaths(text, homedir());
   return {
     ...parameters,
@@ -80,6 +81,12 @@ const withHomeRestored = (parameters: Tool.Parameters<typeof OutsideThreadAnswer
     ),
   };
 };
+
+/** Text with this computer's home folder scrubbed out. */
+export const scrubHome = (text: string): string => scrubUserPaths(text, homedir());
+
+/** A tool's encoded answer with this computer's home folder scrubbed from every string in it. */
+export const withHomeScrubbed = (encoded: unknown): unknown => mapStrings(encoded, scrubHome);
 
 /** Runs a handler with the parameters AssistantMcp decoded with the tool's own schema. */
 const decoded = <T extends Tool.Any>(_tool: T, parameters: unknown) =>
@@ -91,9 +98,16 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
     const connections = yield* OutsideAgentConnections;
     const alerts = yield* AssistantAlerts;
     const deps = yield* makeConnectToolDeps;
-    const handlers = yield* makeConnectToolHandlers(deps, { door: "assistant" });
+    const handlers = yield* makeConnectToolHandlers(deps, {
+      door: "assistant",
+      scrubText: scrubHome,
+    });
     const tools: ReadonlyArray<AssistantMcpTool> = [
-      { tool: ProjectsTool, run: (caller) => handlers.projects(caller) },
+      { tool: ComputersTool, run: (caller) => handlers.computers(caller) },
+      {
+        tool: ProjectsTool,
+        run: (caller, parameters) => handlers.projects(caller, decoded(ProjectsTool, parameters)),
+      },
       {
         tool: AgentsTool,
         run: (caller, parameters) => handlers.agents(caller, decoded(AgentsTool, parameters)),
@@ -150,11 +164,12 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
         tool: OutsideThreadAnswerTool,
         required: ["requestId"],
         hints: DRIVES_AN_AGENT,
-        run: (caller, parameters) =>
-          handlers.thread_answer(
-            caller,
-            withHomeRestored(decoded(OutsideThreadAnswerTool, parameters)),
-          ),
+        run: (caller, parameters) => {
+          const answer = decoded(OutsideThreadAnswerTool, parameters);
+          // `~` is the home folder of the computer that runs it: another one restores its own.
+          const elsewhere = (answer.computer?.trim() ?? "").length > 0;
+          return handlers.thread_answer(caller, elsewhere ? answer : withHomeRestored(answer));
+        },
       },
     ];
     const handler = makeAssistantMcp({

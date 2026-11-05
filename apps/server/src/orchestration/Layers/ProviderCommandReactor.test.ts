@@ -4954,7 +4954,22 @@ describe("ProviderCommandReactor", () => {
         await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 2);
         expect(harness.steerTurn).not.toHaveBeenCalled();
 
+        // The session is free before the turn's record says how it ended
+        // (its checkpoint comes after): the message waits for that.
         await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+        await Effect.runPromise(Effect.sleep("100 millis"));
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.complete",
+            commandId: CommandId.make("cmd-outside-turn-complete"),
+            threadId,
+            turnId,
+            state: "completed",
+            completedAt: "2026-01-01T00:00:03.500Z",
+            createdAt: "2026-01-01T00:00:03.500Z",
+          }),
+        );
         await waitFor(() => harness.sendTurn.mock.calls.length === 1);
         expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ threadId, messageId: sent });
         const thread = await readThread(harness);

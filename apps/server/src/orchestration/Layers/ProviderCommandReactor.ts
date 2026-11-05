@@ -5109,15 +5109,23 @@ const make = Effect.gen(function* () {
 
   /**
    * Sends an outside agent's queued message as a turn, with its connection's
-   * grant as it is now and the Stop epoch seen here, or takes it back. True
-   * when its turn started.
+   * grant as it is now and the Stop epoch the drain began under, or takes it
+   * back: `sent`, `taken`, or `wait` while the turn before it hasn't said how
+   * it ended (its record reads running until its checkpoint is taken). Only a
+   * turn that completed sends it on its own; one stopped or failed takes it back.
    */
   const sendOutsideQueued = Effect.fnUntraced(function* (
     thread: OrchestrationThread,
     queued: OrchestrationQueuedFollowUp & { readonly fromOutside: OutsideAgentRef },
     createdAt: string,
+    chainEpoch: number,
   ) {
-    const origin = yield* outsideQueuedOrigin(thread, queued.fromOutside.connectionId);
+    const before = thread.latestTurn?.state;
+    if (before === "running") return "wait" as const;
+    const origin =
+      before === "interrupted" || before === "error"
+        ? null
+        : yield* outsideQueuedOrigin(thread, queued.fromOutside.connectionId);
     if (origin !== null) {
       const sent = yield* orchestrationEngine
         .dispatch({
@@ -5125,7 +5133,7 @@ const make = Effect.gen(function* () {
           commandId: serverCommandId("follow-up-send-outside-queued"),
           threadId: thread.id,
           messageId: queued.messageId,
-          ifChainEpoch: thread.agentRequests.chainEpoch,
+          ifChainEpoch: chainEpoch,
           outsideOrigin: origin,
           createdAt,
         })
@@ -5143,12 +5151,12 @@ const make = Effect.gen(function* () {
       if (sent) {
         const after = yield* resolveThread(thread.id);
         if (after?.messages.some((message) => message.id === queued.messageId) === true) {
-          return true;
+          return "sent" as const;
         }
       }
     }
     yield* takeBackQueued(thread.id, queued.messageId, createdAt);
-    return false;
+    return "taken" as const;
   });
 
   /**
@@ -5180,16 +5188,27 @@ const make = Effect.gen(function* () {
     createdAt: string,
   ) {
     let candidate: MessageId | undefined = messageId;
+    // The Stop epoch the drain began under: a Stop since sends nothing more.
+    let chainEpoch: number | undefined;
     while (candidate !== undefined) {
       const current: MessageId = candidate;
+      if (queueHeldByStop.has(threadId)) return;
       const thread = yield* resolveThread(threadId);
+      chainEpoch ??= thread?.agentRequests.chainEpoch;
       const entry = thread?.queuedFollowUps?.find((queued) => queued.messageId === current);
       if (thread !== undefined && entry?.fromOutside !== undefined) {
-        if (
-          yield* sendOutsideQueued(thread, { ...entry, fromOutside: entry.fromOutside }, createdAt)
-        ) {
+        const outcome = yield* sendOutsideQueued(
+          thread,
+          { ...entry, fromOutside: entry.fromOutside },
+          createdAt,
+          chainEpoch ?? thread.agentRequests.chainEpoch,
+        );
+        if (outcome === "wait") {
+          yield* holdRemoteTurn(threadId, retryHeldQueue(threadId));
           return;
         }
+        yield* releaseRemoteHold(threadId);
+        if (outcome === "sent") return;
         const latest = yield* resolveThread(threadId);
         const next = latest ? nextQueuedFollowUp(latest) : undefined;
         candidate = next !== undefined && next.messageId !== current ? next.messageId : undefined;
@@ -5211,6 +5230,7 @@ const make = Effect.gen(function* () {
             commandId: serverCommandId("follow-up-send-queued"),
             threadId,
             messageId: current,
+            ...(chainEpoch !== undefined ? { ifChainEpoch: chainEpoch } : {}),
             createdAt,
           })
           .pipe(
@@ -5343,7 +5363,7 @@ const make = Effect.gen(function* () {
     // A turn that ended any other way sends nothing on its own: an outside
     // agent's message waiting for it is taken back, as Stop takes it back.
     if (
-      previousStatus === "running" &&
+      (previousStatus === "running" || previousStatus === "starting") &&
       (session.status === "error" ||
         session.status === "interrupted" ||
         session.status === "stopped")

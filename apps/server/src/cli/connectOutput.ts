@@ -6,6 +6,7 @@
  */
 import type {
   AgentsResult,
+  ComputersResult,
   OutsideThreadReadResult,
   OutsideThreadStartResult,
   OutsideThreadStopResult,
@@ -20,6 +21,7 @@ import { EXIT, type ExitCode } from "./connectExit.ts";
 
 /** Every outcome a tool can answer that means Threadlines refused the call. */
 const REFUSED_OUTCOMES: ReadonlySet<string> = new Set([
+  "offline",
   "not_allowed",
   "not_found",
   "not_yours",
@@ -106,6 +108,24 @@ function columns(rows: ReadonlyArray<ReadonlyArray<string>>): string {
         .trimEnd(),
     )
     .join("\n");
+}
+
+export function formatComputers(result: ComputersResult): string {
+  return columns(
+    result.computers.map((computer) => [
+      computer.name,
+      computer.id,
+      computer.here
+        ? "this computer"
+        : computer.allowed === "yes"
+          ? "allowed"
+          : computer.allowed === "asked"
+            ? "waiting for you to allow it there"
+            : computer.allowed === "unknown"
+              ? "offline"
+              : "not allowed (allow it in Threadlines > Settings > Connections)",
+    ]),
+  );
 }
 
 export function formatProjects(result: ProjectsResult): string {

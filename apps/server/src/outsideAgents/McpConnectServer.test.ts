@@ -220,6 +220,7 @@ describe("/mcp/connect", () => {
       (listed.result.tools as Array<{ readonly name: string }>).map((tool) => tool.name).toSorted();
     expect(names(result.see)).toEqual([
       "agents",
+      "computers",
       "inbox",
       "projects",
       "thread_changes",
@@ -229,6 +230,7 @@ describe("/mcp/connect", () => {
     ]);
     expect(names(result.start)).toEqual([
       "agents",
+      "computers",
       "inbox",
       "projects",
       "thread_changes",
