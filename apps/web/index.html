@@ -6,6 +6,24 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
+    <!-- iPhone and iPad zoom the page into any text field whose text is under
+         16px, and the app's fields are mostly 13px. A maximum scale of 1 stops
+         that zoom; in Safari a pinch still zooms, since iOS ignores the limit
+         for gestures. Apple touch screens only: Android applies the limit to
+         pinches too, and never zooms into fields anyway. An iPad reports
+         itself as a Mac, so a Mac with a touch screen counts. -->
+    <script>
+      (() => {
+        const userAgent = navigator.userAgent;
+        const appleTouchScreen =
+          /\b(?:iPhone|iPad|iPod)\b/.test(userAgent) ||
+          (/\bMacintosh\b/.test(userAgent) && navigator.maxTouchPoints > 1);
+        if (!appleTouchScreen) return;
+        const viewport = document.querySelector('meta[name="viewport"]');
+        const content = viewport?.getAttribute("content");
+        if (content) viewport.setAttribute("content", `${content}, maximum-scale=1`);
+      })();
+    </script>
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#161616" />
