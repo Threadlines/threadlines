@@ -167,6 +167,8 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       getSourceControlSetup: () => withServer((server) => server.getSourceControlSetup()),
       startGitHubAuth: () => withServer((server) => server.startGitHubAuth()),
       cancelGitHubAuth: () => withServer((server) => server.cancelGitHubAuth()),
+      getReportProblemAccount: () => withServer((server) => server.getReportProblemAccount()),
+      reportProblem: (input) => withServer((server) => server.reportProblem(input)),
       getTraceDiagnostics: () => withServer((server) => server.getTraceDiagnostics()),
       getProcessDiagnostics: () => withServer((server) => server.getProcessDiagnostics()),
       getProcessResourceHistory: (input) =>

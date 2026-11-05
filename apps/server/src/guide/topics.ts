@@ -292,6 +292,6 @@ Settings that give agents more reach ({place:threads.agentThreads}, {place:threa
     keywords: ["update", "version", "nightly", "stable", "release", "what's new", "bug", "report"],
     body: `The desktop app updates itself. When an update is ready, a notice says so with a button to restart into it. The app's version and which releases it follows (stable, or nightly builds with the newest changes) are in {place:general.about}; its Version row opens What's new.
 
-To report a bug, {place:general.reportProblem} opens GitHub's bug form with the version and setup filled in; the user finishes and sends it from their own GitHub account. The search box (Report a problem), the new-thread screen and the Help menu in the desktop app open the same form.`,
+To report a bug, {place:general.reportProblem} opens a short form in the app, with the version and setup filled in. When the computer is signed in to GitHub, Post report puts it on Threadlines' GitHub issues from the user's own account, so GitHub tells them about replies. Signed out, they can sign in from the form or finish on GitHub's form, which opens with what they wrote. Reports are public. The search box (Report a problem), the new-thread screen, the "Something went wrong" screen and the Help menu in the desktop app open the same form.`,
   },
 ];

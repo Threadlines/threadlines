@@ -312,6 +312,10 @@ export interface WsRpcClient {
     >;
     readonly startGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverStartGitHubAuth>;
     readonly cancelGitHubAuth: RpcUnaryNoArgMethod<typeof WS_METHODS.serverCancelGitHubAuth>;
+    readonly getReportProblemAccount: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetReportProblemAccount
+    >;
+    readonly reportProblem: RpcUnaryMethod<typeof WS_METHODS.serverReportProblem>;
     readonly getTraceDiagnostics: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetTraceDiagnostics>;
     readonly getProcessDiagnostics: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverGetProcessDiagnostics
@@ -979,6 +983,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverStartGitHubAuth]({})),
       cancelGitHubAuth: () =>
         transport.request((client) => client[WS_METHODS.serverCancelGitHubAuth]({})),
+      getReportProblemAccount: () =>
+        transport.request((client) => client[WS_METHODS.serverGetReportProblemAccount]({})),
+      reportProblem: (input) =>
+        transport.request((client) => client[WS_METHODS.serverReportProblem](input)),
       getTraceDiagnostics: () =>
         transport.request((client) =>
           client[WS_METHODS.serverGetTraceDiagnostics]({}).pipe(Effect.withTracerEnabled(false)),

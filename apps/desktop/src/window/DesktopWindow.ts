@@ -97,6 +97,8 @@ export const OPEN_USAGE_MENU_ACTION = "open-usage";
 export const OPEN_THREAD_MENU_ACTION = "open-thread";
 /** Help › What's New: the release notes for the version you have. */
 export const OPEN_WHATS_NEW_MENU_ACTION = "open-whats-new";
+/** Help › Report a Problem: the app's own report form (web ReportProblemDialog.tsx). */
+export const OPEN_REPORT_PROBLEM_MENU_ACTION = "open-report-problem";
 export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
 export const NAVIGATE_BACK_MENU_ACTION = "navigate-back";
 export const NAVIGATE_FORWARD_MENU_ACTION = "navigate-forward";
