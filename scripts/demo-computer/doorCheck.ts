@@ -22,6 +22,7 @@ const TIMEOUT_MS = 30_000;
 /** Every tool a Work connection lists: what the directories review. */
 const WORK_TOOLS = [
   "agents",
+  "computers",
   "inbox",
   "projects",
   "thread_answer",
