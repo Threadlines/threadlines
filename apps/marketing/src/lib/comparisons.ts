@@ -107,11 +107,11 @@ export const COMPARISONS: readonly Comparison[] = [
     title: "Conductor app alternative for Claude Code and Codex | Threadlines",
     description:
       "Conductor is joining Meta and stopped new sign-ups. Threadlines is a free, open-source app for Mac, Windows and Linux that runs Claude Code, Codex and more.",
-    headline: "A Conductor alternative for Mac, Windows and Linux",
+    headline: "A free, open-source Conductor alternative",
     summary:
       "A Mac app that's joining Meta and closed to new users. Threadlines is free, open source, and runs on Mac, Windows and Linux.",
     intro:
-      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way on Mac, Windows and Linux. It's free and MIT-licensed, and two agents can share one thread.",
+      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way, on Mac, Windows and Linux, and two agents can share one thread. It's free and MIT-licensed, so the code stays public whatever happens to the project.",
     status: {
       heading: "Conductor is joining Meta",
       text: "On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups and downloads. If you already use it, the Mac app keeps working for now, and Pro users keep Pro features for free.",
@@ -246,9 +246,9 @@ export const COMPARISONS: readonly Comparison[] = [
       },
     ],
     pickThreadlines: [
-      "You work on Windows or Linux, or move between computers.",
-      "You want open source with no paid tier.",
+      "You want an app that's free and open source.",
       "You want Codex to check Claude's work in the same thread.",
+      "You work on Windows or Linux, or move between computers.",
       "You want your own Windows PC or Linux box to share the work.",
       "You use Antigravity or fx.",
     ],

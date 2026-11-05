@@ -108,11 +108,31 @@ const structuredData = [
           <a class="primary-action" href="/download">
             <Icon name="download" /> Download Threadlines
           </a>
+          {
+            switching && (
+              <a href="#switching">
+                How to move from {comparison.name} <span aria-hidden="true">↓</span>
+              </a>
+            )
+          }
           <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
             View the source on GitHub <span aria-hidden="true">↗</span>
           </a>
         </div>
       </header>
+
+      <figure class="compare-shot">
+        <img
+          src="/Screenshots/app/two-agents.webp"
+          alt="Threadlines with a full sidebar of projects and threads, and two agents working on the same bug in one thread"
+          width="2400"
+          height="1401"
+          decoding="async"
+        />
+        <figcaption>
+          Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
+        </figcaption>
+      </figure>
 
       {
         status && (
@@ -217,7 +237,7 @@ const structuredData = [
 
       {
         switching && (
-          <section class="compare-section compare-switching">
+          <section class="compare-section compare-switching" id="switching">
             <h2>{switching.heading}</h2>
             <ol class="compare-steps">
               {switching.steps.map((step) => (
@@ -243,20 +263,6 @@ const structuredData = [
           </section>
         )
       }
-
-      <figure class="compare-shot">
-        <img
-          src="/Screenshots/app/two-agents.webp"
-          alt="Threadlines with a full sidebar of projects and threads, and two agents working on the same bug in one thread"
-          width="2400"
-          height="1401"
-          loading="lazy"
-          decoding="async"
-        />
-        <figcaption>
-          Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
-        </figcaption>
-      </figure>
 
       <section class="compare-section">
         <h2>Questions</h2>
@@ -504,6 +510,11 @@ const structuredData = [
     font-size: 15px;
     line-height: 1.5;
     text-wrap: pretty;
+  }
+
+  /* The hero's jump link lands here; keep the heading clear of the sticky nav. */
+  .compare-switching {
+    scroll-margin-top: 72px;
   }
 
   .compare-switching code {
