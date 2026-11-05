@@ -109,11 +109,21 @@ jobs:
             fi
             sleep 2
           done
-          docker logs smoke | grep -q "pairingUrl" || {
-            echo "::error::Boot log printed no pairing URL."
-            docker logs smoke
-            exit 1
-          }
+          # The pairing URL is printed once startup finishes, a moment after
+          # HTTP first answers, so keep looking for it. The log is read whole
+          # before grep: `grep -q` quitting early would cut `docker logs` off
+          # mid-write, and pipefail would count that as a miss.
+          for attempt in $(seq 1 30); do
+            if grep -q "pairingUrl" <<< "$(docker logs smoke 2>&1)"; then
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "::error::Boot log printed no pairing URL."
+              docker logs smoke
+              exit 1
+            fi
+            sleep 1
+          done
           docker exec smoke claude --version
           docker exec smoke codex --version
           docker exec smoke git --version
