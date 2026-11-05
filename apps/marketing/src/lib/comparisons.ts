@@ -437,8 +437,8 @@ export const COMPARISONS: readonly Comparison[] = [
       "Your code isn't on GitHub.",
     ],
     pickOther: [
-      "You have sessions to finish before November 11.",
-      "You want a task to keep going in the cloud with your laptop closed.",
+      "You're wrapping up sessions already in Jules, before it turns read-only on November 11.",
+      "You need a task to keep running in the cloud with your laptop closed, before November 11.",
     ],
     switching: {
       heading: "Coming from Jules",
