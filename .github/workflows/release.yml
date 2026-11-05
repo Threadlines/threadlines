@@ -1069,6 +1069,20 @@ jobs:
             -f publish=true
           echo "Dispatched npm publish of @threadlines/server@$VERSION from $TAG."
 
+      # winget.yml sends the Windows installer to microsoft/winget-pkgs.
+      - name: Send stable release to winget
+        if: ${{ needs.preflight.outputs.channel == 'stable' && needs.windows.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run winget.yml \
+            --ref "$TAG" \
+            -f version="$VERSION"
+          echo "Dispatched the winget update for $VERSION from $TAG."
+
   deploy_web_app:
     name: Deploy app.threadlines.dev
     needs:
