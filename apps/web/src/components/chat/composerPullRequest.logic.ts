@@ -17,13 +17,17 @@ import type {
 } from "@threadlines/contracts";
 import {
   resolvePullRequestAutoMergeStep,
+  resolvePullRequestAutomationHold,
   type PullRequestAutoMergeStep,
+  type PullRequestAutomationHold,
 } from "@threadlines/shared/pullRequestAutoMerge";
 import {
   pullRequestArmedToMerge,
   type PullRequestChecksWait,
 } from "@threadlines/shared/pullRequestPolling";
 
+import { getThreadInFlightStatus } from "../../lib/threadSort";
+import type { SidebarThreadSummary } from "../../types";
 import {
   pullRequestDetailOutranksListing,
   summarizePullRequestChecks,
@@ -284,8 +288,8 @@ export type ComposerAutoMergeControl =
 interface ServerAutoMergeContext {
   /** The thread's auto-fix watch, which turns a failing check into one to wait out. */
   readonly autoFix: boolean;
-  /** The agent is mid-turn, and may be about to push. */
-  readonly agentWorking: boolean;
+  /** What about the thread the server waits on before it merges; see `composerPullRequestThreadHold`. */
+  readonly threadHold: PullRequestAutomationHold | null;
   /** Commits on the thread's branch that the host has not seen yet. */
   readonly unpushedCommits: number;
   /** Where the checkout has its branch on the host, or null where it cannot say. */
@@ -378,10 +382,52 @@ function serverAutoMergeOffer(
   };
 }
 
+/** What the merge switch says it waits on, for each of the thread's holds. */
+const THREAD_HOLD_REASONS: Readonly<Record<PullRequestAutomationHold, string>> = {
+  approval: "Waiting for your approval",
+  question: "Waiting for your answer",
+  turn: "Waiting for the agent to finish",
+  plan: "Waiting for you to review the plan",
+};
+
+/**
+ * What about the thread the server's merge waits on, read from what the
+ * client has: the same shared rule the server decides by, so the switch never
+ * promises a merge the server is holding back. The turn is the chat's own
+ * reading of it, which also covers a message just sent, plus a turn the
+ * session still names. The server's approvals take in a thread its agent
+ * asked to start and a settings change, which the open thread keeps apart.
+ */
+export function composerPullRequestThreadHold(
+  thread: Pick<
+    SidebarThreadSummary,
+    | "session"
+    | "latestTurn"
+    | "hasPendingApprovals"
+    | "pendingChildApproval"
+    | "pendingSettingsChange"
+    | "hasPendingUserInput"
+    | "hasActionableProposedPlan"
+  >,
+): PullRequestAutomationHold | null {
+  return resolvePullRequestAutomationHold({
+    turnInProgress:
+      getThreadInFlightStatus(thread) !== null ||
+      thread.latestTurn?.state === "running" ||
+      thread.session?.activeTurnId !== undefined,
+    hasPendingApprovals:
+      thread.hasPendingApprovals ||
+      thread.pendingChildApproval === true ||
+      thread.pendingSettingsChange === true,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasActionableProposedPlan: thread.hasActionableProposedPlan,
+  });
+}
+
 /**
  * The server's next step, in its own words: the shared rule, and before it the
- * watcher's own hold on a thread whose agent is mid-turn, which it passes over
- * until the turn ends.
+ * watcher's own hold on a thread whose agent is mid-turn or waiting on the
+ * user, which it passes over until that is done.
  */
 function serverAutoMergeStep(
   detail: PullRequestDetail,
@@ -394,8 +440,8 @@ function serverAutoMergeStep(
     pushedHead: context.pushedHead,
     now: context.now,
   });
-  return step.kind !== "stop" && context.agentWorking
-    ? { kind: "wait", reason: "Waiting for the agent to finish" }
+  return step.kind !== "stop" && context.threadHold !== null
+    ? { kind: "wait", reason: THREAD_HOLD_REASONS[context.threadHold] }
     : step;
 }
 

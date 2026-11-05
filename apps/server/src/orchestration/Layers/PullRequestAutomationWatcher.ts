@@ -29,6 +29,7 @@ import {
 import {
   PULL_REQUEST_AUTO_MERGE_ACTIVITY_KIND_PREFIX,
   resolvePullRequestAutoMergeStep,
+  resolvePullRequestAutomationHold,
 } from "@threadlines/shared/pullRequestAutoMerge";
 import {
   PULL_REQUEST_CHECKS_POLL_INTERVAL_MS,
@@ -162,27 +163,27 @@ function threadIdFromPairKey(key: string): string {
 /**
  * Whether a turn is in flight, or the thread is waiting on the user. Starting a
  * turn on top of either would be refused or would bury the question, and a
- * merge waits too, since the agent may be about to push, so both mean "come
- * back next sweep". The shell read model says this three ways: the latest
- * turn's own state, the live session, and the pending-request flags. A session
- * still starting up counts: a turn has been asked for, and until it starts the
- * latest turn on record is the one before it.
+ * merge waits too, so both mean "come back next sweep". The rule is shared
+ * (`resolvePullRequestAutomationHold`), so the composer's merge switch says
+ * which one it waits on. The shell read model gives the turn two ways: the
+ * latest turn's own state and the live session. A session still starting up
+ * counts: a turn has been asked for, and until it starts the latest turn on
+ * record is the one before it.
  */
-function hasTurnInProgress(thread: OrchestrationThreadShell): boolean {
-  if (thread.latestTurn?.state === "running") {
-    return true;
-  }
-  if (
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput ||
-    thread.hasActionableProposedPlan
-  ) {
-    return true;
-  }
-  return thread.session !== null && sessionHasTurnInProgress(thread.session);
+function awaitsAgentOrUser(thread: OrchestrationThreadShell): boolean {
+  return (
+    resolvePullRequestAutomationHold({
+      turnInProgress:
+        thread.latestTurn?.state === "running" ||
+        (thread.session !== null && sessionHasTurnInProgress(thread.session)),
+      hasPendingApprovals: thread.hasPendingApprovals,
+      hasPendingUserInput: thread.hasPendingUserInput,
+      hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    }) !== null
+  );
 }
 
-/** The session's part of `hasTurnInProgress`: a turn starting or running. */
+/** The session's part of `awaitsAgentOrUser`: a turn starting or running. */
 function sessionHasTurnInProgress(session: OrchestrationSession): boolean {
   return (
     session.status === "starting" || session.status === "running" || session.activeTurnId !== null
@@ -208,7 +209,7 @@ function awaitsBackgroundWork(thread: OrchestrationThreadShell): boolean {
  * waiting for that very merge, and a merge that waited on it would never come.
  */
 function hasWorkInProgress(thread: OrchestrationThreadShell): boolean {
-  return hasTurnInProgress(thread) || awaitsBackgroundWork(thread);
+  return awaitsAgentOrUser(thread) || awaitsBackgroundWork(thread);
 }
 
 /** Whether "Merge when checks pass" is on for any of the thread's pull requests. */
@@ -788,7 +789,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           latest === null ||
           Option.isNone(latest) ||
           mergeSwitchOf(latest.value, number, input.holders) === null ||
-          hasTurnInProgress(latest.value)
+          awaitsAgentOrUser(latest.value)
         ) {
           return false;
         }
@@ -1574,8 +1575,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * thread and its project are read here, not carried in from a listing. A
      * sweep reaches its last thread long after it listed them, and by then the
      * thread may have started a turn, changed its switches, or had a look of
-     * its own. Answers what it found; `busy` where a turn is in progress,
-     * which is "not yet"; `background` where the agent awaits background work,
+     * its own. Answers what it found; `busy` where a turn is in progress or
+     * the thread waits on the user, which is "not yet"; `background` where the agent awaits background work,
      * which is "not yet" for a turn of the watcher's but not for a merge, so
      * the thread was looked at only if something is to merge; null where it is
      * no longer watched or is on a host this cannot read. Run under the look
@@ -1590,7 +1591,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       if (thread === null || Option.isNone(thread) || !isWatched(thread.value)) {
         return null;
       }
-      if (hasTurnInProgress(thread.value)) {
+      if (awaitsAgentOrUser(thread.value)) {
         return "busy";
       }
       const background = awaitsBackgroundWork(thread.value);
@@ -1685,15 +1686,15 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       });
       // Deleted threads never reach the shell snapshot, and archived ones are
       // not watched, so busy is the only one left to rule out here. A turn in
-      // progress is also "not yet" for a merge: the agent may be about to
-      // push. Background work the agent awaits holds back only a turn of the
+      // progress, or a wait on the user, is also "not yet" for a merge: the
+      // agent may be about to push. Background work the agent awaits holds back only a turn of the
       // watcher's, so such a thread is looked at where something is to merge.
       const lookableThreadIds = new Set<string>(
         snapshot.threads
           .filter(
             (thread) =>
               isWatched(thread) &&
-              !hasTurnInProgress(thread) &&
+              !awaitsAgentOrUser(thread) &&
               (!awaitsBackgroundWork(thread) || mergeSwitchArmed(thread)),
           )
           .map((thread) => thread.id as string),
@@ -1879,7 +1880,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
               read !== null && Option.isSome(read) && isWatched(read.value) ? read.value : null;
             if (
               watched !== null &&
-              (hasTurnInProgress(watched) ||
+              (awaitsAgentOrUser(watched) ||
                 (waitingFor === "background" && awaitsBackgroundWork(watched)))
             ) {
               return;

@@ -67,6 +67,42 @@ export interface PullRequestAutoMergeInput {
 }
 
 /**
+ * What about a thread holds the server's pull request work back, its merge and
+ * any turn of its own: the agent waiting on the user, who may ask for more
+ * first, or the agent mid-turn, which may be about to push. Background work
+ * the agent left running is not one: it can be a wait for that very merge.
+ */
+export type PullRequestAutomationHold = "approval" | "question" | "turn" | "plan";
+
+export interface PullRequestAutomationHoldInput {
+  /** The latest turn is running, or the session is starting one or in one. */
+  readonly turnInProgress: boolean;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  /** A proposed plan neither implemented nor dismissed. */
+  readonly hasActionableProposedPlan: boolean;
+}
+
+/**
+ * The thread's hold, or null where nothing holds. What the user has to act on
+ * now first, then the turn, then a plan left from a turn that has ended.
+ */
+export function resolvePullRequestAutomationHold(
+  input: PullRequestAutomationHoldInput,
+): PullRequestAutomationHold | null {
+  if (input.hasPendingApprovals) {
+    return "approval";
+  }
+  if (input.hasPendingUserInput) {
+    return "question";
+  }
+  if (input.turnInProgress) {
+    return "turn";
+  }
+  return input.hasActionableProposedPlan ? "plan" : null;
+}
+
+/**
  * The next step for an open pull request. Worst first: what can never merge,
  * then what someone has to act on, then what only needs time.
  */
