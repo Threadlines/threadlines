@@ -7,7 +7,7 @@ import ProseLayout from "../layouts/ProseLayout.astro";
   heading="Privacy policy"
   description="What Threadlines keeps on your computer, what leaves it, and how to turn off what you don't want."
   canonicalPath="/privacy"
-  updated="November 2, 2026"
+  updated="November 5, 2026"
 >
   <p>
     Threadlines is built by Wilfredo Leon. It runs on your own computer, and there's no Threadlines
@@ -40,6 +40,8 @@ import ProseLayout from "../layouts/ProseLayout.astro";
     <li>
       <strong>GitHub:</strong> through your own sign-in, it asks about your repositories, branches and pull requests.
       The desktop app also checks GitHub for updates, every few minutes, and the app reads release notes from it.
+      When you report a problem from the app and choose to post it, it goes to Threadlines' public GitHub issues
+      from your own account: what you wrote, the app version, your operating system and which app you use.
     </li>
     <li>
       <strong>Package registries:</strong> npm and Homebrew, to see whether your coding agents have updates.
@@ -139,7 +141,7 @@ import ProseLayout from "../layouts/ProseLayout.astro";
 
   <h2>This website and the hosted app</h2>
   <p>
-    threadlines.dev and app.threadlines.dev are hosted on Vercel, which sees ordinary web request data such as IP addresses. This website also uses Vercel Web Analytics to count visits, without cookies. Vercel keeps this data for a limited time set by its plans. The hosted app opens in your browser and talks to your own computer.
+    threadlines.dev and app.threadlines.dev are hosted on Vercel, which sees ordinary web request data such as IP addresses. This website also uses Vercel Web Analytics to count visits, without cookies. When you arrive through a link I shared that carries a source tag (like <code>?ref=x</code>), it records that source and the page you landed on, then removes the tag from the address bar. Vercel keeps this data for a limited time set by its plans. The hosted app opens in your browser and talks to your own computer.
   </p>
 
   <h2>Who gets your data</h2>
