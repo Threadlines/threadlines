@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![As seen on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to)
 
-**[Website](https://www.threadlines.dev/) · [Download](https://www.threadlines.dev/download) · [Supported agents](https://www.threadlines.dev/agents) · [Changelog](https://www.threadlines.dev/changelog) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
+**[Website](https://www.threadlines.dev/?ref=readme) · [Download](https://www.threadlines.dev/download?ref=readme) · [Supported agents](https://www.threadlines.dev/agents?ref=readme) · [Changelog](https://www.threadlines.dev/changelog?ref=readme) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
 
 Threadlines is an open-source ADE (agentic development environment) for Claude
 Code, Codex, OpenCode, Cursor, and other coding agents. Keep the agent
@@ -73,7 +73,7 @@ context across tools.
 ### Desktop app
 
 Install the latest stable desktop app from the
-[download page](https://www.threadlines.dev/download) or
+[download page](https://www.threadlines.dev/download?ref=readme) or
 [GitHub Releases](https://github.com/Threadlines/threadlines/releases/latest).
 
 Signed Windows and macOS builds and a Linux x64 AppImage are published through
@@ -134,15 +134,15 @@ The artifact is written to `release/`.
 
 Threadlines runs these coding agents, signed in with your own accounts:
 
-- [Codex](https://www.threadlines.dev/agents/codex) by OpenAI
-- [Claude Code](https://www.threadlines.dev/agents/claude-code) by Anthropic
-- [OpenCode](https://www.threadlines.dev/agents/opencode) by Anomaly
-- [Cursor](https://www.threadlines.dev/agents/cursor), through the Cursor CLI
-- [Antigravity](https://www.threadlines.dev/agents/antigravity) by Google
-- [Grok Build](https://www.threadlines.dev/agents/grok) by xAI
-- [fx](https://www.threadlines.dev/agents/fx) by Vercel
-- [Muse Code](https://www.threadlines.dev/agents/muse-code) by Meta
-- [Pi](https://www.threadlines.dev/agents/pi) by Earendil
+- [Codex](https://www.threadlines.dev/agents/codex?ref=readme) by OpenAI
+- [Claude Code](https://www.threadlines.dev/agents/claude-code?ref=readme) by Anthropic
+- [OpenCode](https://www.threadlines.dev/agents/opencode?ref=readme) by Anomaly
+- [Cursor](https://www.threadlines.dev/agents/cursor?ref=readme), through the Cursor CLI
+- [Antigravity](https://www.threadlines.dev/agents/antigravity?ref=readme) by Google
+- [Grok Build](https://www.threadlines.dev/agents/grok?ref=readme) by xAI
+- [fx](https://www.threadlines.dev/agents/fx?ref=readme) by Vercel
+- [Muse Code](https://www.threadlines.dev/agents/muse-code?ref=readme) by Meta
+- [Pi](https://www.threadlines.dev/agents/pi?ref=readme) by Earendil
 
 Other agents from the open [ACP registry](https://github.com/agentclientprotocol/registry)
 can run as community agents. Threadlines installs them but hasn't tested them.

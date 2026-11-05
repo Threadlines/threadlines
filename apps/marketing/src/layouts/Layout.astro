@@ -193,6 +193,22 @@ const siteStructuredData = {
       });
       syncToggle();
     </script>
+    <script>
+      import { track } from "@vercel/analytics";
+
+      import { linkSource, withoutLinkSource } from "../lib/linkSource";
+
+      const here = new URL(location.href);
+      const source = linkSource(here);
+      if (source) {
+        // The analytics component sets up this queue too; this covers running first.
+        window.va ??= (event, properties) => {
+          (window.vaq ??= []).push([event, properties]);
+        };
+        track("Arrived from link", { source, page: here.pathname });
+        history.replaceState(history.state, "", withoutLinkSource(here));
+      }
+    </script>
   </body>
 </html>
 
