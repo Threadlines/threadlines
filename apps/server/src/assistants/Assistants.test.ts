@@ -9,6 +9,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   OutsideAgentRequestId,
   type RelayAssistantHostFrame,
+  type RelayAssistantRelayFrame,
   type RelayAssistantRequestFrame,
   type RelayAssistantResponseFrame,
   type RelayAssistantSignIn,
@@ -19,8 +20,10 @@ import {
   randomAssistantSecret,
 } from "@threadlines/shared/assistantCredentials";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -51,12 +54,13 @@ import { makeAssistantMcp } from "./AssistantMcp.ts";
 import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
 import {
   AssistantRelay,
+  AssistantRelayError,
   type AssistantRelayEvent,
   type AssistantRelayShape,
 } from "./AssistantRelay.ts";
 import { type AssistantHttpResponse, Assistants } from "./Assistants.ts";
 import { makeAssistantRelay, makeAssistantRelayWith } from "./AssistantRelayLive.ts";
-import { AssistantsLive } from "./AssistantsLive.ts";
+import { ASSISTANT_REVIEW_COMPUTER_ENV, AssistantsLive } from "./AssistantsLive.ts";
 
 const HOST = "8911ad8a-f546-45e5-a2e8-7a6a8adfc65c";
 const ORIGIN = "https://connect.threadlines.dev";
@@ -83,13 +87,28 @@ const makeFakeRelay = Effect.gen(function* () {
   const answers = new Map<string, Deferred.Deferred<RelayAssistantResponseFrame>>();
   const revoked: Array<string> = [];
   const state = { wanted: false };
+  /** Route tags: held until `hold` is done, and failing `failures` times first. */
+  const routeTags = {
+    calls: 0,
+    failures: 0,
+    hold: null as Deferred.Deferred<void> | null,
+  };
   const relay: AssistantRelayShape = {
     available: true,
     hostId: Effect.succeed(HOST),
     info: () => Effect.succeed({ address: RESOURCE, enabled: true }),
     createCode: Effect.succeed({ code: "K4D82PQX", expiresAt: "2099-01-01T00:00:00.000Z" }),
     cancelCode: Effect.void,
-    routeTag: () => Effect.sync(() => ({ hostId: HOST, routeTag: randomAssistantSecret() })),
+    routeTag: () =>
+      Effect.gen(function* () {
+        routeTags.calls += 1;
+        if (routeTags.hold !== null) yield* Deferred.await(routeTags.hold);
+        if (routeTags.failures > 0) {
+          routeTags.failures -= 1;
+          return yield* new AssistantRelayError({ reason: "unreachable", detail: "offline" });
+        }
+        return { hostId: HOST, routeTag: randomAssistantSecret() };
+      }),
     revoke: ({ connectionIds }) =>
       Effect.sync(() => {
         revoked.push(...connectionIds);
@@ -127,45 +146,53 @@ const makeFakeRelay = Effect.gen(function* () {
       };
     });
   const push = (event: AssistantRelayEvent) => Effect.sync(() => Queue.offerUnsafe(events, event));
-  return { relay, sent, revoked, state, ask, push };
+  return { relay, sent, revoked, state, routeTags, ask, push };
 });
 type FakeRelay = Effect.Success<typeof makeFakeRelay>;
 
-/** The door and the outside-agent services over an in-memory database and the fake relay. */
-const startDoor = Effect.gen(function* () {
-  const fake = yield* makeFakeRelay;
-  const services = yield* Layer.build(
-    OutsideAgentConnectionsLive.pipe(
-      Layer.provideMerge(
-        AssistantsLive.pipe(
-          Layer.provide(Layer.succeed(AssistantRelay, fake.relay)),
-          Layer.provide(OutsideAgentConnectionRepositoryLive),
+/**
+ * The door and the outside-agent services over an in-memory database and the
+ * fake relay, with `env` as the whole environment it reads.
+ */
+const startDoor = (env: Record<string, string>) =>
+  Effect.gen(function* () {
+    const fake = yield* makeFakeRelay;
+    const services = yield* Layer.build(
+      OutsideAgentConnectionsLive.pipe(
+        Layer.provideMerge(
+          AssistantsLive.pipe(
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+            Layer.provide(Layer.succeed(AssistantRelay, fake.relay)),
+            Layer.provide(OutsideAgentConnectionRepositoryLive),
+          ),
         ),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provide(ServerSecretStoreLive),
+        Layer.provide(
+          Layer.succeed(AnalyticsService, { record: () => Effect.void, flush: Effect.void }),
+        ),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "assistants-test-" })),
       ),
-      Layer.provideMerge(SqlitePersistenceMemory),
-      Layer.provide(ServerSecretStoreLive),
-      Layer.provide(
-        Layer.succeed(AnalyticsService, { record: () => Effect.void, flush: Effect.void }),
-      ),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "assistants-test-" })),
-    ),
-  );
-  return {
-    fake,
-    assistants: Context.get(services, Assistants),
-    signIn: Context.get(services, OutsideAgentSignIn),
-    connections: Context.get(services, OutsideAgentConnections),
-  };
-});
-type Door = Effect.Success<typeof startDoor>;
+    );
+    return {
+      fake,
+      assistants: Context.get(services, Assistants),
+      signIn: Context.get(services, OutsideAgentSignIn),
+      connections: Context.get(services, OutsideAgentConnections),
+    };
+  });
+type Door = Effect.Success<ReturnType<typeof startDoor>>;
 
 /** Credentials carry Unix seconds of ten digits: the test clock starts on a real day. */
 const START = Date.parse("2026-10-30T09:00:00.000Z");
 
-const withDoor = <A, E>(test: (door: Door) => Effect.Effect<A, E>) =>
+const withDoor = <A, E>(
+  test: (door: Door) => Effect.Effect<A, E>,
+  env: Record<string, string> = {},
+) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
-    return yield* test(yield* startDoor);
+    return yield* test(yield* startDoor(env));
   }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped);
 
 /** Runs `read` until `done` holds of it, letting the door's fibers run in between. */
@@ -493,6 +520,124 @@ describe("assistants: sign-in", () => {
         yield* until(door.assistants.state, (state) => state.signIns.length === 1);
       }),
     ),
+  );
+
+  it.effect(
+    "the demo computer listens from the start, and connects review sign-ins on their own, beside the others",
+    () =>
+      Effect.gen(function* () {
+        const decisionFor = (door: Door, signInId: string) =>
+          door.fake.sent.find(
+            (frame) => frame.type === "signin.decision" && frame.signInId === signInId,
+          );
+        const reviewSignIn = (
+          door: Door,
+          signInId: string,
+          meanwhile: (frame: RelayAssistantRelayFrame) => Effect.Effect<void> = () => Effect.void,
+        ) =>
+          Effect.gen(function* () {
+            const { verifier, challenge } = pkce();
+            const frame = yield* signInFrame(signInId, { codeChallenge: challenge, review: true });
+            yield* door.fake.push({ type: "frame", frame });
+            yield* meanwhile(frame);
+            const decision = yield* until(
+              Effect.sync(() => decisionFor(door, signInId)),
+              (found) => found !== undefined,
+            );
+            if (decision?.type !== "signin.decision" || decision.decision !== "allow") {
+              return yield* Effect.die(new Error("no allow decision"));
+            }
+            return yield* exchange(door.fake, decision.authorizationCode, {
+              code_verifier: verifier,
+            });
+          });
+
+        yield* withDoor(
+          (door) =>
+            Effect.gen(function* () {
+              yield* until(
+                Effect.sync(() => door.fake.state.wanted),
+                (wanted) => wanted,
+              );
+              expect((yield* door.assistants.state).reviewComputer).toBe(true);
+              yield* connect(door, "by-hand");
+
+              expect((yield* reviewSignIn(door, "reviewer-1")).status).toBe(200);
+              expect((yield* reviewSignIn(door, "reviewer-2")).status).toBe(200);
+              const listed = yield* until(
+                Stream.runHead(door.signIn.changes).pipe(Effect.map(Option.getOrThrow)),
+                (value) => value.connections.length === 3,
+              );
+              // Nobody replaced anybody, and a reviewer gets what it asked for, at Work.
+              expect(listed.connections.filter((row) => row.access === "work")).toHaveLength(2);
+              expect(listed.connections.find((row) => row.access === "work")).toMatchObject({
+                maxRuntimeMode: "full-access",
+                projectIds: null,
+              });
+
+              // The relay out of reach for a moment: Allow is tried again while the sign-in waits.
+              door.fake.routeTags.failures = 1;
+              const retried = yield* reviewSignIn(door, "reviewer-3", () =>
+                Effect.gen(function* () {
+                  yield* until(
+                    Effect.sync(() => door.fake.routeTags.failures),
+                    (failures) => failures === 0,
+                  );
+                  yield* TestClock.adjust(Duration.seconds(5));
+                }),
+              );
+              expect(retried.status).toBe(200);
+
+              // Sent again, as after a reconnect, while Allow waits on the relay: the same sign-in,
+              // so the Allow on its way still counts, once.
+              const hold = yield* Deferred.make<void>();
+              door.fake.routeTags.hold = hold;
+              const callsBefore = door.fake.routeTags.calls;
+              const replayed = yield* reviewSignIn(door, "reviewer-4", (frame) =>
+                Effect.gen(function* () {
+                  yield* until(
+                    Effect.sync(() => door.fake.routeTags.calls),
+                    (calls) => calls > callsBefore,
+                  );
+                  yield* door.fake.push({ type: "frame", frame });
+                  for (let turn = 0; turn < 20; turn += 1) yield* Effect.yieldNow;
+                  door.fake.routeTags.hold = null;
+                  yield* Deferred.succeed(hold, undefined);
+                }),
+              );
+              expect(replayed.status).toBe(200);
+              const allowed = new Set(
+                door.fake.sent.flatMap((frame) =>
+                  frame.type === "signin.decision" &&
+                  frame.signInId === "reviewer-4" &&
+                  frame.decision === "allow"
+                    ? [frame.authorizationCode]
+                    : [],
+                ),
+              );
+              expect(allowed.size).toBe(1);
+
+              // A sign-in with a computer's code still waits for Allow.
+              yield* door.fake.push({ type: "frame", frame: yield* signInFrame("ordinary") });
+              yield* until(door.assistants.state, (state) => state.signIns.length === 1);
+              expect(decisionFor(door, "ordinary")).toBeUndefined();
+            }),
+          { [ASSISTANT_REVIEW_COMPUTER_ENV]: "1" },
+        );
+
+        // Anywhere else, a review mark changes nothing.
+        yield* withDoor((door) =>
+          Effect.gen(function* () {
+            expect((yield* door.assistants.state).reviewComputer).toBe(false);
+            yield* door.fake.push({
+              type: "frame",
+              frame: yield* signInFrame("marked", { review: true }),
+            });
+            yield* until(door.assistants.state, (state) => state.signIns.length === 1);
+            expect(decisionFor(door, "marked")).toBeUndefined();
+          }),
+        );
+      }),
   );
 });
 

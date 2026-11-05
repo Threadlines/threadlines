@@ -115,6 +115,13 @@ export const RelayAssistantSignIn = Schema.Struct({
   place: Schema.NullOr(RelayAssistantPlace),
   createdAt: IsoDateTime,
   expiresAt: IsoDateTime,
+  /**
+   * The page typed the relay's reviewer code, not this computer's: only ever
+   * sent to the one computer the relay names for directory review. A demo
+   * computer started for review approves these without a click; anywhere
+   * else it means nothing.
+   */
+  review: Schema.optionalKey(Schema.Literal(true)),
 });
 export type RelayAssistantSignIn = typeof RelayAssistantSignIn.Type;
 

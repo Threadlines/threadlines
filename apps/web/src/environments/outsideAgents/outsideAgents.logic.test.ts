@@ -378,6 +378,7 @@ describe("waitingOutsideAgentSignIns", () => {
         code: null,
         signIns: [assistant("grok", "2026-10-23T11:59:00.000Z")],
         alertTargets: [],
+        reviewComputer: false,
       },
       linkedAsks: [linked],
     });

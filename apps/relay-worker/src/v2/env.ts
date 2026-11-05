@@ -47,6 +47,14 @@ export type RelayV2Env = Env & {
   readonly ASSISTANT_ROUTE_KEY?: string;
   readonly ASSISTANT_CLIENT_KEY?: string;
   readonly THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS?: string;
+  /**
+   * Directory review (docs/design/assistants.md, "The reviewer's code"): a
+   * 26-character code that never expires, a secret
+   * (`wrangler secret put ASSISTANT_REVIEW_CODE`), and the one demo computer
+   * it signs in to. Unset: no such code works.
+   */
+  readonly ASSISTANT_REVIEW_CODE?: string;
+  readonly ASSISTANT_REVIEW_HOST?: string;
   /** Per client IP: registrations, sign-in pages and typed codes (10 a minute). */
   readonly ASSISTANT_SIGN_IN_RATE_LIMITER: RateLimit;
   /** Per client IP: sign-in pages polling for the computer's decision. */

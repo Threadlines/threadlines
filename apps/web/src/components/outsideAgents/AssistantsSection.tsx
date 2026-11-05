@@ -113,6 +113,14 @@ export function AssistantsSection({ revealOnArrival }: { readonly revealOnArriva
               who="assistant"
               testId="assistants-quiet"
             />
+            {assistants.reviewComputer ? (
+              // Only Threadlines' own demo computer for directory reviewers starts like this.
+              <SettingsRow
+                data-testid="assistants-review-computer"
+                title="Review sign-ins are allowed without a click"
+                description="This computer is set up for directory reviewers, so sign-ins with the reviewers' code connect on their own. Restart Threadlines without THREADLINES_ASSISTANT_REVIEW_COMPUTER to turn this off."
+              />
+            ) : null}
             <SettingsRow
               data-testid="assistants-address-row"
               place="connections.assistantAddress"

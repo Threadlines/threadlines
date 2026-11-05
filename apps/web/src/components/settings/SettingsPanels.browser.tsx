@@ -5505,6 +5505,7 @@ describe("Agents outside Threadlines", () => {
       code: null,
       signIns: [],
       alertTargets: [],
+      reviewComputer: false,
       ...parts,
     };
   }
@@ -5552,7 +5553,14 @@ describe("Agents outside Threadlines", () => {
       pending: [],
       linkedAsks: [],
       quietUntil: null,
-      assistants: { status: "off", address: null, code: null, signIns: [], alertTargets: [] },
+      assistants: {
+        status: "off",
+        address: null,
+        code: null,
+        signIns: [],
+        alertTargets: [],
+        reviewComputer: false,
+      },
       ...parts,
     };
   }
@@ -6121,6 +6129,15 @@ describe("Agents outside Threadlines", () => {
       .element(assistants.getByText("Can't reach the relay right now. Threadlines keeps trying."))
       .toBeVisible();
     await expect.element(assistants.getByTestId("assistants-connect")).toBeDisabled();
+
+    // Only the reviewers' demo computer says it connects review sign-ins on its own.
+    await expect
+      .element(assistants.getByTestId("assistants-review-computer"))
+      .not.toBeInTheDocument();
+    outsideAgentsHarness.emit(snapshot({ assistants: assistantsState({ reviewComputer: true }) }));
+    await expect
+      .element(assistants.getByTestId("assistants-review-computer"))
+      .toMatchTextContent("Review sign-ins are allowed without a click");
   });
 
   it("names an assistant by what it is, with its mark, and lets Change say it's another", async () => {

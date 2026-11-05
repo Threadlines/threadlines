@@ -1,0 +1,37 @@
+# The demo computer on Fly.io (docker/demo/README.md, "Run it on Fly.io").
+# Deploy from the repository root, with the server packed into
+# docker/demo/prebuilt/ first (README, "Run it on Fly.io"):
+#
+#   fly deploy . -c docker/demo/fly.toml --dockerfile docker/demo/Dockerfile \
+#     --ignorefile docker/demo/prebuilt.dockerignore --build-arg SERVER_FROM=prebuilt
+#
+# No [http_service] or [[services]]: nothing on it is reachable from the
+# internet. It reaches the relay over a connection it opens itself.
+app = "threadlines-demo"
+primary_region = "iad"
+
+# Its home folder, which keeps its identity (keys, relay registration,
+# connections) across restarts, deploys and resets.
+[mounts]
+source = "demo_home"
+destination = "/home/threadlines"
+initial_size = "1gb"
+
+[[vm]]
+size = "shared-cpu-1x"
+# The server takes about 350 MB and each agent about 80 MB: at 1 GB, three or
+# four threads a reviewer starts would run it out of memory.
+memory = "2gb"
+
+[[restart]]
+policy = "always"
+
+# Only that the server answers; `threadlines-demo ready` (the fake data seeded)
+# isn't something Fly can run, so check it with `fly ssh console -C "threadlines-demo ready"`.
+[checks.server]
+type = "http"
+port = 3773
+path = "/api/auth/session"
+interval = "30s"
+timeout = "5s"
+grace_period = "90s"

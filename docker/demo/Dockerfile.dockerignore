@@ -1,0 +1,53 @@
+# Used by `docker build -f docker/demo/Dockerfile .`. An allowlist: only what
+# the source build reads goes into the build context, never an untracked file
+# at the root. Every workspace package is needed (pnpm installs from the
+# lockfile, and the web build reads the marketing changelog).
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!vite.config.ts
+!apps
+!assets
+!packages
+!patches
+!scripts
+!oxlint-plugin-threadlines
+!docker/demo/entrypoint.sh
+!docker/demo/prebuilt
+
+# Inside those, local installs and outputs stay out...
+**/node_modules
+**/dist
+**/dist-electron
+**/.vite-plus
+**/*.tsbuildinfo
+**/.electron-runtime
+**/.astro
+**/.turbo
+**/.vercel
+**/.wrangler
+**/.tanstack
+**/.vitest*
+**/__screenshots__
+**/*.log
+
+# ...and so does anything the root .gitignore treats as secret or local.
+**/.env
+**/.env.*
+**/.secrets
+**/secrets.local
+**/.codex-local
+**/.claude
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cer
+**/*.jks
+**/*.local.json
+**/*.local.toml
+**/*.local.yaml
+**/*.local.yml

@@ -253,6 +253,10 @@ export interface OutsideAgentConnectionRepositoryShape {
     ReadonlyArray<OutsideAgentConnectionId>,
     OutsideAgentConnectionRepositoryError
   >;
+  /** Saves a new connection beside any from the same registration (the demo computer's review sign-ins). */
+  readonly insert: (
+    row: OutsideAgentConnectionRow,
+  ) => Effect.Effect<void, OutsideAgentConnectionRepositoryError>;
   /**
    * Changes a live connection's grant, and its assistant pick when given;
    * none when it is removed or unknown.
@@ -419,18 +423,8 @@ const make = Effect.gen(function* () {
       wrap("countLive"),
     );
 
-  const insertReplacing: OutsideAgentConnectionRepositoryShape["insertReplacing"] = (row) =>
-    Effect.gen(function* () {
-      const replaced = yield* sql<{ readonly connectionId: OutsideAgentConnectionId }>`
-        UPDATE outside_agent_connections
-        SET
-          removed_at = ${row.createdAt},
-          removed_reason = 'replaced',
-          relay_revoke_pending = ${sql.unsafe(RELAY_REVOKE_PENDING)}
-        WHERE client_id_hash = ${row.clientIdHash} AND kind = ${row.kind} AND removed_at IS NULL
-        RETURNING connection_id AS "connectionId"
-      `;
-      yield* sql`
+  const insertRow = (row: OutsideAgentConnectionRow) =>
+    sql`
         INSERT INTO outside_agent_connections (
           connection_id, kind, sign_in, client_id_hash, client_name, software_id, redirect_uri,
           resource, access, work_level, max_runtime_mode, project_ids_json, token_generation,
@@ -453,8 +447,24 @@ const make = Effect.gen(function* () {
           ${row.createdAt}, ${row.lastUsedAt}, ${row.removedAt}, ${row.removedReason}, 0
         )
       `;
+
+  const insertReplacing: OutsideAgentConnectionRepositoryShape["insertReplacing"] = (row) =>
+    Effect.gen(function* () {
+      const replaced = yield* sql<{ readonly connectionId: OutsideAgentConnectionId }>`
+        UPDATE outside_agent_connections
+        SET
+          removed_at = ${row.createdAt},
+          removed_reason = 'replaced',
+          relay_revoke_pending = ${sql.unsafe(RELAY_REVOKE_PENDING)}
+        WHERE client_id_hash = ${row.clientIdHash} AND kind = ${row.kind} AND removed_at IS NULL
+        RETURNING connection_id AS "connectionId"
+      `;
+      yield* insertRow(row);
       return replaced.map((entry) => entry.connectionId);
     }).pipe(sql.withTransaction, wrap("insertReplacing"));
+
+  const insert: OutsideAgentConnectionRepositoryShape["insert"] = (row) =>
+    insertRow(row).pipe(Effect.asVoid, wrap("insert"));
 
   const setGrant: OutsideAgentConnectionRepositoryShape["setGrant"] = (input) =>
     Effect.gen(function* () {
@@ -597,6 +607,7 @@ const make = Effect.gen(function* () {
     listLive,
     countLive,
     insertReplacing,
+    insert,
     setGrant,
     markRemoved,
     findVia,

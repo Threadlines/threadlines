@@ -38,7 +38,11 @@
     // kill switch, and the requests each computer forwards per UTC day. Its
     // two keys are secrets: `wrangler secret put ASSISTANT_ROUTE_KEY` and
     // `ASSISTANT_CLIENT_KEY`. Every credential is bound to the origin, so
-    // changing it disconnects every assistant.
+    // changing it disconnects every assistant. Directory review is off unless
+    // both `ASSISTANT_REVIEW_CODE` (26 characters, a secret) and
+    // `ASSISTANT_REVIEW_HOST` (the demo computer's host id) are put the same
+    // way. Rotating the code doesn't end connections it made; remove those on
+    // the demo computer.
     "ASSISTANTS_ORIGIN": "https://connect.threadlines.dev",
     "ASSISTANTS_ENABLED": "true",
     "THREADLINES_RELAY_HOST_DAILY_ASSISTANT_REQUESTS": "20000",

@@ -30,6 +30,11 @@ const UNPLACED: ReadonlyArray<readonly [file: string, title: string, why: string
     "This code expired.",
     "a sign-in code's state",
   ],
+  [
+    "components/outsideAgents/AssistantsSection.tsx",
+    "Review sign-ins are allowed without a click",
+    "a notice only the reviewers' demo computer shows",
+  ],
 ];
 
 const sourceFiles = (readdirSync(SRC, { recursive: true }) as string[])

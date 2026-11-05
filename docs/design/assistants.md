@@ -2217,6 +2217,22 @@ out of date where they differ from this section.
   connection OpenAI's daily scan uses. On the review path it adds a row instead.
 - **A leak:** rotate the secret **and** remove the demo computer's connections; old
   tokens don't depend on the code. The computer holds fake data and no credentials.
+- **As built (Nov 3):** the code is 26 characters of the sign-in alphabet (130 bits),
+  typed as `XXXX-XXXX-…-XX` into the same box, which now takes 32 characters
+  (`normalizeAssistantReviewCode`, `generateAssistantReviewCode`). The relay reads both
+  settings or neither (`reviewSignIn` in `config.ts`); a matched review code skips the
+  code shards, and `RelayHost.beginAssistantSignIn` checks again that it's the named
+  host. On the computer, `THREADLINES_ASSISTANT_REVIEW_COMPUTER` is read once at start
+  (`AssistantsLive`): the socket is wanted from the start and the computer registers at
+  once, review sign-ins are approved in a fork (logged), their connections use
+  `repository.insert` instead of `insertReplacing`, and Settings › Assistants shows a
+  row saying so (`reviewComputer` in the assistants state). Tested in `signIns.test.ts`
+  and `Assistants.test.ts`, each checked by breaking the code it covers. Sol's review (Nov 4), three
+  findings, all fixed: a sign-in sent again after a reconnect replaced the entry an Allow in
+  flight checks, and a failed route tag was never retried (a replay now keeps its entry, and
+  review approvals retry while the sign-in waits); whether a connection replaces others now
+  follows the relay's mark, not the computer's flag, so a restart without the flag can't let
+  a reviewer end the scan's connection; the review host must be a real UUID.
 
 ### The demo computer
 
@@ -2235,6 +2251,35 @@ out of date where they differ from this section.
   which real providers it stands in for; so does the video. An agent that only pretended
   would mislead, and fail "test every tool".
 - About $5 a month. The provider is the developer's choice.
+- **As built (Nov 4), `docker/demo/` and `scripts/demo-computer/`:**
+  - The agent is a plain Node ACP script on a provider instance of the Cursor driver,
+    named "Demo agent (scripted)" (`displayName`); assistants see that name and never the
+    driver. Cursor's driver because questions that `thread_answer` can answer only come
+    through a descriptor hook (`cursor/ask_question`); the generic core turns every
+    `session/request_permission` into an approval. It reports an account ("No account
+    (scripted demo)") because threads only go to signed-in providers.
+  - It commits only when asked to: `thread_changes` measures uncommitted work, so a
+    commit would empty the diff. The earlier line above about committing was wrong.
+  - Seven threads across three sample repos: finished with changes, a question, an
+    approval, failed, finished without changes, and one working until stopped. A pull
+    request sample is optional (`DEMO_PR_REPO_URL`, `GH_TOKEN`, read-only).
+  - Live states don't survive a restart, so the fixtures are rebuilt on every start
+    (`DEMO_RESET_ON_START`), through the app's own commands. A reset keeps the secrets
+    folder, the environment id, settings and every connection row; checked by
+    fingerprinting before and after, and with a live connection that kept working.
+  - Connections need all-projects grants, since project ids change on each reset; review
+    approvals give exactly that.
+  - Found on the way, not fixed: after a commit, `thread_changes` lists the files with
+    totals of 0 until the baseline catches up; a stopped ACP turn reads `completed`, not
+    `interrupted`.
+  - Sol's review (Nov 4), seven findings, all fixed: a path like `./../x` let the agent
+    delete outside its folder (one realpath guard now covers every read, write and
+    delete); untracked secrets could enter the build context (the ignore file is an
+    allowlist); overlapping resets (a lock); worktrees removed under live agents (each
+    agent records its folders, and a reset waits for them to exit); the Claude SDK's
+    native CLI in the image (deleted after install, `--omit=optional` didn't drop it); an
+    owner session left unrevoked when connecting failed; a failed seed still healthy (a
+    ready marker the health check needs).
 
 ### Tools
 

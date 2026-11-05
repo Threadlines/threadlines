@@ -208,9 +208,34 @@ export function displayAssistantSignInCode(code: string): string {
  * and dashes don't matter; O reads as 0, and I or L as 1, as Crockford says.
  */
 export function normalizeAssistantSignInCode(input: string): string | null {
+  return normalizedCode(input, ASSISTANT_SIGN_IN_CODE_LENGTH);
+}
+
+/**
+ * A directory reviewer's code (docs/design/assistants.md, "The reviewer's
+ * code"): 26 characters of the same alphabet, 130 bits, typed into the same
+ * page as `K4D8-2PQX-…` (32 characters with its dashes). It never expires and
+ * isn't used up, so it's a secret on the relay, never in the app.
+ */
+export const ASSISTANT_REVIEW_CODE_LENGTH = 26;
+
+/** What was typed as a reviewer's code, normalized like a sign-in code, or null when it can't be one. */
+export function normalizeAssistantReviewCode(input: string): string | null {
+  return normalizedCode(input, ASSISTANT_REVIEW_CODE_LENGTH);
+}
+
+/** A fresh reviewer's code, as the relay's secret is set. Unbiased: 32 divides 256. */
+export function generateAssistantReviewCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(ASSISTANT_REVIEW_CODE_LENGTH));
+  let code = "";
+  for (const byte of bytes) code += ASSISTANT_SIGN_IN_CODE_ALPHABET[byte % 32];
+  return code;
+}
+
+function normalizedCode(input: string, length: number): string | null {
   if (input.length > 32) return null;
   const code = input.toUpperCase().replace(/[\s-]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
-  if (code.length !== ASSISTANT_SIGN_IN_CODE_LENGTH) return null;
+  if (code.length !== length) return null;
   for (const char of code) {
     if (!ASSISTANT_SIGN_IN_CODE_ALPHABET.includes(char)) return null;
   }
