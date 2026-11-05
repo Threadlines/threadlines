@@ -1586,7 +1586,11 @@ export const makeConnectToolHandlers = (
               interactionMode: "default",
               branch: placement.kind === "worktree" ? placement.baseBranch : placement.branch,
               worktreePath: null,
-              outsideOrigin: { connectionId: caller.connectionId, name: caller.name },
+              outsideOrigin: {
+                connectionId: caller.connectionId,
+                name: caller.name,
+                ...(caller.assistant !== undefined ? { assistant: caller.assistant } : {}),
+              },
               createdAt,
             },
             ...(placement.kind === "worktree"

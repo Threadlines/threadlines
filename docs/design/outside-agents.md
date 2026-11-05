@@ -498,7 +498,7 @@ new thread, a `thread.turn.start` with a `bootstrap`, and runs it through
 - **Workspace:** from the call, or the project's default.
 - **Access:** the lower of the request (or the user's default) and the ceiling.
 - **On the command:**
-  - `outsideOrigin { connectionId, name }` on `bootstrap.createThread`;
+  - `outsideOrigin { connectionId, name, assistant? }` on `bootstrap.createThread`;
   - `fromOutside` on the turn start;
   - the ids stored on the request row.
 
@@ -551,8 +551,13 @@ schema has no such fields, and the Normalizer refuses them.
 
 No queued outside messages exist, so the follow-up queue needs no change.
 
-**Labels.** The thread header, sidebar row and inbox row get a small origin
-label with the agent's name, next to where scheduled runs show theirs.
+**Labels.** `outsideOrigin` keeps which known assistant it was (`assistant`)
+when Threadlines could place it. The sidebar row leads the title with that
+assistant's mark, where a room's icon sits (a plug for local agents and any
+it couldn't place); the wrapped shelf shows the same mark; the thread header
+shows the mark and name after the title, with the full sentence on hover;
+the hover card says "Started by" with the name. Threads started before the
+field existed keep the plug.
 
 **The user stays in charge.** The user can type in, stop or archive these
 threads like any other. The connection keeps send and stop on them, under the

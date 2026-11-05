@@ -585,7 +585,11 @@ describe("assistants: credentials", () => {
             signIn: "key",
             identity: null,
           });
-          expect(yield* authenticate(door, made.key)).toMatchObject({ name: "Muse" });
+          // Its label places it, so threads it starts carry Muse's mark.
+          expect(yield* authenticate(door, made.key)).toMatchObject({
+            name: "Muse",
+            assistant: "muse",
+          });
           const parsed = parseAssistantCredential(made.key);
           if (parsed?.kind !== "key") return yield* Effect.die(new Error("not a key"));
           const forged = formatAssistantCredential({ ...parsed, secret: randomAssistantSecret() });

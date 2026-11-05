@@ -378,19 +378,34 @@ describe("InboxThreadRow scheduled runs", () => {
 });
 
 describe("InboxThreadRow outside agents", () => {
-  it("names the agent outside Threadlines that started it, in the project's place", async () => {
-    renderRow(null, [], {
-      ...THREAD,
-      outsideOrigin: {
-        connectionId: OutsideAgentConnectionId.make("connection-claude"),
-        name: "Claude Code",
-      },
-    });
-    const label = page.getByTestId(`thread-outside-origin-${THREAD_ID}`);
-    await expect.element(label).toHaveTextContent("from Claude Code");
+  const startedBy = (name: string, assistant?: "grok-bot") => ({
+    ...THREAD,
+    outsideOrigin: {
+      connectionId: OutsideAgentConnectionId.make(`connection-${name}`),
+      name,
+      ...(assistant !== undefined ? { assistant } : {}),
+    },
+  });
+
+  it("leads the title with the mark of the assistant that started it", async () => {
+    renderRow(null, [], startedBy("Grok Bot", "grok-bot"));
+    const mark = page.getByTestId(`thread-outside-origin-${THREAD_ID}`);
     await expect
-      .element(label)
-      .toHaveAttribute("title", "Started by Claude Code, an agent outside Threadlines");
+      .element(mark)
+      .toHaveAccessibleName("Started by Grok Bot, an assistant outside Threadlines");
+    await expect.element(mark.getByTestId("assistant-mark-grok-bot")).toBeInTheDocument();
+    expect(page.getByTestId(`thread-title-${THREAD_ID}`).element().previousElementSibling).toBe(
+      mark.element(),
+    );
+  });
+
+  it("marks an agent Threadlines has no mark for with a plug", async () => {
+    renderRow(null, [], startedBy("Claude Code"));
+    const mark = page.getByTestId(`thread-outside-origin-${THREAD_ID}`);
+    await expect
+      .element(mark)
+      .toHaveAccessibleName("Started by Claude Code, an agent outside Threadlines");
+    await expect.element(mark.getByTestId("outside-origin-plug")).toBeInTheDocument();
   });
 });
 

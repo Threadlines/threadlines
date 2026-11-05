@@ -603,6 +603,15 @@ describe("connect tools: access", () => {
       }),
   );
 
+  it.effect("labels a thread an assistant started with which assistant it is", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld();
+      const grok: OutsideAgentCaller = { ...CALLER, name: "Grok Bot", assistant: "grok-bot" };
+      expect((yield* world.handlers.thread_start(grok, start())).outcome).toBe("started");
+      expect(world.bootstrapped[0]?.bootstrap?.createThread?.outsideOrigin).toEqual(grok);
+    }),
+  );
+
   it.effect("sends only to threads this connection started", () =>
     Effect.gen(function* () {
       const world = yield* makeWorld({ threads: [makeThread({}), ownThread("mine")] });

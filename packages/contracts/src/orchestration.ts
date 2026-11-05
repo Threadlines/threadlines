@@ -634,6 +634,15 @@ export const ThreadScheduledRun = Schema.Struct({
 export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 /**
+ * Always-on assistants Threadlines knows by name and mark
+ * (docs/design/assistants.md). Several sign in through someone else's
+ * service (Grok Bot through Cursor's), so which one it is is a guess from
+ * its sign-in until the user picks.
+ */
+export const KnownAssistant = Schema.Literals(["grok-bot", "chatgpt", "claude", "muse", "cursor"]);
+export type KnownAssistant = typeof KnownAssistant.Type;
+
+/**
  * An outside agent (docs/design/outside-agents.md): a coding agent running
  * outside Threadlines that signed in to this computer's `/mcp/connect`. On a
  * thread it started (`outsideOrigin`, set once at creation) and on each
@@ -644,6 +653,13 @@ export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 export const OutsideAgentRef = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
   name: TrimmedNonEmptyString,
+  /**
+   * Which known assistant it was when this was written, for its mark (a
+   * thread it started shows it in the sidebar and header). Absent for local
+   * agents, for an assistant Threadlines couldn't place, and on refs written
+   * before it was kept.
+   */
+  assistant: Schema.optionalKey(KnownAssistant),
 });
 export type OutsideAgentRef = typeof OutsideAgentRef.Type;
 

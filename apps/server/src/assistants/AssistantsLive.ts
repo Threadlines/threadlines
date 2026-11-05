@@ -76,6 +76,7 @@ import {
   assistantOfRow,
   connectionNameOf,
   connectionOfRow,
+  connectionRefOf,
   grantRefusal,
   normalizedGrant,
 } from "../outsideAgents/connectionShapes.ts";
@@ -1094,7 +1095,7 @@ export const makeAssistants = Effect.gen(function* () {
         yield* repository.touch({ connectionId: row.connectionId, now: isoAt(now) });
         yield* notify;
       }
-      return { connectionId: row.connectionId, name: connectionNameOf(row) };
+      return connectionRefOf(row);
     }).pipe(
       Effect.catchTag("OutsideAgentConnectionRepositoryError", (cause) =>
         Effect.logWarning("assistants: couldn't check a credential", { cause }).pipe(

@@ -1341,7 +1341,7 @@ function outsideOriginsEqual(
   const b = right ?? null;
   return a === null || b === null
     ? a === b
-    : a.connectionId === b.connectionId && a.name === b.name;
+    : a.connectionId === b.connectionId && a.name === b.name && a.assistant === b.assistant;
 }
 
 function sideTurnsEqual(
