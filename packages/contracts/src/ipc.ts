@@ -280,6 +280,11 @@ import type {
   SourceControlSetupState,
   GitHubAuthState,
 } from "./sourceControl.ts";
+import type {
+  ReportProblemAccount,
+  ReportProblemInput,
+  ReportProblemResult,
+} from "./reportProblem.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -1660,6 +1665,10 @@ export interface LocalApi {
     getSourceControlSetup: () => Promise<SourceControlSetupState>;
     startGitHubAuth: () => Promise<GitHubAuthState>;
     cancelGitHubAuth: () => Promise<void>;
+    /** Who "Report a problem" would post as. */
+    getReportProblemAccount: () => Promise<ReportProblemAccount>;
+    /** Posts a bug report to GitHub from this computer's GitHub account. */
+    reportProblem: (input: ReportProblemInput) => Promise<ReportProblemResult>;
     updateSourceControlTool: (
       input: SourceControlToolUpdateInput,
     ) => Promise<SourceControlToolUpdateResult>;

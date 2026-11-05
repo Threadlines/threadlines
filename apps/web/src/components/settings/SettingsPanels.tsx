@@ -51,7 +51,6 @@ import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
 import { setDesktopUpdateStateQueryData } from "../../lib/desktopUpdateReactQuery";
 import { openExternalUrl } from "../../lib/externalLinks";
-import { reportIssueUrl } from "../../lib/reportIssue";
 import {
   deriveUsageWindow,
   usageSummaryQueryOptions,
@@ -81,6 +80,7 @@ import {
   type AutoArchiveProjectGroup,
 } from "../../threadAutoArchive";
 import { Button } from "../ui/button";
+import { openReportProblemDialog } from "../ReportProblemDialog";
 import { openWhatsNewDialog } from "../WhatsNewDialog";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -1288,13 +1288,13 @@ export function DiagnosticsRow() {
   );
 }
 
-/** Opens GitHub's bug form, filled in for this copy of Threadlines. */
+/** Opens the "Report a problem" form. */
 export function ReportProblemRow() {
   return (
     <SettingsRow
       place="general.reportProblem"
       control={
-        <Button size="xs" variant="outline" onClick={() => openExternalUrl(reportIssueUrl())}>
+        <Button size="xs" variant="outline" onClick={openReportProblemDialog}>
           Report
         </Button>
       }

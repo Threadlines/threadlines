@@ -369,10 +369,11 @@ export async function updateAssistantAlertTarget(
   input: AssistantAlertTargetUpdateInput,
 ): Promise<void> {
   await readClient().alertTargetUpdate(input);
-  const { targetId, authorization, ...fields } = input;
+  const { targetId, authorization, finishedWhenAsked, ...fields } = input;
   patchAlertTarget(targetId, (target) => ({
     ...target,
     ...fields,
+    finishedWhenAsked: finishedWhenAsked ?? target.finishedWhenAsked,
     hasAuthorization:
       authorization.kind === "keep" ? target.hasAuthorization : authorization.kind === "set",
   }));

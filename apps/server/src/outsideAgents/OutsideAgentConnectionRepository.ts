@@ -95,7 +95,7 @@ export const OutsideAgentConnectionRow = Schema.Struct({
   /** Which known assistant the user said it is (`none`: none of them); null: not picked, the guess stands. */
   assistantPick: Schema.NullOr(AssistantPick),
   /**
-   * Connected on a linked computer (`sign_in = 'linked'`, migration 102): that
+   * Connected on a linked computer (`sign_in = 'linked'`, migration 103): that
    * computer, its connection there, and the inbound link its calls come over.
    */
   via: Schema.NullOr(OutsideAgentVia),

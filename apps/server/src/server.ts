@@ -132,6 +132,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
 import * as GitHubAuth from "./sourceControl/GitHubAuth.ts";
+import * as ProblemReports from "./sourceControl/ProblemReports.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -707,6 +708,10 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Build setup services once for the HTTP server, not once per WebSocket.
   Layer.provide(SourceControlToolMaintenance.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(GitHubAuth.layer),
+  // One for the server: it remembers reports posted and posts GitHub may have taken.
+  Layer.provide(
+    ProblemReports.layer.pipe(Layer.provide(GitHubCli.layer), Layer.provide(VcsProcess.layer)),
+  ),
   Layer.provide(ProviderMaintenanceRunner.layer),
   // One registry for the whole server: a retried bootstrap turn start must
   // find the run in flight even when it arrives on a different socket. The

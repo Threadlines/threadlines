@@ -6346,6 +6346,7 @@ describe("Agents outside Threadlines", () => {
       kinds: ["needs_you", "finished", "failed"],
       projectIds: null,
       skipViewed: true,
+      finishedWhenAsked: false,
       state: "on",
       hasAuthorization: false,
       refusedSince: null,
@@ -6400,6 +6401,7 @@ describe("Agents outside Threadlines", () => {
         kinds: ["needs_you", "failed"],
         projectIds: [WEB],
         skipViewed: false,
+        finishedWhenAsked: false,
         authorization: "Bearer crsr_secret",
       });
     });
@@ -6410,25 +6412,49 @@ describe("Agents outside Threadlines", () => {
     await expect.element(row.getByRole("heading", { name: "hooks.example.com" })).toBeVisible();
     await expect.element(row).toMatchTextContent("Needs you and failed · web · Nothing sent yet");
 
-    // Edit says a header is set, never what it is, and can clear it.
+    // Edit says a header is set, never what it is, and can clear it. Finished
+    // can come back for only the turns the user asks an agent to alert about.
     await row.getByRole("button", { name: "Edit", exact: true }).click();
     await expect
       .element(dialog.getByTestId("assistant-alert-authorization-state"))
       .toHaveTextContent("Unchanged");
     expect(document.body.textContent).not.toContain("crsr_secret");
     await dialog.getByTestId("assistant-alert-authorization-clear").click();
+    await expect
+      .element(dialog.getByTestId("assistant-alert-finished-when-asked"))
+      .not.toBeInTheDocument();
+    await dialog.getByTestId("assistant-alert-kind-finished").click();
+    await dialog.getByTestId("assistant-alert-finished-when-asked").click();
     await dialog.getByTestId("assistant-alert-save").click();
     await vi.waitFor(() => {
       expect(outsideAgentsHarness.client.alertTargetUpdate).toHaveBeenCalledWith({
         targetId: added.targetId,
         url: added.url,
-        kinds: ["needs_you", "failed"],
+        kinds: ["needs_you", "finished", "failed"],
         projectIds: [WEB],
         skipViewed: false,
+        finishedWhenAsked: true,
         authorization: { kind: "clear" },
       });
     });
     await expect.element(page.getByTestId("assistant-alert-dialog")).not.toBeInTheDocument();
+    outsideAgentsHarness.emit(
+      snapshot({
+        assistants: assistantsState({
+          alertTargets: [
+            {
+              ...added,
+              kinds: ["needs_you", "finished", "failed"],
+              finishedWhenAsked: true,
+              hasAuthorization: false,
+            },
+          ],
+        }),
+      }),
+    );
+    await expect
+      .element(row)
+      .toMatchTextContent("Needs you, finished when you ask and failed · web · Nothing sent yet");
   });
 
   it("says how each web address is doing, sends a test, and turns one the receiver turned off back on", async () => {

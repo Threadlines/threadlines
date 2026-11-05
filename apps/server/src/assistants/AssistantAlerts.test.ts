@@ -5,6 +5,7 @@ import {
   OutsideAgentConnectionId,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
@@ -88,6 +89,8 @@ const makeHarness = Effect.gen(function* () {
   /** How `current` judges an event; true unless set. */
   const stands = new Map<number, boolean | "unknown">();
   const viewed = new Set<string>([VIEWED_THREAD]);
+  /** Each event's subject by `seq`; left out: `turn:turn-<seq>`. */
+  const subjects = new Map<number, string>();
   const calls: Array<Call> = [];
   const answers: Array<OutboundResult> = [];
   const secrets = new Map<string, Uint8Array>();
@@ -141,6 +144,7 @@ const makeHarness = Effect.gen(function* () {
           ? null
           : {
               event,
+              subjectKey: subjects.get(seq) ?? `turn:turn-${seq}`,
               stands: stands.get(seq) ?? true,
               project: "app",
               generalChat: event.projectId === GENERAL_CHATS,
@@ -265,10 +269,13 @@ const makeHarness = Effect.gen(function* () {
       readonly threadId?: ThreadId;
       readonly projectId?: ProjectId;
       readonly stands?: boolean | "unknown";
+      /** The turn a finished event is about; left out: `turn-<seq>`. */
+      readonly turnId?: string;
     } = {},
   ) =>
     Effect.gen(function* () {
       seq += 1;
+      if (options.turnId !== undefined) subjects.set(seq, `turn:${options.turnId}`);
       events.push({
         eventId: `event-${seq}`,
         seq,
@@ -355,6 +362,7 @@ const createTarget = (alerts: AssistantAlertsShape) =>
       kinds: ["needs_you", "finished", "failed"],
       projectIds: null,
       skipViewed: true,
+      finishedWhenAsked: false,
       authorization: "Bearer crsr_test",
     })
     .pipe(Effect.map((created) => created.targetId));
@@ -588,6 +596,7 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
         kinds: ["needs_you"],
         projectIds: null,
         skipViewed: true,
+        finishedWhenAsked: false,
         authorization: { kind: "set", value: "Bearer crsr_new" },
       });
       yield* settle(6_000);
@@ -605,6 +614,71 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
         new TextDecoder().decode(harness.secrets.get(keys[0]!)),
         "Bearer crsr_new",
       );
+      yield* stop;
+    }),
+  );
+
+  it.effect("'only when I ask' sends just the turns an agent was asked about, even open ones", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const { alerts, stop } = yield* harness.boot;
+      const ask = (threadId: ThreadId, turnId: string) =>
+        alerts.ask({ threadId, turnId: TurnId.make(turnId), projectId: PROJECT });
+
+      // Nobody takes finished alerts yet: nothing is remembered for later.
+      assert.deepStrictEqual(yield* ask(VIEWED_THREAD, "turn-early"), {
+        receivers: 0,
+        already: false,
+      });
+      const { targetId } = yield* alerts.create({
+        url: URL_TEXT,
+        kinds: ["needs_you", "finished", "failed"],
+        projectIds: null,
+        skipViewed: true,
+        finishedWhenAsked: true,
+        authorization: null,
+      });
+      assert.deepStrictEqual(yield* ask(VIEWED_THREAD, "turn-asked"), {
+        receivers: 1,
+        already: false,
+      });
+      assert.deepStrictEqual(yield* ask(VIEWED_THREAD, "turn-asked"), {
+        receivers: 1,
+        already: true,
+      });
+      yield* ask(VIEWED_THREAD, "turn-asked-failed");
+
+      yield* harness.record("thread.finished", { turnId: "turn-plain" });
+      yield* harness.record("thread.finished", { threadId: VIEWED_THREAD, turnId: "turn-early" });
+      const asked = yield* harness.record("thread.finished", {
+        threadId: VIEWED_THREAD,
+        turnId: "turn-asked",
+      });
+      const needed = yield* harness.record("thread.needs_you");
+      const askedFailed = yield* harness.record("thread.failed", {
+        threadId: VIEWED_THREAD,
+        turnId: "turn-asked-failed",
+      });
+      yield* harness.record("thread.failed", { threadId: VIEWED_THREAD, turnId: "turn-failed" });
+      yield* settle();
+
+      // The asked turns go out though their thread is open (finished or
+      // failed); needs-you as before; nothing else.
+      assert.deepStrictEqual(
+        harness.calls.map((call) => bodyOf(call).eventId),
+        [`event-${asked}`, `event-${needed}`, `event-${askedFailed}`],
+      );
+
+      // An older app's Edit, which doesn't know the option, leaves it as it is.
+      yield* alerts.update({
+        targetId,
+        url: URL_TEXT,
+        kinds: ["needs_you", "finished", "failed"],
+        projectIds: null,
+        skipViewed: true,
+        authorization: { kind: "keep" },
+      });
+      assert.strictEqual((yield* targetOf(alerts, targetId))?.finishedWhenAsked, true);
       yield* stop;
     }),
   );
@@ -629,6 +703,7 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
         kinds: ["needs_you"],
         projectIds: null,
         skipViewed: true,
+        finishedWhenAsked: false,
         authorization: "Authorization: Bearer crsr_test",
       });
       assert.strictEqual(storedAuthorization(), "Bearer crsr_test");
@@ -642,6 +717,7 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
           kinds: ["needs_you"],
           projectIds: null,
           skipViewed: true,
+          finishedWhenAsked: false,
           authorization: { kind: "set", value },
         });
       yield* edit("crsr_new");
@@ -1151,6 +1227,7 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
             kinds: ["finished"],
             projectIds: null,
             skipViewed: false,
+            finishedWhenAsked: false,
             authorization: { kind: "keep" },
           }),
         ),

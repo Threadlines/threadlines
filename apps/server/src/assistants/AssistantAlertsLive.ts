@@ -60,7 +60,7 @@ import {
 } from "../net/outboundHttps.ts";
 import { READ_RETRY_MS } from "../pushAlerts/alertChecks.ts";
 import { PushAlerts } from "../pushAlerts/PushAlerts.ts";
-import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from "../pushAlerts/pushAlertRules.ts";
+import { MAX_DELIVERY_ATTEMPTS, retryDelayMs, turnAlertId } from "../pushAlerts/pushAlertRules.ts";
 import { connectionNameOf } from "../outsideAgents/connectionShapes.ts";
 import {
   OutsideAgentConnectionRepository,
@@ -152,6 +152,8 @@ const CHECK_LOOKUP_WAIT_MS = 3_000;
 const LOCK_WAIT_MS = 5_000;
 
 const KIND_ORDER: ReadonlyArray<AssistantAlertKind> = ["needs_you", "finished", "failed"];
+/** A finished event about a turn has this subject, then the turn's id (pushAlertRules). */
+const TURN_SUBJECT_PREFIX = turnAlertId("");
 const KIND_OF_NAME: Record<AssistantEventName, AssistantAlertKind> = {
   "thread.needs_you": "needs_you",
   "thread.finished": "finished",
@@ -282,6 +284,7 @@ const toContract = (
         kinds: row.names.map((name) => KIND_OF_NAME[name]),
         projectIds: row.projectIds,
         skipViewed: row.skipViewed,
+        finishedWhenAsked: row.finishedWhenAsked,
         state: row.state,
         hasAuthorization: row.authorizationSecret !== null,
         refusedSince: row.refusedSince,
@@ -493,6 +496,7 @@ const make = (transport: AlertTransport) =>
               targetId,
               ...fields,
               skipViewed: input.skipViewed,
+              finishedWhenAsked: input.finishedWhenAsked,
               authorizationSecret,
               startSeq: position.lastSeq,
               now,
@@ -547,6 +551,7 @@ const make = (transport: AlertTransport) =>
                 targetId: row.targetId,
                 ...fields,
                 skipViewed: input.skipViewed,
+                finishedWhenAsked: input.finishedWhenAsked ?? row.finishedWhenAsked,
                 ...(credentialsChanged ? { authorizationSecret: nextSecret } : {}),
                 newCredentials: credentialsChanged || fields.url !== row.url,
                 now,
@@ -742,6 +747,52 @@ const make = (transport: AlertTransport) =>
             Effect.orElseSucceed(() => "unknown" as const),
           );
 
+    /**
+     * Whether an agent was asked to alert about the turn this finished or
+     * failed event is about; "unknown" when that couldn't be read.
+     */
+    const askedAbout = (event: AssistantEvent, subjectKey: string) => {
+      const turnId =
+        event.name !== "thread.needs_you" && subjectKey.startsWith(TURN_SUBJECT_PREFIX)
+          ? subjectKey.slice(TURN_SUBJECT_PREFIX.length)
+          : null;
+      return turnId === null
+        ? Effect.succeed(false)
+        : repo
+            .isAsked({ threadId: event.threadId, turnId })
+            .pipe(Effect.orElseSucceed(() => "unknown" as const));
+    };
+
+    const ask: AssistantAlertsShape["ask"] = (input) =>
+      Effect.gen(function* () {
+        const rows = yield* repo.list.pipe(stored("read the alert addresses"));
+        const now = yield* Clock.currentTimeMillis;
+        // The same rules the sender applies to a finished event of this project.
+        let receivers = 0;
+        for (const row of rows) {
+          if (row.state !== "on" || !row.names.includes("thread.finished")) continue;
+          if (row.projectIds !== null && !row.projectIds.includes(input.projectId)) continue;
+          if (row.kind === "subscription") {
+            if (row.expiresAt !== null && row.expiresAt <= iso(now)) continue;
+            const connection = yield* connectionOf(row);
+            if (connection === "removed") continue;
+            if (
+              connection !== "unknown" &&
+              connection.projectIds !== null &&
+              !connection.projectIds.includes(input.projectId)
+            ) {
+              continue;
+            }
+          }
+          receivers += 1;
+        }
+        if (receivers === 0) return { receivers, already: false };
+        const added = yield* repo
+          .addAsk({ threadId: input.threadId, turnId: input.turnId, now: iso(now) })
+          .pipe(stored("remember to send the alert"));
+        return { receivers, already: !added };
+      });
+
     /** One delivery, start to answer; "gone" when the target ended with it. */
     const deliver = (row: AlertTargetRow, delivery: AlertDeliveryRow) =>
       Effect.gen(function* () {
@@ -794,12 +845,24 @@ const make = (transport: AlertTransport) =>
           }
         }
         // Edited since it was queued (other kinds or projects), General Chats,
-        // or a thread someone is looking at: not for this address now.
+        // or a thread someone is looking at: not for this address now. A turn
+        // an agent was asked to alert about goes out even while it's looked
+        // at (finished or failed), and is the only finished turn an "only when
+        // I ask" address takes.
         const wanted =
           !current.generalChat &&
           row.names.includes(current.event.name) &&
           (row.projectIds === null || row.projectIds.includes(current.event.projectId));
-        if (!wanted || (row.skipViewed && (yield* isViewed(current.event.threadId)))) {
+        const asked = wanted ? yield* askedAbout(current.event, current.subjectKey) : false;
+        if (asked === "unknown") {
+          yield* settle({ state: "pending", nextAttemptAt: iso(now + READ_RETRY_MS) });
+          return "done" as const;
+        }
+        if (
+          !wanted ||
+          (row.finishedWhenAsked && current.event.name === "thread.finished" && !asked) ||
+          (row.skipViewed && !asked && (yield* isViewed(current.event.threadId)))
+        ) {
           yield* settle({ state: "dropped" });
           return "done" as const;
         }
@@ -1383,6 +1446,7 @@ const make = (transport: AlertTransport) =>
       secret,
       subscribe,
       unsubscribe,
+      ask,
       start,
     });
   });

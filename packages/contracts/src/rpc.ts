@@ -455,6 +455,12 @@ import {
   SourceControlProviderError,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  ReportProblemAccount,
+  ReportProblemError,
+  ReportProblemInput,
+  ReportProblemResult,
+} from "./reportProblem.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -595,6 +601,8 @@ export const WS_METHODS = {
   serverGetSourceControlSetup: "server.getSourceControlSetup",
   serverStartGitHubAuth: "server.startGitHubAuth",
   serverCancelGitHubAuth: "server.cancelGitHubAuth",
+  serverGetReportProblemAccount: "server.getReportProblemAccount",
+  serverReportProblem: "server.reportProblem",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
@@ -912,6 +920,21 @@ export const WsServerStartGitHubAuthRpc = Rpc.make(WS_METHODS.serverStartGitHubA
 export const WsServerCancelGitHubAuthRpc = Rpc.make(WS_METHODS.serverCancelGitHubAuth, {
   payload: Schema.Struct({}),
   success: Schema.Void,
+});
+
+/** Who "Report a problem" would post as on this computer. */
+export const WsServerGetReportProblemAccountRpc = Rpc.make(
+  WS_METHODS.serverGetReportProblemAccount,
+  {
+    payload: Schema.Struct({}),
+    success: ReportProblemAccount,
+  },
+);
+/** Posts a bug report to GitHub from this computer's GitHub account. */
+export const WsServerReportProblemRpc = Rpc.make(WS_METHODS.serverReportProblem, {
+  payload: ReportProblemInput,
+  success: ReportProblemResult,
+  error: ReportProblemError,
 });
 
 export const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDiagnostics, {
@@ -2460,6 +2483,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetSourceControlSetupRpc,
   WsServerStartGitHubAuthRpc,
   WsServerCancelGitHubAuthRpc,
+  WsServerGetReportProblemAccountRpc,
+  WsServerReportProblemRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,

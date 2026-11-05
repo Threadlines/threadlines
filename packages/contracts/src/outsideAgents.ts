@@ -228,6 +228,12 @@ export const AssistantAlertTarget = Schema.Struct({
   projectIds: Schema.NullOr(Schema.Array(ProjectId)),
   /** Skip threads someone is looking at in Threadlines. */
   skipViewed: Schema.Boolean,
+  /**
+   * Finished goes out only for turns the user asked an agent to alert about
+   * (the agent's `alert_assistants`), even while the thread is being looked
+   * at; false: every finished turn.
+   */
+  finishedWhenAsked: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   state: Schema.Literals(["on", "off", "gone"]),
   /** An Authorization header is set (its value is never sent to the app). */
   hasAuthorization: Schema.Boolean,
@@ -348,6 +354,8 @@ const AssistantAlertTargetFields = {
 
 export const AssistantAlertTargetCreateInput = Schema.Struct({
   ...AssistantAlertTargetFields,
+  /** Finished only for turns the user asked an agent to alert about. Left out: every finished turn. */
+  finishedWhenAsked: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The Authorization header's whole value (`Bearer crsr_…`); null: none. */
   authorization: Schema.NullOr(TrimmedNonEmptyString),
 });
@@ -356,6 +364,8 @@ export type AssistantAlertTargetCreateInput = typeof AssistantAlertTargetCreateI
 export const AssistantAlertTargetUpdateInput = Schema.Struct({
   targetId: AssistantAlertTargetId,
   ...AssistantAlertTargetFields,
+  /** Finished only for turns the user asked an agent to alert about. Left out (an older app): as it is. */
+  finishedWhenAsked: Schema.optional(Schema.Boolean),
   /** Keep the Authorization header as it is, replace it, or clear it. */
   authorization: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("keep") }),

@@ -58,6 +58,9 @@ import { GuideToolkit } from "./guideTools.ts";
 import { offeredModels } from "../settingsChanges/modelChoices.ts";
 import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
 import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
+import { makeAlertAssistantsToolHandler } from "./alertAssistantsToolHandlers.ts";
+import { AlertAssistantsToolkit } from "./alertAssistantsTools.ts";
+import { AssistantAlerts } from "../assistants/AssistantAlerts.ts";
 import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
 import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
@@ -71,6 +74,7 @@ const RoomEndpointToolkit = Toolkit.merge(
   ScheduleToolkit,
   GuideToolkit,
   SettingsChangeToolkit,
+  AlertAssistantsToolkit,
 );
 
 type RoomEndpointToolName = keyof typeof RoomEndpointToolkit.tools;
@@ -105,6 +109,9 @@ const ROOM_TOOL_REACH = {
   // Only shows a card on the caller's own thread, but asks to change app-wide
   // settings: refused while outside work limits the caller.
   settings_change: "changes",
+  // Only marks the caller's own turn, but sends word of it off this computer:
+  // refused while outside work limits the caller.
+  alert_assistants: "changes",
 } as const satisfies Record<
   Exclude<RoomEndpointToolName, typeof GUIDE_TOOL_NAME>,
   "own" | "project" | "changes"
@@ -376,6 +383,17 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       settings: settings.readStored.pipe(Effect.orElseSucceed(() => undefined)),
       providers: providers.getProviders,
     });
+    const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
+    const alertAssistants = makeAlertAssistantsToolHandler({
+      readThread,
+      isGeneralChat: (projectId) =>
+        snapshots.getProjectShellById(projectId).pipe(
+          Effect.map((project) => Option.getOrUndefined(project)?.kind === "general-chat"),
+          // Not knowing isn't knowing it is: the sender drops General Chats anyway.
+          Effect.orElseSucceed(() => false),
+        ),
+      alerts: Option.getOrUndefined(assistantAlerts),
+    });
     const caller = requestService(McpRoomInvocation);
     type Refused = { readonly outcome: "refused"; readonly detail: string };
     /**
@@ -461,6 +479,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
       settings_change: (input) =>
         changes("settings_change", (scope) => settingsChange(scope, input)),
+      alert_assistants: () => changes("alert_assistants", alertAssistants),
       // Listed only to runtimes granted it; a call from any other is refused
       // too (a review runtime reads the checkout and nothing else). Refused
       // while outside work limits the caller: it reads app-wide settings,
