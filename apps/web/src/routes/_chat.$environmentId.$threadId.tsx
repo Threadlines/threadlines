@@ -43,7 +43,6 @@ import {
   invalidateGitWorkingTreeDiffQueries,
 } from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
-import { getThreadInFlightStatus } from "../lib/threadSort";
 import {
   setThreadPullRequestAutoFix,
   setThreadPullRequestAutoMerge,
@@ -103,8 +102,14 @@ import {
   type RightPanelTab,
 } from "../rightPanelTabs";
 import { hasRunningAgentActivity } from "../components/chat/agentsPanel.logic";
+import { composerPullRequestThreadHold } from "../components/chat/composerPullRequest.logic";
 import { useRightPanelLauncherStates } from "../components/chat/rightPanelLauncherState";
-import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
+import {
+  selectEnvironmentState,
+  selectSidebarThreadSummaryByRef,
+  selectThreadExistsByRef,
+  useStore,
+} from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
@@ -744,10 +749,12 @@ function ChatThreadRouteView() {
   );
   // What the server weighs before it merges, besides the pull request: it
   // passes over a thread whose agent is mid-turn, since the agent may be about
-  // to push, and waits for local commits to reach the host.
-  const threadAgentWorking = serverThread
-    ? getThreadInFlightStatus(serverThread) !== null || serverThread.latestTurn?.state === "running"
-    : false;
+  // to push, or waiting on the user, and waits for local commits to reach the
+  // host. The thread's summary carries the open questions and plans.
+  const threadPullRequestHold = useStore((store) => {
+    const summary = selectSidebarThreadSummaryByRef(store, threadRef);
+    return summary === undefined ? null : composerPullRequestThreadHold(summary);
+  });
   const threadUnpushedCommits = pullRequestGitStatus.data?.aheadCount ?? 0;
   // Where the checkout last saw its branch pushed, so the row can tell a read
   // of its pull request from before the push. Only for the pull request on
@@ -827,7 +834,7 @@ function ChatThreadRouteView() {
             void setThreadPullRequestAutoMerge(threadRef, null, null);
           }
         },
-        agentWorking: threadAgentWorking,
+        threadHold: threadPullRequestHold,
         // The thread's checkout is on its own branch, so only that pull
         // request can have commits there waiting to be pushed.
         unpushedCommits: own ? threadUnpushedCommits : 0,
@@ -844,7 +851,7 @@ function ChatThreadRouteView() {
     composerPullRequestDismissalHolds,
     currentThreadKey,
     openPullRequestTab,
-    threadAgentWorking,
+    threadPullRequestHold,
     threadCheckoutBranch,
     threadDismissedPullRequests,
     threadLinkedPullRequests,

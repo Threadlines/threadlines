@@ -9,6 +9,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationProjectShell,
+  type OrchestrationSession,
   type OrchestrationThreadShell,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -281,9 +282,33 @@ function switchedOn(
   };
 }
 
-/** The engine's word that a turn was asked for, and later that it ended. */
+/** A session whose agent ended its turn on a run in the background it will wake up for. */
+const AWAITING_BACKGROUND: OrchestrationSession = {
+  threadId: THREAD_ID,
+  status: "ready",
+  providerName: null,
+  runtimeMode: "full-access",
+  activeTurnId: null,
+  lastError: null,
+  updatedAt: NOW_ISO,
+  pendingBackgroundTaskCount: 1,
+  awaitedBackgroundTaskCount: 1,
+};
+
+/** The same session once that run is over. */
+const BACKGROUND_DONE: OrchestrationSession = {
+  ...AWAITING_BACKGROUND,
+  pendingBackgroundTaskCount: 0,
+  awaitedBackgroundTaskCount: 0,
+};
+
+/**
+ * The engine's word that a turn was asked for, and later that it ended. A
+ * session's word is from mid-turn unless `session` says otherwise.
+ */
 function turnEvent(
   type: "thread.turn-start-requested" | "thread.session-set" | "thread.turn-completed",
+  session?: OrchestrationSession,
 ): OrchestrationEvent {
   const base = {
     sequence: 1,
@@ -309,14 +334,13 @@ function turnEvent(
           createdAt: NOW_ISO,
         },
       };
-    // The session's word, mid-turn, that the agent is working.
     case "thread.session-set":
       return {
         ...base,
         type,
         payload: {
           threadId: THREAD_ID,
-          session: {
+          session: session ?? {
             threadId: THREAD_ID,
             status: "running",
             providerName: null,
@@ -736,6 +760,47 @@ describe("PullRequestAutomationWatcher", () => {
       await vi.waitFor(() => expect(dispatched).toHaveLength(1));
       // The check that was already failing when the box was ticked.
       expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+    } finally {
+      await stop();
+    }
+  });
+
+  it("sends a failure only once the background work the agent waits on is over", async () => {
+    const { dispatched, emit, setScript, setThreads, start, statusReads, threadReads } =
+      await createHarness({
+        threads: [thread()],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: detail([PASSING_CHECK]),
+          activity: activity(),
+        },
+      });
+    const stop = await start();
+    try {
+      // Starting sweeps once and records the passing check.
+      await vi.waitFor(() => expect(statusReads).toHaveLength(1));
+      emit(turnEvent("thread.turn-start-requested"));
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: detail([FAILING_CHECK]),
+        activity: activity(),
+      });
+      // The agent ends its turn on a test run it will wake up for, which may
+      // well be about this failure.
+      setThreads([thread({ session: AWAITING_BACKGROUND })]);
+      const readsBefore = threadReads();
+      emit(turnEvent("thread.session-set", AWAITING_BACKGROUND));
+      // Read as its turn ended, and once more by the look that found it waiting.
+      await vi.waitFor(() => expect(threadReads()).toBe(readsBefore + 2));
+      expect(dispatched).toEqual([]);
+      expect(statusReads).toHaveLength(1);
+
+      setThreads([thread({ session: BACKGROUND_DONE })]);
+      emit(turnEvent("thread.session-set", BACKGROUND_DONE));
+      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+      expect(dispatched[0]?.message.text).toContain("These checks failed:\n- typecheck");
+      // The host was read again only as the run ended.
+      expect(statusReads).toHaveLength(2);
     } finally {
       await stop();
     }
@@ -1850,6 +1915,44 @@ describe("PullRequestAutomationWatcher", () => {
       expect(commands[1]).toMatchObject({
         activity: { tone: "info", kind: "pull-request.auto-merge.queued" },
       });
+    });
+
+    it("merges as the turn ends though the agent waits in the background, which may be for this merge", async () => {
+      // Both switches on for the pull request it holds by number, ticked mid-turn.
+      const holding = thread({
+        pullRequestAutoFix: false,
+        linkedPullRequests: [
+          {
+            number: PR_NUMBER,
+            url: `https://github.com/${REPOSITORY}/pull/${PR_NUMBER}`,
+            autoFix: true,
+            autoMerge: "squash",
+          },
+        ],
+      });
+      const { actions, dispatched, emit, setThreads, snapshotReads, start } = await createHarness({
+        threads: [{ ...holding, latestTurn: RUNNING_TURN }],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([PASSING_CHECK]),
+          activity: activity(),
+          merge: () => Effect.succeed({ state: "merged" }),
+        },
+      });
+      const stop = await start();
+      try {
+        // Starting sweeps once and passes over the thread mid-turn.
+        await vi.waitFor(() => expect(snapshotReads()).toBe(1));
+        emit(turnEvent("thread.turn-start-requested"));
+        // The agent ends its turn on a loop that waits for the pull request to merge.
+        setThreads([{ ...holding, session: AWAITING_BACKGROUND }]);
+        emit(turnEvent("thread.session-set", AWAITING_BACKGROUND));
+        await vi.waitFor(() => expect(actions).toHaveLength(1));
+        expect(actions[0]).toMatchObject({ number: PR_NUMBER, action: "merge" });
+        expect(dispatched).toEqual([]);
+      } finally {
+        await stop();
+      }
     });
 
     it("merges as soon as the switch comes on, not at the next interval", async () => {
