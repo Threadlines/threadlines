@@ -106,7 +106,7 @@ import {
 import { childWorktreeBranch, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns.ts";
 import { ForwardedGrantCap } from "./forwardedCalls.ts";
-import { type OtherComputersShape, peerAgentOf } from "./OtherComputers.ts";
+import { type FoundComputer, type OtherComputersShape, peerAgentOf } from "./OtherComputers.ts";
 import {
   OUTSIDE_ALREADY_QUEUED,
   outsideCeilingDetail,
@@ -2500,8 +2500,10 @@ export const makeConnectToolHandlers = (
         const gated = yield* gate(caller, "see");
         if ("refusal" in gated) return { ...gated.refusal, computers: [] };
         const other = deps.otherComputers;
+        const self = other === undefined ? null : yield* other.here;
         const here = {
-          name: other === undefined ? "This computer" : yield* other.here,
+          id: self?.environmentId ?? "here",
+          name: self?.label ?? "This computer",
           here: true,
           allowed: "yes" as const,
           online: true,
@@ -2518,6 +2520,7 @@ export const makeConnectToolHandlers = (
           computers: [
             here,
             ...reach.map((entry) => ({
+              id: entry.environmentId,
               name: entry.computer,
               here: false,
               allowed:
@@ -2545,24 +2548,35 @@ export const makeConnectToolHandlers = (
       caller: OutsideAgentCaller,
       input: ForwardedInput<Name>,
       computerName: string,
+      /** The call as this computer runs it, when `computer` names this one. */
+      runHere: Effect.Effect<ForwardedResult<Name>>,
     ): Effect.Effect<ForwardedResult<Name>> =>
       Effect.gen(function* () {
         const empty = EMPTY_ANSWERS[name] as ForwardedResult<Name>;
         const answer = (outcome: string, detail: string) =>
           ({ ...empty, outcome, detail }) as ForwardedResult<Name>;
+        const other = deps.otherComputers;
+        const found: FoundComputer =
+          other === undefined ? { kind: "none" } : yield* other.find(computerName);
+        if (found.kind === "here") return yield* runHere;
         const gated = yield* gate(caller, FORWARDED_LEVEL[name]);
         if ("refusal" in gated) return { ...empty, ...gated.refusal } as ForwardedResult<Name>;
-        const other = deps.otherComputers;
         if (gated.grant.linked === true) {
           return answer("not_allowed", "From this computer you can only work here.");
         }
-        const computer = other === undefined ? Option.none() : yield* other.find(computerName);
-        if (other === undefined || Option.isNone(computer)) {
+        if (found.kind === "ambiguous") {
+          return answer(
+            "not_found",
+            `More than one linked computer is called "${computerName}". Pass its id from computers.`,
+          );
+        }
+        if (other === undefined || found.kind === "none") {
           return answer(
             "not_found",
             `No linked computer is called "${computerName}". computers lists the ones you can use.`,
           );
         }
+        const computer = found.computer;
         const tool = ConnectToolkit.tools[name];
         const { computer: _computer, ...rest } = input;
         // A wait there ends in time for its answer to come back through here.
@@ -2584,7 +2598,7 @@ export const makeConnectToolHandlers = (
         ).pipe(Effect.orDie);
         const result = yield* other
           .call(
-            computer.value,
+            computer,
             {
               agent: peerAgentOf(gated.grant, door),
               tool: name,
@@ -2597,8 +2611,8 @@ export const makeConnectToolHandlers = (
           return answer(
             "offline",
             FORWARD_CHANGES.has(name)
-              ? `${computer.value.label} couldn't be reached (${result.failure.detail}). It may have got this before it went: call again with the same requestId, which never does it twice.`
-              : `${computer.value.label} couldn't be reached (${result.failure.detail}). Try again when it's on.`,
+              ? `${computer.label} couldn't be reached (${result.failure.detail}). It may have got this before it went: call again with the same requestId, which never does it twice.`
+              : `${computer.label} couldn't be reached (${result.failure.detail}). Try again when it's on.`,
           );
         }
         if (result.success.outcome === "refused") {
@@ -2611,7 +2625,7 @@ export const makeConnectToolHandlers = (
           ? (decoded.success as ForwardedResult<Name>)
           : answer(
               "failed",
-              `${computer.value.label} answered in a way this computer can't read. Update Threadlines on both.`,
+              `${computer.label} answered in a way this computer can't read. Update Threadlines on both.`,
             );
       });
 
@@ -2639,7 +2653,7 @@ export const makeConnectToolHandlers = (
         const computer = (input as { readonly computer?: string } | undefined)?.computer?.trim();
         return computer === undefined || computer.length === 0
           ? here(caller, input)
-          : elsewhere(name, caller, input, computer);
+          : elsewhere(name, caller, input, computer, here(caller, input));
       };
       return run as unknown as (typeof local)[Name];
     };

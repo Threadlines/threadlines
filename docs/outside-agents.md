@@ -63,7 +63,7 @@ Sign-in happens once. Later runs, including unattended ones like `claude -p` or
 ## Your other computers
 
 An agent connected here can work on your other computers too: the ones linked
-to this one in Fleet. Each tool takes `computer`, a name from `computers`. In
+to this one in Fleet. Each tool takes `computer`, an id from `computers` (a name works when only one computer has it). In
 the agent's Change dialog (Settings → Connections), Other computers lists them;
 Ask puts the same approval in front of you on that computer, and it can never
 do more there than here. Remove there, or here, takes it away. This computer

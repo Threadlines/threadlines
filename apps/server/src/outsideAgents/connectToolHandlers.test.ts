@@ -48,7 +48,7 @@ import {
   makeConnectToolHandlers,
 } from "./connectToolHandlers.ts";
 import { ForwardedGrantCap } from "./forwardedCalls.ts";
-import { OtherComputerUnreachable } from "./OtherComputers.ts";
+import { findComputer, OtherComputerUnreachable } from "./OtherComputers.ts";
 import type { OutsideAgentCaller, OutsideAgentLiveGrant } from "./OutsideAgentConnections.ts";
 import type { OutsideAgentRequestRow, OutsideAgentRequestsShape } from "./OutsideAgentRequests.ts";
 
@@ -1487,15 +1487,17 @@ describe("thread_changes", () => {
 
 describe("what a thread waits on", () => {
   describe("other computers", () => {
+    const MAC = { environmentId: EnvironmentId.make("env-mac"), label: "Mac" };
     const WINDOWS = { environmentId: EnvironmentId.make("env-windows"), label: "Windows PC" };
-    const fakeComputers = (answer: PeerOutsideCallResult | "unreachable") => {
+    const fakeComputers = (
+      answer: PeerOutsideCallResult | "unreachable",
+      linked: ReadonlyArray<typeof WINDOWS> = [WINDOWS],
+    ) => {
       const calls: Array<PeerOutsideCallInput> = [];
       const otherComputers: NonNullable<ConnectToolDeps["otherComputers"]> = {
-        here: Effect.succeed("Mac"),
-        find: (name) =>
-          Effect.succeed(
-            name.toLowerCase() === "windows pc" ? Option.some(WINDOWS) : Option.none(),
-          ),
+        here: Effect.succeed(MAC),
+        find: (nameOrId) =>
+          Effect.succeed(findComputer({ nameOrId, here: MAC, computers: linked })),
         reach: () =>
           Effect.succeed([
             {
@@ -1526,9 +1528,9 @@ describe("what a thread waits on", () => {
         const { otherComputers } = fakeComputers({ outcome: "refused", detail: "x" });
         const world = yield* makeWorld({ otherComputers });
         expect((yield* world.handlers.computers(CALLER)).computers).toEqual([
-          { name: "Mac", here: true, allowed: "yes", online: true },
-          { name: "Windows PC", here: false, allowed: "yes", online: true },
-          { name: "Mac mini", here: false, allowed: "unknown", online: false },
+          { id: "env-mac", name: "Mac", here: true, allowed: "yes", online: true },
+          { id: "env-windows", name: "Windows PC", here: false, allowed: "yes", online: true },
+          { id: "env-mini", name: "Mac mini", here: false, allowed: "unknown", online: false },
         ]);
       }),
     );
@@ -1620,6 +1622,31 @@ describe("what a thread waits on", () => {
             )).outcome,
           ).toBe("not_allowed");
           expect(seeOnly.calls).toEqual([]);
+        }),
+    );
+
+    it.effect(
+      "never lets a linked computer's chosen name take a call meant for another one, or for this one",
+      () =>
+        Effect.gen(function* () {
+          // A linked computer calling itself what another one is called, and this one.
+          const impostor = { environmentId: EnvironmentId.make("env-other"), label: "Windows PC" };
+          const posing = { environmentId: EnvironmentId.make("env-posing"), label: "Mac" };
+          const { otherComputers, calls } = fakeComputers({ outcome: "ok", result: {} }, [
+            WINDOWS,
+            impostor,
+            posing,
+          ]);
+          const world = yield* makeWorld({ otherComputers });
+          const shared = yield* world.handlers.threads_list(CALLER, { computer: "Windows PC" });
+          expect(shared.outcome).toBe("not_found");
+          expect(shared.detail).toContain("Pass its id");
+          // This computer's own name stays here.
+          expect((yield* world.handlers.projects(CALLER, { computer: "mac" })).outcome).toBe("ok");
+          expect(calls).toEqual([]);
+          // An id names exactly one.
+          yield* world.handlers.threads_list(CALLER, { computer: "env-windows" });
+          expect(calls).toHaveLength(1);
         }),
     );
 

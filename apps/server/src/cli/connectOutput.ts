@@ -114,6 +114,7 @@ export function formatComputers(result: ComputersResult): string {
   return columns(
     result.computers.map((computer) => [
       computer.name,
+      computer.id,
       computer.here
         ? "this computer"
         : computer.allowed === "yes"

@@ -444,7 +444,7 @@ const ThreadIdParameter = Schema.String.annotate({
 export const ComputerParameter = Schema.optional(
   Schema.String.annotate({
     description:
-      "Another of the user's computers to do this on: a name from computers. Left out: the computer you're connected to.",
+      "Another of the user's computers to do this on: an `id` from computers (a name works when only one computer has it). Left out: the computer you're connected to.",
   }),
 );
 
@@ -461,7 +461,9 @@ export const ComputersResult = Schema.Struct({
   retryAfterSeconds: RetryAfter,
   computers: Schema.Array(
     Schema.Struct({
-      /** Pass as other tools' `computer`. */
+      /** Pass as other tools' `computer`: it names this computer and no other. */
+      id: Schema.String,
+      /** The computer's name, as it calls itself. */
       name: Schema.String,
       /** The computer you're connected to; `computer` can be left out for it. */
       here: Schema.Boolean,
@@ -673,7 +675,7 @@ export const OutsideThreadAnswerTool = drivesThreads(
 export const ComputersTool = readsThreads(
   Tool.make("computers", {
     description:
-      "The user's computers you may work on: the one you're connected to, and the ones linked to it in Threadlines. Pass a name as another tool's `computer` to do that on it. A computer you aren't allowed on yet says so; only the user can allow it there.",
+      "The user's computers you may work on: the one you're connected to, and the ones linked to it in Threadlines. Pass one's `id` as another tool's `computer` to do that on it. A computer you aren't allowed on yet says so; only the user can allow it there.",
     success: ComputersResult,
   }).annotate(Tool.Title, "List computers"),
 );

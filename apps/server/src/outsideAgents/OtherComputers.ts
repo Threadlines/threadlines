@@ -40,11 +40,22 @@ export class OtherComputerUnreachable extends Data.TaggedError("OtherComputerUnr
   readonly detail: string;
 }> {}
 
+/**
+ * Which computer a call's `computer` names: this one, a linked one, or none.
+ * An id matches before a name, since a linked computer picks its own name
+ * and could take another's; a name two computers share names neither.
+ */
+export type FoundComputer =
+  | { readonly kind: "here" }
+  | { readonly kind: "linked"; readonly computer: OtherComputer }
+  | { readonly kind: "none" }
+  | { readonly kind: "ambiguous"; readonly computers: ReadonlyArray<OtherComputer> };
+
 export interface OtherComputersShape {
-  /** This computer's name. */
-  readonly here: Effect.Effect<string>;
-  /** A linked computer by its name (any case) or id; none when no usable link matches. */
-  readonly find: (nameOrId: string) => Effect.Effect<Option.Option<OtherComputer>>;
+  /** This computer: its name and id. */
+  readonly here: Effect.Effect<OtherComputer>;
+  /** The computer a call names, by id first, then by name (any case). */
+  readonly find: (nameOrId: string) => Effect.Effect<FoundComputer>;
   /** Every linked computer and where the connection stands there, each asked live. */
   readonly reach: (
     connectionId: OutsideAgentConnectionId,
@@ -72,6 +83,26 @@ export interface OtherComputersShape {
 export class OtherComputers extends Context.Service<OtherComputers, OtherComputersShape>()(
   "threadlines/outsideAgents/OtherComputers",
 ) {}
+
+/** FoundComputer's rule, over this computer and the linked ones. */
+export const findComputer = (input: {
+  readonly nameOrId: string;
+  readonly here: OtherComputer;
+  readonly computers: ReadonlyArray<OtherComputer>;
+}): FoundComputer => {
+  const raw = input.nameOrId.trim();
+  const wanted = raw.toLowerCase();
+  if (raw === input.here.environmentId) return { kind: "here" };
+  const byId = input.computers.find((computer) => computer.environmentId === raw);
+  if (byId !== undefined) return { kind: "linked", computer: byId };
+  // This computer's own name means this computer, whatever a linked one calls itself.
+  if (input.here.label.trim().toLowerCase() === wanted) return { kind: "here" };
+  const named = input.computers.filter(
+    (computer) => computer.label.trim().toLowerCase() === wanted,
+  );
+  if (named.length === 1) return { kind: "linked", computer: named[0]! };
+  return named.length === 0 ? { kind: "none" } : { kind: "ambiguous", computers: named };
+};
 
 /** How long a question about one computer waits before calling it offline. */
 const ASK_WAIT = Duration.seconds(5);
@@ -108,16 +139,14 @@ export const OtherComputersLive = Layer.effect(
       Effect.orElseSucceed((): ReadonlyArray<OtherComputer> => []),
     );
 
+    const hereComputer = Effect.map(
+      environment.getEnvironmentId,
+      (environmentId): OtherComputer => ({ environmentId, label: environment.currentLabel() }),
+    );
+
     const find: OtherComputersShape["find"] = (nameOrId) =>
-      Effect.map(usable, (computers) => {
-        const wanted = nameOrId.trim().toLowerCase();
-        return Option.fromNullishOr(
-          computers.find(
-            (computer) =>
-              computer.environmentId === nameOrId.trim() ||
-              computer.label.trim().toLowerCase() === wanted,
-          ),
-        );
+      Effect.gen(function* () {
+        return findComputer({ nameOrId, here: yield* hereComputer, computers: yield* usable });
       });
 
     const agentOf = (connectionId: OutsideAgentConnectionId) =>
@@ -232,7 +261,7 @@ export const OtherComputersLive = Layer.effect(
       });
 
     return OtherComputers.of({
-      here: Effect.sync(() => environment.currentLabel()),
+      here: hereComputer,
       find,
       reach,
       ask,

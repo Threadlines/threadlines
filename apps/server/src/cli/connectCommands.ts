@@ -122,7 +122,7 @@ interface SharedFlags {
 
 const computerFlag = Flag.String("computer").pipe(
   Flag.withDescription(
-    "Do it on another of your computers linked to this one (a name from threadlines computers).",
+    "Do it on another of your computers linked to this one (an id from threadlines computers; a name works when only one computer has it).",
   ),
   Flag.optional,
 );

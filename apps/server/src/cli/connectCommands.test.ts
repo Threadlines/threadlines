@@ -188,7 +188,9 @@ const standIn = (script: Script, seen: Seen) => {
   const handlers = ConnectToolkit.toLayer({
     computers: record("computers", () => ({
       outcome: "ok" as const,
-      computers: [{ name: "Mac", here: true, allowed: "yes" as const, online: true }],
+      computers: [
+        { id: "env-mac", name: "Mac", here: true, allowed: "yes" as const, online: true },
+      ],
     })),
     projects: record("projects", () => ({
       outcome: "ok" as const,

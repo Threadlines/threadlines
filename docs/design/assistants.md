@@ -2353,8 +2353,10 @@ as its own doors, as a connection row of its own.
   computer too"), owner only like every grant there, and Allow writes the row.
   B never grants more than the agent has on A: level and highest access are
   capped at what A said when it asked. Asks live in memory for 24 hours.
-- **Calling.** Every tool takes `computer` (a name from the new `computers`
-  tool). A checks the tool's level against its own grant first, then sends
+- **Calling.** Every tool takes `computer`: an id from the new `computers`
+  tool, or a name only one computer has. An id matches first, and this
+  computer's own name means this computer, since a linked computer picks its
+  own name and could take another's (Vercel's security review, Nov 5). A checks the tool's level against its own grant first, then sends
   `peer.outside.call` with the agent's current grant there. B finds the row
   by (link, A's connection id) and runs the tool with its grant capped at
   that (`ForwardedGrantCap`, a context reference the handlers' grant reads),
