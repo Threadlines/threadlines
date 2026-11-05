@@ -5,7 +5,7 @@ packages:
   - scripts
 
 catalog:
-  "@anthropic-ai/claude-agent-sdk": ^0.3.310
+  "@anthropic-ai/claude-agent-sdk": ^0.3.316
   "@anthropic-ai/sdk": ^1.3.0
   "@effect/atom-react": 4.1.2
   "@effect/openapi-generator": 4.1.2
@@ -15,8 +15,8 @@ catalog:
   "@effect/sql-sqlite-bun": 4.1.2
   "@effect/tsgo": 0.63.0
   "@effect/vitest": 4.1.2
-  "@github/copilot-sdk": 1.0.26
-  "@pierre/diffs": 1.6.1
+  "@github/copilot-sdk": 1.0.28
+  "@pierre/diffs": 1.6.2
   "@types/bun": ^1.4.4
   "@types/node": ^24.19.2
   "@vitest/browser-playwright": 5.0.5
@@ -84,8 +84,6 @@ peerDependencyRules:
     - vitest
   allowedVersions:
     "@opencode/client>effect": "*"
-    # plugin-react 6.1.2 predates plugin-babel 0.3, which only adds the opt-in `parallel` option.
-    "@vitejs/plugin-react>@rolldown/plugin-babel": "0.3"
     "@voidzero-dev/vite-plus-core>typescript": "7"
     vite: "*"
     vitest: "*"
