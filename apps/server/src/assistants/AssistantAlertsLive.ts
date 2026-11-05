@@ -244,15 +244,31 @@ export const answerVerdict = (status: number): AnswerVerdict => {
   return { type: "failed", detail: `The receiver turned the alert down (${status}).` };
 };
 
-/** An Authorization value that can go in a header as typed. */
-const checkAuthorization = (value: string) =>
-  value.length > AUTHORIZATION_MAX_LENGTH
-    ? Effect.fail(failure("That Authorization value is too long."))
-    : /[^\t\x20-\x7e]/u.test(value)
-      ? Effect.fail(
-          failure("The Authorization value can only have plain letters, numbers and symbols."),
-        )
-      : Effect.succeed(value);
+/**
+ * What goes in the Authorization header for what the user pasted. Grok shows a
+ * routine's key as a whole header line, "Authorization: Bearer crsr_…", so a
+ * leading "Authorization:" is dropped, and a bare `crsr_` key gets the Bearer
+ * Grok needs. Used when a value is saved and again when one is sent, so values
+ * saved before this also work.
+ */
+const authorizationHeaderValue = (typed: string) => {
+  const value = typed.replace(/^\s*authorization\s*:\s*/iu, "").trim();
+  return value.startsWith("crsr_") ? `Bearer ${value}` : value;
+};
+
+/** An Authorization value that can go in a header, as it will be sent. */
+const checkAuthorization = (typed: string) => {
+  const value = authorizationHeaderValue(typed);
+  return value === ""
+    ? Effect.fail(failure("That's only the header name. Paste its value too, like Bearer crsr_…."))
+    : value.length > AUTHORIZATION_MAX_LENGTH
+      ? Effect.fail(failure("That Authorization value is too long."))
+      : /[^\t\x20-\x7e]/u.test(value)
+        ? Effect.fail(
+            failure("The Authorization value can only have plain letters, numbers and symbols."),
+          )
+        : Effect.succeed(value);
+};
 
 const toContract = (
   row: AlertTargetRow,
@@ -673,7 +689,11 @@ const make = (transport: AlertTransport) =>
             body,
           }),
           ...(authorization !== null
-            ? { authorization: Buffer.from(authorization).toString("utf8") }
+            ? {
+                authorization: authorizationHeaderValue(
+                  Buffer.from(authorization).toString("utf8"),
+                ),
+              }
             : {}),
           ...(row.subscriptionId !== null ? { "x-mcp-subscription-id": row.subscriptionId } : {}),
         };

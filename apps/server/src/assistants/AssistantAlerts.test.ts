@@ -609,6 +609,59 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
     }),
   );
 
+  it.effect("a copied 'Authorization:' line or a bare Grok key sends as Bearer crsr_…", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const { alerts, stop } = yield* harness.boot;
+      const sentAuthorization = Effect.gen(function* () {
+        yield* harness.record("thread.needs_you");
+        yield* settle();
+        return harness.calls.at(-1)!.headers.authorization;
+      });
+      const storedAuthorization = () => {
+        const [key] = [...harness.secrets.keys()].filter((name) => name.includes("-authorization"));
+        return new TextDecoder().decode(harness.secrets.get(key!));
+      };
+
+      // The whole header line, as Grok shows a routine's key.
+      const { targetId } = yield* alerts.create({
+        url: URL_TEXT,
+        kinds: ["needs_you"],
+        projectIds: null,
+        skipViewed: true,
+        authorization: "Authorization: Bearer crsr_test",
+      });
+      assert.strictEqual(storedAuthorization(), "Bearer crsr_test");
+      assert.strictEqual(yield* sentAuthorization, "Bearer crsr_test");
+
+      // Just the key.
+      const edit = (value: string) =>
+        alerts.update({
+          targetId,
+          url: URL_TEXT,
+          kinds: ["needs_you"],
+          projectIds: null,
+          skipViewed: true,
+          authorization: { kind: "set", value },
+        });
+      yield* edit("crsr_new");
+      assert.strictEqual(yield* sentAuthorization, "Bearer crsr_new");
+
+      // A value saved before this fix is sent right too.
+      const [key] = [...harness.secrets.keys()].filter((name) => name.includes("-authorization"));
+      harness.secrets.set(key!, new TextEncoder().encode("Authorization: Bearer crsr_old"));
+      assert.strictEqual(yield* sentAuthorization, "Bearer crsr_old");
+
+      // The header name alone has no value to send.
+      const refused = yield* Effect.flip(edit("Authorization:"));
+      assert.strictEqual(
+        refused.detail,
+        "That's only the header name. Paste its value too, like Bearer crsr_….",
+      );
+      yield* stop;
+    }),
+  );
+
   it.effect("Remove forgets the target's secrets and stops its alerts", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
