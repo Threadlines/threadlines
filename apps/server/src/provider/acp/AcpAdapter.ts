@@ -2171,6 +2171,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             Effect.gen(function* () {
               if (ctx.activeTurnId === turnId) {
                 ctx.activeTurnId = undefined;
+                ctx.session = { ...ctx.session, activeTurnId: undefined, updatedAt: yield* nowIso };
               }
               if (ctx.openPrompt === prompt) ctx.openPrompt = undefined;
               yield* Deferred.succeed(prompt.closed, undefined);
@@ -2388,8 +2389,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopSession: AcpAdapterShape["stopSession"] = (threadId) =>
       withThreadLock(threadId, Effect.flatMap(requireSession(threadId), stopSessionInternal));
 
+    /**
+     * A turn in flight counts as running, waiting on the user's answer or
+     * approval included: that's what keeps the idle reaper from stopping it
+     * (and closing the prompt) while the user is away.
+     */
     const listSessions: AcpAdapterShape["listSessions"] = () =>
-      Effect.sync(() => Array.from(sessions.values(), (c) => ({ ...c.session })));
+      Effect.sync(() =>
+        Array.from(sessions.values(), (c) =>
+          c.activeTurnId !== undefined && c.session.status === "ready"
+            ? { ...c.session, status: "running" as const }
+            : { ...c.session },
+        ),
+      );
 
     const hasSession: AcpAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
