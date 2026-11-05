@@ -407,16 +407,51 @@ which Claude Code builds on.
 - `thread_wait` checks scope again before it returns. A Change can happen while
   it waits.
 
-**Sends: one turn at a time, never queued.**
+**Sends: one turn at a time, or one queued message per thread.**
 
-- `thread_send` to a thread with a running turn returns `busy`. That includes a
-  turn waiting on an approval, a question or a plan, and a setup still in
-  progress.
-- The agent waits (`thread_wait`) and sends again.
-- **Why no queue.** Queued messages drain later, outside the handler. Each
-  queued message would need its own ceiling rule and cap accounting, plus rules
-  for stale settings (Sol, rev 2). Without a queue, every turn an outside agent
-  starts goes through one handler and one decider check.
+Rev, Nov 4 2026 (queued sends; Sol reviewed the plan): the first build refused
+every send to a working thread, because queued messages drain outside the
+handler. Assistants can't hold a call open for minutes, so `busy` meant
+polling. A send to a working thread now waits in the thread's queue.
+
+- `thread_send` to a thread whose turn is running or starting queues the
+  message (`thread.follow-up.submit`, `delivery: "queue"`, server-only
+  `fromOutside`) and answers `queued` with its `messageId`. Still `busy`: a
+  thread being set up, one waiting on the user with no turn running (an
+  approval, a question, a plan), and one already holding a message from this
+  connection. One queued message per connection per thread.
+- **Not the user's.** The entry carries `fromOutside { connectionId, name }`.
+  `isAgentOrigin` counts it, so it waits behind the user's queued messages,
+  Stop takes it back (`decideAgentChainStop`), and Stop's return-to-the-box
+  leaves it alone. It is never steered into a running turn and writes no
+  message until it is sent. The queue row says "Queued from Grok Bot" and
+  offers Remove, not Edit.
+- **Sent under the grant as it is then.** Right before the reactor sends it, it
+  reads the connection's live grant: removed, below Start, or without the
+  thread's project takes it back (`thread.follow-up.unqueue`) and the next
+  message goes. Otherwise `thread.follow-up.send-queued` carries that grant as
+  `outsideOrigin` and the Stop epoch it saw; the decider checks the Stop rules
+  and what waits on the user again, in order with the user's sends, and takes
+  it back instead of failing when they say no. The turn runs with the thread's
+  own settings and goes through the normal outside turn (`fromOutside`, plus
+  `fromOutsideQueue` so the finished turn's record, which reads running until
+  its checkpoint is taken, doesn't count as busy).
+- **Taken back, not left behind.** A turn that ends in an error, an interrupt
+  or a stop takes back the outside messages waiting for it, and so does a
+  restart (with the restart's interrupted sessions). An answer replayed after a
+  restart for a queued send says so instead of `sent`.
+- **Limits.** A queued message holds its thread's place among the
+  connection's running threads, so a start can't take the slot its turn will
+  use.
+- **Following it.** `thread_wait` takes the send's `messageId`: done once that
+  message's turn ended, `taken_back` if it left the queue unsent. Without one,
+  `thread_wait` doesn't answer `done` while any of the caller's messages still
+  waits in the thread. `thread_read` and `thread_wait` list the caller's queued
+  messages (`queued`). `threadlines thread send --wait` follows its message and
+  exits 1 when it was taken back.
+- **Honest limit.** Between the reactor reading the grant and the decider
+  starting the turn, a Change can land; the turn then runs under the grant read
+  a moment before, as a direct send can.
 
 **The live ceiling.** Every turn the agent starts, from `thread_start` or
 `thread_send`, carries `fromOutside { connectionId, name, maxRuntimeMode }` on

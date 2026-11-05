@@ -1293,6 +1293,18 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
                     interactionMode: "default" as const,
                     createdAt: NOW_ISO,
                   },
+                  {
+                    messageId: "msg-queued-outside" as MessageId,
+                    text: "also bump the version",
+                    attachments: [],
+                    fromOutside: {
+                      connectionId: OutsideAgentConnectionId.make("connection-grok"),
+                      name: "Grok Bot",
+                    },
+                    runtimeMode: "full-access" as const,
+                    interactionMode: "default" as const,
+                    createdAt: NOW_ISO,
+                  },
                 ],
               }
             : thread,
@@ -1306,6 +1318,12 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       );
     try {
       await expect.element(page.getByText("then run the tests"), { timeout: 5_000 }).toBeVisible();
+      // An outside agent's message names it, and can be removed but not edited.
+      const outside = page.getByText("also bump the version");
+      await expect.element(outside).toBeVisible();
+      await expect.element(page.getByText("Queued from Grok Bot")).toBeVisible();
+      expect(page.getByLabelText("Remove queued message").elements()).toHaveLength(2);
+      expect(page.getByLabelText("Edit queued message").elements()).toHaveLength(1);
 
       const editor = page.getByTestId("composer-editor");
       await editor.fill("and update the changelog", { timeout: 5_000 });

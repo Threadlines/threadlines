@@ -1812,6 +1812,14 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   /**
+   * Sent by an outside agent while a turn ran (docs/design/outside-agents.md,
+   * "Queued sends"). Never the user's: it waits behind their queued messages,
+   * is taken back by Stop or a turn that doesn't finish, and when it goes it
+   * is checked again against the connection's grant as it is then, and runs
+   * with the thread's own settings.
+   */
+  fromOutside: Schema.optional(OutsideAgentRef),
+  /**
    * The user's message sent while the "Continue where you left off." message
    * named here was still starting its turn. The user wins: if that message
    * hasn't reached the agent yet it is not sent and this one goes instead;
@@ -3233,6 +3241,13 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * busy rule passes over that one question.
    */
   answering: Schema.optional(ApprovalRequestId),
+  /**
+   * Server only: this outside turn sends a message that waited in the queue
+   * (OrchestrationQueuedFollowUp.fromOutside). The queue sends it only once
+   * the turn before it ended, so that turn's record still reading running
+   * (its checkpoint not yet taken) doesn't make it wait; a live session does.
+   */
+  fromOutsideQueue: Schema.optional(Schema.Literal(true)),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom (server only: set from the connection's sign-in). */
@@ -3278,6 +3293,11 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   sentFrom: Schema.optional(MessageSentFrom),
   /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * Server only: an outside agent's message for a thread at work, always
+   * queued, never steered (see OrchestrationQueuedFollowUp.fromOutside).
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
   /**
    * Server only: a steer that could not reach its turn, queued for the next
    * one. The user already sent it, so it is not their newest word on the
@@ -4188,6 +4208,12 @@ const ThreadFollowUpSendQueuedCommand = Schema.Struct({
    * Stop has raised it since, so a send prepared before Stop never runs after.
    */
   ifChainEpoch: Schema.optional(NonNegativeInt),
+  /**
+   * An outside agent's queued message: its connection's grant as the server
+   * read it just now. Without it, or for another connection, the message is
+   * taken back instead of sent.
+   */
+  outsideOrigin: Schema.optional(OutsideTurnOrigin),
   createdAt: IsoDateTime,
 });
 

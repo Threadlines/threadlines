@@ -11,6 +11,7 @@ import {
   type OrchestrationSession,
   type OrchestrationSessionUsageLimit,
   type OrchestrationThread,
+  type OutsideTurnOrigin,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
   TurnId,
@@ -128,9 +129,11 @@ import {
 } from "./settingsChangeDecisions.ts";
 import {
   outsideAnswerDecision,
+  outsideQueueRefusal,
   outsideWorkOf,
   outsideStopRefusal,
   outsideTurnRefusal,
+  type OutsideTurnRefusal,
 } from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -675,6 +678,9 @@ function decideFollowUpSubmit(
   options?: { readonly overtakes?: MessageId },
 ): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   return Effect.gen(function* () {
+    if (command.fromOutside !== undefined) {
+      return yield* decideOutsideFollowUpQueue(targetThread, command, command.fromOutside);
+    }
     // In a room only the agent at work can be steered; a message for any
     // other agent waits for its turn in the queue.
     const addressedAgentId =
@@ -786,6 +792,61 @@ function decideFollowUpSubmit(
         },
       },
     );
+  });
+}
+
+/**
+ * An outside agent's message for a thread at work (docs/design/outside-agents.md,
+ * "Queued sends"): always queued for the thread's own agent, never steered,
+ * one per connection per thread, and only where it could send now but for
+ * the running turn. It isn't the user writing, so nothing of theirs moves.
+ */
+function decideOutsideFollowUpQueue(
+  targetThread: OrchestrationThread,
+  command: Extract<OrchestrationCommand, { readonly type: "thread.follow-up.submit" }>,
+  origin: OutsideTurnOrigin,
+): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
+  return Effect.gen(function* () {
+    const refused = (refusal: OutsideTurnRefusal) =>
+      new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: refusal.detail,
+        ...(refusal.refusal !== undefined ? { refusal: refusal.refusal } : {}),
+      });
+    const refusal = outsideQueueRefusal(targetThread, origin);
+    if (refusal !== null) return yield* refused(refusal);
+    if (
+      targetThread.messages.some((message) => message.id === command.message.messageId) ||
+      (targetThread.queuedFollowUps ?? []).some(
+        (queued) => queued.messageId === command.message.messageId,
+      )
+    ) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
+      });
+    }
+    return {
+      ...withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      }),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: command.threadId,
+        followUp: {
+          messageId: command.message.messageId,
+          text: command.message.text,
+          attachments: [],
+          fromOutside: { connectionId: origin.connectionId, name: origin.name },
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
+    };
   });
 }
 
@@ -2750,6 +2811,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           targetThread,
           command.fromOutside,
           command.answering,
+          command.fromOutsideQueue === true,
         );
         if (outsideRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
@@ -3342,6 +3404,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // An outside agent's message goes only under its connection's grant as
+      // the server read it just now, and only where that would let it send
+      // now; otherwise it is taken back, so the queue moves on. It runs with
+      // the thread's own settings, like a send it made itself.
+      if (queued.fromOutside !== undefined) {
+        const origin = command.outsideOrigin;
+        if (command.steerIntoTurnId !== undefined || command.steeredTurnId !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "An outside agent's queued message is never steered into a turn.",
+          });
+        }
+        if (
+          origin === undefined ||
+          origin.connectionId !== queued.fromOutside.connectionId ||
+          outsideTurnRefusal(targetThread, origin, undefined, true) !== null
+        ) {
+          return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+        }
+        const outsideTurn = yield* decideCommandSequence({
+          readModel,
+          commands: [
+            {
+              type: "thread.turn.start",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              message: {
+                messageId: queued.messageId,
+                role: "user",
+                text: queued.text,
+                attachments: [],
+              },
+              runtimeMode: targetThread.runtimeMode,
+              interactionMode: targetThread.interactionMode,
+              fromOutside: origin,
+              fromOutsideQueue: true,
+              createdAt: command.createdAt,
+            },
+          ],
+        });
+        return [unqueuedEvent, ...outsideTurn];
+      }
       // A message an agent queued (a hand-off, a routed reply, or a child
       // thread's report or request) goes only to the agent it was for. If that
       // agent left, it is taken back and its request cancelled, never handed

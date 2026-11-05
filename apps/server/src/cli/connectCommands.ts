@@ -332,6 +332,8 @@ const waitForThread = (
   flags: SharedFlags,
   threadId: string,
   timeoutSeconds: Option.Option<number>,
+  /** A message just sent or queued: wait for its turn, or say it was taken back. */
+  messageId?: string,
 ) =>
   Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
@@ -349,7 +351,11 @@ const waitForThread = (
       const remaining = yield* remainingMs;
       if (remaining <= 0) return yield* timedOut;
       const seconds = Math.max(1, Math.min(THREAD_WAIT_MAX_SECONDS, Math.ceil(remaining / 1_000)));
-      const call = client.call(ThreadWaitTool, { threadId, seconds });
+      const call = client.call(ThreadWaitTool, {
+        threadId,
+        seconds,
+        ...(messageId !== undefined ? { messageId } : {}),
+      });
       const answered =
         last === null
           ? call
@@ -668,7 +674,7 @@ const threadSendCommand = Command.make("send", {
   timeout: timeoutFlag,
 }).pipe(
   Command.withDescription(
-    "Send a message to a thread this command started. It must not be working.",
+    "Send a message to a thread this command started. While it works, the message waits and goes as its next turn.",
   ),
   Command.withHandler((flags) =>
     withClient(flags, (client, target) =>
@@ -679,8 +685,12 @@ const threadSendCommand = Command.make("send", {
           message,
           ...requestIdFor(flags.requestId, target),
         });
-        yield* answer(flags, result, () => "Sent.");
-        if (flags.wait) yield* waitForThread(client, flags, flags.thread, flags.timeout);
+        yield* answer(flags, result, (sent) =>
+          sent.outcome === "queued" ? "Queued: it goes as the thread's next turn." : "Sent.",
+        );
+        if (flags.wait) {
+          yield* waitForThread(client, flags, flags.thread, flags.timeout, result.messageId);
+        }
       }),
     ),
   ),
