@@ -190,6 +190,11 @@ export function formatThreadRead(result: OutsideThreadReadResult): string {
       : threadStatusLines(result.thread, result.waitingOn, result.waiting);
   for (const message of result.messages) {
     lines.push("", `${message.author}:`, message.text);
+    if (message.clipped === true && message.offset === undefined) {
+      lines.push(
+        `(All of it: threadlines thread read ${result.thread?.threadId ?? "<thread>"} --message ${message.messageId})`,
+      );
+    }
   }
   if (result.more && result.next !== null) {
     lines.push("", `More messages follow. Read them with --after ${result.next}.`);

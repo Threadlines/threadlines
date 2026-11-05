@@ -24,7 +24,12 @@ import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
-import { agentParameter, drivesThreads, readsThreads } from "../mcp/threadTools.ts";
+import {
+  agentParameter,
+  drivesThreads,
+  readsThreads,
+  ThreadReadMessageFields,
+} from "../mcp/threadTools.ts";
 import type { OutsideAgentCaller } from "./OutsideAgentConnections.ts";
 
 /** The connection behind the call being handled (set by the `/mcp/connect` middleware). */
@@ -201,6 +206,10 @@ export const ThreadWaitResult = Schema.Struct({
   waiting: Schema.optional(Schema.Array(OutsideWaitingItem)),
   /** Its newest reply, clipped at 4,000 characters; null when it has none. */
   reply: Schema.optional(Schema.NullOr(Schema.String)),
+  /** The reply's message, for thread_read's `messageId` when it was clipped. */
+  replyMessageId: Schema.optional(Schema.NullOr(Schema.String)),
+  /** The whole reply's length in characters, when `reply` is clipped. */
+  replyLength: Schema.optional(Schema.Number),
 });
 export type ThreadWaitResult = typeof ThreadWaitResult.Type;
 
@@ -439,11 +448,12 @@ export const ThreadsListTool = readsThreads(
 export const OutsideThreadReadTool = readsThreads(
   Tool.make("thread_read", {
     description:
-      "Read a thread: its status, what it waits on when it needs the user, and its messages oldest first, each labelled with who wrote it. Messages are clipped at 4,000 characters. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
+      "Read a thread: its status, what it waits on when it needs the user, and its messages oldest first, each labelled with who wrote it. Messages are clipped at 4,000 characters (`clipped`, with the whole `length`); pass one's `messageId` to read all of it, 20,000 characters at a time, passing `nextOffset` as `offset` while it has one. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       after: Schema.optional(Schema.Number),
       limit: Schema.optional(Schema.Number),
+      ...ThreadReadMessageFields,
     }),
     success: OutsideThreadReadResult,
   }).annotate(Tool.Title, "Read a thread"),
@@ -451,7 +461,7 @@ export const OutsideThreadReadTool = readsThreads(
 
 export const ThreadWaitTool = readsThreads(
   Tool.make("thread_wait", {
-    description: `Wait for a thread to stop working, for up to \`seconds\` (default ${THREAD_WAIT_DEFAULT_SECONDS}, at most ${THREAD_WAIT_MAX_SECONDS}). Returns at once if it isn't working. \`done\` comes with its status and newest reply; \`still_working\` means wait again. When it needs the user, \`waiting\` says what for. Approvals and plans are the user's: tell them to answer in Threadlines. With Work with all threads you may answer a question with thread_answer.`,
+    description: `Wait for a thread to stop working, for up to \`seconds\` (default ${THREAD_WAIT_DEFAULT_SECONDS}, at most ${THREAD_WAIT_MAX_SECONDS}). Returns at once if it isn't working. \`done\` comes with its status and newest reply (clipped at 4,000 characters: thread_read with \`replyMessageId\` reads all of it); \`still_working\` means wait again. When it needs the user, \`waiting\` says what for. Approvals and plans are the user's: tell them to answer in Threadlines. With Work with all threads you may answer a question with thread_answer.`,
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       seconds: Schema.optional(Schema.Number),

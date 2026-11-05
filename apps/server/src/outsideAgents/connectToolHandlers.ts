@@ -110,16 +110,16 @@ import type {
 } from "../orchestration/Services/ThreadBootstrap.ts";
 import {
   agentForCaller,
-  clipText,
+  clipMessageText,
   defaultThreadAgent,
   listThreadAgents,
   modelLabel,
+  READ_MESSAGE_NOT_FOUND,
   readThreadPage,
   relatedThreadTitles,
   requestedAgent,
   summarizeThread,
   THREAD_PROMPT_CHAR_LIMIT,
-  THREAD_READ_MESSAGE_CHAR_LIMIT,
   THREAD_TITLE_CHAR_LIMIT,
   threadLastTurn,
   threadStatus,
@@ -367,14 +367,23 @@ export const findProject = <Project extends ConnectProject>(
   };
 };
 
-/** The newest reply in a thread, clipped; null when it has none. */
-const newestReply = (thread: OrchestrationThread | undefined): string | null => {
+/**
+ * The newest reply in a thread, clipped, with its message (thread_read's
+ * `messageId`) and, when clipped, its whole length; nulls when it has none.
+ */
+const newestReply = (
+  thread: OrchestrationThread | undefined,
+): Pick<ThreadWaitResult, "reply" | "replyMessageId" | "replyLength"> => {
   const reply = thread?.messages.findLast(
     (message) => message.role === "assistant" && message.text.trim().length > 0,
   );
-  return reply === undefined
-    ? null
-    : clipText(reply.text.trim(), THREAD_READ_MESSAGE_CHAR_LIMIT).text;
+  if (reply === undefined) return { reply: null, replyMessageId: null };
+  const clipped = clipMessageText(reply.text.trim());
+  return {
+    reply: clipped.text,
+    replyMessageId: reply.id,
+    ...(clipped.clipped ? { replyLength: clipped.length } : {}),
+  };
 };
 
 /** Whether a thread has a turn Stop can end. */
@@ -787,6 +796,15 @@ export const makeConnectToolHandlers = (
         }
         const providers = yield* deps.providers;
         const titles = yield* relatedThreadTitles(target, deps.status.readShell);
+        const { missing, ...page } = readThreadPage(target, {
+          providers,
+          titles,
+          after: input.after,
+          limit: input.limit,
+          messageId: input.messageId,
+          offset: input.offset,
+        });
+        if (missing) return { outcome: "not_found", detail: READ_MESSAGE_NOT_FOUND, ...none };
         const waiting = (yield* deps.status.scheduleAnswerWaiting).has(target.id);
         return {
           outcome: "ok",
@@ -797,7 +815,7 @@ export const makeConnectToolHandlers = (
             titleOf: (threadId) => titles.get(threadId),
           }),
           ...(yield* waitingOnOf(visible.shell, waiting, target)),
-          ...readThreadPage(target, { providers, titles, after: input.after, limit: input.limit }),
+          ...page,
         } satisfies OutsideThreadReadResult;
       });
 
@@ -864,7 +882,7 @@ export const makeConnectToolHandlers = (
             titleOf: () => undefined,
           }),
           ...(yield* waitingOnOf(shell, waiting, thread)),
-          reply: newestReply(thread),
+          ...newestReply(thread),
         } satisfies ThreadWaitResult;
       });
 

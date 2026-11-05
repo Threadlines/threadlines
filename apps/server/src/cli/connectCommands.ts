@@ -277,6 +277,46 @@ const readText = (value: Option.Option<string>, what: string) =>
     return text.trimEnd();
   });
 
+/**
+ * One message's whole text: thread_read by its id, part after part. The read
+ * with the whole text as its one message, or the answer that stopped it.
+ */
+const readWholeMessage = (client: ConnectClient, threadId: string, messageId: string) =>
+  Effect.gen(function* () {
+    let text = "";
+    let offset = 0;
+    while (true) {
+      const result = yield* client.call(OutsideThreadReadTool, { threadId, messageId, offset });
+      const message = result.outcome === "ok" ? result.messages[0] : undefined;
+      if (message === undefined) return result;
+      text += message.text;
+      if (message.nextOffset === undefined || message.nextOffset <= offset) {
+        const {
+          offset: _offset,
+          nextOffset: _next,
+          clipped: _clipped,
+          length: _length,
+          ...whole
+        } = message;
+        return { ...result, messages: [{ ...whole, text }] };
+      }
+      offset = message.nextOffset;
+    }
+  });
+
+/** A finished wait with its whole reply, read in parts when it came clipped. */
+const withWholeReply = (client: ConnectClient, threadId: string, result: ThreadWaitResult) =>
+  Effect.gen(function* () {
+    if (result.replyLength === undefined || typeof result.replyMessageId !== "string") {
+      return result;
+    }
+    const read = yield* readWholeMessage(client, threadId, result.replyMessageId);
+    const whole = read.outcome === "ok" ? read.messages[0]?.text : undefined;
+    if (whole === undefined) return result;
+    const { replyLength: _length, ...rest } = result;
+    return { ...rest, reply: whole } satisfies ThreadWaitResult;
+  });
+
 /** Shortest gap between two waits, should a server answer `still_working` at once. */
 const MIN_WAIT_GAP_MS = 1_000;
 
@@ -337,7 +377,8 @@ const waitForThread = (
         continue;
       }
       if (reply.outcome !== "done") return yield* answer(flags, reply, formatWait);
-      yield* show(flags, reply, formatWait(reply));
+      const done = yield* withWholeReply(client, threadId, reply);
+      yield* show(flags, done, formatWait(done));
       const code = exitCodeForThread(reply.thread);
       if (code !== EXIT.done) return yield* new CommandExit({ code });
       return;
@@ -656,17 +697,23 @@ const threadReadCommand = Command.make("read", {
     Flag.withDescription("At most this many messages. Default: 20."),
     Flag.optional,
   ),
+  message: Flag.String("message").pipe(
+    Flag.withDescription("Print all of this one message (a messageId from a read), however long."),
+    Flag.optional,
+  ),
 }).pipe(
   Command.withDescription("Read a thread: its status and its messages, oldest first."),
   Command.withHandler((flags) =>
     withClient(flags, (client) =>
-      client
-        .call(OutsideThreadReadTool, {
-          threadId: flags.thread,
-          ...Option.match(flags.after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
-          ...Option.match(flags.limit, { onNone: () => ({}), onSome: (limit) => ({ limit }) }),
-        })
-        .pipe(Effect.flatMap((result) => answer(flags, result, formatThreadRead))),
+      Option.match(flags.message, {
+        onNone: () =>
+          client.call(OutsideThreadReadTool, {
+            threadId: flags.thread,
+            ...Option.match(flags.after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+            ...Option.match(flags.limit, { onNone: () => ({}), onSome: (limit) => ({ limit }) }),
+          }),
+        onSome: (messageId) => readWholeMessage(client, flags.thread, messageId),
+      }).pipe(Effect.flatMap((result) => answer(flags, result, formatThreadRead))),
     ),
   ),
 );

@@ -7,19 +7,19 @@ pick how much it may do: See threads, Start threads, or Work with all threads.
 
 Its tools:
 
-| Tool             | What it does                                                                                                  | Access |
-| ---------------- | ------------------------------------------------------------------------------------------------------------- | ------ |
-| `projects`       | The projects it may use.                                                                                      | See    |
-| `agents`         | The agents and models a thread can run on.                                                                    | See    |
-| `threads_list`   | Threads in its projects, with their status.                                                                   | See    |
-| `thread_read`    | A thread's messages and what it waits on: the command an approval is for, a question and its options, a plan. | See    |
-| `thread_wait`    | Waits for a thread to stop working.                                                                           | See    |
-| `inbox`          | What needs you right now, and what finished or failed since it last looked.                                   | See    |
-| `thread_changes` | A thread's branch, the files it changed, and its pull request's checks and review.                            | See    |
-| `thread_start`   | Starts a thread.                                                                                              | Start  |
-| `thread_send`    | Sends more work to a thread it started. At Work, to any thread in its projects.                               | Start  |
-| `thread_stop`    | Stops a thread it started. At Work, any thread in its projects.                                               | Start  |
-| `thread_answer`  | Answers an agent's question in a thread. Never an approval.                                                   | Work   |
+| Tool             | What it does                                                                                                                                                                   | Access |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| `projects`       | The projects it may use.                                                                                                                                                       | See    |
+| `agents`         | The agents and models a thread can run on.                                                                                                                                     | See    |
+| `threads_list`   | Threads in its projects, with their status.                                                                                                                                    | See    |
+| `thread_read`    | A thread's messages and what it waits on: the command an approval is for, a question and its options, a plan. Long messages come clipped; by `messageId` it reads one in full. | See    |
+| `thread_wait`    | Waits for a thread to stop working.                                                                                                                                            | See    |
+| `inbox`          | What needs you right now, and what finished or failed since it last looked.                                                                                                    | See    |
+| `thread_changes` | A thread's branch, the files it changed, and its pull request's checks and review.                                                                                             | See    |
+| `thread_start`   | Starts a thread.                                                                                                                                                               | Start  |
+| `thread_send`    | Sends more work to a thread it started. At Work, to any thread in its projects.                                                                                                | Start  |
+| `thread_stop`    | Stops a thread it started. At Work, any thread in its projects.                                                                                                                | Start  |
+| `thread_answer`  | Answers an agent's question in a thread. Never an approval.                                                                                                                    | Work   |
 
 `inbox` only lists what finished or failed while an assistant is connected
 (Settings → Connections → Assistants): that's when this computer keeps the
@@ -74,10 +74,12 @@ threadlines thread start app "Fix the flaky login test" --wait
 threadlines thread send <id> "Also update the changelog" --wait
 threadlines thread list --mine
 threadlines thread read <id>
+threadlines thread read <id> --message <messageId>   # all of one long message
 threadlines thread stop <id>
 ```
 
-Every command takes `--json`. `--wait` and `threadlines thread wait` exit with:
+Every command takes `--json`. `--wait` prints the thread's whole reply, however
+long. It and `threadlines thread wait` exit with:
 
 | Code | Means                                                                 |
 | ---- | --------------------------------------------------------------------- |
