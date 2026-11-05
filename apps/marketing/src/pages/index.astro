@@ -5,6 +5,7 @@ import AgentMark from "../components/AgentMark.astro";
 import Layout from "../layouts/Layout.astro";
 import { agentPath, AGENTS, isInStableRelease } from "../lib/agents";
 import { latestStableVersion } from "../lib/changelog";
+import { comparisonPath, COMPARISONS } from "../lib/comparisons";
 import {
   absoluteSiteUrl,
   APPLICATION_ID,
@@ -20,6 +21,8 @@ const styledScenes = new Set(["inbox", "pull-requests", "source-control", "brows
 const mediaName = (name: string) => styledScenes.has(name) ? `spotlight-${name}` : name;
 
 const stableVersion = latestStableVersion(await getCollection("changelog"));
+/** Apps on /compare whose own news (an acquisition, a shutdown) sends people looking. */
+const changingApps = COMPARISONS.filter((comparison) => comparison.status !== undefined);
 const appStructuredData = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -489,6 +492,23 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         <a class="pv-cta" href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">View source</a>
       </div>
       <p class="pv-note">macOS 13+ &middot; Windows &middot; Linux</p>
+      <p class="pv-note pv-switch">
+        {
+          changingApps.length > 0 && (
+            <>
+              Coming from{" "}
+              {changingApps.map((comparison, index) => (
+                <>
+                  {index > 0 && (index === changingApps.length - 1 ? " or " : ", ")}
+                  <a href={comparisonPath(comparison)}>{comparison.name}</a>
+                </>
+              ))}
+              ?{" "}
+            </>
+          )
+        }
+        See <a href="/compare">how Threadlines compares</a> with other apps.
+      </p>
     </div>
   </section>
 
@@ -862,6 +882,9 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   .pv-cta-ico[hidden] { display: none; }
   .pv-cta-ico svg { width: 15px; height: 15px; }
   .pv-note { margin-top: 16px; font-size: 0.85rem; color: var(--fg-muted); }
+  .pv-switch { margin-top: 6px; }
+  .pv-switch a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--underline); text-underline-offset: 3px; transition: color 0.2s ease; }
+  .pv-switch a:hover { color: var(--accent-bright); }
 
   .pv-providers {
     display: flex;
