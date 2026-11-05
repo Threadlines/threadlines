@@ -119,7 +119,9 @@ export async function connectThreadlines(input: {
       const requestId = String(message.requestId ?? "");
       if (message._tag === "Chunk") {
         const handler = chunkHandlers.get(requestId);
-        for (const value of (message.values as ReadonlyArray<unknown>) ?? []) handler?.(value);
+        if (typeof handler === "function") {
+          for (const value of (message.values as ReadonlyArray<unknown>) ?? []) handler(value);
+        }
         // The server sends the next chunk only after this.
         write({ _tag: "Ack", requestId });
       } else if (message._tag === "Exit") {
