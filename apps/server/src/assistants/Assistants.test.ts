@@ -2,12 +2,15 @@
 import * as Crypto from "node:crypto";
 
 import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   OutsideAgentRequestId,
+  RELAY_ASSISTANT_MAX_IN_FLIGHT,
+  RELAY_ASSISTANT_REQUEST_TIMEOUT_MS,
   type RelayAssistantHostFrame,
   type RelayAssistantRelayFrame,
   type RelayAssistantRequestFrame,
@@ -782,6 +785,44 @@ describe("assistants: credentials", () => {
   );
 });
 
+describe("assistants: requests", () => {
+  it.effect("stops a request the relay gave up on, so stuck tool calls can't hold every slot", () =>
+    withDoor((door) =>
+      Effect.gen(function* () {
+        // A tool call that never finishes, on every slot.
+        let started = 0;
+        yield* door.assistants.serveMcp(() =>
+          Effect.suspend(() => {
+            started += 1;
+            return Effect.never;
+          }),
+        );
+        const mcp = { route: "mcp" as const, credential: "x", resource: RESOURCE, headers: {} };
+        const stuck = yield* Effect.forEach(
+          Array.from({ length: RELAY_ASSISTANT_MAX_IN_FLIGHT }),
+          () => door.fake.ask({ ...mcp, body: "{}" }).pipe(Effect.forkChild),
+        );
+        yield* until(
+          Effect.sync(() => started),
+          (count) => count === RELAY_ASSISTANT_MAX_IN_FLIGHT,
+        );
+        const token = yield* refresh(door.fake, "not-a-token").pipe(Effect.forkChild);
+        yield* TestClock.adjust(RELAY_ASSISTANT_REQUEST_TIMEOUT_MS - 1);
+        expect(token.pollUnsafe()).toBeUndefined();
+
+        // The relay gave up on them: they're answered as failed, and the slots free up.
+        yield* TestClock.adjust(1);
+        const answered = yield* until(
+          Effect.sync(() => token.pollUnsafe()),
+          (exit) => exit !== undefined,
+        );
+        expect(answered).toMatchObject({ _tag: "Success", value: { status: 400 } });
+        for (const fiber of stuck) expect((yield* Fiber.join(fiber)).status).toBe(500);
+      }).pipe(Effect.scoped),
+    ),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // AssistantMcp
 // ---------------------------------------------------------------------------
@@ -1453,6 +1494,41 @@ describe("the assistant socket", () => {
       yield* relay.setWanted(true);
       for (let waited = 0; waited < 5_000 && sockets < 2; waited += 10) yield* Effect.sleep(10);
       expect(sockets).toBeGreaterThanOrEqual(2);
+      yield* relay.setWanted(false);
+    }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped),
+  );
+
+  it.live("starts over when the relay never answers the handshake", () =>
+    Effect.gen(function* () {
+      // A relay that takes the connection and never sends a byte, the upgrade included.
+      const held: Array<NodeNet.Socket> = [];
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<NodeNet.Server>((resume) => {
+          const listening = NodeNet.createServer((socket) => held.push(socket));
+          listening.listen(0, "127.0.0.1", () => resume(Effect.succeed(listening)));
+        }),
+        (listening) =>
+          Effect.sync(() => {
+            for (const socket of held) socket.destroy();
+            listening.close();
+          }),
+      );
+      const port = (server.address() as NodeNet.AddressInfo).port;
+      const relay = yield* makeAssistantRelayWith({
+        pingIntervalMs: 50,
+        silenceTimeoutMs: 300,
+      }).pipe(
+        Effect.provideService(RelayHostLink, {
+          relayOrigin: `http://127.0.0.1:${port}`,
+          credentials: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+          register: Effect.succeed({ hostId: HOST, hostSecret: "host-secret-1" }),
+          forgetHost: () => Effect.void,
+          keepOnline: () => Effect.void,
+        }),
+      );
+      yield* relay.setWanted(true);
+      for (let waited = 0; waited < 5_000 && held.length < 2; waited += 10) yield* Effect.sleep(10);
+      expect(held.length).toBeGreaterThanOrEqual(2);
       yield* relay.setWanted(false);
     }).pipe(Effect.provide(Layer.fresh(NodeServices.layer)), Effect.scoped),
   );

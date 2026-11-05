@@ -939,12 +939,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* Deferred.succeed(agentTurn.ended, undefined);
       });
 
-    /** Closes an agent turn whose end notice never came, after a long quiet. */
+    /**
+     * Closes an agent turn whose end notice never came, after a long quiet.
+     * One waiting on the user's approval or answer isn't quiet: it stays open.
+     */
     const watchAgentTurnQuiet = (ctx: AcpSessionContext, turnId: TurnId) =>
       Effect.gen(function* () {
         while (ctx.agentTurn?.turnId === turnId) {
           yield* Effect.sleep(ACP_AGENT_TURN_QUIET_CHECK);
           if (ctx.agentTurn?.turnId !== turnId) return;
+          if (ctx.pendingApprovals.size > 0 || ctx.pendingUserInputs.size > 0) {
+            ctx.agentTurnLastActivityMs = Date.now();
+            continue;
+          }
           if (
             Date.now() - ctx.agentTurnLastActivityMs >=
             Duration.toMillis(ACP_AGENT_TURN_QUIET_LIMIT)
@@ -1339,8 +1346,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   });
                 }),
               );
-              const resolved = yield* Deferred.await(answers);
-              pendingUserInputs.delete(requestId);
+              const resolved = yield* Deferred.await(answers).pipe(
+                Effect.ensuring(Effect.sync(() => pendingUserInputs.delete(requestId))),
+              );
               const turnId = yield* Deferred.await(shown);
               yield* offerRuntimeEvent({
                 type: "user-input.resolved",
@@ -1546,8 +1554,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     );
                   }),
                 );
-                const resolved = yield* Deferred.await(decision);
-                pendingApprovals.delete(requestId);
+                // Gone however the wait ends (an interrupted handler included),
+                // or the quiet watch would hold the agent's turn open forever.
+                const resolved = yield* Deferred.await(decision).pipe(
+                  Effect.ensuring(Effect.sync(() => pendingApprovals.delete(requestId))),
+                );
                 const turnId = yield* Deferred.await(shown);
                 yield* offerRuntimeEvent(
                   makeAcpRequestResolvedEvent({
@@ -2171,6 +2182,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             Effect.gen(function* () {
               if (ctx.activeTurnId === turnId) {
                 ctx.activeTurnId = undefined;
+                ctx.session = { ...ctx.session, activeTurnId: undefined, updatedAt: yield* nowIso };
               }
               if (ctx.openPrompt === prompt) ctx.openPrompt = undefined;
               yield* Deferred.succeed(prompt.closed, undefined);
@@ -2388,8 +2400,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopSession: AcpAdapterShape["stopSession"] = (threadId) =>
       withThreadLock(threadId, Effect.flatMap(requireSession(threadId), stopSessionInternal));
 
+    /**
+     * A turn in flight counts as running, waiting on the user's answer or
+     * approval included: that's what keeps the idle reaper from stopping it
+     * (and closing the prompt) while the user is away.
+     */
     const listSessions: AcpAdapterShape["listSessions"] = () =>
-      Effect.sync(() => Array.from(sessions.values(), (c) => ({ ...c.session })));
+      Effect.sync(() =>
+        Array.from(sessions.values(), (c) =>
+          c.activeTurnId !== undefined && c.session.status === "ready"
+            ? { ...c.session, status: "running" as const }
+            : { ...c.session },
+        ),
+      );
 
     const hasSession: AcpAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {

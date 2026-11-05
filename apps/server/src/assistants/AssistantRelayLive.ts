@@ -6,11 +6,11 @@
  * The assistant socket authenticates as the control socket and device pipes
  * do: the host secret as a `threadlines-token.` subprotocol. It sends the
  * relay's heartbeat ping every 20 s, and 45 s with no frame at all (counted
- * from when it opened, so a socket that never carries anything is caught too)
- * closes it and connects again. A socket refused
- * before it opened asks the relay (at most once a minute) whether it still
- * knows this computer, so a forgotten host registers again on the next call
- * that needs one.
+ * from when it was made, so a handshake that never finishes, or a socket that
+ * never carries anything, is caught too) closes it and connects again. A
+ * socket refused before it opened asks the relay (at most once a minute)
+ * whether it still knows this computer, so a forgotten host registers again on
+ * the next call that needs one.
  *
  * Frames are never logged: a request frame carries a credential.
  */
@@ -207,6 +207,17 @@ export const makeAssistantRelayWith = (timing: AssistantSocketTiming) =>
       socket = opened;
       let isOpen = false;
       let lastFrameAt = Date.now();
+      // From now, not from `open`: a handshake whose answer never comes
+      // doesn't time out on its own, and would hold the socket forever.
+      pingTimer = setInterval(() => {
+        if (socket !== opened) return;
+        if (Date.now() - lastFrameAt > timing.silenceTimeoutMs) {
+          // The network went quiet without a close: start over.
+          onGone();
+          return;
+        }
+        if (opened.readyState === WebSocket.OPEN) opened.send(RELAY_HEARTBEAT_PING_FRAME);
+      }, timing.pingIntervalMs);
 
       opened.addEventListener("open", () => {
         if (socket !== opened) return;
@@ -214,15 +225,6 @@ export const makeAssistantRelayWith = (timing: AssistantSocketTiming) =>
         attempt = 0;
         lastFrameAt = Date.now();
         Queue.offerUnsafe(events, { type: "open" });
-        pingTimer = setInterval(() => {
-          if (socket !== opened) return;
-          if (Date.now() - lastFrameAt > timing.silenceTimeoutMs) {
-            // The network went quiet without a close: start over.
-            onGone();
-            return;
-          }
-          if (opened.readyState === WebSocket.OPEN) opened.send(RELAY_HEARTBEAT_PING_FRAME);
-        }, timing.pingIntervalMs);
       });
       opened.addEventListener("message", (event: MessageEvent) => {
         if (socket !== opened || typeof event.data !== "string") return;

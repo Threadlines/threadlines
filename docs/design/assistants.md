@@ -1172,8 +1172,9 @@ Choices the build made inside the plan, for the relay and web builds to match:
 - **`server/discover`** lists `2026-07-28` and `2025-06-18`; modern requests
   without the `Mcp-Method` header (or `Mcp-Name` on `tools/call`) get
   HeaderMismatch. `ping` is legacy only, as 2026-07-28 removed it.
-- **The assistant socket** sends the relay's heartbeat ping every 20 s; once a
-  pong came back on a socket, 45 s of silence reconnects it.
+- **The assistant socket** sends the relay's heartbeat ping every 20 s; 45 s
+  of silence, counted from when the socket was made, reconnects it (so does a
+  handshake whose answer never comes; see "A stuck door after a relay deploy").
 - **Token requests are bound by the code or refresh token**, not by the
   frame's `resource`; a `resource` in the body must match. MCP requests must
   carry, in the frame's `resource`, the exact string the connection was made
@@ -2441,3 +2442,23 @@ as its own doors, as a connection row of its own.
   its user removes it; it can do nothing, since only A's calls bring it.
 - A is trusted as far as the link is: it could forward calls for any agent B
   allowed through that link.
+
+## A stuck door after a relay deploy (Nov 5 2026)
+
+After the relay deploy of Nov 5 the demo computer approved review sign-ins,
+but every `/token` and `/mcp` request after them waited 30 s and failed, with
+nothing in the computer's log, until the computer restarted.
+
+- **Cause, reproduced with `wrangler dev`.** A replaced assistant socket whose
+  close never finished (the computer's end had already gone quiet) reads open
+  again once the host's object wakes from hibernation. The object took the
+  first open socket, which was that one, so requests went nowhere. Sign-ins
+  go to every socket, so they still reached the computer, and its decisions
+  came back on its live socket.
+- **The relay** now sends requests on the newest open socket (each new one
+  replaces the older) and closes the others again.
+- **The computer** counts both relay sockets' silence from when they were
+  made, not from `open`: a handshake whose answer never came held the
+  assistant socket and the control socket forever. And it stops a request
+  still running when the relay gives up on it (30 s), so stuck tool calls
+  can't hold all 32 slots.

@@ -21,6 +21,8 @@
  * - **Requests** (`request` frames) are handled concurrently, at most
  *   RELAY_ASSISTANT_MAX_IN_FLIGHT at once, each answered with one `response`
  *   frame: `token` here, `mcp` by the handler AssistantMcpServer registers.
+ *   One still running when the relay gives up on it (30 s) is stopped and
+ *   answered as failed.
  * - **Removal** (Remove, replaced, 90 days unused, refresh reuse) marks the
  *   row for revocation at the relay in the same statement; the pending ones
  *   are sent until the relay takes them, across restarts.
@@ -42,6 +44,7 @@ import {
   OutsideAgentRequestId,
   RELAY_ASSISTANT_FRAME_MAX_BYTES,
   RELAY_ASSISTANT_MAX_IN_FLIGHT,
+  RELAY_ASSISTANT_REQUEST_TIMEOUT_MS,
   type RelayAssistantDecisionFrame,
   type RelayAssistantInfo,
   type RelayAssistantPlace,
@@ -1249,6 +1252,9 @@ export const makeAssistants = Effect.gen(function* () {
         ? full
         : { type: "response" as const, id: frame.id, ...failed };
     }).pipe(
+      // The relay has given up by then. A request still running would keep its
+      // slot, and once every slot is held no request is answered at all.
+      Effect.timeout(RELAY_ASSISTANT_REQUEST_TIMEOUT_MS),
       Effect.catchCause((cause) =>
         Effect.logWarning("assistants: a request failed", {
           route: frame.route,

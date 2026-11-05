@@ -56,7 +56,12 @@ import {
 } from "./assistants/answers.ts";
 import { assistantCodeShardName } from "./assistants/codes.ts";
 import { ASSISTANTS_OFF_CODE, assistantsConfig, assistantsInfo } from "./assistants/config.ts";
-import { AssistantDoor, type AssistantDoorRequest, parseHostFrame } from "./assistants/door.ts";
+import {
+  AssistantDoor,
+  type AssistantDoorRequest,
+  currentAssistantSocket,
+  parseHostFrame,
+} from "./assistants/door.ts";
 import { AssistantPresence } from "./assistants/presence.ts";
 import {
   AssistantHostCore,
@@ -125,6 +130,12 @@ interface SocketAttachment {
   readonly requestId?: string;
   /** Assistant sockets only: which socket a forwarded request went out on. */
   readonly socketId?: string;
+  /**
+   * Assistant sockets only: one more than any assistant socket the host still
+   * listed when this one connected, so the newest is known even when two share
+   * a millisecond (currentAssistantSocket).
+   */
+  readonly generation?: number;
   /** Assistant sockets only: requests forwarded and not yet committed to today's allowance. */
   readonly pendingRequests?: number;
   /** Control sockets only: last lease frame, kept on the socket so it survives hibernation. */
@@ -667,7 +678,9 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     if (!(await this.requireHostSecret(request, true))) return badHostSecret();
     if (!(await assistantsConfig(this.env)).enabled) return assistantsOff();
     const now = Date.now();
+    let generation = 1;
     for (const socket of this.ctx.getWebSockets("assistant")) {
+      generation = Math.max(generation, (readAttachment(socket)?.generation ?? 0) + 1);
       this.closeAssistantSocket(
         socket,
         RELAY_CLOSE_CODE_REPLACED,
@@ -676,7 +689,13 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
     const { client, server } = this.accept(
       ["assistant"],
-      { role: "assistant", connectedAt: now, socketId: crypto.randomUUID(), lastCommitAt: now },
+      {
+        role: "assistant",
+        connectedAt: now,
+        generation,
+        socketId: crypto.randomUUID(),
+        lastCommitAt: now,
+      },
       request,
     );
     for (const signIn of this.assistants.signIns(now)) {
@@ -796,20 +815,42 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   }
 
   /**
-   * The open assistant socket, when the computer is there: its control
+   * The computer's assistant socket, when the computer is there: its control
    * socket's lease is fresh too (a sleeping computer's sockets can look open
-   * for a while; its lease lapses in 150 s).
+   * for a while; its lease lapses in 150 s). Older sockets that read open
+   * again are closed again (currentAssistantSocket).
    */
   private liveAssistantSocket(
     now: number,
   ): { readonly socket: WebSocket; readonly socketId: string } | null {
     if (!this.liveControlSocket(now)) return null;
+    const open: Array<{
+      socket: WebSocket;
+      socketId: string;
+      connectedAt: number;
+      generation?: number;
+    }> = [];
     for (const socket of this.ctx.getWebSockets("assistant")) {
       if (socket.readyState !== WebSocket.OPEN) continue;
-      const socketId = readAttachment(socket)?.socketId;
-      if (socketId) return { socket, socketId };
+      const attachment = readAttachment(socket);
+      if (attachment?.socketId) {
+        open.push({
+          socket,
+          socketId: attachment.socketId,
+          connectedAt: attachment.connectedAt,
+          ...(attachment.generation !== undefined ? { generation: attachment.generation } : {}),
+        });
+      }
     }
-    return null;
+    const { current, replaced } = currentAssistantSocket(open);
+    for (const stale of replaced) {
+      this.closeAssistantSocket(
+        stale.socket,
+        RELAY_CLOSE_CODE_REPLACED,
+        "Replaced by a newer connection.",
+      );
+    }
+    return current;
   }
 
   /** Fails what's in flight on the socket, keeps its tally, and closes it. */

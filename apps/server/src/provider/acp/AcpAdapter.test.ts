@@ -1513,6 +1513,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const serverSettings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-interrupt-pending-user-input");
       const userInputRequested = yield* Deferred.make<void>();
+      const turnCompleted = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
@@ -1520,10 +1521,14 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
       yield* Stream.runForEach(adapter.streamEvents, (event) => {
-        if (String(event.threadId) !== String(threadId) || event.type !== "user-input.requested") {
-          return Effect.void;
+        if (String(event.threadId) !== String(threadId)) return Effect.void;
+        if (event.type === "user-input.requested") {
+          return Deferred.succeed(userInputRequested, undefined).pipe(Effect.ignore);
         }
-        return Deferred.succeed(userInputRequested, undefined).pipe(Effect.ignore);
+        if (event.type === "turn.completed") {
+          return Deferred.succeed(turnCompleted, undefined).pipe(Effect.ignore);
+        }
+        return Effect.void;
       }).pipe(Effect.forkChild);
 
       yield* adapter.startSession({
@@ -1543,10 +1548,27 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         .pipe(Effect.forkChild);
 
       yield* Deferred.await(userInputRequested);
+      // Waiting on the user is still a turn in flight: the idle reaper must see it as running.
+      const listed = (yield* adapter.listSessions()).find(
+        (session) => session.threadId === threadId,
+      );
+      assert.equal(listed?.status, "running");
       yield* adapter.interruptTurn(threadId);
       yield* Fiber.await(sendTurnFiber);
+      yield* Deferred.await(turnCompleted);
 
       assert.equal(yield* adapter.hasSession(threadId), true);
+      // The turn's bookkeeping settles just after it reports completing.
+      const listedNow = adapter
+        .listSessions()
+        .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
+      let settled = yield* listedNow;
+      for (let attempt = 0; attempt < 200 && settled?.status !== "ready"; attempt += 1) {
+        yield* Effect.yieldNow;
+        settled = yield* listedNow;
+      }
+      assert.equal(settled?.status, "ready");
+      assert.equal(settled?.activeTurnId, undefined);
       yield* adapter.stopSession(threadId);
     }),
   );

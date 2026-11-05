@@ -177,6 +177,35 @@ export class AssistantDoor {
   }
 }
 
+/**
+ * The computer's assistant socket among the host's open ones: the newest,
+ * since each new socket replaces the older ones. An older one that reads open
+ * was replaced but never finished closing (the computer's end was already
+ * gone): it reads open again once the object wakes from hibernation, and
+ * requests sent on it go nowhere. Those come back as `replaced`, to close again.
+ * Newest is the highest `generation`, then the latest `connectedAt` for
+ * sockets from before generations; the listing order never decides.
+ */
+export function currentAssistantSocket<
+  T extends { readonly connectedAt: number; readonly generation?: number },
+>(open: ReadonlyArray<T>): { readonly current: T | null; readonly replaced: ReadonlyArray<T> } {
+  const newer = (a: T, b: T) =>
+    (a.generation ?? 0) !== (b.generation ?? 0)
+      ? (a.generation ?? 0) > (b.generation ?? 0)
+      : a.connectedAt > b.connectedAt;
+  let current: T | null = null;
+  for (const candidate of open) {
+    if (current === null || newer(candidate, current)) current = candidate;
+  }
+  // Only what is surely older gets closed: a tie (two sockets from before
+  // generations, in one millisecond) can't tell which one is live.
+  const chosen = current;
+  return {
+    current,
+    replaced: chosen === null ? [] : open.filter((candidate) => newer(chosen, candidate)),
+  };
+}
+
 /** The computer's answer as the assistant gets it: its status, allowed headers and body. */
 function computerAnswer(
   route: "mcp" | "token",
