@@ -1207,9 +1207,16 @@ label:has(> select#reasoning-effort) select {
 
 /* Diagrams (MarkdownDiagram.tsx), drawn by pele in a code block's frame. Its
    colors are these variables, so a theme change recolors a diagram without
-   drawing it again. Unscoped: the full-size view sits outside the message. */
+   drawing it again. Unscoped: the full-size view sits outside the message.
+   pele paints the text on colored shapes (git branch names), the patches behind
+   labels, the outlines around crossing lines and hollow arrow heads in
+   --pele-bg, so it must be the solid color right behind the drawing. In a
+   message that is the frame's see-through fill (78% of --muted: 4% black, 9%
+   white in dark) as it shows over the page. The frame itself stays see-through
+   to match the code blocks; on a raised card the patches behind labels come
+   out a shade off. */
 .chat-markdown-diagram {
-  --pele-bg: transparent;
+  --pele-bg: color-mix(in srgb, var(--color-black) 3.12%, var(--background));
   --pele-fg: var(--foreground);
   --pele-muted: var(--muted-foreground);
   --pele-line: color-mix(in srgb, var(--foreground) 55%, transparent);
@@ -1222,14 +1229,34 @@ label:has(> select#reasoning-effort) select {
   --pele-font: var(--font-sans);
   --pele-font-mono: var(--font-mono);
   --pele-radius: 6px;
+  /* Chart and branch colors. pele writes the labels on them (branch names, pie
+     shares, timeline periods) in --pele-bg, so every shade keeps 4.5:1 against
+     it: deep shades under near-white text here, light ones under dark text in
+     dark mode. */
   --pele-series-1: var(--primary);
-  --pele-series-2: var(--color-emerald-500);
-  --pele-series-3: var(--color-amber-500);
-  --pele-series-4: var(--color-violet-500);
-  --pele-series-5: var(--color-cyan-500);
-  --pele-series-6: var(--color-rose-500);
-  --pele-series-7: var(--color-lime-500);
+  --pele-series-2: var(--color-emerald-700);
+  --pele-series-3: var(--color-amber-800);
+  --pele-series-4: var(--color-violet-600);
+  --pele-series-5: var(--color-cyan-700);
+  --pele-series-6: var(--color-rose-700);
+  --pele-series-7: var(--color-lime-800);
   --pele-series-8: var(--muted-foreground);
+
+  @variant dark {
+    --pele-bg: color-mix(in srgb, var(--color-white) 7.02%, var(--background));
+    --pele-series-1: var(--color-blue-400);
+    --pele-series-2: var(--color-emerald-500);
+    --pele-series-3: var(--color-amber-500);
+    --pele-series-4: var(--color-violet-400);
+    --pele-series-5: var(--color-cyan-500);
+    --pele-series-6: var(--color-rose-400);
+    --pele-series-7: var(--color-lime-500);
+  }
+}
+
+/* The full-size view has no frame: it sits on the dialog's pop-up color. */
+.chat-markdown-diagram.chat-markdown-diagram-full {
+  --pele-bg: var(--popover);
 }
 
 .chat-markdown .chat-markdown-diagram {

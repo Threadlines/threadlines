@@ -1270,6 +1270,78 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("writes git branch names in a color that reads on the branch's fill, in both themes", async () => {
+    // pele writes text on colored shapes in --pele-bg: a see-through value
+    // there made every branch name (and pie share) invisible.
+    const pixel = (color: string) => {
+      const context = document.createElement("canvas").getContext("2d")!;
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      return context.getImageData(0, 0, 1, 1).data;
+    };
+    const luminance = (rgba: Uint8ClampedArray) => {
+      const linear = (channel: number) => {
+        const value = channel / 255;
+        return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * linear(rgba[0]!) + 0.7152 * linear(rgba[1]!) + 0.0722 * linear(rgba[2]!);
+    };
+    const expectReadableBranchNames = (root: Element) => {
+      const branches = root.querySelectorAll(".pele-branch");
+      expect(branches.length).toBe(8);
+      // Each branch takes the next color slot, so all eight are checked.
+      const slots = new Set(
+        [...branches].map((b) => b.querySelector("rect")!.getAttribute("fill")),
+      );
+      expect(slots.size).toBe(8);
+      for (const branch of branches) {
+        const text = pixel(getComputedStyle(branch.querySelector("text")!).fill);
+        const fill = pixel(getComputedStyle(branch.querySelector("rect")!).fill);
+        expect(text[3], branch.textContent ?? "").toBe(255);
+        const [light, dark] = [luminance(text), luminance(fill)].sort((a, b) => b - a);
+        expect((light! + 0.05) / (dark! + 0.05), branch.textContent ?? "").toBeGreaterThanOrEqual(
+          4.5,
+        );
+      }
+    };
+    // main plus seven branches: one per color slot.
+    const branchLines = ["b2", "b3", "b4", "b5", "b6", "b7", "b8"]
+      .map((name) => `  branch ${name}\n  commit`)
+      .join("\n");
+    const graph = `\`\`\`mermaid\ngitGraph\n  commit\n${branchLines}\n\`\`\``;
+    const screen = await render(<ChatMarkdown text={graph} cwd="/repo" />);
+    try {
+      // Run alone, this is the renderer's first load (see the tests above).
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelectorAll("[data-chat-markdown-diagram] .pele-branch"),
+          ).toHaveLength(8);
+        },
+        { timeout: 10_000 },
+      );
+      const message = document.querySelector("[data-chat-markdown-diagram]")!;
+      expectReadableBranchNames(message);
+
+      await page.getByRole("button", { name: "View full size" }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll(".chat-markdown-diagram-full .pele-branch")).toHaveLength(
+          8,
+        );
+      });
+      const full = document.querySelector(".chat-markdown-diagram-full")!;
+      expectReadableBranchNames(full);
+
+      // A theme change recolors the drawing without drawing it again.
+      document.documentElement.classList.add("dark");
+      expectReadableBranchNames(message);
+      expectReadableBranchNames(full);
+    } finally {
+      document.documentElement.classList.remove("dark");
+      await screen.unmount();
+    }
+  });
+
   it("keeps a diagram it can't read as code, with the reason", async () => {
     const screen = await render(
       <ChatMarkdown text={"```mermaid\nflowchart LR\n  A -->\n```"} cwd="/repo" />,
