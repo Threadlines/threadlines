@@ -1,0 +1,151 @@
+name: WinGet
+
+run-name: WinGet ${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Sends each stable Windows release to microsoft/winget-pkgs, so
+# `winget install Threadlines.Threadlines` and `winget upgrade` pick it up.
+# release.yml starts this after it publishes a stable release: GitHub doesn't
+# start workflows from GITHUB_TOKEN release events, and a workflow_dispatch is
+# exempt. Run it by hand to retry a version.
+#
+# Needs the WINGET_TOKEN secret: a classic GitHub token with the public_repo
+# scope. The pull request opens from that account's fork of winget-pkgs, which
+# the first run creates. That account's first pull request there also needs
+# Microsoft's CLA, agreed to once in a comment on it.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable version to send, for example 0.9.0."
+        required: true
+        type: string
+      dry_run:
+        description: "Build and check the manifests without opening the pull request."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winget-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  KOMAC_VERSION: 2.17.2
+  # From the release's SHA256SUMS, for komac-<version>-x86_64-unknown-linux-gnu.tar.gz.
+  KOMAC_SHA256: b03b020eec98acfb0b53e284a6e21815b884be33de6785b97e7a120f0e748966
+
+jobs:
+  submit:
+    name: Send to winget-pkgs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check for the token
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [[ -z "$WINGET_TOKEN" ]]; then
+            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo) to send releases to winget."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile --ignore-scripts
+
+      - name: Find the Windows installer
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${DISPATCH_VERSION#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::winget only gets plain stable versions, got '${version}'."
+            exit 1
+          fi
+          installer="Threadlines-${version}-win-x64.exe"
+          release="$(gh release view "v${version}" --json isDraft,isPrerelease,publishedAt)"
+          if [[ "$(jq -r '.isDraft or .isPrerelease' <<< "$release")" == "true" ]]; then
+            echo "::error::v${version} isn't a published stable release."
+            exit 1
+          fi
+          gh release download "v${version}" --pattern "$installer" --dir installer --clobber
+          sha256="$(sha256sum "installer/${installer}" | cut -d' ' -f1)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "release_date=$(jq -r '.publishedAt[0:10]' <<< "$release")" >> "$GITHUB_OUTPUT"
+
+      - name: Write the manifests
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+          RELEASE_DATE: ${{ steps.release.outputs.release_date }}
+        run: |
+          set -euo pipefail
+          node scripts/winget-manifests.ts \
+            --version "$VERSION" \
+            --installer-sha256 "$SHA256" \
+            --release-date "$RELEASE_DATE" \
+            --out winget
+          find winget -name '*.yaml' -print -exec cat {} \;
+
+      - name: Install Komac
+        run: |
+          set -euo pipefail
+          archive="komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/komac"
+          curl -fsSL -o "$RUNNER_TEMP/komac/${archive}" \
+            "https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/${archive}"
+          echo "${KOMAC_SHA256}  $RUNNER_TEMP/komac/${archive}" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/komac/${archive}" -C "$RUNNER_TEMP/komac" komac
+          echo "$RUNNER_TEMP/komac" >> "$GITHUB_PATH"
+
+      - name: Make sure the winget-pkgs fork exists
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        # Komac opens the pull request from the token owner's fork but doesn't
+        # create it. GitHub makes a fork in the background, so wait for it.
+        run: |
+          set -euo pipefail
+          owner="$(gh api user --jq .login)"
+          if ! gh api "repos/${owner}/winget-pkgs" --silent 2> /dev/null; then
+            gh repo fork microsoft/winget-pkgs --clone=false --default-branch-only
+          fi
+          for attempt in $(seq 1 30); do
+            if gh api "repos/${owner}/winget-pkgs/branches/master" --silent 2> /dev/null; then
+              echo "Fork ready: ${owner}/winget-pkgs"
+              exit 0
+            fi
+            echo "Waiting for ${owner}/winget-pkgs (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "::error::${owner}/winget-pkgs never became ready."
+          exit 1
+
+      - name: Open the winget-pkgs pull request
+        env:
+          # Komac reads its token from GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          IS_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(submit winget --yes)
+          if [[ "$IS_DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          komac "${args[@]}"
