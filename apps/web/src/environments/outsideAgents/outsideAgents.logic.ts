@@ -206,14 +206,16 @@ export function describeOutsideAgentsWaiting(count: number): string {
   return `${count} more waiting`;
 }
 
-/** The small label on a thread an outside agent started: "from Claude Code". */
-export function outsideOriginLabel(origin: Pick<OutsideAgentRef, "name">): string {
-  return `from ${origin.name}`;
-}
-
-/** The same, said in full for a tooltip or a screen reader. */
-export function outsideOriginDescription(origin: Pick<OutsideAgentRef, "name">): string {
-  return `Started by ${origin.name}, an agent outside Threadlines`;
+/**
+ * Who started a thread from outside Threadlines, said in full for a tooltip
+ * or a screen reader: "an assistant" when it was a known one (Grok Bot,
+ * ChatGPT), "an agent" for the rest (Claude Code on this computer).
+ */
+export function outsideOriginDescription(
+  origin: Pick<OutsideAgentRef, "name" | "assistant">,
+): string {
+  const kind = origin.assistant !== undefined ? "an assistant" : "an agent";
+  return `Started by ${origin.name}, ${kind} outside Threadlines`;
 }
 
 /** "A", "A and B", "A, B and others": a list that stays short. */

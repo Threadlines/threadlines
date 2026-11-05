@@ -3093,6 +3093,8 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const projectId = ProjectId.make("project-outside");
       const threadId = ThreadId.make("thread-outside");
       const agent = { connectionId: OutsideAgentConnectionId.make("connection-1"), name: "Codex" };
+      // The thread also keeps which known assistant started it, for its mark.
+      const origin = { ...agent, assistant: "chatgpt" as const };
       yield* engine.dispatch({
         type: "project.create",
         commandId: CommandId.make("cmd-outside-project"),
@@ -3113,7 +3115,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "approval-required",
         branch: null,
         worktreePath: null,
-        outsideOrigin: agent,
+        outsideOrigin: origin,
         createdAt,
       });
       yield* engine.dispatch({
@@ -3143,11 +3145,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const readModel = yield* query.getCommandReadModel();
       assert.deepEqual(
         readModel.threads.find((thread) => thread.id === threadId)?.outsideOrigin,
-        agent,
+        origin,
       );
       const shell = yield* query.getShellSnapshot();
       const row = shell.threads.find((thread) => thread.id === threadId);
-      assert.deepEqual(row?.outsideOrigin, agent);
+      assert.deepEqual(row?.outsideOrigin, origin);
       // The agent's message isn't the user's: nothing the user wrote yet.
       assert.equal(row?.latestUserMessageAt, null);
       const detail = yield* query.getThreadDetailById(threadId);

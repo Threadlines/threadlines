@@ -11,7 +11,12 @@ import {
   ProjectId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { OutsideAgentAccess, OutsideAgentRef, RuntimeMode } from "./orchestration.ts";
+import {
+  KnownAssistant,
+  OutsideAgentAccess,
+  OutsideAgentRef,
+  RuntimeMode,
+} from "./orchestration.ts";
 
 /**
  * Outside agents (docs/design/outside-agents.md): coding agents running
@@ -59,15 +64,6 @@ export const OutsideAgentIdentity = Schema.Struct({
   known: Schema.Boolean,
 });
 export type OutsideAgentIdentity = typeof OutsideAgentIdentity.Type;
-
-/**
- * Always-on assistants Threadlines knows by name and mark
- * (docs/design/assistants.md). Several sign in through someone else's
- * service (Grok Bot through Cursor's), so which one it is is a guess from
- * its sign-in until the user picks.
- */
-export const KnownAssistant = Schema.Literals(["grok-bot", "chatgpt", "claude", "muse", "cursor"]);
-export type KnownAssistant = typeof KnownAssistant.Type;
 
 export const OutsideAgentConnection = Schema.Struct({
   connectionId: OutsideAgentConnectionId,
