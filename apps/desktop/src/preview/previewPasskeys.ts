@@ -12,9 +12,18 @@
  *
  * A passkey made here lives in this Mac's Secure Enclave, is not synced, and
  * belongs to the browser profile it was made in (Electron keeps one secret per
- * partition). Clearing browser data does not delete it. Passkeys saved in
- * iCloud Keychain or a password manager are out of reach: Apple serves those
- * to an app only for websites the app is associated with.
+ * partition). Clearing browser data does not delete it.
+ *
+ * Passkeys saved in iCloud Keychain or a password manager are out of reach.
+ * Apple serves those to an app in two ways, and neither fits here:
+ * - For sites that list the app in their `apple-app-site-association` file
+ *   (Associated Domains). Electron offers this as `platformPasskeys`, but it
+ *   needs each site's cooperation, so it can't serve arbitrary pages.
+ * - To an approved web browser holding the managed
+ *   `com.apple.developer.web-browser.public-key-credential` entitlement, for
+ *   any site. Apple grants it only to apps that work as the user's browser
+ *   (registered to open http and https links), which Threadlines is not, and
+ *   Electron has no support for that browser API.
  */
 
 import { DESKTOP_PASSKEY_KEYCHAIN_GROUP_FIELD } from "@threadlines/shared/desktopIdentity";
