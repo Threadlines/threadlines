@@ -6,6 +6,7 @@ import {
   type ModelSelection,
   type ProviderReviewTarget,
   type RuntimeMode,
+  type SourceControlCloneRepositoryInput,
   type SourceControlPublishRepositoryInput,
   type ThreadBootstrapCreateThread,
   type ThreadId,
@@ -109,10 +110,21 @@ export const gitMutationKeys = {
   /** Keyed to the computer only: the worktree each call removes is in its input's `path`. */
   removeWorktree: (environmentId: EnvironmentId | null) =>
     ["git", "mutation", "remove-worktree", environmentId ?? null] as const,
+  /** Keyed to the computer only: each clone's folder is in its input's `destinationPath`. */
+  cloneRepository: (environmentId: EnvironmentId | null) =>
+    ["git", "mutation", "clone-repository", environmentId ?? null] as const,
 };
 
-/** Git mutations that add or remove a worktree: the checkout in their input's `path`. */
-const WORKTREE_GIT_MUTATIONS: ReadonlySet<string> = new Set(["create-worktree", "remove-worktree"]);
+/**
+ * Git mutations whose checkout is named in their input rather than their
+ * key, and the field that names it. A worktree's `cwd` is only the
+ * repository running git; a clone makes the folder it names.
+ */
+const CHECKOUT_INPUT_FIELDS: ReadonlyMap<string, "path" | "destinationPath"> = new Map([
+  ["create-worktree", "path"],
+  ["remove-worktree", "path"],
+  ["clone-repository", "destinationPath"],
+]);
 
 /** Git mutations that only read a checkout; they never hold up a change to it. */
 const CHECKOUT_READING_GIT_MUTATIONS: ReadonlySet<string> = new Set([
@@ -121,7 +133,7 @@ const CHECKOUT_READING_GIT_MUTATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** A string field of a mutation's input, when it has one. */
-function inputPath(variables: unknown, field: "cwd" | "path"): string | null {
+function inputPath(variables: unknown, field: "cwd" | "path" | "destinationPath"): string | null {
   if (typeof variables !== "object" || variables === null || !(field in variables)) {
     return null;
   }
@@ -131,17 +143,18 @@ function inputPath(variables: unknown, field: "cwd" | "path"): string | null {
 
 /**
  * The checkout a git mutation changes, or null. Adding or removing a worktree
- * changes the worktree at its input's `path` (its `cwd` is only the repository
- * running git). Any other mutation keyed to a checkout
- * (`["git", "mutation", kind, environmentId, cwd]`) changes the checkout its
- * input names in `cwd`, when it names one (a branch switch can land in another
- * checkout than the picker's), else the one in its key.
+ * changes the worktree at its input's `path`, and a clone the folder at its
+ * `destinationPath` (`CHECKOUT_INPUT_FIELDS`). Any other mutation keyed to a
+ * checkout (`["git", "mutation", kind, environmentId, cwd]`) changes the
+ * checkout its input names in `cwd`, when it names one (a branch switch can
+ * land in another checkout than the picker's), else the one in its key.
  */
 function changedCheckoutOf(mutation: Mutation<unknown, Error, unknown, unknown>): string | null {
   const key = mutation.options.mutationKey;
   const variables = mutation.state.variables;
-  if (typeof key?.[2] === "string" && WORKTREE_GIT_MUTATIONS.has(key[2])) {
-    return inputPath(variables, "path");
+  const inputField = typeof key?.[2] === "string" ? CHECKOUT_INPUT_FIELDS.get(key[2]) : undefined;
+  if (inputField !== undefined) {
+    return inputPath(variables, inputField);
   }
   if (key === undefined || key.length < 5) {
     return null;
@@ -153,11 +166,11 @@ function changedCheckoutOf(mutation: Mutation<unknown, Error, unknown, unknown>)
 /**
  * Matches every git action that changes the checkout at `cwd`, from any
  * surface: the Source tab, the chat header's pull, the composer's branch
- * picker, a worktree being restored or removed. Pass it to `useIsMutating`
- * to hold a new action back while one is under way. A git action only counts
- * when it runs as a mutation keyed under `["git", "mutation", kind,
- * environmentId, ...]`, so call the API through the mutation helpers here
- * (or `runGitMutation`) rather than directly.
+ * picker, a worktree being restored or removed, a repository being cloned.
+ * Pass it to `useIsMutating` to hold a new action back while one is under
+ * way. A git action only counts when it runs as a mutation keyed under
+ * `["git", "mutation", kind, environmentId, ...]`, so call the API through the
+ * mutation helpers here (or `runGitMutation`) rather than directly.
  */
 export function checkoutChangingGitMutationFilters(
   environmentId: EnvironmentId | null,
@@ -934,6 +947,19 @@ export function sourceControlPublishRepositoryMutationOptions(input: {
     },
     onSuccess: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
+/** Clones a repository into a new folder, which the caller then adds as a project. */
+export function gitCloneRepositoryMutationOptions(input: { environmentId: EnvironmentId | null }) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.cloneRepository(input.environmentId),
+    mutationFn: (args: SourceControlCloneRepositoryInput) => {
+      if (!input.environmentId) {
+        throw new Error("Cloning is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).sourceControl.cloneRepository(args);
     },
   });
 }

@@ -22,6 +22,7 @@ import {
   gitBranchSearchInfiniteQueryOptions,
   gitApplyStashMutationOptions,
   gitCheckoutMutationOptions,
+  gitCloneRepositoryMutationOptions,
   gitCreateRefMutationOptions,
   gitRemoveWorktreeMutationOptions,
   runGitMutation,
@@ -258,6 +259,7 @@ describe("checkoutChangingGitMutationFilters", () => {
         createRef: () => unsettled,
         removeWorktree: () => unsettled,
       },
+      sourceControl: { cloneRepository: () => unsettled },
     } as never);
     const queryClient = new QueryClient();
     function start<TData, TVariables>(
@@ -292,6 +294,10 @@ describe("checkoutChangingGitMutationFilters", () => {
       cwd: "/repo/d",
       path: "/repo/d-worktree",
     });
+    start(gitCloneRepositoryMutationOptions({ environmentId: ENVIRONMENT_A }), {
+      remoteUrl: "https://github.com/example/new.git",
+      destinationPath: "/code/new",
+    });
 
     await vi.waitFor(() => expect(busy(ENVIRONMENT_A, "/repo")).toBe(1));
     expect(busy(ENVIRONMENT_A, "/repo/wt")).toBe(0);
@@ -303,6 +309,8 @@ describe("checkoutChangingGitMutationFilters", () => {
     // and not the repository that runs git for it.
     expect(busy(ENVIRONMENT_A, "/repo/d-worktree/")).toBe(1);
     expect(busy(ENVIRONMENT_A, "/repo/d")).toBe(0);
+    // A clone makes the folder it names.
+    expect(busy(ENVIRONMENT_A, "/code/new")).toBe(1);
 
     settle();
     await vi.waitFor(() => expect(busy(ENVIRONMENT_A, "/repo")).toBe(0));
