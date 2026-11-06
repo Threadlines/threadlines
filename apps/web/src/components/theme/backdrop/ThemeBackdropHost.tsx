@@ -20,7 +20,6 @@ import {
   type BackdropFailureReason,
   type BackdropHostMessage,
   type BackdropZone,
-  type GlassReadability,
   type ThemeBackdrop,
   type ThemeBase,
 } from "@threadlines/contracts";
@@ -28,7 +27,7 @@ import {
   BACKDROP_FRAME_SANDBOX,
   buildBackdropFrameDocument,
 } from "@threadlines/shared/themeBackdropFrame";
-import { glassTextColors } from "@threadlines/shared/themeContrast";
+import { GLASS_TEXT_RATIO, glassTextColors } from "@threadlines/shared/themeContrast";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 import * as Schema from "effect/Schema";
 import {
@@ -78,8 +77,11 @@ export interface ThemeBackdropHostProps {
   readonly base: ThemeBase;
   readonly tokens: ThemeTokens;
   readonly blur: number;
-  /** How readable text over the art must stay (relaxed: 3:1, for art-first looks). Default standard. */
-  readonly readability?: GlassReadability;
+  /**
+   * The contrast text over the art keeps, 3 to 4.5 (glass.ts glassTextRatio).
+   * Default 4.5. It changes live: the frame keeps running.
+   */
+  readonly textRatio?: number;
   readonly zones: ReadonlyArray<BackdropZone>;
   readonly conditions: BackdropConditions;
   readonly activity: BackdropActivity;
@@ -104,6 +106,11 @@ export const BACKDROP_STILL_TIMEOUT_MS = 5_000;
 
 const decodeFrameMessage = Schema.decodeUnknownOption(BackdropFrameMessage);
 
+/** Every text color drawn on glass, each needing `ratio` (default 4.5) over the art. */
+function textsFor(tokens: ThemeTokens, ratio = GLASS_TEXT_RATIO.standard) {
+  return glassTextColors(tokens).map((text) => ({ color: text.color, ratio }));
+}
+
 const LAYER_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
@@ -127,15 +134,8 @@ const shouldDraw = (conditions: BackdropConditions) =>
 
 export const ThemeBackdropHost = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function ThemeBackdropHost(props, ref) {
-    // A new theme, or new readability (the frame takes its text ratios at
-    // start), is a new session: fresh frame, fresh failure state.
-    return (
-      <BackdropSession
-        key={`${props.themeKey}:${props.readability ?? "standard"}`}
-        {...props}
-        ref={ref}
-      />
-    );
+    // A new theme is a new session: fresh frame, fresh failure state.
+    return <BackdropSession key={props.themeKey} {...props} ref={ref} />;
   },
 );
 
@@ -156,7 +156,7 @@ interface FrameApi {
  */
 const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function BackdropSession(props, ref) {
-    const { backdrop, conditions, stillOnly = false, tokens, readability } = props;
+    const { backdrop, conditions, stillOnly = false, tokens, textRatio } = props;
     const [attempt, setAttempt] = useState(0);
     const [failure, setFailure] = useState<Failure | null>(null);
     const [progress, setProgress] = useState<FrameProgress>(null);
@@ -176,7 +176,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
     useEffect(() => {
       if (!still) return;
       let cancelled = false;
-      measureStillTint(still, tokens, readability).then(
+      measureStillTint(still, tokens, textRatio).then(
         (tint) => {
           if (!cancelled) setMeasured({ still, tint });
         },
@@ -187,7 +187,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
       return () => {
         cancelled = true;
       };
-    }, [still, tokens, readability]);
+    }, [still, tokens, textRatio]);
     const minimumTint = still && measured?.still === still ? measured.tint : 1;
 
     const status: ThemeBackdropStatus = failure
@@ -312,7 +312,7 @@ function BackdropFrame(props: BackdropFrameProps) {
     if (state.started) return;
     state.started = true;
     const current = latest.current;
-    const texts = glassTextColors(current.tokens, current.readability);
+    const texts = textsFor(current.tokens, current.textRatio);
     post({
       type: "init",
       mode: current.backdrop.mode,
@@ -451,6 +451,17 @@ function BackdropFrame(props: BackdropFrameProps) {
     state.lastProgressAt = performance.now();
     state.lastHeartbeatAt = performance.now();
   }, [conditionsKey, post]);
+  // The Glass slider moving, or new theme colors: new text bounds, same frame.
+  const textsKey = JSON.stringify(textsFor(props.tokens, props.textRatio));
+  useEffect(() => {
+    if (!session.current.started) return;
+    const texts = JSON.parse(textsKey) as ReturnType<typeof textsFor>;
+    post({
+      type: "texts",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+    });
+  }, [textsKey, post]);
   useEffect(() => {
     const state = session.current;
     if (!state.started || pulse === state.pulse) return;

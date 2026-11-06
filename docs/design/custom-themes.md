@@ -51,7 +51,7 @@ colors is optional.
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Colors   | `base` (`light` or `dark`) plus about 12 seed colors (background, foreground, muted text, accent, accent text, border, success, warning, danger, info, code background, selection). Optional overrides for a listed subset of tokens, a code-syntax palette, a 16-color terminal palette. |
 | Fonts    | Optional UI and mono font, embedded as woff2 bytes (at most 2 fonts, 400 KB each). An agent names a Google Fonts or Bunny family; the server downloads it once when the theme is first saved. After that the file is self-contained and works offline.                                    |
-| Glass    | How much tint the frame, thread list, reading column and composer get (0 to 1), and the blur radius. Only used when there is a backdrop. These are floors the user's "Art in threads" setting moves; readability can raise them, never lower them.                                        |
+| Glass    | How much tint the frame, thread list, reading column and composer get (0 to 1), and the blur radius. Only used when there is a backdrop. These are floors the user's Glass slider moves; readability can raise them, never lower them.                                                    |
 | Backdrop | Optional live art: a script for the draw contract below, a frame rate (12 to 30, default 24), and a still image the runtime captures.                                                                                                                                                     |
 
 Also stored: `name`, `prompt` (what made it, for "Copy prompt"), `createdBy`
@@ -89,11 +89,15 @@ theme this device already kept skips the trial.
 **Switching.** Four ways in:
 
 - `/theme` in the composer opens a strip of thumbnails above the message box
-  (built-ins, starters, yours, "New theme…"). Arrow keys preview (a trial),
-  Enter keeps, Esc goes back.
+  (built-ins, starters, yours, "New theme…"). Arrow keys or a click preview
+  (a trial); Keep (shown while previewing), Enter or a second click keeps;
+  the ✕ or Esc goes back. While a theme with art shows, the Glass slider sits
+  beside the strip's title. The keys work without labels; the buttons'
+  tooltips name them.
 - Command palette: "Change theme…" submenu, and "Use default theme".
-- Settings › General › Appearance: the gallery, "Art in threads" (None, Some,
-  Full), "Motion" (Live, Still), "Import theme file…".
+- Settings › General › Appearance: the gallery, "Glass" (a slider, Solid to
+  Clear, the theme's own in the middle), "Motion" (Live, Still), "Import
+  theme file…".
 - An agent asked to "switch to Dunes" uses `settings_change` on
   `general.theme`, whose choices become dynamic (System, Light, Dark and the
   library's names, checked like `model`). Accepting the card starts the same
@@ -119,16 +123,23 @@ same way: a patch behind its heading, line and buttons, and one behind the
 links under them.
 Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
-thread list, title row and rail. "Art in threads" moves the column's tint
-floor: None (opaque column), Some (default), Full (light tint). Readability
-can always raise a tint. Text over the art keeps 4.5:1, or 3:1 when the
-theme's `glass.readability` is `relaxed` (art-first themes, where the look
-matters more than long reading, Will's call for themes like Honu Lagoon) or
-the user picks Full; text on solid surfaces keeps its checks either way. Settings and every other page (Usage, Scheduled,
+thread list, title row and rail. The Glass slider (`themeGlass`, 0 to 100,
+a device setting) moves every surface's tint floor at once: frame, thread
+list, column, composer and pages. 0 is Solid (every floor opaque), 50 the
+theme's own glass, 100 Clear (no floor, only what readability needs),
+linear between. It replaced "Art in threads" (None, Some, Full, the reading
+column only), whose choices carry over as 0, 50 and 75. Readability can
+always raise a tint. Text over the art keeps 4.5:1 up to the theme's own,
+easing to 3:1 by 75; a theme whose `glass.readability` is `relaxed`
+(art-first themes, where the look matters more than long reading, Will's
+call for themes like Honu Lagoon) keeps 3:1 throughout. Text on solid
+surfaces keeps its checks either way. Dragging moves the glass live: the
+zones get new floors, and the frame takes new text ratios with a `texts`
+message instead of starting over; the setting is saved when the drag ends. Settings and every other page (Usage, Scheduled,
 Pull requests, General chats, Fleet) work like a thread: each marks its
 scrolling area and column (`glassPage.ts`), the column is frosted and tinted
-the full height of the page at the theme's own column floor ("Art in threads"
-is about threads), and the art shows beside it. A page that marks nothing is
+the full height of the page at the column's floor, and the art shows
+beside it. A page that marks nothing is
 frosted whole, so art never shows raw behind its text. The composer and the panels it opens above itself (the theme picker, the
 new-theme hint) are glass too, each over a patch rounded like its outline.
 

@@ -11,7 +11,7 @@ import { resetTestPage } from "../lib/testPage.browser-harness";
 import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 
 import { measureBackdropZones } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
+import { cssGlassTints, glassFloors, glassTextRatio, glassTintCss } from "./glass";
 import { applyGlassTints } from "./themeApply";
 import {
   THEME_PAINT_STORAGE_KEY,
@@ -117,11 +117,26 @@ describe("theme store, applied", () => {
     endThemeTrial(dark.id);
   });
 
-  it("relaxes text over the art for an art-first theme, or when the user picks Full art", () => {
-    const glass = { frame: 0.3, list: 0.35, column: 0.4, composer: 0.55, blur: 18 };
-    expect(glassReadability(glass, "some")).toBe("standard");
-    expect(glassReadability(glass, "full")).toBe("relaxed");
-    expect(glassReadability({ ...glass, readability: "relaxed" }, "some")).toBe("relaxed");
+  it("moves every surface's glass with the Glass slider: solid, the theme's own, then clear", () => {
+    const glass = { frame: 0.3, list: 0.4, column: 0.6, composer: 0.5, blur: 18 };
+    expect(glassFloors(glass, 0)).toEqual({ frame: 1, list: 1, column: 1, composer: 1, page: 1 });
+    // The theme's own in the middle; a page's column follows the thread's.
+    expect(glassFloors(glass, 50)).toEqual({
+      frame: 0.3,
+      list: 0.4,
+      column: 0.6,
+      // The message box is never clearer than the column it sits in.
+      composer: 0.6,
+      page: 0.6,
+    });
+    expect(glassFloors(glass, 75)).toMatchObject({ frame: 0.15, column: 0.3, page: 0.3 });
+    expect(glassFloors(glass, 100)).toEqual({ frame: 0, list: 0, column: 0, composer: 0, page: 0 });
+    // Text over the art keeps 4.5:1 up to the theme's own, easing to 3:1 by three quarters.
+    expect([0, 50, 62.5, 75, 100].map((level) => glassTextRatio(glass, level))).toEqual([
+      4.5, 4.5, 3.75, 3, 3,
+    ]);
+    // A theme that puts its art first keeps 3:1 throughout.
+    expect(glassTextRatio({ ...glass, readability: "relaxed" }, 0)).toBe(3);
   });
 
   it("keeps a group's pinned header the group's own glass until it pins, then solid over what scrolls under", async () => {
@@ -206,7 +221,7 @@ describe("theme store, applied", () => {
       expect(getComputedStyle(screen.getByTestId("fade").element()).display).toBe("none");
 
       // The art runs: its frame tints the zones, so the surfaces turn clear.
-      const floors = glassFloors(glass, "some");
+      const floors = glassFloors(glass, 50);
       applyGlassTints(
         glassTintCss(
           cssGlassTints(
@@ -341,7 +356,7 @@ describe("backdrop zones", () => {
         document,
         { width: window.innerWidth, height: window.innerHeight },
         resolveThemeTokens(darkTheme("#e7ecff")),
-        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, "some"),
+        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, 50),
       );
       expect(artShown).toBe(true);
       const contains = (id: string, text: string, shift = 0) => {
@@ -395,9 +410,10 @@ describe("backdrop zones", () => {
     );
     try {
       const tokens = resolveThemeTokens(darkTheme("#e7ecff"));
+      // Glass at Solid: a page follows the slider like a thread does.
       const floors = glassFloors(
         { frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 },
-        "none",
+        0,
       );
       const { zones, artShown } = measureBackdropZones(
         document,
@@ -412,14 +428,13 @@ describe("backdrop zones", () => {
         core: { x: 409, y: 78, w: 480, h: 560 },
         // ...frosted a margin wider on each side.
         rect: { x: 361, y: 78, w: 576, h: 560 },
-        // "Art in threads" is about threads: a page keeps the theme's own floor.
-        tint: 0.5,
+        tint: 1,
         tintColor: "#0a1029",
       });
       expect(zones.find((zone) => zone.id === "page-header")).toMatchObject({
         edge: "hard",
         rect: { x: 297, y: 37, w: 704, h: 42 },
-        tint: 0.5,
+        tint: 1,
       });
     } finally {
       await screen.unmount();
@@ -446,7 +461,7 @@ describe("backdrop zones", () => {
         document,
         { width: window.innerWidth, height: window.innerHeight },
         resolveThemeTokens(darkTheme("#e7ecff")),
-        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, "some"),
+        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, 50),
       );
       expect(artShown).toBe(true);
       expect(zones.find((zone) => zone.id === "page")).toMatchObject({
@@ -495,7 +510,7 @@ describe("backdrop zones", () => {
       const tokens = resolveThemeTokens(darkTheme("#e7ecff"));
       const floors = glassFloors(
         { frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 },
-        "some",
+        50,
       );
       const { zones, artShown } = measureBackdropZones(
         document,

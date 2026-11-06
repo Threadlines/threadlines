@@ -17,7 +17,7 @@ import {
   RoomAgentRole,
 } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
-import { ThemeArtInThreads, ThemeMotion } from "./themes.ts";
+import { ThemeArtInThreads, ThemeGlassLevel, ThemeMotion } from "./themes.ts";
 import { ClaudeWorkflowSize } from "./workflow.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -289,9 +289,14 @@ export const ClientSettingsSchema = Schema.Struct({
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
-  // How much of a theme's live art shows inside threads: the reading
-  // column's tint floor (docs/design/custom-themes.md). Only themes with a
-  // backdrop use it. Kept on this device, like the theme choice itself.
+  // How much of a theme's art shows through the glass on every page, 0 to
+  // 100, 50 the theme's own (docs/design/custom-themes.md). Unset until the
+  // user moves the Glass slider: read it through themeGlassLevel
+  // (@threadlines/shared/themeGlassLevel). Only themes with art use it.
+  // Kept on this device, like the theme choice itself.
+  themeGlass: Schema.optionalKey(ThemeGlassLevel),
+  // Before the Glass slider: how much art showed inside threads. Only read
+  // to carry an old choice over (themeGlassLevel); nothing writes it.
   themeArtInThreads: ThemeArtInThreads.pipe(Schema.withDecodingDefault(Effect.succeed("some"))),
   // Live: a theme's art moves (within its pause rules). Still: one frame.
   themeMotion: ThemeMotion.pipe(Schema.withDecodingDefault(Effect.succeed("live"))),
@@ -1339,6 +1344,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   sourceControlPanelDefaultOpen: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  themeGlass: Schema.optionalKey(ThemeGlassLevel),
+  // Kept so saving other settings doesn't drop an old choice before it's read.
   themeArtInThreads: Schema.optionalKey(ThemeArtInThreads),
   themeMotion: Schema.optionalKey(ThemeMotion),
 });

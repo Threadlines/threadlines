@@ -14,6 +14,7 @@ import {
 } from "./color.ts";
 import { glassTextColors, measureThemeContrast } from "./contrast.ts";
 import { cssFontFamilyList } from "./fontFamilies.ts";
+import { themeGlassLevel } from "./glassLevel.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
 import { BUILTIN_THEME_TOKENS } from "./builtinTokens.ts";
@@ -237,6 +238,18 @@ describe("text over the art", () => {
     expect(new Set(glassTextColors(tokens, "relaxed").map((text) => text.ratio))).toEqual(
       new Set([3]),
     );
+  });
+});
+
+describe("the Glass level", () => {
+  it("is the user's own, else their old Art in threads choice, else the theme's own", () => {
+    expect(themeGlassLevel({ themeGlass: 80, themeArtInThreads: "none" })).toBe(80);
+    expect(
+      (["none", "some", "full"] as const).map((choice) =>
+        themeGlassLevel({ themeArtInThreads: choice }),
+      ),
+    ).toEqual([0, 50, 75]);
+    expect(themeGlassLevel({})).toBe(50);
   });
 });
 
