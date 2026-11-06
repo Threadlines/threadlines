@@ -27,6 +27,13 @@ export const STARTER_SUMMARIES: ReadonlyArray<StarterSummary> = [
     colors: { background: "#0a1029", foreground: "#e7ecff", accent: "#2fd6b0" },
   },
   {
+    id: "lantern-lake",
+    name: "Lantern Lake",
+    base: "dark",
+    hasArt: true,
+    colors: { background: "#1c2830", foreground: "#eaeee2", accent: "#f0b66c" },
+  },
+  {
     id: "meadow",
     name: "Meadow",
     base: "light",

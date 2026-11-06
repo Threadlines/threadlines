@@ -1162,3 +1162,314 @@ threadlines.backdrop({
   },
 });
 `;
+
+/** A pixel lake at dusk: pines, a cabin with its lamp lit, a lantern on a dock, fireflies, a shooting star after a turn. */
+export const LANTERN_LAKE_ART = String.raw`// Lantern Lake: a pixel lake at dusk. Pines frame still water under a rose
+// sky; a cabin's lamp is lit and smoke curls from its chimney, a lantern burns
+// at the end of a dock, fireflies drift over the banks and the water
+// shimmers. Agents at work bring out more fireflies, a brighter lamp and
+// quicker smoke; a finished turn sends a shooting star. Motion adds up
+// speed x dt, so nothing jumps when the state changes.
+let W = 0, H = 0, base;
+let phase = 0, busy = 0, blow = 0, lastSince = 1e9, smokeClock = 0;
+let clouds = [], twinkles = [], flies = [], puffs = [], glints = [], meteor = null;
+let chimney = null, lamp = null, lantern = null;
+const CLOUD = [[190, 168, 204], [146, 124, 170], [222, 156, 160]], CLOUD_ALPHA = [0.6, 0.55, 0.62];
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const SKY = [[0, "#262c4a"], [0.38, "#3d3a62"], [0.64, "#6b5479"], [0.84, "#ad7787"], [1, "#e7a688"]];
+let seed = 7;
+function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+function hex(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+const STOPS = SKY.map(([at, c]) => [at, hex(c)]);
+function pack(r, g, b) { return 0xff000000 | (Math.max(0, Math.min(255, b | 0)) << 16) | (Math.max(0, Math.min(255, g | 0)) << 8) | Math.max(0, Math.min(255, r | 0)); }
+function ramp(stops, t) {
+  let k = 0;
+  while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+  const [a0, a] = stops[k], [b0, b] = stops[k + 1];
+  const f = Math.max(0, Math.min(1, (t - a0) / (b0 - a0)));
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+// Banded like an old palette: t snaps to steps, dithered where they meet.
+function band(t, x, y, steps) { return Math.min(steps, Math.floor(t * steps + BAYER[(y & 3) * 4 + (x & 3)] / 16)) / steps; }
+function set(x, y, c) { x |= 0; y |= 0; if (x >= 0 && y >= 0 && x < W && y < H) base[y * W + x] = pack(c[0], c[1], c[2]); }
+function blend(x, y, c, a) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H || a <= 0) return;
+  const i = y * W + x, v = base[i], r = v & 255, g = (v >> 8) & 255, b = (v >> 16) & 255;
+  base[i] = pack(r + (c[0] - r) * a, g + (c[1] - g) * a, b + (c[2] - b) * a);
+}
+// Into the frame being drawn, not the scene.
+function glow(data, x, y, c, a) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H || a <= 0.01) return;
+  const o = (y * W + x) * 4;
+  data[o] += (c[0] - data[o]) * a; data[o + 1] += (c[1] - data[o + 1]) * a; data[o + 2] += (c[2] - data[o + 2]) * a;
+}
+// A stepped pine: overlapping tiers, the side facing the sunset caught in its light.
+function pine(x, foot, height, col, rim, mirror) {
+  x |= 0;
+  const tip = foot - height, tiers = height > 60 ? 6 : height > 22 ? 4 : 3, side = x < W * 0.6 ? 1 : -1;
+  for (let y = Math.round(foot - height * 0.25); y < foot; y++) { set(x, y, col); if (height > 30) set(x - 1, y, col); }
+  const stride = (height * 0.74) / tiers, tall = Math.round(stride * 1.55) + 1;
+  for (let t = 0; t < tiers; t++) {
+    const top = Math.round(tip + t * stride);
+    const wide = height * (0.06 + (0.19 * (t + 1)) / tiers);
+    for (let dy = 0; dy < tall; dy++) {
+      // Fuller toward the bottom of each tier, so the steps read.
+      const k = dy / tall, spread = Math.floor(wide * (k * 0.7 + k * k * 0.3)), y = top + dy;
+      for (let dx = -spread; dx <= spread; dx++) {
+        const edge = dx * side >= spread - (spread > 6 ? 1 : 0);
+        const lit = rim && dy > 1 && ((edge && dy < tall - 1) || (dy === tall - 1 && dx * side > 0 && spread > 3));
+        set(x + dx, y, lit ? rim : col);
+        if (mirror && y < mirror.shore) {
+          // Shorter in the water and broken by ripples.
+          const my = Math.round(mirror.shore + (mirror.shore - y) * 0.75);
+          if (my < mirror.near && (my & 3) !== 3) blend(x + dx + ((my >> 2) & 1), my, mirror.color, 0.32);
+        }
+      }
+    }
+  }
+}
+
+threadlines.backdrop({
+  mode: "pixels",
+  scale: 4,
+  setup(info) {
+    W = info.cols; H = info.rows;
+    base = new Uint32Array(W * H);
+    seed = 7;
+    const horizon = Math.round(H * 0.52), shore = Math.round(H * 0.62), near = Math.round(H * 0.87);
+    const sunX = W * 0.6;
+    // The sky, warmer toward the sunset low on the right of center.
+    for (let y = 0; y < shore; y++) {
+      for (let x = 0; x < W; x++) {
+        const d = Math.hypot((x - sunX) / (W * 0.5), (y - horizon) / (H * 0.42));
+        const warm = Math.max(0, 1 - d);
+        const t = Math.min(1, (y / horizon) * 0.92 + warm * warm * 0.3);
+        const c = ramp(STOPS, band(t, x, y, 18));
+        base[y * W + x] = pack(c[0], c[1], c[2]);
+      }
+    }
+    // Stars in the upper sky, fainter toward the middle; a few will twinkle.
+    for (let n = 0; n < 70; n++) {
+      const x = rnd() * W, y = rnd() * H * 0.36, edge = Math.min(1, Math.abs(x / W - 0.5) / 0.25);
+      const a = (0.35 + rnd() * 0.5) * (0.4 + 0.6 * edge) * (1 - y / (H * 0.45));
+      if (n % 5 === 0) twinkles.push({ x: x | 0, y: y | 0, a, rate: 0.6 + rnd() * 1.2, off: rnd() * 6.28 });
+      else blend(x, y, [214, 216, 236], a);
+    }
+    // A crescent moon with a soft dithered halo.
+    const mx = Math.round(W * 0.8), my = Math.round(H * 0.12), mr = Math.max(5, Math.round(H * 0.032));
+    for (let dy = -mr * 3; dy <= mr * 3; dy++) for (let dx = -mr * 3; dx <= mr * 3; dx++) {
+      const d = Math.hypot(dx, dy);
+      if (d <= mr) {
+        const cut = Math.hypot(dx + mr * 0.55, dy + mr * 0.3) < mr * 0.82;
+        if (!cut) set(mx + dx, my + dy, d > mr - 1.2 ? [226, 205, 168] : [244, 228, 192]);
+      } else {
+        const k = Math.max(0, 1 - (d - mr) / (mr * 1.6));
+        if (BAYER[((my + dy) & 3) * 4 + ((mx + dx) & 3)] / 16 < k * k * 0.8) blend(mx + dx, my + dy, [132, 122, 160], 0.28);
+      }
+    }
+    // Far mountains, then rolling hills, hazier the farther they are.
+    for (let x = 0; x < W; x++) {
+      const f = x / W;
+      const peak = Math.abs(Math.sin(f * 9.1 + 0.6)) * 0.6 + Math.abs(Math.sin(f * 23.7 + 1.9)) * 0.28 + Math.sin(f * 61 + 0.4) * 0.05;
+      const top = Math.round(horizon - H * (0.02 + 0.075 * peak));
+      for (let y = top; y < shore; y++) {
+        const t = (y - top) / (shore - top);
+        set(x, y, y === top ? [168, 128, 148] : [122 - 14 * t, 96 - 6 * t, 128 - 4 * t]);
+      }
+      const hill = Math.round(horizon + H * 0.035 - H * 0.03 * (0.5 + 0.5 * Math.sin(f * 5.3 + 2.2)) - H * 0.012 * Math.sin(f * 17 + 0.8));
+      for (let y = hill; y < shore; y++) set(x, y, y === hill ? [104, 98, 132] : [76, 77, 106]);
+    }
+    // The lake: the sky turned over and darkened, with the sunset's path across it.
+    const lakeLow = [30, 44, 60];
+    for (let y = shore; y < H; y++) {
+      const lt = (y - shore) / (near - shore);
+      for (let x = 0; x < W; x++) {
+        const path = Math.max(0, 1 - Math.abs(x - sunX) / (W * (0.05 + 0.08 * lt)));
+        const t = Math.max(0, 0.98 - lt * 0.95 + path * 0.25 * (1 - lt * 0.6));
+        const c = ramp(STOPS, band(t, x, y, 18));
+        const k = 0.3 + 0.45 * lt;
+        base[y * W + x] = pack(c[0] + (lakeLow[0] - c[0]) * k, c[1] + (lakeLow[1] - c[1]) * k, c[2] + (lakeLow[2] - c[2]) * k);
+      }
+    }
+    // The far shore's tree line, mirrored in the water.
+    const mirror = { shore, near, color: [36, 52, 64] };
+    for (let x = -2; x < W + 2; x += 2 + Math.floor(rnd() * 3)) {
+      const h = Math.round(H * (0.02 + rnd() * 0.035));
+      pine(x, shore + 1, h, [46, 66, 78], null, mirror);
+    }
+    for (let x = 0; x < W; x++) set(x, shore, [40, 58, 70]);
+    // Banks slope in from both sides; the middle stays open water.
+    const bankTop = (x) => {
+      const fromSide = Math.min(x, W - 1 - x) / (W * 0.3);
+      return fromSide >= 1 ? H : Math.round(shore + H * 0.03 + fromSide * fromSide * (near - shore));
+    };
+    for (let x = 0; x < W; x++) {
+      const top = bankTop(x);
+      for (let y = top; y < H; y++) set(x, y, y <= top + 1 ? [62, 92, 74] : [27, 50, 52]);
+    }
+    // Pines on the banks.
+    for (let x = 2; x < W * 0.24; x += 5 + Math.floor(rnd() * 6)) pine(x, bankTop(x) + 3, H * (0.1 + rnd() * 0.16), [33, 61, 62], [52, 86, 76]);
+    for (let x = W - 2; x > W * 0.8; x -= 5 + Math.floor(rnd() * 6)) pine(x, bankTop(x) + 3, H * (0.1 + rnd() * 0.16), [33, 61, 62], [52, 86, 76]);
+    // A cabin on the right bank with its lamp lit.
+    const cx = Math.round(W * 0.77), cf = bankTop(cx) + 2, cw = Math.max(14, Math.round(W * 0.05)), ch = Math.round(cw * 0.55);
+    for (let y = cf - ch; y < cf; y++) for (let x = cx - (cw >> 1); x < cx + (cw >> 1); x++) set(x, y, [40, 46, 54]);
+    for (let r = 0; r <= (cw >> 1) + 2; r++) for (let x = cx - r; x <= cx + r; x++) set(x, cf - ch - ((cw >> 1) + 2 - r) * 0.6, r > (cw >> 1) ? [66, 62, 74] : [52, 50, 62]);
+    const chx = cx + Math.round(cw * 0.22), chy = Math.round(cf - ch - cw * 0.25);
+    for (let y = chy - 4; y < chy + 3; y++) { set(chx, y, [48, 44, 52]); set(chx + 1, y, [48, 44, 52]); }
+    chimney = { x: chx, y: chy - 5 };
+    lamp = { x: cx - Math.round(cw * 0.25), y: cf - Math.round(ch * 0.62), w: 3, h: 3 };
+    for (let y = cf - 5; y < cf; y++) { set(cx + 2, y, [30, 34, 40]); set(cx + 3, y, [30, 34, 40]); }
+    // A dock on the left, a lantern on its last post.
+    const dy = Math.round(H * 0.8), d0 = Math.round(W * 0.2), d1 = Math.round(W * 0.32);
+    for (let x = d0; x <= d1; x++) { set(x, dy, [96, 76, 62]); set(x, dy + 1, [64, 50, 44]); }
+    for (const px of [d0 + 4, Math.round((d0 + d1) / 2), d1]) for (let y = dy; y < dy + 6; y++) set(px, y, [52, 42, 38]);
+    for (let y = dy - 7; y < dy; y++) set(d1, y, [70, 56, 48]);
+    lantern = { x: d1, y: dy - 9 };
+    // Big pines frame the edges, close and dark.
+    for (const [f, h] of [[0.0, 0.94], [0.08, 0.7], [0.15, 0.44], [0.87, 0.42], [0.93, 0.68], [1.01, 0.95]]) {
+      pine(W * f, H + 4, H * h, [20, 42, 46], [38, 66, 62]);
+    }
+    // The near bank along the bottom, with reeds and cattails.
+    for (let x = 0; x < W; x++) {
+      const top = Math.round(H * 0.9 + Math.sin(x * 0.07) * 2 + Math.sin(x * 0.19 + 1) * 1.2);
+      for (let y = top; y < H; y++) set(x, y, y === top ? [52, 80, 64] : [17, 36, 40]);
+      if (x % 3 === 0 && rnd() < 0.55) {
+        const tall = 2 + Math.floor(rnd() * 5);
+        for (let k = 1; k <= tall; k++) set(x + (k > 3 && rnd() < 0.3 ? 1 : 0), top - k, [44, 74, 58]);
+        if (rnd() < 0.18) { set(x, top - tall - 1, [112, 78, 56]); set(x, top - tall - 2, [112, 78, 56]); }
+      }
+    }
+    // Clouds: long thin wisps lit rose from below.
+    clouds = [];
+    for (let n = 0; n < 6; n++) {
+      const len = Math.round(W * (0.09 + rnd() * 0.1)), tall = 7 + Math.floor(rnd() * 5), cells = [];
+      const puffs = [];
+      for (let k = 0, count = 3 + Math.floor(rnd() * 3); k < count; k++) {
+        const at = (k + 0.5) / count;
+        puffs.push({ x: len * (0.12 + 0.76 * at), r: tall * (0.45 + 0.55 * Math.sin(Math.PI * at)) * (0.75 + rnd() * 0.3), w: len / count });
+      }
+      const floor = tall - 1;
+      for (let r = 0; r < tall; r++) for (let c = 0; c < len; c++) {
+        let inside = false;
+        for (const pf of puffs) {
+          const dx = (c - pf.x) / (pf.w * 0.85), dy = (r - floor) / pf.r;
+          if (dx * dx + dy * dy <= 1) { inside = true; break; }
+        }
+        if (!inside) continue;
+        // 2: the lit underside, 1: the body, 0: the paler top edge.
+        const above = r > 0 && cells.some((q) => q.r === r - 1 && q.c === c);
+        cells.push({ r, c, kind: r >= floor - 1 ? 2 : above ? 1 : 0 });
+      }
+      // Where each row starts and ends, so the cloud can glide between pixels.
+      for (const q of cells) {
+        q.left = !cells.some((o) => o.r === q.r && o.c === q.c - 1);
+        q.right = !cells.some((o) => o.r === q.r && o.c === q.c + 1);
+      }
+      clouds.push({ x: rnd() * (W + len), y: Math.round(H * (0.05 + n * 0.05 + rnd() * 0.02)), len, cells, speed: 1 + rnd() * 1.6 });
+    }
+    // Shimmer on the open water, and fireflies over the banks.
+    glints = [];
+    for (let n = 0; n < 90; n++) {
+      const y = shore + 2 + Math.floor(rnd() * (near - shore - 2)), x = rnd() * W;
+      if (y >= bankTop(x | 0) - 1) continue;
+      const path = Math.max(0, 1 - Math.abs(x - sunX) / (W * 0.12));
+      glints.push({ x, y, len: 2 + Math.floor(rnd() * 4), rate: 0.5 + rnd() * 0.9, off: rnd() * 6.28, warm: path });
+    }
+    flies = [];
+    for (let n = 0; n < 30; n++) {
+      const left = n % 2 === 0;
+      flies.push({ hx: left ? W * (0.03 + rnd() * 0.25) : W * (0.72 + rnd() * 0.25), hy: H * (0.6 + rnd() * 0.33), a: rnd() * 6.28, b: rnd() * 6.28, c: rnd() * 6.28, rate: 0.6 + rnd() * 0.6 });
+    }
+    puffs = [];
+  },
+  draw(pixels, info) {
+    const dt = Math.min(0.25, info.dt), state = info.state, data = pixels.data;
+    pixels.u32.set(base);
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    blow += (state.pulse - blow) * Math.min(1, dt * 3);
+    phase += dt * (1 + 0.35 * busy);
+    // Clouds drift right and wrap round.
+    for (const cl of clouds) {
+      cl.x += cl.speed * dt * (1 + 0.4 * busy);
+      if (cl.x > W + 4) cl.x -= W + cl.len + 8;
+      // Between pixels, a row's leading edge fades in as its trailing edge fades out.
+      const at = cl.x - cl.len, x0 = Math.floor(at), f = at - x0;
+      for (const q of cl.cells) {
+        const a = CLOUD_ALPHA[q.kind];
+        glow(data, x0 + q.c, cl.y + q.r, CLOUD[q.kind], q.left ? a * (1 - f) : a);
+        if (q.right) glow(data, x0 + q.c + 1, cl.y + q.r, CLOUD[q.kind], a * f);
+      }
+    }
+    for (const s of twinkles) glow(data, s.x, s.y, [226, 228, 246], s.a * (0.45 + 0.55 * Math.sin(phase * s.rate + s.off)));
+    // The water catches the light in short glints.
+    for (const g of glints) {
+      const s = Math.sin(phase * g.rate + g.off);
+      if (s <= 0.2) continue;
+      const a = (s - 0.2) * (0.22 + 0.3 * g.warm), color = g.warm > 0.2 ? [246, 190, 150] : [170, 168, 206];
+      const x = g.x + Math.sin(phase * 0.3 + g.off) * 2;
+      for (let k = 0; k < g.len; k++) glow(data, x + k, g.y, color, a);
+    }
+    // The cabin's lamp and its reflection, a little brighter while agents work.
+    const flicker = 0.85 + 0.08 * Math.sin(phase * 7.3) + 0.05 * Math.sin(phase * 12.1 + 1);
+    const lit = Math.min(1, (0.72 + 0.28 * busy) * flicker + 0.2 * blow);
+    for (let y = 0; y < lamp.h; y++) for (let x = 0; x < lamp.w; x++) glow(data, lamp.x + x, lamp.y + y, [255, 214, 140], lit);
+    for (const [dx, dy] of [[-1, 0], [3, 0], [0, -1], [2, -1], [0, 3], [2, 3], [-1, 2], [3, 2]]) glow(data, lamp.x + dx, lamp.y + dy, [196, 150, 98], lit * 0.35);
+    // The dock lantern: a warm point, a halo, a broken line in the water below.
+    const ll = Math.min(1, 0.8 * flicker + 0.15 * busy + 0.2 * blow);
+    glow(data, lantern.x, lantern.y, [255, 226, 160], ll);
+    glow(data, lantern.x, lantern.y + 1, [255, 200, 120], ll * 0.9);
+    for (const [dx, dy, k] of [[-1, 0, 0.4], [1, 0, 0.4], [0, -1, 0.35], [-1, 1, 0.3], [1, 1, 0.3], [0, 2, 0.3], [-2, 0, 0.15], [2, 0, 0.15], [0, -2, 0.15]]) glow(data, lantern.x + dx, lantern.y + dy, [230, 170, 104], ll * k);
+    for (let k = 0; k < 9; k++) {
+      const wob = Math.round(Math.sin(phase * 1.7 + k * 1.3) * 1.2), y = lantern.y + 14 + k * 2;
+      glow(data, lantern.x + wob, y, [236, 178, 112], ll * 0.42 * (1 - k / 10));
+      if (k % 2 === 0) glow(data, lantern.x + wob + 1, y, [236, 178, 112], ll * 0.2 * (1 - k / 10));
+    }
+    // Chimney smoke, quicker while agents work.
+    smokeClock += dt * (1 + 0.8 * busy);
+    if (smokeClock > 0.7) { smokeClock -= 0.7; if (puffs.length < 14) puffs.push({ x: chimney.x, y: chimney.y, age: 0, sway: phase }); }
+    for (let n = puffs.length - 1; n >= 0; n--) {
+      const p = puffs[n];
+      p.age += dt;
+      p.y -= dt * (2.6 + 1.2 * busy);
+      p.x += dt * 1.4;
+      if (p.age > 7) { puffs.splice(n, 1); continue; }
+      const a = 0.32 * Math.min(1, p.age * 2) * (1 - p.age / 7), x = p.x + Math.sin(p.age * 0.9 + p.sway) * 1.5, size = p.age > 3 ? 2 : 1;
+      for (let dy = 0; dy < size; dy++) for (let dx = 0; dx < size + 1; dx++) glow(data, x + dx, p.y + dy, [168, 162, 182], a);
+    }
+    // Fireflies: more come out while agents work, all brighten after a turn.
+    const level = 10 + 14 * busy + 6 * blow;
+    for (let n = 0; n < flies.length; n++) {
+      const f = flies[n], fade = Math.min(1, level - n);
+      if (fade <= 0) continue;
+      const x = f.hx + Math.sin(phase * 0.21 * f.rate + f.a) * 7 + Math.sin(phase * 0.5 + f.b) * 2;
+      const y = f.hy + Math.sin(phase * 0.17 * f.rate + f.b) * 5;
+      const pulse = Math.max(0, Math.sin(phase * f.rate + f.c));
+      const g = fade * Math.min(1, pulse * pulse * pulse + 0.25 * blow);
+      if (g < 0.05) continue;
+      glow(data, x, y, [238, 246, 160], g);
+      glow(data, x - 1, y, [150, 182, 104], g * 0.35); glow(data, x + 1, y, [150, 182, 104], g * 0.35);
+      glow(data, x, y - 1, [150, 182, 104], g * 0.35); glow(data, x, y + 1, [150, 182, 104], g * 0.35);
+    }
+    // A finished turn sends a shooting star across the upper sky, near a side.
+    if (state.sincePulse < lastSince && state.sincePulse < 0.5) {
+      const left = Math.sin(phase * 13.7) > 0;
+      meteor = { x: W * (left ? 0.06 : 0.62), y: H * 0.05, vx: W * 0.32, vy: H * 0.1, age: 0 };
+    }
+    lastSince = state.sincePulse;
+    if (meteor) {
+      meteor.age += dt;
+      if (meteor.age > 0.9) meteor = null;
+      else {
+        const life = 1 - meteor.age / 0.9;
+        for (let k = 0; k < 14; k++) {
+          const t = meteor.age - k * 0.012;
+          if (t < 0) break;
+          glow(data, meteor.x + meteor.vx * t, meteor.y + meteor.vy * t, [250, 240, 226], life * (1 - k / 14) * 0.95);
+        }
+      }
+    }
+  },
+});
+`;

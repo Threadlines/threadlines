@@ -593,7 +593,9 @@ the budget, no network) and places for the new Appearance rows.
 
 ## Starter themes
 
-Five, all ours: **Aurora** (dark, ASCII night sky, live), **Meadow** (light,
+Six, all ours: **Aurora** (dark, ASCII night sky, live), **Lantern Lake**
+(dark but not too dark, a pixel lake at dusk with a lit cabin and fireflies,
+live), **Meadow** (light,
 grass, clouds over hills, seeds and butterflies, live), **Phosphor** (dark,
 green terminal colors, mono font, static scanlines, no live art),
 **Snowfield** (light, ASCII snow over pines, live), **Tokyo Rain** (dark, a
