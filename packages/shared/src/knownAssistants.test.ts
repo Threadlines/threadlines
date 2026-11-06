@@ -14,6 +14,10 @@ describe("known assistants", () => {
     expect(assistantOfSignInHost("claude.ai:443")).toBe("claude");
     // A site that only ends like a known one doesn't count.
     expect(assistantOfSignInHost("notcursor.com")).toBeNull();
+    // An app's return address is no site, whatever host it names.
+    expect(assistantOfSignInHost("com.evil.app://x.claude.ai/")).toBeNull();
+    expect(assistantOfSignInHost("com.evil.app://x.claude.ai")).toBeNull();
+    expect(assistantOfSignInHost("com.example.app:")).toBeNull();
     expect(assistantOfKeyLabel("Muse work")).toBe("muse");
     expect(assistantOfKeyLabel("my dots")).toBe("chatgpt");
     expect(assistantOfKeyLabel("Helper")).toBeNull();

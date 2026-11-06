@@ -389,7 +389,7 @@ describe("clients and the sign-in page", () => {
       env,
     );
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain("Sign-in returns to cursor://anysphere.cursor-mcp");
+    expect(await page.text()).toContain("Sign-in returns to cursor://anysphere.cursor-mcp/");
 
     // A reverse-domain scheme with no host and no name still signs in, named for its scheme.
     const bare = (await (
@@ -409,16 +409,19 @@ describe("clients and the sign-in page", () => {
 
     // An app scheme naming a known assistant's domain is never taken as that assistant.
     const spoof = (await (
-      await register(env, { redirect_uris: ["com.evil.app://claude.ai/cb"], client_name: "Claude" })
+      await register(env, {
+        redirect_uris: ["com.evil.app://x.claude.ai/cb"],
+        client_name: "Claude",
+      })
     ).json()) as { client_id: string };
     await route(
       new Request(
-        authorizeUrl({ client_id: spoof.client_id, redirect_uri: "com.evil.app://claude.ai/cb" }),
+        authorizeUrl({ client_id: spoof.client_id, redirect_uri: "com.evil.app://x.claude.ai/cb" }),
       ),
       env,
     );
     expect(created.at(-1)).toMatchObject({
-      identity: { kind: "registered", host: "com.evil.app://claude.ai", known: false },
+      identity: { kind: "registered", host: "com.evil.app://x.claude.ai/", known: false },
     });
 
     for (const redirect_uri of [
@@ -430,6 +433,7 @@ describe("clients and the sign-in page", () => {
       "microsoft-edge:http://evil.test/cb",
       "googlechrome://evil.test/cb",
       "web+evil.app://cb",
+      "x-apple.systempreferences:com.apple.preference.security",
       "someapp://cb",
     ]) {
       expect((await register(env, { redirect_uris: [redirect_uri] })).status).toBe(400);

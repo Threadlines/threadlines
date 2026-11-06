@@ -88,11 +88,16 @@ export function clientIdentity(
   };
 }
 
-/** Where a sign-in returns, as people read it: a web address's host, or an app's whole scheme and host (`cursor://anysphere.cursor-mcp`). */
+/**
+ * Where a sign-in returns, as people read it: a web address's host, or an
+ * app's whole scheme and host (`cursor://anysphere.cursor-mcp/`). An app's
+ * label ends in `/` or `:`, so nothing that matches a site by its ending
+ * (assistantOfSignInHost) can take it for one.
+ */
 export function returnAddressLabel(redirect: URL): string {
   if (redirect.protocol === "https:" || redirect.protocol === "http:") return redirect.host;
   const scheme = redirect.protocol.slice(0, -1).toLowerCase();
-  return redirect.host ? `${scheme}://${redirect.host}` : `${scheme}:`;
+  return redirect.host ? `${scheme}://${redirect.host}/` : `${scheme}:`;
 }
 
 /**
@@ -159,7 +164,10 @@ const NOT_APP_SCHEMES = new Set([
 function isAppScheme(protocol: string): boolean {
   const scheme = protocol.slice(0, -1).toLowerCase();
   if (!/^[a-z][a-z0-9+.-]*$/u.test(scheme)) return false;
-  if (scheme.startsWith("web+") || NOT_APP_SCHEMES.has(scheme)) return false;
+  // web+…: a website's own handler. x-apple…: macOS system launchers (x-apple.systempreferences).
+  if (scheme.startsWith("web+") || scheme.startsWith("x-apple") || NOT_APP_SCHEMES.has(scheme)) {
+    return false;
+  }
   return scheme.includes(".") || KNOWN_APP_SCHEMES.has(scheme);
 }
 
