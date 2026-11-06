@@ -1,7 +1,7 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, VcsRef, ThreadId } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronDownIcon } from "lucide-react";
 import {
@@ -17,7 +17,12 @@ import {
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { readEnvironmentApi } from "../environmentApi";
-import { gitBranchSearchInfiniteQueryOptions, gitQueryKeys } from "../lib/gitReactQuery";
+import {
+  gitBranchSearchInfiniteQueryOptions,
+  gitCheckoutMutationOptions,
+  gitCreateRefMutationOptions,
+  gitQueryKeys,
+} from "../lib/gitReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
 import { cn } from "../lib/utils";
 import { parsePullRequestReference } from "../pullRequestReference";
@@ -344,6 +349,14 @@ export function BranchToolbarBranchSelector({
     (_currentBranch: string | null, optimisticBranch: string | null) => optimisticBranch,
   );
   const [isBranchActionPending, startBranchActionTransition] = useTransition();
+  // Run as mutations so the Source tab and the chat header's pull see the
+  // checkout is busy until the switch or new branch lands.
+  const switchRefMutation = useMutation(
+    gitCheckoutMutationOptions({ environmentId, cwd: branchCwd, queryClient }),
+  );
+  const createRefMutation = useMutation(
+    gitCreateRefMutationOptions({ environmentId, cwd: branchCwd, queryClient }),
+  );
   const shouldVirtualizeBranchList = filteredBranchPickerItems.length > 40;
   const totalBranchCount = branchesSearchData?.pages[0]?.totalCount ?? 0;
   const branchStatusText = isBranchesSearchPending
@@ -380,8 +393,7 @@ export function BranchToolbarBranchSelector({
   };
 
   const runSwitchRef = (refName: VcsRef, checkoutCwd: string, nextWorktreePath: string | null) => {
-    const api = readEnvironmentApi(environmentId);
-    if (!api) return;
+    if (!readEnvironmentApi(environmentId)) return;
     const selectedBranchName = refName.isRemote
       ? deriveLocalBranchNameFromRemoteRef(refName.name)
       : refName.name;
@@ -390,7 +402,7 @@ export function BranchToolbarBranchSelector({
       const previousBranch = resolvedActiveBranch;
       setOptimisticBranch(selectedBranchName);
       try {
-        const checkoutResult = await api.vcs.switchRef({
+        const checkoutResult = await switchRefMutation.mutateAsync({
           cwd: checkoutCwd,
           refName: refName.name,
         });
@@ -413,18 +425,13 @@ export function BranchToolbarBranchSelector({
   };
 
   const runCreateRef = (name: string) => {
-    const api = readEnvironmentApi(environmentId);
-    if (!api || !branchCwd) return;
+    if (!readEnvironmentApi(environmentId) || !branchCwd) return;
 
     runBranchAction(async () => {
       const previousBranch = resolvedActiveBranch;
       setOptimisticBranch(name);
       try {
-        const createBranchResult = await api.vcs.createRef({
-          cwd: branchCwd,
-          refName: name,
-          switchRef: true,
-        });
+        const createBranchResult = await createRefMutation.mutateAsync(name);
         setOptimisticBranch(createBranchResult.refName);
         setThreadBranch(createBranchResult.refName, activeWorktreePath);
       } catch (error) {

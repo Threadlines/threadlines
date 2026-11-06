@@ -69,12 +69,14 @@ import * as Schema from "effect/Schema";
 
 import { openInPreferredEditor } from "~/editorPreferences";
 import { openFileInActiveViewer } from "~/fileViewerStore";
-import { readEnvironmentApi, useEnvironmentApiAvailable } from "~/environmentApi";
+import { useEnvironmentApiAvailable } from "~/environmentApi";
 import {
   gitBranchSearchInfiniteQueryOptions,
   gitApplyStashMutationOptions,
   gitCommitDetailsQueryOptions,
   gitCheckoutMutationOptions,
+  checkoutChangingGitMutationFilters,
+  gitCreateRefMutationOptions,
   gitCommitGraphQueryOptions,
   gitCreateTagMutationOptions,
   gitCreateStashMutationOptions,
@@ -84,7 +86,6 @@ import {
   gitGenerateCommitMessageMutationOptions,
   gitInitMutationOptions,
   gitMergeRefMutationOptions,
-  gitMutationKeys,
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
   gitStartProviderReviewMutationOptions,
@@ -1458,20 +1459,13 @@ function SourceControlBranchMenu({
       queryClient,
     }),
   );
-  const createBranchMutation = useMutation({
-    mutationFn: async (refName: string) => {
-      const api = readEnvironmentApi(target.environmentId);
-      if (!api) {
-        throw new Error("Git branch creation is unavailable.");
-      }
-      return api.vcs.createRef({ cwd: target.cwd, refName, switchRef: true });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: gitQueryKeys.refs(target.environmentId, target.cwd),
-      });
-    },
-  });
+  const createBranchMutation = useMutation(
+    gitCreateRefMutationOptions({
+      environmentId: target.environmentId,
+      cwd: target.cwd,
+      queryClient,
+    }),
+  );
 
   const refs = useMemo(
     () => branchSearch.data?.pages.flatMap((page) => page.refs) ?? [],
@@ -2365,31 +2359,13 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
-  const runningStackedActionCount = useIsMutating({
-    mutationKey: gitMutationKeys.runStackedAction(environmentId, cwd),
-  });
-  const runningPublishActionCount = useIsMutating({
-    mutationKey: gitMutationKeys.publishRepository(environmentId, cwd),
-  });
-  const runningPullActionCount = useIsMutating({
-    mutationKey: gitMutationKeys.pull(environmentId, cwd),
-  });
-  const runningCreateStashCount = useIsMutating({
-    mutationKey: gitMutationKeys.createStash(environmentId, cwd),
-  });
-  const runningApplyStashCount = useIsMutating({
-    mutationKey: gitMutationKeys.applyStash(environmentId, cwd),
-  });
-  const runningDropStashCount = useIsMutating({
-    mutationKey: gitMutationKeys.dropStash(environmentId, cwd),
-  });
+  // Any git action changing this checkout, wherever it started: here, the chat
+  // header's pull, or the composer's branch picker.
+  const runningCheckoutGitActionCount = useIsMutating(
+    useMemo(() => checkoutChangingGitMutationFilters(environmentId, cwd), [cwd, environmentId]),
+  );
   const isGitActionRunning =
-    runningStackedActionCount > 0 ||
-    runningPublishActionCount > 0 ||
-    runningPullActionCount > 0 ||
-    runningCreateStashCount > 0 ||
-    runningApplyStashCount > 0 ||
-    runningDropStashCount > 0 ||
+    runningCheckoutGitActionCount > 0 ||
     actionMutation.isPending ||
     initMutation.isPending ||
     createStashMutation.isPending ||
