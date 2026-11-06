@@ -132,6 +132,7 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { waitForProjectInStore } from "../lib/waitForProject";
+import { gitCloneRepositoryMutationOptions, runGitMutation } from "../lib/gitReactQuery";
 import { getLatestThreadForProject } from "../lib/threadSort";
 import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
 import {
@@ -2440,11 +2441,16 @@ export function OpenCommandPaletteDialog() {
     setIsRemoteProjectCloning(true);
     try {
       const provider = remoteProjectSourceProvider(addProjectCloneFlow.source);
-      const result = await api.sourceControl.cloneRepository({
-        remoteUrl: addProjectCloneFlow.remoteUrl,
-        destinationPath,
-        ...(provider ? { provider } : {}),
-      });
+      // As a mutation, so the new folder reads as busy until the clone lands.
+      const result = await runGitMutation(
+        queryClient,
+        gitCloneRepositoryMutationOptions({ environmentId: addProjectCloneFlow.environmentId }),
+        {
+          remoteUrl: addProjectCloneFlow.remoteUrl,
+          destinationPath,
+          ...(provider ? { provider } : {}),
+        },
+      );
       await handleAddProject(result.cwd);
     } catch (error) {
       toastManager.add(
