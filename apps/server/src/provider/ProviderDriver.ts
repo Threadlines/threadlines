@@ -118,6 +118,8 @@ export interface ProviderInstanceAuthFlows {
    */
   readonly run: (input: {
     readonly flow: ProviderAuthFlow;
+    /** For `switch-workspace`: the workspace to switch to. */
+    readonly workspaceId?: string;
     readonly report: (line: string) => Effect.Effect<void>;
     /**
      * Asks the user to open a web page the agent named. Nothing opens by

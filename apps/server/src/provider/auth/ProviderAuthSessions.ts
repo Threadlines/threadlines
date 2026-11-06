@@ -441,6 +441,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     flow: ProviderAuthFlow,
     instanceFlows: ProviderInstanceAuthFlows,
     requestId: string | undefined,
+    workspaceId: string | undefined,
   ) =>
     Effect.gen(function* () {
       const key = String(instanceId);
@@ -487,6 +488,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         instanceFlows
           .run({
             flow,
+            ...(workspaceId !== undefined ? { workspaceId } : {}),
             report: (line) =>
               current() ? emitOutput(instanceId, session, `${line}\r\n`) : Effect.void,
             requestPage: ({ url, message }) =>
@@ -635,12 +637,10 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         const instanceFlows = options.getInstanceAuthFlows
           ? yield* currentInstanceFlows(instanceId, instance, options.getInstanceAuthFlows)
           : undefined;
-        if (instanceFlows) {
-          if (!instanceFlows.flows.includes(input.flow)) {
-            return yield* Effect.fail(
-              new ProviderAuthError({ instanceId: String(instanceId), reason: "unsupportedFlow" }),
-            );
-          }
+        // An instance runs the flows it lists itself; any other goes to the
+        // agent's sign-in command below (Codex runs its workspace switch
+        // itself, and its sign-in as `codex login`).
+        if (instanceFlows && instanceFlows.flows.includes(input.flow)) {
           const terminalCommand = instanceFlows.terminalCommand;
           // A login command comes with its agent closed to everything else
           // until `finished` is called. From asking for the command to the
@@ -662,7 +662,13 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
                 : undefined;
               if (!instanceTerminal) {
                 return yield* restore(
-                  startInstanceFlow(instanceId, input.flow, instanceFlows, input.requestId),
+                  startInstanceFlow(
+                    instanceId,
+                    input.flow,
+                    instanceFlows,
+                    input.requestId,
+                    input.workspaceId,
+                  ),
                 );
               }
               return yield* startTerminal(instanceId, input, {

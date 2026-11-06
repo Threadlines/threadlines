@@ -309,6 +309,7 @@ export function providerConnectStatusLine(input: {
   /** What to do while it runs, for sign-ins that start in the terminal. */
   readonly runningHint?: string | undefined;
 }): string {
+  if (input.flow === "switch-workspace") return workspaceSwitchStatusLine(input.state);
   const isSignOut = input.flow === "logout";
   switch (input.state.status) {
     case "idle":
@@ -337,5 +338,27 @@ export function providerConnectStatusLine(input: {
       }
       return isSignOut ? "Sign-out failed" : "Sign-in failed";
     }
+  }
+}
+
+/**
+ * A workspace switch in words. Its own lines say where it is ("Stopping Codex
+ * chats on this computer…", "Switched to Acme."), so the finished line is the
+ * run's last one.
+ */
+function workspaceSwitchStatusLine(state: ProviderConnectFlowState): string {
+  switch (state.status) {
+    case "idle":
+      return "";
+    case "starting":
+      return "Switching workspace";
+    case "running":
+      return state.signInUrl
+        ? "Sign in to the workspace in your browser to finish."
+        : "Switching workspace";
+    case "succeeded":
+      return state.lastLine.trim() || "Switched workspace";
+    case "failed":
+      return state.detail?.trim() || "Couldn't switch workspace";
   }
 }

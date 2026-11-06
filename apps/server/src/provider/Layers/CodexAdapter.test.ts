@@ -65,6 +65,7 @@ import {
   describeCodexTerminalInput,
   makeCodexAdapter,
 } from "./CodexAdapter.ts";
+import { makeLaunchGate, withLaunchGateClosed } from "../managedRuntime/LaunchGate.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
@@ -1251,6 +1252,53 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         serviceTier: "priority",
       });
     }).pipe(Effect.provide(customLayer));
+  });
+
+  it.effect("a workspace switch stops running sessions and holds new ones off until done", () => {
+    const gate = makeLaunchGate();
+    const gatedRuntimeFactory = makeRuntimeFactory();
+    const gatedLayer = Layer.effect(
+      CodexAdapter,
+      makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: gatedRuntimeFactory.factory,
+        launchGate: gate,
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const start = (threadId: string) =>
+        adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId(threadId),
+          runtimeMode: "full-access",
+        });
+      yield* start("sess-before-switch");
+
+      const during = yield* withLaunchGateClosed(
+        gate,
+        {
+          whenAlreadyClosed: () => "already switching",
+          whenStillHeld: () => "still running",
+          stop: adapter.stopAll().pipe(Effect.ignore),
+        },
+        Effect.gen(function* () {
+          const running = yield* adapter.hasSession(asThreadId("sess-before-switch"));
+          const refused = yield* Effect.flip(start("sess-during-switch"));
+          return { running, refused };
+        }),
+      );
+      assert.equal(during.running, false);
+      assert.match(during.refused.message, /switching workspace/);
+      assert.equal(gatedRuntimeFactory.factory.mock.calls.length, 1);
+
+      yield* start("sess-after-switch");
+      assert.equal(yield* adapter.hasSession(asThreadId("sess-after-switch")), true);
+    }).pipe(Effect.provide(gatedLayer));
   });
 
   it.effect("has the working Codex session renew a side answer's refused sign-in", () => {

@@ -26,7 +26,13 @@ const ProviderAuthRowsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)
  * servers still decode each other, and a server refuses it as
  * `unsupportedFlow`.
  */
-export const ProviderAuthFlow = Schema.Literals(["login", "claude-setup-token", "logout"]);
+export const ProviderAuthFlow = Schema.Literals([
+  "login",
+  "claude-setup-token",
+  "logout",
+  /** Codex: move the sign-in to another of its ChatGPT workspaces (`workspaceId`). */
+  "switch-workspace",
+]);
 export type ProviderAuthFlow = typeof ProviderAuthFlow.Type;
 
 export const ProviderAuthStartInput = Schema.Struct({
@@ -45,6 +51,8 @@ export const ProviderAuthStartInput = Schema.Struct({
    * when this is false or missing, as it is from older clients.
    */
   questions: Schema.optional(Schema.Boolean),
+  /** For `switch-workspace`: the workspace to switch to (ServerProviderWorkspace.id). */
+  workspaceId: Schema.optional(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256))),
 });
 export type ProviderAuthStartInput = Schema.Codec.Encoded<typeof ProviderAuthStartInput>;
 

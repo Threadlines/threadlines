@@ -84,7 +84,7 @@ export const CLAUDE_OAUTH_TOKEN_PATTERN = /sk-ant-oat01-[A-Za-z0-9_-]+/;
  * by the instance). `claude-setup-token` is no longer offered: older clients
  * may still ask for it, and no command answers it.
  */
-export type ProviderAuthFlow = "login" | "claude-setup-token" | "logout";
+export type ProviderAuthFlow = "login" | "claude-setup-token" | "logout" | "switch-workspace";
 
 export interface ProviderAuthCommandInput {
   readonly driver: string;
@@ -253,6 +253,8 @@ export function buildOpenCodeLoginCommand(input: {
 export function buildProviderAuthCommand(
   input: ProviderAuthCommandInput,
 ): ProviderAuthCommand | null {
+  // Switching workspace runs inside the agent's own process, never as a command.
+  if (input.flow === "switch-workspace") return null;
   const binaryPath = input.binaryPath.trim();
   const homePath = input.homePath.trim();
   const shadowHomePath = input.shadowHomePath?.trim() ?? "";

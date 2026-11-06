@@ -345,6 +345,44 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
       }).pipe(Effect.provide(settingsLayer)),
   );
 
+  it.effect("runs the flows an instance lists itself and its sign-in command for the rest", () =>
+    Effect.gen(function* () {
+      // Codex: its workspace switch runs in the server, its sign-in as `codex login`.
+      const switchedTo: Array<string | undefined> = [];
+      const flows: ProviderInstanceAuthFlows = {
+        flows: ["switch-workspace"],
+        describe: () => "Switch ChatGPT workspace",
+        run: ({ workspaceId, report }) =>
+          Effect.sync(() => void switchedTo.push(workspaceId)).pipe(
+            Effect.andThen(report("Switched to Acme.")),
+          ),
+        completeRedirect: () => Effect.void,
+      };
+      const harness = yield* createSessions(() => Effect.succeed(flows));
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+
+      yield* harness.sessions.start({
+        instanceId: CODEX_INSTANCE,
+        flow: "switch-workspace",
+        workspaceId: "acct-acme",
+      });
+      yield* waitFor(
+        harness.getEvents.pipe(Effect.map((events) => statusesOf(events).includes("succeeded"))),
+      );
+      expect(switchedTo).toEqual(["acct-acme"]);
+      expect(harness.ptyAdapter.spawnInputs).toEqual([]);
+      expect((yield* harness.getEvents).find((event) => event.type === "command")).toMatchObject({
+        flow: "switch-workspace",
+        surface: "browser",
+      });
+      expect(outputOf(yield* harness.getEvents)).toBe("Switched to Acme.");
+
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      expect(harness.ptyAdapter.spawnInputs).toHaveLength(1);
+      expect(harness.ptyAdapter.spawnInputs[0]).toMatchObject({ shell: "codex", args: ["login"] });
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
   it.effect("refuses the retired setup-token flow before starting anything, even for Claude", () =>
     Effect.gen(function* () {
       const harness = yield* createSessions();
