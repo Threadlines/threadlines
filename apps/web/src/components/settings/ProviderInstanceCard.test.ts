@@ -11,7 +11,8 @@ import {
   deriveProviderModelsForDisplay,
   hasClaudeCredentialOverrideEnvironment,
   preferClaudeNormalSignInEnvironment,
-  preferClaudeLongLivedOAuthTokenEnvironment,
+  hasSavedClaudeToken,
+  withoutSavedClaudeToken,
   providerAuthBadge,
 } from "./ProviderInstanceCard";
 import { getProviderSummary } from "./providerStatus";
@@ -69,7 +70,7 @@ describe("Claude credential preference helpers", () => {
     ]);
   });
 
-  it("detects Claude credential overrides that take precedence over the long-lived token", () => {
+  it("detects Claude credential overrides that take precedence over Claude's sign-in", () => {
     expect(
       hasClaudeCredentialOverrideEnvironment([
         { name: "ANTHROPIC_API_KEY", value: "", sensitive: false },
@@ -86,22 +87,22 @@ describe("Claude credential preference helpers", () => {
       ]),
     ).toBe(true);
   });
+});
 
-  it("prefers the long-lived token by clearing Anthropic credential overrides", () => {
-    expect(
-      preferClaudeLongLivedOAuthTokenEnvironment([
-        { name: "ANTHROPIC_AUTH_TOKEN", value: "old-token", sensitive: true },
-        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "oauth-token", sensitive: true },
-        { name: "OTHER_VAR", value: "kept", sensitive: false },
-        { name: "ANTHROPIC_API_KEY", value: "sk-ant-test", sensitive: true },
-        { name: "ANTHROPIC_AUTH_TOKEN", value: "duplicate", sensitive: true },
-      ]),
-    ).toEqual([
-      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "oauth-token", sensitive: true },
+describe("a Claude token an older Threadlines saved", () => {
+  it("is found, and removed in favor of Claude's own sign-in", () => {
+    const saved = [
+      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: true, valueRedacted: true },
       { name: "OTHER_VAR", value: "kept", sensitive: false },
-      { name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: false, valueRedacted: false },
-      { name: "ANTHROPIC_API_KEY", value: "", sensitive: false, valueRedacted: false },
+    ];
+    expect(hasSavedClaudeToken(saved)).toBe(true);
+    const removed = withoutSavedClaudeToken(saved);
+    expect(removed).toEqual([
+      { name: "OTHER_VAR", value: "kept", sensitive: false },
+      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false, valueRedacted: false },
     ]);
+    // The empty mask that leaves Claude on its own sign-in is not a saved token.
+    expect(hasSavedClaudeToken(removed)).toBe(false);
   });
 });
 

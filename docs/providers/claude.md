@@ -39,36 +39,22 @@ notice above the message box, with `Sign in again`. Signing in again gives a new
 X hides it until then. Chats on an API key or a long-lived token don't get the notice: they don't
 use that sign-in.
 
-For longer-lived unattended use, Claude Code supports a one-year OAuth token. Threadlines shows the
-right setup command in each Claude provider's `Account` section, with the same `Run` and `Copy`
-options.
+### Machines Without A Browser
 
-Default command:
+On a server or in Docker, `Sign in` still works: `claude auth login` shows an address to open on any
+device, and you paste the code the page gives you back into the sign-in panel.
 
-```bash
-claude setup-token
-```
+Threadlines never saves a Claude token. Claude Code can also run on a one-year token from
+`claude setup-token`, which Anthropic documents for machines without a browser: set it as
+`CLAUDE_CODE_OAUTH_TOKEN` in the environment Threadlines starts from (your shell, a service file, or
+the container's settings). Claude reads it from there. Threadlines refuses to save one in a
+provider's Environment variables, and removes any token an older version saved: those setups sign in
+to Claude again.
 
-For an extra account, the command uses that account's folder, for example:
-
-```bash
-CLAUDE_CONFIG_DIR=~/.threadlines/userdata/accounts/claudeAgent_work_3f9a claude setup-token
-```
-
-Run the command, finish browser authorization, then copy the printed token into the `OAuth token`
-field and choose `Save token`. If you used `Run`, Threadlines opens the command in the last active
-chat terminal; return to Settings after Claude prints the token. Threadlines stores the value as the
-sensitive `CLAUDE_CODE_OAUTH_TOKEN` environment variable for that provider instance. If terminal
-wrapping adds whitespace while copying, Threadlines removes that whitespace before saving.
-
-Credential precedence matters. `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` override
-`CLAUDE_CODE_OAUTH_TOKEN`, so remove stale Anthropic variables from the provider environment unless
-you intentionally want them to win.
-
-If a Claude provider already has a long-lived token and Threadlines detects either Anthropic
-credential variable in that provider, the Account section shows `Use long-lived token`. That action
-clears the provider-level Anthropic credentials and writes blank masks for those names so inherited
-shell environment variables cannot override `CLAUDE_CODE_OAUTH_TOKEN`.
+`ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` win over Claude's own sign-in. When either is set for a
+Claude provider, its Account section says so and offers `Use Claude sign-in`, which clears them and
+writes blank values for those names (and `CLAUDE_CODE_OAUTH_TOKEN`) so ones inherited from your
+shell don't apply either.
 
 ## When Claude's Service Ends A Turn With An Error
 
@@ -88,8 +74,8 @@ sign-in anywhere. The question rides along in the status check Threadlines alrea
 minutes, so it starts no extra Claude process. Chat replies update the meters in between.
 
 The numbers always come from the normal Claude sign-in. A Claude setup that chats on a long-lived
-token can't read them, so for that setup Threadlines asks a short Claude run without the token
-instead. That run also lets Claude renew the normal sign-in when it is due.
+token from its environment can't read them, so for that setup Threadlines asks a short Claude run
+without the token instead. That run also lets Claude renew the normal sign-in when it is due.
 
 - If a check gets no numbers (Claude Code is too old to answer, or the request does not get
   through), the meters keep their last numbers and the check is tried again. A row that is more
