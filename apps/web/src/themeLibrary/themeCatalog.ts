@@ -14,6 +14,7 @@ import {
   chooseTheme,
   hasKeptTheme,
   loadStarterThemeManifest,
+  preloadThemeTokenCode,
   startThemeTrial,
   type ThemeChoice,
 } from "../theme/themeStore";
@@ -170,6 +171,8 @@ export function sameThemeChoice(first: ThemeChoice, second: ThemeChoice): boolea
 /** A tile's theme file, read from wherever it lives; null for the built-ins. */
 export async function loadTileManifest(tile: ThemeTile): Promise<ThemeManifest | null> {
   const { choice } = tile;
+  // Showing it takes the token code too: fetch both at once.
+  if (choice.kind !== "builtin") preloadThemeTokenCode();
   switch (choice.kind) {
     case "builtin":
       return null;

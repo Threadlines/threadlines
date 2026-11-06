@@ -17,13 +17,12 @@
  * index.html reads; `threadlines:theme-kept` the hashes this device kept.
  */
 import type { ThemeManifest } from "@threadlines/contracts";
-import { themeContentHash } from "@threadlines/shared/themeManifestHash";
 import type { StarterTheme } from "@threadlines/shared/themeStarters";
+import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 import { useMemo, useSyncExternalStore } from "react";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
 import { applyThemeToDocument, desktopThemeAppearance, loadActiveThemeFonts } from "./themeApply";
-import { peekCachedTheme, readCachedTheme, rememberThemeContent } from "./themeCache";
 import {
   committedThemeHash,
   createThemeStoreCore,
@@ -46,65 +45,76 @@ function browserStorage(): Storage | null {
   }
 }
 
-// The starters carry their art scripts: a chunk of their own, loaded the
-// first time one is tried or used, never at startup.
-let starters: ReadonlyArray<StarterTheme> | null = null;
-let startersLoading: Promise<ReadonlyArray<StarterTheme>> | null = null;
+/**
+ * Code the store loads the first time it needs it, never at startup. A
+ * failed load is forgotten, so the next call tries again.
+ */
+function loadedOnDemand<T>(load: () => Promise<T>) {
+  let value: T | null = null;
+  let loading: Promise<T> | null = null;
+  return {
+    current: () => value,
+    load: (): Promise<T> =>
+      (loading ??= load().then(
+        (loaded) => (value = loaded),
+        (error: unknown) => {
+          loading = null;
+          throw error;
+        },
+      )),
+  };
+}
 
-/** Loads the starter themes' code; a failed load is forgotten, so the next call tries again. */
+// The starters carry their art scripts, loaded the first time one is tried
+// or used.
+const starterCode = loadedOnDemand<ReadonlyArray<StarterTheme>>(() =>
+  import("@threadlines/shared/themeStarters").then((module) => module.STARTER_THEMES),
+);
+
+// The color math that turns a theme's seeds into its tokens, loaded the
+// first time a custom theme is shown or tried. At startup the pre-paint
+// record's tokens stand in until it lands.
+const tokenCode = loadedOnDemand<(manifest: ThemeManifest) => ThemeTokens>(() =>
+  import("@threadlines/shared/themeTokens").then((module) => module.resolveThemeTokens),
+);
+
+// Where custom content comes from (this device's cache, then the
+// computers), loaded the first time a custom theme needs content.
+const contentSource = loadedOnDemand(() => import("./themeContentSource"));
+
+// Content to keep on this device that the cache's code hasn't taken yet: it
+// answers lookups meanwhile and is written once the code loads (the next
+// use tries again after a failed load).
+const pendingContent = new Map<string, { manifest: ThemeManifest; keep: string | undefined }>();
+
+function loadContentSource() {
+  return contentSource.load().then((source) => {
+    for (const [hash, { manifest, keep }] of pendingContent) {
+      source.rememberThemeContent(hash, manifest, keep);
+    }
+    pendingContent.clear();
+    return source;
+  });
+}
+
+/** Starts loading the token code before a custom theme needs it (a failed load retries later). */
+export function preloadThemeTokenCode(): void {
+  void tokenCode.load().catch(() => {});
+}
+
+/** Loads the starter themes' code. */
 export function loadStarterThemes(): Promise<ReadonlyArray<StarterTheme>> {
-  startersLoading ??= import("@threadlines/shared/themeStarters").then(
-    (module) => (starters = module.STARTER_THEMES),
-    (error: unknown) => {
-      startersLoading = null;
-      throw error;
-    },
-  );
-  return startersLoading;
+  return starterCode.load();
 }
 
 /** A starter theme by id, once the starters are loaded (null until then). */
 export function starterThemeManifest(id: string): ThemeManifest | null {
-  return starters?.find((starter) => starter.id === id)?.manifest ?? null;
+  return starterCode.current()?.find((starter) => starter.id === id)?.manifest ?? null;
 }
 
 /** A starter theme by id, loading the starters first if need be. */
 export async function loadStarterThemeManifest(id: string): Promise<ThemeManifest | null> {
   return (await loadStarterThemes()).find((starter) => starter.id === id)?.manifest ?? null;
-}
-
-/**
- * Library content: this device's cache first, then the entry's computer,
- * then any other connected computer that keeps themes. The runtime is
- * imported when needed, so the store loads before (and without) it.
- */
-async function lookupLibraryContent(
-  choice: Extract<ThemeChoice, { kind: "library" | "unsaved" }>,
-): Promise<ThemeContentLookup> {
-  const cached = await readCachedTheme(choice.hash);
-  if (cached) return { kind: "found", manifest: cached };
-  if (choice.kind === "unsaved") return { kind: "missing" };
-  const runtime = await import("../environments/runtime");
-  const connections = runtime.listEnvironmentConnections();
-  const ordered = [
-    ...connections.filter((connection) => connection.environmentId === choice.environmentId),
-    ...connections.filter((connection) => connection.environmentId !== choice.environmentId),
-  ].filter(
-    (connection) =>
-      runtime.readEnvironmentDescriptor(connection.environmentId)?.capabilities.themes === true,
-  );
-  for (const connection of ordered) {
-    try {
-      const content = await connection.client.themes.read({ hash: choice.hash });
-      if (content.hash === choice.hash) return { kind: "found", manifest: content.manifest };
-    } catch {
-      // Not on this computer, or it can't answer now: ask the next.
-    }
-  }
-  const ownComputerConnected =
-    choice.environmentId === null ||
-    connections.some((connection) => connection.environmentId === choice.environmentId);
-  return ordered.length === 0 || !ownComputerConnected ? { kind: "offline" } : { kind: "missing" };
 }
 
 let core: ThemeStoreCore | null = null;
@@ -133,17 +143,29 @@ function getCore(): ThemeStoreCore {
         : `${Date.now()}-${Math.random()}`,
     systemDark,
     bypassSavedChoice: bypass,
-    hashManifest: themeContentHash,
-    lookupContent: lookupLibraryContent,
-    rememberContent: (hash, manifest) =>
-      rememberThemeContent(
-        hash,
-        manifest,
-        core ? (committedThemeHash(core.getState()) ?? undefined) : undefined,
+    hashManifest: (manifest) =>
+      import("@threadlines/shared/themeManifestHash").then((module) =>
+        module.themeContentHash(manifest),
       ),
+    lookupContent: (choice) => {
+      const pending = pendingContent.get(choice.hash);
+      if (pending) {
+        return Promise.resolve<ThemeContentLookup>({ kind: "found", manifest: pending.manifest });
+      }
+      return loadContentSource().then((source) => source.lookupLibraryContent(choice));
+    },
+    rememberContent: (hash, manifest) => {
+      const keep = core ? (committedThemeHash(core.getState()) ?? undefined) : undefined;
+      pendingContent.set(hash, { manifest, keep });
+      void loadContentSource().catch(() => {});
+    },
     starterManifest: starterThemeManifest,
     loadStarter: loadStarterThemeManifest,
+    deriveTokens: (manifest) => tokenCode.current()?.(manifest) ?? null,
+    loadTokenCode: tokenCode.load,
   });
+  // A saved custom theme needs the token code next; fetch it alongside its content.
+  if (core.getState().committed.kind !== "builtin") preloadThemeTokenCode();
   startDocumentSync(core);
   return core;
 }
@@ -206,10 +228,16 @@ function startDocumentSync(store: ThemeStoreCore): void {
     if (state.active.manifest?.fonts && state.active.hash !== fontsFor) {
       fontsFor = state.active.hash;
       const theme = state.active;
-      void loadActiveThemeFonts(theme).then((loaded) => {
-        if (!loaded || store.getState().active.hash !== theme.hash) return;
-        for (const listener of fontListeners) listener();
-      });
+      void loadActiveThemeFonts(theme).then(
+        (loaded) => {
+          if (!loaded || store.getState().active.hash !== theme.hash) return;
+          for (const listener of fontListeners) listener();
+        },
+        () => {
+          // The font code didn't download: the next time this theme shows, try again.
+          if (fontsFor === theme.hash) fontsFor = null;
+        },
+      );
     }
   };
   apply(true);
@@ -437,7 +465,12 @@ export function endThemeTrial(id: string): void {
 
 /** Commits a choice directly: built-ins, and themes this device kept before. */
 export function chooseTheme(choice: ThemeChoice, manifest?: ThemeManifest): void {
-  const known = manifest ?? (choice.kind === "library" ? peekCachedTheme(choice.hash) : null);
+  const known =
+    manifest ??
+    (choice.kind === "library"
+      ? (pendingContent.get(choice.hash)?.manifest ??
+        contentSource.current()?.peekCachedTheme(choice.hash))
+      : null);
   getCore().chooseTheme(choice, known ?? undefined);
 }
 

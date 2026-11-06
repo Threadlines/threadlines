@@ -13,10 +13,13 @@
  * - Custom content resolves from memory, the device cache, then the entry's
  *   computer. Until it does, the pre-paint record's tokens stand in; if it is
  *   nowhere, the device shows the theme's base built-in and says so.
+ * - Turning content into tokens takes the token code, which loads the first
+ *   time a custom theme is shown or tried. A choice or trial made before it
+ *   lands applies when it does; the window keeps what it showed meanwhile.
  */
 import type { ThemeBase, ThemeManifest } from "@threadlines/contracts";
 import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
-import { resolveThemeTokens, type ThemeTokens } from "@threadlines/shared/themeTokens";
+import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
 import {
@@ -64,6 +67,10 @@ export interface ThemeStoreEnv {
   readonly starterManifest: (id: string) => ThemeManifest | null;
   /** Loads the starters' code (their art is a chunk of its own) and returns one. */
   readonly loadStarter: (id: string) => Promise<ThemeManifest | null>;
+  /** A theme's tokens, or null while the token code isn't loaded. */
+  readonly deriveTokens: (manifest: ThemeManifest) => ThemeTokens | null;
+  /** Loads the token code (the color math, a chunk of its own). */
+  readonly loadTokenCode: () => Promise<unknown>;
 }
 
 /** A custom theme with its content in hand. */
@@ -120,8 +127,11 @@ export function choiceName(choice: ThemeChoice, starterName?: string): string {
   }
 }
 
-function resolveTheme(manifest: ThemeManifest, hash: string | null, name: string): ResolvedTheme {
-  return { manifest, tokens: resolveThemeTokens(manifest), hash, base: manifest.base, name };
+/** A custom theme's content and what it is called, before its tokens. */
+interface ThemeContent {
+  readonly manifest: ThemeManifest;
+  readonly hash: string | null;
+  readonly name: string;
 }
 
 function choiceHash(choice: ThemeChoice): string | null {
@@ -365,60 +375,95 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     );
   };
 
-  const resolveImmediately = (
+  /** A custom choice's content, when its manifest is in hand (or a loaded starter). */
+  const contentFor = (
     choice: ThemeChoice,
     manifest: ThemeManifest | undefined | null,
-  ): ResolvedTheme | null => {
+  ): ThemeContent | null => {
     switch (choice.kind) {
       case "builtin":
         return null;
       case "starter": {
         const starter = manifest ?? env.starterManifest(choice.id);
-        return starter ? resolveTheme(starter, null, starter.name) : null;
+        return starter ? { manifest: starter, hash: null, name: starter.name } : null;
       }
       case "library":
       case "unsaved":
-        return manifest ? resolveTheme(manifest, choice.hash, choice.name) : null;
+        return manifest ? { manifest, hash: choice.hash, name: choice.name } : null;
     }
   };
 
-  /** Finds the committed theme's content when it wasn't handed in. */
-  const lookupCommitted = (choice: ThemeChoice, sequence: number) => {
+  /** The theme now, or null while the token code isn't loaded. */
+  const resolveNow = (content: ThemeContent): ResolvedTheme | null => {
+    const tokens = env.deriveTokens(content.manifest);
+    return tokens ? { ...content, tokens, base: content.manifest.base } : null;
+  };
+
+  /** The theme now when the token code is loaded, else once it loads (null if it can't). */
+  const resolveWhenReady = (content: ThemeContent, then: (theme: ResolvedTheme | null) => void) => {
+    const now = resolveNow(content);
+    if (now) {
+      then(now);
+      return;
+    }
+    void env.loadTokenCode().then(
+      () => then(resolveNow(content)),
+      () => then(null),
+    );
+  };
+
+  /**
+   * Resolves the committed theme when it couldn't be at once: finds its
+   * content when it wasn't handed in (`inHand`), then its tokens.
+   */
+  const lookupCommitted = (
+    choice: ThemeChoice,
+    sequence: number,
+    inHand?: ThemeManifest | null,
+  ) => {
     if (choice.kind === "builtin") return;
+    const unavailable = (reason: "missing" | "offline") => {
+      if (sequence === commitSequence)
+        update({ committedState: { status: "unavailable", reason } });
+    };
+    const settle = (theme: ResolvedTheme | null) => {
+      if (sequence !== commitSequence) return;
+      if (!theme) {
+        unavailable("missing");
+        return;
+      }
+      update({ committedState: { status: "ready", theme }, committedBase: theme.base });
+      writePaintRecord(choice, theme);
+      if (choice.kind === "starter") fillStarterHash(choice, theme.manifest);
+    };
+    const found = (manifest: ThemeManifest | null) => {
+      if (sequence !== commitSequence) return;
+      const content = manifest ? contentFor(choice, manifest) : null;
+      if (content) resolveWhenReady(content, settle);
+      else unavailable("missing");
+    };
+    if (inHand) {
+      found(inHand);
+      return;
+    }
     if (choice.kind === "starter") {
-      const settle = (manifest: ThemeManifest | null) => {
-        if (sequence !== commitSequence) return;
-        if (!manifest) {
-          update({ committedState: { status: "unavailable", reason: "missing" } });
-          return;
-        }
-        const theme = resolveTheme(manifest, null, manifest.name);
-        update({ committedState: { status: "ready", theme }, committedBase: theme.base });
-        writePaintRecord(choice, theme);
-        fillStarterHash(choice, manifest);
-      };
       // Loaded already, or its code is on the way (the paint record covers the wait).
       const loaded = env.starterManifest(choice.id);
-      if (loaded) settle(loaded);
-      else void env.loadStarter(choice.id).then(settle, () => settle(null));
+      if (loaded) found(loaded);
+      else void env.loadStarter(choice.id).then(found, () => found(null));
       return;
     }
     void env.lookupContent(choice).then(
       (lookup) => {
         if (sequence !== commitSequence) return;
         if (lookup.kind !== "found") {
-          update({ committedState: { status: "unavailable", reason: lookup.kind } });
+          unavailable(lookup.kind);
           return;
         }
-        const theme = resolveTheme(lookup.manifest, choice.hash, choice.name);
         env.rememberContent(choice.hash, lookup.manifest);
-        update({ committedState: { status: "ready", theme }, committedBase: theme.base });
-        writePaintRecord(choice, theme);
+        found(lookup.manifest);
       },
-      () => {
-        if (sequence !== commitSequence) return;
-        update({ committedState: { status: "unavailable", reason: "missing" } });
-      },
+      () => unavailable("missing"),
     );
   };
 
@@ -432,12 +477,13 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     commitSequence += 1;
     const sequence = commitSequence;
     clearTrialTimer();
-    const theme = resolveImmediately(choice, manifest);
-    const base = theme?.base ?? null;
+    const content = contentFor(choice, manifest);
+    const theme = content ? resolveNow(content) : null;
+    const base = content?.manifest.base ?? null;
     writeStorage(THEME_STORAGE_KEY, serializeThemeChoice(choice, base));
-    if (choice.kind !== "builtin" && theme) {
-      if (theme.hash) env.rememberContent(theme.hash, theme.manifest);
-      markKept(theme.hash);
+    if (content?.hash) {
+      env.rememberContent(content.hash, content.manifest);
+      markKept(content.hash);
     }
     writePaintRecord(choice, theme);
     update({
@@ -455,7 +501,7 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
       provisional: null,
     });
     if (choice.kind === "starter" && theme) fillStarterHash(choice, theme.manifest);
-    if (choice.kind !== "builtin" && !theme) lookupCommitted(choice, sequence);
+    if (choice.kind !== "builtin" && !theme) lookupCommitted(choice, sequence, content?.manifest);
   };
 
   // The saved choice on load: built-ins are ready, the rest resolve.
@@ -475,11 +521,12 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
         throw new Error("A trial of a custom theme needs its manifest.");
       }
       clearTrialTimer();
-      const theme = choice.kind === "builtin" ? null : resolveImmediately(choice, manifest);
+      const content = contentFor(choice, manifest);
+      const theme = content ? resolveNow(content) : null;
       const trial: ThemeTrial = {
         id: env.randomId(),
         choice,
-        name: theme?.name ?? choiceName(choice),
+        name: content?.name ?? choiceName(choice),
         expiresAt: env.now() + THEME_TRIAL_MS,
         manifest: choice.kind === "builtin" ? null : manifest,
       };
@@ -490,7 +537,22 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
         }
       }, THEME_TRIAL_MS);
       update({ trial, trialTheme: theme });
-      if (choice.kind === "starter" && theme && manifest) fillStarterHash(choice, manifest);
+      if (content && !theme) {
+        // The token code is on its way: the trial shows when it lands, or
+        // ends if it can't.
+        resolveWhenReady(content, (resolved) => {
+          if (state.trial?.id !== trial.id) return;
+          if (!resolved) {
+            clearTrialTimer();
+            update({ trial: null, trialTheme: null });
+            return;
+          }
+          update({ trialTheme: resolved });
+          if (choice.kind === "starter") fillStarterHash(choice, resolved.manifest);
+        });
+      } else if (choice.kind === "starter" && theme) {
+        fillStarterHash(choice, theme.manifest);
+      }
       return trial;
     },
     commitThemeTrial: (id, choice) => {

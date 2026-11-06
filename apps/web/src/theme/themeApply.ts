@@ -7,9 +7,9 @@
  * exactly as it always has.
  */
 import type { DesktopThemeAppearance } from "@threadlines/contracts";
-import { themeTokensCss } from "@threadlines/shared/themeTokens";
+import { themeTokensCss } from "@threadlines/shared/themeTokenNames";
 
-import { loadThemeFonts, themeFontFamily, themeFontStack } from "./themeFonts";
+import { themeFontFamily, themeFontStack } from "./themeFonts";
 import type { ActiveTheme } from "./themeTypes";
 
 export const THEME_STYLE_ID = "tl-theme";
@@ -95,7 +95,9 @@ export function applyGlassTints(css: string | null): void {
 
 /** Loads the theme's embedded fonts; resolves true once a face is ready to measure. */
 export function loadActiveThemeFonts(theme: ActiveTheme): Promise<boolean> {
-  return loadThemeFonts(theme.manifest?.fonts, theme.hash);
+  return import("./themeFontFaces").then((faces) =>
+    faces.loadThemeFonts(theme.manifest?.fonts, theme.hash),
+  );
 }
 
 const opaqueHex = (value: string) => (/^#[0-9a-fA-F]{8}$/.test(value) ? value.slice(0, 7) : value);

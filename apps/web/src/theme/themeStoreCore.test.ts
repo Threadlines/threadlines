@@ -1,4 +1,5 @@
 import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
+import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -54,9 +55,17 @@ function makeEnv(input: {
   readonly storage?: ReturnType<typeof memoryStorage>;
   readonly content?: Record<string, ThemeManifest>;
   readonly lookup?: (hash: string) => Promise<ThemeContentLookup>;
+  /** False: the token code loads when the test calls `loadTokens`. */
+  readonly tokenCodeLoaded?: boolean;
 }) {
   const timers: Array<{ readonly callback: () => void; cancelled: boolean }> = [];
   let ids = 0;
+  let tokenCodeLoaded = input.tokenCodeLoaded ?? true;
+  const tokenCodeWaiters: Array<() => void> = [];
+  const loadTokens = () => {
+    tokenCodeLoaded = true;
+    for (const resolve of tokenCodeWaiters.splice(0)) resolve();
+  };
   const storage = input.storage ?? memoryStorage();
   const env: ThemeStoreEnv = {
     storage,
@@ -83,13 +92,18 @@ function makeEnv(input: {
     rememberContent: () => {},
     starterManifest: (id) => (id === "aurora" ? manifest("Aurora") : null),
     loadStarter: async (id) => (id === "aurora" ? manifest("Aurora") : null),
+    deriveTokens: (theme) => (tokenCodeLoaded ? resolveThemeTokens(theme) : null),
+    loadTokenCode: () =>
+      tokenCodeLoaded
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => tokenCodeWaiters.push(resolve)),
   };
   /** Fires a timer the store set, unless it was cancelled (a real timer would not run). */
   const fire = (index: number) => {
     const timer = timers[index];
     if (timer && !timer.cancelled) timer.callback();
   };
-  return { env, storage, timers, fire };
+  return { env, storage, timers, fire, loadTokens };
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -174,6 +188,39 @@ describe("theme store", () => {
     store.endThemeTrial(later.id);
     store.commitThemeTrial(later.id);
     expect(store.getState().committed).toEqual(library(HASH_A, "Aurora"));
+  });
+
+  it("shows a trial or choice made before the token code loads once it lands, keeping the screen meanwhile", async () => {
+    const tried = makeEnv({ tokenCodeLoaded: false });
+    const store = createThemeStoreCore(tried.env);
+    const trial = store.startThemeTrial({
+      choice: library(HASH_A, "Aurora"),
+      manifest: manifest("Aurora"),
+    });
+    expect(trial.name).toBe("Aurora");
+    expect(store.getState().active.choice).toEqual({ kind: "builtin", id: "system" });
+    tried.loadTokens();
+    await flush();
+    expect(store.getState().active).toMatchObject({ hash: HASH_A, name: "Aurora" });
+    expect(store.getState().active.tokens?.background).toBe("#0a1029");
+
+    // A choice is saved at once and shown when the code lands.
+    const chosen = makeEnv({ tokenCodeLoaded: false });
+    const other = createThemeStoreCore(chosen.env);
+    other.chooseTheme(library(HASH_B, "Dusk"), manifest("Dusk", "light"));
+    expect(JSON.parse(chosen.storage.values.get(THEME_STORAGE_KEY)!)).toMatchObject({
+      hash: HASH_B,
+      base: "light",
+    });
+    expect(other.hasKeptTheme(HASH_B)).toBe(true);
+    expect(other.getState().active.choice).toEqual({ kind: "builtin", id: "system" });
+    chosen.loadTokens();
+    await flush();
+    expect(other.getState().active).toMatchObject({ hash: HASH_B, base: "light", name: "Dusk" });
+    expect(JSON.parse(chosen.storage.values.get(THEME_PAINT_STORAGE_KEY)!)).toMatchObject({
+      hash: HASH_B,
+      base: "light",
+    });
   });
 
   it("ends this window's trial when another window commits a choice, and adopts it", () => {

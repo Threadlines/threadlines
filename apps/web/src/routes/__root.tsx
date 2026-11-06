@@ -16,7 +16,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
-import { Suspense, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -124,6 +124,7 @@ import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { ThemeRuntime, useDesktopThemeEvents } from "../theme/ThemeRuntime";
 import { lazyWithPreload } from "../lib/lazyWithPreload";
+import { OptionalChunk } from "../lib/OptionalChunk";
 import { ThemeTrialBar } from "../components/theme/ui/ThemeTrialBar";
 import {
   ensureEnvironmentConnectionBootstrapped,
@@ -265,9 +266,9 @@ function RootRouteView() {
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {primaryEnvironmentAuthenticated ? (
-          <Suspense fallback={null}>
+          <OptionalChunk>
             <ThemeLibrarySyncLazy.Component />
-          </Suspense>
+          </OptionalChunk>
         ) : null}
         {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
         <ThemeTrialBar />

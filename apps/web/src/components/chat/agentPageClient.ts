@@ -18,7 +18,8 @@ import { useMemo } from "react";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
 import { LRUCache } from "../../lib/lruCache";
-import { themeFontFaceCss, themeFontFamily } from "../../theme/themeFonts";
+import { themeFontFaceCss } from "../../theme/themeFontFaces";
+import { themeFontFamily } from "../../theme/themeFonts";
 import { type ActiveTheme, readActiveTheme, useActiveTheme } from "../../theme/themeStore";
 
 /**

@@ -1,7 +1,7 @@
 import "../index.css";
 
 import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import monoFontUrl from "@fontsource-variable/cascadia-mono/files/cascadia-mono-latin-wght-normal.woff2?url";
@@ -78,7 +78,7 @@ describe("theme store, applied", () => {
     await resetTestPage();
   });
 
-  it("puts a custom theme's tokens and base on the document, and a built-in back exactly as it was", () => {
+  it("puts a custom theme's tokens and base on the document, and a built-in back exactly as it was", async () => {
     chooseTheme({ kind: "builtin", id: "light" });
     const before = builtinSnapshot();
     expect(before).toMatchObject({ dark: false, theme: null, glass: false, style: null });
@@ -87,8 +87,9 @@ describe("theme store, applied", () => {
       choice: unsaved(HASH_A, "Winter night"),
       manifest: darkTheme("#e7ecff"),
     });
+    // The first custom theme waits for the token code; later ones apply at once.
+    await vi.waitFor(() => expect(root().getAttribute("data-theme-version")).toBe(HASH_A));
     expect(root().classList.contains("dark")).toBe(true);
-    expect(root().getAttribute("data-theme-version")).toBe(HASH_A);
     expect(token("background")).toBe("#0a1029");
     expect(token("foreground")).toBe("#e7ecff");
     expect(token("surface-solid")).toBe("#0a1029");

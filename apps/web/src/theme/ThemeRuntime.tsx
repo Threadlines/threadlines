@@ -5,9 +5,10 @@
  * art is on; until it reports, glass surfaces stay opaque, so nothing shows
  * through early.
  */
-import { Suspense, useEffect } from "react";
+import { useEffect } from "react";
 
 import { lazyWithPreload } from "../lib/lazyWithPreload";
+import { OptionalChunk } from "../lib/OptionalChunk";
 import { applyGlassTints } from "./themeApply";
 import {
   chooseTheme,
@@ -33,7 +34,7 @@ export function ThemeRuntime() {
 
   if (!hasArt || !manifest || !active.tokens || !active.hash) return null;
   return (
-    <Suspense fallback={null}>
+    <OptionalChunk>
       <BackdropLayer.Component
         key={`${active.hash}:${generation}`}
         manifest={manifest}
@@ -41,7 +42,7 @@ export function ThemeRuntime() {
         base={active.base}
         hash={active.hash}
       />
-    </Suspense>
+    </OptionalChunk>
   );
 }
 

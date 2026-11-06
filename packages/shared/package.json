@@ -79,6 +79,10 @@
       "types": "./src/themes/tokens.ts",
       "import": "./src/themes/tokens.ts"
     },
+    "./themeTokenNames": {
+      "types": "./src/themes/tokenNames.ts",
+      "import": "./src/themes/tokenNames.ts"
+    },
     "./themeContrast": {
       "types": "./src/themes/contrast.ts",
       "import": "./src/themes/contrast.ts"

@@ -379,6 +379,16 @@ Glass mode turns on only when the active theme has a backdrop
 - **Tokens.** One `<style id="tl-theme">` on `html[data-theme]`. Changes go
   through a small theme store that components subscribe to; they don't infer
   it from DOM mutations.
+- **Startup cost.** Startup carries the theme store and what applies tokens
+  it already has, nothing more. Everything else is a chunk of its own,
+  fetched after first paint: the library's sync once the app is signed in;
+  the color math that derives tokens, the device cache and library reads,
+  embedded font loading, the starters, the art and the trial bar when a
+  custom theme is shown or tried (agent pages bring the font code with
+  them). Until then the pre-paint record's tokens stand in. The art and the
+  library's sync fail quietly if their code can't download (OptionalChunk).
+  The startup closure budget (`scripts/check-web-bundle-size.ts`) is the
+  check.
 - **Terminal.** `ThreadTerminalDrawer` (whose observer only watches `class`
   and `style`) and `ProviderConnectTerminal` (no theme subscription today)
   subscribe to the store, take the theme's ANSI palette and mono font, and
