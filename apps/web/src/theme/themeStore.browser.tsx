@@ -11,7 +11,7 @@ import { resetTestPage } from "../lib/testPage.browser-harness";
 import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 
 import { measureBackdropZones } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassTintCss } from "./glass";
+import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
 import { applyGlassTints } from "./themeApply";
 import {
   THEME_PAINT_STORAGE_KEY,
@@ -115,6 +115,13 @@ describe("theme store, applied", () => {
       true,
     );
     endThemeTrial(dark.id);
+  });
+
+  it("relaxes text over the art for an art-first theme, or when the user picks Full art", () => {
+    const glass = { frame: 0.3, list: 0.35, column: 0.4, composer: 0.55, blur: 18 };
+    expect(glassReadability(glass, "some")).toBe("standard");
+    expect(glassReadability(glass, "full")).toBe("relaxed");
+    expect(glassReadability({ ...glass, readability: "relaxed" }, "some")).toBe("relaxed");
   });
 
   it("draws glass only for a theme with art: clear canvas layers, tinted surfaces, opaque sticky headers, no fades", async () => {

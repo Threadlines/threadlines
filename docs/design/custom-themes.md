@@ -121,7 +121,10 @@ Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. "Art in threads" moves the column's tint
 floor: None (opaque column), Some (default), Full (light tint). Readability
-can always raise a tint. Settings and every other page (Usage, Scheduled,
+can always raise a tint. Text over the art keeps 4.5:1, or 3:1 when the
+theme's `glass.readability` is `relaxed` (art-first themes, where the look
+matters more than long reading, Will's call for themes like Honu Lagoon) or
+the user picks Full; text on solid surfaces keeps its checks either way. Settings and every other page (Usage, Scheduled,
 Pull requests, General chats, Fleet) work like a thread: each marks its
 scrolling area and column (`glassPage.ts`), the column is frosted and tinted
 the full height of the page at the theme's own column floor ("Art in threads"

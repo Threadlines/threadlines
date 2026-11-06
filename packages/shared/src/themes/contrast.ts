@@ -6,12 +6,18 @@
  * table (a test), which keeps it honest. Changing a component's color classes
  * means updating its row here.
  */
-import type { ThemeBase, ThemeManifest } from "@threadlines/contracts";
+import type { GlassReadability, ThemeBase, ThemeManifest } from "@threadlines/contracts";
 
 import { color, composite, contrastRatio, formatHex, type Rgba, withAlpha } from "./color.ts";
 import { resolveThemeTokens, type ThemeTokenName, type ThemeTokens } from "./tokens.ts";
 
 type ColorRef = ThemeTokenName | "white";
+
+/** The ratio text over the art keeps, by readability. */
+export const GLASS_TEXT_RATIO: Readonly<Record<GlassReadability, number>> = {
+  standard: 4.5,
+  relaxed: 3,
+};
 
 export interface ThemeContrastPair {
   readonly id: string;
@@ -258,10 +264,15 @@ function paletteFailures(
 
 /**
  * Every text color the app draws straight onto glass, with the ratio it
- * needs. The backdrop frame raises a zone's tint until all of them pass
- * against the art under it (color.ts minimumGlassTint).
+ * needs: 4.5:1, or 3:1 when readability is `relaxed` (the theme puts its art
+ * first, or the user chose Full art). The backdrop frame raises a zone's tint
+ * until all of them pass against the art under it (color.ts
+ * minimumGlassTint).
  */
-export function glassTextColors(tokens: ThemeTokens): Array<{ color: string; ratio: number }> {
+export function glassTextColors(
+  tokens: ThemeTokens,
+  readability: GlassReadability = "standard",
+): Array<{ color: string; ratio: number }> {
   const names: ThemeTokenName[] = [
     "foreground",
     "card-foreground",
@@ -275,5 +286,6 @@ export function glassTextColors(tokens: ThemeTokens): Array<{ color: string; rat
     "warning-foreground",
     "destructive-foreground",
   ];
-  return names.map((name) => ({ color: formatHex({ ...color(tokens[name]), a: 1 }), ratio: 4.5 }));
+  const ratio = GLASS_TEXT_RATIO[readability];
+  return names.map((name) => ({ color: formatHex({ ...color(tokens[name]), a: 1 }), ratio }));
 }

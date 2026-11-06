@@ -307,7 +307,7 @@ const page = (input: {
   const backdrop = manifest.backdrop;
   const art = backdrop === undefined ? "none" : input.art;
   const glass = manifest.glass;
-  const texts = glassTextColors(tokens);
+  const texts = glassTextColors(tokens, glass?.readability);
   const script =
     art === "live" && backdrop !== undefined
       ? `<script>${hostScript({

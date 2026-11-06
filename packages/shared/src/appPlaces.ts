@@ -947,7 +947,7 @@ const ROWS = [
     parent: "general.appearance",
     title: "Art in threads",
     about:
-      "How much of a theme's live art shows behind a thread. None keeps the reading column solid.",
+      "How much of a theme's live art shows behind a thread. None keeps the reading column solid; Full shows the most, even where text gets harder to read.",
     keywords: ["backdrop", "glass", "transparency", "wallpaper"],
     scope: "device",
     edit: {

@@ -51,7 +51,7 @@ import {
   type MeasuredBackdropLayout,
   sameBackdropZones,
 } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassTintCss } from "./glass";
+import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
 import {
@@ -148,6 +148,7 @@ export function ThemeBackdropLayer(props: {
         base={base}
         tokens={tokens}
         blur={glass.blur}
+        readability={glassReadability(glass, artInThreads)}
         zones={layout.zones}
         conditions={conditions}
         activity={activity}

@@ -7,6 +7,7 @@
  * detail is averaged away (the shown still is a blend of its pixels at any
  * scale, so the box bounds it).
  */
+import type { GlassReadability } from "@threadlines/contracts";
 import { color, colorBox, minimumGlassTint, type Rgba } from "@threadlines/shared/themeColor";
 import { glassTextColors } from "@threadlines/shared/themeContrast";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
@@ -19,11 +20,25 @@ import type { ThemeTokens } from "@threadlines/shared/themeTokens";
  */
 const MAX_MEASURE_SIDE = 4096;
 
-let cached: { still: string; background: string; tint: number } | null = null;
+let cached: {
+  still: string;
+  background: string;
+  readability: GlassReadability;
+  tint: number;
+} | null = null;
 
 /** The lowest tint that keeps every glass text color readable over any pixel of the still; 1 when it can't be read. */
-export async function measureStillTint(still: string, tokens: ThemeTokens): Promise<number> {
-  if (cached && cached.still === still && cached.background === tokens.background)
+export async function measureStillTint(
+  still: string,
+  tokens: ThemeTokens,
+  readability: GlassReadability = "standard",
+): Promise<number> {
+  if (
+    cached &&
+    cached.still === still &&
+    cached.background === tokens.background &&
+    cached.readability === readability
+  )
     return cached.tint;
   const image = new Image();
   image.decoding = "async";
@@ -68,9 +83,12 @@ export async function measureStillTint(still: string, tokens: ThemeTokens): Prom
       { r: minR, g: minG, b: minB },
       { r: maxR, g: maxG, b: maxB },
     ]),
-    texts: glassTextColors(tokens).map((text) => ({ color: color(text.color), ratio: text.ratio })),
+    texts: glassTextColors(tokens, readability).map((text) => ({
+      color: color(text.color),
+      ratio: text.ratio,
+    })),
     floor: 0,
   });
-  cached = { still, background: tokens.background, tint };
+  cached = { still, background: tokens.background, readability, tint };
   return tint;
 }

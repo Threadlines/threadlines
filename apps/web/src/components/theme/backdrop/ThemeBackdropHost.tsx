@@ -20,6 +20,7 @@ import {
   type BackdropFailureReason,
   type BackdropHostMessage,
   type BackdropZone,
+  type GlassReadability,
   type ThemeBackdrop,
   type ThemeBase,
 } from "@threadlines/contracts";
@@ -77,6 +78,8 @@ export interface ThemeBackdropHostProps {
   readonly base: ThemeBase;
   readonly tokens: ThemeTokens;
   readonly blur: number;
+  /** How readable text over the art must stay (relaxed: 3:1, for art-first looks). Default standard. */
+  readonly readability?: GlassReadability;
   readonly zones: ReadonlyArray<BackdropZone>;
   readonly conditions: BackdropConditions;
   readonly activity: BackdropActivity;
@@ -124,8 +127,15 @@ const shouldDraw = (conditions: BackdropConditions) =>
 
 export const ThemeBackdropHost = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function ThemeBackdropHost(props, ref) {
-    // A new theme is a new session: fresh frame, fresh failure state.
-    return <BackdropSession key={props.themeKey} {...props} ref={ref} />;
+    // A new theme, or new readability (the frame takes its text ratios at
+    // start), is a new session: fresh frame, fresh failure state.
+    return (
+      <BackdropSession
+        key={`${props.themeKey}:${props.readability ?? "standard"}`}
+        {...props}
+        ref={ref}
+      />
+    );
   },
 );
 
@@ -146,7 +156,7 @@ interface FrameApi {
  */
 const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function BackdropSession(props, ref) {
-    const { backdrop, conditions, stillOnly = false, tokens } = props;
+    const { backdrop, conditions, stillOnly = false, tokens, readability } = props;
     const [attempt, setAttempt] = useState(0);
     const [failure, setFailure] = useState<Failure | null>(null);
     const [progress, setProgress] = useState<FrameProgress>(null);
@@ -166,7 +176,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
     useEffect(() => {
       if (!still) return;
       let cancelled = false;
-      measureStillTint(still, tokens).then(
+      measureStillTint(still, tokens, readability).then(
         (tint) => {
           if (!cancelled) setMeasured({ still, tint });
         },
@@ -177,7 +187,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
       return () => {
         cancelled = true;
       };
-    }, [still, tokens]);
+    }, [still, tokens, readability]);
     const minimumTint = still && measured?.still === still ? measured.tint : 1;
 
     const status: ThemeBackdropStatus = failure
@@ -302,7 +312,7 @@ function BackdropFrame(props: BackdropFrameProps) {
     if (state.started) return;
     state.started = true;
     const current = latest.current;
-    const texts = glassTextColors(current.tokens);
+    const texts = glassTextColors(current.tokens, current.readability);
     post({
       type: "init",
       mode: current.backdrop.mode,

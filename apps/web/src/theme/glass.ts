@@ -14,7 +14,7 @@
  *   each raised to the still's layout-independent minimum.
  * - Before the backdrop reports anything, surfaces are opaque.
  */
-import type { ThemeArtInThreads, ThemeGlass } from "@threadlines/contracts";
+import type { GlassReadability, ThemeArtInThreads, ThemeGlass } from "@threadlines/contracts";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
 
@@ -39,6 +39,17 @@ export function columnFloor(themeColumn: number, artInThreads: ThemeArtInThreads
     case "full":
       return clamp01(themeColumn / 2);
   }
+}
+
+/**
+ * How readable text over the art must stay: relaxed (3:1) when the theme
+ * puts its art first, or when the user asks for Full art in threads.
+ */
+export function glassReadability(
+  glass: ThemeGlass,
+  artInThreads: ThemeArtInThreads,
+): GlassReadability {
+  return glass.readability === "relaxed" || artInThreads === "full" ? "relaxed" : "standard";
 }
 
 /** The tint floors the frame gets for its zones. The composer is never clearer than the column it sits in. */

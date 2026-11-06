@@ -12,7 +12,7 @@ import {
   minimumGlassTint,
   rgbToOklch,
 } from "./color.ts";
-import { measureThemeContrast } from "./contrast.ts";
+import { glassTextColors, measureThemeContrast } from "./contrast.ts";
 import { cssFontFamilyList } from "./fontFamilies.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
@@ -227,6 +227,16 @@ describe("readability check", () => {
       floor: 0.3,
     });
     expect(narrow).toBe(0.3);
+  });
+});
+
+describe("text over the art", () => {
+  it("keeps 4.5:1, or 3:1 for an art-first theme", () => {
+    const tokens = BUILTIN_THEME_TOKENS.dark;
+    expect(new Set(glassTextColors(tokens).map((text) => text.ratio))).toEqual(new Set([4.5]));
+    expect(new Set(glassTextColors(tokens, "relaxed").map((text) => text.ratio))).toEqual(
+      new Set([3]),
+    );
   });
 });
 

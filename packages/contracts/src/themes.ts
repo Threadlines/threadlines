@@ -111,12 +111,21 @@ export type ThemeFonts = typeof ThemeFonts.Type;
  * opaque) and the frost blur in CSS px. These are floors: the user's "Art in
  * threads" setting and readability can raise a tint, never lower it.
  */
+/**
+ * How readable text over the art must stay: `standard` keeps 4.5:1 (normal
+ * text), `relaxed` 3:1 (large text), for themes made for the art more than
+ * long reading. Text on solid surfaces keeps its checks either way.
+ */
+export const GlassReadability = Schema.Literals(["standard", "relaxed"]);
+export type GlassReadability = typeof GlassReadability.Type;
+
 export const ThemeGlass = Schema.Struct({
   frame: UnitInterval,
   list: UnitInterval,
   column: UnitInterval,
   composer: UnitInterval,
   blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
+  readability: Schema.optional(GlassReadability),
 });
 export type ThemeGlass = typeof ThemeGlass.Type;
 
