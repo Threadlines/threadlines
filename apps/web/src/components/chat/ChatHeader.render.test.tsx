@@ -163,6 +163,7 @@ describe("ChatHeader", () => {
   it("shows uncommitted changes as their own button, even with a Source tab open", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
+      openInCwd: "/repo/orbit",
       railOpen: true,
       workingTreeChanges: { insertions: 38, deletions: 12, fileCount: 3 },
       remoteBehindCount: 2,
@@ -177,6 +178,7 @@ describe("ChatHeader", () => {
   it("counts files when the changes add no lines", () => {
     const markup = renderChatHeader({
       sourceControlAvailable: true,
+      openInCwd: "/repo/orbit",
       workingTreeChanges: { insertions: 0, deletions: 0, fileCount: 2 },
     });
 

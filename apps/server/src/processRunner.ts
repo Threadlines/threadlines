@@ -24,6 +24,9 @@ export interface ProcessRunInput {
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly stdin?: string | undefined;
   readonly maxOutputBytes?: number | undefined;
+  /** How stdout's bytes become `stdout`: text (the default) or base64 of the
+   *  raw bytes, for binary output. stderr is always text. */
+  readonly stdoutEncoding?: "utf8" | "base64" | undefined;
   readonly outputMode?: "error" | "truncate" | undefined;
   readonly truncatedMarker?: string | undefined;
   readonly shell?: boolean | string | undefined;
@@ -126,6 +129,7 @@ const collectText = Effect.fn("processRunner.collectText")(function* (input: {
   readonly maxOutputBytes: number;
   readonly outputMode: "error" | "truncate";
   readonly truncatedMarker: string;
+  readonly encoding: "utf8" | "base64";
 }) {
   const stream = input.stream.pipe(
     Stream.mapError(
@@ -145,6 +149,7 @@ const collectText = Effect.fn("processRunner.collectText")(function* (input: {
       stream,
       maxBytes: input.maxOutputBytes,
       truncatedMarker: input.truncatedMarker,
+      encoding: input.encoding,
     });
   }
 
@@ -181,7 +186,7 @@ const collectText = Effect.fn("processRunner.collectText")(function* (input: {
       },
     ),
     Effect.map((state): CollectedUint8StreamText => ({
-      text: Buffer.concat(state.chunks, state.bytes).toString("utf8"),
+      text: Buffer.concat(state.chunks, state.bytes).toString(input.encoding),
       bytes: state.bytes,
       truncated: false,
     })),
@@ -300,6 +305,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
         maxOutputBytes,
         outputMode,
         truncatedMarker,
+        encoding: input.stdoutEncoding ?? "utf8",
       }),
       collectText({
         command: input.command,
@@ -310,6 +316,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
         maxOutputBytes,
         outputMode,
         truncatedMarker,
+        encoding: "utf8",
       }),
       writeStdin,
     ],

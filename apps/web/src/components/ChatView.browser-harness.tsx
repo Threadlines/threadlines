@@ -388,11 +388,14 @@ export function createMockEnvironmentApi(input: {
   getRevertPlan?: EnvironmentApi["orchestration"]["getRevertPlan"];
   warmUpTurn?: EnvironmentApi["orchestration"]["warmUpTurn"];
   previewAutomation?: EnvironmentApi["previewAutomation"];
+  getTurnFile?: EnvironmentApi["orchestration"]["getTurnFile"];
+  listProjectMedia?: EnvironmentApi["orchestration"]["listProjectMedia"];
+  projects?: Partial<EnvironmentApi["projects"]>;
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
     settings: {} as EnvironmentApi["settings"],
-    projects: {} as EnvironmentApi["projects"],
+    projects: (input.projects ?? {}) as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
     previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
     previewLoopback: {} as EnvironmentApi["previewLoopback"],
@@ -422,6 +425,18 @@ export function createMockEnvironmentApi(input: {
       getFullThreadDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getFullThreadDiff"],
+      getTurnFile:
+        input.getTurnFile ??
+        ((async (request) => ({
+          kind: "missing",
+          relativePath: request.path,
+        })) as EnvironmentApi["orchestration"]["getTurnFile"]),
+      listProjectMedia:
+        input.listProjectMedia ??
+        ((async () => ({
+          entries: [],
+          truncated: false,
+        })) as EnvironmentApi["orchestration"]["listProjectMedia"]),
       getRevertPlan:
         input.getRevertPlan ??
         ((() =>
@@ -1986,6 +2001,8 @@ export function createSnapshotWithPendingUserInput(options?: {
   isBlocking?: boolean;
   running?: boolean;
   signIn?: boolean;
+  /** The agent can be told a question went unanswered (Skip, Close, Reply in chat). */
+  canLeaveUnanswered?: boolean;
 }): OrchestrationReadModel {
   const snapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
@@ -2029,6 +2046,7 @@ export function createSnapshotWithPendingUserInput(options?: {
                 payload: {
                   requestId: "req-browser-user-input",
                   isBlocking: options?.isBlocking ?? true,
+                  ...(options?.canLeaveUnanswered ? { canLeaveUnanswered: true } : {}),
                   questions: options?.signIn
                     ? [
                         {

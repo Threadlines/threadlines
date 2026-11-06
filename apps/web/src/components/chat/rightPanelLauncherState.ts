@@ -12,7 +12,7 @@
  * has not published its agents yet -- so the launcher never claims a thread is
  * clean or agentless on missing data.
  */
-import type { EnvironmentId } from "@threadlines/contracts";
+import type { EnvironmentId, OrchestrationMediaKind } from "@threadlines/contracts";
 import { useMemo } from "react";
 
 import { useGitStatus } from "../../lib/gitStatusState";
@@ -23,6 +23,7 @@ import {
   type RightPanelTab,
 } from "../../rightPanelTabs";
 import type { SubagentProgressItem, ThreadSubagentHistoryEntry } from "../../session-logic";
+import { describeMediaCounts } from "../media/mediaPanel.logic";
 import { buildAgentsPanelView, summarizeLiveAgents } from "./agentsPanel.logic";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
@@ -232,6 +233,22 @@ function agentsState(agents: RightPanelLauncherAgentsInput | null): RightPanelSu
   return { description: `${pluralize(total, "agent")} so far.`, empty: false };
 }
 
+/**
+ * Media counts what this thread's turns made, by kind. Unknown (the listing
+ * has not come back) keeps the static copy and stays lit.
+ */
+function mediaState(
+  counts: Readonly<Record<OrchestrationMediaKind, number>> | null,
+): RightPanelSurfaceState {
+  if (counts === null) {
+    return staticState("media");
+  }
+  const description = describeMediaCounts(counts);
+  return description === null
+    ? { description: "No pictures or files yet.", empty: true }
+    : { description: `${description}.`, empty: false };
+}
+
 export function buildRightPanelLauncherStates(input: {
   readonly workingTreeFileCount: number | null;
   /** Turns whose diffs the Diff tab's mode picker still offers. Null when that
@@ -248,6 +265,8 @@ export function buildRightPanelLauncherStates(input: {
   /** The checkout folder itself no longer exists; the tree-backed rows must
    *  not describe a working tree that is not there. */
   readonly checkoutMissing?: boolean;
+  /** How many of each kind of media this thread made, or null while unknown. */
+  readonly media?: Readonly<Record<OrchestrationMediaKind, number>> | null;
 }): RightPanelLauncherStates {
   const checkoutMissing = input.checkoutMissing === true;
   return {
@@ -260,6 +279,7 @@ export function buildRightPanelLauncherStates(input: {
     }),
     pullRequest: pullRequestState(input.pullRequest ?? null),
     agents: agentsState(input.agents),
+    media: mediaState(input.media ?? null),
   };
 }
 
@@ -283,9 +303,12 @@ export function useRightPanelLauncherStates(input: {
   /** The thread's resolved pull request, which the route already reads for the
    *  surface itself. */
   readonly pullRequest?: RightPanelLauncherPullRequest | null;
+  /** The thread's media counts, from the listing the Media tab shows. */
+  readonly media?: Readonly<Record<OrchestrationMediaKind, number>> | null;
 }): RightPanelLauncherStates | undefined {
   const { agents, enabled } = input;
   const pullRequest = input.pullRequest ?? null;
+  const media = input.media ?? null;
   const gitStatus = useGitStatus({
     environmentId: enabled ? input.environmentId : null,
     cwd: enabled ? input.cwd : null,
@@ -304,6 +327,7 @@ export function useRightPanelLauncherStates(input: {
             agents,
             pullRequest,
             checkoutMissing,
+            media,
           })
         : undefined,
     [
@@ -311,6 +335,7 @@ export function useRightPanelLauncherStates(input: {
       checkoutMissing,
       diffHasExplicitTarget,
       enabled,
+      media,
       pullRequest,
       reviewableTurnCount,
       workingTreeFileCount,

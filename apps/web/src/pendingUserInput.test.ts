@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  buildPendingUserInputAnswers,
+  buildPendingUserInputResponse,
+  chatReplyResponse,
   countAnsweredPendingUserInputQuestions,
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
   resolvePendingUserInputAnswer,
   setPendingUserInputCustomAnswer,
+  SKIPPED_PENDING_USER_INPUT_DRAFT,
   togglePendingUserInputOptionSelection,
 } from "./pendingUserInput";
 
@@ -104,10 +106,10 @@ describe("togglePendingUserInputOptionSelection", () => {
   });
 });
 
-describe("buildPendingUserInputAnswers", () => {
+describe("buildPendingUserInputResponse", () => {
   it("returns a canonical answer map for complete prompts", () => {
     expect(
-      buildPendingUserInputAnswers(
+      buildPendingUserInputResponse(
         [
           singleSelectQuestion,
           {
@@ -133,25 +135,47 @@ describe("buildPendingUserInputAnswers", () => {
         },
       ),
     ).toEqual({
-      scope: "Orchestration-first",
-      compat: "Keep the current envelope for one release window",
+      answers: {
+        scope: "Orchestration-first",
+        compat: "Keep the current envelope for one release window",
+      },
+      unanswered: {},
     });
   });
 
   it("returns arrays for answered multi-select prompts", () => {
     expect(
-      buildPendingUserInputAnswers([multiSelectQuestion], {
+      buildPendingUserInputResponse([multiSelectQuestion], {
         areas: {
           selectedOptionLabels: ["Server", "Web"],
         },
       }),
     ).toEqual({
-      areas: ["Server", "Web"],
+      answers: { areas: ["Server", "Web"] },
+      unanswered: {},
     });
   });
 
   it("returns null when any question is unanswered", () => {
-    expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
+    expect(buildPendingUserInputResponse([singleSelectQuestion], {})).toBeNull();
+  });
+
+  it("marks skipped questions, and the rest when the card closes or a chat reply goes", () => {
+    const drafts = { scope: SKIPPED_PENDING_USER_INPUT_DRAFT };
+    const questions = [singleSelectQuestion, multiSelectQuestion];
+    expect(buildPendingUserInputResponse(questions, drafts)).toBeNull();
+    expect(buildPendingUserInputResponse(questions, drafts, "dismissed")).toEqual({
+      answers: {},
+      unanswered: { scope: "skipped", areas: "dismissed" },
+    });
+    expect(chatReplyResponse(questions, drafts)).toEqual({
+      answers: {},
+      unanswered: { scope: "skipped", areas: "replied_in_chat" },
+    });
+    // Nothing left open on the card: the reply answers the last question.
+    expect(
+      chatReplyResponse(questions, { ...drafts, areas: { selectedOptionLabels: ["Web"] } }),
+    ).toEqual({ answers: {}, unanswered: { scope: "skipped", areas: "replied_in_chat" } });
   });
 });
 

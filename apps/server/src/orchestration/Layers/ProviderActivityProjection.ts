@@ -859,6 +859,7 @@ export function projectRuntimeEventToActivities(
               ? { isBlocking: event.payload.isBlocking }
               : {}),
             ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
+            ...(event.payload.canLeaveUnanswered === true ? { canLeaveUnanswered: true } : {}),
           },
         }),
       ];

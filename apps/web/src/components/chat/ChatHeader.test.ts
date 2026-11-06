@@ -1,11 +1,8 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  formatSourceChangesLabel,
-  resolveContinueInProjectHeaderState,
-  shouldShowOpenInEditor,
-} from "./ChatHeader";
+import { resolveContinueInProjectHeaderState, shouldShowOpenInEditor } from "./ChatHeader";
+import { buildHeaderSourceMenuItems, formatSourceChangesLabel } from "./HeaderSourceChanges";
 
 describe("shouldShowOpenInEditor", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -93,5 +90,28 @@ describe("formatSourceChangesLabel", () => {
     expect(formatSourceChangesLabel({ workingTreeChanges: null, remoteBehindCount: 1 })).toBe(
       "1 commit behind the remote. Open the Source tab.",
     );
+  });
+});
+
+describe("buildHeaderSourceMenuItems", () => {
+  it("names the pull the way the Source tab would run it", () => {
+    const pullLabel = (pullKind: Parameters<typeof buildHeaderSourceMenuItems>[0]["pullKind"]) =>
+      buildHeaderSourceMenuItems({ behindCount: 3, pullKind, pullDisabledReason: null })[0]?.label;
+    expect(pullLabel("pull")).toBe("Pull 3 commits");
+    expect(pullLabel("stash_and_pull")).toBe("Stash & pull 3 commits…");
+    expect(pullLabel("resolve_divergence")).toBe("Resolve diverged branch");
+  });
+
+  it("says why it can't pull, since a native menu has no tooltip", () => {
+    expect(
+      buildHeaderSourceMenuItems({
+        behindCount: 1,
+        pullKind: "pull",
+        pullDisabledReason: "Git action in progress.",
+      }),
+    ).toEqual([
+      { id: "pull", label: "Can't pull: Git action in progress", disabled: true },
+      { id: "open-source-tab", label: "Open Source tab", separatorBefore: true },
+    ]);
   });
 });

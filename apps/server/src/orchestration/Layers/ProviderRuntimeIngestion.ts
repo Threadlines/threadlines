@@ -46,7 +46,10 @@ import { turnAdmission } from "../turnAdmission.ts";
 
 import { metricAttributes, providerFirstOutputDuration } from "../../observability/Metrics.ts";
 import { isAgentOutputEvent } from "../../provider/turnLatency.ts";
-import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
+import {
+  checkpointFileFromParsedDiff,
+  parseTurnDiffFilesFromUnifiedDiff,
+} from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { withoutLaunchMark } from "../sessionLaunches.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -887,12 +890,7 @@ function checkpointFileChangeActivity(input: {
 }
 
 function parseCheckpointFilesFromUnifiedDiff(diff: string): OrchestrationCheckpointFile[] {
-  return parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-    path: file.path,
-    kind: "modified",
-    additions: file.additions,
-    deletions: file.deletions,
-  }));
+  return parseTurnDiffFilesFromUnifiedDiff(diff).map(checkpointFileFromParsedDiff);
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {

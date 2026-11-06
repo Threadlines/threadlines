@@ -127,7 +127,7 @@ export interface ProviderAccountTokenUsagePresentation {
 
 /**
  * A provider whose limit resets can only be spent in the provider's own app.
- * Anthropic's resets are "not available via API or third-party tools", so
+ * Anthropic offers no public way for another app to claim a Claude reset, so
  * Threadlines links to claude.ai instead of claiming them itself.
  */
 export interface ProviderExternalResetsLink {

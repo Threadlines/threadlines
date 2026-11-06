@@ -346,7 +346,7 @@ const providerAuthHarness = vi.hoisted(() => {
     readonly instanceId: string;
     readonly listener: (event: AuthEvent) => void;
   }>();
-  const startCalls: Array<{ instanceId: string; flow: string }> = [];
+  const startCalls: Array<{ instanceId: string; flow: string; workspaceId?: string }> = [];
   /** Whether each start said its client answers questions. */
   const startQuestions: Array<boolean | undefined> = [];
   /** Each start's `requestId`: a command event echoing it is that client's own run. */
@@ -384,8 +384,13 @@ const providerAuthHarness = vi.hoisted(() => {
         flow: string;
         questions?: boolean;
         requestId?: string;
+        workspaceId?: string;
       }) => {
-        startCalls.push({ instanceId: input.instanceId, flow: input.flow });
+        startCalls.push({
+          instanceId: input.instanceId,
+          flow: input.flow,
+          ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        });
         startQuestions.push(input.questions);
         startRequestIds.push(input.requestId);
         return Promise.resolve();
@@ -2695,12 +2700,6 @@ describe("GeneralSettingsPanel observability", () => {
     await openProviderDetails("Claude");
     await expect.element(page.getByText("Chat configured")).toBeVisible();
     await expect.element(page.getByText("Usage verified")).toBeVisible();
-    const advancedTokenLabel = page.getByText("Advanced: headless chat token");
-    await expect.element(advancedTokenLabel).toBeVisible();
-    const advancedTokenToggle = advancedTokenLabel.element().closest("summary");
-    if (!advancedTokenToggle) throw new Error("Claude details panel did not render");
-    await page.elementLocator(advancedTokenToggle).click();
-    await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
   it("says a Claude row is signed out of usage and opens its sign-in from there", async () => {
@@ -3284,6 +3283,88 @@ describe("GeneralSettingsPanel observability", () => {
     expect(saved?.environment).toEqual([
       { name: "XAI_API_KEY", value: "xai-test-key-0007", sensitive: true },
     ]);
+  });
+
+  it("switches Codex to another ChatGPT workspace from its Account tab", async () => {
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
+      },
+      shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
+      server: {},
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createCodexProviderWithResetCredits(),
+          auth: {
+            status: "authenticated",
+            type: "chatgpt",
+            email: "will@example.com",
+            label: "ChatGPT Business",
+            workspaces: [
+              { id: "acct-personal", kind: "personal", current: true },
+              { id: "acct-acme", name: "Acme", kind: "workspace", current: false },
+            ],
+          },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    // The row says which workspace Codex is in.
+    await expect.element(page.getByText("· Personal", { exact: true })).toBeVisible();
+    await openProviderDetails("Codex");
+    const switchButton = page.getByRole("button", { name: "Switch", exact: true });
+    await expect.element(switchButton).toBeDisabled();
+
+    await page.getByRole("combobox", { name: "Workspace" }).click();
+    await page.getByRole("option", { name: "Acme" }).click();
+    await switchButton.click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([
+        { instanceId: "codex", flow: "switch-workspace", workspaceId: "acct-acme" },
+      ]);
+    });
+
+    const emit = (
+      event: Parameters<typeof providerAuthHarness.emit>[0] extends infer E
+        ? E extends unknown
+          ? Omit<E, "instanceId" | "createdAt">
+          : never
+        : never,
+    ) =>
+      providerAuthHarness.emit({
+        instanceId: "codex",
+        createdAt: "2026-11-06T00:00:00.000Z",
+        ...event,
+      } as never);
+    emit({
+      type: "command",
+      flow: "switch-workspace",
+      command: "Switch ChatGPT workspace",
+      flowId: "flow-switch",
+      ...(providerAuthHarness.startRequestIds[0]
+        ? { requestId: providerAuthHarness.startRequestIds[0] }
+        : {}),
+      surface: "browser",
+    });
+    emit({ type: "status", status: "running", exitCode: null, detail: null });
+    emit({ type: "output", data: "Stopping Codex chats on this computer…\r\n" });
+    await expect.element(page.getByText("Switching workspace", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Stopping Codex chats on this computer…")).toBeVisible();
+
+    emit({ type: "output", data: "Switched to Acme.\r\n" });
+    emit({ type: "status", status: "succeeded", exitCode: null, detail: null });
+    await expect.element(page.getByText("Switched to Acme.", { exact: true })).toBeVisible();
   });
 
   it("opens Grok's sign-in page only on a device Grok didn't already open it on", async () => {

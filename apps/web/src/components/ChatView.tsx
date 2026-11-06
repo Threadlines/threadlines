@@ -17,6 +17,9 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type UserInputChatReply,
+  type UserInputUnanswered,
+  USER_INPUT_CHAT_REPLY_MAX_CHARS,
   ProviderInstanceId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
@@ -127,13 +130,16 @@ import {
   isWaitingOnBackgroundTasks,
   type McpAuthReconnectAction,
   type PendingApproval,
+  type PendingUserInput,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
-  buildPendingUserInputAnswers,
+  buildPendingUserInputResponse,
+  chatReplyResponse,
   derivePendingUserInputProgress,
+  SKIPPED_PENDING_USER_INPUT_DRAFT,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
@@ -319,6 +325,7 @@ import {
   shouldShowProviderStatusNotice,
   useProviderStatusNotice,
 } from "./chat/providerStatusNotice";
+import { useProviderSignInEndsNotice } from "./chat/providerSignInEndsNotice";
 import { useSessionStartupNotice } from "./chat/sessionStartupNotice";
 import { buildProviderSendPreflightNotice } from "./chat/providerReadinessNotice";
 import { useNoAgentReady } from "./setup/firstRunGateState";
@@ -479,6 +486,7 @@ const EMPTY_QUEUED_FOLLOW_UPS: ReadonlyArray<OrchestrationQueuedFollowUp> = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_PENDING_USER_INPUTS: PendingUserInput[] = [];
 const EMPTY_SUBAGENT_ITEMS: ReadonlyArray<SubagentProgressItem> = [];
 /** A provider-tracked run as the run list renders it. The provider never gives
  *  us a pid or a terminal for one, so stopping it goes through the agent when
@@ -2133,7 +2141,29 @@ export default function ChatView(props: ChatViewProps) {
     () => derivePendingUserInputs(threadActivities),
     [threadActivities],
   );
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  // Reply in chat: the card steps aside and the message box answers the
+  // questions. Tied to this thread and request: when the question closes some
+  // other way meanwhile, the draft stays and the next Send only says so.
+  const [replyInChat, setReplyInChat] = useState<{
+    readonly threadKey: string;
+    readonly requestId: ApprovalRequestId;
+  } | null>(null);
+  const replyingInChatTo = useMemo(
+    () =>
+      replyInChat !== null && replyInChat.threadKey === activeThreadKey
+        ? (pendingUserInputs.find((input) => input.requestId === replyInChat.requestId) ?? null)
+        : null,
+    [activeThreadKey, pendingUserInputs, replyInChat],
+  );
+  const replyInChatClosedMeanwhile =
+    replyInChat !== null && replyInChat.threadKey === activeThreadKey && replyingInChatTo === null;
+  // While replying, every card steps aside: the box is for the reply, and
+  // the other questions come back once it has gone.
+  const composerPendingUserInputs = useMemo(
+    () => (replyingInChatTo === null ? pendingUserInputs : EMPTY_PENDING_USER_INPUTS),
+    [pendingUserInputs, replyingInChatTo],
+  );
+  const activePendingUserInput = composerPendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
@@ -2156,10 +2186,10 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePendingDraftAnswers, activePendingQuestionIndex, activePendingUserInput],
   );
-  const activePendingResolvedAnswers = useMemo(
+  const activePendingResponse = useMemo(
     () =>
       activePendingUserInput
-        ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers)
+        ? buildPendingUserInputResponse(activePendingUserInput.questions, activePendingDraftAnswers)
         : null,
     [activePendingDraftAnswers, activePendingUserInput],
   );
@@ -5326,7 +5356,20 @@ export default function ChatView(props: ChatViewProps) {
       isGoalSettingUpThread(scopedThreadKey(scopeThreadRef(environmentId, activeThread.id)))
     )
       return;
-    if (pendingUserInputs.some(isBlockingUserInput)) return;
+    if (replyInChatClosedMeanwhile) {
+      // The questions closed some other way while the reply was being
+      // written. Say so once; the draft stays for an ordinary send.
+      setReplyInChat(null);
+      toastManager.add(
+        stackedThreadToast({
+          type: "info",
+          title: "Those questions were already closed",
+          description: "Your reply is still in the box. Send it again to send it as a message.",
+        }),
+      );
+      return;
+    }
+    if (replyingInChatTo === null && pendingUserInputs.some(isBlockingUserInput)) return;
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
@@ -5356,6 +5399,63 @@ export default function ChatView(props: ChatViewProps) {
       pickedElementContextCount: composerPickedElementContexts.length,
       drawingContextCount: composerDrawingContexts.length,
     });
+    if (replyingInChatTo !== null) {
+      // The message answers the questions instead of going as a message. It
+      // reaches the agent inside its answer, so it can only be text.
+      const hasMoreThanText =
+        composerAttachments.length > 0 ||
+        sendableComposerTerminalContexts.length > 0 ||
+        sendableTranscriptHighlightContexts.length > 0 ||
+        composerFileSelectionContexts.length > 0 ||
+        composerPickedElementContexts.length > 0 ||
+        composerDrawingContexts.length > 0;
+      if (hasMoreThanText || trimmed.length > USER_INPUT_CHAT_REPLY_MAX_CHARS) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: hasMoreThanText
+              ? "A reply to the questions can only be text"
+              : "That reply is too long to answer the questions",
+            description: hasMoreThanText
+              ? "Remove what's attached, or go back to the questions."
+              : `Keep it under ${USER_INPUT_CHAT_REPLY_MAX_CHARS.toLocaleString()} characters, or go back to the questions.`,
+          }),
+        );
+        return;
+      }
+      if (trimmed.length === 0) return;
+      const response = chatReplyResponse(
+        replyingInChatTo.questions,
+        pendingUserInputAnswersByRequestId[replyingInChatTo.requestId] ??
+          EMPTY_PENDING_USER_INPUT_ANSWERS,
+      );
+      if (!response) return;
+      // Watched from before it goes: the agent may refuse it before the send
+      // returns, and then the reply comes back to the box (sentChatRepliesRef).
+      const replyCommandId = newCommandId();
+      sentChatRepliesRef.current.set(replyCommandId, { text: trimmed, failed: false });
+      sendInFlightRef.current = true;
+      const sent = await onRespondToUserInput(replyingInChatTo.requestId, response.answers, {
+        unanswered: response.unanswered,
+        reply: { text: trimmed },
+        commandId: replyCommandId,
+      });
+      sendInFlightRef.current = false;
+      const refusedMeanwhile = sentChatRepliesRef.current.get(replyCommandId)?.failed === true;
+      if (!sent || refusedMeanwhile) {
+        // Refused (closed meanwhile, or the server said no): the draft stays.
+        sentChatRepliesRef.current.delete(replyCommandId);
+        return;
+      }
+      setReplyInChat(null);
+      // Only the text that went: anything typed while it was on its way stays.
+      if (promptRef.current === promptForSend) {
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.resetCursorState();
+      }
+      return;
+    }
     // A message for the agent whose turn waits on approvals answers them
     // first. Only the draft that was sent goes out afterwards, to the agent it
     // was for: one edited, or readdressed, meanwhile stays in the box, and its
@@ -6821,6 +6921,10 @@ export default function ChatView(props: ChatViewProps) {
       providerSendPreflight !== null &&
       providerSendPreflight.instanceId === activeProviderStatus?.instanceId,
   });
+  const signInEndsNotice = useProviderSignInEndsNotice({
+    status: activeProviderStatus,
+    signIn: composerSignInView,
+  });
   const sessionStartupNotice = useSessionStartupNotice({
     isSessionStarting,
     startedAt: activeWorkStartedAt,
@@ -7137,13 +7241,39 @@ export default function ChatView(props: ChatViewProps) {
     thread: activeThread,
     agentName: outsideWorkAgentName,
   });
+  // While a reply in chat answers the questions, the box says so, with the
+  // way back to the card.
+  const replyInChatNotice = useMemo<ComposerNotice | null>(
+    () =>
+      replyingInChatTo === null
+        ? null
+        : {
+            id: `reply-in-chat:${replyingInChatTo.requestId}`,
+            severity: "info",
+            lead: "Replying in chat",
+            detail: "Your next message answers the questions. Text only.",
+            actions: (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="h-6 px-1.5"
+                onClick={() => setReplyInChat(null)}
+              >
+                Back to questions
+              </Button>
+            ),
+          },
+    [replyingInChatTo],
+  );
   const composerNotices = useMemo(
     () =>
       selectComposerNotices([
+        replyInChatNotice,
         checkoutMissingNotice,
         threadErrorNotice,
         sendPreflightNotice,
         providerStatusNotice,
+        signInEndsNotice,
         sessionStartupNotice,
         removedAccountNotice,
         outsideWorkNotice,
@@ -7155,8 +7285,10 @@ export default function ChatView(props: ChatViewProps) {
       outsideWorkNotice,
       providerStatusNotice,
       removedAccountNotice,
+      replyInChatNotice,
       sendPreflightNotice,
       sessionStartupNotice,
+      signInEndsNotice,
       threadErrorNotice,
     ],
   );
@@ -7189,30 +7321,85 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadId, environmentId, setThreadError],
   );
 
+  // Chat replies sent from here, by the command that sent each. The server
+  // names that command in the failure it records when the agent refuses a
+  // reply (its question was answered elsewhere first), so only a reply this
+  // device sent, and only the attempt that failed, comes back to the box.
+  const sentChatRepliesRef = useRef(new Map<string, { text: string; failed: boolean }>());
+  useEffect(() => {
+    const sent = sentChatRepliesRef.current;
+    if (sent.size === 0) return;
+    for (const activity of threadActivities) {
+      if (activity.kind !== "provider.user-input.respond.failed") continue;
+      const commandId = (activity.payload as { commandId?: unknown } | null)?.commandId;
+      const entry = typeof commandId === "string" ? sent.get(commandId) : undefined;
+      if (commandId === undefined || entry === undefined || entry.failed) continue;
+      if (promptRef.current.trim() === entry.text) {
+        // Refused before the send even returned: the reply is still in the
+        // box, and the send leaves it there.
+        entry.failed = true;
+        continue;
+      }
+      sent.delete(commandId as string);
+      const nextPrompt = appendRestoredFollowUpText(promptRef.current, [entry.text]);
+      promptRef.current = nextPrompt;
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+    }
+  }, [
+    composerDraftTarget,
+    composerRef,
+    sentChatRepliesRef,
+    setComposerDraftPrompt,
+    threadActivities,
+  ]);
+
+  /** Sends a response; true once the server took it, so a reply's draft can go. */
   const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+    async (
+      requestId: ApprovalRequestId,
+      answers: Record<string, unknown>,
+      leftUnanswered?: {
+        readonly unanswered: UserInputUnanswered;
+        readonly reply?: UserInputChatReply;
+        /** The command id to send it under, known before it goes. */
+        readonly commandId?: ReturnType<typeof newCommandId>;
+      },
+    ): Promise<boolean> => {
       const api = readEnvironmentApi(environmentId);
-      if (!api || !activeThreadId) return;
+      if (!api || !activeThreadId) return false;
 
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
+      const sent = await api.orchestration
         .dispatchCommand({
           type: "thread.user-input.respond",
-          commandId: newCommandId(),
+          commandId: leftUnanswered?.commandId ?? newCommandId(),
           threadId: activeThreadId,
           requestId,
           answers,
+          ...(leftUnanswered !== undefined && Object.keys(leftUnanswered.unanswered).length > 0
+            ? { unanswered: leftUnanswered.unanswered }
+            : {}),
+          ...(leftUnanswered?.reply !== undefined ? { reply: leftUnanswered.reply } : {}),
           createdAt: new Date().toISOString(),
         })
-        .catch((err: unknown) => {
-          setThreadError(
-            activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit user input.",
-          );
-        });
+        .then(
+          () => true,
+          (err: unknown) => {
+            setThreadError(
+              activeThreadId,
+              err instanceof Error ? err.message : "Failed to submit user input.",
+            );
+            return false;
+          },
+        );
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      return sent;
     },
     [activeThreadId, environmentId, setThreadError],
   );
@@ -7285,19 +7472,81 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     if (activePendingProgress.isLastQuestion) {
-      if (activePendingResolvedAnswers) {
-        void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
+      if (activePendingResponse) {
+        void onRespondToUserInput(activePendingUserInput.requestId, activePendingResponse.answers, {
+          unanswered: activePendingResponse.unanswered,
+        });
       }
       return;
     }
     setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
   }, [
     activePendingProgress,
-    activePendingResolvedAnswers,
+    activePendingResponse,
     activePendingUserInput,
     onRespondToUserInput,
     setActivePendingUserInputQuestionIndex,
   ]);
+
+  // Skip the question on screen: the next one comes up, or the last sends
+  // the answers given so far with the skipped ones marked.
+  const onSkipActivePendingUserInput = useCallback(() => {
+    const question = activePendingProgress?.activeQuestion;
+    if (!activePendingUserInput || !activePendingProgress || !question) return;
+    const drafts = {
+      ...activePendingDraftAnswers,
+      [question.id]: SKIPPED_PENDING_USER_INPUT_DRAFT,
+    };
+    setPendingUserInputAnswersByRequestId((existing) => ({
+      ...existing,
+      [activePendingUserInput.requestId]: {
+        ...existing[activePendingUserInput.requestId],
+        [question.id]: SKIPPED_PENDING_USER_INPUT_DRAFT,
+      },
+    }));
+    if (!activePendingProgress.isLastQuestion) {
+      setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
+      return;
+    }
+    const response = buildPendingUserInputResponse(activePendingUserInput.questions, drafts);
+    if (response) {
+      void onRespondToUserInput(activePendingUserInput.requestId, response.answers, {
+        unanswered: response.unanswered,
+      });
+    } else {
+      // An earlier question still waits: go back to it.
+      const firstOpen = activePendingUserInput.questions.findIndex(
+        (entry) => buildPendingUserInputResponse([entry], drafts) === null,
+      );
+      if (firstOpen >= 0) setActivePendingUserInputQuestionIndex(firstOpen);
+    }
+  }, [
+    activePendingDraftAnswers,
+    activePendingProgress,
+    activePendingUserInput,
+    onRespondToUserInput,
+    setActivePendingUserInputQuestionIndex,
+  ]);
+
+  // Close the card: answers given so far go, every other question is closed.
+  const onCloseActivePendingUserInput = useCallback(() => {
+    if (!activePendingUserInput) return;
+    const response = buildPendingUserInputResponse(
+      activePendingUserInput.questions,
+      activePendingDraftAnswers,
+      "dismissed",
+    );
+    if (!response) return;
+    void onRespondToUserInput(activePendingUserInput.requestId, response.answers, {
+      unanswered: response.unanswered,
+    });
+  }, [activePendingDraftAnswers, activePendingUserInput, onRespondToUserInput]);
+
+  const onReplyInChatToActivePendingUserInput = useCallback(() => {
+    if (!activePendingUserInput || activeThreadKey === null) return;
+    setReplyInChat({ threadKey: activeThreadKey, requestId: activePendingUserInput.requestId });
+    composerRef.current?.focusAtEnd();
+  }, [activePendingUserInput, activeThreadKey]);
 
   const onPreviousActivePendingUserInputQuestion = useCallback(() => {
     if (!activePendingProgress) {
@@ -8547,8 +8796,8 @@ export default function ChatView(props: ChatViewProps) {
               className={cn(
                 "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
                 isGitRepo
-                  ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
-                  : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+                  ? "pb-[calc(var(--safe-area-bottom)+0.25rem)]"
+                  : "pb-[calc(var(--safe-area-bottom)+0.75rem)] sm:pb-[calc(var(--safe-area-bottom)+1rem)]",
               )}
             >
               <div className="relative isolate mx-auto w-full draft-hero:max-w-[45rem]">
@@ -8573,7 +8822,7 @@ export default function ChatView(props: ChatViewProps) {
                     threadLocked={threadMoveComposerLock}
                     activePendingApproval={activePendingApproval}
                     pendingApprovals={pendingApprovals}
-                    pendingUserInputs={pendingUserInputs}
+                    pendingUserInputs={composerPendingUserInputs}
                     activePendingDraftAnswers={activePendingDraftAnswers}
                     activePendingQuestionIndex={activePendingQuestionIndex}
                     respondingRequestIds={respondingRequestIds}
@@ -8658,6 +8907,9 @@ export default function ChatView(props: ChatViewProps) {
                     onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                     onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
                     onRespondToUserInput={onRespondToUserInput}
+                    onSkipActivePendingUserInput={onSkipActivePendingUserInput}
+                    onCloseActivePendingUserInput={onCloseActivePendingUserInput}
+                    onReplyInChatToActivePendingUserInput={onReplyInChatToActivePendingUserInput}
                     onPreviousActivePendingUserInputQuestion={
                       onPreviousActivePendingUserInputQuestion
                     }

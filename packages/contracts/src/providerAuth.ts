@@ -4,8 +4,7 @@
  * Wire shapes for the settings-owned auth flow: Threadlines spawns the
  * provider's own auth command in an ephemeral PTY (never a thread terminal,
  * never persisted) and streams its output back to the Providers settings
- * page. Secrets printed by `claude setup-token` are captured and masked
- * server-side, so `ProviderAuthOutputEvent.data` never carries a raw token.
+ * page.
  *
  * @module providerAuth
  */
@@ -21,11 +20,19 @@ const ProviderAuthRowsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)
 
 /**
  * `login` runs the driver's interactive sign-in (`codex login`,
- * `claude auth login`, Antigravity's Google sign-in); `claude-setup-token`
- * mints the long-lived headless token and stores it as a sensitive instance
- * environment variable; `logout` signs the provider out where it can.
+ * `claude auth login`, Antigravity's Google sign-in); `logout` signs the
+ * provider out where it can. `claude-setup-token` is retired: Threadlines no
+ * longer saves Claude tokens. It stays in the schema so older clients and
+ * servers still decode each other, and a server refuses it as
+ * `unsupportedFlow`.
  */
-export const ProviderAuthFlow = Schema.Literals(["login", "claude-setup-token", "logout"]);
+export const ProviderAuthFlow = Schema.Literals([
+  "login",
+  "claude-setup-token",
+  "logout",
+  /** Codex: move the sign-in to another of its ChatGPT workspaces (`workspaceId`). */
+  "switch-workspace",
+]);
 export type ProviderAuthFlow = typeof ProviderAuthFlow.Type;
 
 export const ProviderAuthStartInput = Schema.Struct({
@@ -44,6 +51,8 @@ export const ProviderAuthStartInput = Schema.Struct({
    * when this is false or missing, as it is from older clients.
    */
   questions: Schema.optional(Schema.Boolean),
+  /** For `switch-workspace`: the workspace to switch to (ServerProviderWorkspace.id). */
+  workspaceId: Schema.optional(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256))),
 });
 export type ProviderAuthStartInput = Schema.Codec.Encoded<typeof ProviderAuthStartInput>;
 

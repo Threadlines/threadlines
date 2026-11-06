@@ -82,6 +82,8 @@ import {
   ThreadId,
   TurnId,
   type UserInputQuestion,
+  type UserInputUnanswered,
+  type UserInputUnansweredReason,
 } from "@threadlines/contracts";
 import {
   getProviderOptionCurrentValue,
@@ -245,6 +247,7 @@ import {
 } from "../Drivers/ClaudeWorkflowRuns.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
+  type ClaudeLaunchTarget,
   claudeModelSupportsAutoRuntimeMode,
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -447,9 +450,15 @@ interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
 }
 
+/** The user's response to a question: answers, and which went unanswered and how. */
+interface ClaudeUserInputResponse {
+  readonly answers: ProviderUserInputAnswers;
+  readonly unanswered?: UserInputUnanswered | undefined;
+}
+
 interface PendingUserInput {
   readonly questions: ReadonlyArray<UserInputQuestion>;
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly answers: Deferred.Deferred<ClaudeUserInputResponse>;
   /** Set when a tool server asked: its answer is checked before it is taken. */
   readonly elicitation?: McpElicitation;
 }
@@ -704,6 +713,8 @@ interface ClaudeSessionContext {
   lastThreadStartedId: string | undefined;
   /** The CLI's version, from its init message; unknown until the first turn. */
   cliVersion: string | undefined;
+  /** The protocol capabilities the CLI listed in its init message. */
+  cliCapabilities: ReadonlySet<string>;
   // Rendered cross-driver handoff preamble, injected ahead of the first user
   // turn and cleared once consumed. Set only when a session starts from a
   // context seed (no native resume).
@@ -837,6 +848,14 @@ export interface ClaudeAdapterLiveOptions {
    * version known to take it, so it asks this until then.
    */
   readonly installedCliVersion?: Effect.Effect<string | undefined>;
+  /**
+   * Asks the Claude Code a session is about to start for its version: the
+   * executable, folder and environment handed to the SDK. What the session
+   * asks of the CLI at start (claudeGuardFailure) holds for its whole life,
+   * so it may not trust a provider check that predates an update or a
+   * downgrade, or that looked `claude` up another way.
+   */
+  readonly readLaunchVersion?: (launch: ClaudeLaunchTarget) => Effect.Effect<string | undefined>;
   /**
    * Whether Claude keeps suggesting the next message while it warns that
    * usage runs fast (Settings › Threads). Read like the workflow size.
@@ -1020,7 +1039,18 @@ export function lockDownClaudeQueryOptions(
       behavior: "deny",
       message: `A side answer is read-only (${toolName}).`,
     }),
-    hooks: { PreToolUse: [{ hooks: [sideAnswerToolGuard(allowedTools)] }] },
+    // The same Claude Code runs it, so its guard fails closed exactly when the
+    // session's own guards do (claudeGuardFailure).
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [sideAnswerToolGuard(allowedTools)],
+          ...(base.hooks?.PreToolUse?.some((matcher) => matcher.onFailure === "block")
+            ? { onFailure: "block" as const }
+            : {}),
+        },
+      ],
+    },
   };
 }
 
@@ -2684,6 +2714,53 @@ function supportsClaudeAppendOnly(cliVersion: string | undefined): boolean {
     cliVersion === undefined ||
     compareSemverVersions(cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0
   );
+}
+
+/** The CLI capability that lets an answer say how a question went unanswered. */
+const ASK_USER_QUESTION_UNANSWERED_CAPABILITY = "ask_user_question_unanswered_v1";
+
+/**
+ * How each unanswered question went unanswered, as AskUserQuestion's
+ * `annotations` (keyed by question text, like its answers). Claude doesn't
+ * read these, its answers say it in words; they keep the transcript exact.
+ * Only for a CLI that lists the capability: an older one refuses the whole
+ * answer when it sees them.
+ */
+function claudeUnansweredAnnotations(input: {
+  readonly unanswered: UserInputUnanswered | undefined;
+  readonly questionIds: ReadonlyArray<string>;
+  readonly capabilities: ReadonlySet<string>;
+}): Record<string, { readonly unanswered: UserInputUnansweredReason }> | undefined {
+  if (
+    input.unanswered === undefined ||
+    !input.capabilities.has(ASK_USER_QUESTION_UNANSWERED_CAPABILITY)
+  ) {
+    return undefined;
+  }
+  const entries = input.questionIds.flatMap((id) => {
+    const reason = input.unanswered?.[id];
+    return reason === undefined ? [] : [[id, { unanswered: reason }] as const];
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** The oldest Claude Code that honours `onFailure` on hook matchers. */
+const MINIMUM_CLAUDE_HOOK_ON_FAILURE_VERSION = "2.1.317";
+
+/**
+ * How a guard hook (a PreToolUse hook that denies a tool) ends when it fails.
+ * A guard whose own lookup fails would otherwise let the tool run: a side
+ * answer could write, Claude's Artifact tool could publish with artifacts
+ * switched off. So it blocks, but only on a Claude Code known to honour that:
+ * the SDK refuses to start a session that asks for it on an older one. Unlike
+ * the checks above, an unknown version is not taken to be current; it keeps
+ * the old behaviour, where the tool runs.
+ */
+function claudeGuardFailure(cliVersion: string | undefined): { readonly onFailure?: "block" } {
+  return cliVersion !== undefined &&
+    compareSemverVersions(cliVersion, MINIMUM_CLAUDE_HOOK_ON_FAILURE_VERSION) >= 0
+    ? { onFailure: "block" }
+    : {};
 }
 
 /** A finished workflow's output file holds every agent's final entry and the
@@ -7112,6 +7189,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (cliVersion) {
           context.cliVersion = cliVersion;
         }
+        const capabilities = (message as { readonly capabilities?: unknown }).capabilities;
+        if (Array.isArray(capabilities)) {
+          context.cliCapabilities = new Set(
+            capabilities.filter((entry): entry is string => typeof entry === "string"),
+          );
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "session.configured",
@@ -8074,7 +8157,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     // Questions still open get no answer: their askers see the session gone.
     for (const pending of context.pendingUserInputs.values()) {
-      yield* Deferred.succeed(pending.answers, {} as ProviderUserInputAnswers);
+      yield* Deferred.succeed(pending.answers, { answers: {} });
     }
     context.pendingUserInputs.clear();
 
@@ -8633,10 +8716,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ) {
         const noAnswer = {} as ProviderUserInputAnswers;
         if (request.signal.aborted) {
-          return { answers: noAnswer, aborted: true };
+          return { answers: noAnswer, unanswered: undefined, aborted: true };
         }
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-        const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const answers = yield* Deferred.make<ClaudeUserInputResponse>();
         const turnRef = context.turnState
           ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
           : {};
@@ -8650,7 +8733,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }
           aborted = true;
           pendingUserInputs.delete(requestId);
-          runFork(Deferred.succeed(answers, noAnswer));
+          runFork(Deferred.succeed(answers, { answers: noAnswer }));
         };
         pendingUserInputs.set(requestId, {
           questions: request.payload.questions,
@@ -8661,7 +8744,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (request.signal.aborted) {
           // Given up on while this was being set up.
           onAbort();
-          return { answers: noAnswer, aborted: true };
+          return { answers: noAnswer, unanswered: undefined, aborted: true };
         }
 
         const requestedStamp = yield* makeEventStamp();
@@ -8683,7 +8766,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
 
-        const answered = yield* Deferred.await(answers).pipe(
+        const response = yield* Deferred.await(answers).pipe(
           Effect.ensuring(
             Effect.sync(() => {
               pendingUserInputs.delete(requestId);
@@ -8692,6 +8775,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ),
         );
 
+        const answered = response.answers;
         const resolvedStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
           type: "user-input.resolved",
@@ -8710,7 +8794,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         // A session that stopped answered nothing.
-        return { answers: answered, aborted: aborted || context.stopped };
+        return {
+          answers: answered,
+          unanswered: response.unanswered,
+          aborted: aborted || context.stopped,
+        };
       });
 
       /**
@@ -8800,8 +8888,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }),
         );
 
-        const { answers, aborted } = yield* askUser(context, {
-          payload: { questions },
+        // Claude reads any text as an answer, so a question can be skipped,
+        // closed, or answered in the chat instead.
+        const { answers, unanswered, aborted } = yield* askUser(context, {
+          payload: { questions, canLeaveUnanswered: true },
           signal: callbackOptions.signal,
           providerItemId: callbackOptions.toolUseID,
           rawMethod: "canUseTool/AskUserQuestion",
@@ -8817,11 +8907,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         // Return the answers to the SDK in the expected format:
         // { questions: [...], answers: { questionText: selectedLabel } }
+        const annotations = claudeUnansweredAnnotations({
+          unanswered,
+          questionIds: questions.map((question) => question.id),
+          capabilities: context.cliCapabilities,
+        });
         return {
           behavior: "allow",
           updatedInput: {
             questions: toolInput.questions,
             answers,
+            ...(annotations !== undefined ? { annotations } : {}),
           },
         } satisfies PermissionResult;
       });
@@ -9125,6 +9221,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Claude's own Artifact tool, which uploads a page to claude.ai. Only
       // beside agent pages: the chat shows the local copy of each publish.
       const artifacts = input.artifacts === true && agentPages;
+      // The setting decides, whatever the environment Threadlines was
+      // started in says: on asks for the tool, off refuses it.
+      // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+      const sdkEnvironment = {
+        ...withUsualCommandLookup(claudeEnvironment),
+        ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
+      };
+      // Asked of the very binary, folder and environment the SDK gets below.
+      const guardFailure = claudeGuardFailure(
+        options?.readLaunchVersion !== undefined
+          ? yield* options.readLaunchVersion({
+              executable: claudeBinaryPath,
+              cwd: input.cwd,
+              environment: sdkEnvironment,
+            })
+          : undefined,
+      );
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
       const credential =
@@ -9295,19 +9408,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           Stop: [{ hooks: [reportCheckBacks] }],
           UserPromptSubmit: [{ hooks: [noticeCheckBackFire] }],
           PreToolUse: [
-            { matcher: CLAUDE_SELF_SCHEDULING_TOOL_MATCHER, hooks: [outsideWorkGuard] },
+            {
+              matcher: CLAUDE_SELF_SCHEDULING_TOOL_MATCHER,
+              hooks: [outsideWorkGuard],
+              ...guardFailure,
+            },
             ...(artifacts
-              ? [{ matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"), hooks: [artifactSwitchGuard] }]
+              ? [
+                  {
+                    matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"),
+                    hooks: [artifactSwitchGuard],
+                    ...guardFailure,
+                  },
+                ]
               : []),
           ],
         },
-        // The setting decides, whatever the environment Threadlines was
-        // started in says: on asks for the tool, off refuses it.
-        // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
-        env: {
-          ...withUsualCommandLookup(claudeEnvironment),
-          ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
-        },
+        env: sdkEnvironment,
         ...(input.cwd || pageAssets !== undefined
           ? {
               additionalDirectories: [
@@ -9463,6 +9580,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastCompletedTurnId: undefined,
         lastThreadStartedId: undefined,
         cliVersion: undefined,
+        cliCapabilities: new Set(),
         // Render the cross-driver handoff seed once at start; consumed on the
         // first turn. Only honored when there is no native resume to defer to
         // (including when a requested resume fell back to a fresh start).
@@ -10413,7 +10531,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = Effect.fn(
     "respondToUserInput",
-  )(function* (threadId, requestId, answers) {
+  )(function* (threadId, requestId, answers, unanswered) {
     const context = yield* requireSession(threadId);
     const pending = context.pendingUserInputs.get(requestId);
     if (!pending) {
@@ -10439,7 +10557,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     context.pendingUserInputs.delete(requestId);
-    yield* Deferred.succeed(pending.answers, answers);
+    yield* Deferred.succeed(pending.answers, {
+      answers,
+      ...(unanswered !== undefined ? { unanswered } : {}),
+    });
   });
 
   const stopSession: ClaudeAdapterShape["stopSession"] = Effect.fn("stopSession")(

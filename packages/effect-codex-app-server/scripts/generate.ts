@@ -12,9 +12,55 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-const CODEX_PROTOCOL_VERSION = "0.163.0";
+const CODEX_PROTOCOL_VERSION = "0.167.0";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
+/**
+ * Codex's JSON Schema links definitions as `#/definitions/<name>`. The OpenAPI
+ * 3.1 generator takes refs as `#/components/schemas/<name>` (Effect 4.1 refuses
+ * anything else), so every rewritten ref points there.
+ */
+const COMPONENT_REF_PREFIX = "#/components/schemas/";
+
+/**
+ * Lists of words Codex keeps adding to: plan names, hook events and sources,
+ * model and plugin metadata. Each sits inside a reply that fills a whole
+ * screen or status (the account read, the model list, the hooks and plugin
+ * lists) or a notification about the same things, and one word our bindings
+ * don't know would otherwise fail all of it (a new plan made the Codex sign-in
+ * check fail). In what Codex sends us, each of these also takes any other
+ * string, so a new word arrives as text. Requests we send keep the closed list,
+ * and statuses the runtime acts on (turn, item and hook run status) stay closed.
+ */
+const OPEN_ENUM_DEFINITIONS: ReadonlySet<string> = new Set([
+  "AccountRoutingOverride",
+  "AccountSessionWorkspaceKind",
+  "AppTemplateUnavailableReason",
+  "AuthMode",
+  "CyberAccessProgram",
+  "HookEventName",
+  "HookExecutionMode",
+  "HookHandlerType",
+  "HookOutputEntryKind",
+  "HookScope",
+  "HookSource",
+  "HookTrustStatus",
+  "InputModality",
+  "MultiAgentVersion",
+  "PlanType",
+  "PluginAuthPolicy",
+  "PluginAvailability",
+  "PluginDisabledReason",
+  "PluginInstallPolicy",
+  "PluginInstallPolicySource",
+  "PluginShareDiscoverability",
+  "PluginSharePrincipalRole",
+  "PluginSharePrincipalType",
+  "RateLimitReachedType",
+  "RateLimitResetCreditStatus",
+  "RateLimitResetType",
+  "SkillScope",
+]);
 
 const JsonSchemaDocument = Schema.StructWithRest(
   Schema.Struct({
@@ -331,40 +377,156 @@ function isJsonObject(value: Schema.Json | undefined): value is Schema.JsonObjec
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Whether a generated file holds something Codex sends us: a reply or a notification. */
+function isSentByCodex(exportName: string): boolean {
+  return /(Response|Notification)$/.test(exportName) && exportName !== "ClientNotification";
+}
+
+/** A closed list of strings: an enum, or alternatives that are each one. */
+function isStringEnumSchema(schema: Schema.Json): schema is Schema.JsonObject {
+  if (!isJsonObject(schema)) return false;
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.length > 0 && schema.enum.every((value) => typeof value === "string");
+  }
+  const alternatives = schema.oneOf ?? schema.anyOf;
+  return (
+    Array.isArray(alternatives) && alternatives.length > 0 && alternatives.every(isStringEnumSchema)
+  );
+}
+
+/** The same closed list, plus any other string (see `OPEN_ENUM_DEFINITIONS`). */
+function openStringEnum(schema: Schema.JsonObject): Schema.Json {
+  return {
+    ...(schema.title !== undefined ? { title: schema.title } : {}),
+    ...(schema.description !== undefined ? { description: schema.description } : {}),
+    anyOf: [schema, { type: "string" }],
+  };
+}
+
+/** Keys whose value is one schema, or an array of schemas. */
+const SUBSCHEMA_KEYS = new Set([
+  "items",
+  "prefixItems",
+  "additionalProperties",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "not",
+]);
+/** Keys whose value maps names to schemas; the map itself is not a schema. */
+const SUBSCHEMA_MAP_KEYS = new Set(["properties", "patternProperties", "definitions", "$defs"]);
+
 /**
- * Forward-compat for Codex 0.164+, which stores generated images in the
- * attachment store: an `imageGeneration` thread item then carries either inline
- * `result` data or a durable `fileId` (upstream schema: anyOf `{fileId}` |
- * `{result}`). Schemas up to 0.163 require `result`, so a file-backed item
- * from a newer Codex would fail to decode and be dropped. This makes `result`
- * optional and adds an optional `fileId`. It only fires while the pinned schema
- * still requires `result`, so it becomes a no-op once the pin reaches 0.164.
+ * Rebuilds a schema with `transform` applied to each schema directly inside it
+ * (property schemas, items, alternatives). Data such as `enum`, `required` or
+ * `default`, and the name maps themselves, are never treated as schemas, so a
+ * property that happens to be called `properties` stays a property.
  */
-function relaxImageGenerationResult(value: Schema.Json): Schema.Json {
+function mapSubschemas(
+  schema: Schema.JsonObject,
+  transform: (child: Schema.Json) => Schema.Json,
+): Record<string, Schema.Json> {
+  return Object.fromEntries(
+    Object.entries(schema).map(([key, child]) => {
+      if (SUBSCHEMA_MAP_KEYS.has(key) && isJsonObject(child)) {
+        return [
+          key,
+          Object.fromEntries(Object.entries(child).map(([name, sub]) => [name, transform(sub)])),
+        ];
+      }
+      if (SUBSCHEMA_KEYS.has(key)) {
+        return [key, Array.isArray(child) ? child.map(transform) : transform(child)];
+      }
+      return [key, child];
+    }),
+  );
+}
+
+/** An inline object schema: its own properties, no ref and no alternatives. */
+function isPlainObjectSchema(value: Schema.Json): value is Schema.JsonObject {
+  return (
+    isJsonObject(value) &&
+    isJsonObject(value.properties) &&
+    !("$ref" in value) &&
+    !("anyOf" in value) &&
+    !("oneOf" in value) &&
+    !("allOf" in value)
+  );
+}
+
+/**
+ * Codex's schema leaves `additionalProperties` unset, which JSON Schema reads
+ * as "any other key, any JSON value". Effect 4.1's generator honours that with
+ * an index signature on every object type. Marking these objects closed keeps
+ * them plain `Schema.Struct`s, which still decode a reply that carries keys a
+ * newer Codex added: decoding drops the keys it doesn't know. Objects that say
+ * what else they allow (records, free-form maps) keep their own setting.
+ */
+function closeUnspecifiedObjects(value: Schema.Json): Schema.Json {
   if (Array.isArray(value)) {
-    return value.map(relaxImageGenerationResult);
+    return value.map(closeUnspecifiedObjects);
   }
   if (!isJsonObject(value)) {
     return value;
   }
 
-  const next = Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, relaxImageGenerationResult(child)]),
-  ) as Record<string, Schema.Json>;
-  const { properties, required } = next;
-  if (!isJsonObject(properties) || !Array.isArray(required) || !required.includes("result")) {
+  const next = mapSubschemas(value, closeUnspecifiedObjects);
+  return isJsonObject(next.properties) && !("additionalProperties" in next)
+    ? { ...next, additionalProperties: false }
+    : next;
+}
+
+/**
+ * Codex writes some objects as shared properties plus alternatives, such as an
+ * image content item that has `type` and `detail` and then either `image_url`
+ * or `file_id`. Effect 4.1's generator refuses to intersect such alternatives,
+ * so each alternative is merged with the shared part into an object of its own
+ * (the union Effect 4.0 used to emit itself).
+ */
+function distributeObjectAlternatives(value: Schema.Json): Schema.Json {
+  if (Array.isArray(value)) {
+    return value.map(distributeObjectAlternatives);
+  }
+  if (!isJsonObject(value)) {
+    return value;
+  }
+
+  const next = mapSubschemas(value, distributeObjectAlternatives);
+  const alternativesKey = "anyOf" in next ? "anyOf" : "oneOf" in next ? "oneOf" : undefined;
+  const nested = alternativesKey ? next[alternativesKey] : undefined;
+  if (!alternativesKey || !Array.isArray(nested) || !isJsonObject(next.properties)) {
     return next;
   }
-  const typeProperty = properties.type;
-  const typeEnum = isJsonObject(typeProperty) ? typeProperty.enum : undefined;
-  if (!Array.isArray(typeEnum) || typeEnum.length !== 1 || typeEnum[0] !== "imageGeneration") {
+  // An alternative that was itself split above (an image item that carries
+  // either a URL or a file id) contributes each of its own alternatives.
+  const alternatives = nested.flatMap((alternative) => {
+    if (!isJsonObject(alternative)) return [alternative];
+    const inner = alternative.anyOf ?? alternative.oneOf;
+    return Array.isArray(inner) && Object.keys(alternative).length === 1 ? inner : [alternative];
+  });
+  if (!alternatives.every(isPlainObjectSchema)) {
     return next;
   }
 
+  const { [alternativesKey]: _alternatives, ...shared } = next;
+  const sharedProperties = next.properties;
+  const sharedRequired = Array.isArray(next.required) ? next.required : [];
   return {
-    ...next,
-    properties: { ...properties, fileId: properties.fileId ?? { type: "string" } },
-    required: required.filter((field) => field !== "result"),
+    [alternativesKey]: alternatives.map((alternative) => {
+      const required = [
+        ...(Array.isArray(alternative.required) ? alternative.required : []),
+        ...sharedRequired,
+      ];
+      return {
+        ...shared,
+        ...alternative,
+        properties: {
+          ...(isJsonObject(alternative.properties) ? alternative.properties : {}),
+          ...sharedProperties,
+        },
+        ...(required.length > 0 ? { required: [...new Set(required)] } : {}),
+      };
+    }),
   };
 }
 
@@ -443,6 +605,7 @@ function resolveResponseTypeName(
   generatedSchemaNames: ReadonlySet<string>,
 ): string {
   const overrides: Record<string, string> = {
+    "accountSession/list": "AccountSessionsResponse",
     "account/gatewayOAuth/cancel": "GatewayOAuthCancelResponse",
     "account/gatewayOAuth/login": "GatewayOAuthLoginResponse",
     "account/gatewayOAuth/read": "GatewayOAuthReadResponse",
@@ -577,7 +740,7 @@ function rewriteExternalRefs(
         const definitionName = child.slice("#/definitions/".length);
         const localRewrite = localDefinitionNames.get(definitionName);
         if (localRewrite) {
-          return [key, `#/definitions/${localRewrite}`];
+          return [key, `${COMPONENT_REF_PREFIX}${localRewrite}`];
         }
 
         const candidates = [
@@ -598,7 +761,7 @@ function rewriteExternalRefs(
           throw new Error(`Missing rewritten definition for ref: ${child}`);
         }
 
-        return [key, `#/definitions/${rewritten}`];
+        return [key, `${COMPONENT_REF_PREFIX}${rewritten}`];
       }
 
       return [
@@ -630,6 +793,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     jsonSchemaFiles.map((file) => [file.qualifiedName, file.exportName]),
   );
   const aggregateSchemas: Record<string, Schema.Json> = {};
+  const openedEnumDefinitions = new Set<string>();
 
   for (const file of jsonSchemaFiles) {
     const raw = yield* fs.readFileString(file.sourcePath);
@@ -642,7 +806,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     );
 
     for (const [definitionName, definitionSchema] of Object.entries(parsed.definitions ?? {})) {
-      aggregateSchemas[localDefinitionNames.get(definitionName)!] = stripNullDefaults(
+      const normalized = stripNullDefaults(
         normalizeNullableTypes(
           rewriteExternalRefs(
             definitionSchema,
@@ -652,6 +816,14 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
           ),
         ),
       );
+      const opensEnum =
+        OPEN_ENUM_DEFINITIONS.has(definitionName) &&
+        isSentByCodex(file.exportName) &&
+        isStringEnumSchema(normalized);
+      if (opensEnum) openedEnumDefinitions.add(definitionName);
+      aggregateSchemas[localDefinitionNames.get(definitionName)!] = opensEnum
+        ? openStringEnum(normalized)
+        : normalized;
     }
 
     const topLevelSchema: Record<string, Schema.Json> = {};
@@ -671,6 +843,17 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
         ),
       ),
     );
+  }
+
+  // A listed name that no longer exists, or stopped being a list of strings,
+  // means Codex renamed or reshaped it: the list needs a look, not silence.
+  const unopenedEnums = [...OPEN_ENUM_DEFINITIONS].filter(
+    (name) => !openedEnumDefinitions.has(name),
+  );
+  if (unopenedEnums.length > 0) {
+    return yield* new GeneratorError({
+      detail: `OPEN_ENUM_DEFINITIONS names no string enum in what Codex sends: ${unopenedEnums.join(", ")}`,
+    });
   }
 
   for (const [name, schema] of Object.entries(ManualSchemas)) {
@@ -698,7 +881,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   }
 
   for (const [name, schema] of Object.entries(aggregateSchemas)) {
-    aggregateSchemas[name] = relaxImageGenerationResult(schema);
+    aggregateSchemas[name] = closeUnspecifiedObjects(distributeObjectAlternatives(schema));
   }
 
   const generator = makeJsonSchemaGenerator();

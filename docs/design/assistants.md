@@ -194,7 +194,14 @@ assistant's webhook ◀──────────── https, signed alerts
   - `client_id` is a relay-signed blob (name, redirect URIs, software id),
     signed with `ASSISTANT_CLIENT_KEY`.
   - The name is the client's own claim, and the dialog says so.
-- **Redirect URIs:** https only, no userinfo or fragment, exact match.
+- **Redirect URIs:** https, loopback http on any port (RFC 8252 7.3), or a native
+  app's own scheme (RFC 8252 7.1): reverse-domain (`com.example.app:`, as 8.4 asks) or a
+  known app's dotless one (only `cursor` so far). Dotted system schemes never pass (`web+`
+  handlers, `x-apple…` and `com.apple.…` on macOS, `microsoft.…` on Windows); browser,
+  web, document and script schemes are dotless, so the reverse-domain rule refuses them. An app scheme is never a known identity,
+  whatever host it names; the dialog shows it whole (`cursor://anysphere.cursor-mcp`). No
+  userinfo or fragment, exact match otherwise. (Nov 5: the Cursor app and CLI register all
+  three kinds at once, and https-only refused them. Sol's review shaped the scheme rule.)
 
 ### Authorize: the app's code typed into the page
 

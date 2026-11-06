@@ -5,7 +5,6 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -13,14 +12,15 @@ import {
   applyClaudeRateLimitInfoToAccountUsage,
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
-  claudeUsageBackoffKey,
+  claudeSignInEndsWindow,
+  claudeUsageCheckFromGetUsage,
+  type ClaudeGetUsageAnswer,
   extractClaudeOAuthCredential,
-  fetchClaudeAccountUsage,
+  keepEarlierScopedWindows,
   normalizeClaudeAccountUsage,
   normalizeClaudeScopedUsageWindow,
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
-  parseClaudeUsageRetryAfter,
   carryClaudeAccountUsageForward,
   claudeKeychainServiceName,
   isClaudeSignInRenewalDue,
@@ -29,17 +29,6 @@ import {
 } from "./ClaudeUsage.ts";
 
 const encoder = new TextEncoder();
-
-describe("claudeUsageBackoffKey", () => {
-  it("isolates Retry-After state when a fresh login rotates the credential", () => {
-    const previous = claudeUsageBackoffKey({ accessToken: "expired-token" });
-    const refreshed = claudeUsageBackoffKey({ accessToken: "refreshed-token" });
-
-    expect(previous).not.toBe(refreshed);
-    expect(previous).not.toContain("expired-token");
-    expect(refreshed).not.toContain("refreshed-token");
-  });
-});
 
 function mockHandle(result: {
   readonly stdout?: string;
@@ -99,42 +88,56 @@ describe("normalizeClaudeUsageResetsAt", () => {
 });
 
 describe("extractClaudeOAuthCredential", () => {
-  it("uses the access token even when expiresAt is stale", () => {
+  it("keeps only when the sign-in expires and whether it can renew, never its tokens", () => {
     expect(
       extractClaudeOAuthCredential({
-        claudeAiOauth: {
-          accessToken: " token ",
-          expiresAt: 1,
-        },
-        account: {
-          email: " claude@example.com ",
-        },
-        organizationUuid: " org-1 ",
+        claudeAiOauth: { accessToken: " token ", refreshToken: "refresh", expiresAt: 1 },
       }),
-    ).toEqual({
-      accessToken: "token",
-      organizationUuid: "org-1",
-      email: "claude@example.com",
-      expiresAt: 1,
+    ).toEqual({ expiresAt: 1, renewable: true });
+    expect(extractClaudeOAuthCredential({ claudeAiOauth: { accessToken: "token" } })).toEqual({
       renewable: false,
     });
   });
 
-  it("extracts email from nested Claude OAuth credential metadata", () => {
+  it("reads when the sign-in ends, as Claude Code reads it", () => {
+    const end = Date.parse("2026-11-20T00:00:00.000Z");
+    const read = (claudeAiOauth: Record<string, unknown>) =>
+      extractClaudeOAuthCredential({ claudeAiOauth: { accessToken: "token", ...claudeAiOauth } })
+        ?.signInEndsAt;
+    expect(read({ refreshToken: "refresh", refreshTokenExpiresAt: end })).toBe(end);
+    // No refresh token: nothing renews, so there is no sign-in end to speak of.
+    expect(read({ refreshTokenExpiresAt: end })).toBeUndefined();
+    // The access token runs more than 3 days past it: an end an older login
+    // left behind, which Claude Code ignores too.
     expect(
-      extractClaudeOAuthCredential({
-        claudeAiOauth: {
-          accessToken: "token",
-          account: {
-            email: "nested@example.com",
-          },
-        },
+      read({
+        refreshToken: "refresh",
+        refreshTokenExpiresAt: end,
+        expiresAt: end + 4 * 24 * 60 * 60 * 1000,
       }),
-    ).toEqual({
-      accessToken: "token",
-      email: "nested@example.com",
-      renewable: false,
+    ).toBeUndefined();
+    expect(read({ refreshToken: "refresh", refreshTokenExpiresAt: null })).toBeUndefined();
+  });
+
+  it("gives the window a stored sign-in ends in, and knows a failed read from none", () => {
+    const end = Date.parse("2026-11-20T00:00:00.000Z");
+    const now = Date.parse("2026-11-12T00:00:00.000Z");
+    const present = (signInEndsAt?: number) => ({
+      _tag: "Present" as const,
+      credential: {
+        renewable: true,
+        ...(signInEndsAt !== undefined ? { signInEndsAt } : {}),
+      },
     });
+    expect(claudeSignInEndsWindow(present(end), now)).toEqual({
+      earliest: "2026-11-17T00:00:00.000Z",
+      latest: "2026-11-20T00:00:00.000Z",
+    });
+    expect(claudeSignInEndsWindow(present(), now)).toBeUndefined();
+    expect(claudeSignInEndsWindow({ _tag: "Absent" }, now)).toBeUndefined();
+    expect(claudeSignInEndsWindow({ _tag: "Unreadable", transient: true }, now)).toBe("unknown");
+    // More than ten years out is bad data.
+    expect(claudeSignInEndsWindow(present(now + 3_651 * 24 * 60 * 60 * 1000), now)).toBeUndefined();
   });
 
   it("returns undefined when the token is missing", () => {
@@ -212,13 +215,7 @@ describe("readClaudeStoredSignIn", () => {
 
     expect(credential).toEqual({
       _tag: "Present",
-      credential: {
-        accessToken: "file-token",
-        organizationUuid: "file-org",
-        email: "file@example.com",
-        expiresAt: 1,
-        renewable: false,
-      },
+      credential: { expiresAt: 1, renewable: false },
     });
   });
 
@@ -259,12 +256,7 @@ describe("readClaudeStoredSignIn", () => {
 
     expect(credential).toEqual({
       _tag: "Present",
-      credential: {
-        accessToken: "keychain-token",
-        organizationUuid: "keychain-org",
-        expiresAt: 1,
-        renewable: false,
-      },
+      credential: { expiresAt: 1, renewable: false },
     });
   });
 
@@ -311,11 +303,7 @@ describe("readClaudeStoredSignIn", () => {
     ]);
     expect(credential).toEqual({
       _tag: "Present",
-      credential: {
-        accessToken: "service-token",
-        organizationUuid: "service-org",
-        renewable: false,
-      },
+      credential: { renewable: false },
     });
   });
 
@@ -344,28 +332,6 @@ describe("readClaudeStoredSignIn", () => {
     );
 
     expect(credential).toEqual({ _tag: "Absent" });
-  });
-});
-
-describe("parseClaudeUsageRetryAfter", () => {
-  it("parses delta seconds as an absolute retry timestamp", () => {
-    expect(parseClaudeUsageRetryAfter("45", 1_000)).toBe(46_000);
-  });
-
-  it("parses HTTP dates and caps excessive retry windows", () => {
-    const nowMs = Date.parse("2026-06-10T00:00:00.000Z");
-    expect(parseClaudeUsageRetryAfter("Wed, 10 Jun 2026 00:02:00 GMT", nowMs)).toBe(
-      Date.parse("2026-06-10T00:02:00.000Z"),
-    );
-    expect(parseClaudeUsageRetryAfter("7200", nowMs)).toBe(nowMs + 60 * 60 * 1000);
-  });
-
-  it("ignores missing, invalid, and past values", () => {
-    const nowMs = Date.parse("2026-06-10T00:00:00.000Z");
-    expect(parseClaudeUsageRetryAfter(undefined, nowMs)).toBeUndefined();
-    expect(parseClaudeUsageRetryAfter("nope", nowMs)).toBeUndefined();
-    expect(parseClaudeUsageRetryAfter("0", nowMs)).toBeUndefined();
-    expect(parseClaudeUsageRetryAfter("Wed, 09 Jun 2026 00:00:00 GMT", nowMs)).toBeUndefined();
   });
 });
 
@@ -882,283 +848,136 @@ describe("applyClaudeRateLimitInfoToAccountUsage", () => {
   });
 });
 
-describe("fetchClaudeAccountUsage", () => {
-  // Serves 401 for any token except `freshToken`, which gets a usage payload.
-  // Records the bearer of every request so tests can assert the retry order.
-  function usageEndpointLayer(freshToken: string, bearers: Array<string | undefined>) {
-    return Layer.succeed(
-      HttpClient.HttpClient,
-      HttpClient.make((request) => {
-        const authorization = (request.headers as unknown as Record<string, string>).authorization;
-        bearers.push(authorization);
-        return Effect.succeed(
-          HttpClientResponse.fromWeb(
-            request,
-            authorization === `Bearer ${freshToken}`
-              ? new Response(JSON.stringify({ five_hour: { utilization: 18 } }), {
-                  status: 200,
-                  headers: { "content-type": "application/json" },
-                })
-              : new Response(JSON.stringify({ error: { type: "authentication_error" } }), {
-                  status: 401,
-                  headers: { "content-type": "application/json" },
-                }),
-          ),
-        );
+describe("claudeUsageCheckFromGetUsage", () => {
+  const checkedAt = "2026-11-06T04:15:00.000Z";
+  const weeklyResetsAt = "2026-11-13T03:00:00.708073+00:00";
+  // Claude Code passes the usage endpoint's body on as `rate_limits`; the SDK
+  // types only part of it.
+  const answer = (rateLimits: Record<string, unknown> | null, available = true) =>
+    ({
+      rate_limits_available: available,
+      rate_limits: rateLimits,
+    }) as unknown as ClaudeGetUsageAnswer;
+
+  it("reads the server's own rows that Claude Code passes on", () => {
+    expect(
+      claudeUsageCheckFromGetUsage(
+        answer({
+          five_hour: null,
+          seven_day: { utilization: 4, resets_at: weeklyResetsAt },
+          limits: [
+            {
+              kind: "weekly_all",
+              group: "weekly",
+              percent: 4,
+              severity: "normal",
+              resets_at: weeklyResetsAt,
+              scope: null,
+            },
+            {
+              kind: "weekly_scoped",
+              group: "weekly",
+              percent: 81,
+              severity: "warning",
+              resets_at: weeklyResetsAt,
+              scope: { model: { id: null, display_name: "Fable" }, surface: null },
+            },
+          ],
+          // Claude Code's own summary of the same rows loses the severity.
+          model_scoped: [{ display_name: "Fable", utilization: 81, resets_at: weeklyResetsAt }],
+        }),
+        checkedAt,
+      ),
+    ).toEqual({
+      _tag: "Fresh",
+      usage: {
+        source: "claude-oauth-usage",
+        checkedAt,
+        primaryLimitId: "claude",
+        limits: [
+          {
+            limitId: "claude",
+            secondary: {
+              usedPercent: 4,
+              remainingPercent: 96,
+              resetsAt: Date.parse(weeklyResetsAt),
+              windowDurationMins: 10_080,
+              checkedAt,
+            },
+            scoped: [
+              {
+                scopeLabel: "Fable",
+                usedPercent: 81,
+                remainingPercent: 19,
+                resetsAt: Date.parse(weeklyResetsAt),
+                windowDurationMins: 10_080,
+                severity: "warning",
+                checkedAt,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("falls back to Claude Code's per-model summary when the rows are left out", () => {
+    const check = claudeUsageCheckFromGetUsage(
+      answer({
+        seven_day: { utilization: 4, resets_at: weeklyResetsAt },
+        model_scoped: [{ display_name: "Fable", utilization: 12, resets_at: weeklyResetsAt }],
       }),
+      checkedAt,
     );
-  }
-
-  function credentialsJson(accessToken: string, refreshToken: string | null = "refresh"): string {
-    return JSON.stringify({ claudeAiOauth: { accessToken, refreshToken } });
-  }
-
-  // An empty keychain (`security` exit 44): the login is read from the file.
-  const noKeychainLayer = () => mockSpawnerLayer(() => ({ code: 44 }));
-
-  it("renews an expired credential and retries the usage fetch once", async () => {
-    const bearers: Array<string | undefined> = [];
-    let refreshRuns = 0;
-    const usage = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const homePath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "threadlines-claude-usage-",
-        });
-        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
-        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("renew-stale-token"));
-        const refresh = Effect.gen(function* () {
-          refreshRuns += 1;
-          yield* fileSystem.writeFileString(credentialsPath, credentialsJson("renew-fresh-token"));
-          return true;
-        }).pipe(Effect.orDie);
-        return yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            NodeServices.layer,
-            noKeychainLayer(),
-            usageEndpointLayer("renew-fresh-token", bearers),
-          ),
-        ),
-      ),
-    );
-
-    expect(refreshRuns).toBe(1);
-    expect(bearers).toEqual(["Bearer renew-stale-token", "Bearer renew-fresh-token"]);
-    expect(usage._tag === "Fresh" ? usage.usage.limits[0]?.primary?.usedPercent : usage).toBe(18);
+    expect(check._tag === "Fresh" ? check.usage.limits[0]?.scoped : undefined).toEqual([
+      {
+        scopeLabel: "Fable",
+        usedPercent: 12,
+        remainingPercent: 88,
+        resetsAt: Date.parse(weeklyResetsAt),
+        windowDurationMins: 10_080,
+        checkedAt,
+      },
+    ]);
   });
 
-  it("cools down after a refresh that does not rotate the credential", async () => {
-    const bearers: Array<string | undefined> = [];
-    let refreshRuns = 0;
-    const results = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const homePath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "threadlines-claude-usage-",
-        });
-        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-        yield* fileSystem.writeFileString(
-          path.join(homePath, ".claude", ".credentials.json"),
-          credentialsJson("cooldown-stale-token"),
-        );
-        // A dead sign-in: the refresh "succeeds" but the store keeps the
-        // same token, so no retry fires and the next 401 must not spawn
-        // another refresh attempt while the cooldown holds.
-        const refresh = Effect.sync(() => {
-          refreshRuns += 1;
-          return true;
-        });
-        const first = yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
-        const second = yield* fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
-        return [first, second];
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
-        ),
-      ),
+  it("keeps the last per-model windows when a reading does not say which exist", () => {
+    const silent = claudeUsageCheckFromGetUsage(
+      answer({ seven_day: { utilization: 4, resets_at: weeklyResetsAt } }),
+      checkedAt,
     );
+    expect(silent).toMatchObject({ _tag: "Fresh", scopedUnknown: true });
+    const earlier = [
+      {
+        scopeLabel: "Fable",
+        usedPercent: 12,
+        remainingPercent: 88,
+        windowDurationMins: 10_080,
+        checkedAt: "2026-11-06T04:10:00.000Z",
+      },
+    ];
+    if (silent._tag !== "Fresh") throw new Error("expected a fresh reading");
+    expect(keepEarlierScopedWindows(silent.usage, earlier).limits[0]?.scoped).toEqual(earlier);
 
+    // An empty list says there are none: nothing is kept.
+    const none = claudeUsageCheckFromGetUsage(
+      answer({ seven_day: { utilization: 4, resets_at: weeklyResetsAt }, limits: [] }),
+      checkedAt,
+    );
+    expect(none).toMatchObject({ _tag: "Fresh" });
+    expect(none).not.toHaveProperty("scopedUnknown");
+  });
+
+  it("keeps the last reading when Claude Code has no numbers", () => {
     const unreachable = { _tag: "Unavailable", reason: "unreachable" };
-    expect(results).toEqual([unreachable, unreachable]);
-    expect(refreshRuns).toBe(1);
-    expect(bearers).toEqual(["Bearer cooldown-stale-token", "Bearer cooldown-stale-token"]);
-  });
-
-  it("does not retry when the refresh turn fails", async () => {
-    const bearers: Array<string | undefined> = [];
-    const usage = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const homePath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "threadlines-claude-usage-",
-        });
-        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-        yield* fileSystem.writeFileString(
-          path.join(homePath, ".claude", ".credentials.json"),
-          credentialsJson("failed-refresh-token"),
-        );
-        return yield* fetchClaudeAccountUsage(
-          { homePath, accountFolder: "" },
-          {},
-          Effect.succeed(false),
-        );
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
-        ),
-      ),
-    );
-
-    expect(usage).toEqual({ _tag: "Unavailable", reason: "unreachable" });
-    expect(bearers).toEqual(["Bearer failed-refresh-token"]);
-  });
-
-  it("uses a sign-in another process renewed instead of renewing it again", async () => {
-    const bearers: Array<string | undefined> = [];
-    const usage = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const homePath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "threadlines-claude-usage-",
-        });
-        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
-        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("raced-stale-token"));
-        // A Claude session elsewhere renews while the first request is out.
-        const renewedElsewhere = Layer.succeed(
-          HttpClient.HttpClient,
-          HttpClient.make((request) => {
-            const authorization = (request.headers as unknown as Record<string, string>)
-              .authorization;
-            bearers.push(authorization);
-            const fresh = authorization === "Bearer raced-fresh-token";
-            return (
-              fresh
-                ? Effect.void
-                : fileSystem
-                    .writeFileString(credentialsPath, credentialsJson("raced-fresh-token"))
-                    .pipe(Effect.orDie)
-            ).pipe(
-              Effect.as(
-                HttpClientResponse.fromWeb(
-                  request,
-                  fresh
-                    ? new Response(JSON.stringify({ five_hour: { utilization: 7 } }), {
-                        status: 200,
-                        headers: { "content-type": "application/json" },
-                      })
-                    : new Response("{}", { status: 401 }),
-                ),
-              ),
-            );
-          }),
-        );
-        return yield* fetchClaudeAccountUsage(
-          { homePath, accountFolder: "" },
-          {},
-          Effect.die("A sign-in that was already renewed must not be renewed again"),
-        ).pipe(Effect.provide(renewedElsewhere));
-      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, noKeychainLayer()))),
-    );
-
-    expect(bearers).toEqual(["Bearer raced-stale-token", "Bearer raced-fresh-token"]);
-    expect(usage._tag === "Fresh" ? usage.usage.limits[0]?.primary?.usedPercent : usage).toBe(7);
-  });
-
-  it("says signed out only when the sign-in is gone or can never renew", async () => {
-    const bearers: Array<string | undefined> = [];
-    const results = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const homePath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "threadlines-claude-usage-",
-        });
-        const credentialsPath = path.join(homePath, ".claude", ".credentials.json");
-        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-        const check = (refresh: Effect.Effect<boolean>) =>
-          fetchClaudeAccountUsage({ homePath, accountFolder: "" }, {}, refresh);
-
-        // Nothing stored: no request is even made.
-        const nothingStored = yield* check(Effect.succeed(true));
-        // The CLI removes a sign-in whose renewal the server refused.
-        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("refused-token"));
-        const removedByRenewal = yield* check(
-          fileSystem.remove(credentialsPath).pipe(Effect.as(false), Effect.orDie),
-        );
-        // Rejected, with no refresh token left to renew it.
-        yield* fileSystem.writeFileString(credentialsPath, credentialsJson("spent-token", null));
-        const cannotRenew = yield* check(Effect.succeed(false));
-        return [nothingStored, removedByRenewal, cannotRenew];
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(NodeServices.layer, noKeychainLayer(), usageEndpointLayer("", bearers)),
-        ),
-      ),
-    );
-
-    const signedOut = { _tag: "Unavailable", reason: "signed_out" };
-    expect(results).toEqual([signedOut, signedOut, signedOut]);
-    expect(bearers).toEqual(["Bearer refused-token", "Bearer spent-token"]);
-  });
-
-  it("treats a rate limit and a failed request as temporary, without renewing", async () => {
-    const check = (token: string, status: number) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const homePath = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "threadlines-claude-usage-",
-          });
-          yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
-          yield* fileSystem.writeFileString(
-            path.join(homePath, ".claude", ".credentials.json"),
-            credentialsJson(token),
-          );
-          return yield* fetchClaudeAccountUsage(
-            { homePath, accountFolder: "" },
-            {},
-            Effect.die("A temporary failure must not start a renewal"),
-          );
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              NodeServices.layer,
-              noKeychainLayer(),
-              Layer.succeed(
-                HttpClient.HttpClient,
-                HttpClient.make((request) =>
-                  Effect.succeed(
-                    HttpClientResponse.fromWeb(request, new Response("{}", { status })),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-
-    expect(await check("rate-limited-token", 429)).toEqual({
-      _tag: "Unavailable",
-      reason: "rate_limited",
-    });
-    expect(await check("server-error-token", 503)).toEqual({
-      _tag: "Unavailable",
-      reason: "unreachable",
-    });
+    // No answer in time, or a CLI that does not know the request.
+    expect(claudeUsageCheckFromGetUsage(undefined, checkedAt)).toEqual(unreachable);
+    // No plan limits for this sign-in.
+    expect(claudeUsageCheckFromGetUsage(answer(null, false), checkedAt)).toEqual(unreachable);
+    // A body without any window.
+    expect(
+      claudeUsageCheckFromGetUsage(answer({ five_hour: null, seven_day: null }), checkedAt),
+    ).toEqual(unreachable);
   });
 });
 

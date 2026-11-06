@@ -199,6 +199,7 @@ describe("closeRightPanelSearchParams", () => {
       sourceControl: "0",
       pullRequest: "0",
       agents: "0",
+      media: "0",
       diffTurnId: undefined,
       diffFilePath: undefined,
     });

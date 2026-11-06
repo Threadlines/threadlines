@@ -25,6 +25,8 @@ export interface VcsProcessInput {
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
   readonly appendTruncationMarker?: boolean;
+  /** `base64` for binary stdout (a git blob); see ProcessRunInput. */
+  readonly stdoutEncoding?: "utf8" | "base64";
 }
 
 export interface VcsProcessOutput {
@@ -72,6 +74,7 @@ export const make = Effect.fn("makeVcsProcess")(function* () {
         ...(input.env !== undefined ? { env: input.env } : {}),
         timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+        ...(input.stdoutEncoding !== undefined ? { stdoutEncoding: input.stdoutEncoding } : {}),
         outputMode: "truncate",
         truncatedMarker: input.appendTruncationMarker ? OUTPUT_TRUNCATED_MARKER : "",
         timeoutBehavior: "error",

@@ -207,6 +207,18 @@ html.electron.mac:not([data-marketing-capture]) {
   }
 }
 
+/* The room a bar along the bottom of the screen keeps for the home indicator
+   (the bar at the bottom of an iPhone). 0 while an on-screen keyboard covers
+   it: iOS keeps reporting env(safe-area-inset-bottom) at full height with the
+   keyboard open, so a composer padded by it would float that far above the
+   keyboard. lib/onScreenKeyboard.ts sets the attribute. */
+:root {
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+}
+:root[data-on-screen-keyboard] {
+  --safe-area-bottom: 0px;
+}
+
 /* Safe-area inset utilities for surfaces that opt into edge-to-edge rendering.
    Insets resolve to 0 when the browser already constrains the layout viewport
    to the safe area. */

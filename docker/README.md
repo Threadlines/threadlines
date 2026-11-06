@@ -44,9 +44,10 @@ in `docker logs` is directly clickable.
 
 The Claude Code and Codex CLIs ship inside the image. Sign in once from the
 web app (Settings -> Providers); the credentials land in the home volume and
-survive container updates. For Claude on a headless server, the
-"Advanced: headless chat token" flow in provider settings avoids needing a
-browser on the server itself.
+survive container updates. No browser is needed on the server: Claude's
+sign-in shows an address to open on any device and takes back the code the
+page gives you. You can also pass a token from `claude setup-token` as
+`-e CLAUDE_CODE_OAUTH_TOKEN=...`; Threadlines itself never saves one.
 
 ## Updating
 

@@ -48,6 +48,10 @@ import { ServerConfig } from "./config.ts";
 import { type DeepPartial, deepMerge } from "@threadlines/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@threadlines/shared/schemaJson";
 import { isAntigravityKeyEnvName } from "@threadlines/shared/antigravitySignIn";
+import {
+  CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+  CLAUDE_OAUTH_TOKEN_PATTERN,
+} from "@threadlines/shared/providerAuthCommands";
 import { isPiKeyEnvName } from "./provider/pi/PiBinary.ts";
 import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
@@ -75,11 +79,164 @@ const normalizeServerSettings = (
     ),
   );
 
+const PROVIDER_ENVIRONMENT_SECRET_PREFIX = "provider-env-";
+
 function providerEnvironmentSecretName(input: {
   readonly instanceId: string;
   readonly name: string;
 }): string {
-  return `provider-env-${Buffer.from(input.instanceId, "utf8").toString("base64url")}-${Buffer.from(input.name, "utf8").toString("base64url")}`;
+  return `${PROVIDER_ENVIRONMENT_SECRET_PREFIX}${Buffer.from(input.instanceId, "utf8").toString("base64url")}-${Buffer.from(input.name, "utf8").toString("base64url")}`;
+}
+
+/** Ends the stored secret of a `CLAUDE_CODE_OAUTH_TOKEN`, whatever instance it belonged to. */
+const CLAUDE_TOKEN_SECRET_SUFFIX = `-${Buffer.from(CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV, "utf8").toString("base64url")}`;
+
+/** Why a settings write that would save a Claude token is refused. */
+export const CLAUDE_TOKEN_REFUSED_DETAIL =
+  "Threadlines no longer saves Claude tokens. Sign in to Claude instead.";
+
+/**
+ * Whether a provider variable holds a Claude sign-in token, which Threadlines
+ * never keeps (Anthropic's Claude Code terms don't let apps collect or store
+ * one): any value that is a Claude token, under any name, and any
+ * `CLAUDE_CODE_OAUTH_TOKEN` except the empty mask "Use Claude sign-in" writes
+ * against one in the user's own environment. A sensitive value is checked
+ * where its secret is read (`isClaudeTokenSecret`). A token the user sets in
+ * the environment Threadlines starts from is theirs, and never passes here.
+ */
+function holdsClaudeToken(variable: {
+  readonly name: string;
+  readonly value: string;
+  readonly valueRedacted?: boolean | undefined;
+}): boolean {
+  if (CLAUDE_OAUTH_TOKEN_PATTERN.test(variable.value)) return true;
+  return (
+    variable.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV &&
+    (variable.valueRedacted === true || variable.value.trim().length > 0)
+  );
+}
+
+/** Whether a stored secret is a Claude token, whatever variable it belongs to. */
+const isClaudeTokenSecret = (secret: Uint8Array | null): boolean =>
+  secret !== null && CLAUDE_OAUTH_TOKEN_PATTERN.test(textDecoder.decode(secret));
+
+/** Settings without any Claude token, and the instances that had one. */
+export function withoutClaudeTokens(settings: ServerSettings): {
+  readonly settings: ServerSettings;
+  readonly instanceIds: ReadonlyArray<string>;
+} {
+  const instanceIds: string[] = [];
+  const providerInstances: Record<string, ProviderInstanceConfig> = {};
+  for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+    if (!instance.environment?.some(holdsClaudeToken)) {
+      providerInstances[instanceId] = instance;
+      continue;
+    }
+    instanceIds.push(instanceId);
+    providerInstances[instanceId] = {
+      ...instance,
+      environment: instance.environment.filter((variable) => !holdsClaudeToken(variable)),
+    };
+  }
+  return instanceIds.length === 0
+    ? { settings, instanceIds }
+    : {
+        settings: {
+          ...settings,
+          providerInstances: providerInstances as ServerSettings["providerInstances"],
+        },
+        instanceIds,
+      };
+}
+
+/**
+ * Whether a write brings in a Claude token of its own. A stored one an older
+ * client sends back redacted (no value) is not new: it is dropped, not refused.
+ */
+function bringsClaudeToken(settings: ServerSettings): boolean {
+  return Object.values(settings.providerInstances).some((instance) =>
+    (instance.environment ?? []).some(
+      (variable) =>
+        CLAUDE_OAUTH_TOKEN_PATTERN.test(variable.value) ||
+        (variable.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV && variable.value.trim().length > 0),
+    ),
+  );
+}
+
+const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Key for one provider variable in `alsoDrop`. */
+const variableKey = (instanceId: string, name: string) => `${instanceId}\u0000${name}`;
+
+/**
+ * The settings file as written, before decoding drops what this version
+ * doesn't know: strict JSON (what Threadlines writes) read exactly, else the
+ * lenient reader a hand-edited file needs. Undefined when neither reads it.
+ */
+const decodeStrictSettingsDocument = Schema.decodeUnknownExit(
+  Schema.fromJsonString(Schema.Unknown),
+);
+const decodeLenientSettingsDocument = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
+function parseSettingsDocument(raw: string): unknown {
+  const strict = decodeStrictSettingsDocument(raw);
+  if (strict._tag === "Success") return strict.value;
+  const lenient = decodeLenientSettingsDocument(raw);
+  return lenient._tag === "Success" ? lenient.value : undefined;
+}
+const encodeRawSettingsDocument = Schema.encodeUnknownEffect(fromJsonStringPretty(Schema.Unknown));
+
+/** The sensitive variables a settings document points at the secret store for. */
+function storedVariablesOf(document: unknown): ReadonlyArray<readonly [string, string]> {
+  if (!isJsonRecord(document) || !isJsonRecord(document.providerInstances)) return [];
+  return Object.entries(document.providerInstances).flatMap(([instanceId, instance]) =>
+    isJsonRecord(instance) && Array.isArray(instance.environment)
+      ? instance.environment.flatMap((entry: unknown) =>
+          isJsonRecord(entry) &&
+          entry.sensitive === true &&
+          entry.valueRedacted === true &&
+          typeof entry.name === "string"
+            ? [[instanceId, entry.name] as const]
+            : [],
+        )
+      : [],
+  );
+}
+
+/**
+ * The settings file's own document without its Claude tokens (and without
+ * the variables in `alsoDrop`), or undefined when nothing changes. Edits the
+ * parsed file rather than writing the decoded settings back, so a field this
+ * version does not know survives.
+ */
+function settingsDocumentWithoutClaudeTokens(
+  document: unknown,
+  alsoDrop: ReadonlySet<string>,
+): unknown {
+  if (!isJsonRecord(document) || !isJsonRecord(document.providerInstances)) return undefined;
+  let changed = false;
+  const providerInstances: Record<string, unknown> = {};
+  for (const [instanceId, instance] of Object.entries(document.providerInstances)) {
+    if (!isJsonRecord(instance) || !Array.isArray(instance.environment)) {
+      providerInstances[instanceId] = instance;
+      continue;
+    }
+    const environment = instance.environment.filter((entry: unknown) => {
+      if (!isJsonRecord(entry)) return true;
+      const name = typeof entry.name === "string" ? entry.name : "";
+      return !(
+        alsoDrop.has(variableKey(instanceId, name)) ||
+        holdsClaudeToken({
+          name,
+          value: typeof entry.value === "string" ? entry.value : "",
+          valueRedacted: entry.valueRedacted === true,
+        })
+      );
+    });
+    changed ||= environment.length !== instance.environment.length;
+    providerInstances[instanceId] = { ...instance, environment };
+  }
+  return changed ? { ...document, providerInstances } : undefined;
 }
 
 function redactProviderEnvironmentVariable(
@@ -459,7 +616,7 @@ function stripDefaultServerSettings(current: unknown, defaults: unknown): unknow
 }
 
 const makeServerSettings = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig;
+  const { settingsPath, secretsDir } = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore;
@@ -510,7 +667,15 @@ const makeServerSettings = Effect.gen(function* () {
       });
       return DEFAULT_SERVER_SETTINGS;
     }
-    return decoded.value;
+    // Every read, so a token in the file (an older version's, or a hand edit)
+    // never reaches a provider, a client or a write.
+    const cleaned = withoutClaudeTokens(decoded.value);
+    if (cleaned.instanceIds.length > 0) {
+      yield* Effect.logInfo("settings.claude-token.dropped", {
+        instances: cleaned.instanceIds.length,
+      });
+    }
+    return cleaned.settings;
   });
 
   const settingsCache = yield* Cache.make<typeof cacheKey, ServerSettings, ServerSettingsError>({
@@ -552,6 +717,9 @@ const makeServerSettings = Effect.gen(function* () {
                 ),
               ),
             );
+          // A Claude token saved under another name before this version
+          // never reaches a provider; start-up removes it.
+          if (isClaudeTokenSecret(secret)) continue;
           environment.push({
             ...variable,
             value: secret ? textDecoder.decode(secret) : "",
@@ -744,9 +912,16 @@ const makeServerSettings = Effect.gen(function* () {
     Effect.gen(function* () {
       const current = yield* getSettingsFromCache;
       const patch = yield* makePatch(current);
+      const proposed = applyServerSettingsPatch(current, patch);
+      if (bringsClaudeToken(proposed)) {
+        return yield* new ServerSettingsError({
+          settingsPath,
+          detail: CLAUDE_TOKEN_REFUSED_DETAIL,
+        });
+      }
       const persisted = yield* persistProviderEnvironmentSecrets(
         current,
-        applyServerSettingsPatch(current, patch),
+        withoutClaudeTokens(proposed).settings,
       );
       const next = yield* normalizeServerSettings(persisted.settings);
       yield* writeSettingsAtomically(next);
@@ -779,6 +954,108 @@ const makeServerSettings = Effect.gen(function* () {
       Stream.map(resolveTextGenerationProviders),
     );
 
+  /** A secret file a crash left half-written (`<name>.bin.<id>.tmp`), and its secret's name. */
+  const leftoverSecretName = (entry: string): string | undefined => {
+    const bin = entry.indexOf(".bin.");
+    return entry.startsWith(PROVIDER_ENVIRONMENT_SECRET_PREFIX) &&
+      entry.endsWith(".tmp") &&
+      bin !== -1
+      ? entry.slice(0, bin)
+      : undefined;
+  };
+
+  /**
+   * Takes Claude tokens off disk, holding the settings lock throughout so no
+   * save lands between a check and what it decides, in an order a crash
+   * can't undo:
+   * 1. reads the settings file as written and finds sensitive variables
+   *    whose stored secret is a Claude token (only the secret tells, for a
+   *    name other than `CLAUDE_CODE_OAUTH_TOKEN`);
+   * 2. edits that document to drop them and every other Claude token,
+   *    keeping everything else, including fields this version doesn't know
+   *    and a file it can't otherwise read;
+   * 3. removes every stored secret that is a Claude token or a
+   *    `CLAUDE_CODE_OAUTH_TOKEN`, and the half-written ones a crash left.
+   * Runs on each start, so whatever a failure left is finished next time.
+   * Never fails start-up: a token left on disk is still never used.
+   */
+  const removeClaudeTokens = writeSemaphore
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const readSecret = (secretName: string) =>
+          secretStore.get(secretName).pipe(Effect.orElseSucceed(() => null));
+        const document = yield* Effect.gen(function* () {
+          if (!(yield* readConfigExists)) return undefined;
+          return parseSettingsDocument(yield* readRawConfig);
+        }).pipe(Effect.orElseSucceed(() => undefined));
+
+        const alsoDrop = new Set<string>();
+        for (const [instanceId, name] of storedVariablesOf(document)) {
+          const secret = yield* readSecret(providerEnvironmentSecretName({ instanceId, name }));
+          if (isClaudeTokenSecret(secret)) alsoDrop.add(variableKey(instanceId, name));
+        }
+
+        const cleaned = settingsDocumentWithoutClaudeTokens(document, alsoDrop);
+        if (cleaned !== undefined) {
+          const contents = yield* encodeRawSettingsDocument(cleaned).pipe(
+            Effect.mapError((cause) => toSettingsError("failed to encode settings", cause)),
+          );
+          yield* writeFileStringAtomically({
+            filePath: settingsPath,
+            contents: `${contents}\n`,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, pathService),
+            Effect.mapError((cause) => toSettingsError("failed to write settings file", cause)),
+          );
+          yield* Cache.invalidate(settingsCache, cacheKey);
+          yield* Effect.logInfo("settings.claude-token.removed-from-file");
+        }
+
+        const secretNames = yield* secretStore
+          .list(PROVIDER_ENVIRONMENT_SECRET_PREFIX)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+        for (const secretName of secretNames) {
+          const isToken =
+            secretName.endsWith(CLAUDE_TOKEN_SECRET_SUFFIX) ||
+            isClaudeTokenSecret(yield* readSecret(secretName));
+          if (!isToken) continue;
+          yield* secretStore
+            .remove(secretName)
+            .pipe(
+              Effect.mapError((cause) =>
+                toSettingsError("failed to remove a stored Claude token", cause),
+              ),
+            );
+          yield* Effect.logInfo("settings.claude-token.secret-removed");
+        }
+        const entries = yield* fs.readDirectory(secretsDir).pipe(Effect.orElseSucceed(() => []));
+        for (const entry of entries) {
+          const secretName = leftoverSecretName(entry);
+          if (secretName === undefined) continue;
+          const entryPath = pathService.join(secretsDir, entry);
+          const isToken =
+            secretName.endsWith(CLAUDE_TOKEN_SECRET_SUFFIX) ||
+            isClaudeTokenSecret(
+              yield* fs.readFile(entryPath).pipe(Effect.orElseSucceed(() => null)),
+            );
+          if (!isToken) continue;
+          yield* fs
+            .remove(entryPath)
+            .pipe(
+              Effect.mapError((cause) =>
+                toSettingsError("failed to remove a half-written Claude token", cause),
+              ),
+            );
+        }
+      }),
+    )
+    .pipe(
+      Effect.catch((error: ServerSettingsError) =>
+        Effect.logWarning("Claude token cleanup did not finish", { detail: error.detail }),
+      ),
+    );
+
   const start = Effect.gen(function* () {
     const shouldStart = yield* Ref.modify(startedRef, (started) => [!started, true]);
     if (!shouldStart) {
@@ -789,6 +1066,7 @@ const makeServerSettings = Effect.gen(function* () {
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
       yield* getSettingsFromCache;
+      yield* removeClaudeTokens;
     });
 
     const startupExit = yield* Effect.exit(startup);

@@ -97,6 +97,10 @@ export interface ProviderConnectFlowProps {
    * toast sits under the window this panel is in.
    */
   readonly startErrorInline?: boolean;
+  /** The workspace a `switch-workspace` run moves to. */
+  readonly workspaceId?: string | undefined;
+  /** Keeps the action off, e.g. while the picked workspace is the current one. */
+  readonly actionDisabled?: boolean;
 }
 
 /**
@@ -304,6 +308,8 @@ export function ProviderConnectFlow({
   onSucceeded,
   autoStart = false,
   startErrorInline = false,
+  workspaceId,
+  actionDisabled = false,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -343,7 +349,10 @@ export function ProviderConnectFlow({
       if (startErrorInline) return;
       toastManager.add(
         failureNotice({
-          title: `Couldn't start ${displayName} sign-in`,
+          title:
+            flow === "switch-workspace"
+              ? `Couldn't switch ${displayName} workspace`
+              : `Couldn't start ${displayName} sign-in`,
           error,
         }),
       );
@@ -385,7 +394,7 @@ export function ProviderConnectFlow({
 
   const startFlow = (options?: { readonly terminal?: boolean }) => {
     setShowTerminal(false);
-    start(options);
+    start({ ...options, ...(workspaceId ? { workspaceId } : {}) });
   };
 
   // Once per panel, even when the effect runs twice.
@@ -423,7 +432,7 @@ export function ProviderConnectFlow({
         "h-6 shrink-0 gap-1 px-2 text-xs",
         buttonVariant === "ghost" && "text-muted-foreground hover:text-foreground",
       )}
-      disabled={isActive || isStarting}
+      disabled={isActive || isStarting || actionDisabled}
       onClick={() => startFlow()}
     >
       {isActive || isStarting ? <LoaderIcon className="size-2.5 animate-spin" /> : null}

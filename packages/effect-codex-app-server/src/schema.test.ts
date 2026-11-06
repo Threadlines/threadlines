@@ -101,8 +101,7 @@ it("preserves async questions in streamed items and restored conversation histor
   }
 });
 
-// Codex 0.164 can send a generated image as an attachment id with no inline
-// data; the generator relaxes `result` until the pin reaches that schema.
+// Codex 0.164+ can send a generated image as an attachment id with no inline data.
 it("accepts generated images with inline data or only an attachment id", () => {
   const base = {
     type: "imageGeneration",
@@ -137,4 +136,45 @@ it("accepts legacy questions without a blocking flag and preserves explicit fals
       isBlocking: false,
     });
   }
+});
+
+// Codex adds plans and hook events often; one new word must not fail the whole
+// account read or hooks list (the generator's OPEN_ENUM_DEFINITIONS), and keys
+// a newer Codex adds are dropped rather than refused.
+const decodeAccountReply = Schema.decodeUnknownSync(CodexSchema.V2GetAccountResponse);
+const decodeHooksReply = Schema.decodeUnknownSync(CodexSchema.V2HooksListResponse);
+it("keeps a reply whole when Codex sends a word or a key it didn't have before", () => {
+  const account = {
+    account: { type: "chatgpt" as const, email: "a@b.c", planType: "a_plan_from_next_year" },
+    requiresOpenaiAuth: false,
+  };
+  assert.deepEqual(decodeAccountReply(account), account);
+  assert.deepEqual(decodeAccountReply({ ...account, newField: 1 }), account);
+
+  const hooks = {
+    data: [
+      {
+        cwd: "/tmp/project",
+        errors: [],
+        warnings: [],
+        hooks: [
+          {
+            key: "hook-1",
+            handlerType: "command" as const,
+            command: "echo hi",
+            eventName: "anEventFromNextYear",
+            source: "aSourceFromNextYear",
+            trustStatus: "aTrustFromNextYear",
+            currentHash: "hash",
+            displayOrder: 0,
+            enabled: true,
+            isManaged: false,
+            sourcePath: "/tmp/project/.codex/hooks.json",
+            timeoutSec: 30,
+          },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(decodeHooksReply(hooks), hooks);
 });

@@ -42,11 +42,14 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { freshOrCurrentSnapshot } from "../freshProviderSnapshot.ts";
 import {
   checkCodexProviderStatus,
+  type CodexWorkspaceMemory,
   consumeCodexRateLimitResetCredit,
   makePendingCodexProvider,
   mergeCodexAccountUsageRateLimits,
 } from "../Layers/CodexProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { makeLaunchGate } from "../managedRuntime/LaunchGate.ts";
+import { makeCodexWorkspaceSwitchFlows } from "./CodexWorkspaceSwitch.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
@@ -184,7 +187,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // in as instance rebuilds from the registry rather than in-place
       // updates. Pre-provide `ChildProcessSpawner` so the check fits
       // `makeManagedServerProvider.checkProvider`'s `R = never`.
-      const checkProvider = checkCodexProviderStatus(effectiveConfig, undefined, processEnv).pipe(
+      const workspaceMemory: CodexWorkspaceMemory = {};
+      const checkProvider = checkCodexProviderStatus(
+        effectiveConfig,
+        undefined,
+        processEnv,
+        workspaceMemory,
+      ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
@@ -229,9 +238,12 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // notifications can be folded straight into the live provider snapshot —
       // account usage then updates in real time instead of waiting for the
       // periodic `account/rateLimits/read` probe.
+      // Held by every Codex chat of this instance; a workspace switch closes it.
+      const launchGate = makeLaunchGate();
       const adapter = yield* makeCodexAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        launchGate,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         publishRealtimeAudio: realtimeAudioHub.publish,
         releaseRealtimeAudio: realtimeAudioHub.remove,
@@ -272,6 +284,15 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        // Its sign-in stays the `codex login` command; only the workspace
+        // switch runs here (ProviderAuthSessions falls back for the rest).
+        authFlows: makeCodexWorkspaceSwitchFlows({
+          settings: effectiveConfig,
+          environment: processEnv,
+          spawner,
+          gate: launchGate,
+          stopSessions: Effect.suspend(() => adapter.stopAll()).pipe(Effect.ignore),
+        }),
         accountUsage: {
           consumeRateLimitResetCredit: (input) =>
             consumeCodexRateLimitResetCredit({

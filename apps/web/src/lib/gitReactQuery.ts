@@ -6,6 +6,7 @@ import {
   type ModelSelection,
   type ProviderReviewTarget,
   type RuntimeMode,
+  type SourceControlCloneRepositoryInput,
   type SourceControlPublishRepositoryInput,
   type ThreadBootstrapCreateThread,
   type ThreadId,
@@ -13,10 +14,15 @@ import {
 } from "@threadlines/contracts";
 import {
   infiniteQueryOptions,
+  type Mutation,
+  type MutationFilters,
+  MutationObserver,
+  type MutationObserverOptions,
   mutationOptions,
   queryOptions,
   type QueryClient,
 } from "@tanstack/react-query";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { ensureEnvironmentApi } from "../environmentApi";
 import { requireEnvironmentConnection } from "../environments/runtime";
 
@@ -64,6 +70,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "init", environmentId ?? null, cwd] as const,
   switchRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "switchRef", environmentId ?? null, cwd] as const,
+  createRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "create-ref", environmentId ?? null, cwd] as const,
   createTag: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "createTag", environmentId ?? null, cwd] as const,
   deleteBranch: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -96,7 +104,116 @@ export const gitMutationKeys = {
     ["git", "mutation", "publish-repository", environmentId ?? null, cwd] as const,
   applyAuthRemediation: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "apply-auth-remediation", environmentId ?? null, cwd] as const,
+  /** Keyed to the computer only: the worktree each call adds is in its input's `path`. */
+  createWorktree: (environmentId: EnvironmentId | null) =>
+    ["git", "mutation", "create-worktree", environmentId ?? null] as const,
+  /** Keyed to the computer only: the worktree each call removes is in its input's `path`. */
+  removeWorktree: (environmentId: EnvironmentId | null) =>
+    ["git", "mutation", "remove-worktree", environmentId ?? null] as const,
+  /** Keyed to the computer only: each clone's folder is in its input's `destinationPath`. */
+  cloneRepository: (environmentId: EnvironmentId | null) =>
+    ["git", "mutation", "clone-repository", environmentId ?? null] as const,
 };
+
+/**
+ * Git mutations whose checkout is named in their input rather than their
+ * key, and the field that names it. A worktree's `cwd` is only the
+ * repository running git; a clone makes the folder it names.
+ */
+const CHECKOUT_INPUT_FIELDS: ReadonlyMap<string, "path" | "destinationPath"> = new Map([
+  ["create-worktree", "path"],
+  ["remove-worktree", "path"],
+  ["clone-repository", "destinationPath"],
+]);
+
+/** Git mutations that only read a checkout; they never hold up a change to it. */
+const CHECKOUT_READING_GIT_MUTATIONS: ReadonlySet<string> = new Set([
+  "generate-commit-message",
+  "start-provider-review",
+]);
+
+/** A string field of a mutation's input, when it has one. */
+function inputPath(variables: unknown, field: "cwd" | "path" | "destinationPath"): string | null {
+  if (typeof variables !== "object" || variables === null || !(field in variables)) {
+    return null;
+  }
+  const value: unknown = Reflect.get(variables, field);
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * The checkout a git mutation changes, or null. Adding or removing a worktree
+ * changes the worktree at its input's `path`, and a clone the folder at its
+ * `destinationPath` (`CHECKOUT_INPUT_FIELDS`). Any other mutation keyed to a
+ * checkout (`["git", "mutation", kind, environmentId, cwd]`) changes the
+ * checkout its input names in `cwd`, when it names one (a branch switch can
+ * land in another checkout than the picker's), else the one in its key.
+ */
+function changedCheckoutOf(mutation: Mutation<unknown, Error, unknown, unknown>): string | null {
+  const key = mutation.options.mutationKey;
+  const variables = mutation.state.variables;
+  const inputField = typeof key?.[2] === "string" ? CHECKOUT_INPUT_FIELDS.get(key[2]) : undefined;
+  if (inputField !== undefined) {
+    return inputPath(variables, inputField);
+  }
+  if (key === undefined || key.length < 5) {
+    return null;
+  }
+  const keyCwd = key[4];
+  return inputPath(variables, "cwd") ?? (typeof keyCwd === "string" ? keyCwd : null);
+}
+
+/**
+ * Matches every git action that changes the checkout at `cwd`, from any
+ * surface: the Source tab, the chat header's pull, the composer's branch
+ * picker, a worktree being restored or removed, a repository being cloned.
+ * Pass it to `useIsMutating` to hold a new action back while one is under
+ * way. A git action only counts when it runs as a mutation keyed under
+ * `["git", "mutation", kind, environmentId, ...]`, so call the API through the
+ * mutation helpers here (or `runGitMutation`) rather than directly.
+ */
+export function checkoutChangingGitMutationFilters(
+  environmentId: EnvironmentId | null,
+  cwd: string | null,
+): MutationFilters {
+  return {
+    predicate: (mutation) => {
+      const key = mutation.options.mutationKey;
+      return (
+        cwd !== null &&
+        key !== undefined &&
+        key[0] === "git" &&
+        key[1] === "mutation" &&
+        typeof key[2] === "string" &&
+        !CHECKOUT_READING_GIT_MUTATIONS.has(key[2]) &&
+        key[3] === (environmentId ?? null) &&
+        isSameCheckout(changedCheckoutOf(mutation), cwd)
+      );
+    },
+  };
+}
+
+const isSameCheckout = (changed: string | null, cwd: string) =>
+  changed !== null && areFilesystemPathsEqual(changed, cwd);
+
+/**
+ * Runs a git mutation from a callback whose computer is only known at the
+ * call, registered in the mutation cache the way `useMutation` does it, so
+ * `checkoutChangingGitMutationFilters` sees it while it runs. The observer
+ * lets go once it settles; otherwise the cache would keep every run forever.
+ */
+export async function runGitMutation<TData, TVariables>(
+  queryClient: QueryClient,
+  options: MutationObserverOptions<TData, Error, TVariables>,
+  variables: TVariables,
+): Promise<TData> {
+  const observer = new MutationObserver(queryClient, options);
+  try {
+    return await observer.mutate(variables);
+  } finally {
+    observer.reset();
+  }
+}
 
 export function invalidateGitQueries(
   queryClient: QueryClient,
@@ -406,6 +523,27 @@ export function gitCheckoutMutationOptions(input: {
     onSettled: async (_data, _error, args) => {
       const checkout = resolveCheckoutInput(args);
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, checkout.cwd);
+    },
+  });
+}
+
+/** Creates a branch at HEAD and switches the checkout to it. */
+export function gitCreateRefMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.createRef(input.environmentId, input.cwd),
+    mutationFn: async (refName: string) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Git branch creation is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.createRef({ cwd: input.cwd, refName, switchRef: true });
+    },
+    onSettled: async () => {
+      await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
     },
   });
 }
@@ -813,15 +951,28 @@ export function sourceControlPublishRepositoryMutationOptions(input: {
   });
 }
 
+/** Clones a repository into a new folder, which the caller then adds as a project. */
+export function gitCloneRepositoryMutationOptions(input: { environmentId: EnvironmentId | null }) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.cloneRepository(input.environmentId),
+    mutationFn: (args: SourceControlCloneRepositoryInput) => {
+      if (!input.environmentId) {
+        throw new Error("Cloning is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).sourceControl.cloneRepository(args);
+    },
+  });
+}
+
 /**
+ * Adds a worktree. The caller refreshes git views when it's done, since one
+ * action can add or remove several worktrees.
+ *
  * @deprecated Use a VCS-named mutation helper once the UI naming migration lands.
  */
-export function gitCreateWorktreeMutationOptions(input: {
-  environmentId: EnvironmentId | null;
-  queryClient: QueryClient;
-}) {
+export function gitCreateWorktreeMutationOptions(input: { environmentId: EnvironmentId | null }) {
   return mutationOptions({
-    mutationKey: ["git", "mutation", "create-worktree", input.environmentId ?? null] as const,
+    mutationKey: gitMutationKeys.createWorktree(input.environmentId),
     mutationFn: (
       args: Parameters<ReturnType<typeof ensureEnvironmentApi>["vcs"]["createWorktree"]>[0],
     ) => {
@@ -829,9 +980,6 @@ export function gitCreateWorktreeMutationOptions(input: {
         throw new Error("Worktree creation is unavailable.");
       }
       return ensureEnvironmentApi(input.environmentId).vcs.createWorktree(args);
-    },
-    onSuccess: async () => {
-      await invalidateGitQueries(input.queryClient, { environmentId: input.environmentId });
     },
   });
 }
@@ -862,14 +1010,14 @@ export function vcsListWorktreesQueryOptions(input: {
 }
 
 /**
+ * Removes a worktree. The caller refreshes git views when it's done: a
+ * cleanup removes many in a row and refreshes once at the end.
+ *
  * @deprecated Use a VCS-named mutation helper once the UI naming migration lands.
  */
-export function gitRemoveWorktreeMutationOptions(input: {
-  environmentId: EnvironmentId | null;
-  queryClient: QueryClient;
-}) {
+export function gitRemoveWorktreeMutationOptions(input: { environmentId: EnvironmentId | null }) {
   return mutationOptions({
-    mutationKey: ["git", "mutation", "remove-worktree", input.environmentId ?? null] as const,
+    mutationKey: gitMutationKeys.removeWorktree(input.environmentId),
     mutationFn: (
       args: Parameters<ReturnType<typeof ensureEnvironmentApi>["vcs"]["removeWorktree"]>[0],
     ) => {
@@ -877,9 +1025,6 @@ export function gitRemoveWorktreeMutationOptions(input: {
         throw new Error("Worktree removal is unavailable.");
       }
       return ensureEnvironmentApi(input.environmentId).vcs.removeWorktree(args);
-    },
-    onSuccess: async () => {
-      await invalidateGitQueries(input.queryClient, { environmentId: input.environmentId });
     },
   });
 }

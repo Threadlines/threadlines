@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { ServerConfig } from "./config.ts";
 import {
+  CLAUDE_TOKEN_REFUSED_DETAIL,
   redactServerSettingsForClient,
   ServerSettingsLive,
   ServerSettingsService,
@@ -705,6 +706,170 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         return Effect.succeed({ providerInstances });
       });
       assert.lengthOf(yield* secretFiles, 0);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("takes saved Claude tokens off disk at start-up and refuses new ones", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const secretName = (instanceId: string, name: string) =>
+        `provider-env-${Buffer.from(instanceId).toString("base64url")}-${Buffer.from(name).toString("base64url")}`;
+      const claudeTokenSecret = secretName("claudeAgent", "CLAUDE_CODE_OAUTH_TOKEN");
+      const renamedTokenSecret = secretName("claude_work", "ANTHROPIC_AUTH_TOKEN");
+      const otherSecret = secretName("codex_personal", "OPENROUTER_API_KEY");
+      const secretFiles = fileSystem
+        .readDirectory(serverConfig.secretsDir)
+        .pipe(Effect.map((names) => names.filter((name) => name.startsWith("provider-env-"))));
+      const writeSecret = (name: string, value: string) =>
+        fileSystem.writeFileString(`${serverConfig.secretsDir}/${name}`, value);
+
+      // What an older version left: a saved token, the same token kept under
+      // another name, one half-written when the app stopped, one pasted as
+      // plain text, and settings that are not tokens, one from a newer version.
+      yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true });
+      yield* writeSecret(`${claudeTokenSecret}.bin`, "sk-ant-oat01-saved");
+      yield* writeSecret(`${claudeTokenSecret}.bin.0b1c.tmp`, "sk-ant-oat01-half");
+      yield* writeSecret(`${renamedTokenSecret}.bin`, "sk-ant-oat01-renamed");
+      yield* writeSecret(`${otherSecret}.bin`, "sk-or-kept");
+      const redacted = { value: "", sensitive: true, valueRedacted: true };
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          aSettingFromANewerVersion: { kept: true },
+          providerInstances: {
+            claudeAgent: {
+              driver: "claudeAgent",
+              environment: [
+                { name: "CLAUDE_CODE_OAUTH_TOKEN", ...redacted },
+                { name: "KEEP_ME", value: "kept", sensitive: false },
+              ],
+              config: {},
+            },
+            claude_work: {
+              driver: "claudeAgent",
+              environment: [{ name: "ANTHROPIC_AUTH_TOKEN", ...redacted }],
+              config: {},
+            },
+            codex_personal: {
+              driver: "codex",
+              environment: [
+                { name: "OPENROUTER_API_KEY", ...redacted },
+                { name: "NOTES", value: "sk-ant-oat01-pasted", sensitive: false },
+              ],
+              config: {},
+            },
+          },
+        }),
+      );
+
+      yield* serverSettings.start;
+
+      const settings = yield* serverSettings.getSettings;
+      const environmentOf = (instanceId: string) =>
+        settings.providerInstances[ProviderInstanceId.make(instanceId)]?.environment;
+      assert.deepEqual(environmentOf("claudeAgent"), [
+        { name: "KEEP_ME", value: "kept", sensitive: false },
+      ]);
+      assert.deepEqual(environmentOf("claude_work"), []);
+      assert.deepEqual(environmentOf("codex_personal"), [
+        { name: "OPENROUTER_API_KEY", value: "sk-or-kept", sensitive: true, valueRedacted: true },
+      ]);
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "CLAUDE_CODE_OAUTH_TOKEN");
+      assert.notInclude(raw, "ANTHROPIC_AUTH_TOKEN");
+      assert.notInclude(raw, "sk-ant-oat01");
+      assert.include(raw, "aSettingFromANewerVersion");
+      assert.deepEqual(yield* secretFiles, [`${otherSecret}.bin`]);
+
+      // A new token is refused, even dressed up as a stored value; the empty
+      // mask "Use Claude sign-in" writes is not.
+      const claudeAgent = ProviderInstanceId.make("claudeAgent");
+      const saveClaudeEnvironment = (
+        environment: ReadonlyArray<{
+          name: string;
+          value: string;
+          sensitive: boolean;
+          valueRedacted?: boolean;
+        }>,
+      ) =>
+        serverSettings.updateSettings({
+          providerInstances: {
+            [claudeAgent]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              environment,
+              config: {},
+            },
+          },
+        });
+      for (const variable of [
+        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-new", sensitive: true },
+        {
+          name: "ANTHROPIC_AUTH_TOKEN",
+          value: "sk-ant-oat01-new",
+          sensitive: false,
+          valueRedacted: true,
+        },
+      ]) {
+        const refused = yield* Effect.flip(saveClaudeEnvironment([variable]));
+        assert.equal(refused.detail, CLAUDE_TOKEN_REFUSED_DETAIL);
+      }
+      const masked = yield* saveClaudeEnvironment([
+        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
+      ]);
+      assert.deepEqual(masked.providerInstances[claudeAgent]?.environment, [
+        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
+      ]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("cleans Claude tokens from a settings file it can't otherwise read", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const secretName = (instanceId: string, name: string) =>
+        `provider-env-${Buffer.from(instanceId).toString("base64url")}-${Buffer.from(name).toString("base64url")}`;
+      const tokenLeftover = `${secretName("claudeAgent", "ANTHROPIC_AUTH_TOKEN")}.bin.9f.tmp`;
+      const otherLeftover = `${secretName("codex", "OPENROUTER_API_KEY")}.bin.9f.tmp`;
+      yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        `${serverConfig.secretsDir}/${tokenLeftover}`,
+        "sk-ant-oat01-half",
+      );
+      yield* fileSystem.writeFileString(
+        `${serverConfig.secretsDir}/${otherLeftover}`,
+        "sk-or-half",
+      );
+      // A value this version rejects makes it load defaults; the file must
+      // still lose its token and keep everything else exactly.
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          autoArchiveInactiveThreadsDays: "not a number",
+          aNote: "keep ,] literally",
+          providerInstances: {
+            claudeAgent: {
+              driver: "claudeAgent",
+              environment: [{ name: "NOTES", value: "sk-ant-oat01-plain", sensitive: false }],
+              config: {},
+            },
+          },
+        }),
+      );
+
+      yield* serverSettings.start;
+
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "sk-ant-oat01");
+      assert.include(raw, '"keep ,] literally"');
+      assert.include(raw, '"not a number"');
+      const leftovers = yield* fileSystem.readDirectory(serverConfig.secretsDir);
+      assert.deepEqual(
+        leftovers.filter((name) => name.endsWith(".tmp")),
+        [otherLeftover],
+      );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 });

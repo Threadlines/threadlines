@@ -79,18 +79,38 @@ export function clientIdentity(
     return { kind: "cimd", host: client.cimdHost, known: isKnownAssistantHost(client.cimdHost) };
   }
   const redirect = new URL(redirectUri);
+  const web = redirect.protocol === "https:" || redirect.protocol === "http:";
   return {
     kind: "registered",
-    host: redirect.host,
-    known: isKnownAssistantHost(redirect.hostname),
+    host: returnAddressLabel(redirect),
+    // An app's own scheme proves nothing about a domain (cursor://claude.ai is anyone's), so it's never known.
+    known: web && isKnownAssistantHost(redirect.hostname),
   };
 }
 
 /**
- * A return address as registered, or null. https only, exact (kept as sent,
- * compared as sent), no userinfo or fragment, printable ASCII, at most 512
- * characters. Loopback http (127.0.0.1, [::1], localhost) when allowed: the
- * door allows it, as the MCP spec says, for native clients.
+ * Where a sign-in returns, as people read it: a web address's host, or an
+ * app's whole scheme and host (`cursor://anysphere.cursor-mcp/`). An app's
+ * label ends in `/` or `:`, so nothing that matches a site by its ending
+ * (assistantOfSignInHost) can take it for one.
+ */
+export function returnAddressLabel(redirect: URL): string {
+  if (redirect.protocol === "https:" || redirect.protocol === "http:") return redirect.host;
+  const scheme = redirect.protocol.slice(0, -1).toLowerCase();
+  return redirect.host ? `${scheme}://${redirect.host}/` : `${scheme}:`;
+}
+
+/**
+ * A return address as registered, or null: exact (kept as sent, compared as
+ * sent), no userinfo or fragment, printable ASCII, at most 512 characters.
+ * - https, with a host;
+ * - loopback http (127.0.0.1, [::1], localhost) when allowed: the door allows
+ *   it, as the MCP spec says, for native clients;
+ * - a native app's own scheme (RFC 8252, section 7.1): a reverse-domain one
+ *   (`com.example.app:/callback`), as section 8.4 recommends, or a known app's
+ *   dotless one (the Cursor app's `cursor://anysphere.cursor-mcp/oauth/callback`).
+ *   Browser launchers, website-registered handlers (`web+…`), and web, document
+ *   and script schemes never pass: they could hand the code to any website.
  */
 export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
@@ -102,10 +122,30 @@ export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): st
   } catch {
     return null;
   }
-  if (url.username || url.password || !url.hostname) return null;
-  if (url.protocol === "https:") return value;
-  if (url.protocol === "http:" && allowLoopbackHttp && isLoopbackHost(url.hostname)) return value;
-  return null;
+  if (url.username || url.password) return null;
+  if (url.protocol === "https:") return url.hostname ? value : null;
+  if (url.protocol === "http:") {
+    return allowLoopbackHttp && isLoopbackHost(url.hostname) ? value : null;
+  }
+  return isAppScheme(url.protocol) ? value : null;
+}
+
+/** Dotless schemes of native apps known to sign in here; any other app scheme must be reverse-domain. */
+const KNOWN_APP_SCHEMES = new Set(["cursor"]);
+
+/**
+ * Dotted schemes a browser or operating system handles itself: a website's own handler (web+…),
+ * macOS and Apple apps (x-apple.systempreferences, com.apple.…) and Windows' own apps
+ * (microsoft.windows.camera). Browser, script and document schemes are dotless, so they fail
+ * the reverse-domain rule already.
+ */
+const SYSTEM_SCHEME_PREFIXES = ["web+", "x-apple", "com.apple.", "microsoft."];
+
+function isAppScheme(protocol: string): boolean {
+  const scheme = protocol.slice(0, -1).toLowerCase();
+  if (!/^[a-z][a-z0-9+.-]*$/u.test(scheme)) return false;
+  if (SYSTEM_SCHEME_PREFIXES.some((prefix) => scheme.startsWith(prefix))) return false;
+  return scheme.includes(".") || KNOWN_APP_SCHEMES.has(scheme);
 }
 
 /** A client's name as shown: no control or formatting characters, spaces collapsed, 60 characters. */
@@ -161,7 +201,7 @@ export function parseRegistration(body: unknown, allowLoopbackHttp: boolean): Re
         ok: false,
         error: "invalid_redirect_uri",
         description:
-          "Redirect URIs must be https, at most 512 characters, with no user info or fragment.",
+          "Redirect URIs must be https, loopback http or an app's own scheme, at most 512 characters, with no user info or fragment.",
       };
     }
     if (!redirectUris.includes(checked)) redirectUris.push(checked);
@@ -185,7 +225,10 @@ export function parseRegistration(body: unknown, allowLoopbackHttp: boolean): Re
   ) {
     return metadataError("software_id must be a short printable string.");
   }
-  const name = cleanClientName(metadata.client_name) ?? new URL(redirectUris[0]!).host;
+  const name =
+    cleanClientName(metadata.client_name) ??
+    cleanClientName(returnAddressLabel(new URL(redirectUris[0]!))) ??
+    "Unnamed assistant";
   return {
     ok: true,
     registration: {
@@ -402,7 +445,7 @@ async function resolveMetadataDocument(
     if (redirectUris.length === CIMD_MAX_KEPT_REDIRECTS) break;
   }
   if (redirectUris.length === 0) {
-    return refused("This assistant's client details have no https return address.");
+    return refused("This assistant's client details have no return address Threadlines can use.");
   }
   const client: AssistantClient = {
     clientId,

@@ -95,6 +95,11 @@ const AUTO_EXPAND_TICK_MS = 1_000;
 /** Cap on replayed scrollback held for a terminal that mounts mid-flow. */
 const OUTPUT_BUFFER_CHARS = 64_000;
 
+export interface ProviderConnectFlowStartOptions {
+  readonly terminal?: boolean;
+  readonly workspaceId?: string;
+}
+
 export interface ProviderConnectFlowController {
   readonly state: ProviderConnectFlowState;
   /** Finishes a browser sign-in with the address the browser ended on. */
@@ -141,9 +146,10 @@ export interface ProviderConnectFlowController {
   readonly terminalWriteRef: RefObject<((data: string) => void) | null>;
   /**
    * Starts the flow. `terminal` asks for the agent's own terminal sign-in
-   * where the flow would otherwise ask its questions in the panel (Pi).
+   * where the flow would otherwise ask its questions in the panel (Pi);
+   * `workspaceId` is the workspace a `switch-workspace` run moves to.
    */
-  readonly start: (options?: { readonly terminal?: boolean }) => void;
+  readonly start: (options?: ProviderConnectFlowStartOptions) => void;
   /** Cancels the server session and clears everything this hook is showing. */
   readonly reset: () => void;
   /** Ends any run on the instance, not only this hook's, and resolves once the server has. */
@@ -325,7 +331,7 @@ export function useProviderConnectFlow(input: {
   }, [isActive]);
 
   const start = useCallback(
-    (options?: { readonly terminal?: boolean }) => {
+    (options?: ProviderConnectFlowStartOptions) => {
       if (instanceId === null) {
         return;
       }
@@ -357,6 +363,7 @@ export function useProviderConnectFlow(input: {
           rows: PROVIDER_CONNECT_TERMINAL_ROWS,
           requestId,
           questions: options?.terminal !== true,
+          ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
         })
         .then(
           () => {

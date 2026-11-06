@@ -8348,6 +8348,191 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("sends skipped and chat-replied questions as words, and shows a reply the agent took", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const requestId = asApprovalRequestId("claude-question-1");
+    const prepare = async (accepts: boolean) => {
+      const harness = await createHarness();
+      if (!accepts) {
+        harness.respondToUserInput.mockImplementation(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "claudeAgent",
+              method: "item/tool/respondToUserInput",
+              detail: `Unknown pending user-input request: ${requestId}`,
+            }),
+          ),
+        );
+      }
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-question-session"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("cmd-question-requested"),
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-question-requested"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId,
+              canLeaveUnanswered: true,
+              questions: [
+                {
+                  id: "Which database?",
+                  header: "Database",
+                  question: "Which database?",
+                  options: [],
+                },
+                { id: "Tests now?", header: "Tests", question: "Tests now?", options: [] },
+                { id: "Deploy?", header: "Deploy", question: "Deploy?", options: [] },
+              ],
+            },
+            turnId: asTurnId("turn-1"),
+            createdAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.user-input.respond",
+          commandId: CommandId.make("cmd-question-respond"),
+          threadId: ThreadId.make("thread-1"),
+          requestId,
+          answers: { "Which database?": "Postgres" },
+          unanswered: { "Tests now?": "skipped", "Deploy?": "replied_in_chat" },
+          reply: { text: "Ship it Friday, after the demo." },
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      return harness;
+    };
+    const replyMessages = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
+      (await harness.readModel()).threads[0]?.messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.text);
+
+    const accepted = await prepare(true);
+    expect(accepted.respondToUserInput.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      requestId: "claude-question-1",
+      answers: {
+        "Which database?": "Postgres",
+        "Tests now?": "The user skipped this question.",
+        "Deploy?":
+          "The user answered in the chat instead of choosing:\n\nShip it Friday, after the demo.",
+      },
+      unanswered: { "Tests now?": "skipped", "Deploy?": "replied_in_chat" },
+    });
+    expect(await replyMessages(accepted)).toEqual(["Ship it Friday, after the demo."]);
+
+    // Another device answered first: the agent never took this reply, so it
+    // never shows as if it had, and its words stay readable in the failure.
+    const lost = await prepare(false);
+    expect(await replyMessages(lost)).toEqual([]);
+    const failure = (await lost.readModel()).threads[0]?.activities.find(
+      (activity) => activity.kind === "provider.user-input.respond.failed",
+    );
+    expect(failure?.summary).toBe("Your reply didn't reach the agent");
+    expect((failure?.payload as { detail: string }).detail).toContain(
+      "Your reply: Ship it Friday, after the demo.",
+    );
+  });
+
+  it("queues an answer for the room agent that asked while another agent works", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const requestId = asApprovalRequestId("astra-async-question");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-asker-add"),
+      threadId,
+      participant: {
+        id: astraId,
+        handle: "astra",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      },
+      createdAt: now,
+    });
+    // The thread's own agent is working when Astra's earlier question is answered.
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-holder-turn"),
+      threadId,
+      message: { messageId: asMessageId("holder-1"), role: "user", text: "work", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      createdAt: now,
+    });
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.session?.status === "running" && thread.session.activeTurnId != null;
+    });
+    const running = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    await dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("cmd-astra-question"),
+      threadId,
+      activity: {
+        id: EventId.make("activity-astra-question"),
+        tone: "info",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        payload: {
+          requestId,
+          isBlocking: false,
+          responseMode: "message",
+          canLeaveUnanswered: true,
+          questions: [{ id: "page", header: "Page", question: "Which page?", options: [] }],
+        },
+        turnId: running!.session!.activeTurnId!,
+        participantId: astraId,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.user-input.respond",
+      commandId: CommandId.make("cmd-answer-astra"),
+      threadId,
+      requestId,
+      answers: {},
+      unanswered: { page: "replied_in_chat" },
+      reply: { text: "The clone picker" },
+      createdAt: now,
+    });
+    await harness.drain();
+
+    expect(harness.steerTurn).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.queuedFollowUps?.map((entry) => [entry.messageId, entry.participantId])).toEqual(
+      [[`question-answer:${requestId}`, astraId]],
+    );
+  });
+
   describe("async question replies", () => {
     const now = "2026-01-01T00:00:00.000Z";
     const requestId = asApprovalRequestId("async-sign-in-question");

@@ -81,6 +81,7 @@ import {
   publishedArtifactFromToolResult,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
+import type { ClaudeLaunchTarget } from "./ClaudeProvider.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 /**
@@ -385,6 +386,7 @@ function makeHarness(config?: {
   readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
   readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
   readonly installedCliVersion?: string;
+  readonly readLaunchVersion?: ClaudeAdapterLiveOptions["readLaunchVersion"];
   readonly suggestionsWhenUsageRunsFast?: ClaudeAdapterLiveOptions["suggestionsWhenUsageRunsFast"];
 }) {
   const query = new FakeClaudeQuery();
@@ -420,6 +422,7 @@ function makeHarness(config?: {
     ...(config?.installedCliVersion
       ? { installedCliVersion: Effect.succeed(config.installedCliVersion) }
       : {}),
+    ...(config?.readLaunchVersion ? { readLaunchVersion: config.readLaunchVersion } : {}),
     ...(config?.suggestionsWhenUsageRunsFast
       ? { suggestionsWhenUsageRunsFast: config.suggestionsWhenUsageRunsFast }
       : {}),
@@ -10026,6 +10029,56 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("fails its tool guards closed only on a Claude Code that honours it", () => {
+    // Asking an older Claude Code to block stops the SDK from starting the
+    // session at all, so those (and an unknown version) keep the old guards.
+    // The version is the launched binary's own, not the provider's last check.
+    const guardFailures = (launchCliVersion: string | undefined, lockdown?: "side-review") => {
+      const asked: Array<ClaudeLaunchTarget> = [];
+      // The provider's last check says current; only the binary's own answer counts.
+      const harness = makeHarness({
+        installedCliVersion: "2.1.318",
+        readLaunchVersion: (launch) => {
+          asked.push(launch);
+          return Effect.succeed(launchCliVersion);
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: "/tmp/project",
+          ...(lockdown ? { lockdown } : {}),
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()!.options;
+        // Asked of what the SDK launches: the same binary, found the same way.
+        assert.deepEqual(
+          asked.map((launch) => [launch.executable, launch.cwd, launch.environment.PATH]),
+          [[options.pathToClaudeCodeExecutable, options.cwd, options.env?.PATH]],
+        );
+        const hooks = options.hooks;
+        assert.deepEqual(
+          hooks?.PostToolUse?.map((matcher) => matcher.onFailure),
+          lockdown ? undefined : [undefined, undefined],
+        );
+        return (hooks?.PreToolUse ?? []).map((matcher) => matcher.onFailure);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.orDie,
+      );
+    };
+    return Effect.gen(function* () {
+      assert.deepEqual(yield* guardFailures(undefined), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.316"), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.317"), ["block"]);
+      assert.deepEqual(yield* guardFailures("2.1.316", "side-review"), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.318", "side-review"), ["block"]);
+    });
+  });
+
   it.effect("refuses its own check-backs and goals while outside work marks the agent", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -11001,6 +11054,80 @@ describe("ClaudeAdapterLive", () => {
         .join(", ");
       assert.notEqual(v121Rendered, "", "Expected non-empty SDK 2.1.121 tool_result (#2388)");
       assert.equal(v121Rendered, '"Which framework?"="React"');
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("says how each question went unanswered only to a CLI that takes it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const skip = (question: string) =>
+        Effect.gen(function* () {
+          const seen = events.length;
+          const result = canUseTool(
+            "AskUserQuestion",
+            {
+              questions: [{ question, header: "Q", options: [{ label: "A", description: "A" }] }],
+            },
+            {
+              signal: new AbortController().signal,
+              toolUseID: `tool-${question}`,
+              requestId: `request-${question}`,
+            },
+          );
+          let requested: ProviderRuntimeEvent | undefined;
+          while (
+            (requested = events
+              .slice(seen)
+              .find((event) => event.type === "user-input.requested")) === undefined
+          ) {
+            yield* Effect.yieldNow;
+          }
+          assert.equal(
+            requested.type === "user-input.requested" && requested.payload.canLeaveUnanswered,
+            true,
+          );
+          yield* adapter.respondToUserInput(
+            session.threadId,
+            ApprovalRequestId.make(String(requested.requestId)),
+            { [question]: "The user skipped this question." },
+            { [question]: "skipped" },
+          );
+          const permission = yield* Effect.promise(() => result);
+          return (permission as { updatedInput: Record<string, unknown> }).updatedInput;
+        });
+
+      // Before the CLI lists the capability: an older CLI refuses the whole
+      // answer when it carries annotations, so only the words go.
+      const before = yield* skip("Before init?");
+      assert.deepEqual(before.answers, { "Before init?": "The user skipped this question." });
+      assert.isUndefined(before.annotations);
+
+      const configured = events.filter((event) => event.type === "session.configured").length;
+      harness.query.emit({
+        ...claudeInitMessage("2.1.318"),
+        capabilities: ["ask_user_question_unanswered_v1"],
+      } as unknown as SDKMessage);
+      while (events.filter((event) => event.type === "session.configured").length === configured) {
+        yield* Effect.yieldNow;
+      }
+      const after = yield* skip("After init?");
+      assert.deepEqual(after.annotations, { "After init?": { unanswered: "skipped" } });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -3,8 +3,10 @@ import * as path from "node:path";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 
 import {
+  type ApprovalRequestId,
   type ChatAttachment,
   type ChatSkillReference,
+  type MessageSentFrom,
   CheckoutMissingError,
   CommandId,
   EventId,
@@ -107,6 +109,7 @@ import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
 import {
   formatUserInputReply,
+  composeUserInputAnswers,
   questionAnswerMessageId,
   readRequestedUserInput,
 } from "../userInput.ts";
@@ -834,6 +837,8 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    /** The command that failed, so the client that sent it can tell it apart. */
+    readonly failedCommandId?: string | null | undefined;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.activity.append",
@@ -847,6 +852,7 @@ const make = Effect.gen(function* () {
         payload: {
           detail: input.detail,
           ...(input.requestId ? { requestId: input.requestId } : {}),
+          ...(input.failedCommandId ? { commandId: input.failedCommandId } : {}),
         },
         turnId: input.turnId,
         createdAt: input.createdAt,
@@ -4017,6 +4023,51 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.ignoreCause({ log: true }));
 
+  /**
+   * A chat reply that answered questions, shown in the chat as the user's
+   * message in the turn that asked. The agent already has it inside its
+   * answer, so this only records it; a replay finds the stable id and stops.
+   */
+  const recordChatReply = Effect.fn("recordChatReply")(function* (input: {
+    readonly thread: OrchestrationThread;
+    readonly requestId: ApprovalRequestId;
+    readonly text: string;
+    readonly turnId: TurnId | null;
+    readonly participantId: ThreadParticipantId | null;
+    readonly sentFrom: MessageSentFrom | undefined;
+    /** An outside agent's reply keeps its name in the chat. */
+    readonly fromOutside: OutsideTurnOrigin | undefined;
+    readonly createdAt: string;
+  }) {
+    const messageId = questionAnswerMessageId(input.requestId);
+    if (
+      input.turnId === null ||
+      input.thread.messages.some((message) => message.id === messageId)
+    ) {
+      return;
+    }
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.follow-up.accept",
+        commandId: CommandId.make(`question-chat-reply:${input.requestId}`),
+        threadId: input.thread.id,
+        turnId: input.turnId,
+        participantId: input.participantId,
+        message: { messageId, role: "user", text: input.text, attachments: [] },
+        ...(input.sentFrom !== undefined ? { sentFrom: input.sentFrom } : {}),
+        ...(input.fromOutside !== undefined
+          ? {
+              fromOutside: {
+                connectionId: input.fromOutside.connectionId,
+                name: input.fromOutside.name,
+              },
+            }
+          : {}),
+        createdAt: input.createdAt,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
   const processUserInputResponseRequested = Effect.fn("processUserInputResponseRequested")(
     function* (
       event: Extract<ProviderIntentEvent, { type: "thread.user-input-response-requested" }>,
@@ -4041,6 +4092,7 @@ const make = Effect.gen(function* () {
           return yield* appendProviderFailureActivity({
             threadId: thread.id,
             kind: "provider.user-input.respond.failed",
+            failedCommandId: event.commandId,
             summary: `Answer from ${fromOutside.name} not sent`,
             detail: refusal,
             turnId: openQuestion?.activity.turnId ?? null,
@@ -4064,12 +4116,62 @@ const make = Effect.gen(function* () {
         if (Option.isSome(previousQuestion) && previousQuestion.value.responseMode === "message")
           return;
       }
+      // Skipped, closed and chat-replied questions in words the agent reads
+      // (the decider already checked them against the open question).
+      const composed = composeUserInputAnswers({
+        requested: Option.isSome(requested) ? requested.value : { questions: [] },
+        answers: event.payload.answers,
+        unanswered: event.payload.unanswered,
+        reply: event.payload.reply,
+      });
+      if (composed._tag === "Invalid") {
+        return yield* appendProviderFailureActivity({
+          threadId: thread.id,
+          kind: "provider.user-input.respond.failed",
+          failedCommandId: event.commandId,
+          summary: "Could not send answer",
+          detail: composed.detail,
+          turnId: openQuestion?.activity.turnId ?? null,
+          createdAt: event.payload.createdAt,
+          requestId: event.payload.requestId,
+        });
+      }
+      const answers = composed.answers;
       if (Option.isSome(requested) && requested.value.responseMode === "message") {
-        const input = formatUserInputReply(requested.value.questions, event.payload.answers);
+        // Closed without a word: the agent asked and moved on, so it waits on
+        // nothing. The question just closes.
+        const closedOnly =
+          requested.value.questions.length > 0 &&
+          requested.value.questions.every(
+            (question) => composed.unanswered[question.id] === "dismissed",
+          );
+        if (closedOnly) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`question-answer-resolved:${event.payload.requestId}`),
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`question-answer-resolved:${event.payload.requestId}`),
+              kind: "user-input.resolved",
+              tone: "info",
+              summary: "Questions closed",
+              payload: { requestId: event.payload.requestId, answers },
+              turnId: openQuestion?.activity.turnId ?? null,
+              ...(openQuestion?.activity.participantId != null
+                ? { participantId: openQuestion.activity.participantId }
+                : {}),
+              createdAt: event.payload.createdAt,
+            },
+            createdAt: event.payload.createdAt,
+          });
+          return;
+        }
+        const input = formatUserInputReply(requested.value.questions, answers);
         const fail = (detail: string) =>
           appendProviderFailureActivity({
             threadId: thread.id,
             kind: "provider.user-input.respond.failed",
+            failedCommandId: event.commandId,
             summary: "Could not send answer",
             detail,
             turnId: openQuestion?.activity.turnId ?? null,
@@ -4085,8 +4187,16 @@ const make = Effect.gen(function* () {
           if (!thread.messages.some((message) => message.id === messageId)) {
             const activeTurnId = thread.session?.activeTurnId;
             let steered = false;
-            const answeringAgentId = sessionSlotParticipantId(thread.session);
-            if (thread.session?.status === "running" && activeTurnId) {
+            // The agent that asked: in a room, another may hold the thread by
+            // now, and an answer steered into its turn would reach the wrong one.
+            const holderId = sessionSlotParticipantId(thread.session);
+            const answeringAgentId =
+              openQuestion !== undefined ? (openQuestion.activity.participantId ?? null) : holderId;
+            const otherAgentWorking =
+              answeringAgentId !== holderId &&
+              thread.session?.status === "running" &&
+              activeTurnId != null;
+            if (thread.session?.status === "running" && activeTurnId && !otherAgentWorking) {
               const deviceNote = messageSentFromNote({
                 sentFrom: event.payload.sentFrom,
                 previous: previousMessageSentFrom(thread.messages, null, answeringAgentId, {
@@ -4163,7 +4273,23 @@ const make = Effect.gen(function* () {
                 }
               }
             }
-            if (!steered) {
+            if (!steered && otherAgentWorking && activeTurnId) {
+              // Another agent is working: the answer waits in the queue for
+              // the one that asked, as any message for it would.
+              yield* orchestrationEngine.dispatch({
+                type: "thread.follow-up.submit",
+                commandId: CommandId.make(`question-answer-queued:${event.payload.requestId}`),
+                threadId: thread.id,
+                turnId: activeTurnId,
+                message: { messageId, role: "user", text: input, attachments: [] },
+                delivery: "queue",
+                participantId: answeringAgentId,
+                ...(event.payload.sentFrom !== undefined
+                  ? { sentFrom: event.payload.sentFrom }
+                  : {}),
+                createdAt: event.payload.createdAt,
+              });
+            } else if (!steered) {
               // Persist the answer through the normal turn path. If starting
               // the provider fails, the transcript keeps the reply for Retry.
               // An outside agent's answer is its turn, with its ceiling
@@ -4182,9 +4308,13 @@ const make = Effect.gen(function* () {
                       // The agent that asked, which the decider checked holds the thread.
                       participantId: event.payload.participantId ?? null,
                     }
-                  : event.payload.sentFrom !== undefined
-                    ? { sentFrom: event.payload.sentFrom }
-                    : {}),
+                  : {
+                      // The agent that asked, which the answer is for.
+                      ...(answeringAgentId !== null ? { participantId: answeringAgentId } : {}),
+                      ...(event.payload.sentFrom !== undefined
+                        ? { sentFrom: event.payload.sentFrom }
+                        : {}),
+                    }),
                 createdAt: event.payload.createdAt,
               });
             }
@@ -4198,7 +4328,7 @@ const make = Effect.gen(function* () {
               kind: "user-input.resolved",
               tone: "info",
               summary: "User input submitted",
-              payload: { requestId: event.payload.requestId, answers: event.payload.answers },
+              payload: { requestId: event.payload.requestId, answers },
               turnId: openQuestion?.activity.turnId ?? null,
               createdAt: event.payload.createdAt,
             },
@@ -4221,6 +4351,7 @@ const make = Effect.gen(function* () {
         return yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,
           kind: "provider.user-input.respond.failed",
+          failedCommandId: event.commandId,
           summary: "Provider user input response failed",
           detail: "No active provider session is bound to this thread.",
           turnId: null,
@@ -4230,11 +4361,15 @@ const make = Effect.gen(function* () {
       }
 
       const userInputSessionKey = yield* resolveSlotSessionKey(event.payload.threadId);
+      const reply = event.payload.reply;
       yield* providerService
         .respondToUserInput({
           threadId: userInputSessionKey,
           requestId: event.payload.requestId,
-          answers: event.payload.answers,
+          answers,
+          ...(Object.keys(composed.unanswered).length > 0
+            ? { unanswered: composed.unanswered }
+            : {}),
         })
         .pipe(
           Effect.andThen(
@@ -4248,14 +4383,43 @@ const make = Effect.gen(function* () {
                   event.payload.createdAt,
                 ),
           ),
+          // The reply went to the agent inside the answer; it shows in the
+          // chat as the user's message only once the agent took it, so a
+          // reply that lost to another device's answer never appears.
+          Effect.andThen(
+            reply === undefined
+              ? Effect.void
+              : recordChatReply({
+                  thread,
+                  requestId: event.payload.requestId,
+                  text: reply.text,
+                  turnId:
+                    openQuestion?.activity.turnId ??
+                    thread.session?.activeTurnId ??
+                    thread.latestTurn?.turnId ??
+                    null,
+                  participantId: openQuestion?.activity.participantId ?? null,
+                  sentFrom: event.payload.sentFrom,
+                  fromOutside,
+                  createdAt: event.payload.createdAt,
+                }),
+          ),
           Effect.catchCause((cause) =>
             appendProviderFailureActivity({
               threadId: event.payload.threadId,
               kind: "provider.user-input.respond.failed",
-              summary: "Provider user input response failed",
-              detail: isUnknownPendingUserInputRequestError(cause)
-                ? stalePendingRequestDetail("user-input", event.payload.requestId)
-                : Cause.pretty(cause),
+              failedCommandId: event.commandId,
+              summary:
+                reply === undefined
+                  ? "Provider user input response failed"
+                  : "Your reply didn't reach the agent",
+              // A chat reply was cleared from the box when it was sent; it
+              // stays readable here, and the client puts it back in the box.
+              detail: `${
+                isUnknownPendingUserInputRequestError(cause)
+                  ? stalePendingRequestDetail("user-input", event.payload.requestId)
+                  : Cause.pretty(cause)
+              }${reply === undefined ? "" : `\n\nYour reply: ${reply.text}`}`,
               turnId: null,
               createdAt: event.payload.createdAt,
               requestId: event.payload.requestId,

@@ -34,7 +34,6 @@ import {
   BROWSER_SIGN_IN_DRIVERS,
   browserSignInLabel,
   buildClaudeAuthLoginCommand,
-  buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
   buildCursorLoginCommand,
   buildFxLoginCommand,
@@ -43,14 +42,13 @@ import {
   buildPiLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
-  deriveClaudeLongLivedOAuthTokenState,
   GROK_DRIVER_KIND,
-  sanitizeClaudeLongLivedOAuthTokenInput,
-  upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 
 import { ProviderApiKeyBillingSwitch } from "./ProviderApiKeyBilling";
 import { ProviderDataSharingSwitch } from "./ProviderDataSharing";
+import { ProviderWorkspaceSwitch } from "./ProviderWorkspaceSwitch";
+import { currentWorkspaceName } from "./providerWorkspaces.logic";
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
@@ -70,8 +68,6 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
-import { Input } from "../ui/input";
-import { toastManager } from "../ui/toast";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { AntigravitySignInMethods } from "./AntigravitySignInMethods";
@@ -108,6 +104,8 @@ import {
   offAgentAction,
 } from "./agentStatus";
 import { ProviderUpdatePopover } from "./ProviderUpdatePopover";
+import { useSignInEndsWarning } from "../../hooks/useSignInEndsWarning";
+import { signInEndsShortText } from "../../lib/signInEnds";
 import { signInMethodNeeds, signInNextStep } from "./useSignInNextStep";
 import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
 
@@ -239,6 +237,31 @@ export function preferClaudeNormalSignInEnvironment(
   return nextEnvironment;
 }
 
+/**
+ * Whether an instance still holds a Claude token an older Threadlines saved.
+ * A current server drops one when it loads its settings, so only an older
+ * computer (a linked one not yet updated) still reports it.
+ */
+export function hasSavedClaudeToken(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): boolean {
+  return environment.some(
+    (variable) =>
+      variable.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV &&
+      (variable.valueRedacted === true || variable.value.trim().length > 0),
+  );
+}
+
+/** The environment with a saved Claude token swapped for the empty mask, so Claude uses its own sign-in. */
+export function withoutSavedClaudeToken(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
+  return [
+    ...environment.filter((variable) => variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV),
+    { name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV, value: "", sensitive: false, valueRedacted: false },
+  ];
+}
+
 export function hasClaudeCredentialOverrideEnvironment(
   environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
 ): boolean {
@@ -249,24 +272,6 @@ export function hasClaudeCredentialOverrideEnvironment(
       ) &&
       (variable.valueRedacted === true || variable.value.trim().length > 0),
   );
-}
-
-export function preferClaudeLongLivedOAuthTokenEnvironment(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
-  const overrideNames = new Set<string>(CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES);
-  const nextEnvironment = environment.filter((variable) => !overrideNames.has(variable.name));
-
-  for (const name of CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES) {
-    nextEnvironment.push({
-      name,
-      value: "",
-      sensitive: false,
-      valueRedacted: false,
-    });
-  }
-
-  return nextEnvironment;
 }
 
 function ProviderAuthEmail(props: {
@@ -558,146 +563,6 @@ function ProviderEnvironmentEditor(props: {
   );
 }
 
-function ClaudeLongLivedAuthSection(props: {
-  readonly idPrefix: string;
-  readonly instanceId: ProviderInstanceId;
-  readonly setupCommand: string;
-  readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
-  readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
-}) {
-  const tokenState = deriveClaudeLongLivedOAuthTokenState(props.environment);
-  const tokenInputId = `${props.idPrefix}-claude-oauth-token`;
-  const [tokenDraft, setTokenDraft] = useState("");
-  const [isExpanded, setIsExpanded] = useState(tokenState.configured);
-  const sanitizedTokenDraft = sanitizeClaudeLongLivedOAuthTokenInput(tokenDraft);
-  const tokenDraftHasValue = tokenDraft.trim().length > 0;
-  const tokenDraftWillBeSanitized = tokenDraftHasValue && sanitizedTokenDraft !== tokenDraft.trim();
-  const saveToken = () => {
-    if (sanitizedTokenDraft.length === 0) {
-      toastManager.add({
-        type: "error",
-        title: "Paste a Claude sign-in token first",
-        description: "Run the setup command, copy the printed token, then save it here.",
-      });
-      return;
-    }
-    props.onChange(
-      upsertClaudeLongLivedOAuthTokenEnvironment(props.environment, sanitizedTokenDraft),
-    );
-    setTokenDraft("");
-    toastManager.add({
-      type: "success",
-      title: "Saved your Claude token",
-      description: tokenDraftWillBeSanitized
-        ? "Whitespace was removed from the pasted token before saving."
-        : "Claude will use this token to sign in.",
-    });
-  };
-
-  return (
-    <details
-      className="group border-t border-group-divider pt-4"
-      // React alone drives `open`: the summary click below prevents the
-      // native toggle. Letting the browser toggle first creates a race where a
-      // render committed before the onToggle state update re-applies the stale
-      // `open` and snaps the section shut (a CI-only flake on loaded runners).
-      open={isExpanded}
-    >
-      <summary
-        className="cursor-pointer list-none text-xs font-semibold text-foreground marker:hidden"
-        onClick={(event) => {
-          event.preventDefault();
-          setIsExpanded((expanded) => !expanded);
-        }}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <ChevronDownIcon className="size-3 transition-transform group-open:rotate-180" />
-          Advanced: headless chat token
-          {tokenState.configured ? (
-            <Badge variant="secondary" size="sm">
-              Active
-            </Badge>
-          ) : null}
-        </span>
-      </summary>
-      <div className="mt-3 grid gap-3">
-        <p className="text-xs text-muted-foreground">
-          Optional for remote or headless chat. Usage still requires normal Claude sign-in.
-        </p>
-        <ProviderConnectFlow
-          instanceId={props.instanceId}
-          flow="claude-setup-token"
-          displayName="Claude"
-          actionLabel={tokenState.configured ? "Generate new token" : "Generate token"}
-          command={props.setupCommand}
-          buttonVariant={tokenState.configured ? "outline" : "default"}
-          description="Threadlines saves the token for you when it appears."
-        />
-        <label className="block" htmlFor={tokenInputId}>
-          <span className="text-xs font-medium text-foreground">Paste a token instead</span>
-          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
-            <Input
-              id={tokenInputId}
-              className="min-w-64 flex-1"
-              value={tokenDraft}
-              onChange={(event) => setTokenDraft(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  saveToken();
-                }
-              }}
-              type="password"
-              autoComplete="off"
-              placeholder={
-                tokenState.configured
-                  ? "Stored secret - enter a new value to replace"
-                  : "Paste token"
-              }
-              spellCheck={false}
-            />
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              className="h-8 px-2 text-xs sm:h-7.5"
-              disabled={sanitizedTokenDraft.length === 0}
-              onClick={saveToken}
-            >
-              Save token
-            </Button>
-          </div>
-          <span className="mt-1 block text-xs text-muted-foreground">
-            This writes <code className="text-foreground">{CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV}</code>{" "}
-            as a sensitive environment variable.
-          </span>
-          {tokenDraftWillBeSanitized ? (
-            <span className="mt-1 block text-xs text-warning">
-              Whitespace will be removed before saving.
-            </span>
-          ) : null}
-        </label>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={tokenState.configured ? "success" : "secondary"} size="sm">
-            {tokenState.configured ? "Configured" : "Not configured"}
-          </Badge>
-          {tokenState.configured ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-xs"
-              onClick={() => props.onChange(preferClaudeNormalSignInEnvironment(props.environment))}
-            >
-              Use normal Claude sign-in
-            </Button>
-          ) : null}
-        </div>
-      </div>
-    </details>
-  );
-}
-
 export function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
   readonly label: string;
   readonly variant: "success" | "warning" | "secondary";
@@ -854,7 +719,6 @@ function ProviderAccountSignInSection(props: {
   readonly onEnvironmentChange: (
     environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
   ) => void;
-  readonly claudeSetupTokenCommand?: string | undefined;
   readonly signInHandoffActive?: boolean;
   readonly instance: ProviderInstanceConfig;
   /** Saves the instance and resolves once the server stored it (Antigravity's method). */
@@ -862,6 +726,8 @@ function ProviderAccountSignInSection(props: {
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
+  // A saved sign-in close to its end: Sign in again becomes the main action.
+  const signInEndsWarning = useSignInEndsWarning(props.liveProvider);
   // Antigravity's and Grok's sign-in follow their method: a browser sign-in,
   // or a check of a key (or a Google Cloud project).
   const methodStep = signInNextStep({
@@ -883,8 +749,7 @@ function ProviderAccountSignInSection(props: {
   const signOut = browserSignIn ? browserSignOutCopy(props.driverKind, props.instance) : null;
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
-  const claudeLongLivedTokenConfigured =
-    isClaude && deriveClaudeLongLivedOAuthTokenState(props.environment).configured;
+  const hasLegacyClaudeToken = isClaude && hasSavedClaudeToken(props.environment);
   const claudeCapabilityBadges = isClaude
     ? (["chat", "usage"] as const).flatMap((kind) => {
         const capability = props.liveProvider?.auth.capabilities?.[kind];
@@ -970,7 +835,7 @@ function ProviderAccountSignInSection(props: {
                   ? methodCopy.runningHint
                   : undefined
             }
-            buttonVariant={needsSignIn ? "default" : "ghost"}
+            buttonVariant={needsSignIn || signInEndsWarning ? "default" : "ghost"}
             description={
               isClaude
                 ? "Signing in covers both chat and usage."
@@ -997,10 +862,23 @@ function ProviderAccountSignInSection(props: {
                     {presentation.label}
                   </Badge>
                 ))}
+                {signInEndsWarning ? (
+                  <Badge variant="warning" size="sm">
+                    {signInEndsShortText(signInEndsWarning)}
+                  </Badge>
+                ) : null}
               </>
             }
           />
         )}
+
+        {props.liveProvider?.enabled !== false && props.liveProvider ? (
+          <ProviderWorkspaceSwitch
+            instanceId={props.instanceId}
+            displayName={props.displayName}
+            provider={props.liveProvider}
+          />
+        ) : null}
 
         {signOut && props.liveProvider?.auth.status === "authenticated" ? (
           <ProviderConnectFlow
@@ -1028,6 +906,31 @@ function ProviderAccountSignInSection(props: {
           <ProviderDataSharingSwitch provider={props.liveProvider} />
         ) : null}
 
+        {hasLegacyClaudeToken ? (
+          <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium">Saved Claude token</p>
+                <p className="mt-0.5 text-warning/85">
+                  This computer runs an older Threadlines that chats on a saved Claude token. Remove
+                  it to use your Claude sign-in instead.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 border-warning/40 bg-warning/10 px-2 text-xs text-warning hover:bg-warning/15"
+                onClick={() =>
+                  props.onEnvironmentChange(withoutSavedClaudeToken(props.environment))
+                }
+              >
+                Remove token
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         {hasClaudeCredentialOverride ? (
           <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
             <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
@@ -1035,46 +938,22 @@ function ProviderAccountSignInSection(props: {
                 <p className="font-medium">Environment override active</p>
                 <p className="mt-0.5 text-warning/85">
                   `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` is set for this provider. Claude
-                  uses those before the long-lived OAuth token.
+                  uses it instead of your Claude sign-in.
                 </p>
-                {claudeLongLivedTokenConfigured ? (
-                  <p className="mt-1 text-warning/85">
-                    Use the long-lived token to clear these provider overrides and mask inherited
-                    Anthropic env vars.
-                  </p>
-                ) : (
-                  <p className="mt-1 text-warning/85">
-                    Add a long-lived token before switching this provider to OAuth token auth.
-                  </p>
-                )}
               </div>
-              {claudeLongLivedTokenConfigured ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 border-warning/40 bg-warning/10 px-2 text-xs text-warning hover:bg-warning/15"
-                  onClick={() =>
-                    props.onEnvironmentChange(
-                      preferClaudeLongLivedOAuthTokenEnvironment(props.environment),
-                    )
-                  }
-                >
-                  Use long-lived token
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 border-warning/40 bg-warning/10 px-2 text-xs text-warning hover:bg-warning/15"
+                onClick={() =>
+                  props.onEnvironmentChange(preferClaudeNormalSignInEnvironment(props.environment))
+                }
+              >
+                Use Claude sign-in
+              </Button>
             </div>
           </div>
-        ) : null}
-
-        {isClaude && props.claudeSetupTokenCommand ? (
-          <ClaudeLongLivedAuthSection
-            idPrefix={props.idPrefix}
-            instanceId={props.instanceId}
-            setupCommand={props.claudeSetupTokenCommand}
-            environment={props.environment}
-            onChange={props.onEnvironmentChange}
-          />
         ) : null}
       </div>
     </ProviderConfigurationSection>
@@ -1481,6 +1360,9 @@ export function ProviderInstanceCard({
   const authenticatedDetail = hasAuthenticatedEmail
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
+  // Which workspace it uses, where the sign-in has more than one.
+  const workspaceName = hasAuthenticatedEmail ? currentWorkspaceName(liveProvider?.auth) : null;
+  const signInEndsWarning = useSignInEndsWarning(liveProvider);
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const providerInstallView = deriveProviderInstallView(liveProvider);
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
@@ -1536,15 +1418,6 @@ export function ProviderInstanceCard({
   const providerSettingsFieldGroups = useMemo(
     () => splitProviderSettingsFields(providerSettingsFields),
     [providerSettingsFields],
-  );
-  const claudeSetupTokenCommand = useMemo(
-    () =>
-      buildClaudeSetupTokenCommand({
-        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
-        homePath: readProviderConfigString(instance.config, "homePath"),
-        accountFolder: readProviderConfigString(instance.config, "accountFolder"),
-      }),
-    [instance.config],
   );
   const community = isCommunityAgent ? liveProvider?.community : undefined;
   const terminalLoginCommand = useMemo(() => {
@@ -1791,7 +1664,11 @@ export function ProviderInstanceCard({
       <span className="inline-flex min-w-0 items-center gap-x-1">
         <ProviderAuthEmail email={authEmail} />
         {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
+        {workspaceName ? <span className="truncate">· {workspaceName}</span> : null}
         <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
+        {signInEndsWarning ? (
+          <span className="text-warning">· {signInEndsShortText(signInEndsWarning)}</span>
+        ) : null}
       </span>
     ) : showFullGuide ? (
       <span>
@@ -2054,7 +1931,6 @@ export function ProviderInstanceCard({
                 signInHandoffActive={signInHandoffActive}
                 instance={instance}
                 onSaveInstance={onSaveInstance}
-                {...(driverKind === CLAUDE_DRIVER_KIND ? { claudeSetupTokenCommand } : {})}
               />
             </div>
           ) : null}

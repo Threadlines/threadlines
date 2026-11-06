@@ -1,17 +1,12 @@
 /**
- * Provider auth commands and the credentials they produce.
- *
- * One source of truth for:
- *   - the sign-in / token commands Threadlines runs for a provider instance
- *     (server spawns the argv form in a PTY; the web shows the display form
- *     under "Prefer your own terminal?"),
- *   - the `CLAUDE_CODE_OAUTH_TOKEN` environment entry a `claude setup-token`
- *     run produces, which both the server (auto-capture) and the web (manual
- *     paste fallback) write into the instance's environment.
+ * Provider auth commands: the one source of truth for the sign-in commands
+ * Threadlines runs for a provider instance (the server spawns the argv form
+ * in a PTY; the web shows the display form under "Prefer your own
+ * terminal?"), and for the Claude credential variables they work around.
  *
  * @module providerAuthCommands
  */
-import { CursorSettings, type ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
+import { CursorSettings } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
 import { bashWord, wslCommand } from "./wsl.ts";
@@ -62,10 +57,16 @@ export function browserSignInLabel(driver: string): string {
   return driver === GROK_DRIVER_KIND ? "Sign in with Grok" : "Sign in with Google";
 }
 
+/**
+ * Where Claude Code reads a long-lived token from `claude setup-token`.
+ * Threadlines never saves one: a user may set it in their own environment,
+ * as Anthropic documents for machines without a browser, and Claude reads it
+ * there. Settings refuse it (see `serverSettings`).
+ */
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /**
- * Credential env vars Claude reads *before* the long-lived OAuth token.
+ * Credential env vars Claude reads *before* a long-lived OAuth token.
  * Cleared when the user asks for normal sign-in, and never forwarded into
  * an auth PTY (a stale token there makes `claude auth login` a no-op).
  */
@@ -74,15 +75,16 @@ export const CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES = [
   "ANTHROPIC_API_KEY",
 ] as const;
 
-/** Long-lived Claude OAuth token as printed by `claude setup-token`. */
+/** A Claude sign-in token, as `claude setup-token` prints it. */
 export const CLAUDE_OAUTH_TOKEN_PATTERN = /sk-ant-oat01-[A-Za-z0-9_-]+/;
 
 /**
  * Which auth flow to run for an instance. `login` resolves to the driver's
- * interactive sign-in; `claude-setup-token` mints a long-lived headless token;
- * `logout` signs out (browser sign-in drivers only, run by the instance).
+ * interactive sign-in; `logout` signs out (browser sign-in drivers only, run
+ * by the instance). `claude-setup-token` is no longer offered: older clients
+ * may still ask for it, and no command answers it.
  */
-export type ProviderAuthFlow = "login" | "claude-setup-token" | "logout";
+export type ProviderAuthFlow = "login" | "claude-setup-token" | "logout" | "switch-workspace";
 
 export interface ProviderAuthCommandInput {
   readonly driver: string;
@@ -163,19 +165,6 @@ export function openCodeAccountEnvironment(input: {
     input.platform === "win32" || (input.platform === undefined && accountFolder.includes("\\"));
   const separator = windows ? "\\" : "/";
   return { OPENCODE_DB: `${accountFolder}${separator}opencode.db` };
-}
-
-export function buildClaudeSetupTokenCommand(input: {
-  readonly binaryPath: string;
-  readonly homePath: string;
-  readonly accountFolder?: string | undefined;
-}): string {
-  const binaryPath = input.binaryPath.trim() || "claude";
-  return renderDisplayCommand({
-    file: binaryPath,
-    args: ["setup-token"],
-    env: claudeAuthEnvironment(input),
-  });
 }
 
 export function buildClaudeAuthLoginCommand(input: {
@@ -264,6 +253,8 @@ export function buildOpenCodeLoginCommand(input: {
 export function buildProviderAuthCommand(
   input: ProviderAuthCommandInput,
 ): ProviderAuthCommand | null {
+  // Switching workspace runs inside the agent's own process, never as a command.
+  if (input.flow === "switch-workspace") return null;
   const binaryPath = input.binaryPath.trim();
   const homePath = input.homePath.trim();
   const shadowHomePath = input.shadowHomePath?.trim() ?? "";
@@ -282,9 +273,10 @@ export function buildProviderAuthCommand(
   }
 
   if (input.driver === CLAUDE_DRIVER_KIND) {
+    if (input.flow !== "login") return null;
     const env = claudeAuthEnvironment({ homePath, accountFolder: input.accountFolder });
     const file = binaryPath || "claude";
-    const args = input.flow === "claude-setup-token" ? ["setup-token"] : ["auth", "login"];
+    const args = ["auth", "login"];
     return {
       file,
       args,
@@ -378,92 +370,4 @@ export function buildProviderSignOutCommand(input: {
       : null;
   }
   return null;
-}
-
-export interface ClaudeLongLivedOAuthTokenState {
-  readonly configured: boolean;
-  readonly redacted: boolean;
-  readonly value: string;
-}
-
-export function deriveClaudeLongLivedOAuthTokenState(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-): ClaudeLongLivedOAuthTokenState {
-  const variable = environment.find((entry) => entry.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
-  if (!variable) {
-    return { configured: false, redacted: false, value: "" };
-  }
-  const redacted = variable.valueRedacted === true;
-  const value = redacted ? "" : variable.value;
-  return {
-    configured: redacted || value.trim().length > 0,
-    redacted,
-    value,
-  };
-}
-
-export function sanitizeClaudeLongLivedOAuthTokenInput(value: string): string {
-  const trimmed = value.trim();
-  // Accept pastes of the whole `export CLAUDE_CODE_OAUTH_TOKEN=<token>` line.
-  // Parsed without a regex: the obvious `\s*=\s*(.+)$` pattern is
-  // polynomially backtracking on adversarial whitespace (CodeQL
-  // js/polynomial-redos).
-  let token = trimmed;
-  const markerIndex = trimmed.lastIndexOf(CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
-  const precededOk =
-    markerIndex === 0 || (markerIndex > 0 && /\s/.test(trimmed[markerIndex - 1] ?? ""));
-  if (markerIndex !== -1 && precededOk) {
-    const rest = trimmed.slice(markerIndex + CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV.length);
-    const equalsIndex = rest.indexOf("=");
-    if (equalsIndex !== -1 && rest.slice(0, equalsIndex).trim().length === 0) {
-      token = rest.slice(equalsIndex + 1).trim();
-    }
-  }
-  return token
-    .replace(/^['"]|['"]$/g, "")
-    .replace(/\\[nr]/g, "")
-    .replace(/\s+/g, "");
-}
-
-export function upsertClaudeLongLivedOAuthTokenEnvironment(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-  token: string,
-): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
-  const trimmed = sanitizeClaudeLongLivedOAuthTokenInput(token);
-  const nextEnvironment: ProviderInstanceEnvironmentVariable[] = [];
-  let inserted = false;
-
-  for (const variable of environment) {
-    if (variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV) {
-      nextEnvironment.push(variable);
-      continue;
-    }
-    if (trimmed.length === 0 || inserted) {
-      continue;
-    }
-    nextEnvironment.push({
-      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
-      value: trimmed,
-      sensitive: true,
-      valueRedacted: false,
-    });
-    inserted = true;
-  }
-
-  if (trimmed.length > 0 && !inserted) {
-    nextEnvironment.push({
-      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
-      value: trimmed,
-      sensitive: true,
-      valueRedacted: false,
-    });
-  }
-
-  return nextEnvironment;
-}
-
-export function removeClaudeLongLivedOAuthTokenEnvironment(
-  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
-): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
-  return environment.filter((variable) => variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
 }

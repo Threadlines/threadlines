@@ -18,7 +18,14 @@
  * tab you were just on is worse than losing its name, which a tooltip gives
  * back. Scrolling is still there underneath, for when even the icons overflow.
  */
-import { BotIcon, FileDiffIcon, GitPullRequestIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  BotIcon,
+  FileDiffIcon,
+  GitPullRequestIcon,
+  ImagesIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
@@ -46,6 +53,7 @@ export const RIGHT_PANEL_TAB_ICONS: Readonly<Record<RightPanelTab, Icon>> = {
   diff: FileDiffIcon,
   pullRequest: GitPullRequestIcon,
   agents: BotIcon,
+  media: ImagesIcon,
 };
 
 /** Labelled while they fit, all icons once they do not. Never a mix: dropping

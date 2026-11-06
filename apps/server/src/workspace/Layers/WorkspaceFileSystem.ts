@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 
 import {
+  PROJECT_MEDIA_CHUNK_MAX_BYTES,
   PROJECT_WRITE_FILE_MAX_BYTES,
   type ProjectReadFileResult,
   type ProjectRestoreOriginalResult,
@@ -16,9 +17,11 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { makeFileOriginals } from "../fileOriginals.ts";
+import { fileVersionOf } from "../fileVersion.ts";
 import {
   detectRasterImageMimeType,
   IMAGE_MIME_TYPE_BY_EXTENSION,
+  PLAYABLE_MEDIA_MIME_TYPE_BY_EXTENSION,
   SAFE_IMAGE_FILE_EXTENSIONS,
 } from "../../imageMime.ts";
 import {
@@ -536,7 +539,61 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
     },
   );
 
-  return { readFile, writeFile, restoreOriginal } satisfies WorkspaceFileSystemShape;
+  const readMediaChunk: WorkspaceFileSystemShape["readMediaChunk"] = Effect.fn(
+    "WorkspaceFileSystem.readMediaChunk",
+  )(function* (input) {
+    const target = yield* resolveTarget(input);
+    if (target.realPath === null) {
+      return { kind: "missing", relativePath: target.relativePath } as const;
+    }
+    const realPath = target.realPath;
+    const mimeType =
+      PLAYABLE_MEDIA_MIME_TYPE_BY_EXTENSION[path.extname(target.absolutePath).toLowerCase()];
+    if (mimeType === undefined) {
+      return { kind: "unsupported", relativePath: target.relativePath } as const;
+    }
+    const targetStat = yield* fileSystem.stat(realPath).pipe(
+      Effect.catch((cause) =>
+        cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+      ),
+      readError(input, "workspaceFileSystem.statMedia"),
+    );
+    if (targetStat === null) {
+      return { kind: "missing", relativePath: target.relativePath } as const;
+    }
+    if (targetStat.type !== "File") {
+      return { kind: "unsupported", relativePath: target.relativePath } as const;
+    }
+    const size = Number(targetStat.size);
+    const offset = Math.min(input.offset, size);
+    const length = Math.min(input.length, PROJECT_MEDIA_CHUNK_MAX_BYTES, size - offset);
+    const bytes =
+      length === 0
+        ? Buffer.alloc(0)
+        : yield* Effect.scoped(
+            Effect.gen(function* () {
+              const file = yield* fileSystem.open(realPath);
+              yield* file.seek(BigInt(offset), "start");
+              return yield* readFrom(file, length);
+            }),
+          ).pipe(readError(input, "workspaceFileSystem.readMedia"));
+    return {
+      kind: "chunk",
+      relativePath: target.relativePath,
+      mimeType,
+      size,
+      version: fileVersionOf(targetStat),
+      offset,
+      base64: bytes.toString("base64"),
+    } as const;
+  });
+
+  return {
+    readFile,
+    writeFile,
+    restoreOriginal,
+    readMediaChunk,
+  } satisfies WorkspaceFileSystemShape;
 });
 
 export const WorkspaceFileSystemLive = Layer.effect(WorkspaceFileSystem, makeWorkspaceFileSystem);

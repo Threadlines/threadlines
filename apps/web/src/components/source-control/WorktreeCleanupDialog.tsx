@@ -1,12 +1,16 @@
 import type { EnvironmentId, VcsWorktreeStatus } from "@threadlines/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderGit2Icon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { readEnvironmentApi } from "~/environmentApi";
 import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
-import { invalidateGitQueries, vcsListWorktreesQueryOptions } from "~/lib/gitReactQuery";
+import {
+  gitRemoveWorktreeMutationOptions,
+  invalidateGitQueries,
+  vcsListWorktreesQueryOptions,
+} from "~/lib/gitReactQuery";
 import { cn } from "~/lib/utils";
 import { selectThreadsForEnvironment, useStore } from "~/store";
 import {
@@ -154,6 +158,10 @@ export function WorktreeCleanupDialogBody({
   readonly onSwitchCheckout?: ((row: WorktreeCleanupRow) => void) | undefined;
 }) {
   const queryClient = useQueryClient();
+  // A mutation per worktree, so a pull in one being removed waits for it.
+  const { mutateAsync: removeWorktree } = useMutation(
+    gitRemoveWorktreeMutationOptions({ environmentId: target.environmentId }),
+  );
   const worktreesQuery = useQuery({
     ...vcsListWorktreesQueryOptions({ environmentId: target.environmentId, cwd: target.cwd }),
     refetchOnMount: "always",
@@ -211,14 +219,14 @@ export function WorktreeCleanupDialogBody({
   const removeRows = async (targets: readonly WorktreeCleanupRow[]) => {
     setRunRows((current) => current ?? rows);
     setIsRunning(true);
-    const api = readEnvironmentApi(target.environmentId);
+    const connected = readEnvironmentApi(target.environmentId) !== undefined;
     for (const row of targets) {
       setProgress((current) => new Map(current).set(row.path, { status: "deleting" }));
       try {
-        if (!api) {
+        if (!connected) {
           throw new Error("Not connected to this computer right now.");
         }
-        await api.vcs.removeWorktree({
+        await removeWorktree({
           cwd: target.projectCwd,
           path: row.path,
           force: true,

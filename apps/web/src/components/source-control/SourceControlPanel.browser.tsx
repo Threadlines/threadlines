@@ -15,9 +15,10 @@ import {
   type VcsCommitGraphResult,
   type VcsPullResult,
   type VcsStatusResult,
+  type VcsSwitchRefResult,
   type VcsWorktreeStatus,
 } from "@threadlines/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -43,7 +44,10 @@ import { showOnScreenKeyboard } from "../../hooks/useOnScreenKeyboardInset.brows
 import { CHAT_HEADER_BOTTOM_CSS_VAR } from "../../rightPanelLayout";
 import { useStore } from "../../store";
 import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
+import { resetParentRepositoryApprovalForTests } from "./parentRepositoryApproval";
+import { gitCheckoutMutationOptions } from "~/lib/gitReactQuery";
 import { RightPanelSheet } from "../RightPanelSheet";
+import { HeaderSourceChanges } from "../chat/HeaderSourceChanges";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
 
 const gitStatusMock = vi.hoisted(() => ({
@@ -485,6 +489,7 @@ async function renderPanel(
 
   return {
     environmentApi,
+    queryClient,
     async cleanup() {
       await screen.unmount();
       queryClient.clear();
@@ -512,6 +517,7 @@ describe("SourceControlPanel changes", () => {
     window.localStorage.clear();
     resetAppAtomRegistryForTests();
     resetGitActionProgressStateForTests();
+    resetParentRepositoryApprovalForTests();
     await __resetLocalApiForTests();
   });
 
@@ -1065,6 +1071,88 @@ describe("SourceControlPanel changes", () => {
       expect(pull).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("holds Pull while a branch switch started elsewhere changes this checkout", async () => {
+    const switched = createDeferredPromise<VcsSwitchRefResult>();
+    const switchRef: EnvironmentApi["vcs"]["switchRef"] = vi.fn(async () => switched.promise);
+    const mounted = await renderPanel({
+      status: makeStatus({ behindCount: 1 }),
+      environmentApi: makeEnvironmentApi({ vcs: { switchRef } }),
+    });
+
+    try {
+      const pullButton = page.getByRole("button", { name: "Pull" });
+      await expect.element(pullButton).not.toBeDisabled();
+
+      // The composer's branch picker, reading a worktree, switches this checkout.
+      void new MutationObserver(
+        mounted.queryClient,
+        gitCheckoutMutationOptions({
+          environmentId: ENVIRONMENT_ID,
+          cwd: "/repo/project-worktree",
+          queryClient: mounted.queryClient,
+        }),
+      ).mutate({ cwd: CWD, refName: "main" });
+
+      await expect.element(pullButton).toBeDisabled();
+      switched.resolve({ refName: "main" });
+      await expect.element(pullButton).not.toBeDisabled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("pulls from the chat header's behind count without opening the Source tab", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "pulled" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+    }));
+    const showContextMenu = vi.fn(async () => "pull" as const);
+    window.nativeApi = { contextMenu: { show: showContextMenu } } as unknown as LocalApi;
+    gitStatusMock.data = makeStatus({ behindCount: 2 });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi({ vcs: { pull } }));
+    const onOpenSourceTab = vi.fn();
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const screen = await render(
+      <AppAtomRegistryProvider>
+        <QueryClientProvider client={queryClient}>
+          <HeaderSourceChanges
+            environmentId={ENVIRONMENT_ID}
+            cwd={CWD}
+            threadRef={null}
+            workingTreeChanges={null}
+            remoteBehindCount={2}
+            onOpenSourceTab={onOpenSourceTab}
+          />
+        </QueryClientProvider>
+      </AppAtomRegistryProvider>,
+    );
+
+    try {
+      document.querySelector("[data-header-source-changes]")?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 9,
+          clientY: 9,
+        }),
+      );
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ cwd: CWD }));
+      expect(showContextMenu).toHaveBeenCalledWith(
+        [
+          { id: "pull", label: "Pull 2 commits", disabled: false },
+          { id: "open-source-tab", label: "Open Source tab", separatorBefore: true },
+        ],
+        { x: 9, y: 9 },
+      );
+      expect(onOpenSourceTab).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
     }
   });
 

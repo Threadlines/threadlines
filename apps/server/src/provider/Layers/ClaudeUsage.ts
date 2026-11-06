@@ -1,33 +1,23 @@
 /**
  * ClaudeUsage — subscription usage snapshot for the Claude provider card.
  *
- * The data behind Claude Code's `/usage` screen is served by Anthropic's
- * OAuth usage endpoint, which the wider Claude Code tooling ecosystem
- * (statusline plugins, usage monitors) reads with the same scoped OAuth
- * credential Claude Code maintains in `<home>/.claude/.credentials.json` or
- * macOS Keychain. (The Agent SDK now also exposes an experimental `get_usage`
- * control request on live sessions, but the probe needs usage without a
- * running session, so the endpoint remains the source here. Mid-turn deltas
- * arrive separately via `rate_limit_event` — see
- * `applyClaudeRateLimitInfoToAccountUsage` below.)
+ * The numbers behind Claude Code's `/usage` screen come from Claude Code
+ * itself: a quiet session asks it with the SDK's `get_usage` control request
+ * (`claudeUsageCheckFromGetUsage`), and Claude Code fetches them with its own
+ * sign-in. Threadlines never sends a Claude credential anywhere. Mid-turn
+ * deltas arrive separately via `rate_limit_event` — see
+ * `applyClaudeRateLimitInfoToAccountUsage` below.
  *
- * `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is intentionally not
- * used here. It is valid for long-lived inference auth, but the usage endpoint
- * rejects it without the profile/usage scope and may then apply long Retry-After
- * windows. Chat can still work while usage is unavailable.
+ * `get_usage` is experimental, so no step here fails the provider probe. A
+ * check that cannot produce numbers says why (`ClaudeUsageCheck`), and the
+ * driver keeps showing the last reading meanwhile (see
+ * `carryClaudeAccountUsageForward`).
  *
- * The endpoint is unofficial, so no step here fails the provider probe. A
- * check that cannot produce numbers says why (`ClaudeUsageCheck`): the
- * sign-in is confirmed gone, the endpoint is rate limiting, or it could not
- * be reached. The driver keeps showing the last reading meanwhile (see
- * `carryClaudeAccountUsageForward`). We still log redacted diagnostics and
- * honor Retry-After so a rate-limited check doesn't keep hammering the endpoint.
- *
- * This module never writes or refreshes the credential itself — the CLI owns
- * the credential store and its refresh-token rotation. When the access token
- * has expired (401), the fetch delegates to an injected refresh effect that
- * runs a real Claude turn on normal sign-in auth, then retries once against
- * the re-read store. See `fetchClaudeAccountUsage`.
+ * The stored sign-in is still read here, for one thing only: whether a Claude
+ * CLI started now would renew it (`isClaudeSignInRenewalDue`), so a quiet
+ * session is never stopped mid-renewal. Only its expiry and whether it can
+ * renew are kept; the tokens are dropped as soon as they are parsed. The CLI
+ * owns the store and its refresh-token rotation.
  *
  * @module provider/Layers/ClaudeUsage
  */
@@ -45,8 +35,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import type { SDKControlGetUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import { usageResetTimeMs } from "@threadlines/shared/usageLimits";
 
 import {
@@ -56,42 +46,26 @@ import {
 } from "../Drivers/ClaudeHome.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 
-export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 export const CLAUDE_MACOS_KEYCHAIN_SERVICE = "Claude Code-credentials";
-const USAGE_FETCH_TIMEOUT_MS = 4_000;
 const KEYCHAIN_READ_TIMEOUT_MS = 1_500;
 const FIVE_HOUR_WINDOW_MINS = 300;
 const SEVEN_DAY_WINDOW_MINS = 10_080;
-const CLAUDE_USAGE_BACKOFF_MAX_MS = 60 * 60 * 1000;
-const CLAUDE_USAGE_REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
-const claudeUsageBackoffUntilMsByCredential = new Map<string, number>();
-// Keyed like the backoff map: a genuinely revoked sign-in keeps producing the
-// same stale token, so its key stays cooled down; a fresh sign-in rotates the
-// token and gets a new key (and an immediate refresh attempt).
-const claudeUsageRefreshCooldownUntilMsByCredential = new Map<string, number>();
-// Concurrent refresh turns would race Anthropic's refresh-token rotation
-// against each other; only ever run one at a time.
-let claudeUsageCredentialRefreshInFlight = false;
 
-const ClaudeCredentialAccount = Schema.Struct({
-  email: Schema.optional(Schema.String),
-});
-
+/**
+ * The stored sign-in, read only for its expiry and whether it can renew. The
+ * token fields are parsed to tell a sign-in from an empty record, then dropped
+ * (`extractClaudeOAuthCredential`).
+ */
 const ClaudeCredentialsPayload = Schema.Struct({
   claudeAiOauth: Schema.optional(
     Schema.Struct({
       accessToken: Schema.optional(Schema.String),
       refreshToken: Schema.optional(Schema.NullOr(Schema.String)),
       expiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
-      email: Schema.optional(Schema.String),
-      account: Schema.optional(ClaudeCredentialAccount),
+      refreshTokenExpiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
     }),
   ),
-  account: Schema.optional(ClaudeCredentialAccount),
-  email: Schema.optional(Schema.String),
-  userEmail: Schema.optional(Schema.String),
-  organizationUuid: Schema.optional(Schema.String),
 });
 type ClaudeCredentialsPayload = typeof ClaudeCredentialsPayload.Type;
 
@@ -133,24 +107,29 @@ const ClaudeUsageLimitEntry = Schema.Struct({
 });
 export type ClaudeUsageLimitEntry = typeof ClaudeUsageLimitEntry.Type;
 
+/**
+ * One per-model weekly window as Claude Code reports it beside the raw rows:
+ * `get_usage`'s `model_scoped`, for a CLI that leaves the raw rows out.
+ */
+const ClaudeModelScopedWindow = Schema.Struct({
+  display_name: Schema.optional(Schema.NullOr(Schema.String)),
+  utilization: Schema.optional(Schema.NullOr(Schema.Number)),
+  resets_at: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+});
+
+/**
+ * The usage endpoint's body, as Claude Code passes it on in `get_usage`'s
+ * `rate_limits`: the two main windows, the server's own rows (`limits`), and
+ * Claude Code's per-model summary (`model_scoped`).
+ */
 const ClaudeOAuthUsageResponse = Schema.Struct({
   five_hour: Schema.optional(Schema.NullOr(ClaudeUsageWindow)),
   seven_day: Schema.optional(Schema.NullOr(ClaudeUsageWindow)),
   limits: Schema.optional(Schema.NullOr(Schema.Array(ClaudeUsageLimitEntry))),
+  model_scoped: Schema.optional(Schema.NullOr(Schema.Array(ClaudeModelScopedWindow))),
 });
 export type ClaudeOAuthUsageResponse = typeof ClaudeOAuthUsageResponse.Type;
-const decodeClaudeOAuthUsageResponse = Schema.decodeUnknownEffect(ClaudeOAuthUsageResponse);
-
-const KNOWN_CLAUDE_USAGE_FIELDS = [
-  "five_hour",
-  "seven_day",
-  "seven_day_oauth_apps",
-  "seven_day_opus",
-  "seven_day_sonnet",
-  "cinder_cove",
-  "extra_usage",
-  "limits",
-] as const;
+const decodeClaudeOAuthUsageResponse = Schema.decodeUnknownOption(ClaudeOAuthUsageResponse);
 
 const CLAUDE_USAGE_LIMIT_GROUP_DURATION_MINS: Record<string, number> = {
   session: FIVE_HOUR_WINDOW_MINS,
@@ -227,15 +206,37 @@ export function normalizeClaudeScopedUsageWindow(
   };
 }
 
+/**
+ * The scoped windows of one reading: from the server's own rows when the body
+ * carries them (they have labels, groups and severity), else from Claude
+ * Code's per-model summary, whose windows are all weekly.
+ */
+function claudeScopedUsageWindows(
+  payload: ClaudeOAuthUsageResponse,
+): ReadonlyArray<ServerProviderScopedUsageWindow> {
+  if (payload.limits) {
+    return payload.limits
+      .map((entry) => normalizeClaudeScopedUsageWindow(entry))
+      .filter((window): window is ServerProviderScopedUsageWindow => window !== undefined);
+  }
+  return (payload.model_scoped ?? []).flatMap((entry) => {
+    const window = normalizeClaudeScopedUsageWindow({
+      scope: { model: { display_name: entry.display_name ?? null } },
+      percent: entry.utilization ?? null,
+      resets_at: entry.resets_at ?? null,
+      group: "weekly",
+    });
+    return window ? [window] : [];
+  });
+}
+
 export function normalizeClaudeAccountUsage(
   payload: ClaudeOAuthUsageResponse,
   checkedAt: string,
 ): ServerProviderAccountUsage | undefined {
   const primary = normalizeClaudeUsageWindow(payload.five_hour, FIVE_HOUR_WINDOW_MINS);
   const secondary = normalizeClaudeUsageWindow(payload.seven_day, SEVEN_DAY_WINDOW_MINS);
-  const scoped = (payload.limits ?? [])
-    .map((entry) => normalizeClaudeScopedUsageWindow(entry))
-    .filter((window): window is ServerProviderScopedUsageWindow => window !== undefined);
+  const scoped = claudeScopedUsageWindows(payload);
   if (!primary && !secondary && scoped.length === 0) return undefined;
 
   // Each window records when it was read, so a reading kept across a failed
@@ -597,10 +598,11 @@ function applyClaudeRateLimitWindow(
   };
 }
 
+/**
+ * What Threadlines keeps from the stored sign-in: when it expires and whether
+ * it can renew, for the renewal guard. The tokens themselves are never kept.
+ */
 export interface ClaudeOAuthCredential {
-  readonly accessToken: string;
-  readonly organizationUuid?: string;
-  readonly email?: string;
   /**
    * When the CLI will treat the access token as expired (epoch ms), from the
    * stored field the CLI itself decides on. Absent when the store records
@@ -609,66 +611,12 @@ export interface ClaudeOAuthCredential {
   readonly expiresAt?: number;
   /** Whether the store holds a refresh token; without one the CLI cannot renew. */
   readonly renewable: boolean;
-}
-
-export function claudeUsageBackoffKey(
-  credential: Pick<ClaudeOAuthCredential, "accessToken" | "organizationUuid">,
-): string {
-  // A fresh login rotates the access token. Include a one-way token
-  // fingerprint so a Retry-After received for an expired credential cannot
-  // suppress the replacement credential for the rest of the old backoff.
-  const tokenFingerprint = createHash("sha256")
-    .update(credential.accessToken)
-    .digest("base64url")
-    .slice(0, 16);
-  return `${credential.organizationUuid ?? "default"}:${tokenFingerprint}`;
-}
-
-function readHeaderValue(headers: unknown, headerName: string): string | undefined {
-  const get = headers && typeof headers === "object" ? (headers as { get?: unknown }).get : null;
-  if (typeof get === "function") {
-    const value = get.call(headers, headerName);
-    return typeof value === "string" ? value : undefined;
-  }
-
-  if (!headers || typeof headers !== "object") return undefined;
-  const record = headers as Record<string, unknown>;
-  const exact = record[headerName];
-  if (typeof exact === "string") return exact;
-
-  const lower = record[headerName.toLowerCase()];
-  return typeof lower === "string" ? lower : undefined;
-}
-
-export function parseClaudeUsageRetryAfter(
-  value: string | undefined,
-  nowMs: number,
-): number | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-
-  const seconds = Number(trimmed);
-  if (Number.isFinite(seconds) && seconds > 0) {
-    return nowMs + Math.min(seconds * 1000, CLAUDE_USAGE_BACKOFF_MAX_MS);
-  }
-
-  const parsedDate = Date.parse(trimmed);
-  if (!Number.isFinite(parsedDate) || parsedDate <= nowMs) return undefined;
-  return Math.min(parsedDate, nowMs + CLAUDE_USAGE_BACKOFF_MAX_MS);
-}
-
-function readClaudeUsageErrorType(body: unknown): string | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const error = (body as Record<string, unknown>).error;
-  if (!error || typeof error !== "object") return undefined;
-  const type = (error as Record<string, unknown>).type;
-  return typeof type === "string" && type.trim() ? type : undefined;
-}
-
-function hasKnownClaudeUsageField(body: unknown): boolean {
-  if (!body || typeof body !== "object") return false;
-  const record = body as Record<string, unknown>;
-  return KNOWN_CLAUDE_USAGE_FIELDS.some((field) => field in record);
+  /**
+   * When the sign-in itself ends (epoch ms): the refresh token's own end,
+   * which Claude Code 2.1.318+ saves at sign-in and renewals never move.
+   * Absent when the store records none, or one Claude Code would ignore.
+   */
+  readonly signInEndsAt?: number;
 }
 
 function normalizeCredentialString(value: string | undefined): string | undefined {
@@ -676,31 +624,89 @@ function normalizeCredentialString(value: string | undefined): string | undefine
   return trimmed ? trimmed : undefined;
 }
 
+/**
+ * Whether Claude runs on a long-lived `CLAUDE_CODE_OAUTH_TOKEN` in this
+ * environment. That keeps the CLI off the stored sign-in, and the token has
+ * no access to plan usage.
+ */
+export function hasClaudeChatOnlyToken(environment: NodeJS.ProcessEnv): boolean {
+  return normalizeCredentialString(environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]) !== undefined;
+}
+
+/**
+ * A stored sign-in, reduced to what the renewal guard needs. One without an
+ * access token is no sign-in at all.
+ */
 export function extractClaudeOAuthCredential(
   credentials: ClaudeCredentialsPayload | undefined,
 ): ClaudeOAuthCredential | undefined {
-  const accessToken = normalizeCredentialString(credentials?.claudeAiOauth?.accessToken);
-  if (!accessToken) return undefined;
-
-  // Claude Code may leave `expiresAt` stale when secure storage/keychain is the
-  // source of truth, so the usage endpoint decides whether the token still
-  // works. The stored value still predicts when a starting CLI will renew.
+  if (normalizeCredentialString(credentials?.claudeAiOauth?.accessToken) === undefined) {
+    return undefined;
+  }
   const expiresAt = credentials?.claudeAiOauth?.expiresAt;
-  const organizationUuid = normalizeCredentialString(credentials?.organizationUuid);
-  const email =
-    normalizeCredentialString(credentials?.account?.email) ??
-    normalizeCredentialString(credentials?.claudeAiOauth?.account?.email) ??
-    normalizeCredentialString(credentials?.claudeAiOauth?.email) ??
-    normalizeCredentialString(credentials?.email) ??
-    normalizeCredentialString(credentials?.userEmail);
+  const renewable =
+    normalizeCredentialString(credentials?.claudeAiOauth?.refreshToken ?? undefined) !== undefined;
+  const signInEndsAt = claudeSignInEndsAt({
+    renewable,
+    expiresAt,
+    refreshTokenExpiresAt: credentials?.claudeAiOauth?.refreshTokenExpiresAt,
+  });
   return {
-    accessToken,
-    ...(organizationUuid ? { organizationUuid } : {}),
-    ...(email ? { email } : {}),
     ...(typeof expiresAt === "number" && Number.isFinite(expiresAt) ? { expiresAt } : {}),
-    renewable:
-      normalizeCredentialString(credentials?.claudeAiOauth?.refreshToken ?? undefined) !==
-      undefined,
+    renewable,
+    ...(signInEndsAt !== undefined ? { signInEndsAt } : {}),
+  };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Claude Code reads a sign-in end more than ten years out as bad data. */
+const CLAUDE_SIGN_IN_END_HORIZON_MS = 3_650 * DAY_MS;
+/**
+ * How far before its saved end a sign-in may already have ended. Claude Code
+ * says "ends between (end - 3 days) and end", and ignores the saved end once
+ * the access token outlives it by more than this.
+ */
+export const CLAUDE_SIGN_IN_END_UNCERTAINTY_MS = 3 * DAY_MS;
+
+/**
+ * The saved end of a Claude sign-in, read as Claude Code 2.1.318 reads it:
+ * only for a renewable sign-in, and not when the access token already runs
+ * well past it (an end saved by an older login that renewals carried along).
+ */
+function claudeSignInEndsAt(input: {
+  readonly renewable: boolean;
+  readonly expiresAt: number | null | undefined;
+  readonly refreshTokenExpiresAt: number | null | undefined;
+}): number | undefined {
+  const end = input.refreshTokenExpiresAt;
+  if (!input.renewable || typeof end !== "number" || !Number.isFinite(end) || end <= 0) {
+    return undefined;
+  }
+  if (
+    typeof input.expiresAt === "number" &&
+    input.expiresAt > end + CLAUDE_SIGN_IN_END_UNCERTAINTY_MS
+  ) {
+    return undefined;
+  }
+  return end;
+}
+
+/**
+ * The window a stored sign-in ends in, for the provider snapshot: undefined
+ * when there is no sign-in or no usable end, and `"unknown"` when the store
+ * could not be read this time (the caller keeps what it knew).
+ */
+export function claudeSignInEndsWindow(
+  stored: ClaudeStoredSignIn,
+  nowMs: number,
+): { readonly earliest: string; readonly latest: string } | "unknown" | undefined {
+  if (stored._tag === "Unreadable") return "unknown";
+  if (stored._tag === "Absent") return undefined;
+  const end = stored.credential.signInEndsAt;
+  if (end === undefined || end > nowMs + CLAUDE_SIGN_IN_END_HORIZON_MS) return undefined;
+  return {
+    earliest: new Date(end - CLAUDE_SIGN_IN_END_UNCERTAINTY_MS).toISOString(),
+    latest: new Date(end).toISOString(),
   };
 }
 
@@ -892,9 +898,7 @@ export function isClaudeSignInRenewalDue(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly nowMs: number;
 }): boolean {
-  if (normalizeCredentialString(input.environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]) !== undefined) {
-    return false;
-  }
+  if (hasClaudeChatOnlyToken(input.environment)) return false;
   if (input.stored._tag === "Unreadable") return input.stored.transient;
   if (input.stored._tag === "Absent") return false;
   const { expiresAt, renewable } = input.stored.credential;
@@ -914,9 +918,7 @@ export const checkClaudeSignInRenewalDue = <R>(input: {
   readonly environment: NodeJS.ProcessEnv;
 }): Effect.Effect<boolean, never, R> =>
   Effect.gen(function* () {
-    if (normalizeCredentialString(input.environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]) !== undefined) {
-      return false;
-    }
+    if (hasClaudeChatOnlyToken(input.environment)) return false;
     const stored = yield* input.readStoredSignIn;
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     return isClaudeSignInRenewalDue({ stored, environment: input.environment, nowMs });
@@ -927,211 +929,76 @@ export type ClaudeUsageUnavailableReason = ServerProviderAuthCapabilityReason;
 
 /** The outcome of one usage check: fresh numbers, or why there are none. */
 export type ClaudeUsageCheck =
-  | { readonly _tag: "Fresh"; readonly usage: ServerProviderAccountUsage }
+  | {
+      readonly _tag: "Fresh";
+      readonly usage: ServerProviderAccountUsage;
+      /**
+       * The reading did not say which per-model windows exist (Claude Code can
+       * answer from cached data without them), so `usage` has none and the
+       * last known ones still stand (`keepEarlierScopedWindows`).
+       */
+      readonly scopedUnknown?: true;
+    }
   | { readonly _tag: "Unavailable"; readonly reason: ClaudeUsageUnavailableReason };
 
-const usageUnavailable = (reason: ClaudeUsageUnavailableReason): ClaudeUsageCheck => ({
+export const claudeUsageUnavailable = (reason: ClaudeUsageUnavailableReason): ClaudeUsageCheck => ({
   _tag: "Unavailable",
   reason,
 });
 
+/** The part of Claude Code's `get_usage` answer the bars are built from. */
+export type ClaudeGetUsageAnswer = Pick<
+  SDKControlGetUsageResponse,
+  "rate_limits_available" | "rate_limits"
+>;
+
 /**
- * One usage-endpoint round trip, body included, under one timeout. Resolves
- * to `undefined` on a network error or timeout; otherwise carries the HTTP
- * status plus the parsed usage snapshot (present only for a 2xx response
- * with a recognizable payload). The status lets the caller tell an expired
- * credential (401) and a rate limit (429) apart from every other failure.
+ * Claude Code's `get_usage` answer as a usage check. `rate_limits` carries the
+ * usage endpoint's body as Claude Code read it with its own sign-in, so it
+ * goes through the same normalizer the bars always used. No answer (a CLI too
+ * old to know the request, a timeout), no plan limits for this sign-in, or a
+ * body without any window are all `unreachable`: the last reading stays.
  */
-const fetchClaudeUsageSnapshotOnce = Effect.fn("fetchClaudeUsageSnapshotOnce")(function* (
-  credential: ClaudeOAuthCredential,
-): Effect.fn.Return<
-  { readonly status: number; readonly usage: ServerProviderAccountUsage | undefined } | undefined,
-  never,
-  HttpClient.HttpClient
-> {
-  const client = yield* HttpClient.HttpClient;
-  const request = HttpClientRequest.get(CLAUDE_OAUTH_USAGE_URL).pipe(
-    HttpClientRequest.setHeaders({
-      authorization: `Bearer ${credential.accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-      accept: "application/json",
-      ...(credential.organizationUuid
-        ? { "x-organization-uuid": credential.organizationUuid }
-        : {}),
-    }),
-  );
-  const roundTrip = Effect.gen(function* () {
-    const httpResponse = yield* client.execute(request);
-    if (httpResponse.status < 200 || httpResponse.status >= 300) {
-      const responseBody = yield* httpResponse.json.pipe(Effect.orElseSucceed(() => undefined));
-      const retryAfterReferenceMs = DateTime.toEpochMillis(yield* DateTime.now);
-      const retryAfterMs = parseClaudeUsageRetryAfter(
-        readHeaderValue(httpResponse.headers, "retry-after"),
-        retryAfterReferenceMs,
-      );
-      if (httpResponse.status === 429 && retryAfterMs !== undefined) {
-        claudeUsageBackoffUntilMsByCredential.set(claudeUsageBackoffKey(credential), retryAfterMs);
-      }
+export function claudeUsageCheckFromGetUsage(
+  answer: ClaudeGetUsageAnswer | undefined,
+  checkedAt: string,
+): ClaudeUsageCheck {
+  if (!answer?.rate_limits_available || !answer.rate_limits) {
+    return claudeUsageUnavailable("unreachable");
+  }
+  const payload = Option.getOrUndefined(decodeClaudeOAuthUsageResponse(answer.rate_limits));
+  const usage = payload ? normalizeClaudeAccountUsage(payload, checkedAt) : undefined;
+  if (!payload || !usage) return claudeUsageUnavailable("unreachable");
+  // An empty list says there are none; a missing one says nothing.
+  const scopedKnown = payload.limits != null || payload.model_scoped != null;
+  return scopedKnown ? { _tag: "Fresh", usage } : { _tag: "Fresh", usage, scopedUnknown: true };
+}
 
-      yield* Effect.logWarning("claude.usage.fetch.unavailable", {
-        status: httpResponse.status,
-        retryAfterMs:
-          retryAfterMs !== undefined
-            ? Math.max(0, retryAfterMs - retryAfterReferenceMs)
-            : undefined,
-        errorType: readClaudeUsageErrorType(responseBody),
-        hasUsageFields: hasKnownClaudeUsageField(responseBody),
-      });
-      return { status: httpResponse.status, usage: undefined };
-    }
-
-    const payload = yield* httpResponse.json.pipe(
-      Effect.flatMap((body) => decodeClaudeOAuthUsageResponse(body)),
-      Effect.orElseSucceed(() => undefined),
-    );
-    if (!payload) return { status: httpResponse.status, usage: undefined };
-
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    return { status: httpResponse.status, usage: normalizeClaudeAccountUsage(payload, checkedAt) };
-  });
-  const result = yield* roundTrip.pipe(
-    Effect.timeoutOption(USAGE_FETCH_TIMEOUT_MS),
-    Effect.catch(() => Effect.succeed(Option.none())),
-  );
-  return Option.getOrUndefined(result);
-});
-
-/** Why a round trip that returned no numbers failed. */
-function claudeUsageFailureReason(
-  snapshot: { readonly status: number } | undefined,
-): ClaudeUsageUnavailableReason {
-  return snapshot?.status === 429 ? "rate_limited" : "unreachable";
+/** The per-model windows a reading lists. */
+export function claudeScopedWindowsOf(
+  usage: ServerProviderAccountUsage | undefined,
+): ReadonlyArray<ServerProviderScopedUsageWindow> {
+  const limit = usage?.limits.find((candidate) => candidate.limitId === "claude");
+  return limit?.scoped ?? [];
 }
 
 /**
- * Check the subscription usage (5h + weekly windows) of the account Claude
- * Code is signed in to. Never fails: a check without numbers says why.
- *
- * The stored access token lives ~8 hours, and only a real Claude process can
- * renew it (with the long-lived refresh token kept in the same credential).
- * Threadlines sessions on a chat-only token never renew the stored credential
- * as a side effect, so without help this check starts failing with 401 a few
- * hours after the last sign-in. When `refreshOAuthCredential` is provided it
- * is run on a 401 (expected to make the CLI renew and persist the
- * credential), then the check re-reads the store and retries once. A
- * per-credential cooldown keeps a sign-in that cannot renew from spawning a
- * refresh attempt on every probe.
- *
- * `signed_out` is reported only on proof: the store holds no sign-in, or it
- * holds one that the endpoint rejects and nothing can renew (the CLI removes
- * a sign-in whose renewal was refused, or leaves it without a refresh
- * token). Every other failure is temporary.
+ * A reading that did not say which per-model windows exist, given the ones
+ * the last reading that did say listed. Each keeps the time it was read, so
+ * it ages like any reading kept across a failed check, and a newer chat
+ * update of the same window still wins (`preferNewerClaudeUsageReadings`).
  */
-export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(function* (
-  claudeSettings: ClaudeFolderConfig,
-  environment: NodeJS.ProcessEnv = process.env,
-  refreshOAuthCredential?: Effect.Effect<boolean>,
-): Effect.fn.Return<
-  ClaudeUsageCheck,
-  never,
-  | FileSystem.FileSystem
-  | HttpClient.HttpClient
-  | Path.Path
-  | ChildProcessSpawner.ChildProcessSpawner
-> {
-  const stored = yield* readClaudeStoredSignIn(claudeSettings, { environment });
-  if (stored._tag !== "Present") {
-    yield* Effect.logDebug("claude.usage.fetch.skipped", {
-      reason: stored._tag === "Absent" ? "missing-oauth-credential" : "unreadable-credential-store",
-    });
-    return usageUnavailable(stored._tag === "Absent" ? "signed_out" : "unreachable");
-  }
-  const credential = stored.credential;
-
-  const backoffKey = claudeUsageBackoffKey(credential);
-  const backoffUntilMs = claudeUsageBackoffUntilMsByCredential.get(backoffKey);
-  const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-  if (backoffUntilMs !== undefined && backoffUntilMs > nowMs) {
-    yield* Effect.logDebug("claude.usage.fetch.skipped", {
-      reason: "retry-after-backoff",
-      retryAfterMs: backoffUntilMs - nowMs,
-    });
-    return usageUnavailable("rate_limited");
-  }
-
-  const snapshot = yield* fetchClaudeUsageSnapshotOnce(credential);
-  if (snapshot?.usage) return { _tag: "Fresh", usage: snapshot.usage };
-  if (snapshot?.status !== 401) return usageUnavailable(claudeUsageFailureReason(snapshot));
-  // Another Claude process may have renewed the sign-in since it was read
-  // (a status check that was still renewing, a session in a terminal): then
-  // the store already holds a working token and nothing needs renewing.
-  const latest = yield* readClaudeStoredSignIn(claudeSettings, { environment });
-  if (latest._tag === "Present" && latest.credential.accessToken !== credential.accessToken) {
-    const renewedElsewhere = yield* fetchClaudeUsageSnapshotOnce(latest.credential);
-    if (renewedElsewhere?.usage) return { _tag: "Fresh", usage: renewedElsewhere.usage };
-    if (renewedElsewhere?.status !== 401) {
-      return usageUnavailable(claudeUsageFailureReason(renewedElsewhere));
-    }
-  }
-  // A rejected sign-in the store holds no refresh token for can never renew.
-  const rejected = usageUnavailable(credential.renewable ? "unreachable" : "signed_out");
-  if (refreshOAuthCredential === undefined) return rejected;
-
-  const refreshNowMs = DateTime.toEpochMillis(yield* DateTime.now);
-  const cooldownUntilMs = claudeUsageRefreshCooldownUntilMsByCredential.get(backoffKey);
-  if (cooldownUntilMs !== undefined && cooldownUntilMs > refreshNowMs) {
-    yield* Effect.logDebug("claude.usage.credential-refresh.skipped", {
-      reason: "cooldown",
-      cooldownMs: cooldownUntilMs - refreshNowMs,
-    });
-    return rejected;
-  }
-  if (claudeUsageCredentialRefreshInFlight) {
-    yield* Effect.logDebug("claude.usage.credential-refresh.skipped", { reason: "in-flight" });
-    return usageUnavailable("unreachable");
-  }
-  claudeUsageRefreshCooldownUntilMsByCredential.set(
-    backoffKey,
-    refreshNowMs + CLAUDE_USAGE_REFRESH_COOLDOWN_MS,
-  );
-  claudeUsageCredentialRefreshInFlight = true;
-  const refreshed = yield* refreshOAuthCredential.pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        claudeUsageCredentialRefreshInFlight = false;
-      }),
+export function keepEarlierScopedWindows(
+  usage: ServerProviderAccountUsage,
+  earlier: ReadonlyArray<ServerProviderScopedUsageWindow>,
+): ServerProviderAccountUsage {
+  if (earlier.length === 0) return usage;
+  return {
+    ...usage,
+    limits: usage.limits.map((limit) =>
+      limit.limitId === "claude" && (limit.scoped?.length ?? 0) === 0
+        ? { ...limit, scoped: [...earlier] }
+        : limit,
     ),
-  );
-
-  const afterRefresh = yield* readClaudeStoredSignIn(claudeSettings, { environment });
-  if (afterRefresh._tag === "Absent") {
-    yield* Effect.logWarning("claude.usage.credential-refresh.failed", { reason: "signed-out" });
-    return usageUnavailable("signed_out");
-  }
-  if (!refreshed) {
-    yield* Effect.logWarning("claude.usage.credential-refresh.failed", {
-      reason: "refresh-turn-failed",
-    });
-    return afterRefresh._tag === "Present" && !afterRefresh.credential.renewable
-      ? usageUnavailable("signed_out")
-      : usageUnavailable("unreachable");
-  }
-  if (
-    afterRefresh._tag !== "Present" ||
-    afterRefresh.credential.accessToken === credential.accessToken
-  ) {
-    yield* Effect.logWarning("claude.usage.credential-refresh.failed", {
-      reason: "credential-not-rotated",
-    });
-    return afterRefresh._tag === "Present" && !afterRefresh.credential.renewable
-      ? usageUnavailable("signed_out")
-      : usageUnavailable("unreachable");
-  }
-
-  const retried = yield* fetchClaudeUsageSnapshotOnce(afterRefresh.credential);
-  if (retried?.usage) {
-    yield* Effect.logInfo("claude.usage.credential-refresh.recovered");
-    return { _tag: "Fresh", usage: retried.usage };
-  }
-  return usageUnavailable(claudeUsageFailureReason(retried));
-});
+  };
+}

@@ -814,6 +814,14 @@ export const UserInputRequestedPayload = Schema.Struct({
   isBlocking: Schema.optional(Schema.Boolean),
   /** Async message questions receive a user message instead of an RPC response. */
   responseMode: Schema.optional(Schema.Literal("message")),
+  /**
+   * The agent reads any text as an answer and can be told a question went
+   * unanswered (skipped, closed, or answered in the chat instead), so the card
+   * offers Skip, Close and Reply in chat. Absent: each question needs one of
+   * its own answers, as a yes/no confirmation or a choice matched against the
+   * options does.
+   */
+  canLeaveUnanswered: Schema.optional(Schema.Boolean),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 

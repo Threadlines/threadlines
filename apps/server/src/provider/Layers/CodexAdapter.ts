@@ -97,6 +97,7 @@ import {
 } from "../codexSideAnswerHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
+import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import { mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { roomSideKindOf, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 
@@ -190,7 +191,7 @@ function codexUserInputText(
         case "localImage":
           return `[Image attachment: ${part.path}]`;
         case "audio":
-          return `[Audio attachment: ${part.url}]`;
+          return `[Audio attachment: ${"url" in part ? part.url : part.fileId}]`;
         case "localAudio":
           return `[Audio attachment: ${part.path}]`;
         case "skill":
@@ -420,7 +421,7 @@ function mapCodexStoredItem(
       return codexToolEntry({
         name: "image_generation",
         summary: item.revisedPrompt ?? item.status,
-        outputPreview: item.result || item.savedPath || undefined,
+        outputPreview: ("result" in item ? item.result : undefined) || item.savedPath || undefined,
       });
     case "enteredReviewMode":
       return { role: "system", text: item.review, toolUses: [] };
@@ -598,7 +599,12 @@ export function codexFailureCategory(info: unknown): ProviderFailureCategory | u
         return "rate_limit";
       case "serverOverloaded":
       case "flexUnavailable":
+      // Capacity the account's policy allows is used up; Codex retries it
+      // like an overload and says to try again later.
+      case "policyCapacityUnavailable":
         return "overloaded";
+      case "modelNotFound":
+        return "model_unavailable";
       case "internalServerError":
         return "server_error";
       case "unauthorized":
@@ -667,6 +673,12 @@ export interface CodexAdapterLiveOptions {
    * merged usage reading: Codex's usage-limit error doesn't carry its reset.
    */
   readonly readUsageLimit?: Effect.Effect<RuntimeUsageLimit | undefined>;
+  /**
+   * Held by every session while it runs. A workspace switch closes it: no
+   * session starts, and the running ones are stopped and waited out, so none
+   * keeps the old workspace's sign-in.
+   */
+  readonly launchGate?: LaunchGate;
 }
 
 interface CodexAdapterSessionContext {
@@ -1711,6 +1723,8 @@ export function mapToRuntimeEvents(
             ...(payload && "isBlocking" in payload && typeof payload.isBlocking === "boolean"
               ? { isBlocking: payload.isBlocking }
               : {}),
+            // Codex reads any text as an answer.
+            canLeaveUnanswered: true,
           },
         },
       ];
@@ -2281,7 +2295,12 @@ export function mapToRuntimeEvents(
             eventId: EventId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             requestId: RuntimeRequestId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             type: "user-input.requested",
-            payload: { questions, isBlocking: false, responseMode: "message" },
+            payload: {
+              questions,
+              isBlocking: false,
+              responseMode: "message",
+              canLeaveUnanswered: true,
+            },
           },
         ];
       }
@@ -3388,6 +3407,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 ),
               ),
         );
+        // Held for the session's life (its scope), checked and taken in one
+        // step, so a workspace switch can stop every session and wait them out.
+        if (options?.launchGate) {
+          yield* holdLaunchGate(
+            options.launchGate,
+            () =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: "Codex is switching workspace. Try again when that's done.",
+              }),
+          ).pipe(Effect.provideService(Scope.Scope, sessionScope));
+        }
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),

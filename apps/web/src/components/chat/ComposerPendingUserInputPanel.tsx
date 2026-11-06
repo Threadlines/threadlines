@@ -5,7 +5,13 @@ import {
   derivePendingUserInputProgress,
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
-import { CheckIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, PencilLineIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
+  PencilLineIcon,
+  XIcon,
+} from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { ComposerMcpElicitation } from "./ComposerMcpElicitation";
@@ -25,6 +31,14 @@ interface PendingUserInputPanelProps {
   isUnavailable?: boolean;
   isAgentRunning: boolean;
   onRespond?: (requestId: ApprovalRequestId, answers: Record<string, unknown>) => void;
+  /**
+   * The ways out of a question the agent can be told about
+   * (`canLeaveUnanswered`): skip the current one, close the card, or answer
+   * in the chat instead.
+   */
+  onSkip?: () => void;
+  onClose?: () => void;
+  onReplyInChat?: () => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -40,6 +54,9 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   isUnavailable = false,
   isAgentRunning,
   onRespond,
+  onSkip,
+  onClose,
+  onReplyInChat,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -70,6 +87,11 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       onCustomAnswerChange={onCustomAnswerChange}
       isUnavailable={isUnavailable}
       isAgentRunning={isAgentRunning}
+      leaveUnanswered={
+        activePrompt.canLeaveUnanswered === true && onSkip && onClose && onReplyInChat
+          ? { onSkip, onClose, onReplyInChat }
+          : null
+      }
     />
   );
 });
@@ -86,6 +108,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   onCustomAnswerChange,
   isUnavailable,
   isAgentRunning,
+  leaveUnanswered,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
@@ -98,6 +121,11 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   onCustomAnswerChange: (questionId: string, value: string) => void;
   isUnavailable: boolean;
   isAgentRunning: boolean;
+  leaveUnanswered: {
+    readonly onSkip: () => void;
+    readonly onClose: () => void;
+    readonly onReplyInChat: () => void;
+  } | null;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -202,33 +230,60 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       data-composer-questions-expanded="true"
       className="max-h-[50dvh] overflow-y-auto overscroll-contain px-4 py-2.5 sm:px-5"
     >
-      <button
-        type="button"
-        aria-expanded={true}
-        aria-label="Collapse questions"
-        ref={collapseButtonRef}
-        onClick={toggleCollapsed}
-        className="group/header -mx-1.5 -my-1 flex w-[calc(100%+0.75rem)] cursor-pointer items-center justify-between gap-3 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/40"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          {prompt.questions.length > 1 ? (
-            <span className="flex h-5 shrink-0 items-center rounded-md bg-muted/60 px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground/60">
-              {questionIndex + 1}/{prompt.questions.length}
+      <div className="-mx-1.5 -my-1 flex w-[calc(100%+0.75rem)] items-center gap-0.5">
+        <button
+          type="button"
+          aria-expanded={true}
+          aria-label="Collapse questions"
+          ref={collapseButtonRef}
+          onClick={toggleCollapsed}
+          className="group/header flex min-w-0 flex-1 cursor-pointer items-center justify-between gap-3 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/40"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {prompt.questions.length > 1 ? (
+              <span className="flex h-5 shrink-0 items-center rounded-md bg-muted/60 px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground/60">
+                {questionIndex + 1}/{prompt.questions.length}
+              </span>
+            ) : null}
+            <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/70 uppercase">
+              {activeQuestion.header}
             </span>
-          ) : null}
-          <span className="shrink-0 text-[11px] font-semibold tracking-widest text-muted-foreground/70 uppercase">
-            {activeQuestion.header}
+            {activeQuestion.multiSelect ? (
+              <span className="truncate text-[11px] text-muted-foreground/70">
+                · select one or more
+              </span>
+            ) : null}
+          </div>
+          <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground/70 transition-colors group-hover/header:text-muted-foreground/80">
+            <ChevronsDownUpIcon className="size-3.5" />
           </span>
-          {activeQuestion.multiSelect ? (
-            <span className="truncate text-[11px] text-muted-foreground/70">
-              · select one or more
-            </span>
-          ) : null}
-        </div>
-        <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground/70 transition-colors group-hover/header:text-muted-foreground/80">
-          <ChevronsDownUpIcon className="size-3.5" />
-        </span>
-      </button>
+        </button>
+        {leaveUnanswered ? (
+          <>
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={leaveUnanswered.onReplyInChat}
+              disabled={isResponding}
+              tooltip="Write your answer in the message box instead"
+            >
+              Reply in chat
+            </Button>
+            <button
+              type="button"
+              aria-label="Close questions"
+              title="Close the questions. The agent goes on without answers."
+              onClick={leaveUnanswered.onClose}
+              disabled={isResponding}
+              className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <XIcon className="size-3.5" />
+            </button>
+          </>
+        ) : null}
+      </div>
       <p className="mt-1 text-sm text-foreground/90">{activeQuestion.question}</p>
       {/* Blocking questions need no hint: the transcript already says the turn
           is waiting. Async ones do, since answering later is the new behavior. */}
@@ -338,6 +393,18 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                 disabled={isResponding}
               >
                 Previous
+              </Button>
+            ) : null}
+            {leaveUnanswered ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="text-muted-foreground"
+                onClick={leaveUnanswered.onSkip}
+                disabled={isResponding || isUnavailable}
+              >
+                Skip
               </Button>
             ) : null}
             <Button

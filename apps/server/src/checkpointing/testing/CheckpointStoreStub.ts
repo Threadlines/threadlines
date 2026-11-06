@@ -28,6 +28,7 @@ export function makeCheckpointStoreStub(
     restoreCheckpointPaths: () => Effect.void,
     restoreCheckpointFileEdits: () => Effect.succeed(false),
     deleteCheckpointRefs: () => Effect.void,
+    readRevisionFile: () => Effect.succeed({ kind: "missing" as const }),
     ...overrides,
   };
 }

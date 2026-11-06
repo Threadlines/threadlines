@@ -24,6 +24,7 @@ import {
   ProviderRequestKind,
   ProviderSandboxMode,
   ProviderUserInputAnswers,
+  UserInputUnanswered,
   RuntimeMode,
   ThreadBootstrapCreateThread,
 } from "./orchestration.ts";
@@ -343,7 +344,8 @@ export const ProviderSteerTurnInput = Schema.Struct({
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 
-export const ProviderReviewDelivery = Schema.Literals(["inline", "detached"]);
+/** Where a review runs. Codex 0.166 dropped separate review threads; reviews run in the chat. */
+export const ProviderReviewDelivery = Schema.Literals(["inline"]);
 export type ProviderReviewDelivery = typeof ProviderReviewDelivery.Type;
 
 export const ProviderReviewTarget = Schema.Union([
@@ -712,7 +714,10 @@ export type ProviderRespondToRequestInput = typeof ProviderRespondToRequestInput
 export const ProviderRespondToUserInputInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
+  /** Every question answered; unanswered ones in words the agent reads. */
   answers: ProviderUserInputAnswers,
+  /** Which questions went unanswered, and how, for a provider that records it. */
+  unanswered: Schema.optional(UserInputUnanswered),
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 

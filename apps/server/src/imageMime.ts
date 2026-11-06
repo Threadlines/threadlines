@@ -27,6 +27,28 @@ export const SAFE_IMAGE_FILE_EXTENSIONS = new Set([
   ".webp",
 ]);
 
+/**
+ * Video and sound files the app plays, by extension. `.mov` is labelled as MP4
+ * on purpose: QuickTime and MP4 share one container, and browsers that play
+ * one play the other, but some refuse a file whose stated type is QuickTime.
+ */
+export const PLAYABLE_MEDIA_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/mp4",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".flac": "audio/flac",
+};
+
 export const IMAGE_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
   ".avif": "image/avif",
   ".bmp": "image/bmp",

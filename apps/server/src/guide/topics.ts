@@ -40,6 +40,8 @@ The agent and model a new thread starts with is {place:threads.agent}. You can s
 
 While an agent works, the arrow beside the send button picks how a message goes: Steer now adds it to the reply in progress, Send when done holds it for the next one, and the choice sticks. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
 
+When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
+
 When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. Old threads can be archived for you: {place:archived.cleanup}.`,
   },
   {
@@ -198,12 +200,18 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
       "usage limit",
       "rate limit",
       "continue at reset",
+      "workspace",
+      "chatgpt",
     ],
     body: `{place:settings.providers} lists the agents this computer can run (Claude, Codex, Cursor, OpenCode, Pi and others), in use and not in use. Each card has its account and sign-in, its models, how it appears (name and color), and how it launches (command and environment variables).
 
 {place:providers.community} adds agents from the open ACP registry; Threadlines hasn't tested those.
 
 How much of each plan you've used is on {place:usage}.
+
+A Claude sign-in made with Claude's own sign-in (not an API key or a long-lived token) ends on a date that renewing doesn't move: up to 3 days before the date Claude saved. From 10 days before, the Claude row in Settings and the notice above the message box say when, with Sign in again; signing in again sets a new date. The notice's X hides it until the next sign-in.
+
+When a Codex ChatGPT sign-in belongs to more than one workspace (a personal one and a company's, say), the Codex row shows the one in use, and its Account & Sign-in has Workspace: pick another and Switch. Switching first stops that Codex's running chats and holds new ones until it's done. A workspace behind company sign-on opens a sign-in page; Cancel keeps the current workspace. A chat whose data the old workspace keeps in another region may not continue after a switch; start a new thread for it. It needs Codex 0.167 or later.
 
 If Codex's sign-in goes stale in a chat before it has started on your message, Threadlines restarts Codex and sends the message again, once, with a note in the chat. If that fails too, the chat asks you to sign in.
 
@@ -274,7 +282,67 @@ Edit (or double-click, or start typing) edits the file in place, and it saves as
 
 A file outside the project opens and edits the same way, but git doesn't track it, so Threadlines keeps the original before the first save, for 30 days. Restore original in the footer puts it back.
 
-Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a picture, with Show source for its code. Any other file offers Reveal in Finder (Explorer on Windows) and Copy path. A folder outside the project opens in Finder or Explorer.`,
+Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a picture, with Show source for its code. Videos and sound files play in it: one up to 64 MB loads as it opens, a bigger one waits for Load, and one over 1 GB doesn't play here. Any other file offers Reveal in Finder (Explorer on Windows) and Copy path. A folder outside the project opens in Finder or Explorer.`,
+  },
+  {
+    id: "media-tab",
+    title: "The Media tab",
+    keywords: [
+      "media",
+      "assets",
+      "pictures",
+      "images",
+      "screenshots",
+      "videos",
+      "audio",
+      "documents",
+      "generated images",
+      "before and after",
+      "play video",
+      "pdf preview",
+    ],
+    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed. Open it from the sidebar's list of panels or its + menu.
+
+It opens on the current thread; All threads shows every thread in the project, each file marked with the thread that made it. Files are grouped by type, and each is marked A (the thread added it) or M (it changed one that was there). Search by name, sort newest, oldest or by name, and group by type or by thread. Pictures and PDFs show as small pictures (a PDF its first page); a video shows its first frame once it has played.
+
+Click a picture to see it full size, with arrows to step through the rest; a changed picture has Before and After. A PDF, video or sound file opens in the file viewer, where videos and sound play. Right-click any file to preview it, open it in the file viewer, go to the turn that made it, open it in your editor, reveal it in Finder or Explorer, or copy its path.
+
+Only files inside the project's folder are listed. A file an agent saved elsewhere (a temp folder, say), one in a folder git ignores, or one deleted since, doesn't show.
+
+In the Diff tab, a changed picture shows its Before and After side by side instead of a file name.`,
+  },
+  {
+    id: "source-control",
+    title: "The Source tab and Git",
+    keywords: [
+      "git",
+      "source control",
+      "source tab",
+      "side panel",
+      "header",
+      "down arrow",
+      "uncommitted",
+      "commit",
+      "push",
+      "pull",
+      "behind",
+      "remote",
+      "branch",
+      "merge",
+      "stash",
+      "changes",
+      "graph",
+      "fetch",
+    ],
+    body: `The panel button at the right of the chat header opens a side panel, and so does Cmd+D, or Ctrl+D on Windows and Linux. Its Source tab is where you work with Git in the thread's checkout. {place:sourceControl.openPanelByDefault} opens it as you enter a thread.
+
+Beside that button the header shows uncommitted lines added and removed, and ↓ with how many commits the branch is behind its remote. Click the counts to open the Source tab. Right-click the ↓ count, or hold it on a touch screen, to pull without opening the panel. A narrow header hides the counts.
+
+The Source tab lists staged and unstaged changes; click a file for its diff. The main button commits and pushes, writing the message unless you pick Write message from its menu first. With nothing to commit, it only pushes. The same menu has Commit only, Push only, Stash changes, View stashes and Review changes with Codex. Below it are Pull, New PR or Open PR, and the branch menu for creating, switching and merging branches. Graph shows the history. Right-click a commit to copy it, tag it or open it on the site that hosts the repository.
+
+Pull only fast-forwards, so it never merges or rebases. With uncommitted changes it asks to stash them, pull, and put them back. If the remote branch was force-pushed or recreated, Pull offers to back up your branch before taking the remote's. Pull and the Source tab's buttons wait while another Git action changes the checkout. In a project inside a bigger repository, the Source tab asks before it changes anything.
+
+The ↓ count is only as fresh as the last fetch, and {place:sourceControl.fetchInterval} sets how often that runs. Commit and pull request text follow {place:sourceControl.writingStyle} and {place:sourceControl.writerModel}. GitHub sign-ins are in {place:sourceControl.providers}, and {place:pullRequests} lists your pull requests across projects.`,
   },
   {
     id: "pages-and-command-requests",

@@ -12,7 +12,12 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderSignInEnds,
+} from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -39,17 +44,25 @@ import {
   checkClaudeProviderStatus,
   claudeChatAndUsageAccountsDiffer,
   makePendingClaudeProvider,
+  claudeChatUsesStoredSignIn,
   probeClaudeCapabilities,
+  readClaudeLaunchVersion,
   readClaudeNormalAuthEmail,
+  readClaudeNormalSignInUsage,
   readClaudeUsageBreakdown,
-  refreshClaudeOAuthCredential,
   seedClaudeProviderUsage,
+  withClaudeSignInEnds,
 } from "../Layers/ClaudeProvider.ts";
 import { makeClaudeTokenUsageHistoryReader } from "../Layers/ClaudeTokenUsageHistory.ts";
 import {
   applyClaudeRateLimitInfoToAccountUsage,
   checkClaudeSignInRenewalDue,
-  fetchClaudeAccountUsage,
+  claudeScopedWindowsOf,
+  claudeSignInEndsWindow,
+  type ClaudeUsageCheck,
+  claudeUsageUnavailable,
+  hasClaudeChatOnlyToken,
+  keepEarlierScopedWindows,
   readClaudeStoredSignIn,
 } from "../Layers/ClaudeUsage.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
@@ -87,7 +100,15 @@ const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
  * errors on every send must not turn into a probe stream.
  */
 const UNCLASSIFIED_ERROR_PROBE_MIN_INTERVAL_MS = 15_000;
-const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+/**
+ * How long a probe's answers (account, models, plan usage) are reused. Under
+ * the refresh interval, so every scheduled check reads afresh even though the
+ * interval's timer starts before the first check finishes. Within one check
+ * the same probe answers both the account and the usage question.
+ */
+const CAPABILITIES_PROBE_TTL = Duration.minutes(4);
+// A probe or usage check that brought nothing back is asked again soon.
+const FAILED_PROBE_TTL = Duration.seconds(30);
 // Claude's usage report reads a week of transcripts, and it moves slowly: one
 // reading serves the Usage page for a while. One that failed is retried sooner.
 const USAGE_BREAKDOWN_TTL = Duration.minutes(10);
@@ -291,16 +312,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         environment: processEnv,
       });
 
+      // The usage this instance last saved, so a restart (or a rebuild after a
+      // settings change) starts from the last reading instead of empty meters.
+      const cachedSnapshot = yield* resolveProviderStatusCachePath({
+        cacheDir: serverConfig.providerStatusCacheDir,
+        instanceId,
+      }).pipe(
+        Effect.flatMap(readProviderStatusCache),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
       // account-specific probes never share auth metadata across instances.
-      const capabilitiesProbeCache = yield* Cache.make({
-        capacity: 1,
-        timeToLive: CAPABILITIES_PROBE_TTL,
-        lookup: () =>
+      const capabilitiesProbeCache = yield* Cache.makeWith(
+        () =>
           probeClaudeCapabilities(effectiveConfig, processEnv, { readStoredSignIn }).pipe(
             Effect.provideService(Path.Path, path),
           ),
-      });
+        {
+          capacity: 1,
+          timeToLive: (exit) =>
+            Exit.isSuccess(exit) &&
+            exit.value !== undefined &&
+            exit.value.usage?._tag !== "Unavailable"
+              ? CAPABILITIES_PROBE_TTL
+              : FAILED_PROBE_TTL,
+        },
+      );
       // One reading at a time: a Usage page opened twice shares the read.
       const usageBreakdownCache = yield* Cache.makeWith(
         () =>
@@ -319,45 +358,85 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig,
         processEnv,
       );
+      // Plan usage for an instance that chats on a long-lived token, read on
+      // its normal sign-in. Every other instance reads it in the capabilities
+      // probe above, so no second Claude process starts for it.
+      const normalSignInUsageCache = yield* Cache.makeWith(
+        () =>
+          readClaudeNormalSignInUsage(effectiveConfig, processEnv, { readStoredSignIn }).pipe(
+            Effect.provideService(Path.Path, path),
+          ),
+        {
+          capacity: 1,
+          timeToLive: (exit) =>
+            Exit.isSuccess(exit) && exit.value._tag === "Fresh"
+              ? CAPABILITIES_PROBE_TTL
+              : FAILED_PROBE_TTL,
+        },
+      );
+      // The per-model windows of the last reading that listed them, for one
+      // that does not say (Claude Code answering from cached data). Starts from
+      // the reading saved before a restart.
+      const lastScopedWindows = yield* Ref.make(
+        claudeScopedWindowsOf(cachedSnapshot?.accountUsage),
+      );
+      const settleScopedWindows = (check: ClaudeUsageCheck): Effect.Effect<ClaudeUsageCheck> => {
+        if (check._tag !== "Fresh") return Effect.succeed(check);
+        if (check.scopedUnknown) {
+          return Ref.get(lastScopedWindows).pipe(
+            Effect.map((earlier): ClaudeUsageCheck => ({
+              _tag: "Fresh",
+              usage: keepEarlierScopedWindows(check.usage, earlier),
+            })),
+          );
+        }
+        return Ref.set(lastScopedWindows, claudeScopedWindowsOf(check.usage)).pipe(
+          Effect.as(check),
+        );
+      };
 
-      const checkProvider = checkClaudeProviderStatus(
-        effectiveConfig,
-        () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
-        processEnv,
-        (settings) =>
-          fetchClaudeAccountUsage(
-            settings,
-            processEnv,
-            refreshClaudeOAuthCredential(settings, processEnv, { readStoredSignIn }).pipe(
+      // The stored sign-in's end as last read. A read that didn't finish (a
+      // slow keychain) keeps it; one that finds no end clears it, so signing
+      // in again replaces the old date at the next check.
+      const lastSignInEndsRef = yield* Ref.make<ServerProviderSignInEnds | undefined>(undefined);
+      const checkProvider = Effect.gen(function* () {
+        const provider = yield* checkClaudeProviderStatus(
+          effectiveConfig,
+          () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
+          processEnv,
+          () =>
+            (hasClaudeChatOnlyToken(processEnv)
+              ? Cache.get(normalSignInUsageCache, "usage")
+              : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
+                  Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
+                )
+            ).pipe(Effect.flatMap(settleScopedWindows)),
+          (settings) =>
+            readClaudeNormalAuthEmail(settings, processEnv).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
             ),
-          ).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.provideService(Path.Path, path),
-          ),
-        (settings) =>
-          readClaudeNormalAuthEmail(settings, processEnv).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-          ),
-        readTokenUsage ? () => readTokenUsage : undefined,
-        () => isSignInRenewalDue,
-      ).pipe(
+          readTokenUsage ? () => readTokenUsage : undefined,
+          () => isSignInRenewalDue,
+        );
+        // Only the sign-in chat runs on has an end worth a warning; its date
+        // is read from the stored sign-in, as Claude Code itself reads it.
+        if (!claudeChatUsesStoredSignIn(provider)) {
+          yield* Ref.set(lastSignInEndsRef, undefined);
+          return withClaudeSignInEnds(provider, undefined);
+        }
+        const window = claudeSignInEndsWindow(
+          yield* readStoredSignIn,
+          DateTime.toEpochMillis(yield* DateTime.now),
+        );
+        if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
+        return withClaudeSignInEnds(
+          provider,
+          window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
+        );
+      }).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(Path.Path, path),
-      );
-
-      // The usage this instance last saved, so a restart (or a rebuild after a
-      // settings change) starts from the last reading instead of empty meters.
-      const cachedSnapshot = yield* resolveProviderStatusCachePath({
-        cacheDir: serverConfig.providerStatusCacheDir,
-        instanceId,
-      }).pipe(
-        Effect.flatMap(readProviderStatusCache),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       );
 
@@ -421,7 +500,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // The adapter is built after the snapshot so mid-turn `rate_limit_event`
       // messages can be folded straight into the live provider snapshot —
       // account usage then updates in real time instead of waiting for the
-      // periodic probe of the OAuth usage endpoint.
+      // periodic usage check.
       const adapter = yield* makeClaudeAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
@@ -445,6 +524,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         installedCliVersion: snapshot.getSnapshot.pipe(
           Effect.map((provider) => provider.version ?? undefined),
         ),
+        readLaunchVersion: (launch) =>
+          readClaudeLaunchVersion(launch).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          ),
         // Read live as well. Unreadable settings leave Claude's own rule.
         suggestionsWhenUsageRunsFast: serverSettings.getSettings.pipe(
           Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),

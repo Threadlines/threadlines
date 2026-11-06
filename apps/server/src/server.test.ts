@@ -114,6 +114,7 @@ import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
 } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import { ProjectMedia, type ProjectMediaShape } from "./media/ProjectMedia.ts";
 import {
   CheckpointRevert,
   type CheckpointRevertShape,
@@ -546,6 +547,7 @@ const buildAppUnderTest = (options?: {
     themeLibrary?: Partial<ThemeLibraryShape>;
     linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
+    projectMedia?: Partial<ProjectMediaShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
     serverLifecycleEvents?: Partial<ServerLifecycleEventsShape>;
@@ -1080,7 +1082,7 @@ const buildAppUnderTest = (options?: {
               diff: "",
             }),
           ...options?.layers?.checkpointDiffQuery,
-        }),
+        }).pipe(Layer.merge(Layer.mock(ProjectMedia)({ ...options?.layers?.projectMedia }))),
       ),
       Layer.provide(
         Layer.mock(CheckpointRevert)({

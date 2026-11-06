@@ -101,6 +101,29 @@ export const ServerProviderAuthCapabilities = Schema.Struct({
 });
 export type ServerProviderAuthCapabilities = typeof ServerProviderAuthCapabilities.Type;
 
+/**
+ * When a saved sign-in stops working, however often it renews: somewhere
+ * between `earliest` and `latest`. Only set for a sign-in that chat uses.
+ */
+export const ServerProviderSignInEnds = Schema.Struct({
+  earliest: IsoDateTime,
+  latest: IsoDateTime,
+});
+export type ServerProviderSignInEnds = typeof ServerProviderSignInEnds.Type;
+
+/**
+ * A workspace the signed-in account can work in (a ChatGPT workspace for
+ * Codex): its own, or a team's. `current` is the one in use.
+ */
+export const ServerProviderWorkspace = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: Schema.optional(TrimmedNonEmptyString),
+  /** "personal" or "workspace" for Codex; any other word reads as a workspace. */
+  kind: Schema.optional(TrimmedNonEmptyString),
+  current: Schema.Boolean,
+});
+export type ServerProviderWorkspace = typeof ServerProviderWorkspace.Type;
+
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
   type: Schema.optional(TrimmedNonEmptyString),
@@ -108,6 +131,9 @@ export const ServerProviderAuth = Schema.Struct({
   email: Schema.optional(TrimmedNonEmptyString),
   usageEmail: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.optional(ServerProviderAuthCapabilities),
+  signInEnds: Schema.optional(ServerProviderSignInEnds),
+  /** The workspaces this sign-in can switch between (the `switch-workspace` sign-in flow). */
+  workspaces: Schema.optional(Schema.Array(ServerProviderWorkspace)),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 

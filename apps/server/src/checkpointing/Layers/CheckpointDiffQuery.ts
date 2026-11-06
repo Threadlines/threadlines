@@ -1,5 +1,6 @@
 import {
   type CheckpointRef,
+  type OrchestrationCheckpointSummary,
   OrchestrationGetTurnDiffResult,
   type ThreadId,
   type OrchestrationGetFullThreadDiffResult,
@@ -10,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { readRevisionFileResult } from "../../media/revisionFile.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
 import {
@@ -49,9 +51,78 @@ function buildTurnDiffResult(
   };
 }
 
+/**
+ * The name `path` had at the start of a range: a rename inside the range
+ * (`previousPath` on a later turn's entry) is followed back, newest turn
+ * first, so a renamed picture's Before is read under its old name. Null when
+ * no turn in the range touched the path at all, which keeps reads to the
+ * files the thread's own turns changed.
+ */
+export function pathAtRangeStart(
+  checkpointsInRange: ReadonlyArray<OrchestrationCheckpointSummary>,
+  path: string,
+): string | null {
+  const normalize = (value: string) => value.replaceAll("\\", "/");
+  let name = normalize(path);
+  let touched = false;
+  const newestFirst = checkpointsInRange.toSorted(
+    (left, right) => right.checkpointTurnCount - left.checkpointTurnCount,
+  );
+  for (const checkpoint of newestFirst) {
+    const entry = checkpoint.files.find((file) => normalize(file.path) === name);
+    if (!entry) {
+      continue;
+    }
+    touched = true;
+    if (entry.previousPath !== undefined) {
+      name = normalize(entry.previousPath);
+    }
+  }
+  return touched ? name : null;
+}
+
 const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const checkpointStore = yield* CheckpointStore;
+
+  // A single turn's change starts from the snapshot taken just before that
+  // turn ran, when one was kept (by turn count, then by turn id), so writes
+  // between turns never show as the turn's own. Any wider range starts from
+  // the previous turn's end.
+  const resolveSingleTurnFromRef = Effect.fn("CheckpointDiffQuery.resolveSingleTurnFromRef")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly workspaceCwd: string;
+      readonly toCheckpoint: OrchestrationCheckpointSummary;
+      readonly fallback: CheckpointRef;
+    }) {
+      const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
+        input.threadId,
+        input.toCheckpoint.checkpointTurnCount,
+      );
+      if (
+        yield* checkpointStore.hasCheckpointRef({
+          cwd: input.workspaceCwd,
+          checkpointRef: preTurnCountCheckpointRef,
+        })
+      ) {
+        return preTurnCountCheckpointRef;
+      }
+      const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(
+        input.threadId,
+        input.toCheckpoint.turnId,
+      );
+      if (
+        yield* checkpointStore.hasCheckpointRef({
+          cwd: input.workspaceCwd,
+          checkpointRef: preTurnCheckpointRef,
+        })
+      ) {
+        return preTurnCheckpointRef;
+      }
+      return input.fallback;
+    },
+  );
 
   const getTurnDiff: CheckpointDiffQueryShape["getTurnDiff"] = Effect.fn("getTurnDiff")(
     function* (input) {
@@ -134,32 +205,14 @@ const make = Effect.gen(function* () {
           detail: `Checkpoint ref is unavailable for turn ${input.toTurnCount}.`,
         });
       }
-      const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(
-        input.threadId,
-        toCheckpoint.turnId,
-      );
-      const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
-        input.threadId,
-        toCheckpoint.checkpointTurnCount,
-      );
-      const canUsePreTurnCheckpoint = input.toTurnCount === input.fromTurnCount + 1;
-      const preTurnCountCheckpointExists = canUsePreTurnCheckpoint
-        ? yield* checkpointStore.hasCheckpointRef({
-            cwd: workspaceCwd,
-            checkpointRef: preTurnCountCheckpointRef,
-          })
-        : false;
-      const preTurnCheckpointExists =
-        canUsePreTurnCheckpoint && !preTurnCountCheckpointExists
-          ? yield* checkpointStore.hasCheckpointRef({
-              cwd: workspaceCwd,
-              checkpointRef: preTurnCheckpointRef,
+      const effectiveFromCheckpointRef =
+        input.toTurnCount === input.fromTurnCount + 1
+          ? yield* resolveSingleTurnFromRef({
+              threadId: input.threadId,
+              workspaceCwd,
+              toCheckpoint,
+              fallback: fromCheckpointRef,
             })
-          : false;
-      const effectiveFromCheckpointRef = preTurnCountCheckpointExists
-        ? preTurnCountCheckpointRef
-        : preTurnCheckpointExists
-          ? preTurnCheckpointRef
           : fromCheckpointRef;
 
       const attributedFilePaths = attributedDiffPaths(
@@ -297,9 +350,100 @@ const make = Effect.gen(function* () {
     return turnDiff satisfies OrchestrationGetFullThreadDiffResult;
   });
 
+  const getTurnFile: CheckpointDiffQueryShape["getTurnFile"] = Effect.fn(
+    "CheckpointDiffQuery.getTurnFile",
+  )(function* (input) {
+    const operation = "CheckpointDiffQuery.getTurnFile";
+    const toTurnCount =
+      input.range.kind === "turn" ? input.range.turnCount : input.range.toTurnCount;
+    const fromTurnCount = input.range.kind === "turn" ? toTurnCount - 1 : 0;
+    yield* Effect.annotateCurrentSpan({
+      "checkpoint.thread_id": input.threadId,
+      "checkpoint.range_kind": input.range.kind,
+      "checkpoint.to_turn_count": toTurnCount,
+      "checkpoint.side": input.side,
+    });
+    const missing = { kind: "missing" as const, relativePath: input.path };
+
+    const threadContext = yield* projectionSnapshotQuery
+      .getThreadCheckpointContext(input.threadId)
+      .pipe(Effect.withSpan("checkpoint.turnFile.lookupContext"));
+    if (Option.isNone(threadContext)) {
+      return yield* new CheckpointInvariantError({
+        operation,
+        detail: `Thread '${input.threadId}' not found.`,
+      });
+    }
+    const workspaceCwd = threadContext.value.worktreePath ?? threadContext.value.workspaceRoot;
+    if (!workspaceCwd) {
+      return yield* new CheckpointInvariantError({
+        operation,
+        detail: `Workspace path missing for thread '${input.threadId}' when reading a turn file.`,
+      });
+    }
+    const checkpoints = threadContext.value.checkpoints;
+    const toCheckpoint = checkpoints.find(
+      (checkpoint) => checkpoint.checkpointTurnCount === toTurnCount,
+    );
+    if (!toCheckpoint) {
+      return missing;
+    }
+    const inRange = checkpoints.filter(
+      (checkpoint) =>
+        checkpoint.checkpointTurnCount > fromTurnCount &&
+        checkpoint.checkpointTurnCount <= toTurnCount,
+    );
+    // Only the files this thread's turns in the range changed are read, the
+    // same files the Diff tab's patch for the range is scoped to.
+    const startPath = pathAtRangeStart(inRange, input.path);
+    if (startPath === null) {
+      return missing;
+    }
+
+    if (input.side === "after") {
+      return yield* readRevisionFileResult({
+        checkpointStore,
+        cwd: workspaceCwd,
+        revision: toCheckpoint.checkpointRef,
+        path: input.path,
+      });
+    }
+
+    const rangeStartRef =
+      fromTurnCount === 0
+        ? checkpointRefForThreadTurn(input.threadId, 0)
+        : checkpoints.find((checkpoint) => checkpoint.checkpointTurnCount === fromTurnCount)
+            ?.checkpointRef;
+    if (!rangeStartRef) {
+      return missing;
+    }
+    const fromRef =
+      input.range.kind === "turn"
+        ? yield* resolveSingleTurnFromRef({
+            threadId: input.threadId,
+            workspaceCwd,
+            toCheckpoint,
+            fallback: rangeStartRef,
+          })
+        : rangeStartRef;
+    // Older records carry no rename; the patch the caller is showing does.
+    const beforePath =
+      startPath === input.path.replaceAll("\\", "/") && input.previousPath !== undefined
+        ? input.previousPath
+        : startPath;
+    return yield* readRevisionFileResult({
+      checkpointStore,
+      cwd: workspaceCwd,
+      revision: fromRef,
+      path: beforePath,
+      displayPath: input.path,
+    });
+  });
+
   return {
     getTurnDiff,
     getFullThreadDiff,
+    getTurnFile,
   } satisfies CheckpointDiffQueryShape;
 });
 

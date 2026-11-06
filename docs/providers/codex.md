@@ -55,6 +55,24 @@ Emails are blurred by default; click the blurred email to reveal it.
 In the model picker, each Codex account has its own tab, with how much of its usage limit is used
 next to its name.
 
+## Switch ChatGPT Workspace
+
+If your ChatGPT sign-in belongs to more than one workspace (your personal one and a company's
+ChatGPT Business or Enterprise, for example), the Codex row shows which one Codex uses, and its
+`Account & Sign-in` section has a `Workspace` setting. Pick another workspace and choose `Switch`.
+It needs Codex 0.167 or later; an older Codex shows no `Workspace` setting.
+
+- Codex makes the switch itself, on its saved sign-in. Codex in your terminal moves too when it
+  shares that sign-in, as the default Codex row does. An account added with
+  `Add another Codex account` has its own sign-in, and switches on its own.
+- Threadlines first stops the running chats of that Codex row and holds new ones until the switch
+  is done, so no chat keeps going in the old workspace. Send a message to carry on.
+- A workspace behind its company's single sign-on opens a sign-in page. Finish there, or on
+  another device paste the address the page ends on. `Cancel` keeps the current workspace.
+- Government workspaces need their own sign-in: sign in to Codex with that workspace instead.
+- A chat whose data the old workspace keeps in another region may not continue in the new one.
+  Start a new thread for it.
+
 ## Can I Switch Accounts In An Existing Thread?
 
 Yes. Accounts added with `Add another Codex account` share your main Codex history, so a thread

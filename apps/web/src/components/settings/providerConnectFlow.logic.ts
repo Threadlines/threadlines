@@ -309,38 +309,56 @@ export function providerConnectStatusLine(input: {
   /** What to do while it runs, for sign-ins that start in the terminal. */
   readonly runningHint?: string | undefined;
 }): string {
-  const isToken = input.flow === "claude-setup-token";
+  if (input.flow === "switch-workspace") return workspaceSwitchStatusLine(input.state);
   const isSignOut = input.flow === "logout";
   switch (input.state.status) {
     case "idle":
       return "";
     case "starting":
-      return isToken
-        ? "Starting token setup"
-        : isSignOut
-          ? `Signing out of ${input.displayName}`
-          : `Starting ${input.displayName} sign-in`;
+      return isSignOut
+        ? `Signing out of ${input.displayName}`
+        : `Starting ${input.displayName} sign-in`;
     case "running":
       // What the agent asked is the step the user is on.
       if (input.state.question) return input.state.question.message;
       if (input.state.pageRequest?.code) return "Enter the code below on the sign-in page.";
       if (input.runningHint) return input.runningHint;
       // A browser sign-in has nothing to finish in the browser before it opens a page.
-      if (input.state.surface === "browser" && !input.state.signInUrl && !isSignOut && !isToken) {
+      if (input.state.surface === "browser" && !input.state.signInUrl && !isSignOut) {
         return `Signing in to ${input.displayName}`;
       }
-      return isToken
-        ? "Finish authorization in your browser. The token is saved here automatically."
-        : isSignOut
-          ? `Signing out of ${input.displayName}`
-          : "Finish sign-in in your browser, then come back to this page.";
+      return isSignOut
+        ? `Signing out of ${input.displayName}`
+        : "Finish sign-in in your browser, then come back to this page.";
     case "succeeded":
-      return isToken ? "Token saved" : isSignOut ? "Signed out" : "Signed in";
+      return isSignOut ? "Signed out" : "Signed in";
     case "failed": {
       if (input.state.detail && input.state.detail.trim().length > 0) {
         return input.state.detail;
       }
-      return isToken ? "Token setup failed" : isSignOut ? "Sign-out failed" : "Sign-in failed";
+      return isSignOut ? "Sign-out failed" : "Sign-in failed";
     }
+  }
+}
+
+/**
+ * A workspace switch in words. Its own lines say where it is ("Stopping Codex
+ * chats on this computer…", "Switched to Acme."), so the finished line is the
+ * run's last one.
+ */
+function workspaceSwitchStatusLine(state: ProviderConnectFlowState): string {
+  switch (state.status) {
+    case "idle":
+      return "";
+    case "starting":
+      return "Switching workspace";
+    case "running":
+      return state.signInUrl
+        ? "Sign in to the workspace in your browser to finish."
+        : "Switching workspace";
+    case "succeeded":
+      return state.lastLine.trim() || "Switched workspace";
+    case "failed":
+      return state.detail?.trim() || "Couldn't switch workspace";
   }
 }

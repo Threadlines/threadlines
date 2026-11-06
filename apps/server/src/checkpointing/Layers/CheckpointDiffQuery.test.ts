@@ -607,3 +607,160 @@ describe("CheckpointDiffQueryLive", () => {
     ).rejects.toThrow("Thread 'thread-missing' not found.");
   });
 });
+
+describe("CheckpointDiffQueryLive.getTurnFile", () => {
+  const projectId = ProjectId.make("project-turn-file");
+  const threadId = ThreadId.make("thread-turn-file");
+  const turnId = TurnId.make("turn-turn-file-1");
+  const turnOneRef = checkpointRefForThreadTurn(threadId, 1);
+  const context: ProjectionThreadCheckpointContext = {
+    threadId,
+    projectId,
+    workspaceRoot: "/tmp/workspace",
+    worktreePath: null,
+    checkpoints: [
+      {
+        turnId,
+        checkpointTurnCount: 1,
+        checkpointRef: turnOneRef,
+        status: "ready",
+        files: [
+          { path: "art/hero.png", kind: "modified", additions: 0, deletions: 0 },
+          {
+            path: "art/renamed.png",
+            kind: "modified",
+            additions: 0,
+            deletions: 0,
+            previousPath: "art/original.png",
+          },
+        ],
+        assistantMessageId: null,
+        completedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  };
+
+  const readTurnFile = (input: {
+    readonly range:
+      | { readonly kind: "turn"; readonly turnCount: number }
+      | {
+          readonly kind: "thread";
+          readonly toTurnCount: number;
+        };
+    readonly side: "before" | "after";
+    readonly path: string;
+    readonly previousPath?: string;
+  }) => {
+    const reads: Array<{ readonly revision: string; readonly path: string }> = [];
+    const checkpointStore = makeCheckpointStoreStub({
+      // The snapshot taken just before turn 1 ran exists, as it does for any
+      // turn recorded since pre-turn snapshots were kept.
+      hasCheckpointRef: ({ checkpointRef }) =>
+        Effect.succeed(checkpointRef === checkpointPreTurnRefForThreadTurnCount(threadId, 1)),
+      readRevisionFile: ({ revision, path }) =>
+        Effect.sync(() => {
+          reads.push({ revision, path });
+          return { kind: "file" as const, base64: "iVBORw==", size: 4 };
+        }),
+    });
+    const layer = CheckpointDiffQueryLive.pipe(
+      Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
+      Layer.provideMerge(
+        Layer.mock(ProjectionSnapshotQuery)({
+          getThreadCheckpointContext: () => Effect.succeed(Option.some(context)),
+        }),
+      ),
+    );
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const query = yield* CheckpointDiffQuery;
+        return yield* query.getTurnFile({
+          threadId,
+          range: input.range as never,
+          side: input.side,
+          path: input.path,
+          ...(input.previousPath ? { previousPath: input.previousPath } : {}),
+        });
+      }).pipe(Effect.provide(layer)),
+    ).then((result) => ({ result, reads }));
+  };
+
+  it("reads each side from the snapshots the Diff tab compares for that view", async () => {
+    // One turn's own change starts at the snapshot taken just before it ran...
+    const turnBefore = await readTurnFile({
+      range: { kind: "turn", turnCount: 1 },
+      side: "before",
+      path: "art/hero.png",
+    });
+    expect(turnBefore.reads).toEqual([
+      { revision: checkpointPreTurnRefForThreadTurnCount(threadId, 1), path: "art/hero.png" },
+    ]);
+    expect(turnBefore.result).toEqual({
+      kind: "image",
+      relativePath: "art/hero.png",
+      mimeType: "image/png",
+      base64: "iVBORw==",
+      size: 4,
+    });
+
+    // ...while "All chat changes" starts where the thread began, even over the
+    // same single turn.
+    const threadBefore = await readTurnFile({
+      range: { kind: "thread", toTurnCount: 1 },
+      side: "before",
+      path: "art/hero.png",
+    });
+    expect(threadBefore.reads).toEqual([
+      { revision: checkpointRefForThreadTurn(threadId, 0), path: "art/hero.png" },
+    ]);
+
+    const after = await readTurnFile({
+      range: { kind: "turn", turnCount: 1 },
+      side: "after",
+      path: "art/hero.png",
+    });
+    expect(after.reads).toEqual([{ revision: turnOneRef, path: "art/hero.png" }]);
+  });
+
+  it("reads a renamed picture's Before under its old name", async () => {
+    const { reads, result } = await readTurnFile({
+      range: { kind: "turn", turnCount: 1 },
+      side: "before",
+      path: "art/renamed.png",
+    });
+    expect(reads).toEqual([
+      {
+        revision: checkpointPreTurnRefForThreadTurnCount(threadId, 1),
+        path: "art/original.png",
+      },
+    ]);
+    expect(result).toMatchObject({ kind: "image", relativePath: "art/renamed.png" });
+  });
+
+  it("takes the patch's old name for a rename its records predate", async () => {
+    // hero.png's record has no previousPath, as turns recorded before renames
+    // were kept don't; the Diff tab passes the name its patch shows.
+    const { reads } = await readTurnFile({
+      range: { kind: "turn", turnCount: 1 },
+      side: "before",
+      path: "art/hero.png",
+      previousPath: "art/hero-old.png",
+    });
+    expect(reads).toEqual([
+      {
+        revision: checkpointPreTurnRefForThreadTurnCount(threadId, 1),
+        path: "art/hero-old.png",
+      },
+    ]);
+  });
+
+  it("never reads a file the range's turns did not change", async () => {
+    const { reads, result } = await readTurnFile({
+      range: { kind: "turn", turnCount: 1 },
+      side: "after",
+      path: ".env",
+    });
+    expect(reads).toEqual([]);
+    expect(result).toEqual({ kind: "missing", relativePath: ".env" });
+  });
+});

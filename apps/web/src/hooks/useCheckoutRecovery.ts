@@ -9,7 +9,7 @@
  *
  * @module useCheckoutRecovery
  */
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
@@ -19,7 +19,11 @@ import {
   type CheckoutStatusLike,
   selectCheckoutRecovery,
 } from "../lib/checkoutRecovery";
-import { gitBranchSearchInfiniteQueryOptions, invalidateGitQueries } from "../lib/gitReactQuery";
+import {
+  gitBranchSearchInfiniteQueryOptions,
+  gitCreateWorktreeMutationOptions,
+  invalidateGitQueries,
+} from "../lib/gitReactQuery";
 import { newCommandId } from "../lib/utils";
 import { failureNotice, toastManager } from "../components/ui/toast";
 
@@ -41,6 +45,10 @@ export function useCheckoutRecovery(input: {
   readonly status: CheckoutStatusLike | null | undefined;
 }): CheckoutRecoveryView {
   const queryClient = useQueryClient();
+  // A mutation, so a pull in the checkout being restored waits for it.
+  const { mutateAsync: recreateWorktree } = useMutation(
+    gitCreateWorktreeMutationOptions({ environmentId: input.environmentId }),
+  );
   const [isBusy, setIsBusy] = useState(false);
   const pathMissing = input.status?.pathMissing === true;
   const branch = input.branch;
@@ -140,8 +148,8 @@ export function useCheckoutRecovery(input: {
     const path = recovery.cwd;
     // Recreated at the same path on the same branch, so the thread resumes
     // exactly where it was rather than being moved somewhere new.
-    void run((api) => api.vcs.createWorktree({ cwd: projectCwd, refName, path }));
-  }, [recovery, run]);
+    void run(() => recreateWorktree({ cwd: projectCwd, refName, path }));
+  }, [recovery, recreateWorktree, run]);
 
   return { recovery, isBusy, onSwitchToProjectRoot, onRecreateWorktree };
 }
