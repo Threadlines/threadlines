@@ -148,6 +148,7 @@ export function ThemeBackdropLayer(props: {
         activity={activity}
         pulse={pulse}
         stillOnly={stillOnly}
+        framedStill={!tooHeavy}
         onStatus={setBackdropStatus}
       />
     </div>,
