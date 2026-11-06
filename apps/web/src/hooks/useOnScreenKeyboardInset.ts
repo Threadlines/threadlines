@@ -1,25 +1,9 @@
 import { type CSSProperties, useCallback, useSyncExternalStore } from "react";
 
-type VisualViewportEdge = "top" | "bottom";
+import { readVisualViewportInset, type VisualViewportEdge } from "~/lib/onScreenKeyboard";
 
 function getServerSnapshot(): number {
   return 0;
-}
-
-function readVisualViewportInset(edge: VisualViewportEdge): number {
-  const viewport = window.visualViewport;
-  if (!viewport) {
-    return 0;
-  }
-  // Pinch zoom also shrinks the visual viewport; only a 1:1 scale reliably
-  // means the height delta comes from the on-screen keyboard.
-  if (Math.abs(viewport.scale - 1) > 0.01) {
-    return 0;
-  }
-  if (edge === "top") {
-    return Math.max(0, Math.round(viewport.offsetTop));
-  }
-  return Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
 }
 
 function useVisualViewportInset(edge: VisualViewportEdge, enabled: boolean): number {

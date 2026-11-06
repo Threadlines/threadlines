@@ -12,6 +12,7 @@ import "./index.css";
 
 import { StatusBarEdge } from "./components/StatusBarEdge";
 import { isElectron } from "./env";
+import { installOnScreenKeyboardFlag } from "./lib/onScreenKeyboard";
 import { installPopupPickGuard } from "./lib/popupPickGuard";
 import { isMacPlatform } from "./lib/utils";
 import { getRouter } from "./router";
@@ -37,6 +38,7 @@ if (isElectron) {
 document.title = APP_DISPLAY_NAME;
 
 installPopupPickGuard();
+installOnScreenKeyboardFlag();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -751,7 +751,7 @@ function AddSelectionToChatFooter({
   return (
     // Bottom padding tracks the home-indicator inset on notched phones, where
     // the sheet runs to the screen edge.
-    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,var(--safe-area-bottom))]">
       <span
         className={cn(
           "text-[11px]",
@@ -1297,7 +1297,7 @@ function FileEditorStatusFooter({
       as,
     };
     return (
-      <div className="flex items-center justify-between gap-2 border-t border-border/60 bg-amber-500/10 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+      <div className="flex items-center justify-between gap-2 border-t border-border/60 bg-amber-500/10 px-3 py-1.5 max-sm:pb-[max(0.375rem,var(--safe-area-bottom))]">
         <span className="text-[11px] text-amber-600 dark:text-amber-400">
           This file changed on disk while you were editing.
         </span>
@@ -1326,7 +1326,7 @@ function FileEditorStatusFooter({
   }
 
   return (
-    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,var(--safe-area-bottom))]">
       <span
         className={cn(
           "text-[11px]",
