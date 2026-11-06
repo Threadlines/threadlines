@@ -116,7 +116,7 @@ export const BACKDROP_RUNTIME_TIMING: BackdropRuntimeTiming = {
   streamingPace: 0.5,
   paceEaseMs: 600,
   resumeFadeMs: 500,
-  stillWaitMs: 300,
+  stillWaitMs: 1_000,
   budgetWindowMs: 5_000,
   budgetWarmupMs: 1_500,
   budgetMsPerSecond: 60,
