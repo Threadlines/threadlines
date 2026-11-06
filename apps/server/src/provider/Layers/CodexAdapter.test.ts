@@ -306,6 +306,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
 
+  /** A sample's answer; the effect form lets a test hold one open. */
+  public sampleThreadEffect: (input: {
+    readonly expectedTurnId: string;
+    readonly prompt: string;
+    readonly effort?: string | undefined;
+  }) => Effect.Effect<EffectCodexSchema.V2ThreadSampleResponse> = (input) =>
+    Effect.succeed({ responseId: "sample-1", sourceTurnId: input.expectedTurnId, text: null });
+  public readonly sampleThreadCalls: Array<{
+    readonly expectedTurnId: string;
+    readonly effort?: string | undefined;
+  }> = [];
+
   public goalState: CodexThreadGoal | null = null;
 
   public readonly setGoalImpl = vi.fn(
@@ -428,6 +440,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   realtimeListVoices = Effect.promise(() => this.realtimeListVoicesImpl());
 
   compactContext = Effect.promise(() => this.compactContextImpl());
+  sampleThread = (input: {
+    readonly expectedTurnId: string;
+    readonly prompt: string;
+    readonly effort?: string | undefined;
+  }) =>
+    Effect.suspend(() => {
+      this.sampleThreadCalls.push({
+        expectedTurnId: input.expectedTurnId,
+        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      });
+      return this.sampleThreadEffect(input);
+    });
 
   readMcpResource = () =>
     Effect.succeed<EffectCodexSchema.V2McpResourceReadResponse>({ contents: [] });
@@ -1252,6 +1276,138 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         serviceTier: "priority",
       });
     }).pipe(Effect.provide(customLayer));
+  });
+
+  it.effect("suggests the next message after a turn a person started, and only then", () => {
+    const suggestionsRuntimeFactory = makeRuntimeFactory();
+    let suggestionsOn = true;
+    const suggestionsLayer = Layer.effect(
+      CodexAdapter,
+      makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: suggestionsRuntimeFactory.factory,
+        promptSuggestions: {
+          shouldSuggest: Effect.sync(() => suggestionsOn),
+          effortFor: (model) => Effect.succeed(model === "gpt-test" ? "low" : undefined),
+        },
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const threadId = asThreadId("thread-suggestions");
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = suggestionsRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      const send = (turnId: string, suggestNextMessage: boolean) =>
+        Effect.gen(function* () {
+          runtime.sendTurnImpl.mockResolvedValueOnce({ threadId, turnId: asTurnId(turnId) });
+          yield* adapter.sendTurn({
+            threadId,
+            input: "Next step?",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-test"),
+            attachments: [],
+            ...(suggestNextMessage ? { suggestNextMessage: true } : {}),
+          });
+        });
+      const turnEvent = (method: "turn/started" | "turn/completed", turnId: string) =>
+        runtime.emit({
+          id: asEventId(`evt-${method}-${turnId}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-11-06T00:00:00.000Z",
+          method,
+          threadId,
+          turnId: asTurnId(turnId),
+          payload: {
+            threadId: "provider-thread-suggestions",
+            turn: { id: turnId, items: [], status: "completed" },
+          },
+        } satisfies ProviderEvent);
+      // Lets the session's event loop take what was emitted.
+      const settle = Effect.forEach(Array.from({ length: 50 }), () => Effect.yieldNow, {
+        discard: true,
+      });
+
+      runtime.sampleThreadEffect = (input) =>
+        Effect.succeed({
+          responseId: "sample-1",
+          sourceTurnId: input.expectedTurnId,
+          text: '"Run the tests."',
+        });
+      const suggestion = yield* Stream.runHead(
+        adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.prompt-suggestion.updated"),
+        ),
+      ).pipe(Effect.forkChild);
+      yield* send("turn-person", true);
+      yield* turnEvent("turn/completed", "turn-person");
+      const suggested = yield* Fiber.join(suggestion);
+      assert.equal(suggested._tag, "Some");
+      if (suggested._tag === "Some" && suggested.value.type === "turn.prompt-suggestion.updated") {
+        assert.equal(suggested.value.turnId, "turn-person");
+        assert.equal(suggested.value.payload.suggestion, "Run the tests.");
+      }
+      assert.deepStrictEqual(runtime.sampleThreadCalls, [
+        { expectedTurnId: "turn-person", effort: "low" },
+      ]);
+
+      // Another agent's or a task's turn: nobody is about to type.
+      yield* send("turn-agent", false);
+      yield* turnEvent("turn/completed", "turn-agent");
+      yield* settle;
+      assert.equal(runtime.sampleThreadCalls.length, 1);
+
+      // A turn that starts stops the suggestion still being made, at Codex too.
+      let abandoned = false;
+      runtime.sampleThreadEffect = () =>
+        Effect.never.pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              abandoned = true;
+            }),
+          ),
+        );
+      yield* send("turn-slow", true);
+      yield* turnEvent("turn/completed", "turn-slow");
+      yield* settle;
+      assert.equal(runtime.sampleThreadCalls.length, 2);
+      yield* turnEvent("turn/started", "turn-goal");
+      yield* settle;
+      assert.equal(abandoned, true);
+
+      // A turn quicker than its own start reply still gets one.
+      runtime.sampleThreadEffect = (input) =>
+        Effect.succeed({ responseId: "s", sourceTurnId: input.expectedTurnId, text: "Ship it." });
+      runtime.sendTurnImpl.mockImplementationOnce(async () => {
+        await Effect.runPromise(turnEvent("turn/completed", "turn-quick"));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { threadId, turnId: asTurnId("turn-quick") };
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Quick one",
+        attachments: [],
+        suggestNextMessage: true,
+      });
+      yield* settle;
+      assert.deepStrictEqual(runtime.sampleThreadCalls.at(-1), { expectedTurnId: "turn-quick" });
+
+      // Switched off: no sample at all.
+      suggestionsOn = false;
+      yield* send("turn-off", true);
+      yield* turnEvent("turn/completed", "turn-off");
+      yield* settle;
+      assert.equal(runtime.sampleThreadCalls.length, 3);
+    }).pipe(Effect.provide(suggestionsLayer));
   });
 
   it.effect("a workspace switch stops running sessions and holds new ones off until done", () => {

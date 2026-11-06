@@ -32,7 +32,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
-import { usageLimitFromAccountUsage } from "@threadlines/shared/usageLimits";
+import {
+  isAccountUsageNearLimit,
+  usageLimitFromAccountUsage,
+} from "@threadlines/shared/usageLimits";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
@@ -50,6 +53,12 @@ import {
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeLaunchGate } from "../managedRuntime/LaunchGate.ts";
 import { makeCodexWorkspaceSwitchFlows } from "./CodexWorkspaceSwitch.ts";
+import {
+  CODEX_SUGGESTION_USAGE_CEILING_PERCENT,
+  codexSuggestionEffort,
+  modelReasoningEfforts,
+} from "../Layers/CodexPromptSuggestions.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
@@ -107,7 +116,8 @@ export type CodexDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | ServerSettingsService;
 
 /**
  * Stamp instance identity onto a `ServerProvider` snapshot produced by the
@@ -145,6 +155,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
+      const serverSettings = yield* ServerSettingsService;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
@@ -247,6 +258,29 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         publishRealtimeAudio: realtimeAudioHub.publish,
         releaseRealtimeAudio: realtimeAudioHub.remove,
+        // Read before each suggestion, so the switch and the account's usage
+        // count from the next one. Unreadable settings make none.
+        promptSuggestions: {
+          shouldSuggest: Effect.gen(function* () {
+            const on = yield* serverSettings.getSettings.pipe(
+              Effect.map((settings) => settings.codexSuggestions),
+              Effect.orElseSucceed(() => false),
+            );
+            if (!on) return false;
+            const current = yield* snapshot.getSnapshot;
+            return !isAccountUsageNearLimit(
+              current.accountUsage,
+              yield* Clock.currentTimeMillis,
+              CODEX_SUGGESTION_USAGE_CEILING_PERCENT,
+            );
+          }),
+          effortFor: (model) =>
+            snapshot.getSnapshot.pipe(
+              Effect.map((current) =>
+                codexSuggestionEffort(modelReasoningEfforts(current.models, model)),
+              ),
+            ),
+        },
         // Codex's usage-limit error has no reset time. A fresh read right
         // after the failure shows which window is spent and when it resets;
         // a slow or failed read falls back to the reading already held.

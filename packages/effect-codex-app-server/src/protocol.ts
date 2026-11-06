@@ -46,12 +46,24 @@ export interface CodexAppServerPatchedProtocolOptions {
   readonly onTermination?: (error: CodexError.CodexAppServerError) => Effect.Effect<void, never>;
 }
 
+/** What a request does when its caller stops waiting for the answer. */
+export interface CodexAppServerRequestOptions {
+  /**
+   * Runs, with the request's id, when the caller is interrupted after the
+   * request went out and before its answer came: to have the server stop
+   * the work too (`thread/sample/cancel`). It runs inside the interruption,
+   * so it should hand off anything that waits.
+   */
+  readonly onAbandon?: (requestId: number) => Effect.Effect<void>;
+}
+
 export interface CodexAppServerPatchedProtocol {
   readonly incomingNotifications: Stream.Stream<CodexAppServerIncomingNotification>;
   readonly incomingRequests: Stream.Stream<CodexAppServerIncomingRequest>;
   readonly request: (
     method: string,
     payload?: unknown,
+    options?: CodexAppServerRequestOptions,
   ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
   readonly notify: (
     method: string,
@@ -373,27 +385,41 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     yield* Stream.fromQueue(outgoing).pipe(Stream.run(options.stdio.stdout()), Effect.forkScoped);
 
-    const request = (method: string, payload?: unknown) =>
-      Effect.gen(function* () {
-        const requestId = yield* Ref.modify(
-          nextRequestId,
-          (current) => [current, current + 1] as const,
-        );
-        const deferred = yield* Deferred.make<unknown, CodexError.CodexAppServerError>();
-        yield* Ref.update(pending, (current) => new Map(current).set(String(requestId), deferred));
-        yield* offerOutgoing({
-          id: requestId,
-          method,
-          ...(payload !== undefined ? { params: payload } : {}),
-        }).pipe(
-          Effect.catch((error) =>
-            removePending(String(requestId)).pipe(Effect.andThen(Effect.fail(error))),
-          ),
-        );
-        return yield* Deferred.await(deferred).pipe(
-          Effect.onInterrupt(() => removePending(String(requestId))),
-        );
-      });
+    // Registered and sent in one step, so an interruption either finds the
+    // request unsent or knows its id to clean up after.
+    const request = (
+      method: string,
+      payload?: unknown,
+      requestOptions?: CodexAppServerRequestOptions,
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const requestId = yield* Ref.modify(
+            nextRequestId,
+            (current) => [current, current + 1] as const,
+          );
+          const deferred = yield* Deferred.make<unknown, CodexError.CodexAppServerError>();
+          yield* Ref.update(pending, (current) =>
+            new Map(current).set(String(requestId), deferred),
+          );
+          yield* offerOutgoing({
+            id: requestId,
+            method,
+            ...(payload !== undefined ? { params: payload } : {}),
+          }).pipe(
+            Effect.catch((error) =>
+              removePending(String(requestId)).pipe(Effect.andThen(Effect.fail(error))),
+            ),
+          );
+          return yield* restore(Deferred.await(deferred)).pipe(
+            Effect.onInterrupt(() =>
+              removePending(String(requestId)).pipe(
+                Effect.andThen(requestOptions?.onAbandon?.(requestId) ?? Effect.void),
+              ),
+            ),
+          );
+        }),
+      );
 
     const notify = (method: string, payload?: unknown) =>
       offerOutgoing({

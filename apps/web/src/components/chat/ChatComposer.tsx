@@ -131,6 +131,7 @@ import {
   FOLLOW_UP_DELIVERY_LABELS,
   roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
+import { useEnvironmentServerSetting } from "../../hooks/useEnvironmentServerSetting";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
 import { getThreadInFlightStatus } from "../../lib/threadSort";
@@ -1773,10 +1774,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const recipientDriverKind = addressedRoomAgent
     ? addressedRoomAgentEntry?.driverKind
     : selectedProvider;
+  // Codex's suggestions are Threadlines' own, with a switch in Settings on
+  // the computer the thread runs on.
+  const codexSuggestionsOn = useEnvironmentServerSetting(environmentId, "codexSuggestions");
+  const recipientSuggestionsOff = recipientDriverKind === "codex" && !codexSuggestionsOn;
   const promptSuggestion = useMemo(
     () =>
       selectPromptSuggestion({
         recipientDriverKind,
+        recipientSuggestionsOff,
         isFromRecipient: isFromRecipientAgent,
         phase,
         sideAnswerInProgress,
@@ -1798,6 +1804,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isSendBusy,
       pendingUserInputs.length,
       phase,
+      recipientSuggestionsOff,
       queuedFollowUpCount,
       recipientDriverKind,
       showPlanFollowUpPrompt,

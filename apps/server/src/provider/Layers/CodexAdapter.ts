@@ -43,6 +43,7 @@ import {
   TurnId,
   type ProviderSteerTurnInput,
 } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
@@ -75,6 +76,7 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import { isAgentOutputEvent } from "../turnLatency.ts";
+import { CODEX_SUGGESTION_PROMPT, codexSuggestionFromSample } from "./CodexPromptSuggestions.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
@@ -679,7 +681,32 @@ export interface CodexAdapterLiveOptions {
    * keeps the old workspace's sign-in.
    */
   readonly launchGate?: LaunchGate;
+  /**
+   * Codex suggests the user's next message after a turn they started
+   * (CodexPromptSuggestions), when the driver says it may now (its setting,
+   * the account's usage), asking for the reasoning `effortFor` names for the
+   * turn's model.
+   */
+  readonly promptSuggestions?: {
+    readonly shouldSuggest: Effect.Effect<boolean>;
+    readonly effortFor: (model: string | undefined) => Effect.Effect<string | undefined>;
+  };
 }
+
+/** A session's suggestions: the turns to suggest after, and the one being made. */
+interface CodexSuggestionState {
+  /** Turns a person started, with the model each runs on, until they end. */
+  readonly awaiting: Map<TurnId, { readonly model: string | undefined }>;
+  /**
+   * The last few turns that ended before `sendTurn` had their id to mark
+   * them (a turn quicker than its own start reply), so it still can.
+   */
+  readonly endedUnmarked: Map<TurnId, { readonly completed: boolean; readonly eventId: EventId }>;
+  making: Fiber.Fiber<void, never> | undefined;
+}
+
+/** How many unmarked endings a session keeps for a `sendTurn` still on its way back. */
+const ENDED_UNMARKED_KEPT = 8;
 
 interface CodexAdapterSessionContext {
   readonly threadId: ThreadId;
@@ -694,6 +721,7 @@ interface CodexAdapterSessionContext {
   /** A room's side answer: never asked to act for the user's own Codex. */
   readonly lockdown: boolean;
   readonly turnProgress: CodexTurnProgress;
+  readonly suggestions: CodexSuggestionState;
 }
 
 /** What this runtime's turns have done so far, for `resendTurn`. */
@@ -3437,6 +3465,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
 
         const turnProgress: CodexTurnProgress = { workedTurnIds: new Set() };
+        const suggestions: CodexSuggestionState = {
+          awaiting: new Map(),
+          endedUnmarked: new Map(),
+          making: undefined,
+        };
         let resendingTurn = false;
 
         // The session context owns and explicitly interrupts this fiber. It
@@ -3510,6 +3543,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            yield* followTurnsForSuggestions({
+              threadId: input.threadId,
+              runtime,
+              scope: sessionScope,
+              suggestions,
+              runtimeEvents,
+            });
             // A dead child (crash or graceful close outside stopSession) must
             // not linger in the session map: hasSession/listSessions would
             // keep routing turns to it instead of letting the next turn start
@@ -3595,6 +3635,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           stopped: false,
           lockdown: input.lockdown !== undefined,
           turnProgress,
+          suggestions,
         });
         sessionScopeTransferred = true;
 
@@ -3660,6 +3701,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
+    // The last turn's suggestion is moot once another message goes.
+    yield* dropSuggestion(session.suggestions);
     // Cross-driver handoff: lead the first turn with the rendered seed, then
     // continue natively on subsequent turns.
     const pendingContextSeedText = session.pendingContextSeedText;
@@ -3709,6 +3752,30 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     };
     if (pendingContextSeedText !== undefined) {
       session.pendingContextSeedText = undefined;
+    }
+    const promptSuggestions = options?.promptSuggestions;
+    if (input.suggestNextMessage === true && promptSuggestions && !session.lockdown) {
+      const model =
+        input.modelSelection?.instanceId === boundInstanceId
+          ? input.modelSelection.model
+          : undefined;
+      // A turn quicker than its own start reply has ended already.
+      const ended = session.suggestions.endedUnmarked.get(turn.turnId);
+      session.suggestions.endedUnmarked.delete(turn.turnId);
+      if (ended === undefined) {
+        session.suggestions.awaiting.set(turn.turnId, { model });
+      } else if (ended.completed) {
+        yield* startSuggestion({
+          promptSuggestions,
+          threadId: session.threadId,
+          runtime: session.runtime,
+          scope: session.scope,
+          suggestions: session.suggestions,
+          turnId: turn.turnId,
+          model,
+          completedEventId: ended.eventId,
+        });
+      }
     }
     return turn;
   });
@@ -4336,6 +4403,124 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ? { ...event, payload: { ...event.payload, usageLimit: reading } }
         : event,
     );
+  });
+
+  /** Stops the suggestion a session is making: its turn is no longer the latest. */
+  const dropSuggestion = (suggestions: CodexSuggestionState) =>
+    Effect.suspend(() => {
+      const making = suggestions.making;
+      suggestions.making = undefined;
+      return making ? Fiber.interrupt(making).pipe(Effect.asVoid) : Effect.void;
+    });
+
+  /**
+   * One sample of what the person would type next after `turnId`, published
+   * as that turn's prompt suggestion. A sample that fails, comes back empty
+   * or reads like no message leaves none; so does a suggestion the setting or
+   * the account's usage stopped while it was made.
+   */
+  const makeSuggestion = (input: {
+    readonly promptSuggestions: NonNullable<CodexAdapterLiveOptions["promptSuggestions"]>;
+    readonly threadId: ThreadId;
+    readonly runtime: CodexSessionRuntimeShape;
+    readonly turnId: TurnId;
+    readonly model: string | undefined;
+    readonly completedEventId: EventId;
+  }) =>
+    Effect.gen(function* () {
+      const { promptSuggestions } = input;
+      if (!(yield* promptSuggestions.shouldSuggest)) return;
+      const effort = yield* promptSuggestions.effortFor(input.model);
+      const sample = yield* input.runtime.sampleThread({
+        expectedTurnId: input.turnId,
+        prompt: CODEX_SUGGESTION_PROMPT,
+        ...(effort !== undefined ? { effort } : {}),
+      });
+      const suggestion = codexSuggestionFromSample(sample.text);
+      // Samples write no transcript, so their usage is only here.
+      yield* Effect.annotateCurrentSpan({
+        "codex.suggestion.kept": suggestion !== undefined,
+        "codex.suggestion.input_tokens": sample.inputTokens ?? -1,
+        "codex.suggestion.cached_input_tokens": sample.cachedInputTokens ?? -1,
+        "codex.suggestion.output_tokens": sample.outputTokens ?? -1,
+      });
+      if (suggestion === undefined || !(yield* promptSuggestions.shouldSuggest)) return;
+      yield* Queue.offer(runtimeEventQueue, {
+        type: "turn.prompt-suggestion.updated",
+        eventId: EventId.make(`${input.completedEventId}:prompt-suggestion`),
+        provider: PROVIDER,
+        createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+        threadId: input.threadId,
+        turnId: input.turnId,
+        payload: { suggestion },
+      });
+    }).pipe(
+      Effect.withSpan("CodexAdapter.suggestNextMessage"),
+      // Codex refuses a sample once the thread moved on, or times it out.
+      Effect.catch((cause) =>
+        Effect.logDebug("Codex made no suggestion", { threadId: input.threadId, cause }),
+      ),
+    );
+
+  /** Starts the suggestion after `turnId`, in place of any still being made. */
+  const startSuggestion = Effect.fnUntraced(function* (input: {
+    readonly promptSuggestions: NonNullable<CodexAdapterLiveOptions["promptSuggestions"]>;
+    readonly threadId: ThreadId;
+    readonly runtime: CodexSessionRuntimeShape;
+    readonly scope: Scope.Scope;
+    readonly suggestions: CodexSuggestionState;
+    readonly turnId: TurnId;
+    readonly model: string | undefined;
+    readonly completedEventId: EventId;
+  }) {
+    yield* dropSuggestion(input.suggestions);
+    input.suggestions.making = yield* makeSuggestion(input).pipe(Effect.forkIn(input.scope));
+  });
+
+  /**
+   * Follows a session's turns for its suggestions: a turn that starts ends
+   * the one being made, and a turn a person started that completes starts
+   * the next, in the session's scope.
+   */
+  const followTurnsForSuggestions = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly runtime: CodexSessionRuntimeShape;
+    readonly scope: Scope.Scope;
+    readonly suggestions: CodexSuggestionState;
+    readonly runtimeEvents: ReadonlyArray<ProviderRuntimeEvent>;
+  }) {
+    const promptSuggestions = options?.promptSuggestions;
+    if (!promptSuggestions) return;
+    const { suggestions } = input;
+    for (const event of input.runtimeEvents) {
+      if (event.type === "turn.started") {
+        yield* dropSuggestion(suggestions);
+        continue;
+      }
+      if (event.type !== "turn.completed" || event.turnId === undefined) continue;
+      const completed = event.payload.state === "completed";
+      const awaited = suggestions.awaiting.get(event.turnId);
+      if (awaited === undefined) {
+        suggestions.endedUnmarked.set(event.turnId, { completed, eventId: event.eventId });
+        for (const turnId of suggestions.endedUnmarked.keys()) {
+          if (suggestions.endedUnmarked.size <= ENDED_UNMARKED_KEPT) break;
+          suggestions.endedUnmarked.delete(turnId);
+        }
+        continue;
+      }
+      suggestions.awaiting.delete(event.turnId);
+      if (!completed) continue;
+      yield* startSuggestion({
+        promptSuggestions,
+        threadId: input.threadId,
+        runtime: input.runtime,
+        scope: input.scope,
+        suggestions,
+        turnId: event.turnId,
+        model: awaited.model,
+        completedEventId: event.eventId,
+      });
+    }
   });
 
   const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {

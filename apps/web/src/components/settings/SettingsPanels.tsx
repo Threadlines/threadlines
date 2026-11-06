@@ -517,6 +517,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
         ? ["Keep Claude's suggestions when you're using a lot"]
         : []),
+      ...(settings.codexSuggestions !== DEFAULT_UNIFIED_SETTINGS.codexSuggestions
+        ? [placeById("threads.codexSuggestions").title]
+        : []),
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
         : []),
@@ -556,6 +559,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
       settings.claudeSuggestionsWhenUsageRunsFast,
+      settings.codexSuggestions,
       settings.continueAfterUsageLimits,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
@@ -627,6 +631,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
       claudeSuggestionsWhenUsageRunsFast:
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
+      codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,

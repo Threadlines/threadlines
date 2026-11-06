@@ -306,6 +306,12 @@ export const ProviderSendTurnInput = Schema.Struct({
   requestedAt: Schema.optional(IsoDateTime),
   /** See ProviderTurnOrigin. */
   origin: Schema.optional(ProviderTurnOrigin),
+  /**
+   * A person sent this from the app and reads the reply: a driver that makes
+   * its own suggestion of their next message (Codex) does so after this turn.
+   * Absent for agents', threads', tasks' and Threadlines' own turns.
+   */
+  suggestNextMessage: Schema.optional(Schema.Boolean),
   /** See ProviderTurnResend. */
   resend: Schema.optional(ProviderTurnResend),
   /** See ProviderTurnHandoffSteps. */

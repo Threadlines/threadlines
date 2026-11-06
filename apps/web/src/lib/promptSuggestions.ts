@@ -79,6 +79,11 @@ export interface PromptSuggestionSelectionInput {
    */
   readonly recipientDriverKind: ProviderDriverKind | undefined;
   /**
+   * The user turned that kind of agent's suggestions off in Settings (Codex
+   * suggestions): ones already made hide too.
+   */
+  readonly recipientSuggestionsOff?: boolean;
+  /**
    * In a room, whether a suggestion came from the agent the next message goes
    * to. Another agent's never shows, even one of the same kind. Absent: every
    * suggestion is the thread's own agent's.
@@ -116,7 +121,7 @@ export interface PromptSuggestionSelectionInput {
 export function selectPromptSuggestion(
   input: PromptSuggestionSelectionInput,
 ): PromptSuggestion | null {
-  if (input.recipientDriverKind === undefined) {
+  if (input.recipientDriverKind === undefined || input.recipientSuggestionsOff === true) {
     return null;
   }
   if (

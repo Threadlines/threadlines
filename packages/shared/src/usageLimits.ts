@@ -56,8 +56,8 @@ export type AccountUsageBlock =
   /** No reading to go by. */
   | { readonly state: "unknown" };
 
-function isSpent(window: ServerProviderUsageWindow): boolean {
-  return window.usedPercent >= 100 || window.remainingPercent <= 0;
+function isUsedUpTo(window: ServerProviderUsageWindow, percent: number): boolean {
+  return window.usedPercent >= percent || window.remainingPercent <= 100 - percent;
 }
 
 /**
@@ -70,6 +70,28 @@ export function readAccountUsageBlock(
   accountUsage: ServerProviderAccountUsage | undefined,
   nowMs: number,
 ): AccountUsageBlock {
+  return readAccountUsageBlockAt(accountUsage, nowMs, 100);
+}
+
+/**
+ * Whether an account is close enough to a limit (`percent` of a plan-wide
+ * window used, or out of room) that extras which spend usage, like a
+ * suggested next message, should wait: by `readAccountUsageBlock`'s rules.
+ * False with no reading to go by.
+ */
+export function isAccountUsageNearLimit(
+  accountUsage: ServerProviderAccountUsage | undefined,
+  nowMs: number,
+  percent: number,
+): boolean {
+  return readAccountUsageBlockAt(accountUsage, nowMs, percent).state === "blocked";
+}
+
+function readAccountUsageBlockAt(
+  accountUsage: ServerProviderAccountUsage | undefined,
+  nowMs: number,
+  spentAtPercent: number,
+): AccountUsageBlock {
   if (accountUsage === undefined) return { state: "unknown" };
   let blocked = false;
   let resetsAtMs: number | null = null;
@@ -79,7 +101,7 @@ export function readAccountUsageBlock(
     for (const candidate of [limit.primary, limit.secondary]) {
       if (candidate === undefined) continue;
       sawWindow = true;
-      if (!isSpent(candidate)) continue;
+      if (!isUsedUpTo(candidate, spentAtPercent)) continue;
       const resetMs = usageResetTimeMs(candidate.resetsAt);
       if (resetMs !== undefined && resetMs <= nowMs) continue;
       blocked = true;

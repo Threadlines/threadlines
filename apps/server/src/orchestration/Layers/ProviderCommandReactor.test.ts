@@ -3161,6 +3161,13 @@ describe("ProviderCommandReactor", () => {
       resumeCursor: { opaque: "resume-1" },
     });
     await waitFor(async () => (await marks()).length === 0);
+    // Only a person's messages ask the agent to suggest their next one.
+    expect(
+      harness.sendTurn.mock.calls.map(
+        (call) =>
+          (call[0] as { readonly suggestNextMessage?: boolean } | undefined)?.suggestNextMessage,
+      ),
+    ).toEqual([undefined, undefined, true, true]);
   });
 
   it("clears an outside mark on Start fresh only once the agent's runtime is gone", async () => {
