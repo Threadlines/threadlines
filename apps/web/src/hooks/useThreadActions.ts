@@ -7,8 +7,12 @@ import { useCallback, useRef } from "react";
 import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "./useHandleNewThread";
-import { ensureEnvironmentApi, readEnvironmentApi } from "../environmentApi";
-import { invalidateGitQueries } from "../lib/gitReactQuery";
+import { readEnvironmentApi } from "../environmentApi";
+import {
+  gitRemoveWorktreeMutationOptions,
+  invalidateGitQueries,
+  runGitMutation,
+} from "../lib/gitReactQuery";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { stopThreadSession } from "../lib/threadSessionCommands";
 import { newCommandId } from "../lib/utils";
@@ -191,11 +195,12 @@ export function useThreadActions() {
       readonly worktreePath: string;
     }) => {
       try {
-        await ensureEnvironmentApi(input.environmentId).vcs.removeWorktree({
-          cwd: input.projectCwd,
-          path: input.worktreePath,
-          force: true,
-        });
+        // As a mutation, so a pull still running in that worktree's header waits.
+        await runGitMutation(
+          queryClient,
+          gitRemoveWorktreeMutationOptions({ environmentId: input.environmentId }),
+          { cwd: input.projectCwd, path: input.worktreePath, force: true },
+        );
         await invalidateGitQueries(queryClient, { environmentId: input.environmentId });
       } catch (error) {
         console.error("Failed to remove orphaned worktree after thread deletion", {
