@@ -75,6 +75,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
         <ClaudeSuggestionsRow />
+        <CodexSuggestionsRow />
         <ContinueAfterUsageLimitsRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
@@ -684,6 +685,38 @@ export function ClaudeSuggestionsRow() {
             updateSettings({ claudeSuggestionsWhenUsageRunsFast: Boolean(checked) })
           }
           aria-label="Keep Claude's suggestions when you're using a lot"
+        />
+      }
+    />
+  );
+}
+
+/**
+ * Codex suggests the user's next message after replying to them: one extra
+ * answer from the thread's cached context each time. Read by the thread's
+ * computer before each suggestion; off also hides Codex suggestions already
+ * made.
+ */
+export function CodexSuggestionsRow() {
+  const on = useSettings((settings) => settings.codexSuggestions);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="threads.codexSuggestions"
+      description="After a reply to your message, Codex suggests what you might send next (the gray text you can take with Tab). Each one uses a little Codex usage, and none come while a usage limit is 90% used."
+      resetAction={
+        on ? null : (
+          <SettingResetButton
+            label="Codex suggestions"
+            onClick={() => updateSettings({ codexSuggestions: true })}
+          />
+        )
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) => updateSettings({ codexSuggestions: Boolean(checked) })}
+          aria-label="Codex suggestions"
         />
       }
     />

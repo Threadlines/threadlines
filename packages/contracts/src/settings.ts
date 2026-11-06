@@ -1038,6 +1038,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   /**
+   * After a turn a person started, Codex suggests their next message: one
+   * extra model answer from the thread's cached context, on the account's
+   * usage. Skipped while a usage window is 90% used. Read before each
+   * suggestion, and the composer hides Codex suggestions while it is off.
+   * Never chosen: on.
+   */
+  codexSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * "Continue at reset" for every thread a Claude or Codex usage limit stops,
    * when the limit names its reset time: the thread continues by itself once
    * it resets. Only messages the user typed (and the continue messages that
@@ -1244,6 +1252,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
+  codexSuggestions: Schema.optionalKey(Schema.Boolean),
   continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),

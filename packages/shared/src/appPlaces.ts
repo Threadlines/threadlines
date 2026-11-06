@@ -1325,6 +1325,16 @@ const ROWS = [
     ...editableServerSwitch("claudeSuggestionsWhenUsageRunsFast"),
   },
   {
+    id: "threads.codexSuggestions",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Codex suggestions",
+    about:
+      "After a reply to your message, Codex suggests what you might send next. Each suggestion uses a little Codex usage.",
+    keywords: ["autocomplete", "prompt suggestions", "codex"],
+    ...editableServerSwitch("codexSuggestions"),
+  },
+  {
     id: "threads.continueAfterUsageLimits",
     kind: "row",
     parent: "threads.newThreads",

@@ -73,6 +73,23 @@ It needs Codex 0.167 or later; an older Codex shows no `Workspace` setting.
 - A chat whose data the old workspace keeps in another region may not continue in the new one.
   Start a new thread for it.
 
+## Suggested Next Message
+
+After Codex replies to a message you sent, the message box shows a suggestion of what you might
+send next, in gray. Tab takes it (`Use` on a phone), Escape hides it.
+
+Codex doesn't make these itself, so Threadlines asks it for one: a single extra answer from a
+hidden copy of the chat (Codex's experimental `thread/sample`, Codex 0.167 or later). It reuses the
+chat's cached context, so most of it is cheap cached input, but it does count toward your Codex
+usage. Threadlines only asks:
+
+- after a turn you started from the app, not one a task, another thread or another agent started
+- while no usage limit is 90% used
+- while `Codex suggestions` in `Settings -> Threads` is on (it is by default)
+
+Sending another message cancels a suggestion still being made. Suggestions don't show in Threadlines'
+Usage page token counts, which come from chat transcripts; the limit bars include them.
+
 ## Can I Switch Accounts In An Existing Thread?
 
 Yes. Accounts added with `Add another Codex account` share your main Codex history, so a thread

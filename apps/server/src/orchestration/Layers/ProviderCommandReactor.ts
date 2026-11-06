@@ -3248,6 +3248,8 @@ const make = Effect.gen(function* () {
           ...turnRequest,
           requestedAt,
           origin,
+          // Its sender reads the reply here: Codex suggests their next message.
+          ...(origin === "person" ? { suggestNextMessage: true } : {}),
           ...(resend !== undefined ? { resend } : {}),
           handoffSteps: {
             queueMs,

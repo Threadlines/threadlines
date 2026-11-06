@@ -247,4 +247,32 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       });
     }),
   );
+
+  it.effect("tells a request's caller-chosen hook its id when the caller stops waiting", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({ stdio });
+      const abandoned: Array<number> = [];
+
+      const sample = yield* transport
+        .request(
+          "thread/sample",
+          { threadId: "thread-1", expectedTurnId: "turn-1", prompt: "Next?" },
+          { onAbandon: (requestId) => Effect.sync(() => void abandoned.push(requestId)) },
+        )
+        .pipe(Effect.forkScoped);
+      const sent = (yield* decodeJson(yield* Queue.take(output))) as { readonly id: number };
+      yield* Fiber.interrupt(sample);
+      assert.deepEqual(abandoned, [sent.id]);
+
+      // A late answer to it is dropped, and the next request still gets its own.
+      yield* Queue.offer(input, encodeJsonl({ id: sent.id, result: { text: "late" } }));
+      const next = yield* transport.request("thread/list", {}).pipe(Effect.forkScoped);
+      const nextSent = (yield* decodeJson(yield* Queue.take(output))) as { readonly id: number };
+      yield* Queue.offer(input, encodeJsonl({ id: nextSent.id, result: { data: [] } }));
+      assert.deepEqual(yield* Fiber.join(next), { data: [] });
+      // One that was answered never reaches the hook.
+      assert.deepEqual(abandoned, [sent.id]);
+    }),
+  );
 });

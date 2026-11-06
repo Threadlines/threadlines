@@ -30,6 +30,8 @@ The agent and model a new thread starts with is {place:threads.agent}. You can s
 
 While an agent works, the arrow beside the send button picks how a message goes: Steer now adds it to the reply in progress, Send when done holds it for the next one, and the choice sticks. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
 
+After a reply to your message, Claude or Codex can suggest what you might send next: gray text in the empty message box, taken with Tab (Use on a phone), hidden with Escape. Claude makes its own and skips them when you're on track to run out of usage early, unless {place:threads.claudeSuggestions} is on. Codex's are made by Threadlines with one extra Codex answer each, only after messages you sent, never while a usage limit is 90% used, and {place:threads.codexSuggestions} turns them off.
+
 When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
 
 When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. Old threads can be archived for you: {place:archived.cleanup}.`,

@@ -130,6 +130,16 @@ describe("selectPromptSuggestion", () => {
     expect(
       selectPromptSuggestion(makeInput({ activities: fromCodex, recipientDriverKind: CLAUDE })),
     ).toBeNull();
+    // Turned off in Settings: the ones already made hide too.
+    expect(
+      selectPromptSuggestion(
+        makeInput({
+          activities: fromCodex,
+          recipientDriverKind: CODEX,
+          recipientSuggestionsOff: true,
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("in a room, shows only the suggestion of the agent the next message goes to", () => {

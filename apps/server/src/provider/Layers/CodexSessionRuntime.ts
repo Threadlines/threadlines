@@ -154,6 +154,8 @@ const decodeCodexRealtimeListVoicesResponse = Schema.decodeUnknownEffect(
 const PROVIDER = ProviderDriverKind.make("codex");
 export const CODEX_THREAD_SOURCE = "threadlines";
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(60);
+/** How long telling Codex to stop a sample nobody waits for may take. */
+const CODEX_SAMPLE_CANCEL_TIMEOUT = Duration.seconds(5);
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -351,6 +353,18 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly realtimeListVoices: Effect.Effect<ProviderRealtimeVoicesList, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
+  /**
+   * One model answer to `prompt` from a hidden copy of this thread as it
+   * stood after `expectedTurnId`, its latest finished turn (Codex's
+   * `thread/sample`, experimental): the thread itself is untouched, and the
+   * answer reuses its cached context. Interrupting it has Codex stop the
+   * answer too, while this runtime is up.
+   */
+  readonly sampleThread: (input: {
+    readonly expectedTurnId: string;
+    readonly prompt: string;
+    readonly effort?: string | undefined;
+  }) => Effect.Effect<EffectCodexSchema.V2ThreadSampleResponse, CodexSessionRuntimeError>;
   /**
    * MCP Apps (docs/mcp-apps.md), through this thread's MCP servers with no
    * model turn: a server's `ui://` resource, a tool call (no approval prompt;
@@ -3134,6 +3148,36 @@ const makeCodexSessionRuntimeIn = (
           }),
         );
       }),
+      sampleThread: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          return yield* withCodexRequestTimeout(
+            "sample a Codex thread",
+            client.request(
+              "thread/sample",
+              {
+                threadId: providerThreadId,
+                expectedTurnId: input.expectedTurnId,
+                prompt: input.prompt,
+                ...(input.effort ? { effort: input.effort } : {}),
+                interruptOnCancel: true,
+              },
+              {
+                // Handed off: the interruption doesn't wait on Codex. A
+                // runtime already closing ends the answer with its process.
+                onAbandon: (requestId) =>
+                  client
+                    .request("thread/sample/cancel", { requestId })
+                    .pipe(
+                      Effect.timeoutOption(CODEX_SAMPLE_CANCEL_TIMEOUT),
+                      Effect.ignore,
+                      Effect.forkIn(runtimeScope),
+                      Effect.asVoid,
+                    ),
+              },
+            ),
+          );
+        }),
       readMcpResource: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

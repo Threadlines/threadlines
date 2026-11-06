@@ -113,6 +113,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(TestHttpClientLive),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
