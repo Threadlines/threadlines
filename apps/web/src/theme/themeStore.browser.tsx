@@ -124,6 +124,39 @@ describe("theme store, applied", () => {
     expect(glassReadability({ ...glass, readability: "relaxed" }, "some")).toBe("relaxed");
   });
 
+  it("keeps a group's pinned header the group's own glass until it pins, then solid over what scrolls under", async () => {
+    const screen = await render(
+      <div data-testid="scroller" style={{ height: 120, overflow: "auto" }}>
+        <div style={{ height: 40 }} />
+        <div className="surface-group p-2.5">
+          <div data-sticky-group-header="" className="sticky top-2 z-10">
+            <div
+              data-sticky-group-fill=""
+              data-testid="fill"
+              className="absolute inset-x-0 -top-2 bottom-0 -z-10 surface-group-solid"
+            />
+            Turn changes
+          </div>
+          <div style={{ height: 400 }} />
+        </div>
+      </div>,
+    );
+    const visibility = () => getComputedStyle(screen.getByTestId("fill").element()).visibility;
+    try {
+      // Without glass the solid layer always shows, as before.
+      expect(visibility()).toBe("visible");
+      root().setAttribute("data-glass", "");
+      expect(visibility()).toBe("hidden");
+      screen.getByTestId("scroller").element().scrollTop = 200;
+      await vi.waitFor(() => expect(visibility()).toBe("visible"));
+      screen.getByTestId("scroller").element().scrollTop = 0;
+      await vi.waitFor(() => expect(visibility()).toBe("hidden"));
+    } finally {
+      root().removeAttribute("data-glass");
+      await screen.unmount();
+    }
+  });
+
   it("draws glass only for a theme with art: clear canvas layers, tinted surfaces, opaque sticky headers, no fades", async () => {
     const screen = await render(
       <div data-slot="sidebar-wrapper" className="bg-frame">

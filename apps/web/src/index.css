@@ -575,6 +575,23 @@ html[data-glass]
   [data-glass-surface]:not([data-glass-surface="composer"]) {
   background-color: color-mix(in srgb, var(--card) var(--glass-composer, 100%), transparent);
 }
+/* A group's pinned header (the turn changes row) hides what scrolls under it
+   with a solid copy of the group's fill. Over glass that solid fill would
+   show as a pale band, so it shows only while the header is actually
+   pinned; otherwise the header is the same glass as its group. */
+@supports (container-type: scroll-state) {
+  html[data-glass] [data-sticky-group-header] {
+    container-type: scroll-state;
+  }
+  html[data-glass] [data-sticky-group-header] > [data-sticky-group-fill] {
+    visibility: hidden;
+  }
+  @container scroll-state(stuck: top) {
+    html[data-glass] [data-sticky-group-header] > [data-sticky-group-fill] {
+      visibility: visible;
+    }
+  }
+}
 /* Fades that blend content into an opaque canvas (the timeline's bottom
    edge, header edges, the thread list's ends, a folded plan) read as bright
    bands over art. */
