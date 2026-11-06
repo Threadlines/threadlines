@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { color, composite, contrastRatio } from "./color.ts";
 import { checkThemeManifest } from "./manifest.ts";
 import { STARTER_SUMMARIES } from "./starterSummaries.ts";
-import { STARTER_THEMES } from "./starters.ts";
+import { RETIRED_STARTER_THEMES, STARTER_THEMES } from "./starters.ts";
 import { resolveThemeTokens } from "./tokens.ts";
 
 interface Declared {
@@ -64,6 +64,9 @@ function targetFor(art: Declared) {
   };
 }
 
+/** Offered and retired: a retired starter is still worn, so it keeps passing every check. */
+const EVERY_STARTER = [...STARTER_THEMES, ...RETIRED_STARTER_THEMES];
+
 describe("starter themes", () => {
   it("list as their summaries say, without loading their art", () => {
     expect(STARTER_SUMMARIES).toEqual(
@@ -81,23 +84,28 @@ describe("starter themes", () => {
     );
   });
 
-  it("have stable, unique ids", () => {
+  it("have stable, unique ids, retired ones still found by theirs", () => {
     expect(STARTER_THEMES.map((starter) => starter.id)).toEqual([
       "aurora",
-      "dunes",
+      "meadow",
       "phosphor",
       "snowfield",
+      "tokyo-rain",
+    ]);
+    // A device that chose one of these keeps it.
+    expect(RETIRED_STARTER_THEMES.map((starter) => starter.id)).toEqual([
+      "dunes",
       "night-rain",
       "ember",
     ]);
   });
 
-  it.each(STARTER_THEMES)("$id passes the theme check", ({ manifest }) => {
+  it.each(EVERY_STARTER)("$id passes the theme check", ({ manifest }) => {
     const check = checkThemeManifest(manifest);
     expect(check.ok ? [] : check.errors).toEqual([]);
   });
 
-  it.each(STARTER_THEMES)(
+  it.each(EVERY_STARTER)(
     "$id's code and terminal colors read on their backgrounds",
     ({ manifest }) => {
       const tokens = resolveThemeTokens(manifest);
@@ -116,7 +124,7 @@ describe("starter themes", () => {
     },
   );
 
-  it.each(STARTER_THEMES.filter((starter) => starter.manifest.backdrop))(
+  it.each(EVERY_STARTER.filter((starter) => starter.manifest.backdrop))(
     "$id's art draws in its declared mode, idle, working and after a turn",
     ({ manifest }) => {
       const backdrop = manifest.backdrop!;
@@ -146,7 +154,7 @@ describe("starter themes", () => {
   // An hour in, motion drawn as time × a speed that changes with state lands
   // somewhere else entirely the frame agents start or stop: Dunes' wind
   // streaks teleported and raced after every turn.
-  it.each(STARTER_THEMES.filter((starter) => starter.manifest.backdrop))(
+  it.each(EVERY_STARTER.filter((starter) => starter.manifest.backdrop))(
     "$id's art eases in and out of the working look without jumping, an hour in",
     ({ manifest }) => {
       const art = declare(manifest.backdrop!.script);
