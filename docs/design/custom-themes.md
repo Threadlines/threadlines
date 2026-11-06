@@ -341,9 +341,13 @@ under 0.1 ms). The design leans on that:
   theme's rate for 2 seconds after a `turn-done` pulse. A theme can ask for
   less, never more than 30.
 - **The app always wins.** While the user scrolls, drags a divider, resizes
-  the window or types, and while a reply is streaming into the open thread,
-  the app posts `busy` and the frame holds its last frame. It resumes 400 ms
-  after the last busy signal.
+  the window or types, the app posts `busy` and the frame holds its last
+  frame. It resumes 400 ms after the last busy signal. Busy comes from input
+  (wheel, keys, touch, drags), not scroll events: the chat scrolls itself
+  while it follows a reply. While a reply is
+  streaming into the open thread, the app posts `streaming` and the art keeps
+  moving, slower: at most 12 fps, its time easing to half speed (and back
+  after). Holding it for a whole reply read as a random freeze.
 - **Power and heat.** On battery the frame rate stays at or under 20 (desktop `powerMonitor`
   `on-battery`/`on-ac`; on web `navigator.getBattery()` where it exists). When
   macOS reports a `serious` or `critical` thermal state, or the CPU speed
@@ -503,8 +507,9 @@ tested per provider.
 
 Gating: on when agent pages are on (`enableAgentPages`). The app guide gets a
 `themes` topic (what a theme is, the draw contract, the art rules: calm
-center, slow motion, a seamless loop, palette from the art, stay under the
-budget, no network) and places for the new Appearance rows.
+center, slow motion, a seamless loop, palette from the art, motion that adds
+up speed × `dt` and eases into the working look so nothing jumps, stay under
+the budget, no network) and places for the new Appearance rows.
 
 ## Storage and devices
 
