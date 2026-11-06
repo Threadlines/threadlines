@@ -343,7 +343,7 @@ export function providerConnectStatusLine(input: {
 
 /**
  * A workspace switch in words. Its own lines say where it is ("Stopping Codex
- * chats on this computer…", "Switched to Acme."), so the finished line is the
+ * chats on this computer…", "Switched workspace."), so the finished line is the
  * run's last one.
  */
 function workspaceSwitchStatusLine(state: ProviderConnectFlowState): string {

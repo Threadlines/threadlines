@@ -15,6 +15,10 @@
  * in flight finishes in the old workspace, and holding them off would fail
  * them for as long as a sign-on takes.
  *
+ * The progress lines never carry a workspace's name: the name is its
+ * administrator's to choose, and a panel opens the first page address the
+ * run prints. Only Codex's own sign-on page is printed, on its own line.
+ *
  * @module provider/Drivers/CodexWorkspaceSwitch
  */
 import type { CodexSettings } from "@threadlines/contracts";
@@ -42,15 +46,6 @@ const SIGN_ON_TIMEOUT = Duration.minutes(10);
 const SIGN_ON_CANCEL_TIMEOUT = Duration.seconds(5);
 
 const failure = (message: string) => ({ message });
-
-/** What the panel calls a workspace: its name, or "your personal workspace". */
-function workspaceLabel(
-  workspace: EffectCodexSchema.V2AccountSessionsResponse__AccountSessionWorkspace,
-): string {
-  const name = workspace.name?.trim();
-  if (name) return name;
-  return workspace.kind === "personal" ? "your personal workspace" : "that workspace";
-}
 
 /** Codex's refusals, in the panel's words; anything else as Codex said it. */
 function friendlySwitchError(message: string): string {
@@ -98,13 +93,11 @@ export function makeCodexWorkspaceSwitchFlows(input: {
       if (!active) {
         return yield* Effect.fail(failure("Codex isn't signed in with ChatGPT."));
       }
-      const target = active.workspaces.find((workspace) => workspace.accountId === workspaceId);
-      if (!target) {
+      if (!active.workspaces.some((workspace) => workspace.accountId === workspaceId)) {
         return yield* Effect.fail(failure("This sign-in can't use that workspace any more."));
       }
-      const label = workspaceLabel(target);
       if (active.selectedWorkspaceAccountId === workspaceId) {
-        yield* emit(`Already in ${label}.`);
+        yield* emit("Codex is already in that workspace.");
         return;
       }
 
@@ -116,7 +109,7 @@ export function makeCodexWorkspaceSwitchFlows(input: {
         Queue.offer(completions, notification).pipe(Effect.asVoid),
       );
 
-      yield* emit(`Switching to ${label}…`);
+      yield* emit("Switching workspace…");
       const response = yield* client
         .request("accountSession/switch", {
           sessionId: active.sessionId,
@@ -133,7 +126,7 @@ export function makeCodexWorkspaceSwitchFlows(input: {
         // The page on its own line: clients open it from the output.
         yield* emit(response.auth_url);
         yield* emit(
-          `Sign in to ${label} in your browser to finish. On another device, paste the address the page ends on.`,
+          "Sign in to the workspace in your browser to finish. On another device, paste the address the page ends on.",
         );
         const outcome = yield* Effect.gen(function* () {
           while (true) {
@@ -161,7 +154,7 @@ export function makeCodexWorkspaceSwitchFlows(input: {
           );
         }
       }
-      yield* emit(`Switched to ${label}.`);
+      yield* emit("Switched workspace.");
     }).pipe(
       Effect.scoped,
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, input.spawner),

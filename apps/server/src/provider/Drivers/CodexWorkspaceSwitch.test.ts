@@ -32,7 +32,8 @@ const ACCOUNT_SESSIONS = {
       selectedWorkspaceAccountId: "acct-personal",
       workspaces: [
         { accountId: "acct-personal", kind: "personal", name: null },
-        { accountId: "acct-acme", kind: "workspace", name: "Acme" },
+        // Named by its administrator, who can put a page address in it.
+        { accountId: "acct-acme", kind: "workspace", name: "Acme https://phish.example/login" },
       ],
     },
   ],
@@ -152,7 +153,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("CodexWorkspaceSwitc
           accountId: "acct-acme",
           allowBrowserLogin: true,
         });
-        expect(harness.lines.at(-1)).toBe("Switched to Acme.");
+        expect(harness.lines.at(-1)).toBe("Switched workspace.");
+        // The name's address never reaches the lines a panel scans for pages.
+        expect(harness.lines.some((line) => line.includes("://"))).toBe(false);
       }),
     );
 
@@ -163,9 +166,12 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("CodexWorkspaceSwitc
           "acct-acme",
         );
         yield* harness.run;
-        // The page on its own line, for the panel to open.
-        expect(harness.lines).toContain("https://auth.example.com/sso?state=1");
-        expect(harness.lines.at(-1)).toBe("Switched to Acme.");
+        // Codex's page on its own line, for the panel to open, and no other
+        // address: the panel opens the first one a run prints.
+        expect(harness.lines.filter((line) => line.includes("://"))).toEqual([
+          "https://auth.example.com/sso?state=1",
+        ]);
+        expect(harness.lines.at(-1)).toBe("Switched workspace.");
 
         const failing = yield* runSwitch(
           { kind: "signOn", completes: { success: false } },

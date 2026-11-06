@@ -3362,9 +3362,9 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("Switching workspace", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Stopping Codex chats on this computer…")).toBeVisible();
 
-    emit({ type: "output", data: "Switched to Acme.\r\n" });
+    emit({ type: "output", data: "Switched workspace.\r\n" });
     emit({ type: "status", status: "succeeded", exitCode: null, detail: null });
-    await expect.element(page.getByText("Switched to Acme.", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Switched workspace.", { exact: true })).toBeVisible();
   });
 
   it("opens Grok's sign-in page only on a device Grok didn't already open it on", async () => {
