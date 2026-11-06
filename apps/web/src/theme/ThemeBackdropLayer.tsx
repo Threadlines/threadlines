@@ -45,7 +45,8 @@ import {
   type MeasuredBackdropLayout,
   sameBackdropZones,
 } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
+import { cssGlassTints, glassFloors, glassTextRatio, glassTintCss } from "./glass";
+import { useGlassLevel } from "./glassLevel";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
 import { useLayoutBusy } from "./layoutBusy";
@@ -80,9 +81,9 @@ export function ThemeBackdropLayer(props: {
   const { manifest, tokens, base } = props;
   const backdrop = manifest.backdrop!;
   const glass = manifest.glass!;
-  const artInThreads = useSettings((settings) => settings.themeArtInThreads);
+  const glassLevel = useGlassLevel();
   const motionSetting = useSettings((settings) => settings.themeMotion);
-  const floors = useMemo(() => glassFloors(glass, artInThreads), [glass, artInThreads]);
+  const floors = useMemo(() => glassFloors(glass, glassLevel), [glass, glassLevel]);
   const status = useSyncExternalStore(subscribeTheme, () => readThemeState().backdropStatus);
   const tooHeavy = useBackdropTooHeavy();
   const slowdown = useBackdropSlowdown();
@@ -141,7 +142,7 @@ export function ThemeBackdropLayer(props: {
         base={base}
         tokens={tokens}
         blur={glass.blur}
-        readability={glassReadability(glass, artInThreads)}
+        textRatio={glassTextRatio(glass, glassLevel)}
         zones={layout.zones}
         conditions={conditions}
         activity={activity}

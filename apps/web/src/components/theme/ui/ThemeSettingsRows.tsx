@@ -4,7 +4,7 @@
  * the library across computers, each library theme with its menu), what the
  * running art costs on this computer, and the two art settings.
  */
-import type { ThemeArtInThreads, ThemeMotion } from "@threadlines/contracts";
+import { THEME_GLASS_LEVEL_DEFAULT, type ThemeMotion } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRef, useState } from "react";
@@ -12,6 +12,7 @@ import { useRef, useState } from "react";
 import { useGeneralChats } from "~/components/chats/useGeneralChats";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
+import { useSavedGlassLevel } from "~/theme/glassLevel";
 import {
   chooseTheme,
   retryBackdrop,
@@ -60,6 +61,7 @@ import { SegmentedControl, SegmentedControlItem } from "../../ui/segmented-contr
 import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsRow } from "../../settings/settingsLayout";
 import { NEW_THEME_PROMPT } from "./NewThemeHint";
+import { ThemeGlassSlider } from "./ThemeGlassSlider";
 import { ThemeTileView } from "./ThemeTileView";
 
 const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
@@ -451,37 +453,30 @@ export function ThemeRow() {
   );
 }
 
-const ART_LABELS: Record<ThemeArtInThreads, string> = { none: "None", some: "Some", full: "Full" };
-
-export function ThemeArtInThreadsRow() {
-  const value = useSettings((settings) => settings.themeArtInThreads);
+/** The Glass slider, with its ends and middle named under it. */
+export function ThemeGlassRow() {
+  const level = useSavedGlassLevel();
   const { updateSettings } = useUpdateSettings();
   return (
     <SettingsRow
-      place="general.themeArtInThreads"
+      place="general.themeGlass"
       resetAction={
-        value !== DEFAULT_UNIFIED_SETTINGS.themeArtInThreads ? (
+        level !== THEME_GLASS_LEVEL_DEFAULT ? (
           <SettingResetButton
-            label="art in threads"
-            onClick={() =>
-              updateSettings({ themeArtInThreads: DEFAULT_UNIFIED_SETTINGS.themeArtInThreads })
-            }
+            label="glass"
+            onClick={() => updateSettings({ themeGlass: THEME_GLASS_LEVEL_DEFAULT })}
           />
         ) : null
       }
       control={
-        <SegmentedControl
-          size="sm"
-          value={value}
-          onValueChange={(next) => updateSettings({ themeArtInThreads: next })}
-          aria-label="Art in threads"
-        >
-          {(Object.keys(ART_LABELS) as ThemeArtInThreads[]).map((option) => (
-            <SegmentedControlItem key={option} value={option}>
-              {ART_LABELS[option]}
-            </SegmentedControlItem>
-          ))}
-        </SegmentedControl>
+        <div className="w-full sm:w-56">
+          <ThemeGlassSlider />
+          <div className="mt-0.5 flex justify-between text-[11px] text-muted-foreground">
+            <span>Solid</span>
+            <span>Theme</span>
+            <span>Clear</span>
+          </div>
+        </div>
       }
     />
   );

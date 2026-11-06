@@ -19,9 +19,11 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  THEME_GLASS_LEVEL_DEFAULT,
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import { themeGlassLevel } from "@threadlines/shared/themeGlassLevel";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
   OPEN_LINKS_IN_LABELS,
@@ -93,7 +95,7 @@ import {
 } from "../ui/number-field";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { ThemeArtInThreadsRow, ThemeMotionRow, ThemeRow } from "../theme/ui/ThemeSettingsRows";
+import { ThemeGlassRow, ThemeMotionRow, ThemeRow } from "../theme/ui/ThemeSettingsRows";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -399,6 +401,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   const themeIsDefault = themeChoice.kind === "builtin" && themeChoice.id === "system";
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  const glassLevel = themeGlassLevel(settings);
 
   const isGitWritingModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
@@ -422,9 +425,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   const changedSettingLabels = useMemo(
     () => [
       ...(!themeIsDefault ? ["Theme"] : []),
-      ...(settings.themeArtInThreads !== DEFAULT_UNIFIED_SETTINGS.themeArtInThreads
-        ? ["Art in threads"]
-        : []),
+      ...(glassLevel !== THEME_GLASS_LEVEL_DEFAULT ? ["Glass"] : []),
       ...(settings.themeMotion !== DEFAULT_UNIFIED_SETTINGS.themeMotion ? ["Motion"] : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
@@ -581,7 +582,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sourceControlPanelDefaultOpen,
       settings.usageAnalyticsEnabled,
       settings.sidebarThreadPreviewCount,
-      settings.themeArtInThreads,
+      glassLevel,
       settings.themeMotion,
       settings.timestampFormat,
       themeIsDefault,
@@ -598,7 +599,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 
     chooseTheme({ kind: "builtin", id: "system" });
     updateSettings({
-      themeArtInThreads: DEFAULT_UNIFIED_SETTINGS.themeArtInThreads,
+      themeGlass: THEME_GLASS_LEVEL_DEFAULT,
       themeMotion: DEFAULT_UNIFIED_SETTINGS.themeMotion,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       diffChangesOnly: DEFAULT_UNIFIED_SETTINGS.diffChangesOnly,
@@ -1128,7 +1129,7 @@ function UnifiedSwitchRow({
   );
 }
 
-export { ThemeArtInThreadsRow, ThemeMotionRow, ThemeRow };
+export { ThemeGlassRow, ThemeMotionRow, ThemeRow };
 
 export function TimeFormatRow() {
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
@@ -1302,7 +1303,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <PushAlertsSettingsSection />
         <SettingsSection place="general.appearance">
           <ThemeRow />
-          <ThemeArtInThreadsRow />
+          <ThemeGlassRow />
           <ThemeMotionRow />
           <TimeFormatRow />
         </SettingsSection>

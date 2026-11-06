@@ -71,6 +71,10 @@
       "types": "./src/agentPages.ts",
       "import": "./src/agentPages.ts"
     },
+    "./themeGlassLevel": {
+      "types": "./src/themes/glassLevel.ts",
+      "import": "./src/themes/glassLevel.ts"
+    },
     "./themeColor": {
       "types": "./src/themes/color.ts",
       "import": "./src/themes/color.ts"

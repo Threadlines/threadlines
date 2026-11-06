@@ -187,6 +187,24 @@ export function backdropFrameRuntime(
     return { x, y, w, h };
   };
 
+  /** Text colors with the contrast each needs over the art, from `init` or `texts`. */
+  const readTexts = (textColors: unknown, textRatios: unknown): Init["texts"] | null => {
+    if (!Array.isArray(textColors) || !Array.isArray(textRatios)) return null;
+    if (textColors.length > limits.maxTextColors || textColors.length !== textRatios.length)
+      return null;
+    const texts: Init["texts"] = [];
+    for (let index = 0; index < textColors.length; index++) {
+      const hex: unknown = textColors[index];
+      const ratio: unknown = textRatios[index];
+      // From 3:1 up: a ratio near 1:1 leaves a band of failing tints too thin
+      // for the tint map's search to be sure of stepping on it.
+      if (typeof hex !== "string" || !HEX.test(hex) || !isNum(ratio, 3, 21)) return null;
+      const rgb = hexToRgb(hex);
+      texts.push({ luminance: math.luminance(rgb.r, rgb.g, rgb.b), ratio });
+    }
+    return texts;
+  };
+
   const readInit = (message: Record<string, unknown>): Init | null => {
     const { mode, script, maxFps, base, palette, textColors, textRatios, blur } = message;
     if (mode !== "grid" && mode !== "pixels" && mode !== "canvas") return null;
@@ -202,19 +220,8 @@ export function backdropFrameRuntime(
         return null;
       cleanPalette[key] = value;
     }
-    if (!Array.isArray(textColors) || !Array.isArray(textRatios)) return null;
-    if (textColors.length > limits.maxTextColors || textColors.length !== textRatios.length)
-      return null;
-    const texts: Init["texts"] = [];
-    for (let index = 0; index < textColors.length; index++) {
-      const hex = textColors[index];
-      const ratio = textRatios[index];
-      // From 3:1 up: a ratio near 1:1 leaves a band of failing tints too thin
-      // for the tint map's search to be sure of stepping on it.
-      if (typeof hex !== "string" || !HEX.test(hex) || !isNum(ratio, 3, 21)) return null;
-      const rgb = hexToRgb(hex);
-      texts.push({ luminance: math.luminance(rgb.r, rgb.g, rgb.b), ratio });
-    }
+    const texts = readTexts(textColors, textRatios);
+    if (!texts) return null;
     const solid = cleanPalette["surface-solid"] ?? cleanPalette.background;
     const baseColor =
       solid !== undefined && HEX.test(solid)
@@ -2382,6 +2389,14 @@ void main() {
         if (shown && shown.kind === "pixels" && art?.definition) {
           shown.map = pixelMap(art.definition, shown.width, shown.height);
         }
+        render();
+        return;
+      }
+      case "texts": {
+        // The Glass slider moved, or the theme's colors changed: the art keeps running.
+        const texts = readTexts(message.textColors, message.textRatios);
+        if (!texts || !theme) return;
+        theme = { ...theme, texts };
         render();
         return;
       }

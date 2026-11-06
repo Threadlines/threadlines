@@ -344,6 +344,37 @@ describe("backdrop frame", () => {
     });
   });
 
+  it("takes new text contrast while it runs, without starting the art over", async () => {
+    mounted = await mountFrame();
+    // White art; no text to keep readable yet, so the column keeps its floor.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid) {
+          for (let i = 0; i < grid.glyph.length; i++) {
+            grid.glyph[i] = -1;
+            grid.bg.fill(255, i * 4, i * 4 + 4);
+          }
+        } });`,
+      [COLUMN],
+      [],
+    );
+    await mounted.framesAbove(3);
+    const before = await mounted.probe(true);
+    expect(before.tints.column).toBeCloseTo(COLUMN.tint, 2);
+    // The Glass slider moved: the app's light text now needs 4.5:1 over that white.
+    mounted.post({
+      type: "texts",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map(() => 4.5),
+    });
+    await vi.waitFor(async () =>
+      expect((await mounted!.probe(true)).tints.column).toBeGreaterThan(0.5),
+    );
+    const after = await mounted.framesAbove(before.drawnFrames + 2);
+    expect(after.generation).toBe(before.generation);
+  });
+
   it("keeps column text readable when the art turns white", async () => {
     mounted = await mountFrame();
     mounted.start(

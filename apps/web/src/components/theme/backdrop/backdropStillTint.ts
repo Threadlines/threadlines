@@ -7,9 +7,14 @@
  * detail is averaged away (the shown still is a blend of its pixels at any
  * scale, so the box bounds it).
  */
-import type { GlassReadability } from "@threadlines/contracts";
-import { color, colorBox, minimumGlassTint, type Rgba } from "@threadlines/shared/themeColor";
-import { glassTextColors } from "@threadlines/shared/themeContrast";
+import {
+  color,
+  colorBox,
+  minimumGlassTint,
+  type ColorBox,
+  type Rgba,
+} from "@threadlines/shared/themeColor";
+import { GLASS_TEXT_RATIO, glassTextColors } from "@threadlines/shared/themeContrast";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
 /**
@@ -20,42 +25,51 @@ import type { ThemeTokens } from "@threadlines/shared/themeTokens";
  */
 const MAX_MEASURE_SIDE = 4096;
 
-let cached: {
-  still: string;
-  background: string;
-  readability: GlassReadability;
-  tint: number;
-} | null = null;
+/** The still's color box (being) measured, with the solid surface it sits on: once per still. */
+let measured: { still: string; surface: string; box: Promise<ColorBox | null> } | null = null;
 
-/** The lowest tint that keeps every glass text color readable over any pixel of the still; 1 when it can't be read. */
+/**
+ * The lowest tint that keeps every glass text color at `ratio` (4.5 by
+ * default) over any pixel of the still; 1 when it can't be read. Moving the
+ * Glass slider asks again with new ratios, so the pixels are scanned once.
+ */
 export async function measureStillTint(
   still: string,
   tokens: ThemeTokens,
-  readability: GlassReadability = "standard",
+  ratio = GLASS_TEXT_RATIO.standard,
 ): Promise<number> {
-  if (
-    cached &&
-    cached.still === still &&
-    cached.background === tokens.background &&
-    cached.readability === readability
-  )
-    return cached.tint;
+  const surface = tokens["surface-solid"];
+  if (!measured || measured.still !== still || measured.surface !== surface) {
+    measured = { still, surface, box: stillColorBox(still, tokens) };
+  }
+  const box = await measured.box;
+  if (!box) return 1;
+  return minimumGlassTint({
+    tint: color(tokens.background),
+    box,
+    texts: glassTextColors(tokens).map((text) => ({ color: color(text.color), ratio })),
+    floor: 0,
+  });
+}
+
+/** The per-channel color box of every pixel in the still, and the solid surface; null when it can't be measured. */
+async function stillColorBox(still: string, tokens: ThemeTokens): Promise<ColorBox | null> {
   const image = new Image();
   image.decoding = "async";
   image.src = still;
   try {
     await image.decode();
   } catch {
-    return 1;
+    return null;
   }
-  if (Math.max(image.naturalWidth, image.naturalHeight) > MAX_MEASURE_SIDE) return 1;
+  if (Math.max(image.naturalWidth, image.naturalHeight) > MAX_MEASURE_SIDE) return null;
   const width = Math.max(1, image.naturalWidth);
   const height = Math.max(1, image.naturalHeight);
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return 1;
+  if (!context) return null;
   context.imageSmoothingEnabled = false;
   context.drawImage(image, 0, 0, width, height);
   const data = context.getImageData(0, 0, width, height).data;
@@ -77,18 +91,8 @@ export async function measureStillTint(
     if (g > maxG) maxG = g;
     if (b > maxB) maxB = b;
   }
-  const tint = minimumGlassTint({
-    tint: color(tokens.background),
-    box: colorBox([
-      { r: minR, g: minG, b: minB },
-      { r: maxR, g: maxG, b: maxB },
-    ]),
-    texts: glassTextColors(tokens, readability).map((text) => ({
-      color: color(text.color),
-      ratio: text.ratio,
-    })),
-    floor: 0,
-  });
-  cached = { still, background: tokens.background, readability, tint };
-  return tint;
+  return colorBox([
+    { r: minR, g: minG, b: minB },
+    { r: maxR, g: maxG, b: maxB },
+  ]);
 }
