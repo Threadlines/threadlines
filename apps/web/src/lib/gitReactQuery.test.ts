@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { MutationObserver, type MutationObserverOptions, QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("../environmentApi", () => ({
@@ -18,8 +18,12 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  checkoutChangingGitMutationFilters,
   gitBranchSearchInfiniteQueryOptions,
   gitApplyStashMutationOptions,
+  gitCheckoutMutationOptions,
+  gitCreateRefMutationOptions,
+  gitRemoveWorktreeMutationOptions,
   gitCommitGraphQueryOptions,
   gitCreateStashMutationOptions,
   gitMutationKeys,
@@ -238,6 +242,67 @@ describe("git mutation options", () => {
       expectedStashId: "0123456789abcdef0123456789abcdef01234567",
       dropAfterApply: true,
     });
+  });
+});
+
+describe("checkoutChangingGitMutationFilters", () => {
+  it("counts a checkout busy while any surface changes it, where the change lands", async () => {
+    let settle: () => void = () => {};
+    const unsettled = new Promise<never>((_resolve, reject) => {
+      settle = () => reject(new Error("settled"));
+    });
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      vcs: {
+        switchRef: () => unsettled,
+        createRef: () => unsettled,
+        removeWorktree: () => unsettled,
+      },
+    } as never);
+    const queryClient = new QueryClient();
+    function start<TData, TVariables>(
+      options: MutationObserverOptions<TData, Error, TVariables>,
+      variables: TVariables,
+    ) {
+      void new MutationObserver(queryClient, options).mutate(variables).catch(() => undefined);
+    }
+    const busy = (environmentId: EnvironmentId, cwd: string) =>
+      queryClient.isMutating(checkoutChangingGitMutationFilters(environmentId, cwd));
+
+    // The composer's picker reads /repo but switches the main checkout.
+    start(
+      gitCheckoutMutationOptions({ environmentId: ENVIRONMENT_A, cwd: "/repo/wt", queryClient }),
+      {
+        cwd: "/repo",
+        refName: "main",
+      },
+    );
+    start(
+      gitCreateRefMutationOptions({ environmentId: ENVIRONMENT_A, cwd: "/repo/b", queryClient }),
+      "feature",
+    );
+    start(
+      {
+        mutationKey: gitMutationKeys.generateCommitMessage(ENVIRONMENT_A, "/repo/c"),
+        mutationFn: () => unsettled,
+      },
+      undefined,
+    );
+    start(gitRemoveWorktreeMutationOptions({ environmentId: ENVIRONMENT_A, queryClient }), {
+      cwd: "/repo/d",
+      path: "/repo/d-worktree",
+    });
+
+    await vi.waitFor(() => expect(busy(ENVIRONMENT_A, "/repo")).toBe(1));
+    expect(busy(ENVIRONMENT_A, "/repo/wt")).toBe(0);
+    expect(busy(ENVIRONMENT_A, "/repo/b")).toBe(1);
+    expect(busy(ENVIRONMENT_B, "/repo/b")).toBe(0);
+    // Writing a commit message only reads the checkout.
+    expect(busy(ENVIRONMENT_A, "/repo/c")).toBe(0);
+    // Removing a worktree runs git in the repository without changing its checkout.
+    expect(busy(ENVIRONMENT_A, "/repo/d")).toBe(0);
+
+    settle();
+    await vi.waitFor(() => expect(busy(ENVIRONMENT_A, "/repo")).toBe(0));
   });
 });
 

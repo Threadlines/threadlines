@@ -13,6 +13,7 @@ import {
 } from "@threadlines/contracts";
 import {
   infiniteQueryOptions,
+  type Mutation,
   type MutationFilters,
   mutationOptions,
   queryOptions,
@@ -65,6 +66,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "init", environmentId ?? null, cwd] as const,
   switchRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "switchRef", environmentId ?? null, cwd] as const,
+  createRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "create-ref", environmentId ?? null, cwd] as const,
   createTag: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "createTag", environmentId ?? null, cwd] as const,
   deleteBranch: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -106,9 +109,36 @@ const CHECKOUT_READING_GIT_MUTATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The checkout a git mutation changes. Only mutations keyed to a checkout
+ * (`["git", "mutation", kind, environmentId, cwd]`) change one: the checkout
+ * their input names, when it names one (a branch switch can land in another
+ * checkout than the picker's), else the one in the key. Worktree add and
+ * remove are keyed to no checkout; their `cwd` is the repository running git.
+ */
+function changedCheckoutOf(mutation: Mutation<unknown, Error, unknown, unknown>): unknown {
+  const key = mutation.options.mutationKey;
+  if (key === undefined || key.length < 5) {
+    return undefined;
+  }
+  const variables = mutation.state.variables;
+  if (
+    typeof variables === "object" &&
+    variables !== null &&
+    "cwd" in variables &&
+    typeof variables.cwd === "string"
+  ) {
+    return variables.cwd;
+  }
+  return key[4];
+}
+
+/**
  * Matches every git action that changes the checkout at `cwd`, from any
- * surface. Pass it to `useIsMutating` to hold a new action back while one
- * is under way.
+ * surface: the Source tab, the chat header's pull, the composer's branch
+ * picker. Pass it to `useIsMutating` to hold a new action back while one is
+ * under way. A git action only counts when it runs as a mutation keyed under
+ * `["git", "mutation", kind, environmentId, ...]`, so call the API through
+ * the mutation helpers here rather than directly.
  */
 export function checkoutChangingGitMutationFilters(
   environmentId: EnvironmentId | null,
@@ -118,13 +148,14 @@ export function checkoutChangingGitMutationFilters(
     predicate: (mutation) => {
       const key = mutation.options.mutationKey;
       return (
+        cwd !== null &&
         key !== undefined &&
         key[0] === "git" &&
         key[1] === "mutation" &&
         typeof key[2] === "string" &&
         !CHECKOUT_READING_GIT_MUTATIONS.has(key[2]) &&
         key[3] === (environmentId ?? null) &&
-        key[4] === cwd
+        changedCheckoutOf(mutation) === cwd
       );
     },
   };
@@ -438,6 +469,27 @@ export function gitCheckoutMutationOptions(input: {
     onSettled: async (_data, _error, args) => {
       const checkout = resolveCheckoutInput(args);
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, checkout.cwd);
+    },
+  });
+}
+
+/** Creates a branch at HEAD and switches the checkout to it. */
+export function gitCreateRefMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.createRef(input.environmentId, input.cwd),
+    mutationFn: async (refName: string) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Git branch creation is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.createRef({ cwd: input.cwd, refName, switchRef: true });
+    },
+    onSettled: async () => {
+      await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
     },
   });
 }
