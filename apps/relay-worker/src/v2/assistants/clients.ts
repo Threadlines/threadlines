@@ -133,41 +133,18 @@ export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): st
 /** Dotless schemes of native apps known to sign in here; any other app scheme must be reverse-domain. */
 const KNOWN_APP_SCHEMES = new Set(["cursor"]);
 
-/** Schemes a browser or system handles itself (web, documents, scripts, launchers): never an app's return address, dotted or not. */
-const NOT_APP_SCHEMES = new Set([
-  "about",
-  "blob",
-  "chrome",
-  "chrome-extension",
-  "content",
-  "data",
-  "file",
-  "filesystem",
-  "ftp",
-  "intent",
-  "javascript",
-  "jar",
-  "mailto",
-  "moz-extension",
-  "ms-appx",
-  "ms-appx-web",
-  "resource",
-  "safari-extension",
-  "sms",
-  "tel",
-  "view-source",
-  "vbscript",
-  "ws",
-  "wss",
-]);
+/**
+ * Dotted schemes a browser or operating system handles itself: a website's own handler (web+…),
+ * macOS and Apple apps (x-apple.systempreferences, com.apple.…) and Windows' own apps
+ * (microsoft.windows.camera). Browser, script and document schemes are dotless, so they fail
+ * the reverse-domain rule already.
+ */
+const SYSTEM_SCHEME_PREFIXES = ["web+", "x-apple", "com.apple.", "microsoft."];
 
 function isAppScheme(protocol: string): boolean {
   const scheme = protocol.slice(0, -1).toLowerCase();
   if (!/^[a-z][a-z0-9+.-]*$/u.test(scheme)) return false;
-  // web+…: a website's own handler. x-apple…: macOS system launchers (x-apple.systempreferences).
-  if (scheme.startsWith("web+") || scheme.startsWith("x-apple") || NOT_APP_SCHEMES.has(scheme)) {
-    return false;
-  }
+  if (SYSTEM_SCHEME_PREFIXES.some((prefix) => scheme.startsWith(prefix))) return false;
   return scheme.includes(".") || KNOWN_APP_SCHEMES.has(scheme);
 }
 

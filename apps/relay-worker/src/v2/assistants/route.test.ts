@@ -434,6 +434,8 @@ describe("clients and the sign-in page", () => {
       "googlechrome://evil.test/cb",
       "web+evil.app://cb",
       "x-apple.systempreferences:com.apple.preference.security",
+      "com.apple.reminderkitstore:/cb",
+      "microsoft.windows.camera.picker:/callback",
       "someapp://cb",
     ]) {
       expect((await register(env, { redirect_uris: [redirect_uri] })).status).toBe(400);
