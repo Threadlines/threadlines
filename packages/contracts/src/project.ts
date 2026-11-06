@@ -18,6 +18,14 @@ export const ProjectSearchEntriesInput = Schema.Struct({
   // useful content before the user types a filter.
   query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
+  /**
+   * `path-ending` finds files instead of ranking entries: the file at `query`
+   * itself, even one the index leaves out (an ignored file), then every indexed
+   * file whose path ends with `/query`, compared without case, in path order.
+   * A file a chat cites from inside a subfolder is placed this way. Older
+   * servers ignore it and rank as usual; the result's `match` says which ran.
+   */
+  match: Schema.optionalKey(Schema.Literal("path-ending")),
 });
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 
@@ -33,6 +41,8 @@ export type ProjectEntry = typeof ProjectEntry.Type;
 export const ProjectSearchEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  /** The input's `match`, when the server applied it. */
+  match: Schema.optionalKey(Schema.Literal("path-ending")),
 });
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 

@@ -425,18 +425,43 @@ function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | n
     : pathWithoutTrailingSeparators;
 }
 
+/** What a thread route registers: the viewer's workspace, plus where its worktree came from. */
+export interface ActiveFileViewerContext extends FileViewerContext {
+  /**
+   * The project's own folder. When the thread works in a worktree of it, a
+   * file the chat cites that the worktree lacks is looked for here too: agents
+   * sometimes work in the main checkout instead of the thread's.
+   */
+  projectRoot?: string | null | undefined;
+}
+
 /**
  * Context registered by the active thread route so deeply nested call sites
  * (chat file chips, diff rows) can open the viewer without prop-drilling the
  * environment/workspace identity through every renderer.
  */
-let activeFileViewerContext: FileViewerContext | null = null;
+let activeFileViewerContext: ActiveFileViewerContext | null = null;
+const activeFileViewerContextListeners = new Set<() => void>();
 
-export function setActiveFileViewerContext(context: FileViewerContext | null): void {
+export function setActiveFileViewerContext(context: ActiveFileViewerContext | null): void {
   activeFileViewerContext = context;
+  for (const listener of activeFileViewerContextListeners) {
+    listener();
+  }
 }
 
-export function getActiveFileViewerContext(): FileViewerContext | null {
+/**
+ * Hear when a route registers or clears its context, for `useSyncExternalStore`.
+ * A route registers in an effect, after the chat inside it first renders.
+ */
+export function subscribeActiveFileViewerContext(listener: () => void): () => void {
+  activeFileViewerContextListeners.add(listener);
+  return () => {
+    activeFileViewerContextListeners.delete(listener);
+  };
+}
+
+export function getActiveFileViewerContext(): ActiveFileViewerContext | null {
   return activeFileViewerContext;
 }
 
@@ -449,7 +474,8 @@ export function openActiveFileViewer(): boolean {
   if (!activeFileViewerContext) {
     return false;
   }
-  useFileViewerStore.getState().open(activeFileViewerContext);
+  const { environmentId, cwd, threadRef } = activeFileViewerContext;
+  useFileViewerStore.getState().open({ environmentId, cwd, threadRef });
   return true;
 }
 
@@ -593,76 +619,215 @@ export function parseChatFileReference(
 
 /** Where an inline-code file reference points, once it has been placed. */
 export interface ResolvedChatFileReference {
-  /** The project folder the path is relative to. */
+  /** The folder the path is relative to: the thread's, or the project folder behind it. */
   readonly cwd: string;
   readonly relativePath: string;
   readonly line: number | undefined;
 }
 
+/** What looking for an inline-code file reference found. */
+export type ChatFileReferencePlace =
+  | { readonly status: "found"; readonly file: ResolvedChatFileReference }
+  /** More than one file ends in the cited path, and nothing says which one is meant. */
+  | { readonly status: "ambiguous" }
+  /** Neither the thread's folder nor the project folder behind it has the file. */
+  | { readonly status: "none" };
+
+const AMBIGUOUS_CHAT_FILE_REFERENCE: ChatFileReferencePlace = { status: "ambiguous" };
+const MISSING_CHAT_FILE_REFERENCE: ChatFileReferencePlace = { status: "none" };
+
 /**
- * Place an inline-code file reference from the chat transcript in the active
- * project. Pathed references are taken as written; bare file names are
- * resolved through the workspace search index (models frequently cite
- * `ChatComposer.tsx:1010` without the directory). Null when it cannot be
- * placed.
+ * The project folder a chat working in `cwd` also looks in for the files it
+ * cites: the registered thread's project folder, when `cwd` is that thread's
+ * worktree. Null for a thread working in the project folder itself.
+ */
+export function projectRootBehind(cwd: string | undefined): string | null {
+  const context = activeFileViewerContext;
+  const projectRoot = context?.projectRoot;
+  if (!cwd || !context || !projectRoot) {
+    return null;
+  }
+  if (!isSameFolder(context.cwd, cwd) || isSameFolder(projectRoot, cwd)) {
+    return null;
+  }
+  return projectRoot;
+}
+
+function isSameFolder(left: string, right: string): boolean {
+  return relativePathWithinCwdOrRoot(left, right) === "";
+}
+
+/**
+ * Look for an inline-code file reference in `cwd`, then in `projectRoot` when
+ * `cwd` has no file it could mean. The server finds the files the reference
+ * can name (`match: "path-ending"`): the file at the path as written, ignored
+ * or not, and every file whose path ends with it; see
+ * {@link findReferencedFile} for which one that is. Throws when a search fails,
+ * including when the disk can't say whether the path as written is a file.
+ */
+export async function placeChatFileReference(input: {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly projectRoot: string | null;
+  readonly reference: { readonly path: string; readonly line: number | undefined };
+}): Promise<ChatFileReferencePlace> {
+  const { line } = input.reference;
+  const path = input.reference.path.replace(/^(?:\.\/)+/u, "");
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) {
+    // A path that steps through folders says exactly where the file is.
+    return { status: "found", file: { cwd: input.cwd, relativePath: path, line } };
+  }
+  const { ensureEnvironmentApi } = await import("./environmentApi");
+  const api = ensureEnvironmentApi(input.environmentId);
+  const search = (folder: string, query: string) =>
+    api.projects.searchEntries({
+      cwd: folder,
+      query,
+      limit: FILE_REFERENCE_SEARCH_LIMIT,
+      match: "path-ending",
+    });
+  const folders =
+    input.projectRoot !== null && !isSameFolder(input.projectRoot, input.cwd)
+      ? [input.cwd, input.projectRoot]
+      : [input.cwd];
+  for (const folder of folders) {
+    let result = await search(folder, path);
+    const isOlderServer = result.match !== "path-ending";
+    if (isOlderServer && path.includes("/")) {
+      // An older server ranked fuzzy hits for the whole path. Asked for the
+      // file name instead, it ranks every file with that name first.
+      result = await search(folder, path.slice(path.lastIndexOf("/") + 1));
+    }
+    let match = findReferencedFile(result.entries, path);
+    const foundAsWritten = match.status === "found" && match.path === path;
+    if (isOlderServer && path.includes("/") && !foundAsWritten) {
+      // The older server's index leaves out ignored files, so the path as
+      // written is read where it says. A read that fails proves nothing, and
+      // the path as written stands.
+      const asWritten = await api.projects
+        .readFile({ cwd: folder, relativePath: path })
+        .catch(() => undefined);
+      if (asWritten === undefined || asWritten.kind !== "missing") {
+        return { status: "found", file: { cwd: folder, relativePath: path, line } };
+      }
+    }
+    if (!isOlderServer && result.truncated && path.includes("/") && !foundAsWritten) {
+      // The project is past the index's size cap, so one file found ending in
+      // the path does not mean it is the only one.
+      match = match.status === "none" ? match : { status: "ambiguous" };
+    }
+    if (match.status === "found") {
+      return { status: "found", file: { cwd: folder, relativePath: match.path, line } };
+    }
+    if (match.status === "ambiguous") {
+      return AMBIGUOUS_CHAT_FILE_REFERENCE;
+    }
+  }
+  return MISSING_CHAT_FILE_REFERENCE;
+}
+
+/**
+ * Place an inline-code file reference from the chat transcript for the active
+ * thread, by {@link placeChatFileReference}. Null when the text is not a file
+ * reference or no thread is registered.
  */
 export async function resolveChatFileReference(
   text: string,
-): Promise<ResolvedChatFileReference | null> {
+): Promise<ChatFileReferencePlace | null> {
   const parsed = parseChatFileReference(text);
   const context = activeFileViewerContext;
   if (!parsed || !context) {
     return null;
   }
-  if (parsed.path.includes("/")) {
-    return { cwd: context.cwd, relativePath: parsed.path, line: parsed.line };
-  }
-
-  const { ensureEnvironmentApi } = await import("./environmentApi");
   try {
-    const api = ensureEnvironmentApi(context.environmentId);
-    const result = await api.projects.searchEntries({
+    return await placeChatFileReference({
+      environmentId: context.environmentId,
       cwd: context.cwd,
-      query: parsed.path,
-      limit: FILE_NAME_SEARCH_LIMIT,
+      projectRoot: projectRootBehind(context.cwd),
+      reference: parsed,
     });
-    const match = findFileNamed(result.entries, parsed.path);
-    return match ? { cwd: context.cwd, relativePath: match.path, line: parsed.line } : null;
   } catch {
-    return null;
+    // With no search to ask, a path is taken as written and the viewer says
+    // whether it is there; a bare name can't be placed at all.
+    return parsed.path.includes("/")
+      ? {
+          status: "found",
+          file: { cwd: context.cwd, relativePath: parsed.path, line: parsed.line },
+        }
+      : MISSING_CHAT_FILE_REFERENCE;
   }
+}
+
+/**
+ * Open a placed reference in the active viewer. A file in the project folder
+ * behind a worktree opens by its absolute path, as a file outside the thread's
+ * folder.
+ */
+export function openResolvedChatFileReference(file: ResolvedChatFileReference): boolean {
+  return openFileInActiveViewer({
+    path: `${file.cwd.replace(/[\\/]+$/u, "")}/${file.relativePath}`,
+    line: file.line,
+  });
 }
 
 /**
  * Open an inline-code file reference from the chat transcript, placed by
- * {@link resolveChatFileReference}. Returns false when nothing could be opened.
+ * {@link resolveChatFileReference}: "opened", or why nothing could be.
  */
-export async function openChatFileReference(text: string): Promise<boolean> {
-  const resolved = await resolveChatFileReference(text);
-  return resolved !== null
-    ? openFileInActiveViewer({ path: resolved.relativePath, line: resolved.line })
-    : false;
+export async function openChatFileReference(
+  text: string,
+): Promise<"opened" | "ambiguous" | "none"> {
+  const place = await resolveChatFileReference(text);
+  if (place?.status === "found" && openResolvedChatFileReference(place.file)) {
+    return "opened";
+  }
+  return place?.status === "ambiguous" ? "ambiguous" : "none";
 }
 
-/** Exact name matches rank ahead of fuzzy ones, so a few hits hold one if any exists. */
-export const FILE_NAME_SEARCH_LIMIT = 8;
+/**
+ * Files asked for per lookup. A current server returns only files the
+ * reference can name, so two settle whether a path names one; an older one
+ * ranks fuzzy hits, and the rest of the page gives the real ones room.
+ */
+export const FILE_REFERENCE_SEARCH_LIMIT = 32;
+
+/** Which workspace search hit an inline-code reference names. */
+export type ReferencedFileMatch =
+  | { readonly status: "found"; readonly path: string }
+  | { readonly status: "ambiguous" }
+  | { readonly status: "none" };
 
 /**
- * The workspace search hit that is the named file itself, in whatever folder.
- * The search is fuzzy, so its best hit for `README.txt` can be some other file
- * entirely when the project has none; a bare name only ever resolves to a file
- * with exactly that name.
+ * The workspace search hit an inline-code reference names. The search is
+ * fuzzy, so its best hit can be some other file entirely: a reference only
+ * ever resolves to a file whose path is it or ends with it. The file at the
+ * path as written wins. Otherwise a bare name (`README.txt`) is the best-ranked
+ * file with exactly that name, in whatever folder. A path is the one file whose
+ * path ends with it, since agents often cite a path from inside a subfolder
+ * (`Model/ReturnForm.php` for `shop/app/code/Buyfire/ReturnForm/Model/ReturnForm.php`);
+ * when several do, nothing says which one is meant.
  */
-export function findFileNamed(
+export function findReferencedFile(
   entries: ReadonlyArray<ProjectEntry>,
-  name: string,
-): ProjectEntry | undefined {
-  const wanted = name.toLowerCase();
-  return entries.find((entry) => {
+  reference: string,
+): ReferencedFileMatch {
+  const wanted = reference.toLowerCase();
+  const ending = `/${wanted}`;
+  const matches = entries.filter((entry) => {
     if (entry.kind !== "file") return false;
     const path = entry.path.toLowerCase();
-    return path === wanted || path.endsWith(`/${wanted}`);
+    return path === wanted || path.endsWith(ending);
   });
+  // Exact spelling first: on a case-sensitive disk `src/Index.ts` and
+  // `src/index.ts` are two files.
+  const asWritten =
+    matches.find((entry) => entry.path === reference) ??
+    matches.find((entry) => entry.path.toLowerCase() === wanted);
+  const best = asWritten ?? (wanted.includes("/") && matches.length > 1 ? undefined : matches[0]);
+  if (best) {
+    return { status: "found", path: best.path };
+  }
+  return matches.length > 1 ? { status: "ambiguous" } : { status: "none" };
 }
 
 export interface OpenFileInViewerInput {
