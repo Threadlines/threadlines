@@ -349,10 +349,11 @@ under 0.1 ms). The design leans on that:
   production build, Aurora and Dunes against no art at all), keys took as
   long to show up (24 ms typical, 32 ms at worst) and scrolling dropped as
   many frames (6%) with the art running as with it held or off: it runs in
-  its own process. While a reply is
-  streaming into the open thread, the app posts `streaming` and the art keeps
-  moving, slower: at most 12 fps, its time easing to half speed (and back
-  after). Holding it for a whole reply read as a random freeze.
+  its own process. A reply streaming into the open thread doesn't hold or
+  slow it either: the same check with a stand-in agent streaming a long
+  markdown reply dropped as few frames (2 to 4 in 5 seconds at 120 Hz) with
+  the art at full rate as with it slowed to 12 fps or off. (The first build
+  held the art for the whole reply, which read as a random freeze.)
 - **Power and heat.** On battery the frame rate stays at or under 20 (desktop `powerMonitor`
   `on-battery`/`on-ac`; on web `navigator.getBattery()` where it exists). When
   macOS reports a `serious` or `critical` thermal state, or the CPU speed

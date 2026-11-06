@@ -47,9 +47,6 @@ export interface BackdropRuntimeTiming {
   readonly batteryFps: number;
   readonly burstMs: number;
   readonly busyResumeMs: number;
-  readonly streamingFps: number;
-  readonly streamingPace: number;
-  readonly paceEaseMs: number;
   readonly resumeFadeMs: number;
   readonly stillWaitMs: number;
   readonly budgetWindowMs: number;
@@ -277,12 +274,11 @@ export function backdropFrameRuntime(
 
   const readConditions = (value: unknown): BackdropConditions | null => {
     if (!isRecord(value)) return null;
-    const { motion, visible, busy, streaming, idle, focused, power, thermal, slowdown } = value;
+    const { motion, visible, busy, idle, focused, power, thermal, slowdown } = value;
     if (motion !== "live" && motion !== "still") return null;
     if (
       typeof visible !== "boolean" ||
       typeof busy !== "boolean" ||
-      typeof streaming !== "boolean" ||
       typeof idle !== "boolean" ||
       typeof focused !== "boolean"
     ) {
@@ -299,7 +295,7 @@ export function backdropFrameRuntime(
       return null;
     }
     if (!isInt(slowdown, 0, limits.maxSlowdown)) return null;
-    return { motion, visible, busy, streaming, idle, focused, power, thermal, slowdown };
+    return { motion, visible, busy, idle, focused, power, thermal, slowdown };
   };
 
   // ---------------------------------------------------------------------
@@ -323,8 +319,6 @@ export function backdropFrameRuntime(
   let tickSequence = 0;
   let drawnFrames = 0;
   let artTime = 0;
-  /** How fast art time runs against the clock: 1, easing toward `streamingPace` while a reply streams in. */
-  let artPace = 1;
   let lastTickAt: number | null = null;
   let staleDropped = 0;
   /** Frame cost samples (the worker's work plus the frame's own) for the budget. */
@@ -2126,7 +2120,6 @@ void main() {
         ? theme.maxFps
         : Math.min(theme.maxFps, activity.working > 0 ? timing.workingFps : timing.idleFps);
     if (conditions?.power === "battery") fps = Math.min(fps, timing.batteryFps);
-    if (conditions?.streaming === true) fps = Math.min(fps, timing.streamingFps);
     // Never slower than one frame a second, so a drawing frame always shows progress to the app's watchdog.
     // The desktop watchdog's slowdown is a floor under the budget's own steps.
     return Math.max(timing.minFps, fps / 2 ** Math.max(throttle, conditions?.slowdown ?? 0));
@@ -2171,12 +2164,7 @@ void main() {
     if (!current || !current.definition || current.outstanding || runState() !== "running") return;
     const sentAt = now();
     const interval = 1000 / targetFps();
-    const elapsed =
-      lastTickAt === null ? interval / 1000 : Math.min(1, (sentAt - lastTickAt) / 1000);
-    // While a reply streams in, art time eases down to a slower pace, and back after.
-    const pace = conditions?.streaming === true ? timing.streamingPace : 1;
-    artPace += (pace - artPace) * Math.min(1, (elapsed * 1000) / timing.paceEaseMs);
-    const dt = elapsed * artPace;
+    const dt = lastTickAt === null ? interval / 1000 : Math.min(1, (sentAt - lastTickAt) / 1000);
     artTime += dt;
     lastTickAt = sentAt;
     tickSequence += 1;

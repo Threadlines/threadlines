@@ -339,8 +339,6 @@ export const BackdropConditions = Schema.Struct({
   visible: Schema.Boolean,
   /** The user is resizing the window or dragging a divider: the art holds still. */
   busy: Schema.Boolean,
-  /** A reply is streaming into the open thread: the art keeps moving, slower and at a lower rate. */
-  streaming: Schema.Boolean,
   /** No input and no agent working for two minutes. */
   idle: Schema.Boolean,
   /** The window is the one in front: the art runs at the theme's own rate. */

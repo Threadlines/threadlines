@@ -283,7 +283,7 @@ const hostScript = (input: {
     if (data.type === "ready") {
       root.setAttribute(ATTR.art, "ready");
       post(init);
-      post({ type: "conditions", conditions: { motion: "live", visible: true, busy: false, streaming: false, idle: false, focused: true, power: "ac", thermal: "nominal", slowdown: 0 } });
+      post({ type: "conditions", conditions: { motion: "live", visible: true, busy: false, idle: false, focused: true, power: "ac", thermal: "nominal", slowdown: 0 } });
       post({ type: "activity", activity: ${scriptJson({ working: 1, waiting: 0 })} });
       document.fonts.ready.then(send);
     } else if (data.type === "heartbeat") root.setAttribute(ATTR.frame, String(data.frame));
