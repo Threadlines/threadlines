@@ -6,7 +6,6 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "./environmentApi";
 import {
-  FILE_REFERENCE_SEARCH_LIMIT,
   findReferencedFile,
   isPathWithinCwd,
   openDirectoryInViewer,
@@ -129,35 +128,26 @@ describe("fileViewerStore", () => {
     ).toEqual({ status: "found", path: "src/Index.ts" });
   });
 
-  it("places a cited path past a page of namesakes and a folder at the path as written", async () => {
-    // A folder sits where the path says, so the server refuses to read it.
-    const readFile = vi.fn(async () => {
-      throw new Error("Cannot read entry of type 'Directory' as a file.");
-    });
-    const searchEntries = vi.fn(async (input: { query: string }) => {
-      if (input.query === "Form.php") {
-        return { entries: [{ path: "module/Model/Form.php", kind: "file" }], truncated: false };
-      }
-      if (input.query === "Data.php") {
-        // More files share the name than one page holds, none under Helper/.
-        const namesakes = Array.from({ length: FILE_REFERENCE_SEARCH_LIMIT }, (_, index) => ({
-          path: `vendor/lib${index}/Data.php`,
-          kind: "file",
-        }));
-        return { entries: namesakes, truncated: true };
-      }
-      return {
-        entries: [
-          { path: "shop/Analytics/Helper/Data.php", kind: "file" },
-          { path: "shop/Banner/Helper/Data.php", kind: "file" },
-        ],
-        truncated: true,
-      };
+  it("places a cited path from the files the server finds, and on an older server reads it first", async () => {
+    // A current server finds the files a path can name itself.
+    const currentSearch = vi.fn(async (input: { query: string }) => ({
+      entries:
+        input.query === "Helper/Data.php"
+          ? [
+              { path: "shop/Analytics/Helper/Data.php", kind: "file" },
+              { path: "shop/Banner/Helper/Data.php", kind: "file" },
+            ]
+          : [{ path: "module/Model/Form.php", kind: "file" }],
+      truncated: false,
+      match: "path-ending",
+    }));
+    const readFile = vi.fn(async (_input: { relativePath: string }) => {
+      throw new Error("Permission denied");
     });
     // The environment API is only handed out in a window.
     vi.stubGlobal("window", {});
     __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
-      projects: { readFile, searchEntries },
+      projects: { readFile, searchEntries: currentSearch },
     } as unknown as EnvironmentApi);
     const place = (path: string) =>
       placeChatFileReference({
@@ -172,14 +162,30 @@ describe("fileViewerStore", () => {
         status: "found",
         file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
       });
-      // The page of namesakes is full, so the whole path is searched too, and
-      // turns up two files ending in it.
       await expect(place("Helper/Data.php")).resolves.toEqual({ status: "ambiguous" });
-      expect(searchEntries.mock.calls.map(([input]) => input.query)).toEqual([
-        "Form.php",
-        "Data.php",
-        "Helper/Data.php",
-      ]);
+      expect(currentSearch.mock.calls[0]?.[0]).toMatchObject({ match: "path-ending" });
+      expect(readFile).not.toHaveBeenCalled();
+
+      // An older server ranks fuzzy hits from an index without ignored files.
+      // A read that fails proves nothing, so the path as written stands.
+      __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
+        projects: {
+          readFile,
+          searchEntries: async () => ({
+            entries: [{ path: "module/Model/Form.php", kind: "file" }],
+            truncated: false,
+          }),
+        },
+      } as unknown as EnvironmentApi);
+      await expect(place("Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "Model/Form.php", line: 3 },
+      });
+      readFile.mockResolvedValueOnce({ kind: "missing", relativePath: "Model/Form.php" } as never);
+      await expect(place("Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
+      });
     } finally {
       __resetEnvironmentApiOverridesForTests();
       vi.unstubAllGlobals();

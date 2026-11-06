@@ -459,19 +459,18 @@ describe("ChatMarkdown", () => {
       { path: "shop/app/code/Buyfire/Analytics/Helper/Data.php", kind: "file" as const },
       { path: "shop/app/code/Buyfire/Banner/Helper/Data.php", kind: "file" as const },
     ];
+    // The server finds the files each path can name.
     const searchEntries = vi.fn(async (input: { cwd: string; query: string }) => ({
       entries:
-        input.query === "Data.php"
+        input.query === "Helper/Data.php"
           ? helpers
-          : input.query === "ReturnForm.php" && input.cwd === "/repo/project"
+          : input.query === "Model/ReturnForm.php" && input.cwd === "/repo/project"
             ? [{ path: moduleFile, kind: "file" as const }]
             : [],
       truncated: false,
+      match: "path-ending" as const,
     }));
-    const readFile = vi.fn(async (input: { cwd: string; relativePath: string }) => ({
-      kind: "missing" as const,
-      relativePath: input.relativePath,
-    }));
+    const readFile = vi.fn();
     installReadFileEnvironment(
       readFile as unknown as EnvironmentApi["projects"]["readFile"],
       searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
@@ -499,8 +498,8 @@ describe("ChatMarkdown", () => {
         expect(state.activePath).toBe(`/repo/project/${moduleFile}`);
         expect(state.revealLine).toBe(12);
       });
-      // The path as written was looked for in both folders first.
-      expect(readFile.mock.calls.map(([input]) => input.cwd)).toEqual([cwd, "/repo/project"]);
+      // The worktree first, then the project folder.
+      expect(searchEntries.mock.calls.map(([input]) => input.cwd)).toEqual([cwd, "/repo/project"]);
 
       // Two files end in this path, and nothing says which one the agent meant.
       const ambiguous = document.querySelector(

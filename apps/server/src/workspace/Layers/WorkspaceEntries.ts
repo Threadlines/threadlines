@@ -10,6 +10,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import {
@@ -792,9 +793,84 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
     },
   );
 
+  /**
+   * The file at a workspace-relative path, looked up on disk so a file the
+   * index leaves out (an ignored one) counts. Null when nothing is there, a
+   * folder is, or the path leaves the workspace; fails when the disk can't
+   * say, since that proves nothing either way.
+   */
+  const fileAtPath = Effect.fn("WorkspaceEntries.fileAtPath")(function* (
+    cwd: string,
+    relativePath: string,
+  ): Effect.fn.Return<SearchableWorkspaceEntry | null, WorkspaceEntriesError> {
+    const resolved = yield* workspacePaths
+      .resolveRelativePathWithinRoot({ workspaceRoot: cwd, relativePath })
+      .pipe(Effect.option);
+    if (Option.isNone(resolved)) {
+      return null;
+    }
+    const { absolutePath, relativePath: workspaceRelativePath } = resolved.value;
+    const isFile = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          return (await fsPromises.stat(absolutePath)).isFile();
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException | undefined)?.code;
+          if (code === "ENOENT" || code === "ENOTDIR") return false;
+          throw error;
+        }
+      },
+      catch: (cause) =>
+        new WorkspaceEntriesError({
+          cwd,
+          operation: "workspaceEntries.fileAtPath",
+          detail: cause instanceof Error ? cause.message : String(cause),
+          cause,
+        }),
+    });
+    return isFile
+      ? toSearchableWorkspaceEntry({
+          path: workspaceRelativePath,
+          kind: "file",
+          parentPath: parentPathOf(workspaceRelativePath),
+        })
+      : null;
+  });
+
+  /** `match: "path-ending"`; see `ProjectSearchEntriesInput`. */
+  const searchPathEnding = Effect.fn("WorkspaceEntries.searchPathEnding")(function* (
+    cwd: string,
+    input: { readonly query: string; readonly limit: number },
+  ) {
+    const query = toPosixPath(input.query.trim()).replace(/^\/+|\/+$/gu, "");
+    const limit = Math.max(0, Math.floor(input.limit));
+    if (query.length === 0) {
+      return { entries: [], truncated: false, match: "path-ending" as const };
+    }
+    const atQuery = yield* fileAtPath(cwd, query);
+    const index = yield* Cache.get(workspaceIndexCache, cwd);
+    const wanted = query.toLowerCase();
+    const ending = `/${wanted}`;
+    const files: SearchableWorkspaceEntry[] = atQuery ? [atQuery] : [];
+    for (const entry of index.entries) {
+      if (entry.kind !== "file" || entry.path === atQuery?.path) continue;
+      if (entry.normalizedPath === wanted || entry.normalizedPath.endsWith(ending)) {
+        files.push(entry);
+      }
+    }
+    return {
+      entries: files.slice(0, limit),
+      truncated: index.truncated || files.length > limit,
+      match: "path-ending" as const,
+    };
+  });
+
   const search: WorkspaceEntriesShape["search"] = Effect.fn("WorkspaceEntries.search")(
     function* (input) {
       const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+      if (input.match === "path-ending") {
+        return yield* searchPathEnding(normalizedCwd, input);
+      }
       return yield* Cache.get(workspaceIndexCache, normalizedCwd).pipe(
         Effect.map((index) => {
           const normalizedQuery = normalizeSearchQuery(input.query, {
