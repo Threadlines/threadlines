@@ -235,7 +235,19 @@ describe("theme store, applied", () => {
       expect(alpha("column")).toBe(0);
       expect(alpha("home")).toBe(0);
 
-      // The still instead: each surface paints its floor, raised to the still's minimum.
+      // Motion: Still on a computer: the frame stands on one frame and tints it, so still clear.
+      applyGlassTints(
+        glassTintCss(
+          cssGlassTints(
+            floors,
+            { kind: "still", reason: "motion", minimumTint: 0.65, framed: true },
+            false,
+          ),
+        ),
+      );
+      expect(alpha("column")).toBe(0);
+
+      // The still image instead: each surface paints its floor, raised to the still's minimum.
       applyGlassTints(
         glassTintCss(
           cssGlassTints(floors, { kind: "still", reason: "motion", minimumTint: 0.65 }, false),

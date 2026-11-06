@@ -12,9 +12,11 @@
  * - While the backdrop frame runs, it paints every zone's tint over the art
  *   itself (raising it for readability), so the app's own surfaces are clear
  *   and alpha never compounds.
- * - When the app shows the still instead (Still, a phone, a failed or paused
- *   frame), the frame can't measure, so the surfaces paint the tint in CSS,
- *   each raised to the still's layout-independent minimum.
+ * - Motion: Still keeps the frame: it draws one frame of the art and stands,
+ *   tinting it the same way, so the surfaces stay clear.
+ * - When the app shows the still image instead (a phone, a failed frame, or
+ *   before the frame draws), the frame can't measure, so the surfaces paint
+ *   the tint in CSS, each raised to the still's layout-independent minimum.
  * - Before the backdrop reports anything, surfaces are opaque.
  */
 import type { ThemeGlass } from "@threadlines/contracts";
@@ -77,7 +79,8 @@ export function cssGlassTints(
   tooHeavy: boolean,
 ): GlassFloors {
   if (status === null) return { frame: 1, list: 1, column: 1, composer: 1, page: 1 };
-  if (status.kind === "running" && !tooHeavy) {
+  // The frame tints over the art itself: live, or one frame standing for Motion: Still.
+  if ((status.kind === "running" && !tooHeavy) || (status.kind === "still" && status.framed)) {
     return { frame: 0, list: 0, column: 0, composer: 0, page: 0 };
   }
   const minimum = status.kind === "running" ? 1 : clamp01(status.minimumTint);

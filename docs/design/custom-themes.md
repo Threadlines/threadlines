@@ -210,6 +210,18 @@ it:
   Motion, or on phones, the frame keeps the last bitmap and terminates the
   worker. A theme can't spend anything while paused. Resuming starts a new
   worker and continues `t` from where it stopped (setup runs again).
+- **Still keeps the frame.** Under "Motion: Still" or Reduce Motion on a
+  computer, the frame stays: it draws one frame of the art (or keeps the one
+  on screen when Still is chosen), terminates the worker, and stands on it,
+  frosting and tinting it patch by patch like the live art, so Still keeps
+  Live's colors and glass. It recomposites only when the layout moves, and
+  draws one new frame once the window settles at a new size. Until its first
+  frame, the app's 3-second watchdog expects progress as for live art. The
+  first build removed the frame and showed the still image under one
+  whole-page CSS tint, which washed busy art out. The cost is the frame's
+  graphics memory while it stands. Art the computer found too heavy (the
+  desktop CPU watchdog's last verdict) is still too, but loses its frame:
+  the still image shows, as on phones.
 - **Missed ticks.** A tick not answered within two frame intervals counts as a
   miss. Three misses in a row halve the frame rate; continued misses
   terminate the worker and show the still, with "Paused: this theme's art is
@@ -309,7 +321,8 @@ cost counts against the budget. Zones still update while paused: the frame
 recomposites and remeasures the kept bitmap.
 
 **The fallback can't remeasure,** so it doesn't depend on layout: when the
-app shows the still (phones, Still, a failed frame), it computes one tint from
+app shows the still image (phones, a failed frame, the moment before the
+frame draws), it computes one tint from
 the per-channel box of the whole still and applies it to every text surface.
 With no still, text surfaces are opaque.
 

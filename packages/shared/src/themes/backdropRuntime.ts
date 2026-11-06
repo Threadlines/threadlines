@@ -394,6 +394,8 @@ export function backdropFrameRuntime(
     | null = null;
   /** Buffers of an earlier frame, handed back to the worker with the next tick. */
   let spare: ArrayBuffer[] = [];
+  /** The window changed size since the last frame: one standing for Still is redrawn. */
+  let stillStale = false;
   /** The art target holds a drawn frame: the picture on screen. */
   let artHeld = false;
   /** A restarted worker's first frame fades in over the picture on screen. */
@@ -1395,6 +1397,7 @@ void main() {
     }
     render();
     drawnFrames += 1;
+    stillStale = false;
     // The first frame is announced at once: the app shows the art on it, and
     // the next heartbeat could be a second away.
     if (drawnFrames === 1) send({ type: "heartbeat", frame: drawnFrames });
@@ -1632,7 +1635,9 @@ void main() {
       endFade();
       return;
     }
-    if (runState() !== "running") {
+    // Held still or out of sight, the fade waits; standing for Motion: Still,
+    // it finishes, since the picture is on screen.
+    if (runState() !== "running" && !standingStill()) {
       fadeHeldAt = now();
       return;
     }
@@ -2102,20 +2107,28 @@ void main() {
   const runState = (): RunState => {
     if (!theme || !gl || failed || contextLost || !conditions) return "paused";
     const c = conditions;
-    if (
-      c.motion === "still" ||
-      !c.visible ||
-      c.idle ||
-      c.thermal === "serious" ||
-      c.thermal === "critical"
-    ) {
+    if (!c.visible || c.idle || c.thermal === "serious" || c.thermal === "critical") {
       return "paused";
     }
     // Busy holds the art, but not before its first frame: a theme just
     // switched to (often by keyboard) shows its art at once.
     if (c.busy || now() < busyUntil) return drawnFrames === 0 ? "running" : "hold";
+    // Still: one frame of the art, then it stands, frosted and tinted like
+    // the live art. A frame already on screen (from before Still, or the
+    // still's fade) stays; after a lost context, or once the window settles
+    // at a new size, one is drawn again.
+    if (c.motion === "still") return shown === null || stillStale ? "running" : "paused";
     return "running";
   };
+
+  /** Paused only because Motion is Still: the art's frame is on screen and can still be recomposited. */
+  const standingStill = () =>
+    runState() === "paused" &&
+    conditions?.motion === "still" &&
+    conditions.visible &&
+    !conditions.idle &&
+    conditions.thermal !== "serious" &&
+    conditions.thermal !== "critical";
 
   const targetFps = () => {
     if (!theme) return 0;
@@ -2134,7 +2147,7 @@ void main() {
 
   const schedule = () => {
     const state = runState();
-    if (state === "running") continueFade();
+    if (state === "running" || standingStill()) continueFade();
     if (state === "paused") {
       stopArt();
       return;
@@ -2386,10 +2399,13 @@ void main() {
         )
           return;
         viewport = next;
+        // A frame standing for Still was drawn for the old size.
+        stillStale = true;
         if (shown && shown.kind === "pixels" && art?.definition) {
           shown.map = pixelMap(art.definition, shown.width, shown.height);
         }
         render();
+        schedule();
         return;
       }
       case "texts": {

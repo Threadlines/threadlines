@@ -310,6 +310,32 @@ describe("backdrop frame", () => {
     expect((await mounted.probe()).shown.column?.high).toBeLessThan(0.05);
   });
 
+  it("draws one frame for Motion: Still and stands on it, then moves on from it when Live", async () => {
+    mounted = await mountFrame();
+    mounted.start("grid", GRID_ART, [COLUMN]);
+    mounted.post({ type: "conditions", conditions: { ...LIVE, motion: "still" } });
+    const first = await mounted.framesAbove(0);
+    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    const standing = await mounted.probe();
+    await sleep(600);
+    // No more frames, and no worker: one frame, standing.
+    const later = await mounted.probe();
+    expect(later.drawnFrames).toBe(standing.drawnFrames);
+    expect(later.workerAlive).toBe(false);
+    expect(later.state).toBe("paused");
+
+    // A new window size: one new frame for it, then it stands again.
+    mounted.post({ type: "viewport", width: 700, height: 450, dpr: window.devicePixelRatio || 1 });
+    const resized = await mounted.framesAbove(later.drawnFrames);
+    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await sleep(400);
+    expect((await mounted.probe()).drawnFrames).toBeLessThanOrEqual(resized.drawnFrames + 1);
+
+    mounted.post({ type: "conditions", conditions: LIVE });
+    const moving = await mounted.framesAbove(resized.drawnFrames + 2);
+    expect(moving.generation).toBeGreaterThan(first.generation);
+  });
+
   it("steps the rate down when ticks go unanswered, then stops the art as too heavy", async () => {
     mounted = await mountFrame();
     // In front, the art runs at its own 24 fps: even slowed twice (6 fps) a

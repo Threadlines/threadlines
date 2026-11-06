@@ -53,14 +53,20 @@ export type ThemeBackdropStatus =
     }
   | {
       /**
-       * Showing the still: Motion is Still or Reduce Motion ("motion"), a
-       * phone ("phone"), or the art hasn't drawn its first frame yet, because
-       * it is starting or paused before it drew one ("paused").
+       * Not moving: Motion is Still or Reduce Motion ("motion"), a phone
+       * ("phone"), or the art hasn't drawn its first frame yet, because it
+       * is starting or paused before it drew one ("paused").
        */
       readonly kind: "still";
       readonly reason: "motion" | "paused" | "phone";
       /** The tint every glass text surface needs over the still (layout-independent). */
       readonly minimumTint: number;
+      /**
+       * The frame shows one frame of the art, frosted and tinted patch by
+       * patch like the live art, so the surfaces stay clear (Motion: Still on
+       * a computer). Otherwise the app shows the still image under CSS tints.
+       */
+      readonly framed?: boolean;
     }
   | {
       readonly kind: "failed";
@@ -89,6 +95,12 @@ export interface ThemeBackdropHostProps {
   readonly pulse: number;
   /** Phones show the still only. */
   readonly stillOnly?: boolean;
+  /**
+   * Motion is Still by the user's choice (or Reduce Motion): the frame stays
+   * and stands on one frame. Art the computer found too heavy is still too,
+   * but its frame goes, and the still image shows.
+   */
+  readonly framedStill?: boolean;
   readonly onStatus?: (status: ThemeBackdropStatus) => void;
 }
 
@@ -156,13 +168,24 @@ interface FrameApi {
  */
 const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function BackdropSession(props, ref) {
-    const { backdrop, conditions, stillOnly = false, tokens, textRatio } = props;
+    const {
+      backdrop,
+      conditions,
+      stillOnly = false,
+      framedStill = false,
+      tokens,
+      textRatio,
+    } = props;
     const [attempt, setAttempt] = useState(0);
     const [failure, setFailure] = useState<Failure | null>(null);
     const [progress, setProgress] = useState<FrameProgress>(null);
     const [measured, setMeasured] = useState<{ still: string; tint: number } | null>(null);
     const frameApi = useRef<FrameApi | null>(null);
-    const showFrame = !stillOnly && conditions.motion === "live" && failure === null;
+    // The frame stays for Motion: Still too: it draws one frame and stands,
+    // with the same glass. Phones, a failed frame and art found too heavy
+    // show the still image.
+    const showFrame =
+      !stillOnly && failure === null && (conditions.motion === "live" || framedStill);
 
     // A frame shown again is a new frame: it hasn't drawn anything yet.
     const [shownBefore, setShownBefore] = useState(showFrame);
@@ -195,7 +218,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
       : stillOnly
         ? { kind: "still", reason: "phone", minimumTint }
         : conditions.motion === "still"
-          ? { kind: "still", reason: "motion", minimumTint }
+          ? { kind: "still", reason: "motion", minimumTint, framed: progress !== null }
           : progress === null
             ? { kind: "still", reason: "paused", minimumTint }
             : {
@@ -482,7 +505,10 @@ function BackdropFrame(props: BackdropFrameProps) {
         return;
       }
       const silent = now - state.lastHeartbeatAt > BACKDROP_WATCHDOG_MS;
-      const stalled = shouldDraw(conditions) && now - state.lastProgressAt > BACKDROP_WATCHDOG_MS;
+      // Still draws one frame: until it has, the frame must show progress too.
+      const expecting =
+        shouldDraw(conditions) || (conditions.motion === "still" && state.lastFrame === 0);
+      const stalled = expecting && now - state.lastProgressAt > BACKDROP_WATCHDOG_MS;
       if (silent || stalled) {
         latest.current.onFailure({
           reason: "heartbeat",
