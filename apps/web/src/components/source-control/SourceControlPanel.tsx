@@ -2,7 +2,6 @@ import {
   type ContextMenuItem,
   type EnvironmentId,
   type GitActionProgressEvent,
-  type GitRemoteAuthFailure,
   type GitStackedAction,
   type ModelSelection,
   type ProviderReviewTarget,
@@ -10,15 +9,13 @@ import {
   type ScopedThreadRef,
   type VcsCommitDetailsResult,
   type VcsCommitGraphCommit,
-  type VcsPullHistoryReconciliation,
-  type VcsPullResult,
   type VcsRef,
   type VcsStashEntry,
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import { formatGitErrorMessage, gitRemoteAuthFailureFromError } from "@threadlines/shared/git";
+import { formatGitErrorMessage } from "@threadlines/shared/git";
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -88,7 +85,6 @@ import {
   gitInitMutationOptions,
   gitMergeRefMutationOptions,
   gitMutationKeys,
-  gitPullMutationOptions,
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
   gitStartProviderReviewMutationOptions,
@@ -125,7 +121,8 @@ import { resolvePathLinkTarget } from "~/terminal-links";
 import { getVcsRefBadge, type WorktreeCleanupRow } from "~/worktreeCleanup";
 import { BranchMenuCleanupItem, WorktreeCleanupDialogBody } from "./WorktreeCleanupDialog";
 import { PublishRepositoryDialog } from "../GitActionsControl";
-import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
+import { GitPullDialogs, type GitPullTarget, refreshGitCheckout, useGitPull } from "./GitPullFlow";
+import { useParentRepositoryApproval } from "./parentRepositoryApproval";
 import { ProviderReviewDialog } from "./ProviderReviewDialog";
 import { SourceControlIcon } from "../Icons";
 import { SourceControlLinksMenu } from "./SourceControlLinksMenu";
@@ -206,6 +203,7 @@ import {
   resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
   type SourceControlFileTreeNode,
+  sourceControlActionDisabledReason,
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
 import {
@@ -298,36 +296,6 @@ interface PendingProviderReview {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly bootstrap: ProviderReviewThreadBootstrap;
-}
-
-type HistoryReconciliationRequiredResult = Extract<
-  VcsPullResult,
-  { readonly status: "requires_history_reconciliation" }
->;
-
-interface PullRequestTarget {
-  readonly environmentId: EnvironmentId | null;
-  readonly cwd: string | null;
-}
-
-interface PendingHistoryReconciliation extends PullRequestTarget {
-  readonly environmentId: EnvironmentId;
-  readonly cwd: string;
-  readonly result: HistoryReconciliationRequiredResult;
-}
-
-interface PendingStashRecovery extends PullRequestTarget {
-  readonly environmentId: EnvironmentId;
-  readonly cwd: string;
-  readonly title: string;
-  readonly detail: string;
-  readonly stashId: string;
-  readonly recoveryRef: string | null;
-  readonly conflictedPaths: readonly string[];
-}
-
-function isSamePullRequestTarget(a: PullRequestTarget, b: PullRequestTarget): boolean {
-  return a.environmentId === b.environmentId && a.cwd === b.cwd;
 }
 
 const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, string> = {
@@ -452,85 +420,6 @@ function buildDiscardChangesDescription(pending: PendingDiscardChanges): string 
       : `Discard changes in ${pending.count} files.`;
   const removal = pending.includesNewFiles ? " New or untracked files will be deleted." : "";
   return `${scope} Tracked changes will be restored to HEAD when possible.${removal} This cannot be undone.`;
-}
-
-function actionDisabledReason(input: {
-  readonly status: VcsStatusResult | null;
-  readonly action: "commit" | "commit_push" | "pull" | "push" | "create_pr";
-  readonly isBusy: boolean;
-  readonly repositorySafetyReason?: string | null;
-}): string | null {
-  if (input.repositorySafetyReason) {
-    return input.repositorySafetyReason;
-  }
-  if (input.isBusy) {
-    return "Git action in progress.";
-  }
-  const status = input.status;
-  if (!status?.isRepo) {
-    return "No Git repository.";
-  }
-  if (input.action === "commit") {
-    return status.hasWorkingTreeChanges ? null : "No working tree changes.";
-  }
-  if (input.action === "commit_push") {
-    if (!status.hasWorkingTreeChanges) {
-      return "No working tree changes.";
-    }
-    if (status.refName === null) {
-      return "Detached HEAD.";
-    }
-    if (status.behindCount > 0) {
-      return "Branch is behind upstream.";
-    }
-    if (!status.hasUpstream && !status.hasPrimaryRemote) {
-      return "No primary remote.";
-    }
-    return null;
-  }
-  if (input.action === "pull") {
-    if (status.refName === null) {
-      return "Detached HEAD.";
-    }
-    if (status.hasWorkingTreeChanges) {
-      if (
-        status.workingTree.files.some(
-          (file) => file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged",
-        )
-      ) {
-        return "Resolve merge conflicts first.";
-      }
-      if (status.aheadCount > 0 && status.behindCount > 0) {
-        return "Commit or stash changes before resolving branch divergence.";
-      }
-    }
-    return status.behindCount > 0 ? null : "Branch is up to date.";
-  }
-
-  if (status.refName === null) {
-    return "Detached HEAD.";
-  }
-  if (status.hasWorkingTreeChanges) {
-    return "Commit changes first.";
-  }
-  if (status.behindCount > 0) {
-    return "Branch is behind upstream.";
-  }
-  if (!status.hasUpstream && !status.hasPrimaryRemote) {
-    return "No primary remote.";
-  }
-  if (input.action === "push") {
-    if (!status.hasUpstream && status.hasPrimaryRemote && !status.isDefaultRef) {
-      return null;
-    }
-    return status.aheadCount > 0 ? null : "No local commits to push.";
-  }
-  if (status.pr?.state === "open") {
-    return null;
-  }
-  return (status.aheadOfDefaultCount ?? status.aheadCount) > 0
-    ? null
-    : "No branch commits to include.";
 }
 
 function ActionButton({
@@ -2092,18 +1981,6 @@ export function SourceControlPanel({
   const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
   const [commitMessageEditorMounted, setCommitMessageEditorMounted] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
-  const [approvedParentRepositoryKey, setApprovedParentRepositoryKey] = useState<string | null>(
-    null,
-  );
-  const [authRemediationFailure, setAuthRemediationFailure] = useState<GitRemoteAuthFailure | null>(
-    null,
-  );
-  const [pendingHistoryReconciliation, setPendingHistoryReconciliation] =
-    useState<PendingHistoryReconciliation | null>(null);
-  const [pendingStashRecovery, setPendingStashRecovery] = useState<PendingStashRecovery | null>(
-    null,
-  );
-  const [safePullConfirmationOpen, setSafePullConfirmationOpen] = useState(false);
   const [stashDialogMode, setStashDialogMode] = useState<"create" | "manage" | null>(null);
   const [stashMessage, setStashMessage] = useState("");
   const [stashIncludeUntracked, setStashIncludeUntracked] = useState(true);
@@ -2152,23 +2029,8 @@ export function SourceControlPanel({
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
   const environmentApiAvailable = useEnvironmentApiAvailable(environmentId);
-  const currentPullTargetRef = useRef<PullRequestTarget>({ environmentId, cwd });
-  currentPullTargetRef.current = { environmentId, cwd };
-  const activeHistoryReconciliation =
-    pendingHistoryReconciliation &&
-    isSamePullRequestTarget(pendingHistoryReconciliation, currentPullTargetRef.current)
-      ? pendingHistoryReconciliation
-      : null;
-  const activeStashRecovery =
-    pendingStashRecovery &&
-    isSamePullRequestTarget(pendingStashRecovery, currentPullTargetRef.current)
-      ? pendingStashRecovery
-      : null;
 
   useEffect(() => {
-    setPendingHistoryReconciliation(null);
-    setPendingStashRecovery(null);
-    setSafePullConfirmationOpen(false);
     setStashDialogMode(null);
     setPendingDropStash(null);
   }, [cwd, environmentId]);
@@ -2245,16 +2107,9 @@ export function SourceControlPanel({
     branch: reviewThread?.branch ?? null,
     status,
   });
-  const parentRepositoryRoot =
-    status?.isRepo && status.repositoryRootRelation === "ancestor"
-      ? (status.repositoryRoot ?? null)
-      : null;
-  const parentRepositoryKey =
-    environmentId && cwd && parentRepositoryRoot
-      ? `${environmentId}\0${cwd}\0${parentRepositoryRoot}`
-      : null;
-  const isParentRepositoryConfirmationRequired =
-    parentRepositoryKey !== null && approvedParentRepositoryKey !== parentRepositoryKey;
+  const parentRepositoryApproval = useParentRepositoryApproval({ environmentId, cwd, status });
+  const { parentRepositoryRoot } = parentRepositoryApproval;
+  const isParentRepositoryConfirmationRequired = parentRepositoryApproval.confirmationRequired;
   const repositorySafetyReason = isParentRepositoryConfirmationRequired
     ? "Confirm the parent repository before making changes."
     : null;
@@ -2447,13 +2302,6 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
-  const pullMutation = useMutation(
-    gitPullMutationOptions({
-      environmentId,
-      cwd,
-      queryClient,
-    }),
-  );
   const stashesQuery = useQuery(
     gitStashesQueryOptions({
       environmentId,
@@ -2544,7 +2392,6 @@ export function SourceControlPanel({
     runningDropStashCount > 0 ||
     actionMutation.isPending ||
     initMutation.isPending ||
-    pullMutation.isPending ||
     createStashMutation.isPending ||
     applyStashMutation.isPending ||
     dropStashMutation.isPending ||
@@ -2597,10 +2444,6 @@ export function SourceControlPanel({
       : EMPTY_DIRECTORY_EXPANSION_OVERRIDES;
   const changedFileCount = changedFiles.length;
   const stashes = stashesQuery.data?.stashes ?? [];
-  const hasBranchDivergence = Boolean(status && status.aheadCount > 0 && status.behindCount > 0);
-  const shouldProtectChangesBeforePull = Boolean(
-    status?.hasWorkingTreeChanges && status.behindCount > 0 && status.aheadCount === 0,
-  );
   const stashChangesDisabledReason = isGitActionRunning
     ? "Git action in progress."
     : !status?.isRepo
@@ -2623,31 +2466,25 @@ export function SourceControlPanel({
   const sourceControlPresentation = getSourceControlPresentation(status?.sourceControlProvider);
   const changeRequestLabel = sourceControlPresentation.terminology.shortLabel;
   const openPullRequest = status?.pr?.state === "open" ? status.pr : null;
-  const commitDisabledReason = actionDisabledReason({
+  const commitDisabledReason = sourceControlActionDisabledReason({
     status,
     action: "commit",
     isBusy: isGitActionRunning,
     repositorySafetyReason,
   });
-  const commitAndPushDisabledReason = actionDisabledReason({
+  const commitAndPushDisabledReason = sourceControlActionDisabledReason({
     status,
     action: "commit_push",
     isBusy: isGitActionRunning,
     repositorySafetyReason,
   });
-  const pullDisabledReason = actionDisabledReason({
-    status,
-    action: "pull",
-    isBusy: isGitActionRunning,
-    repositorySafetyReason,
-  });
-  const pushDisabledReason = actionDisabledReason({
+  const pushDisabledReason = sourceControlActionDisabledReason({
     status,
     action: "push",
     isBusy: isGitActionRunning,
     repositorySafetyReason,
   });
-  const prDisabledReason = actionDisabledReason({
+  const prDisabledReason = sourceControlActionDisabledReason({
     status,
     action: "create_pr",
     isBusy: isGitActionRunning,
@@ -2693,15 +2530,21 @@ export function SourceControlPanel({
       })
     : null;
 
-  const refreshPanel = useCallback(() => {
-    if (!environmentId || !cwd) {
-      return;
-    }
-    void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
-    void queryClient.invalidateQueries({
-      queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
-    });
-  }, [cwd, environmentId, queryClient]);
+  const refreshPanel = useCallback(
+    () => refreshGitCheckout(queryClient, { environmentId, cwd }),
+    [cwd, environmentId, queryClient],
+  );
+  const pullTarget = useMemo<GitPullTarget>(() => ({ environmentId, cwd }), [cwd, environmentId]);
+  const openCreateStashDialog = useCallback(() => setStashDialogMode("create"), []);
+  const pull = useGitPull({
+    target: pullTarget,
+    status,
+    isBusy: isGitActionRunning,
+    repositorySafetyReason,
+    threadToastData,
+    onStashRequired: openCreateStashDialog,
+  });
+  const { isCurrentTarget: isCurrentPullTarget, showStashRecovery } = pull;
 
   const refreshPanelFromRemote = useCallback(() => {
     if (!environmentId || !cwd) {
@@ -2887,193 +2730,6 @@ export function SourceControlPanel({
     ],
   );
 
-  const executePull = useCallback(
-    (options?: {
-      readonly historyReconciliation?: VcsPullHistoryReconciliation;
-      readonly stashLocalChanges?: boolean;
-    }) => {
-      if (isParentRepositoryConfirmationRequired) {
-        return;
-      }
-      const requestTarget: PullRequestTarget = { environmentId, cwd };
-      const promise = pullMutation.mutateAsync(options);
-      void toastManager.promise<Awaited<ReturnType<typeof pullMutation.mutateAsync>>>(promise, {
-        loading: {
-          title: options?.historyReconciliation
-            ? "Updating from rewritten upstream..."
-            : options?.stashLocalChanges
-              ? "Stashing, pulling, and restoring..."
-              : hasBranchDivergence
-                ? "Checking branch history..."
-                : "Pulling...",
-          data: threadToastData,
-        },
-        success: (result) => {
-          switch (result.status) {
-            case "pulled":
-              return {
-                title: "Pulled",
-                description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}.`,
-                data: threadToastData,
-              };
-            case "skipped_up_to_date":
-              return {
-                title: "Already up to date",
-                description: `${result.refName} is already synchronized.`,
-                data: threadToastData,
-              };
-            case "requires_history_reconciliation":
-              return options?.stashLocalChanges
-                ? {
-                    title: "Upstream history changed",
-                    description:
-                      "Stash your changes manually, then pull again to review the rewritten history.",
-                    timeout: 0,
-                    data: threadToastData,
-                  }
-                : {
-                    title: "Branch history needs review",
-                    description: `Review ${result.refName} against ${result.upstreamRef} before updating.`,
-                    data: threadToastData,
-                  };
-            case "reconciled":
-              return {
-                title: "Updated from rewritten upstream",
-                description: `Backed up ${result.refName} to ${result.recoveryRef}, then updated it from ${result.upstreamRef}.`,
-                data: threadToastData,
-              };
-            case "pulled_with_restored_changes":
-              return {
-                title: "Updated and restored changes",
-                description: result.stashDropped
-                  ? `Updated ${result.refName} from ${result.upstreamRef} and restored your local changes.`
-                  : `Updated ${result.refName} and restored your local changes. The protected stash was kept because the stash list changed.`,
-                data: threadToastData,
-              };
-            case "pulled_with_restore_conflicts":
-              return {
-                title: "Updated; local changes need attention",
-                description: `Your protected stash was kept. Resolve ${result.conflictedPaths.length} conflicted ${result.conflictedPaths.length === 1 ? "file" : "files"}.`,
-                timeout: 0,
-                data: threadToastData,
-              };
-            case "pulled_with_restore_failure":
-              return {
-                title: "Updated; protected changes need attention",
-                description: result.detail,
-                timeout: 0,
-                data: threadToastData,
-              };
-            case "update_failed_with_protected_changes":
-              return {
-                title: "Update stopped; protected changes need attention",
-                description: result.detail,
-                timeout: 0,
-                data: threadToastData,
-              };
-          }
-        },
-        error: (error) => {
-          const authFailure = gitRemoteAuthFailureFromError(error);
-          if (authFailure) {
-            return failureNotice({
-              title: "Couldn't pull the changes",
-              reason: formatGitErrorMessage(error),
-              timeout: 0,
-              actionProps: {
-                children: "Fix authentication...",
-                onClick: () => setAuthRemediationFailure(authFailure),
-              },
-              data: {
-                ...threadToastData,
-                actionVariant: "default" as const,
-              },
-            });
-          }
-          return failureNotice({
-            title: "Couldn't pull the changes",
-            reason: formatGitErrorMessage(error),
-            ...(threadToastData ? { data: threadToastData } : {}),
-          });
-        },
-      });
-      void promise.then(
-        (result) => {
-          if (!isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)) {
-            return;
-          }
-          if (result.status === "requires_history_reconciliation" && !options?.stashLocalChanges) {
-            if (requestTarget.environmentId && requestTarget.cwd) {
-              setPendingHistoryReconciliation({
-                environmentId: requestTarget.environmentId,
-                cwd: requestTarget.cwd,
-                result,
-              });
-            }
-          } else if (result.status === "requires_history_reconciliation") {
-            setPendingHistoryReconciliation(null);
-            setStashDialogMode("create");
-          } else if (
-            result.status === "pulled_with_restore_conflicts" ||
-            result.status === "pulled_with_restore_failure" ||
-            result.status === "update_failed_with_protected_changes"
-          ) {
-            if (requestTarget.environmentId && requestTarget.cwd) {
-              setPendingStashRecovery({
-                environmentId: requestTarget.environmentId,
-                cwd: requestTarget.cwd,
-                title:
-                  result.status === "update_failed_with_protected_changes"
-                    ? "Update stopped; protected changes remain"
-                    : "Branch updated; local changes need attention",
-                detail:
-                  result.status === "pulled_with_restore_conflicts"
-                    ? "Threadlines kept the protected stash because restoring it caused conflicts."
-                    : result.detail,
-                stashId: result.stashId,
-                recoveryRef: result.recoveryRef,
-                conflictedPaths:
-                  result.status === "pulled_with_restore_failure" ? [] : result.conflictedPaths,
-              });
-            }
-            setPendingHistoryReconciliation(null);
-          } else {
-            setPendingHistoryReconciliation(null);
-          }
-          refreshPanel();
-        },
-        () => {
-          if (
-            options?.historyReconciliation &&
-            isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)
-          ) {
-            // A failed confirmation may mean HEAD or the upstream moved. Require a fresh probe
-            // instead of leaving a stale destructive confirmation available for retry.
-            setPendingHistoryReconciliation(null);
-            refreshPanel();
-          }
-        },
-      );
-    },
-    [
-      cwd,
-      environmentId,
-      hasBranchDivergence,
-      isParentRepositoryConfirmationRequired,
-      pullMutation,
-      refreshPanel,
-      threadToastData,
-    ],
-  );
-
-  const runPull = useCallback(() => {
-    if (shouldProtectChangesBeforePull) {
-      setSafePullConfirmationOpen(true);
-      return;
-    }
-    executePull();
-  }, [executePull, shouldProtectChangesBeforePull]);
-
   const createStash = useCallback(() => {
     const message = stashMessage.trim();
     const promise = createStashMutation.mutateAsync({
@@ -3109,7 +2765,7 @@ export function SourceControlPanel({
 
   const applySelectedStash = useCallback(
     (stash: VcsStashEntry, dropAfterApply: boolean) => {
-      const requestTarget: PullRequestTarget = { environmentId, cwd };
+      const requestTarget: GitPullTarget = { environmentId, cwd };
       const promise = applyStashMutation.mutateAsync({
         selector: stash.selector,
         expectedStashId: stash.id,
@@ -3153,9 +2809,9 @@ export function SourceControlPanel({
             result.status === "conflicted" &&
             requestTarget.environmentId &&
             requestTarget.cwd &&
-            isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)
+            isCurrentPullTarget(requestTarget)
           ) {
-            setPendingStashRecovery({
+            showStashRecovery({
               environmentId: requestTarget.environmentId,
               cwd: requestTarget.cwd,
               title: "Stash needs conflict resolution",
@@ -3173,7 +2829,15 @@ export function SourceControlPanel({
         },
       );
     },
-    [applyStashMutation, cwd, environmentId, refreshPanel, threadToastData],
+    [
+      applyStashMutation,
+      cwd,
+      environmentId,
+      isCurrentPullTarget,
+      refreshPanel,
+      showStashRecovery,
+      threadToastData,
+    ],
   );
 
   const dropSelectedStash = useCallback(() => {
@@ -4387,7 +4051,7 @@ export function SourceControlPanel({
                       type="button"
                       variant="outline"
                       size="xs"
-                      onClick={() => setApprovedParentRepositoryKey(parentRepositoryKey)}
+                      onClick={() => parentRepositoryApproval.setApproved(true)}
                     >
                       Use parent repository
                     </Button>
@@ -4405,13 +4069,13 @@ export function SourceControlPanel({
                   <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground/70">
                     <span className="inline-flex min-w-0 items-center gap-1">
                       <CheckIcon className="size-3 shrink-0 text-success" />
-                      Parent actions enabled for this panel
+                      Parent actions enabled for this folder
                     </span>
                     <Button
                       type="button"
                       variant="ghost"
                       size="xs"
-                      onClick={() => setApprovedParentRepositoryKey(null)}
+                      onClick={() => parentRepositoryApproval.setApproved(false)}
                     >
                       Lock
                     </Button>
@@ -4846,15 +4510,15 @@ export function SourceControlPanel({
             <div className="grid grid-cols-2 gap-1.5">
               <ActionButton
                 label={
-                  hasBranchDivergence
+                  pull.kind === "resolve_divergence"
                     ? "Resolve"
-                    : shouldProtectChangesBeforePull
+                    : pull.kind === "stash_and_pull"
                       ? "Stash & pull"
                       : "Pull"
                 }
                 icon={<DownloadIcon className="size-3" />}
-                disabledReason={pullDisabledReason}
-                onClick={runPull}
+                disabledReason={pull.disabledReason}
+                onClick={pull.run}
               />
               {/* Opening it in the app is the action; the host is still one
                   click away, because a review often finishes over there. */}
@@ -5247,44 +4911,6 @@ export function SourceControlPanel({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
-      <AlertDialog
-        open={safePullConfirmationOpen}
-        onOpenChange={(open) => {
-          if (!pullMutation.isPending) {
-            setSafePullConfirmationOpen(open);
-          }
-        }}
-      >
-        <AlertDialogPopup className="max-w-lg">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Stash, pull, and restore?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Threadlines will temporarily stash {changedFileCount} changed{" "}
-              {changedFileCount === 1 ? "file" : "files"}, including untracked files, fast-forward{" "}
-              <span className="font-mono">{status?.refName ?? "the current branch"}</span> by{" "}
-              {status?.behindCount ?? 0} {(status?.behindCount ?? 0) === 1 ? "commit" : "commits"},
-              then restore your staged and unstaged changes. Nothing will be committed or pushed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose
-              render={<Button variant="outline" size="sm" disabled={pullMutation.isPending} />}
-            >
-              Cancel
-            </AlertDialogClose>
-            <Button
-              size="sm"
-              disabled={pullMutation.isPending || pullDisabledReason !== null}
-              onClick={() => {
-                setSafePullConfirmationOpen(false);
-                executePull({ stashLocalChanges: true });
-              }}
-            >
-              Stash, pull &amp; restore
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
       <Dialog
         open={stashDialogMode === "create"}
         onOpenChange={(open) => {
@@ -5517,181 +5143,19 @@ export function SourceControlPanel({
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      <Dialog
-        open={activeStashRecovery !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingStashRecovery(null);
-          }
-        }}
-      >
-        <DialogPopup className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <TriangleAlertIcon className="size-4 text-amber-500" />
-              {activeStashRecovery?.title ?? "Protected changes need attention"}
-            </DialogTitle>
-            <DialogDescription>{activeStashRecovery?.detail}</DialogDescription>
-          </DialogHeader>
-          {activeStashRecovery ? (
-            <div className="divide-y divide-border border-t border-border px-6 text-sm">
-              {activeStashRecovery.conflictedPaths.length > 0 ? (
-                <div className="py-3">
-                  <div className="mb-1 text-xs text-muted-foreground">Conflicted files</div>
-                  {activeStashRecovery.conflictedPaths.map((filePath) => (
-                    <div key={filePath} className="truncate font-mono text-xs">
-                      {filePath}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              <div className="py-3">
-                <div className="text-xs text-muted-foreground">Protected stash</div>
-                <div className="break-all font-mono text-xs">{activeStashRecovery.stashId}</div>
-              </div>
-              {activeStashRecovery.recoveryRef ? (
-                <div className="py-3">
-                  <div className="text-xs text-muted-foreground">Recovery ref</div>
-                  <div className="break-all font-mono text-xs">
-                    {activeStashRecovery.recoveryRef}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setPendingStashRecovery(null);
-                setStashDialogMode("manage");
-              }}
-            >
-              View stashes
-            </Button>
-            {activeStashRecovery?.conflictedPaths[0] && onOpenDiff ? (
-              <Button
-                size="sm"
-                onClick={() => {
-                  const firstConflict = activeStashRecovery.conflictedPaths[0];
-                  setPendingStashRecovery(null);
-                  onOpenDiff(firstConflict);
-                }}
-              >
-                Review conflicts
-              </Button>
-            ) : (
-              <Button size="sm" onClick={() => setPendingStashRecovery(null)}>
-                Done
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
       <PublishRepositoryDialog
         open={isPublishDialogOpen}
         onOpenChange={setIsPublishDialogOpen}
         environmentId={target.environmentId}
         gitCwd={target.cwd}
       />
-      <AlertDialog
-        open={activeHistoryReconciliation !== null}
-        onOpenChange={(open) => {
-          if (!open && !pullMutation.isPending) {
-            setPendingHistoryReconciliation(null);
-          }
+      <GitPullDialogs
+        pull={pull}
+        stashRecoveryAction={{
+          label: "View stashes",
+          run: () => setStashDialogMode("manage"),
         }}
-      >
-        <AlertDialogPopup className="max-w-lg">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <TriangleAlertIcon className="size-4 text-amber-500" />
-              Branch histories are unrelated
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {activeHistoryReconciliation ? (
-                <span className="space-y-2">
-                  <span className="block">
-                    <span className="font-mono">
-                      {activeHistoryReconciliation.result.upstreamRef}
-                    </span>{" "}
-                    no longer shares commit history with your local{" "}
-                    <span className="font-mono">{activeHistoryReconciliation.result.refName}</span>.
-                    This usually means the upstream branch was force-pushed or recreated.
-                  </span>
-                  {activeHistoryReconciliation.result.equivalentUpstreamCommitSha ? (
-                    <span className="block">
-                      Threadlines found your current file snapshot in the rewritten upstream at{" "}
-                      <span className="font-mono">
-                        {activeHistoryReconciliation.result.equivalentUpstreamCommitSha.slice(
-                          0,
-                          12,
-                        )}
-                      </span>
-                      . It can save your local HEAD under a recovery ref, then update the branch to
-                      the rewritten upstream.
-                    </span>
-                  ) : (
-                    <span className="block">
-                      Threadlines could not match your current file snapshot in the rewritten
-                      upstream. Continuing saves your current HEAD under a recovery ref, then
-                      replaces the local branch with the upstream version.
-                    </span>
-                  )}
-                  <span className="block">
-                    The backup stays local and is never pushed automatically.
-                  </span>
-                </span>
-              ) : null}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose
-              render={<Button variant="outline" size="sm" disabled={pullMutation.isPending} />}
-            >
-              Cancel
-            </AlertDialogClose>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={pullMutation.isPending || activeHistoryReconciliation === null}
-              onClick={() => {
-                if (
-                  !activeHistoryReconciliation ||
-                  !isSamePullRequestTarget(
-                    activeHistoryReconciliation,
-                    currentPullTargetRef.current,
-                  )
-                ) {
-                  return;
-                }
-                executePull({
-                  historyReconciliation: {
-                    refName: activeHistoryReconciliation.result.refName,
-                    upstreamRef: activeHistoryReconciliation.result.upstreamRef,
-                    expectedLocalSha: activeHistoryReconciliation.result.localSha,
-                    expectedUpstreamSha: activeHistoryReconciliation.result.upstreamSha,
-                  },
-                });
-              }}
-            >
-              Back up local &amp; use upstream
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-      <GitAuthRemediationDialog
-        open={authRemediationFailure !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setAuthRemediationFailure(null);
-          }
-        }}
-        environmentId={target.environmentId}
-        gitCwd={target.cwd}
-        failure={authRemediationFailure}
-        onResolved={runPull}
+        onOpenDiff={onOpenDiff}
       />
     </div>
   );

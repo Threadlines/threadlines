@@ -33,6 +33,7 @@ import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadAct
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
 import { HeaderAgentFaces } from "./HeaderAgentFaces";
+import { HeaderSourceChanges } from "./HeaderSourceChanges";
 import type { WorkingTreeChanges } from "../ChatView.logic";
 import { cn } from "../../lib/utils";
 import { useComputerLabel } from "../sidebar/linkedComputers";
@@ -98,9 +99,9 @@ interface ChatHeaderProps {
    *  Source tab. Null when the tree is clean or the status has not loaded. */
   workingTreeChanges: WorkingTreeChanges | null;
   /**
-   * Commits the branch is behind its upstream, shown beside the change count
-   * as a pull-available hint. Null when there is nothing to pull or the status
-   * has not loaded.
+   * Commits the branch is behind its upstream, shown beside the change count;
+   * right-clicking it pulls without opening the Source tab. Null when there is
+   * nothing to pull or the status has not loaded.
    */
   remoteBehindCount: number | null;
   /** Subagents running right now, drawn as faces. Null when nothing is live. */
@@ -176,36 +177,6 @@ export function resolveContinueInProjectHeaderState(disabledReason: string | nul
     disabled,
     tooltip: disabled ? disabledReason : "Start a project thread seeded with this chat",
   };
-}
-
-/** Reads the change count out loud, naming what clicking it does. */
-export function formatSourceChangesLabel(input: {
-  readonly workingTreeChanges: WorkingTreeChanges | null;
-  readonly remoteBehindCount: number | null;
-}): string {
-  const parts: string[] = [];
-  const changes = input.workingTreeChanges;
-  if (changes) {
-    parts.push(
-      changes.insertions > 0 || changes.deletions > 0
-        ? `Uncommitted changes: ${changes.insertions} added, ${changes.deletions} removed.`
-        : `Uncommitted changes in ${formatFileCount(changes.fileCount)}.`,
-    );
-  }
-  if (input.remoteBehindCount !== null) {
-    parts.push(
-      input.remoteBehindCount === 1
-        ? "1 commit behind the remote."
-        : `${input.remoteBehindCount} commits behind the remote.`,
-    );
-  }
-  parts.push("Open the Source tab.");
-  return parts.join(" ");
-}
-
-function formatFileCount(count: number): string {
-  if (count === 0) return "the working tree";
-  return count === 1 ? "1 file" : `${count} files`;
 }
 
 const STARTED_BY_CHIP_CLASS =
@@ -362,8 +333,6 @@ export const ChatHeader = memo(function ChatHeader({
   const continueInProjectState = resolveContinueInProjectHeaderState(
     continueInProjectDisabledReason,
   );
-  const showSourceChanges =
-    sourceControlAvailable && (workingTreeChanges !== null || remoteBehindCount !== null);
   // The divider splits launchers from the views on its right; with nothing on
   // its left it would only hang there. A narrow header drops it for the title.
   const hasLaunchers =
@@ -524,53 +493,15 @@ export const ChatHeader = memo(function ChatHeader({
             className="mx-0.5 h-4 w-px shrink-0 bg-border @max-xl/header-actions:hidden"
           />
         ) : null}
-        {/* Hidden on a narrow header, where the room goes to the title; the
-            Source tab still lists every count. */}
-        {showSourceChanges ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  className="shrink-0 gap-1 px-1.5 font-mono text-[10.5px] @max-xl/header-actions:hidden"
-                  onClick={onOpenSourceTab}
-                  aria-label={formatSourceChangesLabel({ workingTreeChanges, remoteBehindCount })}
-                  data-header-source-changes="true"
-                />
-              }
-            >
-              {workingTreeChanges ? (
-                workingTreeChanges.insertions > 0 || workingTreeChanges.deletions > 0 ? (
-                  <>
-                    <span className="text-success">+{workingTreeChanges.insertions}</span>
-                    <span className="text-destructive">−{workingTreeChanges.deletions}</span>
-                  </>
-                ) : (
-                  <span className="font-sans text-[11px] text-muted-foreground">
-                    {formatFileCount(workingTreeChanges.fileCount)}
-                  </span>
-                )
-              ) : null}
-              {/* Deliberately hue-less: the arrow is the signal, and a third
-                  color beside the green/red counts would crowd them. */}
-              {remoteBehindCount !== null ? (
-                <span className="text-muted-foreground">↓{remoteBehindCount}</span>
-              ) : null}
-            </TooltipTrigger>
-            <TooltipPopup side="bottom">
-              {workingTreeChanges ? "Uncommitted changes. " : null}Open the Source tab.
-              {remoteBehindCount !== null ? (
-                <div className="text-muted-foreground">
-                  {remoteBehindCount === 1
-                    ? "1 commit behind the remote."
-                    : `${remoteBehindCount} commits behind the remote.`}{" "}
-                  Pull from the Source tab.
-                </div>
-              ) : null}
-            </TooltipPopup>
-          </Tooltip>
+        {sourceControlAvailable && openInCwd !== null ? (
+          <HeaderSourceChanges
+            environmentId={activeThreadEnvironmentId}
+            cwd={openInCwd}
+            threadRef={activeThreadRef}
+            workingTreeChanges={workingTreeChanges}
+            remoteBehindCount={remoteBehindCount}
+            onOpenSourceTab={onOpenSourceTab}
+          />
         ) : null}
         {liveAgents ? (
           <HeaderAgentFaces

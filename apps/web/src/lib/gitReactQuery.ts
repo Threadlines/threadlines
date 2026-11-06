@@ -13,6 +13,7 @@ import {
 } from "@threadlines/contracts";
 import {
   infiniteQueryOptions,
+  type MutationFilters,
   mutationOptions,
   queryOptions,
   type QueryClient,
@@ -97,6 +98,37 @@ export const gitMutationKeys = {
   applyAuthRemediation: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "apply-auth-remediation", environmentId ?? null, cwd] as const,
 };
+
+/** Git mutations that only read a checkout; they never hold up a change to it. */
+const CHECKOUT_READING_GIT_MUTATIONS: ReadonlySet<string> = new Set([
+  "generate-commit-message",
+  "start-provider-review",
+]);
+
+/**
+ * Matches every git action that changes the checkout at `cwd`, from any
+ * surface. Pass it to `useIsMutating` to hold a new action back while one
+ * is under way.
+ */
+export function checkoutChangingGitMutationFilters(
+  environmentId: EnvironmentId | null,
+  cwd: string | null,
+): MutationFilters {
+  return {
+    predicate: (mutation) => {
+      const key = mutation.options.mutationKey;
+      return (
+        key !== undefined &&
+        key[0] === "git" &&
+        key[1] === "mutation" &&
+        typeof key[2] === "string" &&
+        !CHECKOUT_READING_GIT_MUTATIONS.has(key[2]) &&
+        key[3] === (environmentId ?? null) &&
+        key[4] === cwd
+      );
+    },
+  };
+}
 
 export function invalidateGitQueries(
   queryClient: QueryClient,
