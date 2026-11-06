@@ -97,7 +97,7 @@ function DrawerPopup({
               ? "h-full border-e [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(-100%)] data-starting-style:[transform:translateX(-100%)]"
               : side === "right"
                 ? "h-full border-s [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(100%)] data-starting-style:[transform:translateX(100%)]"
-                : "max-h-[88dvh] w-full rounded-t-2xl border-t pb-[env(safe-area-inset-bottom)] [transform:translateY(var(--drawer-swipe-movement-y))] data-ending-style:[transform:translateY(100%)] data-starting-style:[transform:translateY(100%)]",
+                : "max-h-[88dvh] w-full rounded-t-2xl border-t pb-(--safe-area-bottom) [transform:translateY(var(--drawer-swipe-movement-y))] data-ending-style:[transform:translateY(100%)] data-starting-style:[transform:translateY(100%)]",
             className,
           )}
           data-slot="drawer-popup"

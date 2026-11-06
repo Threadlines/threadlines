@@ -8544,8 +8544,8 @@ export default function ChatView(props: ChatViewProps) {
               className={cn(
                 "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
                 isGitRepo
-                  ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
-                  : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+                  ? "pb-[calc(var(--safe-area-bottom)+0.25rem)]"
+                  : "pb-[calc(var(--safe-area-bottom)+0.75rem)] sm:pb-[calc(var(--safe-area-bottom)+1rem)]",
               )}
             >
               <div className="relative isolate mx-auto w-full draft-hero:max-w-[45rem]">
