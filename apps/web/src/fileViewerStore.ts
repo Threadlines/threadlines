@@ -671,32 +671,50 @@ export async function placeChatFileReference(input: {
   readonly projectRoot: string | null;
   readonly reference: { readonly path: string; readonly line: number | undefined };
 }): Promise<ChatFileReferencePlace> {
+  const { line } = input.reference;
+  const path = input.reference.path.replace(/^(?:\.\/)+/u, "");
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) {
+    // A path that steps through folders says exactly where the file is.
+    return { status: "found", file: { cwd: input.cwd, relativePath: path, line } };
+  }
   const { ensureEnvironmentApi } = await import("./environmentApi");
   const api = ensureEnvironmentApi(input.environmentId);
-  const { path, line } = input.reference;
+  const search = (folder: string, query: string) =>
+    api.projects.searchEntries({
+      cwd: folder,
+      query,
+      limit: FILE_REFERENCE_SEARCH_LIMIT,
+      match: "path-ending",
+    });
   const folders =
     input.projectRoot !== null && !isSameFolder(input.projectRoot, input.cwd)
       ? [input.cwd, input.projectRoot]
       : [input.cwd];
   for (const folder of folders) {
-    const result = await api.projects.searchEntries({
-      cwd: folder,
-      query: path,
-      limit: FILE_REFERENCE_SEARCH_LIMIT,
-      match: "path-ending",
-    });
-    const match = findReferencedFile(result.entries, path);
+    let result = await search(folder, path);
+    const isOlderServer = result.match !== "path-ending";
+    if (isOlderServer && path.includes("/")) {
+      // An older server ranked fuzzy hits for the whole path. Asked for the
+      // file name instead, it ranks every file with that name first.
+      result = await search(folder, path.slice(path.lastIndexOf("/") + 1));
+    }
+    let match = findReferencedFile(result.entries, path);
     const foundAsWritten = match.status === "found" && match.path === path;
-    if (result.match !== "path-ending" && path.includes("/") && !foundAsWritten) {
-      // An older server ranked hits instead, from an index that leaves out
-      // ignored files, so the path as written is read where it says. A read
-      // that fails proves nothing, and the path as written stands.
+    if (isOlderServer && path.includes("/") && !foundAsWritten) {
+      // The older server's index leaves out ignored files, so the path as
+      // written is read where it says. A read that fails proves nothing, and
+      // the path as written stands.
       const asWritten = await api.projects
         .readFile({ cwd: folder, relativePath: path })
         .catch(() => undefined);
       if (asWritten === undefined || asWritten.kind !== "missing") {
         return { status: "found", file: { cwd: folder, relativePath: path, line } };
       }
+    }
+    if (!isOlderServer && result.truncated && path.includes("/") && !foundAsWritten) {
+      // The project is past the index's size cap, so one file found ending in
+      // the path does not mean it is the only one.
+      match = match.status === "none" ? match : { status: "ambiguous" };
     }
     if (match.status === "found") {
       return { status: "found", file: { cwd: folder, relativePath: match.path, line } };

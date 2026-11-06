@@ -851,13 +851,17 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
     const index = yield* Cache.get(workspaceIndexCache, cwd);
     const wanted = query.toLowerCase();
     const ending = `/${wanted}`;
-    const files: SearchableWorkspaceEntry[] = atQuery ? [atQuery] : [];
+    const endingFiles: SearchableWorkspaceEntry[] = [];
     for (const entry of index.entries) {
       if (entry.kind !== "file" || entry.path === atQuery?.path) continue;
       if (entry.normalizedPath === wanted || entry.normalizedPath.endsWith(ending)) {
-        files.push(entry);
+        endingFiles.push(entry);
       }
     }
+    // In path order whichever way the index was built (a filesystem walk goes
+    // folder level by level), the order ranked search breaks ties in.
+    endingFiles.sort((left, right) => left.path.localeCompare(right.path));
+    const files = atQuery ? [atQuery, ...endingFiles] : endingFiles;
     return {
       entries: files.slice(0, limit),
       truncated: index.truncated || files.length > limit,

@@ -137,8 +137,9 @@ describe("fileViewerStore", () => {
               { path: "shop/Analytics/Helper/Data.php", kind: "file" },
               { path: "shop/Banner/Helper/Data.php", kind: "file" },
             ]
-          : [{ path: "module/Model/Form.php", kind: "file" }],
-      truncated: false,
+          : [{ path: `module/${input.query}`, kind: "file" }],
+      // Past the index's size cap, one file found is not the only one.
+      truncated: input.query === "View/Form.php",
       match: "path-ending",
     }));
     const readFile = vi.fn(async (_input: { relativePath: string }) => {
@@ -158,24 +159,29 @@ describe("fileViewerStore", () => {
       });
 
     try {
-      await expect(place("Model/Form.php")).resolves.toEqual({
+      // A leading ./ says nothing the search needs.
+      await expect(place("./Model/Form.php")).resolves.toEqual({
         status: "found",
         file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
       });
       await expect(place("Helper/Data.php")).resolves.toEqual({ status: "ambiguous" });
-      expect(currentSearch.mock.calls[0]?.[0]).toMatchObject({ match: "path-ending" });
+      await expect(place("View/Form.php")).resolves.toEqual({ status: "ambiguous" });
+      expect(currentSearch.mock.calls.map(([input]) => input)).toMatchObject([
+        { query: "Model/Form.php", match: "path-ending" },
+        { query: "Helper/Data.php", match: "path-ending" },
+        { query: "View/Form.php", match: "path-ending" },
+      ]);
       expect(readFile).not.toHaveBeenCalled();
 
       // An older server ranks fuzzy hits from an index without ignored files.
-      // A read that fails proves nothing, so the path as written stands.
+      // Asked for the file name it ranks namesakes first; a read of the path
+      // as written that fails proves nothing, so that path stands.
+      const olderSearch = vi.fn(async (_input: { query: string }) => ({
+        entries: [{ path: "module/Model/Form.php", kind: "file" }],
+        truncated: false,
+      }));
       __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
-        projects: {
-          readFile,
-          searchEntries: async () => ({
-            entries: [{ path: "module/Model/Form.php", kind: "file" }],
-            truncated: false,
-          }),
-        },
+        projects: { readFile, searchEntries: olderSearch },
       } as unknown as EnvironmentApi);
       await expect(place("Model/Form.php")).resolves.toEqual({
         status: "found",
@@ -186,6 +192,12 @@ describe("fileViewerStore", () => {
         status: "found",
         file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
       });
+      expect(olderSearch.mock.calls.map(([input]) => input.query)).toEqual([
+        "Model/Form.php",
+        "Form.php",
+        "Model/Form.php",
+        "Form.php",
+      ]);
     } finally {
       __resetEnvironmentApiOverridesForTests();
       vi.unstubAllGlobals();

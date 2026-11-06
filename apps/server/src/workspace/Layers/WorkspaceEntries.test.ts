@@ -297,6 +297,19 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
         });
         expect(form.entries.map((entry) => entry.path)).toEqual(["local/Model/Form.php"]);
         expect(form.truncated).toBe(true);
+
+        // Outside git the index walks folder level by level; the files still
+        // come back in path order.
+        const plain = yield* makeTempDir({ prefix: "threadlines-workspace-path-ending-plain-" });
+        yield* writeTextFile(plain, "z/Foo.ts", "");
+        yield* writeTextFile(plain, "a/deep/Foo.ts", "");
+        const foo = yield* searchWorkspaceEntries({
+          cwd: plain,
+          query: "Foo.ts",
+          limit: 10,
+          match: "path-ending",
+        });
+        expect(foo.entries.map((entry) => entry.path)).toEqual(["a/deep/Foo.ts", "z/Foo.ts"]);
       }),
     );
 
