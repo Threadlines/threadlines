@@ -1346,15 +1346,16 @@ describe("CheckpointReactor", () => {
           additions: 1,
           deletions: 1,
         },
+        // Both files are new this turn, and the summary says so.
         {
           path: "apps/desktop/src/main.ts",
-          kind: "modified",
+          kind: "add",
           additions: 1,
           deletions: 0,
         },
         {
           path: "packages/contracts/src/ipc.ts",
-          kind: "modified",
+          kind: "add",
           additions: 2,
           deletions: 0,
         },

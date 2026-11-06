@@ -1,15 +1,16 @@
 /**
  * The right sidebar's tab model.
  *
- * The sidebar is one browser-style panel with a tab strip: Source, Diff and
- * Agents are surfaces you open into it, each at most once. Two things have to
+ * The sidebar is one browser-style panel with a tab strip: Source, Diff,
+ * Pull request, Agents and Media are surfaces you open into it, each at most
+ * once. Two things have to
  * agree about it — the route that renders the panel and the chat header that
  * toggles it — so the state lives here rather than in either of them.
  *
  * Split of authority:
  *
  * - The URL owns the ACTIVE tab, mapped onto the params that already existed
- *   (`sourceControl=1`, `diff=1`, `agents=1`). Deep links keep working and an
+ *   (`sourceControl=1`, `diff=1`, `agents=1`, `media=1`). Deep links keep working and an
  *   explicit `0` still means closed.
  * - This module owns what the URL cannot say: which tabs are in the strip,
  *   whether the sidebar is showing at all (it can be open on the launcher with
@@ -28,7 +29,7 @@ import {
 
 /** A surface the sidebar can open, and the key its active state is filed under
  *  in the URL. */
-export type RightPanelTab = "sourceControl" | "diff" | "pullRequest" | "agents";
+export type RightPanelTab = "sourceControl" | "diff" | "pullRequest" | "agents" | "media";
 
 /** Launcher order and `+` menu order. The strip itself is ordered by when each
  *  tab was opened, like a browser's, so this is only how the fixed menus list
@@ -38,6 +39,7 @@ export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
   "diff",
   "pullRequest",
   "agents",
+  "media",
 ];
 
 export interface RightPanelSurface {
@@ -74,12 +76,19 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
     label: "Agents",
     description: "Subagents and background runs.",
   },
+  media: {
+    id: "media",
+    // "Media", not "Assets": the word a user reaches for when the thing they
+    // want is a picture, a video or a PDF an agent made, not a build input.
+    label: "Media",
+    description: "Pictures and files agents made.",
+  },
 };
 
 /**
  * Which surfaces a thread has at all. General Chats have no repository, so
  * they offer Agents alone; drafts have no turn yet, so they offer the two git
- * surfaces and no Agents. Unavailable surfaces are absent everywhere — strip,
+ * surfaces and neither Agents nor Media (a turn is what makes media). Unavailable surfaces are absent everywhere — strip,
  * launcher, `+` menu — and a deep link to one is ignored.
  */
 export function availableRightPanelTabs(input: {
@@ -324,6 +333,9 @@ export function activeRightPanelTabFromSearch(search: DiffRouteSearch): RightPan
   if (search.agents === "1") {
     return "agents";
   }
+  if (search.media === "1") {
+    return "media";
+  }
   if (search.sourceControl === "1") {
     return "sourceControl";
   }
@@ -336,7 +348,12 @@ export function isRightPanelClosedInSearch(search: DiffRouteSearch): boolean {
   if (activeRightPanelTabFromSearch(search) !== null) {
     return false;
   }
-  return search.sourceControl === "0" || search.pullRequest === "0" || search.agents === "0";
+  return (
+    search.sourceControl === "0" ||
+    search.pullRequest === "0" ||
+    search.agents === "0" ||
+    search.media === "0"
+  );
 }
 
 /**
@@ -370,6 +387,7 @@ export function rightPanelTabSearchParams<T extends Record<string, unknown>>(
     sourceControl: tab === "sourceControl" ? ("1" as const) : ("0" as const),
     pullRequest: tab === "pullRequest" ? ("1" as const) : ("0" as const),
     agents: tab === "agents" ? ("1" as const) : ("0" as const),
+    media: tab === "media" ? ("1" as const) : ("0" as const),
   };
 }
 

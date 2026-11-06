@@ -243,6 +243,62 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
     );
   });
 
+  describe("readMediaChunk", () => {
+    it.effect("reads a video in pieces, byte for byte, and only video or sound files", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const bytes = Uint8Array.from({ length: 300 }, (_, index) => index % 256);
+        yield* fileSystem.writeFile(path.join(cwd, "clip.MOV"), bytes).pipe(Effect.orDie);
+        yield* fileSystem.writeFile(path.join(cwd, "notes.txt"), bytes).pipe(Effect.orDie);
+
+        const middle = yield* workspaceFileSystem.readMediaChunk({
+          cwd,
+          relativePath: "clip.MOV",
+          offset: 100,
+          length: 50,
+        });
+        expect(middle).toEqual({
+          kind: "chunk",
+          relativePath: "clip.MOV",
+          mimeType: "video/mp4",
+          size: 300,
+          version: expect.stringMatching(/^300-\d+$/),
+          offset: 100,
+          base64: Buffer.from(bytes.subarray(100, 150)).toString("base64"),
+        });
+        // A piece that runs past the end stops at it.
+        const tail = yield* workspaceFileSystem.readMediaChunk({
+          cwd,
+          relativePath: "clip.MOV",
+          offset: 280,
+          length: 100,
+        });
+        expect(tail.kind === "chunk" ? Buffer.from(tail.base64, "base64") : null).toEqual(
+          Buffer.from(bytes.subarray(280)),
+        );
+        expect(
+          yield* workspaceFileSystem.readMediaChunk({
+            cwd,
+            relativePath: "notes.txt",
+            offset: 0,
+            length: 10,
+          }),
+        ).toEqual({ kind: "unsupported", relativePath: "notes.txt" });
+        expect(
+          yield* workspaceFileSystem.readMediaChunk({
+            cwd,
+            relativePath: "gone.mp4",
+            offset: 0,
+            length: 10,
+          }),
+        ).toEqual({ kind: "missing", relativePath: "gone.mp4" });
+      }),
+    );
+  });
+
   describe("readFile", () => {
     it.effect("reads text files relative to the workspace root", () =>
       Effect.gen(function* () {

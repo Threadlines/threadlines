@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProjectRevisionFileResult } from "./project.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
@@ -352,6 +353,22 @@ export const VcsWorkingTreeDiffResult = Schema.Struct({
   diff: Schema.String,
 });
 export type VcsWorkingTreeDiffResult = typeof VcsWorkingTreeDiffResult.Type;
+
+/**
+ * One file of the working tree's change as the last commit (`head`) or the
+ * disk (`worktree`) holds it: the two sides of a picture in the Diff tab's
+ * uncommitted view. The path is repository-root-relative, as the working tree
+ * diff names it, and never leaves the repository.
+ */
+export const VcsReadRepositoryFileInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  path: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(4096)),
+  source: Schema.Literals(["head", "worktree"]),
+});
+export type VcsReadRepositoryFileInput = typeof VcsReadRepositoryFileInput.Type;
+
+export const VcsReadRepositoryFileResult = ProjectRevisionFileResult;
+export type VcsReadRepositoryFileResult = typeof VcsReadRepositoryFileResult.Type;
 
 export const VcsDiscardChangesInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,

@@ -44,6 +44,9 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { FileEditorPane } from "./FileEditorPane";
+import { classifyMediaPath } from "@threadlines/shared/media";
+
+import { FileViewerMedia } from "./FileViewerMedia";
 import { FileViewerPdf } from "./FileViewerPdf";
 import { resolveFileConflict, restoreFileOriginal } from "./fileEditorSaveCoordinator";
 import type { RevealLineNotice } from "./FileViewerOverlay.logic";
@@ -1153,6 +1156,20 @@ function FileViewerPreview({
   }
 
   if (file.kind === "binary") {
+    const mediaKind = classifyMediaPath(activePath);
+    if (mediaKind === "video" || mediaKind === "audio") {
+      return (
+        <FileViewerMedia
+          key={activePath}
+          environmentId={context.environmentId}
+          cwd={context.cwd}
+          path={activePath}
+          size={file.size}
+          mediaKind={mediaKind}
+          fallbackActions={<FileViewerFallbackActions context={context} path={activePath} />}
+        />
+      );
+    }
     return <FileViewerCantShow context={context} path={activePath} size={file.size} />;
   }
 
@@ -1363,8 +1380,6 @@ function FileViewerCantShow({
   path: string;
   size: number;
 }) {
-  const target = viewerFileTarget(context.cwd, path);
-  const launchers = readFileActionLaunchers(context.environmentId);
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground">
       <FileImage aria-hidden className="size-5" />
@@ -1372,24 +1387,41 @@ function FileViewerCantShow({
         {basenameOf(path)} can't be shown here ({Math.ceil(size / 1024)} KB).
       </p>
       <div className="flex items-center gap-2">
-        {launchers.canReveal ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => runFileAction("reveal", target, launchers)}
-          >
-            {`Reveal in ${editorLabel("file-manager")}`}
-          </Button>
-        ) : null}
+        <FileViewerFallbackActions context={context} path={path} />
+      </div>
+    </div>
+  );
+}
+
+/** Reveal and Copy path: what is left to do with a file the viewer can't show. */
+function FileViewerFallbackActions({
+  context,
+  path,
+}: {
+  context: FileViewerContext;
+  path: string;
+}) {
+  const target = viewerFileTarget(context.cwd, path);
+  const launchers = readFileActionLaunchers(context.environmentId);
+  return (
+    <>
+      {launchers.canReveal ? (
         <Button
           size="sm"
           variant="outline"
-          onClick={() => runFileAction("copy-path", target, launchers)}
+          onClick={() => runFileAction("reveal", target, launchers)}
         >
-          Copy path
+          {`Reveal in ${editorLabel("file-manager")}`}
         </Button>
-      </div>
-    </div>
+      ) : null}
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => runFileAction("copy-path", target, launchers)}
+      >
+        Copy path
+      </Button>
+    </>
   );
 }
 

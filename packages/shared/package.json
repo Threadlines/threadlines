@@ -422,6 +422,10 @@
     "./knownAssistants": {
       "types": "./src/knownAssistants.ts",
       "import": "./src/knownAssistants.ts"
+    },
+    "./media": {
+      "types": "./src/media.ts",
+      "import": "./src/media.ts"
     }
   },
   "scripts": {

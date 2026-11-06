@@ -1,8 +1,24 @@
 import { create } from "zustand";
 
 export interface ExpandedImageItem {
-  src: string;
+  /** The picture, when the caller already holds it. */
+  src?: string | undefined;
+  /**
+   * Fetches the picture when the viewer comes to it, for a list too heavy to
+   * load whole (the Media tab's pictures). Resolves to null when it can't be
+   * read. Used when `src` is absent.
+   */
+  load?: (() => Promise<string | null>) | undefined;
   name: string;
+  /** A line under the name: what changed it, and where. */
+  detail?: string | undefined;
+  /**
+   * The same picture before a change. Present, the viewer offers Before and
+   * After; resolving to null reads as "no earlier version".
+   */
+  before?: { readonly load: () => Promise<string | null> } | undefined;
+  /** Which side the viewer opens on, when the item has a `before`. */
+  startOn?: "before" | "after" | undefined;
 }
 
 export interface ExpandedImagePreview {

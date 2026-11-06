@@ -250,6 +250,54 @@ export const ProjectMissingFileContent = Schema.Struct({
 });
 export type ProjectMissingFileContent = typeof ProjectMissingFileContent.Type;
 
+/** The most one media chunk read returns, before base64. */
+export const PROJECT_MEDIA_CHUNK_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * A piece of a video or sound file, for playing it. The file travels in
+ * pieces because the app's one connection to a computer carries it (a phone's
+ * included, through the relay), and a whole video is too big for one message.
+ */
+export const ProjectReadMediaChunkInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  /** Relative to `cwd`, or an absolute path for a file outside the project. */
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  offset: NonNegativeInt,
+  length: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROJECT_MEDIA_CHUNK_MAX_BYTES)),
+});
+export type ProjectReadMediaChunkInput = typeof ProjectReadMediaChunkInput.Type;
+
+export const ProjectReadMediaChunkResult = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("chunk"),
+    relativePath: TrimmedNonEmptyString,
+    mimeType: TrimmedNonEmptyString,
+    /** The whole file's size; `base64` covers `offset` onwards, at most `length` bytes. */
+    size: NonNegativeInt,
+    /** Changes whenever the file does; pieces of one load must all match. Opaque. */
+    version: TrimmedNonEmptyString,
+    offset: NonNegativeInt,
+    base64: Schema.String,
+  }),
+  ProjectMissingFileContent,
+  /** Not a video or sound file this read serves. */
+  Schema.Struct({ kind: Schema.Literal("unsupported"), relativePath: TrimmedNonEmptyString }),
+]);
+export type ProjectReadMediaChunkResult = typeof ProjectReadMediaChunkResult.Type;
+
+/**
+ * A file as one revision holds it (a turn's snapshot, the last commit, or the
+ * disk): a picture's bytes, `binary` for anything else or anything too big to
+ * send, `missing` when that revision has no file there. The two sides of a
+ * picture's Before/After.
+ */
+export const ProjectRevisionFileResult = Schema.Union([
+  ProjectImageFileContent,
+  ProjectBinaryFileContent,
+  ProjectMissingFileContent,
+]);
+export type ProjectRevisionFileResult = typeof ProjectRevisionFileResult.Type;
+
 export const ProjectReadFileResult = Schema.Union([
   ProjectTextFileContent,
   ProjectImageFileContent,

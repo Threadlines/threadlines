@@ -134,6 +134,23 @@ export interface VcsCheckpointFileStat {
   readonly deletions: number;
 }
 
+export interface VcsReadRevisionFileInput {
+  readonly cwd: string;
+  /** A checkpoint ref, or `HEAD` for the last commit. */
+  readonly revision: CheckpointRef | "HEAD";
+  /** Repository-root-relative path. */
+  readonly path: string;
+  /** A larger file comes back as `too-large`, without its bytes. */
+  readonly maxBytes: number;
+}
+
+/** A file's bytes as one revision holds them. */
+export type VcsRevisionFile =
+  | { readonly kind: "file"; readonly base64: string; readonly size: number }
+  | { readonly kind: "too-large"; readonly size: number }
+  /** The revision has no file at that path (or no such revision). */
+  | { readonly kind: "missing" };
+
 export interface VcsCheckpointOps {
   readonly captureCheckpoint: (input: VcsCaptureCheckpointInput) => Effect.Effect<void, VcsError>;
   readonly hasCheckpointRef: (
@@ -167,6 +184,10 @@ export interface VcsCheckpointOps {
   readonly deleteCheckpointRefs: (
     input: VcsDeleteCheckpointRefsInput,
   ) => Effect.Effect<void, VcsError>;
+  /** One file's bytes at a snapshot or HEAD, for showing an earlier picture. */
+  readonly readRevisionFile: (
+    input: VcsReadRevisionFileInput,
+  ) => Effect.Effect<VcsRevisionFile, VcsError>;
 }
 
 export interface VcsDriverShape {

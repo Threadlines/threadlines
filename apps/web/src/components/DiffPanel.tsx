@@ -66,6 +66,8 @@ import {
   resolveFileDiffPath,
 } from "./diffs/fileDiffPresentation";
 import { DiffStatLabel } from "./chat/DiffStatLabel";
+import { DiffPictureCompare, type DiffPictureSource } from "./diffs/DiffPictureCompare";
+import { isImageFilePath } from "../lib/imageFilePaths";
 import { SourceControlIcon } from "./Icons";
 import {
   AlertDialog,
@@ -398,6 +400,44 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
       enabled: isGitRepo && diffMode === "workingTree",
     }),
   );
+  // Where a changed picture's two sides come from: the same snapshots as the
+  // patch on screen (one turn, all chat changes, or the last commit against
+  // the disk, read again whenever the working tree diff is).
+  const workingTreeDiffReadAt = workingTreeDiffQuery.dataUpdatedAt;
+  const pictureSource = useMemo<DiffPictureSource | null>(() => {
+    if (diffMode === "workingTree") {
+      return activeCwd
+        ? { kind: "workingTree", cwd: activeCwd, revision: String(workingTreeDiffReadAt) }
+        : null;
+    }
+    if (!activeThreadId) {
+      return null;
+    }
+    if (selectedTurn) {
+      return typeof selectedCheckpointTurnCount === "number" && selectedCheckpointTurnCount > 0
+        ? {
+            kind: "turns",
+            threadId: activeThreadId,
+            range: { kind: "turn", turnCount: selectedCheckpointTurnCount },
+          }
+        : null;
+    }
+    return typeof conversationCheckpointTurnCount === "number"
+      ? {
+          kind: "turns",
+          threadId: activeThreadId,
+          range: { kind: "thread", toTurnCount: conversationCheckpointTurnCount },
+        }
+      : null;
+  }, [
+    activeCwd,
+    activeThreadId,
+    conversationCheckpointTurnCount,
+    diffMode,
+    selectedCheckpointTurnCount,
+    selectedTurn,
+    workingTreeDiffReadAt,
+  ]);
   const selectedTurnCheckpointDiff = selectedTurn
     ? activeCheckpointDiffQuery.data?.diff
     : undefined;
@@ -1685,6 +1725,24 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                             unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                           }}
                         />
+                        {!collapsed &&
+                        pictureSource !== null &&
+                        activeEnvironmentId !== null &&
+                        isImageFilePath(filePath) ? (
+                          <DiffPictureCompare
+                            environmentId={activeEnvironmentId}
+                            path={filePath}
+                            previousPath={fileDiff.prevName}
+                            change={
+                              fileDiff.type === "new"
+                                ? "new"
+                                : fileDiff.type === "deleted"
+                                  ? "deleted"
+                                  : "changed"
+                            }
+                            source={pictureSource}
+                          />
+                        ) : null}
                       </div>
                     );
                   })}

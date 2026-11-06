@@ -14,6 +14,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 import type { CheckpointStoreError } from "../Errors.ts";
+import type { VcsReadRevisionFileInput, VcsRevisionFile } from "../../vcs/VcsDriver.ts";
 import { CheckpointRef } from "@threadlines/contracts";
 
 export interface CaptureCheckpointInput {
@@ -254,6 +255,14 @@ export interface CheckpointStoreShape {
   readonly deleteCheckpointRefs: (
     input: DeleteCheckpointRefsInput,
   ) => Effect.Effect<void, CheckpointStoreError>;
+
+  /**
+   * One file's bytes as a checkpoint (or HEAD) holds them, without touching
+   * the worktree: the earlier side of a picture's Before/After.
+   */
+  readonly readRevisionFile: (
+    input: VcsReadRevisionFileInput,
+  ) => Effect.Effect<VcsRevisionFile, CheckpointStoreError>;
 }
 
 /**

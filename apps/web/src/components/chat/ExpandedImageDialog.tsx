@@ -5,6 +5,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import {
   closeExpandedImagePreview,
+  type ExpandedImageItem,
   type ExpandedImagePreview,
   registerExpandedImageHost,
   useExpandedImagePreview,
@@ -116,6 +117,15 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   }, [navigateImage, onClose, preview.images.length]);
 
   const item = preview.images[preview.index];
+  // Before/After is per picture: stepping to another starts on After.
+  const [sideState, setSideState] = useState<{ readonly index: number; readonly side: ViewerSide }>(
+    () => ({
+      index: initialPreview.index,
+      side: initialPreview.images[initialPreview.index]?.startOn ?? "after",
+    }),
+  );
+  const side = sideState.index === preview.index && item?.before ? sideState.side : "after";
+  const picture = useViewerPicture(preview.images, preview.index, side);
   if (!item) return null;
 
   // Portaled to <body> so the overlay's no-drag rect resolves after every
@@ -163,18 +173,57 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         >
           <XIcon />
         </Button>
-        {/* A new picture opens fitted, whatever the last one was zoomed to. */}
-        <ZoomableImage
-          key={`${preview.index}:${item.src}`}
-          src={item.src}
-          alt={item.name}
-          overlayRef={dialogRef}
-          onClose={onClose}
-        />
+        {item.before ? (
+          <div
+            className="relative z-10 mb-2 flex justify-center"
+            role="group"
+            aria-label="Show the picture before or after the change"
+          >
+            <div className="inline-flex rounded-lg bg-white/10 p-0.5">
+              {(["before", "after"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={side === option}
+                  className={cn(
+                    "rounded-md px-2.5 py-0.5 text-xs transition-colors",
+                    side === option ? "bg-white/20 text-white" : "text-white/70 hover:text-white",
+                  )}
+                  onClick={() => setSideState({ index: preview.index, side: option })}
+                >
+                  {option === "before" ? "Before" : "After"}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {picture.status === "ready" ? (
+          // A new picture (or side) opens fitted, whatever the last was zoomed to.
+          <ZoomableImage
+            key={`${preview.index}:${side}:${picture.src}`}
+            src={picture.src}
+            alt={side === "before" ? `${item.name}, before` : item.name}
+            overlayRef={dialogRef}
+            onClose={onClose}
+          />
+        ) : (
+          <div className="flex h-[40vh] w-[min(560px,80vw)] items-center justify-center rounded-lg border border-white/10 bg-black/40 text-sm text-white/70">
+            {picture.status === "loading"
+              ? "Loading picture…"
+              : side === "before"
+                ? "No earlier version of this picture."
+                : "Couldn't load this picture."}
+          </div>
+        )}
         <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
           {item.name}
           {preview.images.length > 1 ? ` (${preview.index + 1}/${preview.images.length})` : ""}
         </p>
+        {item.detail ? (
+          <p className="max-w-[92vw] truncate text-center text-xs text-muted-foreground/60">
+            {item.detail}
+          </p>
+        ) : null}
       </div>
       {preview.images.length > 1 && (
         <Button
@@ -192,6 +241,67 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     document.body,
   );
 });
+
+type ViewerSide = "before" | "after";
+
+type ViewerPicture =
+  | { readonly status: "ready"; readonly src: string }
+  | { readonly status: "loading" | "unavailable" };
+
+/**
+ * The picture the viewer shows for one item and side: `src` as given, or the
+ * item's own load, run when it comes up. The pictures around the current one
+ * are kept, so stepping back is instant; a load that finishes after the
+ * reader has moved on is dropped.
+ */
+function useViewerPicture(
+  images: ReadonlyArray<ExpandedImageItem>,
+  index: number,
+  side: ViewerSide,
+): ViewerPicture {
+  // Kept per list: another list handed to an open viewer starts empty.
+  const [loaded, setLoaded] = useState<{
+    readonly images: ReadonlyArray<ExpandedImageItem>;
+    readonly byKey: ReadonlyMap<string, string | null>;
+  }>(() => ({ images, byKey: new Map() }));
+  const byKey = loaded.images === images ? loaded.byKey : NO_RESULTS;
+  const item = images[index];
+  const key = `${index}:${side}`;
+  const load = side === "before" ? item?.before?.load : item?.src ? undefined : item?.load;
+  const settled = byKey.has(key);
+
+  useEffect(() => {
+    if (!load || settled) return;
+    let current = true;
+    void load()
+      .catch(() => null)
+      .then((src) => {
+        if (!current) return;
+        setLoaded((previous) => {
+          const next = new Map(previous.images === images ? previous.byKey : NO_RESULTS);
+          next.set(key, src);
+          // Full pictures are big: keep this one and its neighbours, so
+          // stepping back and forth is instant and a long walk holds three.
+          for (const kept of next.keys()) {
+            if (Math.abs(Number.parseInt(kept, 10) - index) > 1) next.delete(kept);
+          }
+          return { images, byKey: next };
+        });
+      });
+    return () => {
+      current = false;
+    };
+  }, [images, index, key, load, settled]);
+
+  if (!item) return { status: "unavailable" };
+  if (side === "after" && item.src) return { status: "ready", src: item.src };
+  if (!load) return { status: "unavailable" };
+  if (!settled) return { status: "loading" };
+  const src = byKey.get(key) ?? null;
+  return src === null ? { status: "unavailable" } : { status: "ready", src };
+}
+
+const NO_RESULTS: ReadonlyMap<string, string | null> = new Map();
 
 /** Zoom over the fitted size, and the picture's offset from its fitted place, CSS px. */
 interface ImageView {
