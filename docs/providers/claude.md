@@ -75,12 +75,18 @@ means the service knew the account and refused the request, so signing in again 
 
 ## Usage Numbers And The Normal Sign-In
 
-The 5h and Weekly meters are read with the normal Claude sign-in, even when chat runs on a
-long-lived token. Threadlines checks them every few minutes.
+Threadlines asks Claude Code for the 5h, Weekly and per-model numbers, the same ones its `/usage`
+screen shows. Claude Code fetches them with its own sign-in; Threadlines never sends a Claude
+sign-in anywhere. The question rides along in the status check Threadlines already runs every five
+minutes, so it starts no extra Claude process. Chat replies update the meters in between.
 
-- If a check fails because Claude is rate limiting it, or the request does not get through, the
-  meters keep their last numbers and the check is tried again. A row that is more than ten minutes
-  old says how old it is (`as of 25m ago`).
+The numbers always come from the normal Claude sign-in. A Claude setup that chats on a long-lived
+token can't read them, so for that setup Threadlines asks a short Claude run without the token
+instead. That run also lets Claude renew the normal sign-in when it is due.
+
+- If a check gets no numbers (Claude Code is too old to answer, or the request does not get
+  through), the meters keep their last numbers and the check is tried again. A row that is more
+  than ten minutes old says how old it is (`as of 25m ago`).
 - If the normal sign-in is signed out, the meters keep their last numbers and update each time you
   chat. The meter says so and offers `Sign in`. Chat on a long-lived token keeps working either way.
 - The per-model weekly rows only update with the normal sign-in.
@@ -362,11 +368,12 @@ Claude initialization cannot return a live catalog.
 
 Anthropic occasionally gives subscription plans a limit reset, for example one saved reset with the
 Opus 5.5 launch. A reset refills the 5h or weekly limit right away without moving the weekly reset
-day. Anthropic documents resets as spent from claude.ai or the Claude desktop app under
-`Settings -> Usage`, and as
-[not available via API or third-party tools](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset).
+day. Anthropic's [help page](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset)
+says to spend a reset from `Settings -> Usage` on claude.ai or in the Claude desktop app, and that
+the button isn't in Claude Mobile or in Claude Code in the terminal or IDE.
 
-Threadlines therefore never claims a Claude reset. Where Codex shows a `Reset` button, a Claude
-provider shows `Use on claude.ai`, which opens `https://claude.ai/settings/usage`: on the provider
-card, in the composer usage popover, and on a usage-limit error. Limits are shared across the
-account, so a reset spent on claude.ai also refills Claude inside Threadlines.
+Anthropic offers no public way for another app to claim a reset, so Threadlines never claims one.
+Where Codex shows a `Reset` button, a Claude provider shows `Use on claude.ai`, which opens
+`https://claude.ai/settings/usage`: on the provider card, in the composer usage popover, and on a
+usage-limit error. Limits are shared across the account, so a reset spent on claude.ai also refills
+Claude inside Threadlines.
