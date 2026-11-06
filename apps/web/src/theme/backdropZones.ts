@@ -24,6 +24,9 @@ import type { GlassFloors } from "./glass";
 /** How far the reading column's frost reaches past the composer on each side. */
 export const COLUMN_MARGIN_PX = 48;
 
+/** How far the home screen's text rises as it fades in (index.css `no-thread-rise`), plus a px. */
+const HOME_RISE_PX = 8;
+
 export interface MeasuredBackdropLayout {
   readonly zones: ReadonlyArray<BackdropZone>;
   /** A screen the art shows behind (a thread, a new thread, home); any other page covers it. */
@@ -90,8 +93,17 @@ function textBox(element: Element | null, bounds: Box, skip?: Element | null): B
   return union(textBoxes(element, bounds, skip));
 }
 
-/** The boxes of the text an element shows, one per line of text. */
-function textBoxes(element: Element | null, bounds: Box, skip?: Element | null): Box[] {
+/**
+ * The boxes of the text an element shows, one per line of text. With
+ * `fading`, text at zero opacity counts too: text that fades in is there a
+ * moment later.
+ */
+function textBoxes(
+  element: Element | null,
+  bounds: Box,
+  skip?: Element | null,
+  fading = false,
+): Box[] {
   if (!element) return [];
   const doc = element.ownerDocument;
   const walker = doc.createTreeWalker(element, NodeFilter.SHOW_TEXT);
@@ -102,7 +114,9 @@ function textBoxes(element: Element | null, bounds: Box, skip?: Element | null):
     const parent = node.parentElement;
     if (!parent || (skip && skip.contains(parent))) continue;
     const style = doc.defaultView?.getComputedStyle(parent);
-    if (style && (style.visibility === "hidden" || Number(style.opacity) === 0)) continue;
+    if (style && (style.visibility === "hidden" || (!fading && Number(style.opacity) === 0))) {
+      continue;
+    }
     // Text inside a folded list is laid out but clipped away: only what an
     // ancestor's overflow leaves on screen counts.
     let shown: Box | null = bounds;
@@ -286,19 +300,21 @@ export function measureBackdropZones(
 
   // Home with no thread open: the first screen a new user sees. Each block of
   // its text gets a patch, the heading's block a wider one, like the
-  // new-thread screen's.
+  // new-thread screen's. Its text fades in rising HOME_RISE_PX, so the
+  // patches count it from the start and cover the whole rise.
   const emptyHome = chatView ? null : root.querySelector("[data-empty-home]");
   const homeBox = visibleBox(emptyHome, panel);
   if (emptyHome && homeBox) {
-    textBlocks(textBoxes(emptyHome, homeBox), 48).forEach((words, index) => {
+    textBlocks(textBoxes(emptyHome, homeBox, null, true), 48).forEach((words, index) => {
+      const core = clip(grow(words, 0, HOME_RISE_PX), homeBox);
       const rect = clip(index === 0 ? grow(words, 96, 64) : grow(words, 36, 18), homeBox);
-      if (rect) {
+      if (core && rect) {
         zones.push({
           id: `home-${index}`,
           edge: "soft",
           shape: "rect",
           rect: toRect(rect),
-          core: toRect(words),
+          core: toRect(core),
           tint: floors.column,
           tintColor: color("background"),
         });

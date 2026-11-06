@@ -539,11 +539,13 @@ html[data-glass] [data-slot="sidebar-inset"] {
   background-color: var(--surface-solid);
 }
 html[data-glass][data-glass-page="chat"] [data-slot="sidebar-inset"],
-html[data-glass][data-glass-page="chat"] [data-empty-home],
 html[data-glass] [data-chat-view] {
   background-color: transparent;
 }
+/* The reading column, the chat's own header and the home screen: clear while
+   the frame frosts them, tinted to the floor when only the still shows. */
 html[data-glass] [data-chat-column],
+html[data-glass][data-glass-page="chat"] [data-empty-home],
 html[data-glass] [data-chat-view] > header {
   background-color: color-mix(in srgb, var(--background) var(--glass-column, 100%), transparent);
 }
@@ -1405,6 +1407,7 @@ label:has(> select#reasoning-effort) select {
   transform-origin: center;
 }
 
+/* The rise is covered by the home screen's glass patches (backdropZones.ts HOME_RISE_PX). */
 @keyframes no-thread-rise {
   from {
     opacity: 0;

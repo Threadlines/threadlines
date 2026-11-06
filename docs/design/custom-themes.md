@@ -190,7 +190,9 @@ it:
   too heavy for this computer" in Appearance and a "Try again" button.
 - **The budget** covers the whole pipeline: the worker's work on the frame
   (the prelude times setup, draw and packing with a clock it took before the
-  theme's script ran) plus the frame's own compositing. Not the round trip: in
+  theme's script ran, and adds any work the art left queued in promise
+  callbacks after the reply, to the next frame) plus the frame's own
+  compositing. Not the round trip: in
   the desktop app the reply waits on a busy page, and that wait is not the
   art's cost (late replies still count as missed ticks). Over 5 seconds the art may use 60 ms of work a second (the heavy
   label's line) before stepping down, and steps back up under half of that.

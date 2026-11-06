@@ -144,6 +144,10 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
   ]) {
     remove(globalThis, name);
   }
+  // Kept for the prelude alone, before the theme's script can reach timers.
+  const timerSource = (globalThis as { setTimeout?: (handler: () => void, ms?: number) => unknown })
+    .setTimeout;
+  const afterMicrotasks = timerSource ? timerSource.bind(globalThis) : null;
   const noTimers = () => {
     throw new Error("Backdrop art draws only when the frame asks: timers are not available.");
   };
@@ -151,6 +155,26 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
   lock(globalThis, "setInterval", noTimers);
 
   let definition: Definition | null = null;
+  /**
+   * Work the art left queued after a frame (promise callbacks run once the
+   * reply is posted), counted with the next frame. A zero-delay timer fires
+   * only after those callbacks drain; its own delay, under a millisecond,
+   * is not counted.
+   */
+  let trailingWork = 0;
+  const TIMER_SLACK_MS = 1;
+  const measureTrailing = () => {
+    if (!afterMicrotasks) return;
+    const postedAt = clock();
+    afterMicrotasks(() => {
+      trailingWork += Math.max(0, clock() - postedAt - TIMER_SLACK_MS);
+    }, 0);
+  };
+  const takeWork = (startedAt: number) => {
+    const work = clock() - startedAt + trailingWork;
+    trailingWork = 0;
+    return work;
+  };
   let failed = false;
   let drawing = false;
 
@@ -455,7 +479,7 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
           type: "grid",
           generation,
           frame: tick.frame,
-          work: clock() - startedAt,
+          work: takeWork(startedAt),
           cols: grid.cols,
           rows: grid.rows,
           glyph,
@@ -471,7 +495,7 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
           type: "pixels",
           generation,
           frame: tick.frame,
-          work: clock() - startedAt,
+          work: takeWork(startedAt),
           width: pixels.width,
           height: pixels.height,
           data,
@@ -480,10 +504,11 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
       );
     } else if (canvas) {
       const bitmap = canvas.transferToImageBitmap();
-      post({ type: "canvas", generation, frame: tick.frame, work: clock() - startedAt, bitmap }, [
+      post({ type: "canvas", generation, frame: tick.frame, work: takeWork(startedAt), bitmap }, [
         bitmap,
       ]);
     }
+    measureTrailing();
   };
 
   scope.addEventListener("message", (event) => {

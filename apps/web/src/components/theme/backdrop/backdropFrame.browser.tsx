@@ -231,6 +231,20 @@ describe("backdrop frame", () => {
     expect((await mounted.failure()).reason).toBe("too-heavy");
   });
 
+  it("counts work the art defers past its frame, and slows art that hides it there", async () => {
+    mounted = await mountFrame();
+    // Each frame looks free, but queues 12 ms of work to run right after its reply.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw() { Promise.resolve().then(() => { const end = performance.now() + 12; while (performance.now() < end) {} }); } });`,
+    );
+    await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+      timeout: 12_000,
+      interval: 250,
+    });
+  });
+
   it("keeps column text readable when the art turns white", async () => {
     mounted = await mountFrame();
     mounted.start(

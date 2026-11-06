@@ -113,9 +113,12 @@ describe("theme store, applied", () => {
               <div data-testid="fade" className="glass-fade" />
             </div>
           </div>
+          <div data-empty-home="" data-testid="home" className="bg-background" />
         </div>
       </div>,
     );
+    // ThemeBackdropLayer marks a page the art shows on; the home screen is one.
+    root().setAttribute("data-glass-page", "chat");
     // How opaque a surface's fill is (color-mix() computes to color(srgb ... / a)).
     const alpha = (testId: string) => {
       const value = getComputedStyle(screen.getByTestId(testId).element()).backgroundColor;
@@ -160,6 +163,7 @@ describe("theme store, applied", () => {
       );
       expect(alpha("title")).toBe(0);
       expect(alpha("column")).toBe(0);
+      expect(alpha("home")).toBe(0);
 
       // The still instead: each surface paints its floor, raised to the still's minimum.
       applyGlassTints(
@@ -169,9 +173,12 @@ describe("theme store, applied", () => {
       );
       expect(alpha("title")).toBeCloseTo(0.7, 2);
       expect(alpha("column")).toBeCloseTo(0.65, 2);
+      // The home screen's text keeps a tint over the still too.
+      expect(alpha("home")).toBeCloseTo(0.65, 2);
       // Sticky headers hide what scrolls under them.
       expect(alpha("sticky")).toBe(1);
     } finally {
+      root().removeAttribute("data-glass-page");
       await screen.unmount();
     }
   });
@@ -262,7 +269,10 @@ describe("backdrop zones", () => {
             style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}
           >
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-              <h2 style={{ margin: 0 }}>Start your first thread</h2>
+              {/* Mid fade-in: invisible and 7 px below where it settles. */}
+              <h2 style={{ margin: 0, opacity: 0, transform: "translateY(7px)" }}>
+                Start your first thread
+              </h2>
               <p style={{ margin: "8px 0 28px" }}>Start a general chat, or add a project.</p>
               <button type="button">New general chat</button>
               <p style={{ marginTop: 120 }}>Star on GitHub</p>
@@ -279,7 +289,7 @@ describe("backdrop zones", () => {
         glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, "some"),
       );
       expect(chatShown).toBe(true);
-      const contains = (id: string, text: string) => {
+      const contains = (id: string, text: string, shift = 0) => {
         const zone = zones.find((candidate) => candidate.id === id);
         const element = [...document.querySelectorAll("h2, p, button")].find(
           (candidate) => candidate.textContent === text,
@@ -291,14 +301,16 @@ describe("backdrop zones", () => {
         const core = zone!.core;
         return (
           core.x <= box.left + 1 &&
-          core.y <= box.top + 1 &&
+          core.y <= box.top + shift + 1 &&
           core.x + core.w >= box.right - 1 &&
-          core.y + core.h >= box.bottom - 1
+          core.y + core.h >= box.bottom + shift - 1
         );
       };
       // The heading, its line and the button share a patch; the links far below get their own.
       expect(zones.map((zone) => zone.id)).toEqual(["home-0", "home-1"]);
+      // The fading heading counts, where it is now and where it settles.
       expect(contains("home-0", "Start your first thread")).toBe(true);
+      expect(contains("home-0", "Start your first thread", -7)).toBe(true);
       expect(contains("home-0", "New general chat")).toBe(true);
       expect(contains("home-1", "Star on GitHub")).toBe(true);
     } finally {
