@@ -87,6 +87,7 @@ describe("starter themes", () => {
   it("have stable, unique ids, retired ones still found by theirs", () => {
     expect(STARTER_THEMES.map((starter) => starter.id)).toEqual([
       "aurora",
+      "lantern-lake",
       "meadow",
       "phosphor",
       "snowfield",
