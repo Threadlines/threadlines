@@ -79,6 +79,7 @@ export function AppTitleBar({
 
   return (
     <div
+      data-slot="app-titlebar"
       data-testid="app-titlebar"
       data-titlebar-slides={slotSlides ? "" : undefined}
       className="drag-region flex h-(--app-titlebar-height) shrink-0 items-center bg-frame ps-(--app-titlebar-leading) pe-(--workspace-controls-right)"

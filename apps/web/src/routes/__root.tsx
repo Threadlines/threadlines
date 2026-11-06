@@ -122,6 +122,9 @@ import {
 import { selectBusyTerminals, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
+import { ThemeRuntime, useDesktopThemeEvents } from "../theme/ThemeBackdropLayer";
+import { ThemeTrialBar } from "../components/theme/ui/ThemeTrialBar";
+import { ThemeLibrarySync } from "../themeLibrary/themeLibraryState";
 import {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
@@ -210,6 +213,7 @@ function RootRouteView() {
     select: (matches) => (matches[0]?._notFound ? undefined : matches[1]?.routeId),
   });
   const { authGateState } = Route.useRouteContext();
+  useDesktopThemeEvents();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
   useEffect(() => {
@@ -246,6 +250,8 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
+        {/* A theme's live art behind the window, and the desktop's theme events. */}
+        <ThemeRuntime />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
@@ -253,6 +259,9 @@ function RootRouteView() {
         <PushAlertsRuntime />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
+        {primaryEnvironmentAuthenticated ? <ThemeLibrarySync /> : null}
+        {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
+        <ThemeTrialBar />
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
         <SshPasswordPromptDialog />

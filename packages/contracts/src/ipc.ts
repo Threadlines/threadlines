@@ -350,6 +350,44 @@ export const DesktopUpdateStatusSchema = Schema.Literals([
 ]);
 export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"]);
 export const DesktopThemeSchema = Schema.Literals(["light", "dark", "system"]);
+
+/** An opaque `#rrggbb` color for the window itself. */
+const DesktopWindowColorSchema = Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/));
+
+/**
+ * The window's own colors under a custom theme (docs/design/custom-themes.md,
+ * "Desktop"): what shows before the page paints, and the Windows and Linux
+ * title bar buttons.
+ */
+export const DesktopThemeColorsSchema = Schema.Struct({
+  windowBackground: DesktopWindowColorSchema,
+  titleBarSymbol: DesktopWindowColorSchema,
+});
+export type DesktopThemeColors = typeof DesktopThemeColorsSchema.Type;
+
+/**
+ * What the app tells the desktop about its theme. The native preference
+ * stays apart from colors: built-in System is `system`, so the OS keeps
+ * driving it; a custom theme sets its base and its colors.
+ */
+export const DesktopThemeAppearanceSchema = Schema.Struct({
+  nativeSource: DesktopThemeSchema,
+  colors: Schema.optional(DesktopThemeColorsSchema),
+});
+export type DesktopThemeAppearance = typeof DesktopThemeAppearanceSchema.Type;
+
+/**
+ * Power and heat, for a theme's live art (docs/design/custom-themes.md,
+ * "Performance"): on battery it slows, and a `serious` or `critical` thermal
+ * state or a lowered CPU speed limit makes it still.
+ */
+export const DesktopPowerStateSchema = Schema.Struct({
+  power: Schema.Literals(["ac", "battery", "unknown"]),
+  thermal: Schema.Literals(["nominal", "fair", "serious", "critical", "unknown"]),
+  /** The OS lowered the CPU speed limit below 100%. */
+  speedLimited: Schema.Boolean,
+});
+export type DesktopPowerState = typeof DesktopPowerStateSchema.Type;
 export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
 export const DesktopAppStageLabelSchema = Schema.Literals(["Alpha", "Dev", "Nightly"]);
 export const DesktopTaskbarStatusSchema = Schema.Literals(["idle", "working", "completed"]);
@@ -1545,7 +1583,19 @@ export interface DesktopBridge {
   previewClearCache?: (input: DesktopPreviewPartition) => Promise<void>;
   /** Clears every remembered profile, plus the profile all projects used to share. */
   previewClearAllBrowsingData?: () => Promise<void>;
-  setTheme: (theme: DesktopTheme) => Promise<void>;
+  setTheme: (appearance: DesktopThemeAppearance) => Promise<void>;
+  /** Power and thermal state now, for a theme's live art. */
+  getPowerState?: () => Promise<DesktopPowerState>;
+  onPowerStateChange?: (listener: (state: DesktopPowerState) => void) => () => void;
+  /**
+   * The window shows a theme's live art (or stops): while it does, the CPU
+   * watchdog samples the backdrop frame's process.
+   */
+  setBackdropActive?: (active: boolean) => Promise<void>;
+  /** The watchdog found the backdrop frame over its CPU budget; the app makes the art still. */
+  onBackdropTooHeavy?: (listener: () => void) => () => void;
+  /** View › Reset Theme: the app goes back to the built-in System theme. */
+  onThemeReset?: (listener: () => void) => () => void;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },

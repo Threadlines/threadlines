@@ -91,7 +91,10 @@ export function NoActiveThreadState() {
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+      <div
+        data-empty-home=""
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
+      >
         <PageTitlebar label="No active thread" />
 
         <Empty className="flex-1 gap-0 overflow-y-auto">

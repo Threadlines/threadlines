@@ -35,6 +35,7 @@ import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
 import * as PreviewScopes from "../preview/PreviewScopes.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { previewProfilePartition, previewSharedPartition } from "../preview/previewPartitions.ts";
+import * as DesktopThemeAppearance from "./DesktopThemeAppearance.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -236,7 +237,11 @@ function makeTestLayer(input: {
   readonly showMessageBox?: ElectronDialog.ElectronDialogShape["showMessageBox"];
   /** The app's state, for a test that changes it while the window lives. */
   readonly desktopState?: DesktopState.DesktopStateShape;
+  readonly electronTheme?: ElectronTheme.ElectronThemeShape;
 }) {
+  const themeLayer = input.electronTheme
+    ? Layer.succeed(ElectronTheme.ElectronTheme, input.electronTheme)
+    : electronThemeLayer;
   const desktopStateLayer =
     input.desktopState !== undefined
       ? Layer.succeed(DesktopState.DesktopState, input.desktopState)
@@ -277,6 +282,7 @@ function makeTestLayer(input: {
   } satisfies ElectronWindow.ElectronWindowShape);
 
   const windowLayer = DesktopWindow.layer.pipe(
+    Layer.provideMerge(DesktopThemeAppearance.layerTest().pipe(Layer.provide(themeLayer))),
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
@@ -323,7 +329,7 @@ function makeTestLayer(input: {
           ElectronSpelling.ElectronSpelling,
           input.electronSpelling ?? { platformSuggestionsFor: () => Effect.succeed([]) },
         ),
-        electronThemeLayer,
+        themeLayer,
         electronWindowLayer,
         Layer.succeed(PreviewAutomation.PreviewAutomation, {
           guardPopup: () => Effect.void,
@@ -480,6 +486,52 @@ describe("DesktopWindow", () => {
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect(
+    "keeps a custom theme's window colors through a native appearance change, and System follows the OS",
+    () =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const sources: string[] = [];
+        let osDark = false;
+        const layer = makeTestLayer({
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          electronTheme: {
+            shouldUseDarkColors: Effect.sync(() => osDark),
+            setSource: (source) => Effect.sync(() => void sources.push(source)),
+            onUpdated: () => Effect.void,
+          },
+        });
+        const lastBackground = () =>
+          (fakeWindow.window.setBackgroundColor as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          const appearance = yield* DesktopThemeAppearance.DesktopThemeAppearance;
+          yield* desktopWindow.handleBackendReady;
+
+          // A dark custom theme sets its base and its own colors.
+          yield* appearance.set({
+            nativeSource: "dark",
+            colors: { windowBackground: "#0a1029", titleBarSymbol: "#e7ecff" },
+          });
+          // The OS flips to light: the window keeps the theme's colors.
+          yield* desktopWindow.syncAppearance;
+          assert.equal(lastBackground(), "#0a1029");
+
+          // Built-in System again: the OS drives the look.
+          yield* appearance.set({ nativeSource: "system" });
+          osDark = true;
+          yield* desktopWindow.syncAppearance;
+          assert.equal(lastBackground(), "#0a0a0a");
+          assert.deepEqual(sources, ["dark", "system"]);
+        }).pipe(Effect.provide(layer));
+      }),
   );
 
   it.effect("holds a ready backend's window until startup allows it", () =>

@@ -19,7 +19,7 @@ import { useCallback, useMemo, type ReactNode, type Ref } from "react";
 
 import { useSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
-import { resolveDiffThemeName } from "~/lib/diffRendering";
+import { useCodeThemeName } from "~/theme/codeTheme";
 import { cn } from "~/lib/utils";
 import { computeFileDiffStat } from "../DiffPanel.logic";
 import { DIFF_PANEL_HOST_STYLE, DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
@@ -82,6 +82,7 @@ export function AnnotatedDiffView<TAnnotation>({
   readonly className?: string;
 }) {
   const { resolvedTheme } = useTheme();
+  const codeThemeName = useCodeThemeName();
   const renderMode = useSettings((settings) => settings.diffRenderMode);
   const wordWrap = useSettings((settings) => settings.diffWordWrap);
 
@@ -118,7 +119,7 @@ export function AnnotatedDiffView<TAnnotation>({
       diffStyle: renderMode === "split" ? ("split" as const) : ("unified" as const),
       lineDiffType: "none" as const,
       overflow: wordWrap ? ("wrap" as const) : ("scroll" as const),
-      theme: resolveDiffThemeName(resolvedTheme),
+      theme: codeThemeName,
       themeType: resolvedTheme,
       stickyHeaders: true,
       enableLineSelection,
@@ -133,7 +134,7 @@ export function AnnotatedDiffView<TAnnotation>({
         ? { onLineSelectionEnd, onGutterUtilityClick: onLineSelectionEnd }
         : {}),
     }),
-    [enableLineSelection, onLineSelectionEnd, renderMode, resolvedTheme, wordWrap],
+    [codeThemeName, enableLineSelection, onLineSelectionEnd, renderMode, resolvedTheme, wordWrap],
   );
 
   return (

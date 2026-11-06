@@ -40,6 +40,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ThemeOfferRow } from "../theme/ui/ThemeOfferRow";
 import { AgentPageFrame } from "./AgentPageFrame";
 
 // Which pages the reader minimized, for this app session. Held outside the
@@ -87,6 +88,11 @@ export function AgentPageRow(props: {
   /** A later turn's version of a page an earlier turn showed. */
   readonly updated: boolean;
 }) {
+  // A theme an agent offered is a page too, shown as a theme row.
+  return props.page.kind === "theme" ? <ThemeOfferRow {...props} /> : <FramedPageRow {...props} />;
+}
+
+function FramedPageRow(props: Parameters<typeof AgentPageRow>[0]) {
   const { page } = props;
   const key = `${props.environmentId}/${props.threadId}/${agentPageRowId(page)}`;
   const minimized = useSyncExternalStore(subscribeMinimized, () => minimizedPages.has(key));

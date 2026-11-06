@@ -22,7 +22,7 @@ import * as NodeFs from "node:fs/promises";
 import NodeOs from "node:os";
 import NodePath from "node:path";
 
-import type { AgentPageKind } from "@threadlines/contracts";
+import { type AgentPageKind, THEME_MAX_FILE_BYTES } from "@threadlines/contracts";
 import { AGENT_PAGE_MAX_BYTES, AGENT_PAGE_MAX_IMAGE_BYTES } from "@threadlines/shared/agentPages";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -37,7 +37,9 @@ const formatMib = (bytes: number) => `${(bytes / MIB).toFixed(1)} MiB`;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isPageFileId = (id: string) => UUID.test(id);
 
-export const pageFileExtension = (kind: AgentPageKind) => (kind === "markdown" ? "md" : "html");
+/** A theme's version file is the theme itself (docs/design/custom-themes.md). */
+export const pageFileExtension = (kind: AgentPageKind) =>
+  kind === "markdown" ? "md" : kind === "theme" ? "json" : "html";
 
 export function threadPagesDir(pagesDir: string, threadId: string): string | null {
   const segment = toSafeThreadAttachmentSegment(threadId);
@@ -148,7 +150,11 @@ export const readPageVersion = Effect.fn("PageStore.readPageVersion")(function* 
   });
 });
 
-/** The kind of page a published file is, by its extension. Null: not a page file. */
+/**
+ * The kind of page a published file is, by its extension. Null: not a page
+ * file. Never `theme`: a provider's own publish is a page, and a theme shows
+ * only through `show_theme`, which checks it.
+ */
 export const publishedPageKind = (path: string): AgentPageKind | null => {
   const extension = NodePath.extname(path).toLowerCase();
   if (extension === ".html" || extension === ".htm") return "html";
@@ -400,6 +406,47 @@ export const inlinePageImages = Effect.fn("PageStore.inlinePageImages")(function
     );
   }
   return inlined;
+});
+
+const THEME_FILE_PATTERN = /\.(?:threadlines-theme|json)$/i;
+
+/**
+ * Reads a theme file an agent saved in the thread's assets folder, for the
+ * theme tools' `path`, with the same rules as a page's images: a regular file
+ * with one name, inside the folder. Returns its parsed JSON, unchecked.
+ */
+export const readThemeFile = Effect.fn("PageStore.readThemeFile")(function* (input: {
+  readonly assetsRoot: string;
+  readonly path: string;
+}) {
+  const { path, assetsRoot } = input;
+  if (!NodePath.isAbsolute(path) || !THEME_FILE_PATTERN.test(path)) {
+    return yield* storeError(
+      `${path} is not the absolute path of a .threadlines-theme or .json file. Save the theme in ${assetsRoot}, or pass it as theme.`,
+    );
+  }
+  const read = yield* Effect.tryPromise({
+    try: () => readConfinedFile({ root: assetsRoot, path, maxBytes: THEME_MAX_FILE_BYTES }),
+    catch: (cause) => storeError("The theme file could not be read.", cause),
+  });
+  if ("refused" in read) {
+    const why =
+      read.refused === "outside"
+        ? "is outside the page assets folder"
+        : read.refused === "missing"
+          ? "does not exist"
+          : read.refused === "too-large"
+            ? `is ${formatMib(read.size ?? 0)}; a theme can be at most ${formatMib(THEME_MAX_FILE_BYTES)}`
+            : "is not a regular file (links are refused)";
+    return yield* storeError(`${path} ${why}. Save theme files as regular files in ${assetsRoot}.`);
+  }
+  return yield* Effect.try({
+    try: (): unknown => JSON.parse(new TextDecoder().decode(read.bytes)),
+    catch: (cause) =>
+      storeError(
+        `${path} is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+      ),
+  });
 });
 
 /** Removes one version file; a missing file is fine. */

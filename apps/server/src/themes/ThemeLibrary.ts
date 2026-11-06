@@ -1,0 +1,277 @@
+/**
+ * This computer's theme library (docs/design/custom-themes.md, "Storage and
+ * devices"): the entries the user names, keeps and deletes, and the content
+ * they name, stored once per hash.
+ *
+ * Every change to an entry sets its revision to one more than the highest
+ * this computer has seen and stamps this computer's environment id, so the
+ * higher `(revision, revisedBy)` wins everywhere (packages/shared
+ * themes/library.ts). A delete is a tombstone, kept so computers converge.
+ * `merge` takes an entry from another computer and keeps whichever copy
+ * wins. Changes run one at a time.
+ *
+ * Content stays while any entry names it, tombstones included; nothing here
+ * deletes content yet (a device may still use a theme deleted elsewhere).
+ */
+import { randomUUID } from "node:crypto";
+
+import {
+  type ThemeContent,
+  type ThemeEntry,
+  type ThemeEntryIdInput,
+  type ThemeEntrySummary,
+  ThemeError,
+  type ThemeLibrarySnapshot,
+  type ThemeManifest,
+  type ThemeMergeInput,
+  type ThemeReadInput,
+  type ThemeRenameInput,
+  type ThemeSaveInput,
+} from "@threadlines/contracts";
+import { compareThemeRevisions, nextThemeRevision } from "@threadlines/shared/themeLibrary";
+import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { ThemeLibraryRepository } from "./ThemeLibraryRepository.ts";
+import { themeProblems, ThemeWorkshop } from "./ThemeWorkshop.ts";
+
+export interface ThemeLibraryShape {
+  readonly snapshot: Effect.Effect<ThemeLibrarySnapshot, ThemeError>;
+  /** The snapshot now, then again after every change. */
+  readonly changes: Stream.Stream<ThemeLibrarySnapshot, ThemeError>;
+  readonly read: (input: ThemeReadInput) => Effect.Effect<ThemeContent, ThemeError>;
+  /** A new entry for a theme: checked, fonts embedded, a fresh entry id. */
+  readonly save: (input: ThemeSaveInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  readonly rename: (input: ThemeRenameInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  /** Tombstones an entry; deleting a tombstone changes nothing. */
+  readonly delete: (input: ThemeEntryIdInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  /** Brings a tombstoned entry back; restoring a live one changes nothing. */
+  readonly restore: (input: ThemeEntryIdInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  /** Keeps whichever of this computer's copy and the given one wins the revision order. */
+  readonly merge: (input: ThemeMergeInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+}
+
+export class ThemeLibrary extends Context.Service<ThemeLibrary, ThemeLibraryShape>()(
+  "threadlines/themes/ThemeLibrary",
+) {}
+
+const STORAGE_DETAIL = "Threadlines couldn't read or save the theme library. Try again.";
+const storageError = () => new ThemeError({ detail: STORAGE_DETAIL });
+const missingEntry = () =>
+  new ThemeError({ detail: "That theme isn't in this computer's library." });
+
+const make = Effect.gen(function* () {
+  const repo = yield* ThemeLibraryRepository;
+  const workshop = yield* ThemeWorkshop;
+  const environment = yield* ServerEnvironment;
+  const scope = yield* Effect.scope;
+  const writes = yield* Semaphore.make(1);
+  const changed = yield* PubSub.sliding<void>(1);
+  const notify = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
+
+  const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  const stored = <A, E>(effect: Effect.Effect<A, E>) => effect.pipe(Effect.mapError(storageError));
+
+  const snapshot: ThemeLibraryShape["snapshot"] = repo.listSummaries.pipe(
+    Effect.map((entries) => ({ entries })),
+    stored,
+  );
+
+  const changes: ThemeLibraryShape["changes"] = Stream.concat(
+    Stream.make(undefined),
+    Stream.fromPubSub(changed),
+  ).pipe(
+    Stream.debounce(Duration.millis(100)),
+    Stream.mapEffect(() => snapshot),
+  );
+
+  const summaryOf = (entryId: string) =>
+    repo
+      .getSummary(entryId)
+      .pipe(
+        stored,
+        Effect.flatMap(
+          Option.match({ onNone: () => Effect.fail(missingEntry()), onSome: Effect.succeed }),
+        ),
+      );
+
+  /**
+   * Stores content that isn't here yet. A theme with art and no thumbnail
+   * (new, or one an earlier save couldn't make) then gets its thumbnail in the
+   * background, and the library changes again once it has.
+   */
+  const storeContent = (hash: string, manifest: ThemeManifest) =>
+    Effect.gen(function* () {
+      const createdAt = yield* nowIso;
+      yield* repo.insertContent({ hash, manifest, createdAt }).pipe(stored);
+      if (manifest.backdrop !== undefined && (yield* repo.lacksThumbnail(hash).pipe(stored))) {
+        yield* workshop.thumbnail(manifest).pipe(
+          Effect.flatMap((thumbnail) =>
+            thumbnail === null
+              ? Effect.void
+              : repo.setThumbnail({ hash, thumbnail }).pipe(Effect.andThen(notify)),
+          ),
+          Effect.ignore({ log: true }),
+          Effect.forkIn(scope),
+        );
+      }
+    });
+
+  /** The next revision this computer gives a change, stamped as its own. */
+  const nextRevision = Effect.gen(function* () {
+    const entries = yield* repo.listEntries.pipe(stored);
+    const revisedBy = yield* environment.getEnvironmentId;
+    return { revision: nextThemeRevision(entries), revisedBy };
+  });
+
+  /** Runs one change to the library, then tells subscribers. */
+  const write = <A>(effect: Effect.Effect<A, ThemeError>) =>
+    writes
+      .withPermits(1)(effect)
+      .pipe(Effect.tap(() => notify));
+
+  const hashOf = (manifest: ThemeManifest) => Effect.promise(() => themeContentHash(manifest));
+
+  const read: ThemeLibraryShape["read"] = (input) =>
+    repo.getContent(input.hash).pipe(
+      stored,
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(new ThemeError({ detail: "That theme isn't stored on this computer." })),
+          onSome: (row) => Effect.succeed({ hash: row.hash, manifest: row.manifest }),
+        }),
+      ),
+    );
+
+  const save: ThemeLibraryShape["save"] = (input) =>
+    Effect.gen(function* () {
+      const manifest = yield* workshop.prepare(input.manifest);
+      const hash = yield* hashOf(manifest);
+      return yield* write(
+        Effect.gen(function* () {
+          yield* storeContent(hash, manifest);
+          const now = yield* nowIso;
+          const entry: ThemeEntry = {
+            entryId: randomUUID(),
+            name: input.name ?? manifest.name,
+            hash,
+            ...(yield* nextRevision),
+            deleted: false,
+            createdAt: now,
+            updatedAt: now,
+          };
+          yield* repo.putEntry(entry).pipe(stored);
+          return yield* summaryOf(entry.entryId);
+        }),
+      );
+    });
+
+  /** Changes one entry at a new revision; `change` returns null to leave it as it is. */
+  const revise = (
+    entryId: string,
+    change: (entry: ThemeEntry) => Effect.Effect<Partial<ThemeEntry> | null, ThemeError>,
+  ) =>
+    write(
+      Effect.gen(function* () {
+        const entry = yield* repo
+          .getEntry(entryId)
+          .pipe(
+            stored,
+            Effect.flatMap(
+              Option.match({ onNone: () => Effect.fail(missingEntry()), onSome: Effect.succeed }),
+            ),
+          );
+        const fields = yield* change(entry);
+        if (fields !== null) {
+          yield* repo
+            .putEntry({
+              ...entry,
+              ...fields,
+              ...(yield* nextRevision),
+              updatedAt: yield* nowIso,
+            })
+            .pipe(stored);
+        }
+        return yield* summaryOf(entryId);
+      }),
+    );
+
+  const rename: ThemeLibraryShape["rename"] = (input) =>
+    revise(input.entryId, (entry) =>
+      entry.deleted
+        ? Effect.fail(
+            new ThemeError({ detail: "That theme was deleted. Restore it to rename it." }),
+          )
+        : Effect.succeed(entry.name === input.name ? null : { name: input.name }),
+    );
+
+  const remove: ThemeLibraryShape["delete"] = (input) =>
+    revise(input.entryId, (entry) => Effect.succeed(entry.deleted ? null : { deleted: true }));
+
+  const restore: ThemeLibraryShape["restore"] = (input) =>
+    revise(input.entryId, (entry) => Effect.succeed(entry.deleted ? { deleted: false } : null));
+
+  const merge: ThemeLibraryShape["merge"] = (input) =>
+    Effect.gen(function* () {
+      const incoming = input.entry;
+      const local = yield* repo.getEntry(incoming.entryId).pipe(stored);
+      if (Option.isSome(local) && compareThemeRevisions(local.value, incoming) >= 0) {
+        return yield* summaryOf(incoming.entryId);
+      }
+      // The incoming copy wins: it needs its content here.
+      const held = yield* repo.getContent(incoming.hash).pipe(stored);
+      let content: ThemeManifest | undefined;
+      if (Option.isNone(held)) {
+        if (input.manifest === undefined) {
+          return yield* new ThemeError({
+            detail: "This computer doesn't have that theme's content. Send the theme with it.",
+          });
+        }
+        const check = checkThemeManifest(input.manifest);
+        if (!check.ok) return yield* themeProblems(check.errors);
+        if ((yield* hashOf(check.manifest)) !== incoming.hash) {
+          return yield* new ThemeError({
+            detail: "The theme sent with that entry isn't the content the entry names.",
+          });
+        }
+        // Stored as sent: its hash names these exact bytes (fonts included),
+        // and another computer's library already embedded them.
+        content = check.manifest;
+      }
+      return yield* write(
+        Effect.gen(function* () {
+          // Re-read under the lock: a change here may have landed meanwhile.
+          const current = yield* repo.getEntry(incoming.entryId).pipe(stored);
+          if (Option.isSome(current) && compareThemeRevisions(current.value, incoming) >= 0) {
+            return yield* summaryOf(incoming.entryId);
+          }
+          if (content !== undefined) yield* storeContent(incoming.hash, content);
+          yield* repo.putEntry(incoming).pipe(stored);
+          return yield* summaryOf(incoming.entryId);
+        }),
+      );
+    });
+
+  return ThemeLibrary.of({
+    snapshot,
+    changes,
+    read,
+    save,
+    rename,
+    delete: remove,
+    restore,
+    merge,
+  });
+});
+
+export const ThemeLibraryLive = Layer.effect(ThemeLibrary, make);

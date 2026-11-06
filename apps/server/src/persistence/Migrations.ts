@@ -123,6 +123,7 @@ import Migration0100 from "./Migrations/100_PhoneAlertControls.ts";
 import Migration0101 from "./Migrations/101_AssistantEventSubscriptions.ts";
 import Migration0102 from "./Migrations/102_AssistantAlertAsks.ts";
 import Migration0103 from "./Migrations/103_OutsideAgentVia.ts";
+import Migration0104 from "./Migrations/104_ThemeLibrary.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -238,6 +239,7 @@ export const migrationEntries = [
   [101, "AssistantEventSubscriptions", Migration0101],
   [102, "AssistantAlertAsks", Migration0102],
   [103, "OutsideAgentVia", Migration0103],
+  [104, "ThemeLibrary", Migration0104],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

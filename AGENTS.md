@@ -173,7 +173,7 @@ its own tokens (`--surface`, `--fg-*`).
 - Complexity belongs at the driver boundary. Orchestration stays pure, UI stays dumb.
 - Typesafety is useful — take advantage of it. Inferred types over annotations; `any` is the enemy.
 - Comments describe how a thing is used: concise notes above functions and classes, not line-by-line narration. When you change code, keep its comments in sync.
-- No continuously repainting animations; they peg the GPU on high-refresh displays.
+- No continuously repainting animations; they peg the GPU on high-refresh displays. One exception, approved by Will: a custom theme's live backdrop art, which the user picks, which runs in the walled-off backdrop runtime under its frame-rate cap, budget and pause rules (docs/design/custom-themes.md, "Performance"). Nothing else gets to animate behind the app.
 - A migration that rewrites existing rows must be timed against a database with real history (hundreds of thousands of events) before it merges. In-memory tests cannot tell a two-second backfill from one that takes hours on a user's install.
 
 ## Reference Repos

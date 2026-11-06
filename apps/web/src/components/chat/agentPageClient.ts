@@ -6,17 +6,20 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import {
+  AGENT_PAGE_DEFAULT_FONTS,
   AGENT_PAGE_FALLBACK_THEMES,
   AGENT_PAGE_THEME_TOKENS,
   type AgentPageAppearance,
+  type AgentPageFonts,
   type AgentPageTheme,
   agentPageTheme,
 } from "@threadlines/shared/agentPages";
 import { useMemo } from "react";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
-import { useTheme } from "../../hooks/useTheme";
 import { LRUCache } from "../../lib/lruCache";
+import { themeFontFaceCss, themeFontFamily } from "../../theme/themeFonts";
+import { type ActiveTheme, readActiveTheme, useActiveTheme } from "../../theme/themeStore";
 
 /**
  * The web's side of agent pages (docs/agent-pages.md): the theme a page
@@ -66,11 +69,36 @@ function cssColorToHex(value: string, over?: string): string | null {
 }
 
 /**
- * The theme a page is handed: the app's live tokens as hex, falling back per
- * token. A page sits on its panel in the chat (AgentPageRow), a quiet group's
- * fill laid over the thread, so its background is that fill.
+ * A custom theme's fonts for a page: its families first in the page's
+ * stacks, with embedded fonts handed over as data URLs.
  */
-export function readAgentPageTheme(appearance: AgentPageAppearance): AgentPageTheme {
+function agentPageThemeFonts(theme: ActiveTheme): {
+  readonly fonts: AgentPageFonts;
+  readonly fontFaces: string;
+} {
+  const fonts = theme.manifest?.fonts;
+  const family = (slot: "ui" | "mono") => themeFontFamily(fonts, slot, theme.hash);
+  const sans = family("ui");
+  const mono = family("mono");
+  return {
+    fonts: {
+      sans: sans ? `"${sans}", ${AGENT_PAGE_DEFAULT_FONTS.sans}` : AGENT_PAGE_DEFAULT_FONTS.sans,
+      mono: mono ? `"${mono}", ${AGENT_PAGE_DEFAULT_FONTS.mono}` : AGENT_PAGE_DEFAULT_FONTS.mono,
+    },
+    fontFaces: themeFontFaceCss(fonts, theme.hash),
+  };
+}
+
+/**
+ * The theme a page is handed: the app's live tokens as hex, falling back per
+ * token, and a custom theme's fonts. A page sits on its panel in the chat
+ * (AgentPageRow), a quiet group's fill laid over the thread, so its
+ * background is that fill.
+ */
+export function readAgentPageTheme(
+  appearance: AgentPageAppearance,
+  theme: ActiveTheme = readActiveTheme(),
+): AgentPageTheme {
   const fallback = AGENT_PAGE_FALLBACK_THEMES[appearance];
   const computed = getComputedStyle(document.documentElement);
   const variables: Record<string, string> = { ...fallback.variables };
@@ -88,13 +116,18 @@ export function readAgentPageTheme(appearance: AgentPageAppearance): AgentPageTh
     // a box inside the panel.
     variables["--tl-surface"] = `linear-gradient(${group}, ${group}) ${thread}`;
   }
-  return agentPageTheme({ appearance, variables });
+  const { fonts, fontFaces } = agentPageThemeFonts(theme);
+  return agentPageTheme({ appearance, variables, ...(fontFaces ? { fontFaces } : {}) }, fonts);
 }
 
-/** The current page theme; a new object only when the app's appearance changes. */
+/**
+ * The current page theme; a new object only when the app's theme changes:
+ * its light-or-dark, or (a same-base switch) the custom theme's content.
+ */
 export function useAgentPageTheme(): AgentPageTheme {
-  const { resolvedTheme } = useTheme();
-  return useMemo(() => readAgentPageTheme(resolvedTheme), [resolvedTheme]);
+  // The store hands out a new active theme only when what shows changes.
+  const active = useActiveTheme();
+  return useMemo(() => readAgentPageTheme(active.base, active), [active]);
 }
 
 // ---------------------------------------------------------------------------

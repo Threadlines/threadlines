@@ -5,8 +5,18 @@
  * guide answers; a test fails on an id the catalog doesn't know.
  *
  * Keep each under ~250 words, in the words the screen uses. A change users can
- * see updates its topic (AGENTS.md, "Hit every surface").
+ * see updates its topic (AGENTS.md, "Hit every surface"). `themes` runs
+ * longer: it carries the theme file format and art rules, shared with the
+ * theme tools (themes/themeGuide.ts).
  */
+import { THEME_FILE_EXTENSION } from "@threadlines/contracts";
+
+import {
+  THEME_ART_CONTRACT_GUIDE,
+  THEME_ART_RULES_GUIDE,
+  THEME_FORMAT_GUIDE,
+} from "../themes/themeGuide.ts";
+
 export interface GuideTopic {
   readonly id: string;
   readonly title: string;
@@ -275,6 +285,32 @@ Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
   },
   {
+    id: "themes",
+    title: "Themes",
+    keywords: [
+      "theme",
+      "custom theme",
+      "colors",
+      "font",
+      "background",
+      "art",
+      "animated",
+      "glass",
+      "look",
+    ],
+    body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat on frosted glass in front. Each device picks its own theme in {place:general.appearance}; a theme kept once is in this computer's library on every device.
+
+An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar above the message box, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too. The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial.
+
+${THEME_FORMAT_GUIDE}
+
+${THEME_ART_CONTRACT_GUIDE}
+
+${THEME_ART_RULES_GUIDE}
+
+The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. Text stays readable whatever the art draws: the frame raises the glass tint under text as needed. Appearance also has {place:general.themeArtInThreads} (how much art shows behind a thread) and {place:general.themeMotion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:general.theme}.`,
+  },
+  {
     id: "changing-settings",
     title: "Agents changing settings",
     keywords: [
@@ -288,7 +324,7 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
       "default model",
       "alerts",
     ],
-    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn.
+    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn. The theme can also be one from the theme library, by name; a theme new to that device starts as a trial with Keep and Undo (see \`themes\`).
 
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },

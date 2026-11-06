@@ -16,8 +16,8 @@ export function HeaderEdgeFade({ at }: { readonly at: "below" | "top" }) {
       aria-hidden="true"
       className={
         at === "below"
-          ? "pointer-events-none absolute inset-x-0 top-full z-10 h-2.5 bg-linear-to-b from-background/75 to-transparent"
-          : "pointer-events-none absolute inset-x-0 top-0 z-10 h-2.5 bg-linear-to-b from-background/75 to-transparent"
+          ? "glass-fade pointer-events-none absolute inset-x-0 top-full z-10 h-2.5 bg-linear-to-b from-background/75 to-transparent"
+          : "glass-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-2.5 bg-linear-to-b from-background/75 to-transparent"
       }
     />
   );

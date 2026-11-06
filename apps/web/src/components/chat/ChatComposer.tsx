@@ -150,6 +150,7 @@ import {
   type ThreadGoalControls,
 } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { NEW_THEME_PROMPT, ThemePickerStrip } from "../theme/ui/ThemePickerStrip";
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { useModelRetirementNotice } from "./modelRetirementNotice";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
@@ -1245,6 +1246,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
+  const [isThemePickerOpen, setIsThemePickerOpen] = useState(false);
   const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
   // Commands this thread will act on: the built-ins plus whatever the selected
   // provider reports. The editor tints the leading token so typed-past-the-menu
@@ -1388,6 +1390,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "plan",
           label: "/plan",
           description: "Switch this thread into plan mode",
+        },
+        {
+          id: "slash:theme",
+          type: "slash-command",
+          command: "theme",
+          label: "/theme",
+          description: "Change how Threadlines looks",
         },
         {
           id: "slash:default",
@@ -2933,6 +2942,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
+        if (item.command === "theme") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            setIsThemePickerOpen(true);
+          }
+          return;
+        }
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
           expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
@@ -3691,6 +3711,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       {/* Clipped sideways so a long line never widens the form, whose scroll
           width the right panel's resize check reads. */}
       <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
+      {!isComposerCollapsedMobile && isThemePickerOpen ? (
+        <div className="mx-auto mb-1.5 w-full overflow-hidden rounded-[var(--app-radius-xlarge)] border border-border bg-card">
+          <ThemePickerStrip
+            onClose={() => {
+              setIsThemePickerOpen(false);
+              composerEditorRef.current?.focusAtEnd();
+            }}
+            onNewTheme={() => {
+              setPrompt(NEW_THEME_PROMPT);
+              composerEditorRef.current?.focusAtEnd();
+            }}
+          />
+        </div>
+      ) : null}
       {!isComposerCollapsedMobile && goalBarVisible && goalControls ? (
         <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-3xl border border-b-0 border-border/55 bg-card/60">
           <ComposerGoalBar

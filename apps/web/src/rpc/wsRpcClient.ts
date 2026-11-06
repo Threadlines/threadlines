@@ -416,6 +416,16 @@ export interface WsRpcClient {
     readonly setViewing: RpcUnaryMethod<typeof WS_METHODS.presenceSetViewing>;
     readonly noteActive: RpcUnaryMethod<typeof WS_METHODS.presenceNoteActive>;
   };
+  /** This computer's theme library (docs/design/custom-themes.md), on servers reporting `themes`. */
+  readonly themes: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.themesSubscribe>;
+    readonly read: RpcUnaryMethod<typeof WS_METHODS.themesRead>;
+    readonly save: RpcUnaryMethod<typeof WS_METHODS.themesSave>;
+    readonly rename: RpcUnaryMethod<typeof WS_METHODS.themesRename>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.themesDelete>;
+    readonly restore: RpcUnaryMethod<typeof WS_METHODS.themesRestore>;
+    readonly merge: RpcUnaryMethod<typeof WS_METHODS.themesMerge>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -1220,6 +1230,19 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.presenceSetViewing](input)),
       noteActive: (input) =>
         transport.request((client) => client[WS_METHODS.presenceNoteActive](input)),
+    },
+    themes: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.themesSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.themesSubscribe,
+        }),
+      read: (input) => transport.request((client) => client[WS_METHODS.themesRead](input)),
+      save: (input) => transport.request((client) => client[WS_METHODS.themesSave](input)),
+      rename: (input) => transport.request((client) => client[WS_METHODS.themesRename](input)),
+      remove: (input) => transport.request((client) => client[WS_METHODS.themesDelete](input)),
+      restore: (input) => transport.request((client) => client[WS_METHODS.themesRestore](input)),
+      merge: (input) => transport.request((client) => client[WS_METHODS.themesMerge](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

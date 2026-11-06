@@ -274,6 +274,16 @@ Every token has a light and a dark value; check both before shipping. In dark
 mode solidity comes from a top highlight; in light mode from a hairline ring
 and a soft drop, the way macOS draws its controls.
 
+Custom themes (docs/design/custom-themes.md) replace the color tokens with
+one set derived from a theme's seed colors, on the base it names (light or
+dark). Build with tokens and they follow. Two rules for surfaces under a
+theme with live art: anything that must hide what scrolls beneath it (a
+sticky header, a fade, a copy button over code) uses `--surface-solid`, never
+`--background`, which glass makes see-through; and floating things (menus,
+popovers, dialogs, toasts) stay opaque. A new token a theme should change
+belongs in `THEME_TOKEN_NAMES` (packages/shared themes/tokens.ts) with its
+derivation, and a new text-on-surface pair in `THEME_CONTRAST_PAIRS`.
+
 New tokens (in `index.css`, next to the elevation ladder). Fills are
 translucent so a group or control reads the same on the canvas, in a side
 panel or inside a dialog.

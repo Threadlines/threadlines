@@ -14,6 +14,7 @@ import {
   type EditValue,
   NO_MODEL,
   type PlaceId,
+  THEME_LABELS,
   isPlaceId,
   parseModelEditValue,
   placeById,
@@ -78,6 +79,8 @@ export function editValueFits(control: EditControl, value: unknown): value is Ed
       return value === NO_MODEL
         ? control.noneLabel !== undefined
         : parseModelEditValue(value) !== null;
+    case "theme":
+      return typeof value === "string" && value.trim().length > 0 && value.length <= 60;
   }
 }
 
@@ -98,6 +101,8 @@ export function describeEditControl(control: EditControl): string {
       return `"<instanceId>/<model>" for a model this computer offers, at its default reasoning${
         control.noneLabel !== undefined ? `, or "${NO_MODEL}" for ${control.noneLabel}` : ""
       }`;
+    case "theme":
+      return '"system", "light", "dark", or the name of a starter theme or a theme in this computer\'s library';
   }
 }
 
@@ -193,6 +198,9 @@ export function describeEditValue(place: PlaceId, value: EditValue): string {
     return String(value);
   }
   const control = spec.edit?.control;
+  if (control?.kind === "theme") {
+    return (THEME_LABELS as Readonly<Record<string, string>>)[value] ?? value;
+  }
   if (control?.kind === "model") {
     return value === NO_MODEL
       ? (control.noneLabel ?? value)

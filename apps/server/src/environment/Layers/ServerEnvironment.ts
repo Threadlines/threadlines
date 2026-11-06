@@ -97,6 +97,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       followsInsertedCommands: true,
       computerLinks: true,
       scheduledTasks: true,
+      themes: true,
       eventTasks: true,
       threadMove: true,
       projectSetup: true,

@@ -224,6 +224,16 @@ describe("DesktopApplicationMenu", () => {
     }),
   );
 
+  it.effect("routes View > Reset Theme to the renderer", () =>
+    Effect.gen(function* () {
+      const { template, selectedAction } = yield* configureMenu("darwin");
+
+      const viewItems = submenuItems(template, (item) => item.label === "View", "View");
+      clickMenuItem(viewItems, "Reset Theme");
+      assert.equal(yield* Deferred.await(selectedAction), DesktopWindow.RESET_THEME_MENU_ACTION);
+    }),
+  );
+
   it.effect("routes Go > Fleet, Go > Back and View > Toggle Sidebar to the renderer", () =>
     Effect.gen(function* () {
       const fleet = yield* configureMenu("linux");

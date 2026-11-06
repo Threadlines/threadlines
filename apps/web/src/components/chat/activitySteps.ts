@@ -600,12 +600,16 @@ function mcpDraft(
       };
     }
   }
-  // Agent pages: showing one is part of the answer; a preview is checking work.
+  // Agent pages and themes: showing one is part of the answer; a preview is checking work.
   if (call.server === "threadlines_pages") {
-    const showing = tool === "show_page";
+    const theme = tool === "show_theme" || tool === "preview_theme";
+    const showing = tool === "show_page" || tool === "show_theme";
+    const thing = theme ? "theme" : "page";
     const wording = showing
-      ? phrase("Showed a page", "Showing a page")
-      : phrase("Previewed a page", "Previewing a page");
+      ? theme
+        ? phrase("Offered a theme", "Offering a theme")
+        : phrase("Showed a page", "Showing a page")
+      : phrase(`Previewed a ${thing}`, `Previewing a ${thing}`);
     return {
       routine: !showing,
       tallies: showing ? [] : [{ tally: "tool" }],

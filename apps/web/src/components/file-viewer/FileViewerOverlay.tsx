@@ -60,7 +60,8 @@ import {
   resolveRevealLineTarget,
 } from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
-import { fnv1a32, resolveDiffThemeName } from "../../lib/diffRendering";
+import { fnv1a32 } from "../../lib/diffRendering";
+import { useCodeThemeName } from "../../theme/codeTheme";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 
 /**
@@ -878,7 +879,7 @@ function FileViewerPreview({
     }),
   );
   const file = fileQuery.data;
-  const themeName = resolveDiffThemeName(resolvedTheme);
+  const themeName = useCodeThemeName();
   const highlighterReady = usePierreHighlighterReady(activePath, themeName);
 
   useEffect(() => {
@@ -1055,7 +1056,7 @@ function FileViewerPreview({
     () => ({
       disableFileHeader: true,
       overflow: wordWrap ? ("wrap" as const) : ("scroll" as const),
-      theme: resolveDiffThemeName(resolvedTheme),
+      theme: themeName,
       themeType: resolvedTheme,
       // Same background overrides as the diff panel so files render on the
       // app's card tone instead of the pierre theme's pure black/white, plus
@@ -1085,7 +1086,7 @@ function FileViewerPreview({
             },
           }),
     }),
-    [isCoarsePointer, resolvedTheme, wordWrap],
+    [isCoarsePointer, resolvedTheme, themeName, wordWrap],
   );
 
   if (!activePath) {

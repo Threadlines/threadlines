@@ -27,7 +27,7 @@ export function StatusBarEdge() {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none fixed inset-x-0 top-0 z-30 h-3 bg-background/1"
+      className="pointer-events-none fixed inset-x-0 top-0 z-30 h-3 bg-surface-solid/1"
       data-slot="status-bar-edge"
     />
   );

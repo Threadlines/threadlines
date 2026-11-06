@@ -37,7 +37,7 @@ const RUN_INTERVAL = Duration.minutes(30);
 /** After a delete or revert, a short wait so a burst of them is one run. */
 const SETTLE_DELAY = Duration.seconds(5);
 
-const VERSION_FILE = /^([0-9a-f-]{36})\.(?:html|md)$/i;
+const VERSION_FILE = /^([0-9a-f-]{36})\.(?:html|md|json)$/i;
 
 /** Events after which page files may have lost their row. */
 const isPageRowLoss = (event: OrchestrationEvent) =>

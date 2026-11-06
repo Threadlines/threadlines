@@ -37,6 +37,8 @@ export * from "./filesystem.ts";
 export * from "./usage.ts";
 export * from "./links.ts";
 export * from "./scheduledTasks.ts";
+export * from "./themes.ts";
+export * from "./themeBackdropWorker.ts";
 export * from "./moves.ts";
 export * from "./settingsChanges.ts";
 export * from "./projectSetup.ts";

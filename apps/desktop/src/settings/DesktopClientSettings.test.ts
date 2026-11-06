@@ -54,6 +54,8 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   sourceControlPanelDefaultOpen: false,
   timestampFormat: "24-hour",
+  themeArtInThreads: "some",
+  themeMotion: "live",
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));

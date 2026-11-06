@@ -17,29 +17,29 @@ export const DIFF_PANEL_UNSAFE_CSS = `
 [data-file],
 [data-error-wrapper],
 [data-virtualizer-buffer] {
-  --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
+  --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--surface-solid)) !important;
+  --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--surface-solid)) !important;
+  --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--surface-solid)) !important;
   --diffs-token-light-bg: transparent;
   --diffs-token-dark-bg: transparent;
 
-  --diffs-bg-context-override: color-mix(in srgb, var(--background) 97%, var(--foreground));
-  --diffs-bg-hover-override: color-mix(in srgb, var(--background) 94%, var(--foreground));
-  --diffs-bg-separator-override: color-mix(in srgb, var(--background) 95%, var(--foreground));
-  --diffs-bg-buffer-override: color-mix(in srgb, var(--background) 90%, var(--foreground));
+  --diffs-bg-context-override: color-mix(in srgb, var(--surface-solid) 97%, var(--foreground));
+  --diffs-bg-hover-override: color-mix(in srgb, var(--surface-solid) 94%, var(--foreground));
+  --diffs-bg-separator-override: color-mix(in srgb, var(--surface-solid) 95%, var(--foreground));
+  --diffs-bg-buffer-override: color-mix(in srgb, var(--surface-solid) 90%, var(--foreground));
 
   /* Number column matches the row tint so each line reads as one flat band. */
-  --diffs-bg-addition-override: color-mix(in srgb, var(--background) 92%, var(--success));
-  --diffs-bg-addition-number-override: color-mix(in srgb, var(--background) 92%, var(--success));
-  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--background) 85%, var(--success));
-  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--background) 80%, var(--success));
+  --diffs-bg-addition-override: color-mix(in srgb, var(--surface-solid) 92%, var(--success));
+  --diffs-bg-addition-number-override: color-mix(in srgb, var(--surface-solid) 92%, var(--success));
+  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--surface-solid) 85%, var(--success));
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--surface-solid) 80%, var(--success));
 
-  --diffs-bg-deletion-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
-  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
-  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--background) 85%, var(--destructive));
+  --diffs-bg-deletion-override: color-mix(in srgb, var(--surface-solid) 92%, var(--destructive));
+  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--surface-solid) 92%, var(--destructive));
+  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--surface-solid) 85%, var(--destructive));
   --diffs-bg-deletion-emphasis-override: color-mix(
     in srgb,
-    var(--background) 80%,
+    var(--surface-solid) 80%,
     var(--destructive)
   );
 

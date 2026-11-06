@@ -2155,7 +2155,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               above the composer. */}
                   <div
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
+                    className="glass-fade pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
                   />
                   {onAddTranscriptHighlightContext ? (
                     <TranscriptSelectionLayer

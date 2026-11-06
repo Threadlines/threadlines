@@ -526,6 +526,8 @@ describe("wsApi", () => {
       sidebarProjectSortOrder: "manual" as const,
       sidebarThreadPreviewCount: 6,
       sourceControlPanelDefaultOpen: false,
+      themeArtInThreads: "some" as const,
+      themeMotion: "live" as const,
       timestampFormat: "24-hour" as const,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
@@ -928,6 +930,8 @@ describe("wsApi", () => {
       sidebarProjectSortOrder: "manual" as const,
       sidebarThreadPreviewCount: 6,
       sourceControlPanelDefaultOpen: false,
+      themeArtInThreads: "some" as const,
+      themeMotion: "live" as const,
       timestampFormat: "24-hour" as const,
     };
 

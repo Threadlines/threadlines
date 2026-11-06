@@ -10,7 +10,8 @@ import {
 } from "~/environments/primary";
 import { useEnvironmentProviders } from "~/hooks/useEnvironmentProviders";
 import { useSettings } from "~/hooks/useSettings";
-import { useTheme } from "~/hooks/useTheme";
+import { useThemeChoice } from "~/theme/themeStore";
+import { themeChoiceName } from "~/themeLibrary/themeCatalog";
 import { describeThisBrowser } from "~/relayDevice";
 import { pushAlertsSupport, usePushAlertsStore } from "~/pushAlerts/pushAlerts";
 import { useComputerLabel } from "../sidebar/linkedComputers";
@@ -38,7 +39,7 @@ export const ComposerSettingsChangePanel = memo(function ComposerSettingsChangeP
   const { request, threadRef } = props;
   const [responding, setResponding] = useState(false);
   const settings = useSettings();
-  const { theme } = useTheme();
+  const theme = themeChoiceName(useThemeChoice());
   const computerLabel = useComputerLabel();
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const providersOf = useEnvironmentProviders();

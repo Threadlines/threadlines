@@ -11,6 +11,7 @@ import {
   AGENT_PAGE_COLUMN_WIDTH,
   AGENT_PAGE_FALLBACK_THEMES,
   AGENT_PAGE_MAX_HEIGHT,
+  agentPageFileName,
   agentPageFrameHeight,
   agentPageShareLink,
   applyAgentPagePublication,
@@ -108,6 +109,23 @@ describe("buildAgentPageDocument", () => {
       theme: { appearance: "dark", variables: { "--background": "red;}</style><script>x()" } },
     });
     expect(document).not.toContain("</style><script>x()");
+  });
+
+  it("hands a page its host theme's fonts as data URLs, under the policy that allows them", () => {
+    const fontFaces =
+      '@font-face{font-family:"TL Theme UI abc";src:url(data:font/woff2;base64,d09GMg==) format("woff2");}';
+    const document = buildAgentPageDocument({
+      content: "<p>hi</p>",
+      kind: "html",
+      theme: { ...theme, fontFaces: `${fontFaces}</style><script>x()` },
+    });
+    expect(document).toContain(fontFaces);
+    expect(document).not.toContain("</style><script>x()");
+    expect(document).toMatch(/font-src data:/);
+  });
+
+  it("names a theme file with its extension", () => {
+    expect(agentPageFileName("Winter: night", "theme")).toBe("Winter night.threadlines-theme");
   });
 });
 

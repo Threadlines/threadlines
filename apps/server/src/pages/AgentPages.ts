@@ -13,6 +13,10 @@
  * `adopt` is the other way a page arrives: a provider's own publishing tool
  * (a Claude artifact) put a local file online, and the chat shows that file
  * as a page of the turn that published it, with the link.
+ *
+ * `showTheme` and `previewTheme` are the theme tools
+ * (docs/design/custom-themes.md): a theme an agent shows is a page of kind
+ * `theme`, published the same way, whose version file is the theme's JSON.
  */
 import { randomUUID } from "node:crypto";
 import NodePath from "node:path";
@@ -26,10 +30,14 @@ import {
   AgentPageVersionId,
   CommandId,
   type OrchestrationThread,
+  type ThemeError,
+  type ThemeFont,
+  ThemeManifest,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
+import { checkThemeManifest } from "@threadlines/shared/themeManifest";
 import {
   AGENT_PAGE_AUTO_HEIGHT_WIDTH,
   AGENT_PAGE_COLUMN_WIDTH,
@@ -47,11 +55,10 @@ import {
 import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../config.ts";
@@ -61,6 +68,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { themeProblems, ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import {
   type PageStoreError,
   ensurePageAssetsDir,
@@ -70,10 +78,12 @@ import {
   pageVersionPath,
   readPageVersion,
   readPublishedPage,
+  readThemeFile,
   removePageVersion,
   writePageVersion,
 } from "./PageStore.ts";
 import { PagePreview, type PagePreviewResult } from "./preview/PagePreview.ts";
+import { THEME_PAGE_HEIGHT, themePageContent, themePreviewText } from "./themePages.ts";
 
 /** What the agent asked to show. Exactly one of `html` and `markdown`. */
 export interface ShowPageInput {
@@ -120,6 +130,25 @@ export type PreviewPageOutcome =
   | { readonly outcome: "previewed"; readonly preview: PagePreviewResult }
   | { readonly outcome: "off" | "not_allowed" | "refused" | "failed"; readonly detail: string };
 
+/** A theme for the theme tools: exactly one of the object and a file in the assets folder. */
+export interface ThemeToolInput {
+  readonly theme?: unknown;
+  readonly path?: string | undefined;
+}
+
+export interface ShowThemeInput extends ThemeToolInput {
+  readonly pageId?: string | undefined;
+}
+
+export type PreviewThemeOutcome =
+  | {
+      readonly outcome: "previewed";
+      /** The checks, the art's cost and the console, worded for the agent. */
+      readonly text: string;
+      readonly shots: ReadonlyArray<{ readonly layout: string; readonly png: string }>;
+    }
+  | { readonly outcome: "off" | "not_allowed" | "refused" | "failed"; readonly detail: string };
+
 export interface AgentPagesShape {
   readonly show: (
     scope: McpInvocationScope,
@@ -129,6 +158,20 @@ export interface AgentPagesShape {
     scope: McpInvocationScope,
     input: PreviewPageInput,
   ) => Effect.Effect<PreviewPageOutcome>;
+  /**
+   * `show_theme` (docs/design/custom-themes.md): checks the theme, embeds its
+   * fonts, captures a still of its art, and shows it as a page of kind
+   * `theme` under the same turn rules as every page.
+   */
+  readonly showTheme: (
+    scope: McpInvocationScope,
+    input: ShowThemeInput,
+  ) => Effect.Effect<ShowPageOutcome>;
+  /** `preview_theme`: the specimen's screenshots and a report. */
+  readonly previewTheme: (
+    scope: McpInvocationScope,
+    input: ThemeToolInput,
+  ) => Effect.Effect<PreviewThemeOutcome>;
   /**
    * Shows the local copy of a page a provider's own tool published (a Claude
    * artifact). Publishing it again updates the page already showing it.
@@ -159,6 +202,9 @@ const NOT_YOUR_TURN_DETAIL =
 const TURN_ENDED_DETAIL =
   "The turn ended before the page could be shown, so it was not. Show it again in your next turn if it is still needed.";
 const ONE_PAGE_DETAIL = "Give the page as exactly one of html or markdown.";
+const ONE_THEME_DETAIL = "Give the theme as exactly one of theme or path.";
+const THEME_SHOWN_MESSAGE =
+  "Offered to the user above your reply, with Try it. Don't describe the theme again; reply with only what the row doesn't say.";
 const DEFAULT_HEIGHT = 480;
 const MIN_PREVIEW_WIDTH = 240;
 const MAX_PREVIEW_WIDTH = 1600;
@@ -177,6 +223,54 @@ const pageOf = (input: {
   return null;
 };
 
+const decodeThemeManifest = Schema.decodeUnknownOption(ThemeManifest);
+
+/** A theme with the hosted fonts it couldn't get left out, so it can still be previewed. */
+const withoutHostedFonts = (manifest: ThemeManifest): ThemeManifest => {
+  const keep = (font: ThemeFont | undefined) =>
+    font !== undefined && (font.source === "system" || font.data !== undefined) ? font : undefined;
+  const ui = keep(manifest.fonts?.ui);
+  const mono = keep(manifest.fonts?.mono);
+  return {
+    ...manifest,
+    fonts: { ...(ui !== undefined ? { ui } : {}), ...(mono !== undefined ? { mono } : {}) },
+  };
+};
+
+/**
+ * The page a show call publishes to: a new one, or the page `requested`
+ * names when the thread has it and it is the same sort (a page or a theme).
+ */
+const pageIdFor = (
+  thread: OrchestrationThread,
+  requested: string | undefined,
+  sort: "page" | "theme",
+): { readonly pageId: AgentPageId } | { readonly refused: string } => {
+  const tool = sort === "theme" ? "show_theme" : "show_page";
+  const id = requested?.trim();
+  if (id === undefined || id.length === 0) return { pageId: AgentPageId.make(randomUUID()) };
+  if (!isPageFileId(id)) {
+    return {
+      refused: `'${id}' is not a page id. Use the pageId an earlier ${tool} returned, or leave it out to show a new ${sort}.`,
+    };
+  }
+  const shown = (thread.pages ?? []).find((page) => page.pageId === id.toLowerCase());
+  if (shown === undefined) {
+    return {
+      refused: `This thread has no ${sort} '${id}'. Leave pageId out to show a new ${sort}.`,
+    };
+  }
+  if ((shown.kind === "theme") !== (sort === "theme")) {
+    return {
+      refused:
+        sort === "theme"
+          ? `'${id}' is a page, not a theme. Leave pageId out to show a new theme.`
+          : `'${id}' is a theme; update it with show_theme, or leave pageId out to show a new page.`,
+    };
+  }
+  return { pageId: AgentPageId.make(id.toLowerCase()) };
+};
+
 const measureDocument = (content: string, kind: AgentPageKind) =>
   buildAgentPageDocument({
     content,
@@ -191,6 +285,7 @@ const make = Effect.gen(function* () {
   const pageRows = yield* ProjectionThreadPageRepository;
   const settings = yield* ServerSettingsService;
   const previews = yield* PagePreview;
+  const workshop = yield* ThemeWorkshop;
 
   const pending = new Set<string>();
   // One publish at a time per page, so versions are numbered in the order
@@ -238,26 +333,9 @@ const make = Effect.gen(function* () {
       }
       const { thread, turnId } = latched;
 
-      const requestedPageId = input.pageId?.trim();
-      if (requestedPageId !== undefined && requestedPageId.length > 0) {
-        if (!isPageFileId(requestedPageId)) {
-          return {
-            outcome: "refused" as const,
-            detail: `'${requestedPageId}' is not a page id. Use the pageId an earlier show_page returned, or leave it out to show a new page.`,
-          };
-        }
-        if (!(thread.pages ?? []).some((page) => page.pageId === requestedPageId)) {
-          return {
-            outcome: "refused" as const,
-            detail: `This thread has no page '${requestedPageId}'. Leave pageId out to show a new page.`,
-          };
-        }
-      }
-      const pageId = AgentPageId.make(
-        requestedPageId !== undefined && requestedPageId.length > 0
-          ? requestedPageId.toLowerCase()
-          : randomUUID(),
-      );
+      const target = pageIdFor(thread, input.pageId, "page");
+      if ("refused" in target) return { outcome: "refused" as const, detail: target.refused };
+      const { pageId } = target;
       const participantId = scope.participantId;
       const lock = yield* lockFor(`${scope.threadId}\u0000${pageId}`);
       return yield* lock.withPermits(1)(
@@ -291,10 +369,12 @@ const make = Effect.gen(function* () {
     readonly kind: AgentPageKind;
     readonly title: string;
     /** The page as it will be stored. */
-    readonly content: Effect.Effect<string, PageStoreError>;
+    readonly content: Effect.Effect<string, PageStoreError | ThemeError>;
     readonly height?: number | undefined;
     readonly icon?: string | undefined;
     readonly shareUrl?: string | undefined;
+    /** What the agent is told once it shows. Default: SHOWN_MESSAGE. */
+    readonly message?: Effect.Effect<string> | undefined;
     /** Whether the page still has its turn to show in, asked right before it is stored. */
     readonly stillStands: (thread: OrchestrationThread) => boolean;
   }): Effect.Effect<ShowPageOutcome> =>
@@ -313,23 +393,30 @@ const make = Effect.gen(function* () {
 
       const prepared = yield* args.content;
 
-      const measured = yield* previews
-        .measure({
-          document: measureDocument(prepared, kind),
-          widths: AGENT_PAGE_MEASURE_WIDTHS,
-        })
-        .pipe(Effect.map(Option.getOrUndefined));
+      // A theme shows as a row of one height; there is nothing to measure.
+      const measured =
+        kind === "theme"
+          ? undefined
+          : yield* previews
+              .measure({
+                document: measureDocument(prepared, kind),
+                widths: AGENT_PAGE_MEASURE_WIDTHS,
+              })
+              .pipe(Effect.map(Option.getOrUndefined));
       const heights: AgentPageHeights | undefined =
         measured !== undefined && measured.length > 0 ? measured : undefined;
-      const height = clampAgentPageHeight(
-        args.height ??
-          (heights !== undefined
-            ? agentPageFrameHeight(
-                { height: Number.MAX_SAFE_INTEGER, heights },
-                AGENT_PAGE_AUTO_HEIGHT_WIDTH,
-              )
-            : DEFAULT_HEIGHT),
-      );
+      const height =
+        kind === "theme"
+          ? THEME_PAGE_HEIGHT
+          : clampAgentPageHeight(
+              args.height ??
+                (heights !== undefined
+                  ? agentPageFrameHeight(
+                      { height: Number.MAX_SAFE_INTEGER, heights },
+                      AGENT_PAGE_AUTO_HEIGHT_WIDTH,
+                    )
+                  : DEFAULT_HEIGHT),
+            );
 
       // Measuring takes a moment: if the turn ended meanwhile (stopped, or
       // taken back), the page has no turn to show in any more.
@@ -392,11 +479,15 @@ const make = Effect.gen(function* () {
               : "The page could not be recorded.",
         };
       }
-      return { outcome: "shown" as const, pageId, version, message: SHOWN_MESSAGE };
+      const message = args.message === undefined ? SHOWN_MESSAGE : yield* args.message;
+      return { outcome: "shown" as const, pageId, version, message };
     }).pipe(
-      Effect.catchTag("PageStoreError", (error) =>
-        Effect.succeed({ outcome: "refused" as const, detail: error.message }),
-      ),
+      Effect.catchTags({
+        PageStoreError: (error) =>
+          Effect.succeed({ outcome: "refused" as const, detail: error.message }),
+        ThemeError: (error) =>
+          Effect.succeed({ outcome: "refused" as const, detail: error.detail }),
+      }),
     );
 
   const adopt: AgentPagesShape["adopt"] = (input) =>
@@ -489,6 +580,119 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** The theme a theme tool was given: the object, or a file in the thread's assets folder. */
+  const themeArgument = (scope: McpInvocationScope, input: ThemeToolInput) =>
+    Effect.gen(function* () {
+      const hasTheme = input.theme !== undefined;
+      const path = input.path?.trim();
+      const hasPath = path !== undefined && path.length > 0;
+      if (hasTheme === hasPath) return { refused: ONE_THEME_DETAIL } as const;
+      if (hasTheme) return { value: input.theme } as const;
+      const assetsRoot = yield* ensurePageAssetsDir(scope.threadId);
+      return { value: yield* readThemeFile({ assetsRoot, path: path! }) } as const;
+    });
+
+  const showTheme: AgentPagesShape["showTheme"] = (scope, input) =>
+    Effect.gen(function* () {
+      if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
+      if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
+      const argument = yield* themeArgument(scope, input);
+      if ("refused" in argument) return { outcome: "refused" as const, detail: argument.refused };
+      const check = checkThemeManifest(argument.value);
+      if (!check.ok) {
+        return {
+          outcome: "refused" as const,
+          detail: `${themeProblems(check.errors).detail}\nFix them (preview_theme shows the same checks), then show the theme again.`,
+        };
+      }
+
+      // Latched now, before fonts and the still: the theme belongs to this turn.
+      const latched = yield* callerTurn(scope);
+      if ("gone" in latched) return { outcome: "refused" as const, detail: GONE_DETAIL };
+      if ("notYours" in latched) {
+        return { outcome: "not_allowed" as const, detail: NOT_YOUR_TURN_DETAIL };
+      }
+      const { thread, turnId } = latched;
+      const target = pageIdFor(thread, input.pageId, "theme");
+      if ("refused" in target) return { outcome: "refused" as const, detail: target.refused };
+      const { pageId } = target;
+      const participantId = scope.participantId;
+      let note: string | undefined;
+      const manifest: ThemeManifest = {
+        ...check.manifest,
+        createdBy: check.manifest.createdBy ?? { kind: "agent", threadId: scope.threadId },
+      };
+      const lock = yield* lockFor(`${scope.threadId}\u0000${pageId}`);
+      return yield* lock.withPermits(1)(
+        publish({
+          threadId: scope.threadId,
+          participantId,
+          thread,
+          turnId,
+          pageId,
+          kind: "theme",
+          title: manifest.name,
+          content: workshop.embedFonts(manifest).pipe(
+            Effect.flatMap(workshop.withStill),
+            Effect.map((prepared) => {
+              note = prepared.note;
+              return themePageContent(prepared.manifest);
+            }),
+          ),
+          message: Effect.sync(() =>
+            note === undefined ? THEME_SHOWN_MESSAGE : `${THEME_SHOWN_MESSAGE} ${note}`,
+          ),
+          stillStands: (still) =>
+            (still.session?.participantId ?? null) === participantId &&
+            still.session?.activeTurnId === turnId,
+        }),
+      );
+    }).pipe(
+      Effect.catchTag("PageStoreError", (error) =>
+        Effect.succeed({ outcome: "refused" as const, detail: error.message }),
+      ),
+    );
+
+  const previewTheme: AgentPagesShape["previewTheme"] = (scope, input) =>
+    Effect.gen(function* () {
+      if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
+      if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
+      const argument = yield* themeArgument(scope, input);
+      if ("refused" in argument) return { outcome: "refused" as const, detail: argument.refused };
+      const check = checkThemeManifest(argument.value);
+      // A theme that only fails rules past its shape (contrast, sizes) still
+      // renders, so the agent sees what it is fixing.
+      const decoded = check.ok ? Option.some(check.manifest) : decodeThemeManifest(argument.value);
+      if (Option.isNone(decoded)) {
+        return {
+          outcome: "refused" as const,
+          detail: themeProblems(check.ok ? [] : check.errors).detail,
+        };
+      }
+      const embedded = yield* workshop.embedFonts(decoded.value).pipe(Effect.result);
+      const manifest =
+        embedded._tag === "Success" ? embedded.success : withoutHostedFonts(decoded.value);
+      return yield* workshop.preview(manifest).pipe(
+        Effect.map((report) => ({
+          outcome: "previewed" as const,
+          text: themePreviewText({
+            manifest,
+            problems: check.ok ? [] : check.errors,
+            fontProblem: embedded._tag === "Failure" ? embedded.failure.detail : null,
+            report,
+          }),
+          shots: report.shots,
+        })),
+        Effect.catch((error) =>
+          Effect.succeed({ outcome: "failed" as const, detail: error.message }),
+        ),
+      );
+    }).pipe(
+      Effect.catchTag("PageStoreError", (error) =>
+        Effect.succeed({ outcome: "refused" as const, detail: error.message }),
+      ),
+    );
+
   const read: AgentPagesShape["read"] = (input) =>
     Effect.gen(function* () {
       const thread = yield* snapshots.getThreadShellById(input.threadId).pipe(
@@ -525,6 +729,8 @@ const make = Effect.gen(function* () {
     show,
     adopt,
     preview,
+    showTheme,
+    previewTheme,
     read,
     pendingVersionIds: Effect.sync(() => new Set(pending)),
     assetsDirOf: (threadId) => pageAssetsDir(threadId),

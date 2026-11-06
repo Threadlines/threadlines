@@ -167,6 +167,13 @@ const make = Effect.gen(function* () {
         dispatchMenuAction(DesktopWindow.TOGGLE_SIDEBAR_MENU_ACTION),
       );
     };
+    // The escape hatch from a theme that went wrong: back to built-in System.
+    const resetThemeClick = () => {
+      runMenuEffect(
+        DesktopWindow.RESET_THEME_MENU_ACTION,
+        dispatchMenuAction(DesktopWindow.RESET_THEME_MENU_ACTION),
+      );
+    };
     const goTo = (action: GoMenuAction) => () => {
       runMenuEffect(action, dispatchMenuAction(action));
     };
@@ -254,6 +261,8 @@ const make = Effect.gen(function* () {
           { role: "zoomOut" },
           { type: "separator" },
           { role: "togglefullscreen" },
+          { type: "separator" },
+          { label: "Reset Theme", click: resetThemeClick },
           ...(environment.platform === "win32"
             ? [
                 {

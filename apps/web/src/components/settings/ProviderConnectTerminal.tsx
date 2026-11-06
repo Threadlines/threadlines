@@ -6,7 +6,7 @@ import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 
 import { isEditableEventTarget } from "../../lib/editableTarget";
-import { createXtermSurface } from "../terminal/xtermSurface";
+import { createXtermSurface, followTerminalTheme } from "../terminal/xtermSurface";
 import { PROVIDER_CONNECT_TERMINAL_CLASS } from "./providerConnectFlow.logic";
 
 interface ProviderConnectTerminalProps {
@@ -58,12 +58,19 @@ export function ProviderConnectTerminal({
       onResizeRef.current(activeTerminal.cols, activeTerminal.rows);
     };
 
-    const resizeObserver = new ResizeObserver(() => {
+    const refit = () => {
       if (disposed) return;
       fitAddon.fit();
       pushSize(terminal);
-    });
+    };
+    const resizeObserver = new ResizeObserver(refit);
     resizeObserver.observe(mount);
+    // Follows the theme store, a same-base switch included.
+    const stopFollowingTheme = followTerminalTheme({
+      terminal,
+      themeSource: () => mount,
+      onFontChange: refit,
+    });
     pushSize(terminal);
     // Ready for the run's prompt, unless the user is typing elsewhere: the
     // terminal can appear on its own (its chunk landing, or the stall
@@ -76,6 +83,7 @@ export function ProviderConnectTerminal({
       disposed = true;
       writeRef.current = null;
       resizeObserver.disconnect();
+      stopFollowingTheme();
       dataSubscription.dispose();
       terminal.dispose();
     };

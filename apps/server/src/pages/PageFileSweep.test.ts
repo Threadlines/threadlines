@@ -23,8 +23,8 @@ describe("sweepPageFiles", () => {
     fs.rmSync(pagesDir, { recursive: true, force: true });
   });
 
-  const write = (thread: string, versionId: string, ageMs: number) => {
-    const file = path.join(pagesDir, thread, PAGE, `${versionId}.html`);
+  const write = (thread: string, versionId: string, ageMs: number, extension = "html") => {
+    const file = path.join(pagesDir, thread, PAGE, `${versionId}.${extension}`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "<p>page</p>");
     const at = new Date(Date.now() - ageMs);
@@ -35,6 +35,8 @@ describe("sweepPageFiles", () => {
   it("removes old files no live row names, and keeps live, pending and young ones", async () => {
     const hour = 60 * 60_000;
     const kept = write("thread-a", KEPT, 2 * hour);
+    // A theme row's version is the theme's JSON.
+    const keptTheme = write("thread-b", KEPT, 2 * hour, "json");
     const orphan = write("thread-a", ORPHAN, 2 * hour);
     const pending = write("thread-a", PENDING, 2 * hour);
     const young = write("thread-a", YOUNG, 60_000);
@@ -42,13 +44,14 @@ describe("sweepPageFiles", () => {
 
     const removed = await sweepPageFiles({
       pagesDir,
-      keep: new Set([`thread-a/${PAGE}/${KEPT}`]),
+      keep: new Set([`thread-a/${PAGE}/${KEPT}`, `thread-b/${PAGE}/${KEPT}`]),
       pending: new Set([PENDING]),
       now: Date.now(),
     });
 
     expect(removed).toBe(2);
     expect(fs.existsSync(kept)).toBe(true);
+    expect(fs.existsSync(keptTheme)).toBe(true);
     expect(fs.existsSync(pending)).toBe(true);
     expect(fs.existsSync(young)).toBe(true);
     expect(fs.existsSync(orphan)).toBe(false);

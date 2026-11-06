@@ -8362,7 +8362,10 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div
+      data-chat-view=""
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
+    >
       {/* Top bar: up in the window's title row while there is one, else here. */}
       <TitleBarContent
         measureRef={chatHeaderBottomVarRef}

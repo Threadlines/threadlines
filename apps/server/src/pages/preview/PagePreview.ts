@@ -67,11 +67,29 @@ export class PagePreview extends Context.Service<
       readonly document: string;
       readonly widths: ReadonlyArray<number>;
     }) => Effect.Effect<Option.Option<ReadonlyArray<readonly [number, number]>>>;
+    /**
+     * Captures documents in a fixed viewport, each as the whole viewport
+     * after it has run a while (theme specimens: docs/design/custom-themes.md).
+     * Like `preview`, starts the install and fails with
+     * PagePreviewInstallingError while it runs; with `installedOnly`, never
+     * waits for an install (starting it in the background) and fails with
+     * PagePreviewBrowserError when there is none yet.
+     */
+    readonly captureViewports: (input: {
+      readonly width: number;
+      readonly height: number;
+      /** Output pixels per CSS pixel; 1 by default. */
+      readonly scale?: number | undefined;
+      readonly shots: ReadonlyArray<HeadlessChrome.ViewportShotRequest>;
+      readonly installedOnly?: boolean | undefined;
+    }) => Effect.Effect<ReadonlyArray<HeadlessChrome.ViewportShot>, PagePreviewError>;
   }
 >()("threadlines/pages/PagePreview") {}
 
 export const MIN_PREVIEW_WIDTH = 240;
 export const MAX_PREVIEW_WIDTH = 1_600;
+/** The tallest fixed viewport `captureViewports` takes. */
+export const MAX_VIEWPORT_HEIGHT = 1_200;
 // Each preview or measurement runs its own browser; more at once mostly costs memory.
 const MAX_CONCURRENT_BROWSERS = 2;
 const CAPTURE_TIMEOUT = "20 seconds";
@@ -171,7 +189,60 @@ export const makePagePreview = Effect.fn("PagePreview.make")(function* (
       Effect.withSpan("PagePreview.measure"),
     );
 
-  return PagePreview.of({ preview, measure });
+  const captureViewports: PagePreview["Service"]["captureViewports"] = (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executable = input.installedOnly
+          ? yield* browser.acquireInstalled.pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () =>
+                    Effect.fail(
+                      new HeadlessChrome.PagePreviewBrowserError({
+                        reason: "the preview browser is not installed yet",
+                      }),
+                    ),
+                  onSome: Effect.succeed,
+                }),
+              ),
+            )
+          : yield* browser.acquire;
+        const width = Math.min(
+          MAX_PREVIEW_WIDTH,
+          Math.max(MIN_PREVIEW_WIDTH, Math.round(input.width)),
+        );
+        const height = Math.min(MAX_VIEWPORT_HEIGHT, Math.max(1, Math.round(input.height)));
+        const scale = Math.min(2, Math.max(0.05, input.scale ?? 1));
+        const longest = input.shots.reduce(
+          (total, shot) => total + shot.waitMs + (shot.waitFor?.maxMs ?? 0),
+          0,
+        );
+        return yield* browsers.withPermits(1)(
+          HeadlessChrome.captureViewports({
+            executable,
+            width,
+            height,
+            scale,
+            shots: input.shots,
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: Duration.sum(
+                Duration.fromInputUnsafe(CAPTURE_TIMEOUT),
+                Duration.millis(longest),
+              ),
+              orElse: () =>
+                Effect.fail(
+                  new HeadlessChrome.PagePreviewBrowserError({
+                    reason: `the page did not finish loading within ${CAPTURE_TIMEOUT}`,
+                  }),
+                ),
+            }),
+          ),
+        );
+      }),
+    ).pipe(Effect.provideContext(services), Effect.withSpan("PagePreview.captureViewports"));
+
+  return PagePreview.of({ preview, measure, captureViewports });
 });
 
 export const layer: Layer.Layer<

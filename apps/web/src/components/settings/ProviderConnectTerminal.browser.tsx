@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { useState } from "react";
 import { render } from "vitest-browser-react";
 
+import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
+
 import { ProviderConnectTerminal } from "./ProviderConnectTerminal";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
+import { endThemeTrial, startThemeTrial } from "../../theme/themeStore";
 
 const onInput = vi.fn((_data: string) => {});
 
@@ -63,6 +66,43 @@ describe("ProviderConnectTerminal", () => {
       await expect.element(addressField()).toHaveValue("http://localhost:1455/auth/callback");
       expect(onInput).not.toHaveBeenCalled();
     } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("takes a same-base theme switch: new text and terminal colors without a remount", async () => {
+    const theme = (hash: string, foreground: string, red: string): ThemeManifest => ({
+      format: THEME_FILE_FORMAT,
+      base: "dark",
+      colors: {
+        background: "#0a1029",
+        foreground,
+        mutedForeground: "#a3aed2",
+        accent: "#2fd6b0",
+        accentForeground: "#03231c",
+      },
+      terminal: ["#000000", red, ...Array.from({ length: 14 }, () => "#cccccc")],
+      name: `Night ${hash.slice(0, 1)}`,
+    });
+    const first = startThemeTrial({
+      choice: { kind: "unsaved", hash: "a".repeat(64), name: "Night a" },
+      manifest: theme("a", "#e7ecff", "#ff5577"),
+    });
+    const screen = await render(<SignInPanel showTerminal />);
+    // xterm writes its colors into a style element of its own.
+    const terminalCss = () =>
+      [...document.querySelectorAll(".xterm style")].map((style) => style.textContent).join("");
+    try {
+      await expect.poll(terminalCss).toContain("#ff5577");
+      const second = startThemeTrial({
+        choice: { kind: "unsaved", hash: "b".repeat(64), name: "Night b" },
+        manifest: theme("b", "#ffd6e8", "#ee2233"),
+      });
+      await expect.poll(terminalCss).toContain("#ee2233");
+      expect(terminalCss()).toContain("#ffd6e8");
+      endThemeTrial(second.id);
+    } finally {
+      endThemeTrial(first.id);
       await screen.unmount();
     }
   });

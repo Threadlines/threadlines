@@ -111,6 +111,9 @@ import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import * as AgentSettingsChanges from "./settingsChanges/AgentSettingsChanges.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
+import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
+import { ThemeLibraryRepositoryLive } from "./themes/ThemeLibraryRepository.ts";
+import { ThemeWorkshopLive } from "./themes/ThemeWorkshop.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as LocalServers from "./preview/LocalServers.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
@@ -561,6 +564,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Outside agents' starts and sends by request id (`/mcp/connect`);
       // building it marks the ones a restart cut off.
       OutsideAgentRequestsLive,
+      // The theme library (docs/design/custom-themes.md), over its own tables.
+      ThemeLibraryLive.pipe(Layer.provide(ThemeLibraryRepositoryLive)),
+    ).pipe(
+      // Getting themes ready, for the library and the theme tools: their
+      // fonts, and specimens, stills and thumbnails in the preview browser.
+      Layer.provideMerge(ThemeWorkshopLive),
     ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),

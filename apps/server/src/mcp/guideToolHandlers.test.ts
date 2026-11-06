@@ -54,8 +54,9 @@ describe("app_guide", () => {
   it("says which settings an agent may change for the user, and which are the user's alone", async () => {
     const { guide } = readers();
     const theme = await Effect.runPromise(guide({ query: "dark mode" }));
+    // Themes go by name now: the built-ins, a starter, or one in this computer's library.
     expect(theme.answer).toContain(
-      'settings_change (place "general.theme", value one of "system" (System), "light" (Light), "dark" (Dark))',
+      `settings_change (place "general.theme", value "system", "light", "dark", or the name of a starter theme or a theme in this computer's library)`,
     );
     const threads = await Effect.runPromise(guide({ query: "why can't you start threads" }));
     expect(threads.answer).toContain("Only the user can change it");

@@ -59,13 +59,19 @@ html.electron.mac:not([data-marketing-capture]) {
   --app-titlebar-leading: 95px;
 }
 
-@theme inline {
+/* Not inline: the `font-sans` and `font-mono` utilities read these variables
+   at runtime, so a custom theme's fonts (theme/themeApply.ts) reach them. The
+   stacks match DEFAULT_SANS_STACK and DEFAULT_MONO_STACK in theme/themeFonts.ts. */
+@theme {
   --font-sans:
     "Schibsted Grotesk Variable", "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", sans-serif;
   --font-mono:
     "Cascadia Mono Variable", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
     monospace;
+}
+
+@theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
   /* Duty-cycled indicator animations: long opacity holds with short stepped
      ramps, so the compositor only produces frames while the value changes
@@ -125,6 +131,7 @@ html.electron.mac:not([data-marketing-capture]) {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-surface-solid: var(--surface-solid);
   --color-rail: var(--rail);
   --color-frame: var(--frame);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -373,6 +380,13 @@ html.electron.mac:not([data-marketing-capture]) {
   /* Matches the macOS default text-selection blue so ::selection and the kept
      transcript-note highlight paint identically. */
   --text-selection: oklch(0.85 0.07 258);
+  /* The opaque base behind anything that must hide what scrolls under it
+     (sticky headers, copy buttons, diagram patches) and the browser's chrome.
+     The same as --background here; a custom theme sets it to its opaque base,
+     which stays solid while its glass surfaces turn see-through. */
+  --surface-solid: var(--background);
+  /* Code blocks' fill (laid over --surface-solid). A custom theme may set its own. */
+  --code-background: var(--muted);
 
   @variant dark {
     color-scheme: dark;
@@ -486,6 +500,61 @@ html.electron {
    row and the canvas beside the work panel, so neither ends in a stripe. */
 html.electron body {
   background: linear-gradient(var(--frame) var(--app-titlebar-height), var(--background) 0);
+}
+
+/* Glass (docs/design/custom-themes.md, "Glass in the app"): only while the
+   active theme has live art, set on <html> by theme/themeApply.ts. The art
+   is drawn behind the page (ThemeBackdropLayer); while it runs, its frame
+   frosts and tints each calm zone itself, so these surfaces turn clear and
+   alpha never compounds. When the app shows the still instead, the surfaces
+   paint the tint (theme/glass.ts sets --glass-*). Until then they stay
+   opaque. The stacked canvas layers (the frame around the panel, the panel,
+   the page, the chat view) collapse so only one of them paints.
+
+   Opaque under glass: popovers, menus, dialogs, toasts (their own fills),
+   the diff, browser, terminal and file panels, sticky headers
+   (--surface-solid), and pages other than a chat or the home screen
+   (Settings and the like cover the art, which pauses). */
+html[data-glass] body {
+  background: transparent !important;
+}
+html[data-glass] [data-slot="sidebar-wrapper"],
+html[data-glass] [data-slot="app-panel"],
+html[data-glass] [data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-container"] {
+  background-color: transparent;
+}
+html[data-glass] [data-slot="app-titlebar"],
+html[data-glass] [data-slot="navigation-rail"] {
+  background-color: color-mix(in srgb, var(--frame) var(--glass-frame, 100%), transparent);
+}
+html[data-glass] [data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-inner"] {
+  background-color: color-mix(in srgb, var(--sidebar) var(--glass-list, 100%), transparent);
+}
+/* The search and compose strip sits outside the list's scroll, so nothing
+   passes under it: it shows the list's glass, not a solid band. */
+html[data-glass] [data-sidebar-chrome] {
+  background-color: transparent;
+}
+html[data-glass] [data-slot="sidebar-inset"] {
+  background-color: var(--surface-solid);
+}
+html[data-glass][data-glass-page="chat"] [data-slot="sidebar-inset"],
+html[data-glass][data-glass-page="chat"] [data-empty-home],
+html[data-glass] [data-chat-view] {
+  background-color: transparent;
+}
+html[data-glass] [data-chat-column],
+html[data-glass] [data-chat-view] > header {
+  background-color: color-mix(in srgb, var(--background) var(--glass-column, 100%), transparent);
+}
+html[data-glass] [data-chat-composer-form] [data-chat-composer-mobile-collapsed] {
+  background-color: color-mix(in srgb, var(--card) var(--glass-composer, 100%), transparent);
+}
+/* Fades that blend content into an opaque canvas (the timeline's bottom
+   edge, header edges, the thread list's ends, a folded plan) read as bright
+   bands over art. */
+html[data-glass] .glass-fade {
+  display: none;
 }
 
 body {
@@ -678,7 +747,7 @@ code {
    translucent, so this lays it over --background: the same shade the group
    around it shows, for a group that sits on the canvas. */
 @utility surface-group-solid {
-  background: linear-gradient(var(--group), var(--group)) var(--background);
+  background: linear-gradient(var(--group), var(--group)) var(--surface-solid);
 }
 
 /* A group drawn per run of rows, for lists that must stay one keyed list while
@@ -1011,7 +1080,7 @@ label:has(> select#reasoning-effort) select {
   gap: 0.28rem;
   border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--muted) 88%, var(--background));
+  background: color-mix(in srgb, var(--muted) 88%, var(--surface-solid));
   padding: 0.08rem 0.34rem;
   color: var(--foreground);
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -1029,7 +1098,7 @@ label:has(> select#reasoning-effort) select {
   opacity: 1;
   color: var(--foreground);
   border-color: color-mix(in srgb, var(--border) 65%, var(--foreground));
-  background: color-mix(in srgb, var(--muted) 72%, var(--background));
+  background: color-mix(in srgb, var(--muted) 72%, var(--surface-solid));
 }
 
 .chat-markdown-file-link:focus-visible {
@@ -1155,14 +1224,14 @@ label:has(> select#reasoning-effort) select {
 
 .chat-markdown .chat-markdown-copy-button {
   /* A plain row action, with a faint backing so it stays legible over code. */
-  background: color-mix(in srgb, var(--background) 75%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 75%, transparent);
   color: var(--muted-foreground);
 }
 
 /* Run in terminal (CommandRuns.tsx): beside the copy button, shown while the
    block is hovered or focused, and always on touch screens. */
 .chat-markdown .chat-markdown-run-button {
-  background: color-mix(in srgb, var(--background) 75%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 75%, transparent);
   color: var(--muted-foreground);
   opacity: 0;
 }
@@ -1181,7 +1250,7 @@ label:has(> select#reasoning-effort) select {
 /* Ours, not the highlighter's class: streamed and settled blocks both land as
    this wrapper's pre, and the settled one carries the theme background inline. */
 .chat-markdown .chat-markdown-shiki > pre {
-  background: color-mix(in srgb, var(--muted) 78%, var(--background)) !important;
+  background: color-mix(in srgb, var(--code-background) 78%, var(--surface-solid)) !important;
 }
 
 /* Math (MarkdownMath.tsx): KaTeX at a size that sits in a 14px line, display
@@ -1216,12 +1285,12 @@ label:has(> select#reasoning-effort) select {
    to match the code blocks; on a raised card the patches behind labels come
    out a shade off. */
 .chat-markdown-diagram {
-  --pele-bg: color-mix(in srgb, var(--color-black) 3.12%, var(--background));
+  --pele-bg: color-mix(in srgb, var(--color-black) 3.12%, var(--surface-solid));
   --pele-fg: var(--foreground);
   --pele-muted: var(--muted-foreground);
   --pele-line: color-mix(in srgb, var(--foreground) 55%, transparent);
-  --pele-surface: var(--background);
-  --pele-surface-alt: color-mix(in srgb, var(--foreground) 7%, var(--background));
+  --pele-surface: var(--surface-solid);
+  --pele-surface-alt: color-mix(in srgb, var(--foreground) 7%, var(--surface-solid));
   --pele-border: color-mix(in srgb, var(--foreground) 28%, transparent);
   --pele-accent: var(--primary);
   --pele-error: var(--destructive);
@@ -1243,7 +1312,7 @@ label:has(> select#reasoning-effort) select {
   --pele-series-8: var(--muted-foreground);
 
   @variant dark {
-    --pele-bg: color-mix(in srgb, var(--color-white) 7.02%, var(--background));
+    --pele-bg: color-mix(in srgb, var(--color-white) 7.02%, var(--surface-solid));
     --pele-series-1: var(--color-blue-400);
     --pele-series-2: var(--color-emerald-500);
     --pele-series-3: var(--color-amber-500);
@@ -1263,7 +1332,7 @@ label:has(> select#reasoning-effort) select {
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-2xl);
-  background: color-mix(in srgb, var(--muted) 78%, var(--background));
+  background: color-mix(in srgb, var(--code-background) 78%, var(--surface-solid));
   /* Room above for the buttons on the frame's first line. */
   padding: calc(0.8rem + 1lh + 0.35rem) 0.9rem 0.9rem;
 }
@@ -1481,7 +1550,7 @@ label:has(> select#reasoning-effort) select {
 
 /* Diffs theme bridge (match diff surfaces to app palette) */
 .diff-panel-viewport {
-  background: color-mix(in srgb, var(--background) 94%, var(--card));
+  background: color-mix(in srgb, var(--surface-solid) 94%, var(--card));
 }
 
 /* One-time emphasis on the file the diff panel just scrolled to. Files sit

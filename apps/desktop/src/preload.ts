@@ -314,7 +314,34 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewClearCache: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL, input),
   previewClearAllBrowsingData: () =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_ALL_BROWSING_DATA_CHANNEL),
-  setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
+  setTheme: (appearance) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, appearance),
+  getPowerState: () => ipcRenderer.invoke(IpcChannels.GET_POWER_STATE_CHANNEL),
+  onPowerStateChange: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+      if (typeof state !== "object" || state === null) return;
+      listener(state as Parameters<typeof listener>[0]);
+    };
+    ipcRenderer.on(IpcChannels.POWER_STATE_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.POWER_STATE_CHANNEL, wrappedListener);
+    };
+  },
+  onThemeReset: (listener) => {
+    const wrappedListener = () => listener();
+    ipcRenderer.on(IpcChannels.RESET_THEME_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.RESET_THEME_CHANNEL, wrappedListener);
+    };
+  },
+  setBackdropActive: (active) =>
+    ipcRenderer.invoke(IpcChannels.SET_BACKDROP_ACTIVE_CHANNEL, active),
+  onBackdropTooHeavy: (listener) => {
+    const wrappedListener = () => listener();
+    ipcRenderer.on(IpcChannels.BACKDROP_TOO_HEAVY_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.BACKDROP_TOO_HEAVY_CHANNEL, wrappedListener);
+    };
+  },
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   isWindowFocused: () => windowFocused,
   onWindowFocusChange: (listener) => {

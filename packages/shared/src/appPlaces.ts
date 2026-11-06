@@ -27,6 +27,8 @@ import type {
   ServerSettingsPatch,
   SourceControlWritingStyleMode,
   ThreadEnvMode,
+  ThemeArtInThreads,
+  ThemeMotion,
   TimestampFormat,
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
@@ -133,6 +135,14 @@ export type EditControl =
       readonly unit: string;
       /** 0 is also allowed, and means off. */
       readonly offAtZero?: true;
+    }
+  | {
+      /**
+       * A theme by name: "system", "light", "dark", a starter, or a theme in
+       * the thread's computer's library. Which names exist depends on that
+       * library, so the tool checks that (settingsChanges/themeChoices.ts).
+       */
+      readonly kind: "theme";
     }
   | {
       /**
@@ -334,6 +344,12 @@ export const TIMESTAMP_FORMAT_LABELS: Readonly<Record<TimestampFormat, string>> 
 /** "Theme", as its menu words each choice. */
 export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
 
+/** "Art in threads", as its control words each choice. */
+export const THEME_ART_IN_THREADS_LABELS = { none: "None", some: "Some", full: "Full" } as const;
+
+/** "Motion", as its control words each choice. */
+export const THEME_MOTION_LABELS = { live: "Live", still: "Still" } as const;
+
 /** "Source control writing style", as its menu words each choice. */
 export const SOURCE_CONTROL_WRITING_STYLE_LABELS: Readonly<
   Record<SourceControlWritingStyleMode, string>
@@ -508,9 +524,9 @@ const SECTIONS = [
     kind: "section",
     parent: "settings.general",
     title: "Appearance",
-    about: "Theme and time format.",
+    about: "Theme, its live art, and time format.",
     scope: "device",
-    keywords: ["dark mode", "light mode"],
+    keywords: ["dark mode", "light mode", "themes"],
   },
   {
     id: "general.chatAndDiffs",
@@ -909,10 +925,54 @@ const ROWS = [
     kind: "row",
     parent: "general.appearance",
     title: "Theme",
-    about: "How Threadlines looks.",
-    keywords: ["dark mode", "light mode", "night mode", "colors"],
+    about:
+      "How Threadlines looks: built in, a starter, or a theme you or an agent made. Each device picks its own.",
+    keywords: [
+      "dark mode",
+      "light mode",
+      "night mode",
+      "colors",
+      "custom theme",
+      "wallpaper",
+      "background",
+      "ascii",
+      "import theme",
+    ],
     scope: "device",
-    edit: { lands: "device", control: { kind: "choice", options: THEME_LABELS }, store: "theme" },
+    edit: { lands: "device", control: { kind: "theme" }, store: "theme" },
+  },
+  {
+    id: "general.themeArtInThreads",
+    kind: "row",
+    parent: "general.appearance",
+    title: "Art in threads",
+    about:
+      "How much of a theme's live art shows behind a thread. None keeps the reading column solid.",
+    keywords: ["backdrop", "glass", "transparency", "wallpaper"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: THEME_ART_IN_THREADS_LABELS },
+      leaves: ["themeArtInThreads"],
+      read: (settings) => settings.themeArtInThreads,
+      patch: (value) => ({ themeArtInThreads: value as ThemeArtInThreads }),
+    },
+  },
+  {
+    id: "general.themeMotion",
+    kind: "row",
+    parent: "general.appearance",
+    title: "Motion",
+    about: "Whether a theme's art moves. Still shows one frame of it.",
+    keywords: ["animation", "reduce motion", "battery", "backdrop"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: THEME_MOTION_LABELS },
+      leaves: ["themeMotion"],
+      read: (settings) => settings.themeMotion,
+      patch: (value) => ({ themeMotion: value as ThemeMotion }),
+    },
   },
   {
     id: "general.timeFormat",
