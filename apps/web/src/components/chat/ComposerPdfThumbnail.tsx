@@ -60,10 +60,11 @@ export const ComposerPdfThumbnail = memo(function ComposerPdfThumbnail(props: {
       </span>
     );
   }
+  // The tile drops its own margin for a drawn page, so the name keeps one here.
   return (
     <>
       <FileTextIcon className="size-5 text-muted-foreground" />
-      <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
+      <span className="w-full truncate px-1 text-[9px] leading-tight text-muted-foreground/80">
         {name}
       </span>
     </>
