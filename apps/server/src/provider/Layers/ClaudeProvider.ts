@@ -66,10 +66,13 @@ import {
 import {
   carryClaudeAccountUsageForward,
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  type ClaudeGetUsageAnswer,
   type ClaudeStoredSignIn,
   type ClaudeUsageCheck,
   type ClaudeUsageUnavailableReason,
   checkClaudeSignInRenewalDue,
+  claudeUsageCheckFromGetUsage,
+  claudeUsageUnavailable,
   preferNewerClaudeUsageReadings,
 } from "./ClaudeUsage.ts";
 
@@ -1019,6 +1022,11 @@ type ClaudeCapabilitiesProbe = {
   readonly tokenSource: string | undefined;
   readonly models: ReadonlyArray<ClaudeModelInfo>;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  /**
+   * The plan usage Claude Code reported in the same session. Absent when the
+   * session runs on a token or key, which has no plan usage to read.
+   */
+  readonly usage?: ClaudeUsageCheck;
 };
 
 // Models whose 1M window is their only window. The CLI lists them as
@@ -1373,13 +1381,72 @@ const withQuietClaudeSession = <A>(
   );
 };
 
+// Claude Code fetches the plan usage over the network, renewing its sign-in
+// first when that is due.
+const PLAN_USAGE_REQUEST_TIMEOUT_MS = 15_000;
+// Left between the usage answer's deadline and the session's.
+const PLAN_USAGE_SESSION_MARGIN_MS = 1_000;
+
+/**
+ * Claude Code's own answer about the plan's usage, read with its own sign-in.
+ * `skipBehaviors` leaves out the slow scan of local transcripts that only the
+ * Usage page needs. Undefined when there is no answer in time, or the CLI
+ * does not know the request. Never rejects.
+ */
+async function askClaudePlanUsage(
+  q: ClaudeQuery,
+  session: { readonly startedAtMs: number; readonly timeoutMs: number },
+): Promise<ClaudeGetUsageAnswer | undefined> {
+  if (typeof q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !== "function") {
+    return undefined;
+  }
+  // Within what is left of the session's own time limit, so a slow start
+  // never costs the answers the session already has.
+  const timeoutMs = Math.min(
+    PLAN_USAGE_REQUEST_TIMEOUT_MS,
+    session.timeoutMs - (Date.now() - session.startedAtMs) - PLAN_USAGE_SESSION_MARGIN_MS,
+  );
+  if (timeoutMs <= 0) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }).then(
+        (answer) => ({
+          rate_limits_available: answer.rate_limits_available,
+          rate_limits: answer.rate_limits,
+        }),
+        () => undefined,
+      ),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Token and key variables that Claude uses before its own sign-in. */
+const CLAUDE_TOKEN_AUTH_ENV_NAMES = [
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+] as const;
+
+/** Whether Claude would run on a token or key rather than its own sign-in. */
+function usesClaudeTokenAuth(environment: NodeJS.ProcessEnv): boolean {
+  return CLAUDE_TOKEN_AUTH_ENV_NAMES.some((name) => (environment[name]?.trim() ?? "") !== "");
+}
+
 /**
  * Probe account information from a quiet Claude session's initialization
  * result. Init data doesn't depend on MCP (slash commands and skills come
  * from settings and plugins).
  *
- * This is used as a fallback when `claude auth status` does not include
- * subscription type information.
+ * On its own sign-in, the same session also asks Claude Code for the plan's
+ * usage, so the usage bars need no extra process. A slow or missing usage
+ * answer never costs the account information.
  */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
@@ -1388,8 +1455,9 @@ const probeClaudeCapabilities = (
     /** The instance's stored normal sign-in, for the renewal guard. */
     readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
   },
-) =>
-  withQuietClaudeSession(
+) => {
+  const readsPlanUsage = !usesClaudeTokenAuth(environment);
+  return withQuietClaudeSession(
     claudeSettings,
     environment,
     {
@@ -1398,6 +1466,7 @@ const probeClaudeCapabilities = (
       timeoutMs: CAPABILITIES_PROBE_TIMEOUT_MS,
     },
     async (q) => {
+      const startedAtMs = Date.now();
       const init = await q.initializationResult();
       const account = init.account as
         | {
@@ -1412,9 +1481,79 @@ const probeClaudeCapabilities = (
         tokenSource: account?.tokenSource,
         models: init.models ?? [],
         slashCommands: parseClaudeInitializationCommands(init.commands),
-      } satisfies ClaudeCapabilitiesProbe;
+        planUsage: readsPlanUsage
+          ? {
+              answer: await askClaudePlanUsage(q, {
+                startedAtMs,
+                timeoutMs: CAPABILITIES_PROBE_TIMEOUT_MS,
+              }),
+            }
+          : undefined,
+      };
     },
+  ).pipe(
+    Effect.flatMap((reply) =>
+      reply === undefined
+        ? Effect.succeed(undefined)
+        : Effect.map(DateTime.now, (now): ClaudeCapabilitiesProbe => {
+            const { planUsage, ...probe } = reply;
+            return planUsage
+              ? {
+                  ...probe,
+                  usage: claudeUsageCheckFromGetUsage(planUsage.answer, DateTime.formatIso(now)),
+                }
+              : probe;
+          }),
+    ),
   );
+};
+
+// A whole quiet session for one usage answer: Claude's start, a renewal of
+// its sign-in when due, and the request itself.
+const NORMAL_SIGN_IN_USAGE_TIMEOUT_MS = 30_000;
+
+/**
+ * Plan usage for an instance that chats on a long-lived token, which cannot
+ * read plan usage. A quiet session without the token asks Claude Code on the
+ * normal sign-in instead, as `claude` in a terminal would. Starting there,
+ * Claude renews that sign-in when it is due, behind the same renewal guard as
+ * every quiet session. Signed out when the store holds no sign-in (no session
+ * starts then) or Claude reports none.
+ */
+export const readClaudeNormalSignInUsage = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /** The instance's stored normal sign-in, for the renewal guard. */
+    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
+  },
+): Effect.Effect<ClaudeUsageCheck, never, Path.Path> =>
+  Effect.gen(function* () {
+    const stored = options?.readStoredSignIn ? yield* options.readStoredSignIn : undefined;
+    if (stored?._tag === "Absent") return claudeUsageUnavailable("signed_out");
+    const reply = yield* withQuietClaudeSession(
+      claudeSettings,
+      stripClaudeTokenAuth(environment),
+      {
+        readStoredSignIn: options?.readStoredSignIn,
+        settingSources: [],
+        timeoutMs: NORMAL_SIGN_IN_USAGE_TIMEOUT_MS,
+      },
+      async (q) => {
+        const startedAtMs = Date.now();
+        const init = await q.initializationResult();
+        const account = init.account as { readonly tokenSource?: string } | undefined;
+        if (account?.tokenSource === "none") return { signedOut: true } as const;
+        const answer = await askClaudePlanUsage(q, {
+          startedAtMs,
+          timeoutMs: NORMAL_SIGN_IN_USAGE_TIMEOUT_MS,
+        });
+        return { signedOut: false, answer } as const;
+      },
+    );
+    if (reply?.signedOut) return claudeUsageUnavailable("signed_out");
+    return claudeUsageCheckFromGetUsage(reply?.answer, DateTime.formatIso(yield* DateTime.now));
+  });
 
 // Claude reads every transcript of the last week for its usage report: 1.6 s
 // on a busy week here, so a big history gets plenty of room.
@@ -1541,9 +1680,7 @@ export const readClaudeLaunchVersion = (launch: ClaudeLaunchTarget) =>
  */
 function stripClaudeTokenAuth(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const normalAuthEnvironment = { ...environment };
-  delete normalAuthEnvironment[CLAUDE_CODE_OAUTH_TOKEN_ENV];
-  delete normalAuthEnvironment.ANTHROPIC_AUTH_TOKEN;
-  delete normalAuthEnvironment.ANTHROPIC_API_KEY;
+  for (const name of CLAUDE_TOKEN_AUTH_ENV_NAMES) delete normalAuthEnvironment[name];
   return normalAuthEnvironment;
 }
 
@@ -1595,95 +1732,7 @@ export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(
   return undefined;
 });
 
-// A real turn renews on every CLI version: it cannot reach the model without
-// a working token. Startup alone renews too on recent CLIs (see
-// `probeClaudeCapabilities`), but that is not something to build a renewal on.
-const CREDENTIAL_REFRESH_TIMEOUT_MS = 60_000;
-const CREDENTIAL_REFRESH_PROMPT = "Reply with exactly: ok";
 const CLAUDE_VERSION_PROBE_TIMEOUT_MS = 30_000;
-
-/**
- * Run one minimal Haiku turn on normal Claude sign-in (token/API-key env
- * stripped) so the CLI renews its stored OAuth credential and persists it to
- * the credential store (macOS Keychain or `~/.claude/.credentials.json`).
- * Threadlines never implements OAuth refresh itself — the CLI owns the store
- * and the refresh-token rotation; live-verified to persist immediately from
- * a short non-interactive run. Resolves to true when the turn got an answer,
- * i.e. the sign-in works and a renewed credential should now be stored. A
- * turn the API refused still ends in a `success` result, flagged `is_error`,
- * so that flag decides. The CLI renews and saves before the model request, so
- * stopping it once the result is in cannot cut the renewal off; every other
- * way out goes through `stopClaudeCliAfterSignInRenewal`.
- */
-export const refreshClaudeOAuthCredential = (
-  claudeSettings: ClaudeSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-  options?: {
-    /** The instance's stored normal sign-in, for the renewal guard. */
-    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
-  },
-): Effect.Effect<boolean, never, Path.Path> => {
-  const abort = new AbortController();
-  const stop = Effect.sync(() => {
-    if (!abort.signal.aborted) abort.abort();
-  });
-  return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(
-      claudeSettings,
-      stripClaudeTokenAuth(environment),
-    );
-    const isRenewalDue = options?.readStoredSignIn
-      ? checkClaudeSignInRenewalDue({
-          readStoredSignIn: options.readStoredSignIn,
-          environment: claudeEnvironment,
-        })
-      : Effect.succeed(false);
-    const renewalDue = yield* isRenewalDue;
-    return yield* Effect.tryPromise(async () => {
-      const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
-      const q = claudeQuery({
-        prompt: CREDENTIAL_REFRESH_PROMPT,
-        options: {
-          persistSession: false,
-          pathToClaudeCodeExecutable: executable,
-          abortController: abort,
-          // No filesystem settings, hooks, or MCP servers (claude.ai
-          // connectors load even without settings): this run exists only to
-          // make the CLI renew its credential, not to act on the user's config.
-          settingSources: [],
-          settings: { disableAllHooks: true },
-          mcpServers: {},
-          strictMcpConfig: true,
-          allowedTools: [],
-          // Named so third-party providers or telemetry-off setups don't
-          // start this run in auto mode (SDK 0.3.286 left it to the CLI).
-          permissionMode: "default",
-          maxTurns: 1,
-          model: "haiku",
-          // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
-          env: withUsualCommandLookup(claudeEnvironment),
-          stderr: () => {},
-        },
-      });
-      for await (const message of q) {
-        if (message.type === "result") return message.subtype === "success" && !message.is_error;
-      }
-      return false;
-    }).pipe(
-      Effect.timeoutOption(CREDENTIAL_REFRESH_TIMEOUT_MS),
-      // A turn that answered has renewed and saved already, so the guard
-      // stops the CLI at once. One that timed out or was interrupted (an
-      // instance rebuilt mid-turn) may be renewing right now, and waits.
-      Effect.onExit(() => stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop })),
-    );
-  }).pipe(
-    Effect.result,
-    Effect.map(
-      (result) =>
-        Result.isSuccess(result) && Option.isSome(result.success) && result.success.value === true,
-    ),
-  );
-};
 
 /**
  * The snapshot for a turned-off instance: no probe runs, only a filesystem

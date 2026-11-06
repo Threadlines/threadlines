@@ -212,7 +212,7 @@ export function toastForProviderRateLimitResetCreditOutcome(
 
 /**
  * Opens the provider's own page for spending a limit reset, for providers
- * that do not let third-party tools claim resets (Claude).
+ * that offer other apps no public way to claim one (Claude).
  */
 export function ProviderExternalResetsButton(props: {
   readonly link: ProviderExternalResetsLink;
