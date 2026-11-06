@@ -10,6 +10,7 @@ import { themeContentHash } from "@threadlines/shared/themeManifestHash";
 import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
 import { useMemo } from "react";
 
+import { preloadThemeArtCode } from "../theme/ThemeRuntime";
 import {
   chooseTheme,
   hasKeptTheme,
@@ -171,8 +172,12 @@ export function sameThemeChoice(first: ThemeChoice, second: ThemeChoice): boolea
 /** A tile's theme file, read from wherever it lives; null for the built-ins. */
 export async function loadTileManifest(tile: ThemeTile): Promise<ThemeManifest | null> {
   const { choice } = tile;
-  // Showing it takes the token code too: fetch both at once.
-  if (choice.kind !== "builtin") preloadThemeTokenCode();
+  // Showing it takes the token code and, for art, the art's code: fetch them
+  // alongside the theme.
+  if (choice.kind !== "builtin") {
+    preloadThemeTokenCode();
+    preloadThemeArtCode();
+  }
   switch (choice.kind) {
     case "builtin":
       return null;

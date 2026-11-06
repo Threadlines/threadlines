@@ -119,7 +119,7 @@ describe("theme store, applied", () => {
       </div>,
     );
     // ThemeBackdropLayer marks a page the art shows on; the home screen is one.
-    root().setAttribute("data-glass-page", "chat");
+    root().setAttribute("data-glass-page", "art");
     // How opaque a surface's fill is (color-mix() computes to color(srgb ... / a)).
     const alpha = (testId: string) => {
       const value = getComputedStyle(screen.getByTestId(testId).element()).backgroundColor;
@@ -283,13 +283,13 @@ describe("backdrop zones", () => {
       </div>,
     );
     try {
-      const { zones, chatShown } = measureBackdropZones(
+      const { zones, artShown } = measureBackdropZones(
         document,
         { width: window.innerWidth, height: window.innerHeight },
         resolveThemeTokens(darkTheme("#e7ecff")),
         glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, "some"),
       );
-      expect(chatShown).toBe(true);
+      expect(artShown).toBe(true);
       const contains = (id: string, text: string, shift = 0) => {
         const zone = zones.find((candidate) => candidate.id === id);
         const element = [...document.querySelectorAll("h2, p, button")].find(
@@ -319,6 +319,58 @@ describe("backdrop zones", () => {
     }
   });
 
+  it("frosts a settings page's column the full height of the page, the art around it", async () => {
+    const at = (left: number, top: number, width: number, height: number) =>
+      ({ position: "absolute", left, top, width, height }) as const;
+    const screen = await render(
+      <div style={{ position: "fixed", inset: 0 }}>
+        <div data-slot="app-panel" style={{ ...at(48, 38, 952, 600), overflow: "hidden" }}>
+          <div data-slot="sidebar-inset" style={at(250, 0, 702, 600)}>
+            {/* The header narrow windows and phones show. */}
+            <header data-glass-page-header="" style={at(0, 0, 702, 40)}>
+              Settings
+            </header>
+            <div data-glass-page-content="" style={{ ...at(0, 40, 702, 560), overflow: "auto" }}>
+              <div data-glass-page-column="" style={at(111, 32, 480, 1200)}>
+                <h1>General</h1>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>,
+    );
+    try {
+      const tokens = resolveThemeTokens(darkTheme("#e7ecff"));
+      const floors = glassFloors(
+        { frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 },
+        "some",
+      );
+      const { zones, artShown } = measureBackdropZones(
+        document,
+        { width: window.innerWidth, height: window.innerHeight },
+        tokens,
+        floors,
+      );
+      expect(artShown).toBe(true);
+      expect(zones.find((zone) => zone.id === "page")).toMatchObject({
+        edge: "soft",
+        // The column, the full visible height of the page...
+        core: { x: 409, y: 78, w: 480, h: 560 },
+        // ...frosted a margin wider on each side.
+        rect: { x: 361, y: 78, w: 576, h: 560 },
+        tint: 0.5,
+        tintColor: "#0a1029",
+      });
+      expect(zones.find((zone) => zone.id === "page-header")).toMatchObject({
+        edge: "hard",
+        rect: { x: 297, y: 37, w: 704, h: 42 },
+        tint: 0.5,
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("frosts the frame, list and composer hard (the composer rounded like its outline), and the reading column soft around the messages", async () => {
     const at = (left: number, top: number, width: number, height: number) =>
       ({ position: "absolute", left, top, width, height }) as const;
@@ -335,11 +387,15 @@ describe("backdrop zones", () => {
           <div data-chat-view="" style={at(250, 0, 702, 600)}>
             <div data-chat-column="" style={{ position: "absolute", inset: 0 }}>
               <div data-timeline-root="" style={at(151, 0, 400, 500)} />
-              <form data-chat-composer-form="" style={at(151, 510, 400, 80)}>
-                {/* Something stacked above the composer's outline, which has its own surface. */}
+              <form data-chat-composer-form="" style={at(151, 400, 400, 190)}>
+                {/* The theme picker above the composer: a glass panel of its own. */}
                 <div
-                  data-chat-composer-frame=""
-                  style={{ ...at(0, 20, 400, 60), borderRadius: "13px 13px 13px 0" }}
+                  data-glass-surface="theme-picker"
+                  style={{ ...at(0, 0, 400, 100), borderRadius: 12 }}
+                />
+                <div
+                  data-glass-surface="composer"
+                  style={{ ...at(0, 130, 400, 60), borderRadius: "13px 13px 13px 0" }}
                 />
               </form>
             </div>
@@ -353,13 +409,13 @@ describe("backdrop zones", () => {
         { frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 },
         "some",
       );
-      const { zones, chatShown } = measureBackdropZones(
+      const { zones, artShown } = measureBackdropZones(
         document,
         { width: window.innerWidth, height: window.innerHeight },
         tokens,
         floors,
       );
-      expect(chatShown).toBe(true);
+      expect(artShown).toBe(true);
       const byId = Object.fromEntries(zones.map((zone) => [zone.id, zone]));
       // Hard zones reach one px past their boxes, so the borders between them frost too.
       expect(byId.title).toMatchObject({
@@ -383,6 +439,12 @@ describe("backdrop zones", () => {
         edge: "hard",
         rect: { x: 448, y: 567, w: 402, h: 62 },
         radii: [14, 14, 14, 0],
+        tint: 0.8,
+      });
+      expect(byId["theme-picker"]).toMatchObject({
+        edge: "hard",
+        rect: { x: 448, y: 437, w: 402, h: 102 },
+        radii: [13, 13, 13, 13],
         tint: 0.8,
       });
     } finally {

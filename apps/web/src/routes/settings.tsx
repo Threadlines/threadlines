@@ -155,9 +155,14 @@ function SettingsContentLayout() {
     <SettingsSurfaceContext.Provider value={isHostedStatic ? "phone" : "full"}>
       <SettingsPlaceSignalsProvider>
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate md:h-auto">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+          {/* Clear under a theme with art: the page's column is glass (index.css). */}
+          <div
+            data-glass-page-shell=""
+            className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground"
+          >
             {!isElectron && (
               <header
+                data-glass-page-header=""
                 className={cn(
                   "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 md:hidden",
                 )}

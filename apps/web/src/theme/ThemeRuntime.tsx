@@ -21,6 +21,11 @@ const BackdropLayer = lazyWithPreload(() =>
   import("./ThemeBackdropLayer").then((module) => module.ThemeBackdropLayer),
 );
 
+/** Fetches the art's code before a theme with art is shown, so it starts at once. */
+export function preloadThemeArtCode(): void {
+  void BackdropLayer.preload();
+}
+
 /** Mounted in the app shell's root: the backdrop while the active theme has art. */
 export function ThemeRuntime() {
   const active = useActiveTheme();

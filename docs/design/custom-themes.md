@@ -115,7 +115,10 @@ Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. "Art in threads" moves the column's tint
 floor: None (opaque column), Some (default), Full (light tint). Readability
-can always raise a tint.
+can always raise a tint. Settings pages work like a thread: the page's column
+is frosted and tinted the full height of the page, and the art shows around
+it. The composer and the panels it opens above itself (the theme picker, the
+new-theme hint) are glass too, each over a patch rounded like its outline.
 
 Opaque in glass mode: popovers, menus, dialogs, toasts, the diff, browser,
 terminal and file panels (their renderers force their own fills, and code
@@ -206,8 +209,14 @@ it:
 - **Desktop CPU watchdog.** A worker that answers ticks on time but spins
   between them is invisible to tick timing. On desktop the main process finds
   the backdrop frame's OS process through `webFrameMain` and samples its CPU
-  with `app.getAppMetrics()` every 2 seconds; over 15% of a core for 10
-  seconds sends the frame to still with the same notice. Chromium groups
+  with `app.getAppMetrics()` every 2 seconds. Over 15% of a core for 10
+  seconds halves the art's rate (`slowdown` in the conditions, a floor under
+  the budget's own steps); another 10 seconds over halves it again, and only
+  a third verdict sends the frame to still with the same notice. The process
+  costs more than the art's own measure (a full-rate grid art read 3-4% by
+  its clock and 8-11% by the process), so a theme near the line crossed it
+  whenever the computer was busy, and stopping outright left the glass solid.
+  A new theme or "Try again" starts over at full rate. Chromium groups
   sandboxed sibling frames into one process, and agent pages are sandboxed
   frames too, so each sample first checks that no other frame lives in that
   process; when one does, the sample is skipped (the watchdog never blames the

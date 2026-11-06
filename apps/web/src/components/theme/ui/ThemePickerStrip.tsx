@@ -1,13 +1,14 @@
 /**
  * The strip `/theme` opens above the message box (docs/design/custom-themes.md,
  * "Switching"): every theme as a tile. Arrow keys and clicks preview a theme
- * as a trial; Enter (or clicking the previewed tile again) keeps it; Esc puts
- * the old one back and closes. "New theme" hands the message box a prompt
- * for an agent to make one.
+ * as a trial; Enter (or clicking the previewed tile again) keeps it; Esc or
+ * the ✕ puts the old one back and closes. "New theme" hands the message box
+ * a prompt for an agent to make one (NewThemeHint.tsx explains it).
  */
-import { PlusIcon } from "lucide-react";
+import { PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { endThemeTrial, useActiveTheme, useThemeChoice, useThemeTrial } from "~/theme/themeStore";
 import {
@@ -19,9 +20,6 @@ import {
 import { useThemePickerOpenStore } from "./themePickerOpen";
 import { keepThemeTrial } from "./themeTrialState";
 import { ThemeTileView } from "./ThemeTileView";
-
-/** What "New theme" puts in the message box, for the user to finish. */
-export const NEW_THEME_PROMPT = "Make me a Threadlines theme that feels like ";
 
 export function ThemePickerStrip({
   onClose,
@@ -106,7 +104,9 @@ export function ThemePickerStrip({
         } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
           event.preventDefault();
           preview(Math.max(0, highlighted - 1));
-        } else if (event.key === "Enter") {
+        } else if (event.key === "Enter" && event.target === event.currentTarget) {
+          // Only with the strip itself focused: Enter on a button in it (✕,
+          // New theme) is that button's own.
           event.preventDefault();
           keep(tiles[highlighted]);
         } else if (event.key === "Escape") {
@@ -115,12 +115,22 @@ export function ThemePickerStrip({
         }
       }}
     >
-      <div className="mb-1.5 flex items-baseline gap-2 px-0.5">
+      <div className="mb-1 flex items-center gap-2 px-0.5">
         <span className="text-[12px] font-medium text-foreground">Themes</span>
         <span className="flex-1" />
         <span className="font-mono text-[10.5px] text-muted-foreground">
           ← → preview · ↵ keep · esc back
         </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Close themes"
+          tooltip="Close (Esc)"
+          onClick={back}
+        >
+          <XIcon className="size-3.5" aria-hidden />
+        </Button>
       </div>
       <div className="flex snap-x gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
         {tiles.map((tile, index) => (

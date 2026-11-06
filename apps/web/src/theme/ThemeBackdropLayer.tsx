@@ -57,6 +57,7 @@ import {
   readThemeState,
   setBackdropStatus,
   subscribeTheme,
+  useBackdropSlowdown,
   useBackdropTooHeavy,
 } from "./themeStore";
 
@@ -90,6 +91,7 @@ export function ThemeBackdropLayer(props: {
   const floors = useMemo(() => glassFloors(glass, artInThreads), [glass, artInThreads]);
   const status = useSyncExternalStore(subscribeTheme, () => readThemeState().backdropStatus);
   const tooHeavy = useBackdropTooHeavy();
+  const slowdown = useBackdropSlowdown();
   const stillOnly = useIsMobile();
 
   // The tints the surfaces paint themselves while the art isn't running.
@@ -104,15 +106,16 @@ export function ThemeBackdropLayer(props: {
 
   const layout = useBackdropLayout(tokens, floors);
   useLayoutEffect(() => {
-    document.documentElement.setAttribute("data-glass-page", layout.chatShown ? "chat" : "page");
+    document.documentElement.setAttribute("data-glass-page", layout.artShown ? "art" : "page");
     return () => document.documentElement.removeAttribute("data-glass-page");
-  }, [layout.chatShown]);
+  }, [layout.artShown]);
 
   const { activity, pulse } = useBackdropActivity();
   const conditions = useBackdropConditions({
     motionSetting,
     tooHeavy,
-    chatShown: layout.chatShown,
+    slowdown,
+    artShown: layout.artShown,
     working: activity.working,
   });
 
@@ -159,7 +162,7 @@ export function ThemeBackdropLayer(props: {
 // ---------------------------------------------------------------------------
 // Zones
 
-const EMPTY_LAYOUT: MeasuredBackdropLayout = { zones: [], chatShown: true };
+const EMPTY_LAYOUT: MeasuredBackdropLayout = { zones: [], artShown: true };
 
 const MEASURED_SELECTORS = [
   '[data-slot="app-titlebar"]',
@@ -168,8 +171,12 @@ const MEASURED_SELECTORS = [
   '[data-slot="sidebar-inner"]',
   "[data-chat-column]",
   "[data-chat-composer-form]",
+  "[data-glass-surface]",
   "[data-draft-hero]",
   "[data-empty-home]",
+  "[data-glass-page-content]",
+  "[data-glass-page-header]",
+  "[data-glass-page-column]",
   "[data-chat-right-panel]",
   '[data-testid="browser-panel"]',
   ".thread-terminal-drawer",
@@ -198,7 +205,7 @@ function useBackdropLayout(
         floors,
       );
       setLayout((previous) =>
-        previous.chatShown === next.chatShown && sameBackdropZones(previous.zones, next.zones)
+        previous.artShown === next.artShown && sameBackdropZones(previous.zones, next.zones)
           ? previous
           : next,
       );
@@ -445,7 +452,8 @@ function usePowerState(): DesktopPowerState {
 function useBackdropConditions(input: {
   readonly motionSetting: "live" | "still";
   readonly tooHeavy: boolean;
-  readonly chatShown: boolean;
+  readonly slowdown: number;
+  readonly artShown: boolean;
   readonly working: number;
 }): BackdropConditions {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
@@ -462,10 +470,11 @@ function useBackdropConditions(input: {
     (power.thermal === "nominal" || power.thermal === "fair" || power.thermal === "unknown")
       ? "serious"
       : power.thermal;
-  const visible = documentVisible && input.chatShown;
+  const visible = documentVisible && input.artShown;
+  const { slowdown } = input;
   return useMemo(
-    () => ({ motion, visible, busy, idle, focused, power: power.power, thermal }),
-    [motion, visible, busy, idle, focused, power.power, thermal],
+    () => ({ motion, visible, busy, idle, focused, power: power.power, thermal, slowdown }),
+    [motion, visible, busy, idle, focused, power.power, thermal, slowdown],
   );
 }
 

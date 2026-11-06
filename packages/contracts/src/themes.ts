@@ -317,6 +317,12 @@ export const BackdropActivity = Schema.Struct({
 export type BackdropActivity = typeof BackdropActivity.Type;
 
 /** What the app tells the frame about running conditions. */
+/**
+ * How many times the desktop CPU watchdog may halve the art's rate before a
+ * further verdict makes it still.
+ */
+export const BACKDROP_MAX_SLOWDOWN = 2;
+
 export const BackdropConditions = Schema.Struct({
   /** The user's Motion setting, or Reduce Motion. */
   motion: Schema.Literals(["live", "still"]),
@@ -330,6 +336,8 @@ export const BackdropConditions = Schema.Struct({
   focused: Schema.Boolean,
   power: Schema.Literals(["ac", "battery", "unknown"]),
   thermal: Schema.Literals(["nominal", "fair", "serious", "critical", "unknown"]),
+  /** Times the desktop CPU watchdog halved the art's rate (0 to BACKDROP_MAX_SLOWDOWN). */
+  slowdown: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: BACKDROP_MAX_SLOWDOWN })),
 });
 export type BackdropConditions = typeof BackdropConditions.Type;
 

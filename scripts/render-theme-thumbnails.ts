@@ -220,6 +220,7 @@ async function startArt(
           focused: false,
           power: "ac",
           thermal: "nominal",
+          slowdown: 0,
         },
       },
     ],

@@ -150,7 +150,8 @@ import {
   type ThreadGoalControls,
 } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
-import { NEW_THEME_PROMPT, ThemePickerStrip } from "../theme/ui/ThemePickerStrip";
+import { NEW_THEME_PROMPT, NewThemeHint } from "../theme/ui/NewThemeHint";
+import { ThemePickerStrip } from "../theme/ui/ThemePickerStrip";
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { useModelRetirementNotice } from "./modelRetirementNotice";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
@@ -1255,6 +1256,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
   const [isThemePickerOpen, setIsThemePickerOpen] = useState(false);
+  const [isNewThemeHintOpen, setIsNewThemeHintOpen] = useState(false);
+  // The hint goes once its sentence is sent or cleared.
+  const showNewThemeHint = isNewThemeHintOpen && prompt.startsWith(NEW_THEME_PROMPT.trimEnd());
+  if (isNewThemeHintOpen && !showNewThemeHint) setIsNewThemeHintOpen(false);
   const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
   // Commands this thread will act on: the built-ins plus whatever the selected
   // provider reports. The editor tints the leading token so typed-past-the-menu
@@ -1949,6 +1954,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setComposerDraftPrompt(composerDraftTarget, nextPrompt);
     },
     [composerDraftTarget, setComposerDraftPrompt],
+  );
+
+  /** Replaces what the message box holds and puts the cursor at its end. */
+  const fillComposerPrompt = useCallback(
+    (nextPrompt: string) => {
+      promptRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(null);
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(nextCursor);
+      });
+    },
+    [promptRef, setPrompt],
   );
 
   const addComposerAttachment = useCallback(
@@ -3720,14 +3740,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           width the right panel's resize check reads. */}
       <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
       {!isComposerCollapsedMobile && isThemePickerOpen ? (
-        <div className="mx-auto mb-1.5 w-full overflow-hidden rounded-[var(--app-radius-xlarge)] border border-border bg-card">
+        <div
+          data-glass-surface="theme-picker"
+          className="mx-auto mb-1.5 w-full overflow-hidden rounded-[var(--app-radius-xlarge)] border border-border bg-card"
+        >
           <ThemePickerStrip
             onClose={() => {
               setIsThemePickerOpen(false);
               composerEditorRef.current?.focusAtEnd();
             }}
             onNewTheme={() => {
-              setPrompt(NEW_THEME_PROMPT);
+              fillComposerPrompt(NEW_THEME_PROMPT);
+              setIsNewThemeHintOpen(true);
+            }}
+          />
+        </div>
+      ) : null}
+      {!isComposerCollapsedMobile && !isThemePickerOpen && showNewThemeHint ? (
+        <div
+          data-glass-surface="new-theme"
+          className="mx-auto mb-1.5 w-full overflow-hidden rounded-[var(--app-radius-xlarge)] border border-border bg-card"
+        >
+          <NewThemeHint
+            onPickIdea={fillComposerPrompt}
+            onClose={() => {
+              setIsNewThemeHintOpen(false);
               composerEditorRef.current?.focusAtEnd();
             }}
           />
@@ -3755,7 +3792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : null}
       {/* The composer's outline: the theme art's frosted patch follows it (backdropZones.ts). */}
       <div
-        data-chat-composer-frame=""
+        data-glass-surface="composer"
         className={cn(
           "group rounded-[13px] p-px transition-[background-color,box-shadow] duration-200",
           interactionMode === "plan" && "plan-mode-frame",

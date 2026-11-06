@@ -414,6 +414,11 @@ export function useBackdropTooHeavy(): boolean {
   return useThemeSelector((state) => state.backdropTooHeavy);
 }
 
+/** Times the desktop watchdog halved the art's rate before pausing it. */
+export function useBackdropSlowdown(): number {
+  return useThemeSelector((state) => state.backdropSlowdown);
+}
+
 let lastUnavailable: { readonly name: string } | null = null;
 
 /**
@@ -487,7 +492,7 @@ export function setBackdropStatus(status: ThemeBackdropStatus | null): void {
   getCore().setBackdropStatus(status);
 }
 
-/** The desktop CPU watchdog's verdict: the art goes still until "Try again". */
+/** The desktop CPU watchdog's verdict: the art slows down, then goes still until "Try again". */
 export function reportBackdropTooHeavy(): void {
   getCore().reportBackdropTooHeavy();
 }

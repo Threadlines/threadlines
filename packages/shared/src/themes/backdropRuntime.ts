@@ -80,6 +80,7 @@ export interface BackdropRuntimeLimits {
   readonly maxBackgroundStops: number;
   readonly maxCellGap: number;
   readonly maxStillChars: number;
+  readonly maxSlowdown: number;
 }
 
 export interface BackdropFrameRuntimeOptions {
@@ -262,7 +263,7 @@ export function backdropFrameRuntime(
 
   const readConditions = (value: unknown): BackdropConditions | null => {
     if (!isRecord(value)) return null;
-    const { motion, visible, busy, idle, focused, power, thermal } = value;
+    const { motion, visible, busy, idle, focused, power, thermal, slowdown } = value;
     if (motion !== "live" && motion !== "still") return null;
     if (
       typeof visible !== "boolean" ||
@@ -282,7 +283,8 @@ export function backdropFrameRuntime(
     ) {
       return null;
     }
-    return { motion, visible, busy, idle, focused, power, thermal };
+    if (!isInt(slowdown, 0, limits.maxSlowdown)) return null;
+    return { motion, visible, busy, idle, focused, power, thermal, slowdown };
   };
 
   // ---------------------------------------------------------------------
@@ -1319,6 +1321,9 @@ void main() {
     }
     render();
     drawnFrames += 1;
+    // The first frame is announced at once: the app shows the art on it, and
+    // the next heartbeat could be a second away.
+    if (drawnFrames === 1) send({ type: "heartbeat", frame: drawnFrames });
     const own = now() - renderStart;
     // The worker's own measure of its work, when it sent one: the round trip
     // also holds time spent waiting on a busy page, which isn't the art's
@@ -1891,7 +1896,9 @@ void main() {
     ) {
       return "paused";
     }
-    if (c.busy || now() < busyUntil) return "hold";
+    // Busy holds the art, but not before its first frame: a theme just
+    // switched to (often by keyboard) shows its art at once.
+    if (c.busy || now() < busyUntil) return drawnFrames === 0 ? "running" : "hold";
     return "running";
   };
 
@@ -1906,7 +1913,8 @@ void main() {
         : Math.min(theme.maxFps, activity.working > 0 ? timing.workingFps : timing.idleFps);
     if (conditions?.power === "battery") fps = Math.min(fps, timing.batteryFps);
     // Never slower than one frame a second, so a drawing frame always shows progress to the app's watchdog.
-    return Math.max(timing.minFps, fps / 2 ** throttle);
+    // The desktop watchdog's slowdown is a floor under the budget's own steps.
+    return Math.max(timing.minFps, fps / 2 ** Math.max(throttle, conditions?.slowdown ?? 0));
   };
 
   const schedule = () => {
@@ -2061,7 +2069,7 @@ void main() {
           : msPerSecond >= timing.energyMediumMsPerSecond
             ? "medium"
             : "light",
-      throttled: throttle > 0,
+      throttled: throttle > 0 || (conditions?.slowdown ?? 0) > 0,
     });
   };
 

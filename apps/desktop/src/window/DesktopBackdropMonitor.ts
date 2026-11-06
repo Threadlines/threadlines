@@ -8,7 +8,8 @@
  * - the CPU watchdog: while the app shows art, every 2 seconds it finds the
  *   backdrop frame (the iframe named `threadlines-backdrop`) and samples its
  *   renderer's CPU. Over 15% of a core for 10 seconds tells the app, which
- *   makes the art still. Chromium can put sandboxed sibling frames (agent
+ *   halves the art's rate; a verdict after the second halving makes it
+ *   still. Chromium can put sandboxed sibling frames (agent
  *   pages) in the same process, so a sample is skipped whenever any other
  *   frame lives there: the watchdog never blames the art for a page's work.
  */
@@ -153,8 +154,10 @@ export const layer = Layer.effect(
       }
       const step = stepWatchdog(watchdogState, { at: Date.now(), cpuPercent });
       watchdogState = step.state;
+      // Sampling goes on: a verdict first slows the art, and art still too
+      // heavy after that earns another. Once the art is still its frame is
+      // gone, so samples say nothing.
       if (step.tooHeavy) {
-        stopWatchdog();
         runFork(electronWindow.sendAll(IpcChannels.BACKDROP_TOO_HEAVY_CHANNEL).pipe(Effect.ignore));
       }
     };

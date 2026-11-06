@@ -17,7 +17,7 @@
  *   time a custom theme is shown or tried. A choice or trial made before it
  *   lands applies when it does; the window keeps what it showed meanwhile.
  */
-import type { ThemeBase, ThemeManifest } from "@threadlines/contracts";
+import { BACKDROP_MAX_SLOWDOWN, type ThemeBase, type ThemeManifest } from "@threadlines/contracts";
 import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
@@ -106,6 +106,11 @@ export interface ThemeStoreState {
   readonly backdropGeneration: number;
   /** The desktop CPU watchdog found the art too heavy; it stays still until "Try again". */
   readonly backdropTooHeavy: boolean;
+  /**
+   * Times the desktop CPU watchdog halved the art's rate; a verdict past
+   * BACKDROP_MAX_SLOWDOWN makes it still (backdropTooHeavy).
+   */
+  readonly backdropSlowdown: number;
   readonly active: ActiveTheme;
 }
 
@@ -248,6 +253,7 @@ export interface ThemeStoreCore {
   readonly adoptStoredChoiceIfChanged: () => void;
   readonly setSystemDark: (dark: boolean) => void;
   readonly setBackdropStatus: (status: ThemeBackdropStatus | null) => void;
+  /** The desktop CPU watchdog's verdict: the art halves its rate, and goes still past the last step. */
   readonly reportBackdropTooHeavy: () => void;
   readonly retryBackdrop: () => void;
   /** Where content can come from changed (a computer connected): look again for what was missing. */
@@ -282,6 +288,7 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     backdropStatus: null,
     backdropGeneration: 0,
     backdropTooHeavy: false,
+    backdropSlowdown: 0,
   };
   let state: ThemeStoreState = { ...initial, active: computeActive(initial, null) };
 
@@ -297,7 +304,7 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     const artChanged = active.hash !== state.active.hash;
     state = {
       ...next,
-      ...(artChanged ? { backdropStatus: null, backdropTooHeavy: false } : {}),
+      ...(artChanged ? { backdropStatus: null, backdropTooHeavy: false, backdropSlowdown: 0 } : {}),
       active,
     };
     for (const listener of listeners) listener();
@@ -607,13 +614,20 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     },
     setBackdropStatus: (status) => update({ backdropStatus: status }),
     reportBackdropTooHeavy: () => {
-      if (!state.backdropTooHeavy) update({ backdropTooHeavy: true });
+      if (state.backdropTooHeavy) return;
+      // Slower first, as the art's own budget does; still only past the last step.
+      if (state.backdropSlowdown < BACKDROP_MAX_SLOWDOWN) {
+        update({ backdropSlowdown: state.backdropSlowdown + 1 });
+      } else {
+        update({ backdropTooHeavy: true });
+      }
     },
     retryBackdrop: () =>
       update({
         backdropGeneration: state.backdropGeneration + 1,
         backdropStatus: null,
         backdropTooHeavy: false,
+        backdropSlowdown: 0,
       }),
     retryUnavailable: () => {
       if (state.committedState.status !== "unavailable") return;

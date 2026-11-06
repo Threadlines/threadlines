@@ -36,6 +36,7 @@ const LIVE = {
   focused: false,
   power: "ac",
   thermal: "nominal",
+  slowdown: 0,
 } as const;
 
 /** The reading column: text in its core, feathered 40 px around it. */
@@ -312,6 +313,47 @@ describe("backdrop frame", () => {
     mounted.post({ type: "test:capture-shown", on: true });
     await mounted.framesAbove(6);
     expectReadable((await mounted.probe()).worst.column);
+  });
+
+  it("draws a new theme's first frame at once, even while the app is busy, and says so at once", async () => {
+    mounted = await mountFrame();
+    mounted.start("grid", GRID_ART, [COLUMN]);
+    // Arrow keys previewing themes keep the app busy.
+    mounted.post({ type: "conditions", conditions: { ...LIVE, busy: true } });
+    const first = await vi.waitFor(
+      () => {
+        const beat = mounted!.messages.find(
+          (message) => message.type === "heartbeat" && Number(message.frame) > 0,
+        );
+        if (!beat) throw new Error("no frame announced yet");
+        return beat;
+      },
+      { timeout: 6_000, interval: 20 },
+    );
+    // Announced on the first frame, not on the next once-a-second heartbeat.
+    expect(first.frame).toBe(1);
+    // After it, busy holds the art.
+    await sleep(300);
+    expect((await mounted.probe()).drawnFrames).toBe(1);
+  });
+
+  it("runs at a quarter of its rate when the CPU watchdog has slowed it twice, and says it is throttled", async () => {
+    mounted = await mountFrame();
+    mounted.start("grid", GRID_ART, [COLUMN]);
+    mounted.post({ type: "conditions", conditions: { ...LIVE, slowdown: 2 } });
+    const stats = await vi.waitFor(
+      () => {
+        const all = mounted!.messages.filter(
+          (message) => message.type === "stats" && Number(message.fps) > 0,
+        );
+        if (all.length < 2) throw new Error("not enough stats yet");
+        return all.at(-1)!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    // Behind other apps the art runs at 10 fps; slowed twice, 2.5.
+    expect(Number(stats.fps)).toBeLessThan(5);
+    expect(stats.throttled).toBe(true);
   });
 
   it("rounds a hard zone's corners like the surface over it, leaving the corners to the art", async () => {

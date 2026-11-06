@@ -4,14 +4,17 @@
  * measured from the live layout in window CSS px.
  *
  * - Hard rectangles: the title row, the rail, the thread list, the composer
- *   (rounded like its outline), and any opaque panel beside the chat (right
- *   panel, browser, terminal).
+ *   and the panels it opens above itself (`data-glass-surface`, each rounded
+ *   like its outline), and any opaque panel beside the chat (right panel,
+ *   browser, terminal).
  * - The reading column: the composer's width plus a margin, the full height
  *   of the chat column, feathered outside a core that covers the messages.
  * - The new-thread screen: a soft patch around the heading, the composer
  *   and the line under it, and one around each line of text under them.
  * - The home screen with no thread open: a soft patch around each block of
  *   its text (the heading, line and buttons; the links under them).
+ * - A settings page: its column, the full height of the page, feathered
+ *   outside like the reading column.
  *
  * Every zone's core holds all the text the app can draw there, so the
  * feather never thins the tint under text.
@@ -30,8 +33,11 @@ const HOME_RISE_PX = 8;
 
 export interface MeasuredBackdropLayout {
   readonly zones: ReadonlyArray<BackdropZone>;
-  /** A screen the art shows behind (a thread, a new thread, home); any other page covers it. */
-  readonly chatShown: boolean;
+  /**
+   * A screen the art shows behind (a thread, a new thread, home, a settings
+   * page); any other page covers it.
+   */
+  readonly artShown: boolean;
 }
 
 interface Box {
@@ -344,15 +350,15 @@ export function measureBackdropZones(
       });
     }
   }
-  // The composer's own outline, rounded as it is; things stacked above it
-  // (the theme picker, the goal bar) have their own surfaces.
-  const composerFrame = surfaceBox(
-    composerForm?.querySelector("[data-chat-composer-frame]") ?? null,
-    panel,
-  );
-  if (composerFrame) {
-    hard("composer", composerFrame.box, floors.composer, color("card"), composerFrame.radii);
-  } else if (composerBox) {
+  // The composer's outline and the panels it opens above itself (the theme
+  // picker), each its own patch rounded as it is. Without them, the form.
+  const surfaces = [...(composerForm?.querySelectorAll("[data-glass-surface]") ?? [])];
+  surfaces.forEach((element) => {
+    const surface = surfaceBox(element, panel);
+    const id = element.getAttribute("data-glass-surface") || "composer";
+    if (surface) hard(id, surface.box, floors.composer, color("card"), surface.radii);
+  });
+  if (surfaces.length === 0 && composerBox) {
     hard("composer", composerBox, floors.composer, color("card"));
   }
   // The chat's own header, where there is no title row to hold it (phones).
@@ -399,9 +405,40 @@ export function measureBackdropZones(
     );
   }
 
+  // A settings page: its column frosted the full height of the page, a
+  // margin wider on each side, like the reading column; its own header
+  // (narrow windows and phones) hard, like the chat's.
+  const pageContent =
+    chatView || emptyHome ? null : root.querySelector("[data-glass-page-content]");
+  if (pageContent) {
+    hard(
+      "page-header",
+      visibleBox(root.querySelector("[data-glass-page-header]"), panel),
+      floors.column,
+      color("background"),
+    );
+  }
+  const pageBox = visibleBox(pageContent, panel);
+  if (pageContent && pageBox) {
+    const column = visibleBox(pageContent.querySelector("[data-glass-page-column]"), pageBox);
+    const core = column && clip({ ...column, top: pageBox.top, bottom: pageBox.bottom }, pageBox);
+    const rect = core && clip(grow(core, COLUMN_MARGIN_PX, 0), pageBox);
+    if (core && rect) {
+      zones.push({
+        id: "page",
+        edge: "soft",
+        shape: "rect",
+        rect: toRect(rect),
+        core: toRect(core),
+        tint: floors.column,
+        tintColor: color("background"),
+      });
+    }
+  }
+
   return {
     zones: zones.slice(0, BACKDROP_MAX_ZONES),
-    chatShown: chatView !== null || homeBox !== null,
+    artShown: chatView !== null || homeBox !== null || pageBox !== null,
   };
 }
 

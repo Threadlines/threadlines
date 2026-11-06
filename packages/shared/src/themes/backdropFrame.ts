@@ -28,6 +28,7 @@
  * whole document, which keeps that true.
  */
 import {
+  BACKDROP_MAX_SLOWDOWN,
   BACKDROP_MAX_ZONES,
   THEME_MAX_FPS,
   THEME_MAX_SCRIPT_CHARS,
@@ -136,6 +137,7 @@ const LIMITS: BackdropRuntimeLimits = {
   maxBackgroundStops: BACKDROP_MAX_BACKGROUND_STOPS,
   maxCellGap: BACKDROP_MAX_CELL_GAP,
   maxStillChars: THEME_MAX_STILL_CHARS,
+  maxSlowdown: BACKDROP_MAX_SLOWDOWN,
 };
 
 export interface BackdropFrameDocumentOptions {

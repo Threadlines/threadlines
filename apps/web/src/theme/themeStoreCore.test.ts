@@ -223,6 +223,23 @@ describe("theme store", () => {
     });
   });
 
+  it("slows the art at each CPU watchdog verdict and stills it only past the last step, until Try again", () => {
+    const store = createThemeStoreCore(makeEnv({}).env);
+    store.chooseTheme(library(HASH_A, "Aurora"), manifest("Aurora"));
+    store.reportBackdropTooHeavy();
+    store.reportBackdropTooHeavy();
+    expect(store.getState()).toMatchObject({ backdropSlowdown: 2, backdropTooHeavy: false });
+    store.reportBackdropTooHeavy();
+    expect(store.getState()).toMatchObject({ backdropSlowdown: 2, backdropTooHeavy: true });
+
+    store.retryBackdrop();
+    expect(store.getState()).toMatchObject({ backdropSlowdown: 0, backdropTooHeavy: false });
+    // The verdict belonged to that art: another theme starts at full rate.
+    store.reportBackdropTooHeavy();
+    store.chooseTheme(library(HASH_B, "Dusk"), manifest("Dusk", "light"));
+    expect(store.getState().backdropSlowdown).toBe(0);
+  });
+
   it("ends this window's trial when another window commits a choice, and adopts it", () => {
     const { env, storage } = makeEnv({});
     const store = createThemeStoreCore(env);

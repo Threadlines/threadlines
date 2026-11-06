@@ -32,6 +32,7 @@ const LIVE: BackdropConditions = {
   focused: false,
   power: "ac",
   thermal: "nominal",
+  slowdown: 0,
 };
 
 const GRID_ART = `threadlines.backdrop({

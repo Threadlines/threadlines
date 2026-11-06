@@ -366,9 +366,9 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
       "glass",
       "look",
     ],
-    body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat on frosted glass in front. Each device picks its own theme in {place:general.appearance}; a theme kept once is in this computer's library on every device.
+    body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. Each device picks its own theme in {place:general.appearance}; a theme kept once is in this computer's library on every device.
 
-An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar above the message box, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too. The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial.
+An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar above the message box, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too. The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. In /theme, New theme puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it; sending it asks the agent for one.
 
 ${THEME_FORMAT_GUIDE}
 
