@@ -2,7 +2,7 @@ import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
-  findFileNamed,
+  findReferencedFile,
   isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
@@ -68,14 +68,49 @@ describe("fileViewerStore", () => {
       { path: "docs/read-me-notes.txt", kind: "file" as const },
       { path: "README.md", kind: "file" as const },
     ];
-    expect(findFileNamed(fuzzyHits, "README.txt")).toBeUndefined();
+    expect(findReferencedFile(fuzzyHits, "README.txt")).toEqual({ status: "none" });
 
     const withExactMatch = [
       ...fuzzyHits,
       { path: "packaging/readme.txt", kind: "directory" as const },
       { path: "packaging/win/README.txt", kind: "file" as const },
+      { path: "packaging/mac/README.txt", kind: "file" as const },
     ];
-    expect(findFileNamed(withExactMatch, "README.txt")?.path).toBe("packaging/win/README.txt");
+    expect(findReferencedFile(withExactMatch, "README.txt")).toEqual({
+      status: "found",
+      path: "packaging/win/README.txt",
+    });
+  });
+
+  it("resolves a path from inside a subfolder only to the one file ending in it", () => {
+    const moduleFile = "shop/app/code/Buyfire/ReturnForm/Model/ReturnForm.php";
+    const hits = [
+      { path: moduleFile, kind: "file" as const },
+      {
+        path: "shop/app/code/Buyfire/ReturnForm/Model/ReturnFormLegacy.php",
+        kind: "file" as const,
+      },
+    ];
+    expect(findReferencedFile(hits, "Model/ReturnForm.php")).toEqual({
+      status: "found",
+      path: moduleFile,
+    });
+    // Two modules each have one, and nothing says which the agent meant.
+    const helpers = [
+      { path: "shop/app/code/Buyfire/Analytics/Helper/Data.php", kind: "file" as const },
+      { path: "shop/app/code/Buyfire/ReturnForm/Helper/Data.php", kind: "file" as const },
+    ];
+    expect(findReferencedFile(helpers, "Helper/Data.php")).toEqual({ status: "ambiguous" });
+    // The file at the path as written wins over others ending the same way.
+    expect(
+      findReferencedFile(
+        [
+          { path: "packages/a/src/index.ts", kind: "file" as const },
+          { path: "src/index.ts", kind: "file" as const },
+        ],
+        "src/index.ts",
+      ),
+    ).toEqual({ status: "found", path: "src/index.ts" });
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {

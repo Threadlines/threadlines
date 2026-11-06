@@ -279,6 +279,8 @@ Show device toolbar, in the browser's options menu (⋮), sets the page's size: 
     ],
     body: `The file viewer opens over the chat: from the folder button in the chat header (Browse project files), or by clicking a file name in the chat. Its file list holds the project's files and a Go to file search; files from outside the project are listed apart, under Outside this project.
 
+A file the agent named without its full folder (\`Model/Form.php\`) opens the one project file that ends that way. In a worktree thread, the project folder is searched too when the worktree lacks the file. If several files match, nothing opens: ask the agent for the full path.
+
 Click a line number to select lines (drag for a range) and add them to the chat, or attach the whole file. The open button in its header opens the file in one of your editors, or reveals it in Finder or Explorer.
 
 Edit (or double-click, or start typing) edits the file in place, and it saves as you type. If the file changed on disk meanwhile, for example an agent edited it, the footer offers Reload file or Keep my version. Editing is off for files over 1 MB, read-only files, text that isn't UTF-8, and on touch screens.

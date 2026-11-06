@@ -24,6 +24,21 @@ export const projectQueryKeys = {
       : (["projects", "read-file", environmentId ?? null, cwd, relativePath, as] as const),
   favicon: (environmentId: EnvironmentId, cwd: string) =>
     ["projects", "favicon", environmentId, cwd] as const,
+  /** Where an inline-code file reference in a chat points; see `placeChatFileReference`. */
+  chatFileReference: (
+    environmentId: EnvironmentId | null,
+    cwd: string | null,
+    projectRoot: string | null,
+    reference: string,
+  ) =>
+    [
+      "projects",
+      "chat-file-reference",
+      environmentId ?? null,
+      cwd,
+      projectRoot,
+      reference,
+    ] as const,
 };
 
 const DEFAULT_SEARCH_ENTRIES_LIMIT = 80;

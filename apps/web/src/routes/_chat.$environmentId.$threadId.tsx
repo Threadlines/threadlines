@@ -281,6 +281,11 @@ function ChatThreadRouteView() {
       ? `${activeProject.cwd}/threads/${threadRef?.threadId ?? ""}`
       : null
     : (sourceControlTarget?.cwd ?? null);
+  // A worktree thread's chat also finds cited files in the project folder:
+  // agents sometimes work there instead of in the thread's checkout.
+  const fileViewerProjectRoot = isGeneralChatThread
+    ? null
+    : (sourceControlTarget?.projectCwd ?? null);
   useEffect(() => {
     if (!threadRef || !fileViewerCwd) {
       setActiveFileViewerContext(null);
@@ -289,12 +294,13 @@ function ChatThreadRouteView() {
     setActiveFileViewerContext({
       environmentId: threadRef.environmentId,
       cwd: fileViewerCwd,
+      projectRoot: fileViewerProjectRoot,
       threadRef,
     });
     return () => {
       setActiveFileViewerContext(null);
     };
-  }, [fileViewerCwd, threadRef]);
+  }, [fileViewerCwd, fileViewerProjectRoot, threadRef]);
 
   const diffLinkedInUrl = search.diff === "1";
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
