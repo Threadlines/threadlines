@@ -1,4 +1,5 @@
 import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
+import { STARTER_THEMES } from "@threadlines/shared/themeStarters";
 import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -9,6 +10,7 @@ import {
   THEME_STORAGE_KEY,
 } from "./themeChoice";
 import {
+  choiceName,
   createThemeStoreCore,
   THEME_TRIAL_MS,
   type ThemeContentLookup,
@@ -109,6 +111,12 @@ function makeEnv(input: {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("theme store", () => {
+  it("names every starter right before its code loads", () => {
+    for (const starter of STARTER_THEMES) {
+      expect(choiceName({ kind: "starter", id: starter.id })).toBe(starter.manifest.name);
+    }
+  });
+
   it("loads today's stored values: the built-in words, the legacy key, and anything else as System", () => {
     expect(
       createThemeStoreCore(

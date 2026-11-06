@@ -18,7 +18,6 @@
  *   lands applies when it does; the window keeps what it showed meanwhile.
  */
 import { BACKDROP_MAX_SLOWDOWN, type ThemeBase, type ThemeManifest } from "@threadlines/contracts";
-import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
@@ -121,10 +120,14 @@ export function choiceName(choice: ThemeChoice, starterName?: string): string {
     case "builtin":
       return BUILTIN_NAMES[choice.id];
     case "starter":
+      // Before the starters' code loads, the name is its id's words
+      // ("night-rain" is Night Rain); a test holds every starter to that.
       return (
         starterName ??
-        STARTER_SUMMARIES.find((starter) => starter.id === choice.id)?.name ??
         choice.id
+          .split("-")
+          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(" ")
       );
     case "library":
     case "unsaved":
