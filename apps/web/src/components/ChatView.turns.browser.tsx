@@ -39,6 +39,7 @@ import {
   waitForElement,
   waitForComposerEditor,
   waitForComposerText,
+  pressComposerKey,
   type TestFixture,
   findComposerProviderModelPicker,
   findVisibleComposerFooter,
@@ -477,6 +478,97 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         expect(buttonEffort()).toContain("Medium");
         expect(mediumFocused).toBe(true);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("answers the questions with a chat reply instead of sending it as a message", async () => {
+    const promptText = () =>
+      useComposerDraftStore.getState().getComposerDraft(THREAD_REF)?.prompt ?? "";
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ canLeaveUnanswered: true, running: true }),
+    });
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      (await waitForButtonByText("Next question")).click();
+      (await waitForButtonByText("Reply in chat")).click();
+
+      // The card steps aside: the message box is back, and says what Send does.
+      await waitForComposerEditor();
+      await expect.element(page.getByText("Replying in chat", { exact: true })).toBeVisible();
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Keep it to the footer for now");
+      await waitForComposerText("Keep it to the footer for now");
+      await pressComposerKey("Enter");
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.user-input.respond",
+            ),
+          ).toMatchObject({
+            requestId: "req-browser-user-input",
+            answers: { scope: "Tight" },
+            unanswered: { risk: "replied_in_chat" },
+            reply: { text: "Keep it to the footer for now" },
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      // It went as the answer, never also as a message of its own.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request.type === "thread.follow-up.submit" || request.type === "thread.turn.start"),
+        ),
+      ).toBe(false);
+      await vi.waitFor(() => expect(promptText()).toBe(""));
+
+      // Another device answered first: the agent refuses this reply, and it
+      // comes back to the box.
+      const sent = wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      ) as unknown as { commandId: string };
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: fixture.snapshot.snapshotSequence + 1,
+          eventId: EventId.make("evt-reply-refused"),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: THREAD_ID,
+            activity: {
+              id: EventId.make("activity-reply-refused"),
+              kind: "provider.user-input.respond.failed",
+              tone: "error",
+              summary: "Your reply didn't reach the agent",
+              payload: {
+                requestId: "req-browser-user-input",
+                commandId: sent.commandId,
+                detail: "Those questions were already answered.",
+              },
+              turnId: "turn-pending-input" as TurnId,
+              createdAt: isoAt(1),
+            },
+          },
+        },
+      });
+      await waitForComposerText("Keep it to the footer for now");
     } finally {
       await mounted.cleanup();
     }

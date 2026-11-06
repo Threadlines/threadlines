@@ -101,6 +101,16 @@ export const ServerProviderAuthCapabilities = Schema.Struct({
 });
 export type ServerProviderAuthCapabilities = typeof ServerProviderAuthCapabilities.Type;
 
+/**
+ * When a saved sign-in stops working, however often it renews: somewhere
+ * between `earliest` and `latest`. Only set for a sign-in that chat uses.
+ */
+export const ServerProviderSignInEnds = Schema.Struct({
+  earliest: IsoDateTime,
+  latest: IsoDateTime,
+});
+export type ServerProviderSignInEnds = typeof ServerProviderSignInEnds.Type;
+
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
   type: Schema.optional(TrimmedNonEmptyString),
@@ -108,6 +118,7 @@ export const ServerProviderAuth = Schema.Struct({
   email: Schema.optional(TrimmedNonEmptyString),
   usageEmail: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.optional(ServerProviderAuthCapabilities),
+  signInEnds: Schema.optional(ServerProviderSignInEnds),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 

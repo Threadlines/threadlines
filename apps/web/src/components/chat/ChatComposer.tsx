@@ -602,6 +602,10 @@ export interface ChatComposerProps {
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onRespondToUserInput?: (requestId: ApprovalRequestId, answers: Record<string, unknown>) => void;
+  /** Skip the question on screen, close the card, or answer in the chat (`canLeaveUnanswered`). */
+  onSkipActivePendingUserInput?: () => void;
+  onCloseActivePendingUserInput?: () => void;
+  onReplyInChatToActivePendingUserInput?: () => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (questionId: string, value: string) => void;
 
@@ -717,6 +721,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
     onRespondToUserInput,
+    onSkipActivePendingUserInput,
+    onCloseActivePendingUserInput,
+    onReplyInChatToActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -3786,6 +3793,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
                   isUnavailable={composerUnavailable}
                   isAgentRunning={hasActiveTurn}
+                  {...(onSkipActivePendingUserInput
+                    ? { onSkip: onSkipActivePendingUserInput }
+                    : {})}
+                  {...(onCloseActivePendingUserInput
+                    ? { onClose: onCloseActivePendingUserInput }
+                    : {})}
+                  {...(onReplyInChatToActivePendingUserInput
+                    ? { onReplyInChat: onReplyInChatToActivePendingUserInput }
+                    : {})}
                 />
               </div>
             ) : pendingInvite !== null ? (

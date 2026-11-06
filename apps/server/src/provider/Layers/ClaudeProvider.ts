@@ -10,6 +10,7 @@ import {
   type ServerProviderAccountTokenUsage,
   type ServerProviderAuthCapabilities,
   type ServerProviderModel,
+  type ServerProviderSignInEnds,
   type ServerProviderSlashCommand,
   type UsageBreakdownWindow,
 } from "@threadlines/contracts";
@@ -2021,6 +2022,33 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     },
   });
 });
+
+/**
+ * Whether chat runs on the saved claude.ai sign-in: signed in on a Claude
+ * plan, not on an API key or a long-lived token from `claude setup-token`.
+ * Only then does that sign-in's end matter to chat.
+ */
+export function claudeChatUsesStoredSignIn(provider: Pick<ServerProviderDraft, "auth">): boolean {
+  const { status, type } = provider.auth;
+  return (
+    status === "authenticated" &&
+    type !== undefined &&
+    type !== "apiKey" &&
+    type !== "longLivedOAuthToken"
+  );
+}
+
+/** The snapshot with its sign-in end, or without one when there is none to show. */
+export function withClaudeSignInEnds<A extends Pick<ServerProviderDraft, "auth">>(
+  provider: A,
+  signInEnds: ServerProviderSignInEnds | undefined,
+): A {
+  const { signInEnds: _previous, ...auth } = provider.auth;
+  return {
+    ...provider,
+    auth: signInEnds !== undefined ? { ...auth, signInEnds } : auth,
+  };
+}
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 

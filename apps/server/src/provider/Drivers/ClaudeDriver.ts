@@ -12,7 +12,12 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderSignInEnds,
+} from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -39,18 +44,21 @@ import {
   checkClaudeProviderStatus,
   claudeChatAndUsageAccountsDiffer,
   makePendingClaudeProvider,
+  claudeChatUsesStoredSignIn,
   probeClaudeCapabilities,
   readClaudeLaunchVersion,
   readClaudeNormalAuthEmail,
   readClaudeNormalSignInUsage,
   readClaudeUsageBreakdown,
   seedClaudeProviderUsage,
+  withClaudeSignInEnds,
 } from "../Layers/ClaudeProvider.ts";
 import { makeClaudeTokenUsageHistoryReader } from "../Layers/ClaudeTokenUsageHistory.ts";
 import {
   applyClaudeRateLimitInfoToAccountUsage,
   checkClaudeSignInRenewalDue,
   claudeScopedWindowsOf,
+  claudeSignInEndsWindow,
   type ClaudeUsageCheck,
   claudeUsageUnavailable,
   hasClaudeChatOnlyToken,
@@ -387,25 +395,46 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         );
       };
 
-      const checkProvider = checkClaudeProviderStatus(
-        effectiveConfig,
-        () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
-        processEnv,
-        () =>
-          (hasClaudeChatOnlyToken(processEnv)
-            ? Cache.get(normalSignInUsageCache, "usage")
-            : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
-                Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
-              )
-          ).pipe(Effect.flatMap(settleScopedWindows)),
-        (settings) =>
-          readClaudeNormalAuthEmail(settings, processEnv).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-          ),
-        readTokenUsage ? () => readTokenUsage : undefined,
-        () => isSignInRenewalDue,
-      ).pipe(
+      // The stored sign-in's end as last read. A read that didn't finish (a
+      // slow keychain) keeps it; one that finds no end clears it, so signing
+      // in again replaces the old date at the next check.
+      const lastSignInEndsRef = yield* Ref.make<ServerProviderSignInEnds | undefined>(undefined);
+      const checkProvider = Effect.gen(function* () {
+        const provider = yield* checkClaudeProviderStatus(
+          effectiveConfig,
+          () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
+          processEnv,
+          () =>
+            (hasClaudeChatOnlyToken(processEnv)
+              ? Cache.get(normalSignInUsageCache, "usage")
+              : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
+                  Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
+                )
+            ).pipe(Effect.flatMap(settleScopedWindows)),
+          (settings) =>
+            readClaudeNormalAuthEmail(settings, processEnv).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            ),
+          readTokenUsage ? () => readTokenUsage : undefined,
+          () => isSignInRenewalDue,
+        );
+        // Only the sign-in chat runs on has an end worth a warning; its date
+        // is read from the stored sign-in, as Claude Code itself reads it.
+        if (!claudeChatUsesStoredSignIn(provider)) {
+          yield* Ref.set(lastSignInEndsRef, undefined);
+          return withClaudeSignInEnds(provider, undefined);
+        }
+        const window = claudeSignInEndsWindow(
+          yield* readStoredSignIn,
+          DateTime.toEpochMillis(yield* DateTime.now),
+        );
+        if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
+        return withClaudeSignInEnds(
+          provider,
+          window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
+        );
+      }).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),

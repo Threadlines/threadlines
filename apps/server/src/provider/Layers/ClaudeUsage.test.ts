@@ -12,6 +12,7 @@ import {
   applyClaudeRateLimitInfoToAccountUsage,
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
+  claudeSignInEndsWindow,
   claudeUsageCheckFromGetUsage,
   type ClaudeGetUsageAnswer,
   extractClaudeOAuthCredential,
@@ -96,6 +97,47 @@ describe("extractClaudeOAuthCredential", () => {
     expect(extractClaudeOAuthCredential({ claudeAiOauth: { accessToken: "token" } })).toEqual({
       renewable: false,
     });
+  });
+
+  it("reads when the sign-in ends, as Claude Code reads it", () => {
+    const end = Date.parse("2026-11-20T00:00:00.000Z");
+    const read = (claudeAiOauth: Record<string, unknown>) =>
+      extractClaudeOAuthCredential({ claudeAiOauth: { accessToken: "token", ...claudeAiOauth } })
+        ?.signInEndsAt;
+    expect(read({ refreshToken: "refresh", refreshTokenExpiresAt: end })).toBe(end);
+    // No refresh token: nothing renews, so there is no sign-in end to speak of.
+    expect(read({ refreshTokenExpiresAt: end })).toBeUndefined();
+    // The access token runs more than 3 days past it: an end an older login
+    // left behind, which Claude Code ignores too.
+    expect(
+      read({
+        refreshToken: "refresh",
+        refreshTokenExpiresAt: end,
+        expiresAt: end + 4 * 24 * 60 * 60 * 1000,
+      }),
+    ).toBeUndefined();
+    expect(read({ refreshToken: "refresh", refreshTokenExpiresAt: null })).toBeUndefined();
+  });
+
+  it("gives the window a stored sign-in ends in, and knows a failed read from none", () => {
+    const end = Date.parse("2026-11-20T00:00:00.000Z");
+    const now = Date.parse("2026-11-12T00:00:00.000Z");
+    const present = (signInEndsAt?: number) => ({
+      _tag: "Present" as const,
+      credential: {
+        renewable: true,
+        ...(signInEndsAt !== undefined ? { signInEndsAt } : {}),
+      },
+    });
+    expect(claudeSignInEndsWindow(present(end), now)).toEqual({
+      earliest: "2026-11-17T00:00:00.000Z",
+      latest: "2026-11-20T00:00:00.000Z",
+    });
+    expect(claudeSignInEndsWindow(present(), now)).toBeUndefined();
+    expect(claudeSignInEndsWindow({ _tag: "Absent" }, now)).toBeUndefined();
+    expect(claudeSignInEndsWindow({ _tag: "Unreadable", transient: true }, now)).toBe("unknown");
+    // More than ten years out is bad data.
+    expect(claudeSignInEndsWindow(present(now + 3_651 * 24 * 60 * 60 * 1000), now)).toBeUndefined();
   });
 
   it("returns undefined when the token is missing", () => {

@@ -108,6 +108,8 @@ import {
   offAgentAction,
 } from "./agentStatus";
 import { ProviderUpdatePopover } from "./ProviderUpdatePopover";
+import { useSignInEndsWarning } from "../../hooks/useSignInEndsWarning";
+import { signInEndsShortText } from "../../lib/signInEnds";
 import { signInMethodNeeds, signInNextStep } from "./useSignInNextStep";
 import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
 
@@ -862,6 +864,8 @@ function ProviderAccountSignInSection(props: {
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
+  // A saved sign-in close to its end: Sign in again becomes the main action.
+  const signInEndsWarning = useSignInEndsWarning(props.liveProvider);
   // Antigravity's and Grok's sign-in follow their method: a browser sign-in,
   // or a check of a key (or a Google Cloud project).
   const methodStep = signInNextStep({
@@ -970,7 +974,7 @@ function ProviderAccountSignInSection(props: {
                   ? methodCopy.runningHint
                   : undefined
             }
-            buttonVariant={needsSignIn ? "default" : "ghost"}
+            buttonVariant={needsSignIn || signInEndsWarning ? "default" : "ghost"}
             description={
               isClaude
                 ? "Signing in covers both chat and usage."
@@ -997,6 +1001,11 @@ function ProviderAccountSignInSection(props: {
                     {presentation.label}
                   </Badge>
                 ))}
+                {signInEndsWarning ? (
+                  <Badge variant="warning" size="sm">
+                    {signInEndsShortText(signInEndsWarning)}
+                  </Badge>
+                ) : null}
               </>
             }
           />
@@ -1481,6 +1490,7 @@ export function ProviderInstanceCard({
   const authenticatedDetail = hasAuthenticatedEmail
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
+  const signInEndsWarning = useSignInEndsWarning(liveProvider);
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const providerInstallView = deriveProviderInstallView(liveProvider);
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
@@ -1792,6 +1802,9 @@ export function ProviderInstanceCard({
         <ProviderAuthEmail email={authEmail} />
         {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
         <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
+        {signInEndsWarning ? (
+          <span className="text-warning">· {signInEndsShortText(signInEndsWarning)}</span>
+        ) : null}
       </span>
     ) : showFullGuide ? (
       <span>

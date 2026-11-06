@@ -13,6 +13,7 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  UserInputUnanswered,
   ProviderExternalThreadListInput,
   ProviderExternalThreadListResult,
   ProviderExternalThreadSnapshot,
@@ -310,12 +311,16 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<void, TError>;
 
   /**
-   * Respond to a structured user-input request.
+   * Respond to a structured user-input request. `answers` covers every
+   * question, the unanswered ones in words the agent reads; `unanswered` says
+   * which those were and how (skipped, closed, answered in chat), for a
+   * provider that records it alongside the answer.
    */
   readonly respondToUserInput: (
     threadId: ThreadId,
     requestId: ApprovalRequestId,
     answers: ProviderUserInputAnswers,
+    unanswered?: UserInputUnanswered,
   ) => Effect.Effect<void, TError>;
 
   /**

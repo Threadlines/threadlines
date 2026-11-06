@@ -11060,6 +11060,80 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("says how each question went unanswered only to a CLI that takes it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const skip = (question: string) =>
+        Effect.gen(function* () {
+          const seen = events.length;
+          const result = canUseTool(
+            "AskUserQuestion",
+            {
+              questions: [{ question, header: "Q", options: [{ label: "A", description: "A" }] }],
+            },
+            {
+              signal: new AbortController().signal,
+              toolUseID: `tool-${question}`,
+              requestId: `request-${question}`,
+            },
+          );
+          let requested: ProviderRuntimeEvent | undefined;
+          while (
+            (requested = events
+              .slice(seen)
+              .find((event) => event.type === "user-input.requested")) === undefined
+          ) {
+            yield* Effect.yieldNow;
+          }
+          assert.equal(
+            requested.type === "user-input.requested" && requested.payload.canLeaveUnanswered,
+            true,
+          );
+          yield* adapter.respondToUserInput(
+            session.threadId,
+            ApprovalRequestId.make(String(requested.requestId)),
+            { [question]: "The user skipped this question." },
+            { [question]: "skipped" },
+          );
+          const permission = yield* Effect.promise(() => result);
+          return (permission as { updatedInput: Record<string, unknown> }).updatedInput;
+        });
+
+      // Before the CLI lists the capability: an older CLI refuses the whole
+      // answer when it carries annotations, so only the words go.
+      const before = yield* skip("Before init?");
+      assert.deepEqual(before.answers, { "Before init?": "The user skipped this question." });
+      assert.isUndefined(before.annotations);
+
+      const configured = events.filter((event) => event.type === "session.configured").length;
+      harness.query.emit({
+        ...claudeInitMessage("2.1.318"),
+        capabilities: ["ask_user_question_unanswered_v1"],
+      } as unknown as SDKMessage);
+      while (events.filter((event) => event.type === "session.configured").length === configured) {
+        yield* Effect.yieldNow;
+      }
+      const after = yield* skip("After init?");
+      assert.deepEqual(after.annotations, { "After init?": { unanswered: "skipped" } });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("routes AskUserQuestion through user-input flow even in full-access mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

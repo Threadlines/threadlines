@@ -32,6 +32,13 @@ Claude may also print `Please run /login`, but that in-session slash command can
 Claude is running through Threadlines' managed SDK session. Threadlines treats that message as a
 provider sign-in problem and opens the terminal login command instead.
 
+A saved Claude sign-in also has an end date of its own, which renewing does not move. Claude
+Code 2.1.318 and later saves it at sign-in, and the sign-in can stop working up to 3 days before
+it. From 10 days before, Threadlines says so on the Claude row in `Settings -> Providers` and in a
+notice above the message box, with `Sign in again`. Signing in again gives a new date. The notice's
+X hides it until then. Chats on an API key or a long-lived token don't get the notice: they don't
+use that sign-in.
+
 For longer-lived unattended use, Claude Code supports a one-year OAuth token. Threadlines shows the
 right setup command in each Claude provider's `Account` section, with the same `Run` and `Copy`
 options.

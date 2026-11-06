@@ -2001,6 +2001,8 @@ export function createSnapshotWithPendingUserInput(options?: {
   isBlocking?: boolean;
   running?: boolean;
   signIn?: boolean;
+  /** The agent can be told a question went unanswered (Skip, Close, Reply in chat). */
+  canLeaveUnanswered?: boolean;
 }): OrchestrationReadModel {
   const snapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
@@ -2044,6 +2046,7 @@ export function createSnapshotWithPendingUserInput(options?: {
                 payload: {
                   requestId: "req-browser-user-input",
                   isBlocking: options?.isBlocking ?? true,
+                  ...(options?.canLeaveUnanswered ? { canLeaveUnanswered: true } : {}),
                   questions: options?.signIn
                     ? [
                         {

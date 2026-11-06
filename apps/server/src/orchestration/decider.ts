@@ -116,7 +116,7 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
-import { questionsClosedByUserMessage } from "./userInput.ts";
+import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
 import {
   SETTINGS_CHANGE_CANCELLED,
   type SettingsChangeDecision,
@@ -3964,6 +3964,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(outside.refusal.refusal !== undefined ? { refusal: outside.refusal.refusal } : {}),
         });
       }
+      // Skipping, closing or replying in chat is checked here, against the
+      // question still open, so a refusal reaches the client while its draft
+      // is still there to keep.
+      if (command.unanswered !== undefined || command.reply !== undefined) {
+        const refusal = unansweredResponseRefusal(thread, command);
+        if (refusal !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: refusal,
+          });
+        }
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -3979,6 +3991,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           requestId: command.requestId,
           answers: command.answers,
+          ...(command.unanswered !== undefined ? { unanswered: command.unanswered } : {}),
+          ...(command.reply !== undefined ? { reply: command.reply } : {}),
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           ...(command.fromOutside !== undefined && outside?.type === "allowed"
             ? { fromOutside: command.fromOutside, participantId: outside.participantId }

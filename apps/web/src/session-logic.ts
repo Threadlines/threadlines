@@ -341,6 +341,8 @@ export interface PendingUserInput {
   /** False when the agent keeps working while the question is open. Absent
    *  means the turn is paused on the answer. */
   isBlocking?: boolean;
+  /** The card may offer Skip, Close and Reply in chat (UserInputRequestedPayload). */
+  canLeaveUnanswered?: boolean;
 }
 
 /** Only a blocking question holds the turn; a non-blocking one is a question
@@ -1123,6 +1125,9 @@ export function derivePendingUserInputs(
             questions: questions ?? [],
             ...(elicitation ? { elicitation } : {}),
             ...(typeof payload?.isBlocking === "boolean" ? { isBlocking: payload.isBlocking } : {}),
+            ...(payload?.canLeaveUnanswered === true && !elicitation
+              ? { canLeaveUnanswered: true }
+              : {}),
           },
         ];
       })
