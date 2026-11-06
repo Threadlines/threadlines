@@ -323,6 +323,8 @@ function BackdropFrame(props: BackdropFrameProps) {
       textColors: texts.map((text) => text.color),
       textRatios: texts.map((text) => text.ratio),
       blur: current.blur,
+      // Shown until the first frame: the art fades in from it.
+      ...(current.backdrop.still ? { still: current.backdrop.still } : {}),
     });
     post(viewportMessage());
     post({ type: "zones", zones: current.zones });

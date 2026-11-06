@@ -84,6 +84,11 @@ export const BACKDROP_FRAME_CONTENT_SECURITY_POLICY =
  *   after. While a reply streams into the open thread it keeps moving, at
  *   most `streamingFps`, its time easing to `streamingPace` of the clock
  *   over about `paceEaseMs` (and back after).
+ * - After a pause the art restarts in a new worker, its own state fresh: the
+ *   picture on screen dissolves into the restarted art over `resumeFadeMs`.
+ *   A theme's first frame fades the same way from its still (what the app
+ *   shows until then), when one comes with `init`: the art waits up to
+ *   `stillWaitMs` for it to decode.
  * - Budget: a frame's cost is the work the worker reports (its prelude's
  *   clock, or the round trip when a reply carries none) plus the frame's own
  *   work. When the work per second over `budgetWindowMs` passes
@@ -110,6 +115,8 @@ export const BACKDROP_RUNTIME_TIMING: BackdropRuntimeTiming = {
   streamingFps: 12,
   streamingPace: 0.5,
   paceEaseMs: 600,
+  resumeFadeMs: 500,
+  stillWaitMs: 1_000,
   budgetWindowMs: 5_000,
   budgetWarmupMs: 1_500,
   budgetMsPerSecond: 60,

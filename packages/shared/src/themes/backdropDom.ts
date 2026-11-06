@@ -241,6 +241,7 @@ export interface BackdropWindow {
   };
   readonly Worker: new (url: string) => BackdropWorker;
   readonly ImageBitmap: abstract new () => BackdropBitmap;
+  createImageBitmap(image: Blob): Promise<BackdropBitmap>;
   addEventListener(
     type: "message",
     listener: (event: { readonly source: unknown; readonly data: unknown }) => void,

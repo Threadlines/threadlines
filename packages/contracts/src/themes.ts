@@ -368,6 +368,8 @@ export const BackdropHostMessage = Schema.Union([
       Schema.Number.check(Schema.isBetween({ minimum: 3, maximum: 21 })),
     ).check(Schema.isMaxLength(32)),
     blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
+    /** The theme's still (a data URL), shown until the art's first frame: the art fades in from it. */
+    still: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_MAX_STILL_CHARS))),
   }),
   Schema.Struct({
     type: Schema.Literal("viewport"),
