@@ -17,7 +17,8 @@ const theme: ThemeManifest = {
   glass: { frame: 0.6, list: 0.7, column: 0.85, composer: 0.85, blur: 16 },
 };
 
-const scripts = (document: string) => document.match(/<script>/g)?.length ?? 0;
+// Script elements in any case and with any attributes.
+const scripts = (document: string) => document.match(/<script\b/gi)?.length ?? 0;
 
 describe("buildThemeSpecimenDocument", () => {
   it("keeps what a theme file says from becoming markup, styles or script", () => {
