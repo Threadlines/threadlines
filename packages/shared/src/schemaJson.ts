@@ -41,33 +41,90 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
     : Cause.pretty(cause);
 };
 
+/** Index just past the string literal that opens at `start`, escapes included. */
+function endOfJsonString(text: string, start: number): number {
+  let index = start + 1;
+  while (index < text.length) {
+    const character = text[index];
+    if (character === "\\") {
+      index += 2;
+      continue;
+    }
+    if (character === '"') return index + 1;
+    index += 1;
+  }
+  return text.length;
+}
+
+/**
+ * Strict JSON from a hand-edited JSONC text: `//` and `/* *\/` comments and
+ * commas right before `}` or `]` removed, string contents left exactly as
+ * written. One pass each, in step with string literals, so a comma, bracket
+ * or slash inside a value is never mistaken for syntax. An unterminated
+ * block comment is left in place, so the text still fails to parse.
+ */
+function jsoncToJson(input: string): string {
+  const withoutComments: string[] = [];
+  let index = 0;
+  while (index < input.length) {
+    const character = input[index];
+    const next = input[index + 1];
+    if (character === '"') {
+      const end = endOfJsonString(input, index);
+      withoutComments.push(input.slice(index, end));
+      index = end;
+    } else if (character === "/" && next === "/") {
+      const lineEnd = input.indexOf("\n", index + 2);
+      index = lineEnd === -1 ? input.length : lineEnd;
+    } else if (character === "/" && next === "*") {
+      const close = input.indexOf("*/", index + 2);
+      if (close === -1) {
+        withoutComments.push(input.slice(index));
+        index = input.length;
+      } else {
+        index = close + 2;
+      }
+    } else {
+      withoutComments.push(character ?? "");
+      index += 1;
+    }
+  }
+
+  const text = withoutComments.join("");
+  const output: string[] = [];
+  index = 0;
+  while (index < text.length) {
+    const character = text[index];
+    if (character === '"') {
+      const end = endOfJsonString(text, index);
+      output.push(text.slice(index, end));
+      index = end;
+      continue;
+    }
+    if (character === ",") {
+      let ahead = index + 1;
+      while (ahead < text.length && /\s/.test(text[ahead] ?? "")) ahead += 1;
+      if (text[ahead] === "}" || text[ahead] === "]") {
+        index += 1;
+        continue;
+      }
+    }
+    output.push(character ?? "");
+    index += 1;
+  }
+  return output.join("");
+}
+
 /**
  * A `Getter` that parses a lenient JSON string (tolerating trailing commas
  * and JS-style comments) into an unknown value.
  *
- * Mirrors `SchemaGetter.parseJson()` but uses `parseLenientJson` instead
- * of `JSON.parse`.
+ * Mirrors `SchemaGetter.parseJson()` but strips JSONC syntax with
+ * `jsoncToJson` before `JSON.parse`.
  */
 const parseLenientJsonGetter = SchemaGetter.transformEffect((input: string) =>
   Effect.try({
-    try: () => {
-      // Strip single-line comments — alternation preserves quoted strings.
-      let stripped = input.replace(
-        /("(?:[^"\\]|\\.)*")|\/\/[^\n]*/g,
-        (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
-      );
-
-      // Strip multi-line comments.
-      stripped = stripped.replace(
-        /("(?:[^"\\]|\\.)*")|\/\*[\s\S]*?\*\//g,
-        (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
-      );
-
-      // Strip trailing commas before `}` or `]`.
-      stripped = stripped.replace(/,(\s*[}\]])/g, "$1");
-
-      return JSON.parse(stripped) as unknown;
-    },
+    try: () => JSON.parse(jsoncToJson(input)) as unknown,
     catch: (e) => new SchemaIssue.InvalidValue({ message: String(e) }),
   }),
 );
