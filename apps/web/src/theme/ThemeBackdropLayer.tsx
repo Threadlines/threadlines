@@ -9,7 +9,7 @@
  *   remeasured when it changes, at most every 100 ms;
  * - conditions: motion (the Motion setting, Reduce Motion, the desktop
  *   watchdog), visibility (the window, and whether a chat is on screen),
- *   busy (scrolling, typing, resizing, dragging: the art holds), streaming
+ *   busy (resizing the window, dragging a divider: the art holds), streaming
  *   (a reply streaming into the open thread: the art slows), idle (two
  *   minutes without input or agent work), power and heat (desktop, else the
  *   Battery API);
@@ -55,7 +55,7 @@ import {
 import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
-import { useInputBusy } from "./inputBusy";
+import { useLayoutBusy } from "./layoutBusy";
 import {
   readThemeState,
   setBackdropStatus,
@@ -424,7 +424,7 @@ function useBackdropConditions(input: {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const documentVisible = useDocumentVisible();
   const focused = useWindowFocused();
-  const busy = useInputBusy();
+  const busy = useLayoutBusy();
   const streaming = useReplyStreaming();
   const idle = useIdle(input.working);
   const power = usePowerState();

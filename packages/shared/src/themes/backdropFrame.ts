@@ -80,8 +80,8 @@ export const BACKDROP_FRAME_CONTENT_SECURITY_POLICY =
  *   theme's maximum or `batteryFps` on battery, halved per throttle step,
  *   and never below `minFps` (the app's watchdog expects a new frame within
  *   3 seconds while the art runs).
- * - The art holds while the app is busy (input) and resumes `busyResumeMs`
- *   after. While a reply streams into the open thread it keeps moving, at
+ * - The art holds while the app is busy (the window resizing, a divider
+ *   dragged) and resumes `busyResumeMs` after. While a reply streams into the open thread it keeps moving, at
  *   most `streamingFps`, its time easing to `streamingPace` of the clock
  *   over about `paceEaseMs` (and back after).
  * - After a pause the art restarts in a new worker, its own state fresh: the

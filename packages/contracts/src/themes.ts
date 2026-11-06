@@ -337,7 +337,7 @@ export const BackdropConditions = Schema.Struct({
   motion: Schema.Literals(["live", "still"]),
   /** The window can be seen (not hidden, minimized, covered or under a full-window page). */
   visible: Schema.Boolean,
-  /** The user is scrolling, typing, dragging or resizing: the art holds still. */
+  /** The user is resizing the window or dragging a divider: the art holds still. */
   busy: Schema.Boolean,
   /** A reply is streaming into the open thread: the art keeps moving, slower and at a lower rate. */
   streaming: Schema.Boolean,

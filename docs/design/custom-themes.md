@@ -340,11 +340,16 @@ under 0.1 ms). The design leans on that:
   another app it drops to 10 fps, 15 while agents work, with a burst to the
   theme's rate for 2 seconds after a `turn-done` pulse. A theme can ask for
   less, never more than 30.
-- **The app always wins.** While the user scrolls, drags a divider, resizes
-  the window or types, the app posts `busy` and the frame holds its last
-  frame. It resumes 400 ms after the last busy signal. Busy comes from input
-  (wheel, keys, touch, drags), not scroll events: the chat scrolls itself
-  while it follows a reply. While a reply is
+- **The app always wins.** While the user resizes the window or drags a
+  divider, the layout changes every step (and with the window, the art's
+  canvas), so the app posts `busy` and the frame holds its last frame. It
+  resumes 400 ms after the last busy signal. Typing and scrolling don't hold
+  the art. The first build held it for them too, and that freeze was the most
+  visible thing about the art. Measured in Chromium on a MacBook Pro (Nov 6,
+  production build, Aurora and Dunes against no art at all), keys took as
+  long to show up (24 ms typical, 32 ms at worst) and scrolling dropped as
+  many frames (6%) with the art running as with it held or off: it runs in
+  its own process. While a reply is
   streaming into the open thread, the app posts `streaming` and the art keeps
   moving, slower: at most 12 fps, its time easing to half speed (and back
   after). Holding it for a whole reply read as a random freeze.
