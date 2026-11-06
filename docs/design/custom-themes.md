@@ -98,7 +98,7 @@ theme this device already kept skips the trial.
 - Settings › General › Appearance: the gallery, "Glass" (a slider, Solid to
   Clear, the theme's own in the middle), "Motion" (Live, Still), "Import
   theme file…".
-- An agent asked to "switch to Dunes" uses `settings_change` on
+- An agent asked to "switch to Meadow" uses `settings_change` on
   `general.theme`, whose choices become dynamic (System, Light, Dark and the
   library's names, checked like `model`). Accepting the card starts the same
   trial when the theme is new to this device; the device result reports the
@@ -593,12 +593,17 @@ the budget, no network) and places for the new Appearance rows.
 
 ## Starter themes
 
-Six, all ours: **Aurora** (dark, ASCII night sky, live), **Dunes** (light,
-painted dunes and wind, live), **Phosphor** (dark, green terminal colors,
-mono font, static scanlines, no live art), **Snowfield** (light, ASCII snow
-over pines, live), **Night Rain** (dark, rain on a window with city lights,
-live), **Ember** (dark warm, slow sparks, live). Each is tuned under the
-budget, passes the table, and is a reference in the guide topic.
+Five, all ours: **Aurora** (dark, ASCII night sky, live), **Meadow** (light,
+grass, clouds over hills, seeds and butterflies, live), **Phosphor** (dark,
+green terminal colors, mono font, static scanlines, no live art),
+**Snowfield** (light, ASCII snow over pines, live), **Tokyo Rain** (dark, a
+neon alley in the rain, two embedded OFL fonts, live). Each is tuned under
+the budget, passes the table, and is a reference in the guide topic.
+
+Retired, still found by id so a device that chose one keeps it, but no
+longer listed (`RETIRED_STARTER_THEMES`): **Dunes** (gave way to Meadow),
+**Night Rain** (gave way to Tokyo Rain, which began as Will's own theme),
+**Ember**.
 
 ## The public gallery (after)
 

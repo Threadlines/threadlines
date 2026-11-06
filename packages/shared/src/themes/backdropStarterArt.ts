@@ -517,3 +517,648 @@ threadlines.backdrop({
   },
 });
 `;
+
+/** A summer meadow: grass and dandelion seeds, clouds over hills with a lone tree, butterflies, a few birds now and then. */
+export const MEADOW_ART = String.raw`// Meadow: soft grass swaying along the bottom under a pale summer sky, clouds
+// drifting over hills with a lone tree, dandelion seeds floating up and
+// butterflies near the edges; now and then a few birds cross. Agents at work
+// stir a breeze; a finished turn sends a puff of seeds and lifts the
+// butterflies. Motion adds up speed x dt.
+let W = 0, H = 0, base, blades, seeds, clouds, flies, phase = -1, busy = 0, blow = 0, spawned = 0, lastPulse = 1e9;
+let birds = null, nextBirds = 12, sky = null, skyKey = "";
+const SEEDS = 110, CALM = 26, BUSY = 44, PUFF = 40;
+function hash(a, b) { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); }
+function pack(r, g, b) { return 0xff000000 | (Math.max(0, Math.min(255, b | 0)) << 16) | (Math.max(0, Math.min(255, g | 0)) << 8) | Math.max(0, Math.min(255, r | 0)); }
+function put(data, x, y, c, a) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H || a <= 0) return;
+  const o = (y * W + x) * 4;
+  data[o] += (c[0] - data[o]) * a; data[o + 1] += (c[1] - data[o + 1]) * a; data[o + 2] += (c[2] - data[o + 2]) * a;
+}
+function spawnSeed(s, puffAt) {
+  spawned += 1;
+  if (puffAt) { s.x = puffAt.x + (hash(spawned, 1) - 0.5) * 14; s.y = puffAt.y + (hash(spawned, 2) - 0.5) * 6; }
+  else { s.x = hash(spawned, 1) * W; s.y = H * (0.82 + hash(spawned, 2) * 0.16); }
+  s.rise = 3 + hash(spawned, 3) * 4;
+  s.drift = 4 + hash(spawned, 4) * 7;
+  s.wob = hash(spawned, 5) * 6.283;
+  s.size = 1 + hash(spawned, 6) * 1.2;
+}
+
+threadlines.backdrop({
+  mode: "pixels",
+  scale: 4,
+  smooth: true,
+  setup(info) {
+    W = info.cols; H = info.rows;
+    base = new Uint32Array(W * H);
+    const top = [226, 238, 249], mid = [242, 246, 240], low = [244, 245, 230];
+    for (let y = 0; y < H; y++) {
+      const v = y / H;
+      const a = v < 0.55 ? top : mid, b = v < 0.55 ? mid : low, k = v < 0.55 ? v / 0.55 : (v - 0.55) / 0.45;
+      for (let x = 0; x < W; x++) {
+        const f = (hash(x, y) - 0.5) * 2;
+        let r = a[0] + (b[0] - a[0]) * k, g = a[1] + (b[1] - a[1]) * k, bl = a[2] + (b[2] - a[2]) * k;
+        // A warm sun just off the top left.
+        const d = Math.hypot(x - W * 0.16, (y - H * 0.08) * 1.3) / (Math.min(W, H) * 0.55), glow = Math.max(0, 1 - d);
+        r += (255 - r) * glow * glow * 0.8; g += (250 - g) * glow * glow * 0.7; bl += (226 - bl) * glow * glow * 0.6;
+        base[y * W + x] = pack(r + f, g + f, bl + f);
+      }
+    }
+    // Two soft rows of hills, paler with distance.
+    const hills = [{ y: 0.66, amp: 0.05, c: [206, 222, 196], f: 2.1, o: 0.4 }, { y: 0.74, amp: 0.045, c: [184, 210, 170], f: 3.3, o: 2.2 }];
+    for (const hill of hills) {
+      for (let x = 0; x < W; x++) {
+        const fx = x / W;
+        const top = H * (hill.y + hill.amp * Math.sin(fx * hill.f * 3.14 + hill.o) + hill.amp * 0.4 * Math.sin(fx * 9 + hill.o * 3));
+        for (let y = Math.max(0, Math.floor(top)); y < H; y++) {
+          const f = (hash(x, y + 7) - 0.5) * 3, i = y * W + x;
+          // The crest pixel takes the hill in proportion to how much it covers.
+          const cover = y === Math.floor(top) ? 1 - (top - Math.floor(top)) : 1;
+          const v = base[i], r = v & 255, g = (v >> 8) & 255, b = (v >> 16) & 255;
+          base[i] = pack(r + (hill.c[0] + f - r) * cover, g + (hill.c[1] + f - g) * cover, b + (hill.c[2] + f - b) * cover);
+        }
+      }
+    }
+    // A lone tree on the far hill, toward the right.
+    {
+      const tx = W * 0.84, fx = tx / W, hill = hills[0];
+      const ty = H * (hill.y + hill.amp * Math.sin(fx * hill.f * 3.14 + hill.o) + hill.amp * 0.4 * Math.sin(fx * 9 + hill.o * 3));
+      const u = H / 300;
+      for (let y = 0; y < 9 * u; y++) for (let dx = -1; dx <= 1; dx++) {
+        const i = Math.round(ty - y) * W + Math.round(tx + dx * 0.6 * u);
+        if (i >= 0 && i < base.length) base[i] = pack(122, 108, 92);
+      }
+      for (let n = 0; n < 9; n++) {
+        const cx = tx + (hash(n, 61) - 0.5) * 12 * u, cy = ty - 12 * u + (hash(n, 62) - 0.5) * 8 * u, rr = (4 + hash(n, 63) * 3) * u;
+        for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) {
+          const d = Math.hypot(dx, dy);
+          if (d > rr) continue;
+          const x = Math.round(cx + dx), y = Math.round(cy + dy);
+          if (x < 0 || y < 0 || x >= W || y >= H) continue;
+          const shade = 0.85 + 0.15 * (-dy / rr), f = (hash(x, y + 3) - 0.5) * 8;
+          base[y * W + x] = pack(118 * shade + f, 156 * shade + f, 104 * shade + f);
+        }
+      }
+    }
+    // The meadow floor under the grass.
+    const ground = Math.floor(H * 0.86), soft = Math.round(H * 0.06);
+    for (let y = ground - soft; y < H; y++) for (let x = 0; x < W; x++) {
+      const f = (hash(x, y + 13) - 0.5) * 8, i = y * W + x;
+      const k = Math.min(1, (y - (ground - soft)) / soft);
+      const v = base[i], r = v & 255, g = (v >> 8) & 255, b = (v >> 16) & 255;
+      base[i] = pack(r + (128 + f - r) * k, g + (168 + f - g) * k, b + (104 + f - b) * k);
+    }
+    blades = [];
+    const count = Math.round(W * 0.9);
+    for (let n = 0; n < count; n++) {
+      const x = hash(n, 41) * W;
+      // Shorter across the middle, where the message box sits.
+      const middle = 1 - 0.45 * Math.max(0, 1 - Math.abs(x / W - 0.5) / 0.25);
+      const shades = [[118, 166, 92], [98, 148, 80], [140, 182, 106], [108, 158, 98]];
+      blades.push({
+        x, root: ground + 2 + hash(n, 42) * (H - ground),
+        len: (8 + hash(n, 43) * 16) * (H / 300) * middle,
+        lean: (hash(n, 44) - 0.5) * 0.5, wob: hash(n, 45) * 6.283,
+        c: shades[Math.floor(hash(n, 46) * shades.length)],
+        flower: hash(n, 47) > 0.96 ? (hash(n, 48) > 0.5 ? [250, 250, 244] : [246, 214, 92]) : null,
+      });
+    }
+    // Clouds: soft puffs made once, drifting at their own heights and speeds.
+    clouds = [];
+    for (let n = 0; n < 5; n++) {
+      const w = Math.round(W * (0.11 + hash(n, 71) * 0.09)), h = Math.round(w * 0.38);
+      const alpha = new Float32Array(w * h), shade = new Float32Array(w * h);
+      const puffs = 6 + Math.floor(hash(n, 72) * 4);
+      for (let q = 0; q < puffs; q++) {
+        const px = w * (0.15 + 0.7 * hash(n * 9 + q, 73)), py = h * (0.45 + 0.25 * hash(n * 9 + q, 74));
+        const pr = h * (0.28 + 0.22 * hash(n * 9 + q, 75));
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const d = Math.hypot(x - px, (y - py) * 1.15) / pr;
+          if (d < 1.2) {
+            const a = Math.min(1, (1.2 - d) * 2.2);
+            const i = y * w + x;
+            if (a > alpha[i]) alpha[i] = a;
+          }
+        }
+      }
+      // Flat-ish bottoms, a little shade underneath.
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x, v = y / h;
+        if (v > 0.72) alpha[i] *= Math.max(0, 1 - (v - 0.72) * 5);
+        shade[i] = Math.max(0, v - 0.35) * 0.35;
+      }
+      // Only the pixels the cloud covers, with each one's color and alpha.
+      const cells = [];
+      for (let i = 0; i < w * h; i++) {
+        const a = alpha[i] * 0.88;
+        if (a < 0.02) continue;
+        cells.push(i % w, (i / w) | 0, a, 252 - 30 * shade[i], 253 - 26 * shade[i], 255 - 18 * shade[i]);
+      }
+      clouds.push({ w, h, cells: Float32Array.from(cells), x: hash(n, 76) * (W + w) - w, y: H * (0.04 + 0.34 * hash(n, 77)), speed: 1.2 + hash(n, 78) * 2.6 });
+    }
+    // Butterflies near the edges of the meadow.
+    flies = [
+      { home: 0.07, c: [255, 255, 250], o: 0.3 },
+      { home: 0.93, c: [250, 214, 96], o: 2.1 },
+      { home: 0.17, c: [244, 160, 84], o: 4.4 },
+      { home: 0.84, c: [255, 255, 250], o: 5.6 },
+    ];
+    if (!seeds) {
+      seeds = [];
+      for (let n = 0; n < SEEDS; n++) { const s = {}; spawnSeed(s, null); s.y = H * (0.2 + hash(n, 9) * 0.75); seeds.push(s); }
+    }
+  },
+  draw(pixels, info) {
+    const dt = info.dt, state = info.state;
+    const data = pixels.data;
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    blow += (state.pulse - blow) * Math.min(1, dt * 4);
+    if (phase < 0) phase = info.t + 10;
+    phase += dt * (1 + 0.6 * busy + 1.4 * blow);
+    const breeze = 0.12 + 0.08 * busy + 0.18 * blow;
+    // Clouds drift by, the nearer ones a little faster. They move less than a
+    // pixel a frame, so the sky with its clouds is redrawn only when one has.
+    const cloudPace = (1 + 0.5 * busy + 1.5 * blow) * dt;
+    let key = "";
+    for (const c of clouds) {
+      c.x += c.speed * cloudPace;
+      if (c.x > W + 2) c.x = -c.w - 2;
+      key += Math.round(c.x) + ",";
+    }
+    if (!sky || sky.length !== base.length) { sky = new Uint32Array(base.length); skyKey = ""; }
+    if (key !== skyKey) {
+      skyKey = key;
+      sky.set(base);
+      for (const c of clouds) {
+        const x0 = Math.round(c.x), y0 = Math.round(c.y), cells = c.cells;
+        for (let q = 0; q < cells.length; q += 6) {
+          const xx = x0 + cells[q], yy = y0 + cells[q + 1];
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          const i = yy * W + xx, v = sky[i], a = cells[q + 2];
+          const r = v & 255, g = (v >> 8) & 255, b = (v >> 16) & 255;
+          sky[i] = pack(r + (cells[q + 3] - r) * a, g + (cells[q + 4] - g) * a, b + (cells[q + 5] - b) * a);
+        }
+      }
+    }
+    pixels.u32.set(sky);
+    // Grass: each blade a short curve from its root, swaying with the breeze.
+    for (const b of blades) {
+      const sway = b.lean + Math.sin(phase * 1.3 + b.wob + b.x * 0.04) * breeze;
+      const steps = Math.ceil(b.len), bend = (sway * 1.6) / steps;
+      let x = b.x, y = b.root;
+      for (let s = 0; s < steps; s++) {
+        const k = s / steps;
+        // A small bend: each step leans a little more than the last.
+        x += bend * s;
+        y -= 1;
+        const xi = x | 0, yi = y | 0;
+        if (xi < 0 || yi < 0 || xi >= W || yi >= H) continue;
+        const o = (yi * W + xi) * 4, a = 0.95 - k * 0.25, light = k * 40;
+        data[o] += (b.c[0] + light - data[o]) * a; data[o + 1] += (b.c[1] + light - data[o + 1]) * a; data[o + 2] += (b.c[2] + light * 0.6 - data[o + 2]) * a;
+      }
+      if (b.flower) { put(data, x, y - 1, b.flower, 0.95); put(data, x + 1, y - 1, b.flower, 0.6); put(data, x - 1, y - 1, b.flower, 0.6); put(data, x, y - 2, b.flower, 0.6); }
+    }
+    // A finished turn: a puff of seeds from one side of the meadow.
+    if (state.sincePulse < lastPulse && state.sincePulse < 0.5) {
+      const at = { x: (hash(info.frame, 3) < 0.5 ? 0.12 : 0.88) * W, y: H * 0.86 };
+      for (let n = BUSY; n < SEEDS; n++) spawnSeed(seeds[n], at);
+    }
+    lastPulse = state.sincePulse;
+    // Seeds: up and away on the breeze; the extra ones fade in and out.
+    const level = CALM + (BUSY - CALM) * busy;
+    for (let n = 0; n < SEEDS; n++) {
+      const s = seeds[n];
+      s.y -= s.rise * dt * (1 + 0.4 * busy + 1.5 * blow);
+      s.x += (s.drift * (1 + 1.5 * blow) + Math.sin(phase * 1.7 + s.wob) * 5) * dt;
+      if (s.y < -4 || s.x > W + 4) { if (n < BUSY) spawnSeed(s, null); else { s.y = -99; continue; } }
+      const fade = n < BUSY ? Math.min(1, level - n) : Math.max(0, Math.min(1, (s.y + 4) / 20)) * (blow > 0.02 || s.y > 0 ? 1 : 0);
+      if (fade <= 0 || s.y < -4) continue;
+      // Quieter across the middle, where the reading column sits.
+      const edge = 0.5 + 0.5 * Math.min(1, Math.abs(s.x / W - 0.5) / 0.3);
+      const a = 0.9 * fade * edge, c = [255, 255, 252];
+      put(data, s.x, s.y, c, a);
+      for (let r = 1; r <= (s.size > 1.6 ? 2 : 1); r++) {
+        const fall = a * (0.5 - r * 0.12);
+        put(data, s.x + r, s.y, c, fall); put(data, s.x - r, s.y, c, fall); put(data, s.x, s.y - r, c, fall); put(data, s.x, s.y + r, c, fall * 0.6);
+      }
+      put(data, s.x, s.y + 2, [176, 166, 140], a * 0.5);
+    }
+    // Butterflies: wandering loops near the edges, wings beating; a finished turn lifts them.
+    for (const f of flies) {
+      const x = W * f.home + Math.sin(phase * 0.45 + f.o) * W * 0.05 + Math.sin(phase * 1.3 + f.o * 2) * W * 0.012;
+      const y = H * (0.8 - 0.12 * blow) + Math.sin(phase * 0.9 + f.o) * H * 0.05 + Math.sin(phase * 2.6 + f.o) * H * 0.01;
+      const open = Math.abs(Math.sin(phase * 9 + f.o * 3));
+      const span = 1 + Math.round(open * 2);
+      put(data, x, y, [92, 78, 70], 0.9);
+      for (let k = 1; k <= span; k++) {
+        put(data, x - k, y - (k > 1 ? 1 : 0), f.c, 0.95); put(data, x + k, y - (k > 1 ? 1 : 0), f.c, 0.95);
+        put(data, x - k, y + 1, f.c, 0.7); put(data, x + k, y + 1, f.c, 0.7);
+      }
+    }
+    // Now and then a few birds cross the upper sky, near an edge.
+    if (!birds && info.t > nextBirds) {
+      const left = hash(info.frame, 11) < 0.5;
+      birds = { x: left ? -12 : W + 12, y: H * (0.08 + hash(info.frame, 12) * 0.16), v: (left ? 1 : -1) * (14 + hash(info.frame, 13) * 8), flap: 0 };
+    }
+    if (birds) {
+      birds.x += birds.v * dt;
+      birds.flap += dt * 8;
+      const gone = birds.v > 0 ? birds.x > W * 0.3 : birds.x < W * 0.7;
+      if (gone) { birds = null; nextBirds = info.t + 22 + hash(info.frame, 14) * 28; }
+      else {
+        for (let k = 0; k < 4; k++) {
+          const bx = birds.x - Math.sign(birds.v) * (k * 8 + (k % 2) * 3), by = birds.y + k * 3 * (k % 2 ? 1 : -0.5) + Math.sin(birds.flap + k) * 0.6;
+          const wing = Math.sin(birds.flap + k * 1.3) > 0 ? 1 : 0;
+          for (const [dx, dy] of [[0, 0], [-1, -1 - wing], [1, -1 - wing], [-2, -1 - wing * 2], [2, -1 - wing * 2]]) put(data, bx + dx, by + dy, [84, 92, 96], 0.75);
+        }
+      }
+    }
+  },
+});
+`;
+
+/** A narrow Tokyo alley at night: neon signs, rain in two layers, a wet street that reflects them. */
+export const TOKYO_RAIN_ART = String.raw`// Tokyo Rain: a narrow alley at night. Vertical signs hang on the buildings
+// at both sides, rain falls in two layers, the wet street at the bottom
+// reflects the neon. Rare events: a sign that flickers, a taxi passing, a
+// distant train crossing between the buildings.
+//
+// Cost: the grid buffers persist between frames, so the still parts (sky,
+// buildings, signs) are written once and only what moves is touched later.
+
+const DEF = [
+  { fx: 0.04, fy: 0.10, text: "カラオケ", color: [255, 61, 139], box: 0, flick: 0 },
+  { fx: 0.125, fy: 0.36, text: "居酒屋", color: [255, 74, 52], box: 1, flick: 0 },
+  { fx: 0.258, fy: 0.40, text: "ホテル", color: [168, 110, 255], box: 0, flick: 0 },
+  { fx: 0.318, fy: 0.17, text: "喫茶", color: [255, 176, 58], box: 0, flick: 1 },
+  { fx: 0.884, fy: 0.25, text: "営業中", color: [47, 224, 255], box: 0, flick: 0 },
+  { fx: 0.93, fy: 0.06, text: "やきとり", color: [255, 128, 64], box: 1, flick: 0 },
+  { fx: 0.975, fy: 0.47, text: "酒場", color: [255, 61, 139], box: 0, flick: 1 },
+];
+
+let SIGN_CH = "";
+for (const s of DEF) for (const ch of s.text) if (SIGN_CH.indexOf(ch) < 0) SIGN_CH += ch;
+const GLYPHS = " │╎-.┌┐└┘─o▪·" + SIGN_CH;
+const G = {};
+for (let i = 0; i < GLYPHS.length; i++) G[GLYPHS[i]] = i;
+
+const SIN = new Float32Array(256);
+for (let i = 0; i < 256; i++) SIN[i] = Math.sin((i / 256) * Math.PI * 2);
+
+function mulberry(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hash(n) {
+  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function c8(v) { return v > 255 ? 255 : v < 0 ? 0 : v; }
+
+let C = 0, R = 0, N = 0, GR = 0, GH = 1, L = 0, RB = 0, TRAIN = 0;
+let lit, sideW, signMask, reflCol, fade, signs, stGlyph, stFg, dirty, nDirty = 0;
+let dX, dY, dS, dL, dF, dLand, nDrops, rnd;
+let lastBg = null, frame = 0;
+const RP = 96;
+const rX = new Int16Array(RP), rY = new Int16Array(RP), rT = new Float32Array(RP);
+let rHead = 0;
+
+function spawnDrop(i, anywhere) {
+  const far = rnd() < 0.6;
+  dX[i] = (rnd() * C) | 0;
+  dF[i] = far ? 1 : 0;
+  dS[i] = far ? 8 + rnd() * 4 : 15 + rnd() * 7;
+  dL[i] = far ? 1 : 2 + ((rnd() * 2) | 0);
+  dLand[i] = (GR + (far ? rnd() * 0.5 : 0.25 + rnd() * 0.75) * GH) | 0;
+  dY[i] = anywhere ? rnd() * dLand[i] : -rnd() * 8;
+}
+
+function build(cols, rows) {
+  C = cols; R = rows; N = C * R;
+  rnd = mulberry(20261106);
+  GH = Math.max(4, Math.round(R * 0.13));
+  GR = R - GH;
+  L = Math.round(C * 0.36);
+  RB = Math.round(C * 0.82);
+  TRAIN = Math.max(2, GR - Math.max(3, Math.round(R * 0.15)));
+  lit = new Float32Array(N * 3);
+  sideW = new Float32Array(C);
+  signMask = new Uint8Array(N);
+  reflCol = new Float32Array(C * 3);
+  stGlyph = new Int16Array(N).fill(-1);
+  stFg = new Uint8Array(N * 4);
+  dirty = new Int32Array(N);
+  nDirty = 0;
+  fade = new Float32Array(GH);
+  for (let k = 0; k < GH; k++) fade[k] = 0.18 + 0.82 * Math.pow(1 - k / GH, 1.2);
+  rT.fill(-99);
+  lastBg = null;
+
+  // The middle stays calm: text sits there on frosted glass.
+  const mid = C * 0.56, half = C * 0.3;
+  for (let x = 0; x < C; x++) {
+    const d = Math.abs(x - mid) / half;
+    sideW[x] = d >= 1 ? 1 : 0.28 + 0.72 * d * d;
+  }
+
+  // Skyline: tall facades at both sides, low hazy buildings far off in the middle.
+  const top = new Int16Array(C), edge = new Uint8Array(C), far = new Uint8Array(C);
+  const segs = [[0, 0.12, 0], [0.12, 0.25, 0], [0.25, 0.36, 0.13], [0.82, 0.9, 0.1], [0.9, 1.01, 0]];
+  for (const [a, b, h] of segs) {
+    const x0 = Math.round(a * C), x1 = Math.min(C, Math.round(b * C));
+    for (let x = x0; x < x1; x++) top[x] = Math.round(h * R);
+    if (x0 > 0 && x0 < C) edge[x0] = 1;
+  }
+  for (let x = L; x < RB;) {
+    const w = 3 + ((rnd() * 7) | 0);
+    const h = Math.round(GR * (0.5 + rnd() * 0.3));
+    for (let k = 0; k < w && x < RB; k++, x++) { top[x] = h; far[x] = 1; }
+  }
+
+  const windows = [];
+  for (let r = 0; r < R; r++) {
+    for (let x = 0; x < C; x++) {
+      const i = r * C + x, i3 = i * 3;
+      let cr, cg, cb;
+      const hz = Math.max(0, 1 - Math.pow((x - mid) / (C * 0.4), 2));
+      if (r < GR) {
+        const t = Math.pow(r / GR, 1.8);
+        cr = 11 + 33 * t; cg = 12 + 10 * t; cb = 30 + 26 * t;
+        const h3 = hz * t * t;
+        cr += 30 * h3; cg += 8 * h3; cb += 22 * h3;
+        if (r >= top[x]) {
+          if (far[x]) {
+            cr = cr * 0.35 + 12; cg = cg * 0.35 + 11; cb = cb * 0.35 + 22;
+            if (r < GR - 1 && r > top[x] && (x & 1) === 0 && (r & 1) === 1 && rnd() < 0.22) windows.push(i, 1);
+          } else {
+            cr = 8; cg = 9; cb = 17;
+            if (edge[x]) { cr = 5; cg = 6; cb = 11; }
+            else if (r > top[x] + 1 && x % 3 === 1 && (r & 1) === 0 && rnd() < 0.16) windows.push(i, 0);
+          }
+        }
+      } else {
+        const t = Math.pow((r - GR) / GH, 0.7);
+        cr = 26 - 19 * t; cg = 19 - 11 * t; cb = 38 - 25 * t;
+        const h3 = hz * (1 - t);
+        cr += 18 * h3; cg += 6 * h3; cb += 16 * h3;
+      }
+      lit[i3] = cr; lit[i3 + 1] = cg; lit[i3 + 2] = cb;
+    }
+  }
+
+  // Signs: geometry, mask, and a glow field each (sky only; the street gets reflections).
+  signs = [];
+  DEF.forEach((d, id) => {
+    const n = d.text.length;
+    const x = Math.min(C - 2, Math.max(1, Math.round(d.fx * C)));
+    let y = Math.round(d.fy * R);
+    y = Math.max(1, Math.min(y, GR - 3 - n));
+    const x0 = x - 1, x1 = x + 1, y0 = y - 1, y1 = y + n;
+    if (y1 >= GR - 1) return;
+    for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) signMask[py * C + px] = 1;
+    const idx = [], ws = [];
+    const RX = 10, RY = 8, k = 900, w0 = 1 / (1 + (RX * 12) * (RX * 12) / k);
+    for (let gy = Math.max(0, y0 - RY); gy <= Math.min(GR - 1, y1 + RY); gy++) {
+      for (let gx = Math.max(0, x0 - RX); gx <= Math.min(C - 1, x1 + RX); gx++) {
+        if (gx >= x0 && gx <= x1 && gy >= y0 && gy <= y1) continue;
+        const dx = Math.max(x0 - gx, 0, gx - x1) * 12;
+        const dy = Math.max(y0 - gy, 0, gy - y1) * 16;
+        const w = (1 / (1 + (dx * dx + dy * dy) / k) - w0) / (1 - w0);
+        if (w > 0.004) { idx.push(gy * C + gx); ws.push(w); }
+      }
+    }
+    const s = {
+      id, x, y, n, x0, x1, y0, y1, text: d.text, color: d.color, box: d.box, flick: d.flick,
+      per: 15 + id * 4.7, off: id * 3.1, b: 0, g: d.box ? 0.4 : 0.34,
+      idx: Int32Array.from(idx), ws: Float32Array.from(ws),
+    };
+    signs.push(s);
+    glow(s, 1, null);
+  });
+
+  // lit windows: small warm squares, static glyphs
+  for (let k = 0; k < windows.length; k += 2) {
+    const i = windows[k], farw = windows[k + 1];
+    if (signMask[i]) continue;
+    const j = i * 3, o = i << 2, a = farw ? 0.32 : 0.42;
+    const wr = farw ? 190 : 230, wg = farw ? 150 : 165, wb = farw ? 120 : 90;
+    stGlyph[i] = farw ? G["·"] : G["▪"];
+    stFg[o] = c8(lit[j] + (wr - lit[j]) * a);
+    stFg[o + 1] = c8(lit[j + 1] + (wg - lit[j + 1]) * a);
+    stFg[o + 2] = c8(lit[j + 2] + (wb - lit[j + 2]) * a);
+    stFg[o + 3] = 255;
+  }
+
+  nDrops = Math.max(40, Math.round(N * 0.032));
+  dX = new Int16Array(nDrops); dY = new Float32Array(nDrops); dS = new Float32Array(nDrops);
+  dL = new Uint8Array(nDrops); dF = new Uint8Array(nDrops); dLand = new Int16Array(nDrops);
+  for (let i = 0; i < nDrops; i++) spawnDrop(i, true);
+}
+
+// Move a sign to brightness nb: shift its glow in "lit" and, if a grid is
+// given, rewrite those cells of the background.
+function glow(s, nb, grid) {
+  const d = (nb - s.b) * s.g;
+  s.b = nb;
+  const cr = s.color[0] * d, cg = s.color[1] * d, cb = s.color[2] * d;
+  const idx = s.idx, ws = s.ws, bg = grid && grid.bg;
+  for (let k = 0; k < idx.length; k++) {
+    const i = idx[k], j = i * 3, w = ws[k];
+    lit[j] += cr * w; lit[j + 1] += cg * w; lit[j + 2] += cb * w;
+    if (bg && !signMask[i]) {
+      const o = i << 2;
+      bg[o] = c8(lit[j]); bg[o + 1] = c8(lit[j + 1]); bg[o + 2] = c8(lit[j + 2]);
+    }
+  }
+}
+
+function panel(grid, s) {
+  const b = s.b, c = s.color, bg = grid.bg, fgA = grid.fg;
+  for (let py = s.y0; py <= s.y1; py++) {
+    for (let px = s.x0; px <= s.x1; px++) {
+      const i = py * C + px, o = i << 2;
+      if (s.box) { bg[o] = c8(c[0] * 0.78 * b); bg[o + 1] = c8(c[1] * 0.78 * b); bg[o + 2] = c8(c[2] * 0.78 * b); }
+      else { bg[o] = c8(12 + c[0] * 0.09 * b); bg[o + 1] = c8(9 + c[1] * 0.09 * b); bg[o + 2] = c8(20 + c[2] * 0.09 * b); }
+      bg[o + 3] = 255;
+      let g = -1, fr = 0, fg = 0, fb = 0;
+      if (px === s.x && py >= s.y && py < s.y + s.n) {
+        g = G[s.text[py - s.y]];
+        if (s.box) { fr = 30; fg = 9; fb = 16; }
+        else { fr = (c[0] + (255 - c[0]) * 0.4) * b; fg = (c[1] + (255 - c[1]) * 0.4) * b; fb = (c[2] + (255 - c[2]) * 0.4) * b; }
+      } else if (!s.box) {
+        if (py === s.y0) g = px === s.x0 ? G["┌"] : px === s.x1 ? G["┐"] : G["─"];
+        else if (py === s.y1) g = px === s.x0 ? G["└"] : px === s.x1 ? G["┘"] : G["─"];
+        else if (px === s.x0 || px === s.x1) g = G["│"];
+        fr = c[0] * 0.9 * b; fg = c[1] * 0.9 * b; fb = c[2] * 0.9 * b;
+      }
+      stGlyph[i] = g;
+      if (g >= 0) {
+        stFg[o] = c8(fr); stFg[o + 1] = c8(fg); stFg[o + 2] = c8(fb); stFg[o + 3] = 255;
+        fgA[o] = stFg[o]; fgA[o + 1] = stFg[o + 1]; fgA[o + 2] = stFg[o + 2]; fgA[o + 3] = 255;
+      }
+      grid.glyph[i] = g;
+    }
+  }
+}
+
+function fullWrite(grid) {
+  const bg = grid.bg;
+  for (let i = 0, j = 0, o = 0; i < N; i++, j += 3, o += 4) {
+    bg[o] = c8(lit[j]); bg[o + 1] = c8(lit[j + 1]); bg[o + 2] = c8(lit[j + 2]); bg[o + 3] = 255;
+  }
+  grid.glyph.set(stGlyph);
+  grid.fg.set(stFg);
+  for (const s of signs) panel(grid, s);
+  nDirty = 0;
+}
+
+// dynamic glyph: fg mixed over the cell's background so alpha reads the same everywhere
+function put(grid, i, g, r, gg, b, a) {
+  const o = i << 2, bg = grid.bg, fg = grid.fg;
+  grid.glyph[i] = g;
+  const br = bg[o], bgc = bg[o + 1], bb = bg[o + 2];
+  fg[o] = c8(br + (r - br) * a);
+  fg[o + 1] = c8(bgc + (gg - bgc) * a);
+  fg[o + 2] = c8(bb + (b - bb) * a);
+  fg[o + 3] = 255;
+  dirty[nDirty++] = i;
+}
+
+threadlines.backdrop({
+  mode: "grid",
+  cell: { width: 12, height: 16 },
+  fontSize: 12,
+  background: ["#0b0c1e", "#2c1838", "#07080d"],
+  glyphs: GLYPHS,
+  setup(info) { build(info.cols, info.rows); },
+  draw(grid, info) {
+    if (info.cols !== C || info.rows !== R || !lit) build(info.cols, info.rows);
+    const t = info.t || 0;
+    const dt = Math.min(Math.max(info.dt || 0, 0), 0.1);
+    const st = info.state || {};
+    const pulse = st.pulse || 0;
+    const speed = 1 + 0.12 * Math.min(st.working || 0, 3);
+    const bg = grid.bg;
+    frame++;
+
+    if (grid.bg !== lastBg) { fullWrite(grid); lastBg = grid.bg; }
+    else for (let k = 0; k < nDirty; k++) grid.glyph[dirty[k]] = -1;
+    nDirty = 0;
+
+    // signs: steady, one or two flicker now and then, all glow brighter after a turn
+    for (const s of signs) {
+      let b = 1;
+      if (s.flick) {
+        const ph = (t + s.off) % s.per;
+        if (ph < 0.9) b = hash(((t * 12) | 0) + s.id * 977) < 0.4 ? 0.5 : 1;
+      }
+      b *= 1 + 0.45 * pulse;
+      if (Math.abs(b - s.b) > 0.004) { glow(s, b, grid); panel(grid, s); }
+    }
+
+    // wet street, half its rows each frame: each sign throws a wobbling streak
+    reflCol.fill(0);
+    for (const s of signs) {
+      const g = s.b * (s.box ? 0.4 : 0.32);
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = s.x + dx;
+        if (x < 0 || x >= C) continue;
+        const w = dx === 0 ? 1 : dx === 1 || dx === -1 ? 0.55 : 0.2;
+        reflCol[x * 3] += s.color[0] * g * w;
+        reflCol[x * 3 + 1] += s.color[1] * g * w;
+        reflCol[x * 3 + 2] += s.color[2] * g * w;
+      }
+    }
+    const tp = t % 43, taxi = tp < 7;
+    const cx = C + 22 - (C + 44) * (tp / 7);
+    const tx0 = taxi ? Math.max(0, (cx - 22) | 0) : C, tx1 = taxi ? Math.min(C - 1, (cx + 22) | 0) : -1;
+    const tI = (t * 38) | 0, tJ = (t * 23) | 0;
+    for (let k = frame & 1; k < GH; k += 2) {
+      const r = GR + k, f = fade[k], rf = 1 - (k / GH) * 0.7, row = r * C;
+      for (let x = 0; x < C; x++) {
+        const wob = SIN[(r * 37 + tI + x * 5) & 255];
+        let xs = wob > 0.55 ? x + 1 : wob < -0.55 ? x - 1 : x;
+        if (xs < 0) xs = 0; else if (xs >= C) xs = C - 1;
+        const m = f * (0.62 + 0.38 * SIN[(r * 53 + x * 11 + tJ) & 255]);
+        const i = row + x, j = i * 3, q = xs * 3, o = i << 2;
+        let vr = lit[j] + reflCol[q] * m, vg = lit[j + 1] + reflCol[q + 1] * m, vb = lit[j + 2] + reflCol[q + 2] * m;
+        if (x >= tx0 && x <= tx1) {
+          // a taxi passes: headlights first, red tail lights after
+          const dx = x - cx, dh = dx + 3, dr = dx - 13;
+          const wh = rf / (1 + (dh * dh) / 22), wr = rf / (1 + (dr * dr) / 7);
+          vr += 70 * wh + 50 * wr; vg += 62 * wh + 8 * wr; vb += 46 * wh + 10 * wr;
+        }
+        bg[o] = c8(vr); bg[o + 1] = c8(vg); bg[o + 2] = c8(vb);
+      }
+    }
+
+    // a distant train crosses between the buildings
+    const trp = (t + 22) % 71;
+    if (trp < 32) {
+      const head = L - 30 + (RB - L + 60) * (trp / 32), j0 = TRAIN * C;
+      const gT = G["▪"];
+      for (let k = 0; k < 28; k++) {
+        const x = Math.floor(head) - k;
+        if (x < L || x >= RB || k % 5 === 0) continue;
+        const i = j0 + x;
+        if (stGlyph[i] >= 0) continue;
+        put(grid, i, gT, 235, 210, 160, 0.55 * sideW[x]);
+      }
+    }
+
+    // rain in two layers; each drop picks up the neon around it
+    const gNear = G["│"], gFar = G["╎"];
+    for (let i = 0; i < nDrops; i++) {
+      dY[i] += dS[i] * dt * speed;
+      if (dY[i] >= dLand[i]) {
+        if (!dF[i] || rnd() < 0.35) {
+          rX[rHead] = dX[i]; rY[rHead] = dLand[i]; rT[rHead] = t;
+          rHead = (rHead + 1) % RP;
+        }
+        spawnDrop(i, false);
+        continue;
+      }
+      const x = dX[i], hr = dY[i] | 0, far = dF[i], len = dL[i];
+      const a0 = (far ? 0.42 : 0.72) * sideW[x];
+      const lr = far ? 78 : 118, lg = far ? 92 : 136, lb = far ? 138 : 190;
+      for (let k = 0; k < len; k++) {
+        const r = hr - k;
+        if (r < 0 || r >= R) continue;
+        const ci = r * C + x;
+        if (signMask[ci] || stGlyph[ci] >= 0) continue;
+        const o = ci << 2;
+        const a = k === 0 ? a0 : k === 1 ? a0 * 0.55 : a0 * 0.3;
+        put(grid, ci, far || k === 2 ? gFar : gNear,
+          lr + bg[o] * 0.8, lg + bg[o + 1] * 0.8, lb + bg[o + 2] * 0.8, a);
+      }
+    }
+
+    // ripples where drops hit the street
+    const gDot = G["."], gO = G["o"], gDash = G["-"];
+    for (let p = 0; p < RP; p++) {
+      const a = t - rT[p];
+      if (a < 0 || a > 0.6) continue;
+      const x = rX[p], r = rY[p];
+      if (r < 0 || r >= R) continue;
+      const al = (1 - a / 0.6) * 0.7 * sideW[x];
+      if (a < 0.3) {
+        const ci = r * C + x, o = ci << 2;
+        put(grid, ci, a < 0.12 ? gDot : gO, 150 + bg[o] * 0.7, 165 + bg[o + 1] * 0.7, 210 + bg[o + 2] * 0.7, al);
+      } else {
+        for (let side = -1; side <= 1; side += 2) {
+          const xx = x + side;
+          if (xx < 0 || xx >= C) continue;
+          const ci = r * C + xx, o = ci << 2;
+          put(grid, ci, gDash, 150 + bg[o] * 0.7, 165 + bg[o + 1] * 0.7, 210 + bg[o + 2] * 0.7, al);
+        }
+      }
+    }
+  },
+});
+`;

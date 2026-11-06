@@ -27,11 +27,11 @@ export const STARTER_SUMMARIES: ReadonlyArray<StarterSummary> = [
     colors: { background: "#0a1029", foreground: "#e7ecff", accent: "#2fd6b0" },
   },
   {
-    id: "dunes",
-    name: "Dunes",
+    id: "meadow",
+    name: "Meadow",
     base: "light",
     hasArt: true,
-    colors: { background: "#fbf6ee", foreground: "#2a1f16", accent: "#6e2c10" },
+    colors: { background: "#f6f9f1", foreground: "#1e2a1c", accent: "#3b742a" },
   },
   {
     id: "phosphor",
@@ -48,17 +48,10 @@ export const STARTER_SUMMARIES: ReadonlyArray<StarterSummary> = [
     colors: { background: "#f5f8fb", foreground: "#1b2430", accent: "#1d4f86" },
   },
   {
-    id: "night-rain",
-    name: "Night Rain",
+    id: "tokyo-rain",
+    name: "Tokyo Rain",
     base: "dark",
     hasArt: true,
-    colors: { background: "#0b0f17", foreground: "#e3e8f0", accent: "#f2a65a" },
-  },
-  {
-    id: "ember",
-    name: "Ember",
-    base: "dark",
-    hasArt: true,
-    colors: { background: "#140c09", foreground: "#f6e8de", accent: "#ff8a3d" },
+    colors: { background: "#0b0c17", foreground: "#e6e8f4", accent: "#ff4d94" },
   },
 ];
