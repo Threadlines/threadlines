@@ -220,16 +220,20 @@ describe("backdrop frame", () => {
 
   it("steps the rate down when ticks go unanswered, then stops the art as too heavy", async () => {
     mounted = await mountFrame();
+    // In front, the art runs at its own 24 fps: even slowed twice (6 fps) a
+    // reply is due within 333 ms, so a 700 ms frame misses at every rate,
+    // with room to spare for a busy machine's late timers.
     mounted.start(
       "grid",
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
-        draw() { const end = performance.now() + 450; while (performance.now() < end) {} } });`,
+        draw() { const end = performance.now() + 700; while (performance.now() < end) {} } });`,
     );
+    mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true } });
     await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
-      timeout: 6_000,
+      timeout: 8_000,
       interval: 50,
     });
-    expect((await mounted.failure()).reason).toBe("too-heavy");
+    expect((await mounted.failure(12_000)).reason).toBe("too-heavy");
   });
 
   it("counts work the art defers past its frame, and slows art that hides it there", async () => {
