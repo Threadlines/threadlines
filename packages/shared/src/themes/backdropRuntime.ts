@@ -2416,6 +2416,14 @@ void main() {
         render();
         return;
       }
+      case "texts": {
+        // The Glass slider moved, or the theme's colors changed: the art keeps running.
+        const texts = readTexts(message.textColors, message.textRatios);
+        if (!texts || !theme) return;
+        theme = { ...theme, texts };
+        render();
+        return;
+      }
       case "zones": {
         const next = readZones(message.zones);
         if (!next) return;
