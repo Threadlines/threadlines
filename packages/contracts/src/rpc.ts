@@ -159,6 +159,8 @@ import {
   VcsStageChangesResult,
   VcsUnstageChangesInput,
   VcsUnstageChangesResult,
+  VcsReadRepositoryFileInput,
+  VcsReadRepositoryFileResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsMergeRefInput,
@@ -258,6 +260,10 @@ import {
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetTurnFileError,
+  OrchestrationGetTurnFileInput,
+  OrchestrationListProjectMediaError,
+  OrchestrationListProjectMediaInput,
   OrchestrationGetRevertPlanError,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetSnapshotError,
@@ -348,6 +354,8 @@ import {
   ProjectReadFileError,
   ProjectReadFileInput,
   ProjectReadFileResult,
+  ProjectReadMediaChunkInput,
+  ProjectReadMediaChunkResult,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -472,6 +480,7 @@ export const WS_METHODS = {
   projectsRestoreOriginal: "projects.restoreOriginal",
   projectsListEntries: "projects.listEntries",
   projectsReadFile: "projects.readFile",
+  projectsReadMediaChunk: "projects.readMediaChunk",
   projectsFavicon: "projects.favicon",
 
   // Chat attachment methods
@@ -506,6 +515,7 @@ export const WS_METHODS = {
   vcsCommitGraph: "vcs.commitGraph",
   vcsCommitDetails: "vcs.commitDetails",
   vcsWorkingTreeDiff: "vcs.workingTreeDiff",
+  vcsReadRepositoryFile: "vcs.readRepositoryFile",
   vcsDiscardChanges: "vcs.discardChanges",
   vcsStageChanges: "vcs.stageChanges",
   vcsUnstageChanges: "vcs.unstageChanges",
@@ -1264,6 +1274,12 @@ export const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
   error: ProjectReadFileError,
 });
 
+export const WsProjectsReadMediaChunkRpc = Rpc.make(WS_METHODS.projectsReadMediaChunk, {
+  payload: ProjectReadMediaChunkInput,
+  success: ProjectReadMediaChunkResult,
+  error: ProjectReadFileError,
+});
+
 export const WsProjectsFaviconRpc = Rpc.make(WS_METHODS.projectsFavicon, {
   payload: ProjectFaviconInput,
   success: ProjectFaviconResult,
@@ -1620,6 +1636,12 @@ export const WsVcsWorkingTreeDiffRpc = Rpc.make(WS_METHODS.vcsWorkingTreeDiff, {
   error: GitCommandError,
 });
 
+export const WsVcsReadRepositoryFileRpc = Rpc.make(WS_METHODS.vcsReadRepositoryFile, {
+  payload: VcsReadRepositoryFileInput,
+  success: VcsReadRepositoryFileResult,
+  error: GitCommandError,
+});
+
 export const WsVcsDiscardChangesRpc = Rpc.make(WS_METHODS.vcsDiscardChanges, {
   payload: VcsDiscardChangesInput,
   success: VcsDiscardChangesResult,
@@ -1760,6 +1782,21 @@ export const WsOrchestrationGetFullThreadDiffRpc = Rpc.make(
     payload: OrchestrationGetFullThreadDiffInput,
     success: OrchestrationRpcSchemas.getFullThreadDiff.output,
     error: OrchestrationGetFullThreadDiffError,
+  },
+);
+
+export const WsOrchestrationGetTurnFileRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getTurnFile, {
+  payload: OrchestrationGetTurnFileInput,
+  success: OrchestrationRpcSchemas.getTurnFile.output,
+  error: OrchestrationGetTurnFileError,
+});
+
+export const WsOrchestrationListProjectMediaRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listProjectMedia,
+  {
+    payload: OrchestrationListProjectMediaInput,
+    success: OrchestrationRpcSchemas.listProjectMedia.output,
+    error: OrchestrationListProjectMediaError,
   },
 );
 
@@ -2529,6 +2566,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsProjectsRestoreOriginalRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
+  WsProjectsReadMediaChunkRpc,
   WsProjectsFaviconRpc,
   WsAttachmentsReadRpc,
   WsVisualizationsReadRpc,
@@ -2582,6 +2620,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsVcsCommitGraphRpc,
   WsVcsCommitDetailsRpc,
   WsVcsWorkingTreeDiffRpc,
+  WsVcsReadRepositoryFileRpc,
   WsVcsDiscardChangesRpc,
   WsVcsStageChangesRpc,
   WsVcsUnstageChangesRpc,
@@ -2674,6 +2713,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
+  WsOrchestrationGetTurnFileRpc,
+  WsOrchestrationListProjectMediaRpc,
   WsOrchestrationGetRevertPlanRpc,
   WsOrchestrationSearchThreadsRpc,
   WsOrchestrationGetTurnActivitiesRpc,

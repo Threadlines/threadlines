@@ -305,3 +305,25 @@ describe("buildRightPanelLauncherStates", () => {
     ).toEqual({ description: "1 agent running.", empty: false });
   });
 });
+
+describe("the Media row", () => {
+  it("counts what the thread made, dims when it made nothing, and keeps its copy while unknown", () => {
+    const base = { workingTreeFileCount: 0, diffHasExplicitTarget: false, ...EMPTY_THREAD };
+    expect(
+      buildRightPanelLauncherStates({
+        ...base,
+        media: { picture: 6, video: 1, audio: 0, document: 2 },
+      }).media,
+    ).toEqual({ description: "6 pictures, 1 video, 2 documents.", empty: false });
+    expect(
+      buildRightPanelLauncherStates({
+        ...base,
+        media: { picture: 0, video: 0, audio: 0, document: 0 },
+      }).media,
+    ).toEqual({ description: "No pictures or files yet.", empty: true });
+    expect(buildRightPanelLauncherStates({ ...base, media: null }).media).toEqual({
+      description: "Pictures and files agents made.",
+      empty: false,
+    });
+  });
+});

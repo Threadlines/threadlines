@@ -1,8 +1,8 @@
 import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
-import { scopeProjectRef } from "@threadlines/client-runtime";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { PullRequestRef, ScopedThreadRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -115,7 +115,13 @@ import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerSto
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { SidebarInset } from "~/components/ui/sidebar";
-import { cn } from "~/lib/utils";
+import { cn, newCommandId } from "~/lib/utils";
+import { projectMediaQueryOptions } from "../lib/mediaReactQuery";
+import {
+  countMediaByKind,
+  type MediaEntry,
+  turnSummariesRevision,
+} from "../components/media/mediaPanel.logic";
 import {
   SourceControlPanel,
   type SourceControlProjectTarget,
@@ -139,6 +145,9 @@ interface ThreadPullRequestTarget {
 }
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const MediaPanel = lazy(() =>
+  import("../components/media/MediaPanel").then((module) => ({ default: module.MediaPanel })),
+);
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
 
 /** Mount the heavy viewer chunk only after the first open request. */
@@ -601,6 +610,7 @@ function ChatThreadRouteView() {
   const sourceControlOpen = activeTab === "sourceControl";
   const pullRequestOpen = activeTab === "pullRequest";
   const agentsOpen = activeTab === "agents";
+  const mediaOpen = activeTab === "media";
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
@@ -644,6 +654,24 @@ function ChatThreadRouteView() {
     navigateToTab,
     shouldUseDiffSheet,
   ]);
+  // The thread's media, for the launcher's Media row: the same listing the
+  // Media tab opens on, so the row and the tab agree. Read only while the
+  // launcher is on screen; a turn landing changes the revision and so the key.
+  const mediaTurnsRevision = turnSummariesRevision(serverThread?.turnDiffSummaries ?? null);
+  const launcherMediaListing = useQuery(
+    projectMediaQueryOptions({
+      environmentId: threadRef?.environmentId ?? null,
+      projectId: serverThread?.projectId ?? null,
+      threadId: threadRef?.threadId ?? null,
+      revision: mediaTurnsRevision,
+      enabled: sidebarVisible && activeTab === null && availableTabs.includes("media"),
+    }),
+  );
+  const launcherMediaEntries = launcherMediaListing.data?.entries;
+  const launcherMediaCounts = useMemo(
+    () => (launcherMediaEntries ? countMediaByKind(launcherMediaEntries) : null),
+    [launcherMediaEntries],
+  );
   // What the launcher's rows say. Only assembled while the launcher is the
   // thing on screen, since that is the only place it is read.
   const launcherSurfaceStates = useRightPanelLauncherStates({
@@ -656,6 +684,7 @@ function ChatThreadRouteView() {
     turnDiffSummaries: serverThread?.turnDiffSummaries ?? null,
     agents: agentsSource,
     pullRequest: leadPullRequestTarget?.pullRequest ?? null,
+    media: launcherMediaCounts,
   });
   // Opening the Diff tab with nothing remembered means this thread's working
   // tree, which is also the freshest thing to look at, so it gets re-read.
@@ -871,6 +900,38 @@ function ChatThreadRouteView() {
     },
     [currentThreadKey, diffTarget, navigateToTab],
   );
+  // "Go to turn N" from the Media tab: the chat at the reply of the turn that
+  // last changed the file, in whichever thread made it. Another thread opens
+  // with its own Media tab beside it; on a phone the sheet steps aside so the
+  // reply is what shows.
+  const goToMediaTurn = useCallback(
+    (entry: MediaEntry) => {
+      if (!threadRef) {
+        return;
+      }
+      const target = scopeThreadRef(threadRef.environmentId, entry.threadId);
+      const sameThread = entry.threadId === threadRef.threadId;
+      const focus = entry.assistantMessageId
+        ? { focusMessageId: entry.assistantMessageId, focusRequest: newCommandId() }
+        : {};
+      if (!sameThread && !shouldUseDiffSheet) {
+        focusRightPanelTab(`${target.environmentId}:${target.threadId}`, "media");
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(target),
+        search: (previous) => ({
+          ...(shouldUseDiffSheet
+            ? rightPanelTabSearchParams(previous, null)
+            : sameThread
+              ? previous
+              : rightPanelTabSearchParams(previous, "media")),
+          ...focus,
+        }),
+      });
+    },
+    [navigate, shouldUseDiffSheet, threadRef],
+  );
   // Reorder touches only the strip's remembered order; the URL owns the
   // active tab, and that does not change here.
   const reorderTab = useCallback(
@@ -963,6 +1024,22 @@ function ChatThreadRouteView() {
             onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
             onMessageThroughParent={messageSubagentThroughParent}
           />
+        </div>
+      ) : null}
+      {openTabs.includes("media") && serverThread ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", mediaOpen ? "flex" : "hidden")}>
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading media…</p>}
+          >
+            <MediaPanel
+              environmentId={threadRef.environmentId}
+              projectId={serverThread.projectId}
+              threadId={threadRef.threadId}
+              turnsRevision={mediaTurnsRevision}
+              visible={mediaOpen}
+              onGoToTurn={goToMediaTurn}
+            />
+          </Suspense>
         </div>
       ) : null}
       {openTabs.includes("sourceControl") ? (

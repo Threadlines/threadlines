@@ -29,8 +29,8 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
-      { path: "src/b.ts", additions: 0, deletions: 2 },
+      { path: "a.txt", kind: "modified", additions: 2, deletions: 1 },
+      { path: "src/b.ts", kind: "modified", additions: 0, deletions: 2 },
     ]);
   });
 
@@ -44,7 +44,13 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "src/new.ts", additions: 0, deletions: 0 },
+      {
+        path: "src/new.ts",
+        kind: "modified",
+        additions: 0,
+        deletions: 0,
+        previousPath: "src/old.ts",
+      },
     ]);
   });
 
@@ -62,7 +68,34 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\r\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
+      { path: "a.txt", kind: "modified", additions: 2, deletions: 1 },
+    ]);
+  });
+
+  it("tells files the patch creates or removes from changed ones, pictures included", () => {
+    const diff = [
+      "diff --git a/shot.png b/shot.png",
+      "new file mode 100644",
+      "index 0000000..1234567",
+      "Binary files /dev/null and b/shot.png differ",
+      "diff --git a/old.png b/old.png",
+      "deleted file mode 100644",
+      "index 1234567..0000000",
+      "Binary files a/old.png and /dev/null differ",
+      "diff --git a/notes.md b/notes.md",
+      "new file mode 100644",
+      "index 0000000..89abcde",
+      "--- /dev/null",
+      "+++ b/notes.md",
+      "@@ -0,0 +1 @@",
+      "+hello",
+      "",
+    ].join("\n");
+
+    expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
+      { path: "notes.md", kind: "add", additions: 1, deletions: 0 },
+      { path: "old.png", kind: "delete", additions: 0, deletions: 0 },
+      { path: "shot.png", kind: "add", additions: 0, deletions: 0 },
     ]);
   });
 });

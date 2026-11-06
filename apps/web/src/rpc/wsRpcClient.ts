@@ -143,6 +143,7 @@ export interface WsRpcClient {
     readonly restoreOriginal: RpcUnaryMethod<typeof WS_METHODS.projectsRestoreOriginal>;
     readonly listEntries: RpcUnaryMethod<typeof WS_METHODS.projectsListEntries>;
     readonly readFile: RpcUnaryMethod<typeof WS_METHODS.projectsReadFile>;
+    readonly readMediaChunk: RpcUnaryMethod<typeof WS_METHODS.projectsReadMediaChunk>;
     readonly favicon: RpcUnaryMethod<typeof WS_METHODS.projectsFavicon>;
   };
   readonly attachments: {
@@ -197,6 +198,7 @@ export interface WsRpcClient {
     readonly commitGraph: RpcUnaryMethod<typeof WS_METHODS.vcsCommitGraph>;
     readonly commitDetails: RpcUnaryMethod<typeof WS_METHODS.vcsCommitDetails>;
     readonly workingTreeDiff: RpcUnaryMethod<typeof WS_METHODS.vcsWorkingTreeDiff>;
+    readonly readRepositoryFile: RpcUnaryMethod<typeof WS_METHODS.vcsReadRepositoryFile>;
     readonly discardChanges: RpcUnaryMethod<typeof WS_METHODS.vcsDiscardChanges>;
     readonly stageChanges: RpcUnaryMethod<typeof WS_METHODS.vcsStageChanges>;
     readonly unstageChanges: RpcUnaryMethod<typeof WS_METHODS.vcsUnstageChanges>;
@@ -529,6 +531,8 @@ export interface WsRpcClient {
     readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
     readonly getFullThreadDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getFullThreadDiff>;
+    readonly getTurnFile: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnFile>;
+    readonly listProjectMedia: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.listProjectMedia>;
     readonly getRevertPlan: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getRevertPlan>;
     readonly searchThreads: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.searchThreads>;
     readonly getTurnActivities: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnActivities>;
@@ -730,6 +734,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.projectsListEntries](input)),
       readFile: (input) =>
         transport.request((client) => client[WS_METHODS.projectsReadFile](input)),
+      readMediaChunk: (input) =>
+        transport.request((client) => client[WS_METHODS.projectsReadMediaChunk](input)),
       favicon: (input) => transport.request((client) => client[WS_METHODS.projectsFavicon](input)),
     },
     attachments: {
@@ -828,6 +834,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.vcsCommitDetails](input)),
       workingTreeDiff: (input) =>
         transport.request((client) => client[WS_METHODS.vcsWorkingTreeDiff](input)),
+      readRepositoryFile: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsReadRepositoryFile](input)),
       discardChanges: (input) =>
         transport.request((client) => client[WS_METHODS.vcsDiscardChanges](input)),
       stageChanges: (input) =>
@@ -1417,6 +1425,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnDiff](input)),
       getFullThreadDiff: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getFullThreadDiff](input)),
+      getTurnFile: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnFile](input)),
+      listProjectMedia: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.listProjectMedia](input)),
       getRevertPlan: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getRevertPlan](input)),
       searchThreads: (input) =>

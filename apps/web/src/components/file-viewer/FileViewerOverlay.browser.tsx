@@ -284,4 +284,83 @@ describe("FileViewerOverlay", () => {
       await screen.unmount();
     }
   });
+
+  it("plays a sound file, fetched in pieces", async () => {
+    // A tenth of a second of silence: a real WAV the browser can play.
+    const samples = 800;
+    const wav = new Uint8Array(44 + samples);
+    const view = new DataView(wav.buffer);
+    const ascii = (offset: number, text: string) =>
+      [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+    ascii(0, "RIFF");
+    view.setUint32(4, 36 + samples, true);
+    ascii(8, "WAVEfmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 8000, true);
+    view.setUint32(28, 8000, true);
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    ascii(36, "data");
+    view.setUint32(40, samples, true);
+    wav.fill(128, 44);
+    const readMediaChunk = vi.fn(async (input: { offset: number; length: number }) => ({
+      kind: "chunk" as const,
+      relativePath: "chime.wav",
+      mimeType: "audio/wav",
+      size: wav.length,
+      offset: input.offset,
+      base64: btoa(String.fromCharCode(...wav.subarray(input.offset, input.offset + input.length))),
+    }));
+    installProjects({
+      readFile: vi.fn(async () => ({
+        kind: "binary" as const,
+        relativePath: "chime.wav",
+        size: wav.length,
+      })),
+      readMediaChunk,
+    } as unknown as Partial<EnvironmentApi["projects"]>);
+    const screen = await renderViewerAt("chime.wav");
+
+    try {
+      await vi.waitFor(() => {
+        const audio = document.querySelector<HTMLAudioElement>('audio[aria-label="chime.wav"]');
+        expect(audio?.src.startsWith("blob:")).toBe(true);
+        // Decoded: the browser read the file and knows how long it is.
+        expect(audio?.duration).toBeGreaterThan(0);
+      });
+      expect(readMediaChunk).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: CWD, relativePath: "chime.wav", offset: 0 }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("waits for Load before fetching a big video", async () => {
+    const readMediaChunk = vi.fn(async () => ({
+      kind: "missing" as const,
+      relativePath: "demo.mp4",
+    }));
+    installProjects({
+      readFile: vi.fn(async () => ({
+        kind: "binary" as const,
+        relativePath: "demo.mp4",
+        size: 200 * 1024 * 1024,
+      })),
+      readMediaChunk,
+    } as unknown as Partial<EnvironmentApi["projects"]>);
+    const screen = await renderViewerAt("demo.mp4");
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Load video" })).toBeVisible();
+      expect(readMediaChunk).not.toHaveBeenCalled();
+      await page.getByRole("button", { name: "Load video" }).click();
+      await expect.element(page.getByText("demo.mp4 is no longer on disk.")).toBeVisible();
+      expect(readMediaChunk).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

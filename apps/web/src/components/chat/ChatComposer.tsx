@@ -171,6 +171,7 @@ import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ProviderUsageSignIn } from "./providerSignIn";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { usePinchToExpand } from "./usePinchToExpand";
+import { ComposerPdfThumbnail } from "./ComposerPdfThumbnail";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -3967,7 +3968,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           ) : (
                             <button
                               type="button"
-                              className="flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 px-1 text-center"
+                              className={cn(
+                                "flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 text-center",
+                                // A PDF's page fills the tile; a name needs a margin.
+                                attachment.type === "file" && attachment.kind === "pdf"
+                                  ? undefined
+                                  : "px-1",
+                              )}
                               aria-label={`Preview ${attachment.name}`}
                               onClick={() => {
                                 if (attachment.type !== "file") return;
@@ -3987,10 +3994,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 });
                               }}
                             >
-                              <FileTextIcon className="size-5 text-muted-foreground" />
-                              <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
-                                {attachment.name}
-                              </span>
+                              {attachment.type === "file" && attachment.kind === "pdf" ? (
+                                <ComposerPdfThumbnail
+                                  file={attachment.file}
+                                  name={attachment.name}
+                                />
+                              ) : (
+                                <>
+                                  <FileTextIcon className="size-5 text-muted-foreground" />
+                                  <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
+                                    {attachment.name}
+                                  </span>
+                                </>
+                              )}
                             </button>
                           )}
                           {nonPersistedComposerImageIdSet.has(attachment.id) && (

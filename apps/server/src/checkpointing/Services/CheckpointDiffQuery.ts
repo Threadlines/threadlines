@@ -11,6 +11,8 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
+  OrchestrationGetTurnFileInput,
+  OrchestrationGetTurnFileResult,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -38,6 +40,16 @@ export interface CheckpointDiffQueryShape {
   readonly getFullThreadDiff: (
     input: OrchestrationGetFullThreadDiffInput,
   ) => Effect.Effect<OrchestrationGetFullThreadDiffResult, CheckpointServiceError>;
+
+  /**
+   * One file of the thread's change, as the snapshot on either side of a
+   * range holds it: the same snapshots `getTurnDiff` (a `turn` range) and
+   * `getFullThreadDiff` (a `thread` range) compare. Only files the range's
+   * turns changed are read; any other path is `missing`.
+   */
+  readonly getTurnFile: (
+    input: OrchestrationGetTurnFileInput,
+  ) => Effect.Effect<OrchestrationGetTurnFileResult, CheckpointServiceError>;
 }
 
 /**

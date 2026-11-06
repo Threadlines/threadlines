@@ -38,6 +38,7 @@ import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 
 import {
   estimateThreadUncommittedDiffStat,
+  checkpointFileFromParsedDiff,
   parseTurnDiffFilesFromUnifiedDiff,
 } from "../../checkpointing/Diffs.ts";
 import { normalizeCheckpointFilePath } from "../../checkpointing/SelectiveRevert.ts";
@@ -658,12 +659,7 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.map((diff) =>
-            parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-              path: file.path,
-              kind: "modified" as const,
-              additions: file.additions,
-              deletions: file.deletions,
-            })),
+            parseTurnDiffFilesFromUnifiedDiff(diff).map(checkpointFileFromParsedDiff),
           ),
           Effect.flatMap((diffFiles) =>
             withoutHeadMovementFiles({

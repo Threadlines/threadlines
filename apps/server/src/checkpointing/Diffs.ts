@@ -8,9 +8,18 @@ export interface TurnDiffFileSummary {
   readonly deletions: number;
 }
 
-export function parseTurnDiffFilesFromUnifiedDiff(
-  diff: string,
-): ReadonlyArray<TurnDiffFileSummary> {
+/**
+ * One file of a turn's patch, in the checkpoint summary's words: `add` for a
+ * file the patch creates, `delete` for one it removes, `modified` for the
+ * rest (renames included, with the old name kept as `previousPath`). The same
+ * vocabulary provider evidence already writes, so every summary reads alike.
+ */
+export interface ParsedTurnDiffFile extends TurnDiffFileSummary {
+  readonly kind: "add" | "delete" | "modified";
+  readonly previousPath?: string;
+}
+
+export function parseTurnDiffFilesFromUnifiedDiff(diff: string): ReadonlyArray<ParsedTurnDiffFile> {
   const normalized = diff.replace(/\r\n/g, "\n").trim();
   if (normalized.length === 0) {
     return [];
@@ -18,14 +27,37 @@ export function parseTurnDiffFilesFromUnifiedDiff(
 
   const parsedPatches = parsePatchFiles(normalized);
   const files = parsedPatches.flatMap((patch) =>
-    patch.files.map((file) => ({
-      path: file.name,
-      additions: file.hunks.reduce((total, hunk) => total + hunk.additionLines, 0),
-      deletions: file.hunks.reduce((total, hunk) => total + hunk.deletionLines, 0),
-    })),
+    patch.files.map((file): ParsedTurnDiffFile => {
+      const previousPath =
+        file.prevName !== undefined && file.prevName !== file.name ? file.prevName : undefined;
+      return {
+        path: file.name,
+        kind: file.type === "new" ? "add" : file.type === "deleted" ? "delete" : "modified",
+        additions: file.hunks.reduce((total, hunk) => total + hunk.additionLines, 0),
+        deletions: file.hunks.reduce((total, hunk) => total + hunk.deletionLines, 0),
+        ...(previousPath !== undefined ? { previousPath } : {}),
+      };
+    }),
   );
 
   return files.toSorted((left, right) => left.path.localeCompare(right.path));
+}
+
+/** A parsed patch file as a checkpoint summary entry. */
+export function checkpointFileFromParsedDiff(file: ParsedTurnDiffFile): {
+  readonly path: string;
+  readonly kind: string;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly previousPath?: string;
+} {
+  return {
+    path: file.path,
+    kind: file.kind,
+    additions: file.additions,
+    deletions: file.deletions,
+    ...(file.previousPath !== undefined ? { previousPath: file.previousPath } : {}),
+  };
 }
 
 /** One path's uncommitted line counts; `previousPath` is set for a rename. */

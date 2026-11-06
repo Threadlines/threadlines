@@ -264,7 +264,34 @@ Edit (or double-click, or start typing) edits the file in place, and it saves as
 
 A file outside the project opens and edits the same way, but git doesn't track it, so Threadlines keeps the original before the first save, for 30 days. Restore original in the footer puts it back.
 
-Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a picture, with Show source for its code. Any other file offers Reveal in Finder (Explorer on Windows) and Copy path. A folder outside the project opens in Finder or Explorer.`,
+Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a picture, with Show source for its code. Videos and sound files play in it: one up to 64 MB loads as it opens, a bigger one waits for Load, and one over 1 GB doesn't play here. Any other file offers Reveal in Finder (Explorer on Windows) and Copy path. A folder outside the project opens in Finder or Explorer.`,
+  },
+  {
+    id: "media-tab",
+    title: "The Media tab",
+    keywords: [
+      "media",
+      "assets",
+      "pictures",
+      "images",
+      "screenshots",
+      "videos",
+      "audio",
+      "documents",
+      "generated images",
+      "before and after",
+      "play video",
+      "pdf preview",
+    ],
+    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed. Open it from the sidebar's list of panels or its + menu.
+
+It opens on the current thread; All threads shows every thread in the project, each file marked with the thread that made it. Files are grouped by type, and each is marked A (the thread added it) or M (it changed one that was there). Search by name, sort newest, oldest or by name, and group by type or by thread. Pictures and PDFs show as small pictures (a PDF its first page); a video shows its first frame once it has played.
+
+Click a picture to see it full size, with arrows to step through the rest; a changed picture has Before and After. A PDF, video or sound file opens in the file viewer, where videos and sound play. Right-click any file to preview it, open it in the file viewer, go to the turn that made it, open it in your editor, reveal it in Finder or Explorer, or copy its path.
+
+Only files inside the project's folder are listed. A file an agent saved elsewhere (a temp folder, say), one in a folder git ignores, or one deleted since, doesn't show.
+
+In the Diff tab, a changed picture shows its Before and After side by side instead of a file name.`,
   },
   {
     id: "pages-and-command-requests",

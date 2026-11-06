@@ -31,6 +31,9 @@ import {
   type ServerLifecycleStreamEvent,
   type ServerSettings,
   OrchestrationGetFullThreadDiffError,
+  OrchestrationGetTurnFileError,
+  OrchestrationListProjectMediaError,
+  GitCommandError,
   OrchestrationGetRevertPlanError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnActivitiesError,
@@ -74,6 +77,7 @@ import { RpcSerialization, RpcServer } from "effect/rpc";
 
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import { ProjectMedia } from "./media/ProjectMedia.ts";
 import { CheckpointRevert } from "./checkpointing/Services/CheckpointRevert.ts";
 import { ServerConfig } from "./config.ts";
 import { fileAttachmentMimeTypeForExtension } from "@threadlines/shared/fileAttachments";
@@ -719,6 +723,7 @@ const makeCoreRpcLayer = (
       const orchestrationEngine = yield* OrchestrationEngineService;
       const threadBootstrap = yield* ThreadBootstrap;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
+      const projectMedia = yield* ProjectMedia;
       const checkpointRevert = yield* CheckpointRevert;
       const keybindings = yield* Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
@@ -1299,6 +1304,34 @@ const makeCoreRpcLayer = (
                 (cause) =>
                   new OrchestrationGetFullThreadDiffError({
                     message: "Failed to load full thread diff",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTurnFile]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTurnFile,
+            checkpointDiffQuery.getTurnFile(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetTurnFileError({
+                    message: "Failed to read the file at that turn",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listProjectMedia]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listProjectMedia,
+            projectMedia.listProjectMedia(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationListProjectMediaError({
+                    message: "Failed to list this project's media",
                     cause,
                   }),
               ),
@@ -2320,6 +2353,26 @@ const makeCoreRpcLayer = (
         // so the `/api/project-favicon` route is unreachable for them; this
         // RPC is their favicon transport. A null favicon means "no icon
         // found" — the client renders its own fallback glyph.
+        [WS_METHODS.projectsReadMediaChunk]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsReadMediaChunk,
+            workspaceFileSystem.readMediaChunk(input).pipe(
+              Effect.mapError((cause) => {
+                const message = isWorkspacePathOutsideRootError(cause)
+                  ? "Workspace file path must stay within the project root."
+                  : `Failed to read workspace file: ${cause.detail}`;
+                return new ProjectReadFileError({
+                  message,
+                  cause,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        // Relay-paired clients (phonelink) have no HTTP path to this server,
+        // so the `/api/project-favicon` route is unreachable for them; this
+        // RPC is their favicon transport. A null favicon means "no icon
+        // found" — the client renders its own fallback glyph.
         [WS_METHODS.projectsFavicon]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsFavicon,
@@ -2793,6 +2846,23 @@ const makeCoreRpcLayer = (
           observeRpcEffect(WS_METHODS.vcsWorkingTreeDiff, gitWorkflow.workingTreeDiff(input), {
             "rpc.aggregate": "vcs",
           }),
+        [WS_METHODS.vcsReadRepositoryFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsReadRepositoryFile,
+            projectMedia.readRepositoryFile(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitCommandError({
+                    operation: "vcs.readRepositoryFile",
+                    command: "git cat-file",
+                    cwd: input.cwd,
+                    detail: cause.detail,
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsDiscardChanges]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsDiscardChanges,

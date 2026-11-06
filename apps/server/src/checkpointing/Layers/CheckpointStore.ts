@@ -143,6 +143,13 @@ const makeCheckpointStore = Effect.gen(function* () {
     return yield* checkpoints.deleteCheckpointRefs(input);
   });
 
+  const readRevisionFile: CheckpointStoreShape["readRevisionFile"] = Effect.fn("readRevisionFile")(
+    function* (input) {
+      const checkpoints = yield* resolveCheckpoints("CheckpointStore.readRevisionFile", input.cwd);
+      return yield* checkpoints.readRevisionFile(input);
+    },
+  );
+
   return {
     isGitRepository,
     captureCheckpoint,
@@ -157,6 +164,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     restoreCheckpointPaths,
     restoreCheckpointFileEdits,
     deleteCheckpointRefs,
+    readRevisionFile,
   } satisfies CheckpointStoreShape;
 });
 

@@ -653,6 +653,7 @@ const gitCommand = (
     readonly timeoutMs?: number;
     readonly maxOutputBytes?: number;
     readonly appendTruncationMarker?: boolean;
+    readonly stdoutEncoding?: "utf8" | "base64";
   },
 ) =>
   process.run({
@@ -673,6 +674,7 @@ const gitCommand = (
     ...(options?.appendTruncationMarker !== undefined
       ? { appendTruncationMarker: options.appendTruncationMarker }
       : {}),
+    ...(options?.stdoutEncoding !== undefined ? { stdoutEncoding: options.stdoutEncoding } : {}),
   });
 
 export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* () {
@@ -1819,6 +1821,42 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         );
       },
     ),
+
+    // Two reads: `cat-file --batch-check` says whether the revision holds a
+    // file there and how big it is, so an oversized one is never read; then
+    // the blob itself, as base64 so its bytes survive the trip through text.
+    readRevisionFile: Effect.fn("GitVcsDriver.checkpoints.readRevisionFile")(function* (input) {
+      const operation = "GitVcsDriver.checkpoints.readRevisionFile";
+      const path = input.path.replaceAll("\\", "/").replace(/^\/+/u, "");
+      // batch-check reads one object name per line.
+      if (path.length === 0 || /[\r\n]/u.test(path)) {
+        return { kind: "missing" as const };
+      }
+      if (input.revision !== "HEAD") {
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+      }
+      const check = yield* execute({
+        operation,
+        cwd: input.cwd,
+        args: ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+        stdin: `${input.revision}:${path}\n`,
+        allowNonZeroExit: true,
+        maxOutputBytes: 4_096,
+      });
+      const [oid, type, sizeText] = check.stdout.trim().split(" ");
+      const size = Number(sizeText);
+      if (check.exitCode !== 0 || type !== "blob" || !oid || !Number.isSafeInteger(size)) {
+        return { kind: "missing" as const };
+      }
+      if (size > input.maxBytes) {
+        return { kind: "too-large" as const, size };
+      }
+      const blob = yield* gitCommand(vcsProcess, operation, input.cwd, ["cat-file", "blob", oid], {
+        maxOutputBytes: input.maxBytes,
+        stdoutEncoding: "base64",
+      });
+      return { kind: "file" as const, base64: blob.stdout, size };
+    }),
   };
 
   return VcsDriver.VcsDriver.of({

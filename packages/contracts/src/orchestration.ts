@@ -38,6 +38,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { ProjectRevisionFileResult } from "./project.ts";
 import { TerminalReuseIds } from "./terminal.ts";
 import {
   AwaitedWorkflowProgress,
@@ -49,6 +50,8 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  getTurnFile: "orchestration.getTurnFile",
+  listProjectMedia: "orchestration.listProjectMedia",
   getRevertPlan: "orchestration.getRevertPlan",
   searchThreads: "orchestration.searchThreads",
   getTurnActivities: "orchestration.getTurnActivities",
@@ -1614,9 +1617,13 @@ export type OrchestrationThreadLinkedPullRequest = typeof OrchestrationThreadLin
 
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: TrimmedNonEmptyString,
+  /** `add`, `delete` or `modified`. Summaries from before new files were told
+   *  apart say `modified` for every file. */
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
+  /** A rename's old name, when the turn's patch detected one. */
+  previousPath: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
 
@@ -6239,6 +6246,85 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
+/**
+ * Which snapshots a file read compares, the same two the Diff tab offers: one
+ * turn's own change (`turn`), or everything since the thread began (`thread`,
+ * "All chat changes"). They can name the same turns and still differ, since a
+ * single turn starts from the snapshot taken just before it ran.
+ */
+export const OrchestrationTurnFileRange = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("turn"), turnCount: PositiveInt }),
+  Schema.Struct({ kind: Schema.Literal("thread"), toTurnCount: PositiveInt }),
+]);
+export type OrchestrationTurnFileRange = typeof OrchestrationTurnFileRange.Type;
+
+/** One file of a thread's change, as it was before or after `range`. */
+export const OrchestrationGetTurnFileInput = Schema.Struct({
+  threadId: ThreadId,
+  range: OrchestrationTurnFileRange,
+  side: Schema.Literals(["before", "after"]),
+  /** Repository-root-relative, as the turn's patch names it. */
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  /**
+   * The file's name before a rename, as the patch shows it. Read for `before`
+   * only when the thread's own records don't name one (turns recorded before
+   * renames were kept).
+   */
+  previousPath: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))),
+});
+export type OrchestrationGetTurnFileInput = typeof OrchestrationGetTurnFileInput.Type;
+
+export const OrchestrationGetTurnFileResult = ProjectRevisionFileResult;
+export type OrchestrationGetTurnFileResult = typeof OrchestrationGetTurnFileResult.Type;
+
+export const OrchestrationMediaKind = Schema.Literals(["picture", "video", "audio", "document"]);
+export type OrchestrationMediaKind = typeof OrchestrationMediaKind.Type;
+
+/**
+ * A picture, video, sound or document one thread's turns created or changed,
+ * folded over the thread's turns: the latest turn that touched it, and whether
+ * the thread created it. Files the thread later deleted, and files outside the
+ * thread's folder, are not listed.
+ */
+export const OrchestrationProjectMediaEntry = Schema.Struct({
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  /** The thread's folder: its worktree, or the project's. */
+  cwd: TrimmedNonEmptyString,
+  /** Inside `cwd`, for reading the file as it is now. */
+  relativePath: TrimmedNonEmptyString,
+  /** As the turn's patch names it (repository-root-relative), for getTurnFile. */
+  repositoryPath: TrimmedNonEmptyString,
+  mediaKind: OrchestrationMediaKind,
+  /** `added` when the thread created the file. Turns recorded before new files
+   *  were told apart read as `modified`. */
+  change: Schema.Literals(["added", "modified"]),
+  turnId: TurnId,
+  checkpointTurnCount: PositiveInt,
+  changedAt: IsoDateTime,
+  /** The reply of the turn that last changed it, to jump to in the chat. */
+  assistantMessageId: Schema.NullOr(MessageId),
+  /** Bytes on disk when listed. Files no longer on disk are not listed. */
+  size: NonNegativeInt,
+  /** Changes whenever the file on disk does, size or not; opaque. */
+  version: TrimmedNonEmptyString,
+});
+export type OrchestrationProjectMediaEntry = typeof OrchestrationProjectMediaEntry.Type;
+
+export const OrchestrationListProjectMediaInput = Schema.Struct({
+  projectId: ProjectId,
+  /** Only this thread's media. */
+  threadId: Schema.optionalKey(ThreadId),
+});
+export type OrchestrationListProjectMediaInput = typeof OrchestrationListProjectMediaInput.Type;
+
+/** Newest change first. `truncated` when older entries were left off. */
+export const OrchestrationListProjectMediaResult = Schema.Struct({
+  entries: Schema.Array(OrchestrationProjectMediaEntry),
+  truncated: Schema.Boolean,
+});
+export type OrchestrationListProjectMediaResult = typeof OrchestrationListProjectMediaResult.Type;
+
 export const OrchestrationRevertPlanMode = Schema.Literals(["workspace", "selective"]);
 export type OrchestrationRevertPlanMode = typeof OrchestrationRevertPlanMode.Type;
 
@@ -6379,6 +6465,14 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
   },
+  getTurnFile: {
+    input: OrchestrationGetTurnFileInput,
+    output: OrchestrationGetTurnFileResult,
+  },
+  listProjectMedia: {
+    input: OrchestrationListProjectMediaInput,
+    output: OrchestrationListProjectMediaResult,
+  },
   getRevertPlan: {
     input: OrchestrationGetRevertPlanInput,
     output: OrchestrationGetRevertPlanResult,
@@ -6447,6 +6541,22 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedError<Orchestrat
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetTurnFileError extends Schema.TaggedError<OrchestrationGetTurnFileError>()(
+  "OrchestrationGetTurnFileError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationListProjectMediaError extends Schema.TaggedError<OrchestrationListProjectMediaError>()(
+  "OrchestrationListProjectMediaError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

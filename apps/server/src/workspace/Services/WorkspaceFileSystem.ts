@@ -13,6 +13,8 @@ import type * as Effect from "effect/Effect";
 import type {
   ProjectReadFileInput,
   ProjectReadFileResult,
+  ProjectReadMediaChunkInput,
+  ProjectReadMediaChunkResult,
   ProjectRestoreOriginalInput,
   ProjectRestoreOriginalResult,
   ProjectWriteFileInput,
@@ -77,6 +79,17 @@ export interface WorkspaceFileSystemShape {
     input: ProjectReadFileInput,
   ) => Effect.Effect<
     ProjectReadFileResult,
+    WorkspaceFileSystemError | WorkspacePathOutsideRootError
+  >;
+
+  /**
+   * A piece of a video or sound file, read from `offset`, for playing it in
+   * pieces. Same paths as `readFile`; anything else is `unsupported`.
+   */
+  readonly readMediaChunk: (
+    input: ProjectReadMediaChunkInput,
+  ) => Effect.Effect<
+    ProjectReadMediaChunkResult,
     WorkspaceFileSystemError | WorkspacePathOutsideRootError
   >;
 }

@@ -13,6 +13,8 @@ import type {
   VcsUnstageChangesResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
+  VcsReadRepositoryFileInput,
+  VcsReadRepositoryFileResult,
   VcsCreateRefInput,
   VcsCreateRefResult,
   VcsCreateTagInput,
@@ -89,6 +91,8 @@ import type {
   ProjectListEntriesResult,
   ProjectReadFileInput,
   ProjectReadFileResult,
+  ProjectReadMediaChunkInput,
+  ProjectReadMediaChunkResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
   ProjectRestoreOriginalInput,
@@ -239,6 +243,10 @@ import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetTurnFileInput,
+  OrchestrationGetTurnFileResult,
+  OrchestrationListProjectMediaInput,
+  OrchestrationListProjectMediaResult,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetRevertPlanResult,
   OrchestrationGetTurnActivitiesInput,
@@ -1839,6 +1847,7 @@ export interface EnvironmentApi {
     restoreOriginal?: (input: ProjectRestoreOriginalInput) => Promise<ProjectRestoreOriginalResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
+    readMediaChunk: (input: ProjectReadMediaChunkInput) => Promise<ProjectReadMediaChunkResult>;
     favicon: (input: ProjectFaviconInput) => Promise<ProjectFaviconResult>;
   };
   /** The commands agents run on this environment's machine.
@@ -1975,6 +1984,7 @@ export interface EnvironmentApi {
     commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
     commitDetails: (input: VcsCommitDetailsInput) => Promise<VcsCommitDetailsResult>;
     workingTreeDiff: (input: VcsWorkingTreeDiffInput) => Promise<VcsWorkingTreeDiffResult>;
+    readRepositoryFile: (input: VcsReadRepositoryFileInput) => Promise<VcsReadRepositoryFileResult>;
     discardChanges: (input: VcsDiscardChangesInput) => Promise<VcsDiscardChangesResult>;
     stageChanges: (input: VcsStageChangesInput) => Promise<VcsStageChangesResult>;
     unstageChanges: (input: VcsUnstageChangesInput) => Promise<VcsUnstageChangesResult>;
@@ -2042,6 +2052,10 @@ export interface EnvironmentApi {
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
+    getTurnFile: (input: OrchestrationGetTurnFileInput) => Promise<OrchestrationGetTurnFileResult>;
+    listProjectMedia: (
+      input: OrchestrationListProjectMediaInput,
+    ) => Promise<OrchestrationListProjectMediaResult>;
     getRevertPlan: (
       input: OrchestrationGetRevertPlanInput,
     ) => Promise<OrchestrationGetRevertPlanResult>;

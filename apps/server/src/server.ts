@@ -66,6 +66,7 @@ import { PullRequestAutomationWatcherLive } from "./orchestration/Layers/PullReq
 import { ThreadPullRequestLinkerLive } from "./orchestration/Layers/ThreadPullRequestLinker.ts";
 import { ThreadBootstrapLive } from "./orchestration/Layers/ThreadBootstrap.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
+import { ProjectMediaLive } from "./media/ProjectMedia.ts";
 import { CheckpointRevertLive } from "./checkpointing/Layers/CheckpointRevert.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -456,6 +457,8 @@ const VcsLayerLive = Layer.empty.pipe(
 
 const CheckpointingLayerLive = Layer.empty.pipe(
   Layer.provideMerge(CheckpointRevertLive),
+  // The Media tab's listing and the Diff tab's uncommitted picture sides.
+  Layer.provideMerge(ProjectMediaLive),
   Layer.provideMerge(CheckpointDiffQueryLive),
   Layer.provideMerge(CheckpointStoreLive.pipe(Layer.provide(VcsDriverRegistryLayerLive))),
 );

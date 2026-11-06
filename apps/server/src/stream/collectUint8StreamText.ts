@@ -17,9 +17,13 @@ export const collectUint8StreamText = <E>(input: {
   readonly stream: Stream.Stream<Uint8Array, E>;
   readonly maxBytes?: number | undefined;
   readonly truncatedMarker?: string | null | undefined;
+  /** `base64` returns the raw bytes encoded, for binary output (a git blob).
+   *  The byte cap counts raw bytes either way, and no marker is appended. */
+  readonly encoding?: "utf8" | "base64" | undefined;
 }): Effect.Effect<CollectedUint8StreamText, E> => {
   const maxBytes = input.maxBytes ?? Number.POSITIVE_INFINITY;
-  const truncatedMarker = input.truncatedMarker ?? "";
+  const encoding = input.encoding ?? "utf8";
+  const truncatedMarker = encoding === "utf8" ? (input.truncatedMarker ?? "") : "";
 
   return input.stream.pipe(
     Stream.runFold(
@@ -59,7 +63,7 @@ export const collectUint8StreamText = <E>(input: {
       },
     ),
     Effect.map((state): CollectedUint8StreamText => {
-      const text = Buffer.concat(state.chunks, state.bytes).toString("utf8");
+      const text = Buffer.concat(state.chunks, state.bytes).toString(encoding);
       return {
         text: state.truncated && truncatedMarker.length > 0 ? `${text}${truncatedMarker}` : text,
         bytes: state.bytes,
