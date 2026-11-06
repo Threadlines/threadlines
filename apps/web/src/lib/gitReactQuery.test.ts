@@ -24,6 +24,7 @@ import {
   gitCheckoutMutationOptions,
   gitCreateRefMutationOptions,
   gitRemoveWorktreeMutationOptions,
+  runGitMutation,
   gitCommitGraphQueryOptions,
   gitCreateStashMutationOptions,
   gitMutationKeys,
@@ -287,7 +288,7 @@ describe("checkoutChangingGitMutationFilters", () => {
       },
       undefined,
     );
-    start(gitRemoveWorktreeMutationOptions({ environmentId: ENVIRONMENT_A, queryClient }), {
+    start(gitRemoveWorktreeMutationOptions({ environmentId: ENVIRONMENT_A }), {
       cwd: "/repo/d",
       path: "/repo/d-worktree",
     });
@@ -298,11 +299,41 @@ describe("checkoutChangingGitMutationFilters", () => {
     expect(busy(ENVIRONMENT_B, "/repo/b")).toBe(0);
     // Writing a commit message only reads the checkout.
     expect(busy(ENVIRONMENT_A, "/repo/c")).toBe(0);
-    // Removing a worktree runs git in the repository without changing its checkout.
+    // Removing a worktree changes that worktree, however its path is spelled,
+    // and not the repository that runs git for it.
+    expect(busy(ENVIRONMENT_A, "/repo/d-worktree/")).toBe(1);
     expect(busy(ENVIRONMENT_A, "/repo/d")).toBe(0);
 
     settle();
     await vi.waitFor(() => expect(busy(ENVIRONMENT_A, "/repo")).toBe(0));
+  });
+});
+
+describe("runGitMutation", () => {
+  it("counts the checkout busy while it runs, then lets the cache drop it", async () => {
+    let finish: () => void = () => {};
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      vcs: {
+        removeWorktree: () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      },
+    } as never);
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { gcTime: 0 } } });
+    const run = runGitMutation(
+      queryClient,
+      gitRemoveWorktreeMutationOptions({ environmentId: ENVIRONMENT_A }),
+      { cwd: "/repo", path: "/repo-worktree", force: true },
+    );
+    const busy = () =>
+      queryClient.isMutating(checkoutChangingGitMutationFilters(ENVIRONMENT_A, "/repo-worktree"));
+
+    await vi.waitFor(() => expect(busy()).toBe(1));
+    finish();
+    await run;
+    expect(busy()).toBe(0);
+    await vi.waitFor(() => expect(queryClient.getMutationCache().getAll()).toHaveLength(0));
   });
 });
 
