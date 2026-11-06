@@ -1,12 +1,18 @@
-import { EnvironmentId } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, type EnvironmentApi } from "@threadlines/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "./environmentApi";
+import {
+  FILE_REFERENCE_SEARCH_LIMIT,
   findReferencedFile,
   isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
   parseChatFileReference,
+  placeChatFileReference,
   relativePathWithinCwd,
   useFileViewerStore,
 } from "./fileViewerStore";
@@ -111,6 +117,73 @@ describe("fileViewerStore", () => {
         "src/index.ts",
       ),
     ).toEqual({ status: "found", path: "src/index.ts" });
+    // Exact spelling first: on a case-sensitive disk these are two files.
+    expect(
+      findReferencedFile(
+        [
+          { path: "src/index.ts", kind: "file" as const },
+          { path: "src/Index.ts", kind: "file" as const },
+        ],
+        "src/Index.ts",
+      ),
+    ).toEqual({ status: "found", path: "src/Index.ts" });
+  });
+
+  it("places a cited path past a page of namesakes and a folder at the path as written", async () => {
+    // A folder sits where the path says, so the server refuses to read it.
+    const readFile = vi.fn(async () => {
+      throw new Error("Cannot read entry of type 'Directory' as a file.");
+    });
+    const searchEntries = vi.fn(async (input: { query: string }) => {
+      if (input.query === "Form.php") {
+        return { entries: [{ path: "module/Model/Form.php", kind: "file" }], truncated: false };
+      }
+      if (input.query === "Data.php") {
+        // More files share the name than one page holds, none under Helper/.
+        const namesakes = Array.from({ length: FILE_REFERENCE_SEARCH_LIMIT }, (_, index) => ({
+          path: `vendor/lib${index}/Data.php`,
+          kind: "file",
+        }));
+        return { entries: namesakes, truncated: true };
+      }
+      return {
+        entries: [
+          { path: "shop/Analytics/Helper/Data.php", kind: "file" },
+          { path: "shop/Banner/Helper/Data.php", kind: "file" },
+        ],
+        truncated: true,
+      };
+    });
+    // The environment API is only handed out in a window.
+    vi.stubGlobal("window", {});
+    __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
+      projects: { readFile, searchEntries },
+    } as unknown as EnvironmentApi);
+    const place = (path: string) =>
+      placeChatFileReference({
+        environmentId: TEST_ENVIRONMENT_ID,
+        cwd: "/repo",
+        projectRoot: null,
+        reference: { path, line: 3 },
+      });
+
+    try {
+      await expect(place("Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
+      });
+      // The page of namesakes is full, so the whole path is searched too, and
+      // turns up two files ending in it.
+      await expect(place("Helper/Data.php")).resolves.toEqual({ status: "ambiguous" });
+      expect(searchEntries.mock.calls.map(([input]) => input.query)).toEqual([
+        "Form.php",
+        "Data.php",
+        "Helper/Data.php",
+      ]);
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {

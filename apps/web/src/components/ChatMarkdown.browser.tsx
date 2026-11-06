@@ -461,9 +461,9 @@ describe("ChatMarkdown", () => {
     ];
     const searchEntries = vi.fn(async (input: { cwd: string; query: string }) => ({
       entries:
-        input.query === "Helper/Data.php"
+        input.query === "Data.php"
           ? helpers
-          : input.query === "Model/ReturnForm.php" && input.cwd === "/repo/project"
+          : input.query === "ReturnForm.php" && input.cwd === "/repo/project"
             ? [{ path: moduleFile, kind: "file" as const }]
             : [],
       truncated: false,
@@ -1675,6 +1675,55 @@ describe("ChatMarkdown", () => {
         expect(useFileViewerStore.getState().activePath).toBe("docs/shots/home.png");
       });
       expect(searchEntries).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows the picture a click would open for an image path cited from inside a subfolder", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const searchEntries = vi.fn(async () => ({
+      entries: [{ path: "docs/shots/home.png", kind: "file" as const }],
+      truncated: false,
+    }));
+    // Nothing at the path as written; the picture is one folder further down.
+    const readFile = vi.fn(async (input: { cwd: string; relativePath: string }) =>
+      input.relativePath === "docs/shots/home.png"
+        ? {
+            kind: "image" as const,
+            relativePath: input.relativePath,
+            mimeType: "image/png",
+            base64: PIXEL_PNG_BASE64,
+            size: 70,
+          }
+        : { kind: "missing" as const, relativePath: input.relativePath },
+    );
+    installReadFileEnvironment(
+      readFile as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="The new layout is in `shots/home.png`."
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("img", { name: "home.png" }), { timeout: 5_000 })
+        .toBeInTheDocument();
+      await page.getByRole("link", { name: "home.png" }).click();
+      await vi.waitFor(() => {
+        expect(useFileViewerStore.getState().activePath).toBe("docs/shots/home.png");
+      });
     } finally {
       await screen.unmount();
     }

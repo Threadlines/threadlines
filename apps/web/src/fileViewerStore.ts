@@ -9,7 +9,12 @@
  */
 import { create } from "zustand";
 
-import type { EnvironmentId, ProjectEntry, ScopedThreadRef } from "@threadlines/contracts";
+import type {
+  EnvironmentApi,
+  EnvironmentId,
+  ProjectEntry,
+  ScopedThreadRef,
+} from "@threadlines/contracts";
 import { isWindowsAbsolutePath } from "@threadlines/shared/path";
 
 export interface FileViewerContext {
@@ -661,8 +666,7 @@ function isSameFolder(left: string, right: string): boolean {
  * Look for an inline-code file reference in `cwd`, then in `projectRoot` when
  * `cwd` has no file it could mean. Bare names (`ChatComposer.tsx`, which models
  * often cite without the folder) and paths are both placed through the
- * workspace search; see {@link findReferencedFile}. Throws when a search or
- * read fails.
+ * workspace search; see {@link findReferencedFile}. Throws when a search fails.
  */
 export async function placeChatFileReference(input: {
   readonly environmentId: EnvironmentId;
@@ -678,20 +682,16 @@ export async function placeChatFileReference(input: {
       ? [input.cwd, input.projectRoot]
       : [input.cwd];
   for (const folder of folders) {
-    const { entries } = await api.projects.searchEntries({
-      cwd: folder,
-      query: path,
-      limit: FILE_REFERENCE_SEARCH_LIMIT,
-    });
-    const match = findReferencedFile(entries, path);
-    const foundAsWritten =
-      match.status === "found" && match.path.toLowerCase() === path.toLowerCase();
-    if (path.includes("/") && !foundAsWritten) {
+    const match = findReferencedFile(await searchReferenceCandidates(api, folder, path), path);
+    if (path.includes("/") && !(match.status === "found" && match.path === path)) {
       // The search leaves out ignored files and stops at a size cap, so a path
-      // is read where it says before another file ending the same way, or none,
-      // stands in for it.
-      const asWritten = await api.projects.readFile({ cwd: folder, relativePath: path });
-      if (asWritten.kind !== "missing") {
+      // is read where it says before another file ending the same way, or
+      // none, stands in for it. A read that fails (a folder sits there) finds
+      // no file.
+      const asWritten = await api.projects
+        .readFile({ cwd: folder, relativePath: path })
+        .catch(() => null);
+      if (asWritten !== null && asWritten.kind !== "missing") {
         return { status: "found", file: { cwd: folder, relativePath: path, line } };
       }
     }
@@ -703,6 +703,45 @@ export async function placeChatFileReference(input: {
     }
   }
   return MISSING_CHAT_FILE_REFERENCE;
+}
+
+function fileNameOf(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/**
+ * The search hits that can hold the file a reference names. The search ranks
+ * every entry named exactly like the cited file ahead of all others, so it is
+ * asked for the name. When more entries share the name than a page holds, it
+ * is asked again for the whole path, which ranks the files ending in it near
+ * the top, so a second file ending the same way is not missed.
+ */
+async function searchReferenceCandidates(
+  api: EnvironmentApi,
+  folder: string,
+  path: string,
+): Promise<ReadonlyArray<ProjectEntry>> {
+  const name = fileNameOf(path);
+  const byName = await api.projects.searchEntries({
+    cwd: folder,
+    query: name,
+    limit: FILE_REFERENCE_SEARCH_LIMIT,
+  });
+  const last = byName.entries.at(-1);
+  const pageFullOfName =
+    byName.truncated &&
+    last !== undefined &&
+    fileNameOf(last.path).toLowerCase() === name.toLowerCase();
+  if (!path.includes("/") || !pageFullOfName) {
+    return byName.entries;
+  }
+  const byPath = await api.projects.searchEntries({
+    cwd: folder,
+    query: path,
+    limit: FILE_REFERENCE_SEARCH_LIMIT,
+  });
+  const seen = new Set(byName.entries.map((entry) => entry.path));
+  return [...byName.entries, ...byPath.entries.filter((entry) => !seen.has(entry.path))];
 }
 
 /**
@@ -764,11 +803,11 @@ export async function openChatFileReference(
 }
 
 /**
- * Search hits asked for per lookup. Exact and path-ending hits rank ahead of
- * fuzzy ones, so a few hold them if any exist, a second file ending the same
- * way included.
+ * Search hits asked for per lookup: enough to hold every file sharing a common
+ * name (each module's `Helper/Data.php`) in one page, which settles whether
+ * a path ends only one of them.
  */
-export const FILE_REFERENCE_SEARCH_LIMIT = 8;
+export const FILE_REFERENCE_SEARCH_LIMIT = 32;
 
 /** Which workspace search hit an inline-code reference names. */
 export type ReferencedFileMatch =
@@ -797,7 +836,11 @@ export function findReferencedFile(
     const path = entry.path.toLowerCase();
     return path === wanted || path.endsWith(ending);
   });
-  const asWritten = matches.find((entry) => entry.path.toLowerCase() === wanted);
+  // Exact spelling first: on a case-sensitive disk `src/Index.ts` and
+  // `src/index.ts` are two files.
+  const asWritten =
+    matches.find((entry) => entry.path === reference) ??
+    matches.find((entry) => entry.path.toLowerCase() === wanted);
   const best = asWritten ?? (wanted.includes("/") && matches.length > 1 ? undefined : matches[0]);
   if (best) {
     return { status: "found", path: best.path };

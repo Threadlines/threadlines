@@ -594,13 +594,13 @@ function placedFileLinkChip(
 }
 
 /**
- * An image cited by bare name in inline code (`home.png`). The name says
- * nothing about the folder, so the picture is the file a click on the chip
- * would open: the project's file with exactly that name. With no such file,
- * the project root is the one place left to look, which is where the chip
- * already points.
+ * An image cited in inline code by a bare name (`home.png`) or by a path that
+ * may start inside a subfolder (`shots/home.png`). The text may not say the
+ * folder, so the picture is the file a click on the chip would open, placed by
+ * the same lookup. With no such file, the path as written is the one place
+ * left to look, which is where the chip already points.
  */
-function MarkdownNamedImage({
+function MarkdownCitedImage({
   name,
   reference,
   chip,
@@ -617,7 +617,11 @@ function MarkdownNamedImage({
   return (
     <MarkdownImageFigure
       name={name}
-      chip={place.status === "found" && cwd ? placedFileLinkChip(chip, place.file, cwd) : chip}
+      chip={
+        place.status === "found" && cwd
+          ? placedFileLinkChip(chip, place.file, cwd)
+          : { ...chip, isAmbiguous: place.status === "ambiguous" }
+      }
     />
   );
 }
@@ -908,8 +912,8 @@ function MarkdownCode({
         <MarkdownFileLink {...chip} />
       );
     }
-    return isBareName ? (
-      <MarkdownNamedImage
+    return searchReference !== null ? (
+      <MarkdownCitedImage
         name={inlineFileLinkMeta.basename}
         reference={inlineFileReference}
         chip={chip}
