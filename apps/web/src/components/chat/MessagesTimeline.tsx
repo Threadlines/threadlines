@@ -5292,9 +5292,19 @@ function AssistantChangedFilesSectionInner({
       {/* Wraps rather than overflowing. With the browser and source control
           both open the chat column gets narrow, and a row that cannot wrap
           pushes its buttons out of the card instead of under the label.
-          It pins while a long tree scrolls under it, so it carries the
-          group's fill as a solid color, and so does the strip above it. */}
-      <div className="sticky top-2 z-10 mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 surface-group-solid before:absolute before:inset-x-0 before:-top-2 before:h-2 before:surface-group-solid before:content-['']">
+          It pins while a long tree scrolls under it, so a layer behind it
+          carries the group's fill as a solid color, the strip above it
+          too. Under glass that layer shows only while it's pinned
+          (index.css, data-sticky-group-header). */}
+      <div
+        data-sticky-group-header=""
+        className="sticky top-2 z-10 mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5"
+      >
+        <div
+          aria-hidden
+          data-sticky-group-fill=""
+          className="pointer-events-none absolute inset-x-0 -top-2 bottom-0 -z-10 surface-group-solid"
+        />
         <p className="min-w-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
           <span>Turn changes ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
