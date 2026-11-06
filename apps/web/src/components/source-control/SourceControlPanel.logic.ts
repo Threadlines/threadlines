@@ -228,6 +228,109 @@ export function formatCommitCount(count: number): string {
   return count === 1 ? "1 commit" : `${count} commits`;
 }
 
+export type SourceControlAction = "commit" | "commit_push" | "pull" | "push" | "create_pr";
+
+/** Why a Source tab action can't run right now, or null when it can. */
+export function sourceControlActionDisabledReason(input: {
+  readonly status: VcsStatusResult | null;
+  readonly action: SourceControlAction;
+  readonly isBusy: boolean;
+  readonly repositorySafetyReason?: string | null;
+}): string | null {
+  if (input.repositorySafetyReason) {
+    return input.repositorySafetyReason;
+  }
+  if (input.isBusy) {
+    return "Git action in progress.";
+  }
+  const status = input.status;
+  if (!status?.isRepo) {
+    return "No Git repository.";
+  }
+  if (input.action === "commit") {
+    return status.hasWorkingTreeChanges ? null : "No working tree changes.";
+  }
+  if (input.action === "commit_push") {
+    if (!status.hasWorkingTreeChanges) {
+      return "No working tree changes.";
+    }
+    if (status.refName === null) {
+      return "Detached HEAD.";
+    }
+    if (status.behindCount > 0) {
+      return "Branch is behind upstream.";
+    }
+    if (!status.hasUpstream && !status.hasPrimaryRemote) {
+      return "No primary remote.";
+    }
+    return null;
+  }
+  if (input.action === "pull") {
+    if (status.refName === null) {
+      return "Detached HEAD.";
+    }
+    if (status.hasWorkingTreeChanges) {
+      if (
+        status.workingTree.files.some(
+          (file) => file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged",
+        )
+      ) {
+        return "Resolve merge conflicts first.";
+      }
+      if (status.aheadCount > 0 && status.behindCount > 0) {
+        return "Commit or stash changes before resolving branch divergence.";
+      }
+    }
+    return status.behindCount > 0 ? null : "Branch is up to date.";
+  }
+
+  if (status.refName === null) {
+    return "Detached HEAD.";
+  }
+  if (status.hasWorkingTreeChanges) {
+    return "Commit changes first.";
+  }
+  if (status.behindCount > 0) {
+    return "Branch is behind upstream.";
+  }
+  if (!status.hasUpstream && !status.hasPrimaryRemote) {
+    return "No primary remote.";
+  }
+  if (input.action === "push") {
+    if (!status.hasUpstream && status.hasPrimaryRemote && !status.isDefaultRef) {
+      return null;
+    }
+    return status.aheadCount > 0 ? null : "No local commits to push.";
+  }
+  if (status.pr?.state === "open") {
+    return null;
+  }
+  return (status.aheadOfDefaultCount ?? status.aheadCount) > 0
+    ? null
+    : "No branch commits to include.";
+}
+
+/**
+ * How a pull goes from this status. `pull` fast-forwards. `stash_and_pull`
+ * sets uncommitted changes aside around the fast-forward, after the user
+ * confirms. `resolve_divergence` is a branch with commits on both sides,
+ * which the server checks before anything moves (a rewritten upstream asks
+ * to back up the local branch first).
+ */
+export type SourceControlPullKind = "pull" | "stash_and_pull" | "resolve_divergence";
+
+export function resolveSourceControlPullKind(
+  status: Pick<VcsStatusResult, "aheadCount" | "behindCount" | "hasWorkingTreeChanges"> | null,
+): SourceControlPullKind {
+  if (status === null || status.behindCount === 0) {
+    return "pull";
+  }
+  if (status.aheadCount > 0) {
+    return "resolve_divergence";
+  }
+  return status.hasWorkingTreeChanges ? "stash_and_pull" : "pull";
+}
+
 export function resolveSourceControlPrimaryAction(input: {
   readonly status: VcsStatusResult | null;
   readonly hasCommitMessage: boolean;

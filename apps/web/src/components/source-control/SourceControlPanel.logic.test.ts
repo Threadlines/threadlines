@@ -13,6 +13,7 @@ import {
   normalizeCommitGraphRefName,
   resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
+  resolveSourceControlPullKind,
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
 import type { VcsStatusResult } from "@threadlines/contracts";
@@ -38,6 +39,19 @@ function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
 }
 
 describe("SourceControlPanel.logic", () => {
+  it("asks to stash only when local changes sit on a branch that is just behind", () => {
+    expect(resolveSourceControlPullKind(status({ behindCount: 2 }))).toBe("pull");
+    expect(
+      resolveSourceControlPullKind(status({ behindCount: 2, hasWorkingTreeChanges: true })),
+    ).toBe("stash_and_pull");
+    expect(
+      resolveSourceControlPullKind(
+        status({ behindCount: 2, aheadCount: 1, hasWorkingTreeChanges: true }),
+      ),
+    ).toBe("resolve_divergence");
+    expect(resolveSourceControlPullKind(status({ hasWorkingTreeChanges: true }))).toBe("pull");
+  });
+
   it("surfaces push as the primary action when a clean branch is ahead of upstream", () => {
     expect(
       resolveSourceControlPrimaryAction({
