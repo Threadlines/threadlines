@@ -82,6 +82,7 @@ function makeEnv(input: {
           ),
     rememberContent: () => {},
     starterManifest: (id) => (id === "aurora" ? manifest("Aurora") : null),
+    loadStarter: async (id) => (id === "aurora" ? manifest("Aurora") : null),
   };
   /** Fires a timer the store set, unless it was cancelled (a real timer would not run). */
   const fire = (index: number) => {

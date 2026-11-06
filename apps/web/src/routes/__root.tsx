@@ -16,7 +16,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -122,9 +122,9 @@ import {
 import { selectBusyTerminals, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
-import { ThemeRuntime, useDesktopThemeEvents } from "../theme/ThemeBackdropLayer";
+import { ThemeRuntime, useDesktopThemeEvents } from "../theme/ThemeRuntime";
+import { lazyWithPreload } from "../lib/lazyWithPreload";
 import { ThemeTrialBar } from "../components/theme/ui/ThemeTrialBar";
-import { ThemeLibrarySync } from "../themeLibrary/themeLibraryState";
 import {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
@@ -158,6 +158,11 @@ import {
   STALE_BUILD_RECHECK_MS,
   type StaleBuildRecovery,
 } from "../staleBuild";
+
+// The theme library's sync across computers: after first paint, never at startup.
+const ThemeLibrarySyncLazy = lazyWithPreload(() =>
+  import("../themeLibrary/themeLibraryState").then((module) => module.ThemeLibrarySync),
+);
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -259,7 +264,11 @@ function RootRouteView() {
         <PushAlertsRuntime />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
-        {primaryEnvironmentAuthenticated ? <ThemeLibrarySync /> : null}
+        {primaryEnvironmentAuthenticated ? (
+          <Suspense fallback={null}>
+            <ThemeLibrarySyncLazy.Component />
+          </Suspense>
+        ) : null}
         {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
         <ThemeTrialBar />
         {isElectron ? <BrowserProfileReconciler /> : null}

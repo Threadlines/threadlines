@@ -5,7 +5,7 @@ import {
 } from "@threadlines/shared/themeBackdropFrame";
 import { color, formatHex, relativeLuminance } from "@threadlines/shared/themeColor";
 import { glassTextColors } from "@threadlines/shared/themeContrast";
-import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeTokens";
+import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 // The backdrop frame (packages/shared themes/backdropRuntime.ts) driven by hand,

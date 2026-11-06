@@ -10,30 +10,8 @@ import {
   type ThemeManifest,
 } from "@threadlines/contracts";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
-import { create } from "zustand";
 
-/** A file read for import: its theme when it checks out, or why it doesn't. */
-export type PendingThemeImport =
-  | {
-      readonly ok: true;
-      readonly fileName: string;
-      readonly manifest: ThemeManifest;
-      readonly hash: string;
-    }
-  | { readonly ok: false; readonly fileName: string; readonly errors: readonly string[] };
-
-interface ThemeImportState {
-  readonly pending: PendingThemeImport | null;
-  readonly set: (pending: PendingThemeImport | null) => void;
-}
-
-export const useThemeImportStore = create<ThemeImportState>()((set) => ({
-  pending: null,
-  set: (pending) => set({ pending }),
-}));
-
-/** Whether a dropped or picked file looks like a theme file. */
-export const isThemeFileName = (name: string) => name.toLowerCase().endsWith(THEME_FILE_EXTENSION);
+import { useThemeImportStore } from "./themeImportState";
 
 /** Reads a theme file and opens the import dialog with what it found. */
 export async function importThemeFile(file: File): Promise<void> {

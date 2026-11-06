@@ -6,11 +6,17 @@
  * `switchToTheme`, so a theme behaves the same wherever it is picked.
  */
 import type { EnvironmentId, ThemeBase, ThemeManifest } from "@threadlines/contracts";
-import { themeContentHash } from "@threadlines/shared/themeManifest";
-import { STARTER_THEMES } from "@threadlines/shared/themeStarters";
+import { themeContentHash } from "@threadlines/shared/themeManifestHash";
+import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
 import { useMemo } from "react";
 
-import { chooseTheme, hasKeptTheme, startThemeTrial, type ThemeChoice } from "../theme/themeStore";
+import {
+  chooseTheme,
+  hasKeptTheme,
+  loadStarterThemeManifest,
+  startThemeTrial,
+  type ThemeChoice,
+} from "../theme/themeStore";
 import {
   type LibraryTheme,
   readLibraryTheme,
@@ -81,20 +87,18 @@ export function describeTheme(input: {
     : `${input.base === "dark" ? "Dark" : "Light"}, no art`;
 }
 
-export const STARTER_TILES: readonly ThemeTile[] = STARTER_THEMES.map(({ id, manifest }) => ({
-  key: `starter:${id}`,
-  name: manifest.name,
-  detail: describeTheme({ base: manifest.base, hasArt: manifest.backdrop !== undefined }),
-  group: "starter",
-  choice: { kind: "starter", id },
-  swatch: {
-    base: manifest.base,
-    background: manifest.colors.background,
-    foreground: manifest.colors.foreground,
-    accent: manifest.colors.accent,
-  },
-  thumbnail: `/themes/${id}.png`,
-}));
+// From the summaries: listing the starters never loads their art.
+export const STARTER_TILES: readonly ThemeTile[] = STARTER_SUMMARIES.map(
+  ({ id, name, base, hasArt, colors }) => ({
+    key: `starter:${id}`,
+    name,
+    detail: describeTheme({ base, hasArt }),
+    group: "starter",
+    choice: { kind: "starter", id },
+    swatch: { base, ...colors },
+    thumbnail: `/themes/${id}.png`,
+  }),
+);
 
 export function libraryTile(
   theme: LibraryTheme,
@@ -170,7 +174,7 @@ export async function loadTileManifest(tile: ThemeTile): Promise<ThemeManifest |
     case "builtin":
       return null;
     case "starter":
-      return STARTER_THEMES.find((starter) => starter.id === choice.id)?.manifest ?? null;
+      return loadStarterThemeManifest(choice.id);
     case "library":
       return (await readLibraryTheme(choice.hash, choice.environmentId)).manifest;
     case "unsaved":

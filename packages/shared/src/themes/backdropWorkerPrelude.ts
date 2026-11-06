@@ -52,7 +52,7 @@ import type {
   BackdropArtError,
   BackdropWorkerReply,
   BackdropWorkerTick,
-} from "@threadlines/contracts";
+} from "@threadlines/contracts/themeBackdropWorker";
 
 import type {
   BackdropBitmap,

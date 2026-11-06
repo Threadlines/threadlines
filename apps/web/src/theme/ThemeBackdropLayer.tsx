@@ -1,8 +1,9 @@
 /**
  * Runs a theme's live art behind the window (docs/design/custom-themes.md,
  * "The backdrop runtime" and "Performance"), from the app's side: it mounts
- * the backdrop host while the active theme has art, and feeds it what it
- * needs, all computed here from the live app:
+ * the backdrop host (ThemeRuntime.tsx mounts this while the active theme has
+ * art, so its code loads only then) and feeds it what it needs, all
+ * computed here from the live app:
  *
  * - zones: the calm areas to frost, from the layout (backdropZones.ts),
  *   remeasured when it changes, at most every 100 ms;
@@ -53,13 +54,9 @@ import {
 import { cssGlassTints, glassFloors, glassTintCss } from "./glass";
 import { applyGlassTints } from "./themeApply";
 import {
-  chooseTheme,
   readThemeState,
-  reportBackdropTooHeavy,
   setBackdropStatus,
   subscribeTheme,
-  useActiveTheme,
-  useBackdropGeneration,
   useBackdropTooHeavy,
 } from "./themeStore";
 
@@ -78,52 +75,8 @@ export function captureActiveBackdropStill(width: number, height: number): Promi
   return hostHandle ? hostHandle.captureStill(width, height) : null;
 }
 
-/**
- * Mounted in the app shell's root: the backdrop while the active theme has
- * art.
- */
-export function ThemeRuntime() {
-  const active = useActiveTheme();
-  const generation = useBackdropGeneration();
-  const manifest = active.manifest;
-  const hasArt = manifest?.backdrop !== undefined && manifest.glass !== undefined;
-
-  useEffect(() => {
-    if (!hasArt) applyGlassTints(null);
-  }, [hasArt]);
-
-  if (!hasArt || !manifest || !active.tokens || !active.hash) return null;
-  return (
-    <ThemeBackdropLayer
-      key={`${active.hash}:${generation}`}
-      manifest={manifest}
-      tokens={active.tokens}
-      base={active.base}
-      hash={active.hash}
-    />
-  );
-}
-
-/**
- * The desktop's theme events, for the app root on every page (sign-in and
- * setup included): View › Reset Theme, and the CPU watchdog's verdict.
- */
-export function useDesktopThemeEvents(): void {
-  useEffect(() => {
-    const bridge = window.desktopBridge;
-    if (!bridge) return;
-    // Not a menu action: those wait for the shell to listen, and the escape
-    // hatch must reach a page whose shell never got that far.
-    const stopReset = bridge.onThemeReset?.(() => chooseTheme({ kind: "builtin", id: "system" }));
-    const stopWatchdog = bridge.onBackdropTooHeavy?.(() => reportBackdropTooHeavy());
-    return () => {
-      stopReset?.();
-      stopWatchdog?.();
-    };
-  }, []);
-}
-
-function ThemeBackdropLayer(props: {
+/** The backdrop for a theme with art (ThemeRuntime.tsx mounts it, fetching this module then). */
+export function ThemeBackdropLayer(props: {
   readonly manifest: ThemeManifest;
   readonly tokens: ThemeTokens;
   readonly base: ThemeBase;

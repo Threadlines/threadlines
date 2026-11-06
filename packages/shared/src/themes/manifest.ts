@@ -2,7 +2,7 @@
  * Checking and fingerprinting theme files (docs/design/custom-themes.md).
  * `checkThemeManifest` is what the server's save, the agent tools and file
  * import all run: the schema, the extra rules the schema can't say, and the
- * readability table. `themeContentHash` names a theme's content; the name,
+ * readability table. `themeContentHash` (manifestHash.ts) names a theme's content; the name,
  * prompt, origin and dates are not content. The same theme on two computers
  * is one library entry by its entry id, whatever its hash.
  */
@@ -99,38 +99,5 @@ export function checkThemeManifest(input: unknown): ThemeCheck {
   return errors.length === 0 ? { ok: true, manifest } : { ok: false, errors, contrast };
 }
 
-/** JSON with object keys sorted at every level, so equal content is equal text. */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .toSorted(([first], [second]) => (first < second ? -1 : first > second ? 1 : 0));
-    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * The part of a theme its hash covers: everything but its name, prompt,
- * origin and date. Embedded font bytes and the still are content too, so two
- * files that differ only there never share a hash (and one never silently
- * replaces the other in a library).
- */
-export function themeContentForHash(manifest: ThemeManifest): unknown {
-  const {
-    name: _name,
-    prompt: _prompt,
-    createdBy: _createdBy,
-    createdAt: _createdAt,
-    ...content
-  } = manifest;
-  return content;
-}
-
-/** SHA-256 of a theme's canonical content, lowercase hex. */
-export async function themeContentHash(manifest: ThemeManifest): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(themeContentForHash(manifest)));
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
+// Hashing lives apart, so apps that only hash load none of the checks.
+export { canonicalJson, themeContentForHash, themeContentHash } from "./manifestHash.ts";

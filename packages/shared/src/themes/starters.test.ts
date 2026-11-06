@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { color, composite, contrastRatio } from "./color.ts";
 import { checkThemeManifest } from "./manifest.ts";
+import { STARTER_SUMMARIES } from "./starterSummaries.ts";
 import { STARTER_THEMES } from "./starters.ts";
 import { resolveThemeTokens } from "./tokens.ts";
 
@@ -64,6 +65,22 @@ function targetFor(art: Declared) {
 }
 
 describe("starter themes", () => {
+  it("list as their summaries say, without loading their art", () => {
+    expect(STARTER_SUMMARIES).toEqual(
+      STARTER_THEMES.map(({ id, manifest }) => ({
+        id,
+        name: manifest.name,
+        base: manifest.base,
+        hasArt: manifest.backdrop !== undefined,
+        colors: {
+          background: manifest.colors.background,
+          foreground: manifest.colors.foreground,
+          accent: manifest.colors.accent,
+        },
+      })),
+    );
+  });
+
   it("have stable, unique ids", () => {
     expect(STARTER_THEMES.map((starter) => starter.id)).toEqual([
       "aurora",

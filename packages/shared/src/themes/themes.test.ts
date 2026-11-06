@@ -15,7 +15,8 @@ import {
 import { measureThemeContrast } from "./contrast.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
-import { BUILTIN_THEME_TOKENS, deriveThemeTokens, THEME_TOKEN_NAMES } from "./tokens.ts";
+import { BUILTIN_THEME_TOKENS } from "./builtinTokens.ts";
+import { deriveThemeTokens, THEME_TOKEN_NAMES } from "./tokens.ts";
 
 const aurora: ThemeManifest = {
   format: THEME_FILE_FORMAT,

@@ -20,14 +20,16 @@
  */
 import type {
   BackdropActivity,
-  BackdropArtDefinition,
   BackdropConditions,
   BackdropFailureReason,
   BackdropFrameMessage,
-  BackdropWorkerReply,
-  BackdropWorkerTick,
   ThemeBackdropMode,
 } from "@threadlines/contracts";
+import type {
+  BackdropArtDefinition,
+  BackdropWorkerReply,
+  BackdropWorkerTick,
+} from "@threadlines/contracts/themeBackdropWorker";
 
 import type {
   BackdropBitmap,

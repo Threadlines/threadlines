@@ -99,6 +99,18 @@
       "types": "./src/themes/starters.ts",
       "import": "./src/themes/starters.ts"
     },
+    "./themeBuiltinTokens": {
+      "types": "./src/themes/builtinTokens.ts",
+      "import": "./src/themes/builtinTokens.ts"
+    },
+    "./themeManifestHash": {
+      "types": "./src/themes/manifestHash.ts",
+      "import": "./src/themes/manifestHash.ts"
+    },
+    "./themeStarterSummaries": {
+      "types": "./src/themes/starterSummaries.ts",
+      "import": "./src/themes/starterSummaries.ts"
+    },
     "./themeSpecimen": {
       "types": "./src/themes/specimen.ts",
       "import": "./src/themes/specimen.ts"

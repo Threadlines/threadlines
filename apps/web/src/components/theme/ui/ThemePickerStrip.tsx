@@ -16,7 +16,8 @@ import {
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
-import { keepThemeTrial, useThemePickerOpenStore } from "./ThemeTrialBar";
+import { useThemePickerOpenStore } from "./themePickerOpen";
+import { keepThemeTrial } from "./themeTrialState";
 import { ThemeTileView } from "./ThemeTileView";
 
 /** What "New theme" puts in the message box, for the user to finish. */

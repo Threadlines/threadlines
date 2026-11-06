@@ -28,6 +28,12 @@
  * whole document, which keeps that true.
  */
 import {
+  BACKDROP_MAX_ZONES,
+  THEME_MAX_FPS,
+  THEME_MAX_SCRIPT_CHARS,
+  THEME_MAX_STILL_CHARS,
+} from "@threadlines/contracts";
+import {
   BACKDROP_MAX_BACKGROUND_STOPS,
   BACKDROP_MAX_CELL_GAP,
   BACKDROP_MAX_CANVAS_DPR,
@@ -37,12 +43,8 @@ import {
   BACKDROP_MAX_GRID_CELLS,
   BACKDROP_MAX_PIXELS_HEIGHT,
   BACKDROP_MAX_PIXELS_WIDTH,
-  BACKDROP_MAX_ZONES,
   BACKDROP_MIN_CELL_PX,
-  THEME_MAX_FPS,
-  THEME_MAX_SCRIPT_CHARS,
-  THEME_MAX_STILL_CHARS,
-} from "@threadlines/contracts";
+} from "@threadlines/contracts/themeBackdropWorker";
 
 import { scriptLiteral } from "../framedDocument.ts";
 import {

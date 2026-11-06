@@ -17,8 +17,8 @@
  * index.html reads; `threadlines:theme-kept` the hashes this device kept.
  */
 import type { ThemeManifest } from "@threadlines/contracts";
-import { themeContentHash } from "@threadlines/shared/themeManifest";
-import { STARTER_THEMES } from "@threadlines/shared/themeStarters";
+import { themeContentHash } from "@threadlines/shared/themeManifestHash";
+import type { StarterTheme } from "@threadlines/shared/themeStarters";
 import { useMemo, useSyncExternalStore } from "react";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
@@ -46,9 +46,31 @@ function browserStorage(): Storage | null {
   }
 }
 
-/** Resolves a starter theme by id. */
+// The starters carry their art scripts: a chunk of their own, loaded the
+// first time one is tried or used, never at startup.
+let starters: ReadonlyArray<StarterTheme> | null = null;
+let startersLoading: Promise<ReadonlyArray<StarterTheme>> | null = null;
+
+/** Loads the starter themes' code; a failed load is forgotten, so the next call tries again. */
+export function loadStarterThemes(): Promise<ReadonlyArray<StarterTheme>> {
+  startersLoading ??= import("@threadlines/shared/themeStarters").then(
+    (module) => (starters = module.STARTER_THEMES),
+    (error: unknown) => {
+      startersLoading = null;
+      throw error;
+    },
+  );
+  return startersLoading;
+}
+
+/** A starter theme by id, once the starters are loaded (null until then). */
 export function starterThemeManifest(id: string): ThemeManifest | null {
-  return STARTER_THEMES.find((starter) => starter.id === id)?.manifest ?? null;
+  return starters?.find((starter) => starter.id === id)?.manifest ?? null;
+}
+
+/** A starter theme by id, loading the starters first if need be. */
+export async function loadStarterThemeManifest(id: string): Promise<ThemeManifest | null> {
+  return (await loadStarterThemes()).find((starter) => starter.id === id)?.manifest ?? null;
 }
 
 /**
@@ -120,6 +142,7 @@ function getCore(): ThemeStoreCore {
         core ? (committedThemeHash(core.getState()) ?? undefined) : undefined,
       ),
     starterManifest: starterThemeManifest,
+    loadStarter: loadStarterThemeManifest,
   });
   startDocumentSync(core);
   return core;

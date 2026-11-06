@@ -15,6 +15,7 @@
  *   nowhere, the device shows the theme's base built-in and says so.
  */
 import type { ThemeBase, ThemeManifest } from "@threadlines/contracts";
+import { STARTER_SUMMARIES } from "@threadlines/shared/themeStarterSummaries";
 import { resolveThemeTokens, type ThemeTokens } from "@threadlines/shared/themeTokens";
 
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
@@ -59,7 +60,10 @@ export interface ThemeStoreEnv {
   ) => Promise<ThemeContentLookup>;
   /** Keeps content by hash on the device (the active theme and the last few used). */
   readonly rememberContent: (hash: string, manifest: ThemeManifest) => void;
+  /** A starter's manifest when the starters' code is loaded; null until then. */
   readonly starterManifest: (id: string) => ThemeManifest | null;
+  /** Loads the starters' code (their art is a chunk of its own) and returns one. */
+  readonly loadStarter: (id: string) => Promise<ThemeManifest | null>;
 }
 
 /** A custom theme with its content in hand. */
@@ -105,7 +109,11 @@ export function choiceName(choice: ThemeChoice, starterName?: string): string {
     case "builtin":
       return BUILTIN_NAMES[choice.id];
     case "starter":
-      return starterName ?? choice.id;
+      return (
+        starterName ??
+        STARTER_SUMMARIES.find((starter) => starter.id === choice.id)?.name ??
+        choice.id
+      );
     case "library":
     case "unsaved":
       return choice.name;
@@ -378,15 +386,21 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
   const lookupCommitted = (choice: ThemeChoice, sequence: number) => {
     if (choice.kind === "builtin") return;
     if (choice.kind === "starter") {
-      const manifest = env.starterManifest(choice.id);
-      if (!manifest) {
-        update({ committedState: { status: "unavailable", reason: "missing" } });
-        return;
-      }
-      const theme = resolveTheme(manifest, null, manifest.name);
-      update({ committedState: { status: "ready", theme }, committedBase: theme.base });
-      writePaintRecord(choice, theme);
-      fillStarterHash(choice, manifest);
+      const settle = (manifest: ThemeManifest | null) => {
+        if (sequence !== commitSequence) return;
+        if (!manifest) {
+          update({ committedState: { status: "unavailable", reason: "missing" } });
+          return;
+        }
+        const theme = resolveTheme(manifest, null, manifest.name);
+        update({ committedState: { status: "ready", theme }, committedBase: theme.base });
+        writePaintRecord(choice, theme);
+        fillStarterHash(choice, manifest);
+      };
+      // Loaded already, or its code is on the way (the paint record covers the wait).
+      const loaded = env.starterManifest(choice.id);
+      if (loaded) settle(loaded);
+      else void env.loadStarter(choice.id).then(settle, () => settle(null));
       return;
     }
     void env.lookupContent(choice).then(
