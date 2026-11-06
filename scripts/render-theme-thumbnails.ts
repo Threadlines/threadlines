@@ -216,6 +216,7 @@ async function startArt(
           motion: "live",
           visible: true,
           busy: false,
+          streaming: false,
           idle: false,
           focused: false,
           power: "ac",

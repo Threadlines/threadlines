@@ -9,9 +9,10 @@
  *   remeasured when it changes, at most every 100 ms;
  * - conditions: motion (the Motion setting, Reduce Motion, the desktop
  *   watchdog), visibility (the window, and whether a chat is on screen),
- *   busy (scrolling, typing, resizing, dragging, a reply streaming into the
- *   open thread), idle (two minutes without input or agent work), power and
- *   heat (desktop, else the Battery API);
+ *   busy (scrolling, typing, resizing, dragging: the art holds), streaming
+ *   (a reply streaming into the open thread: the art slows), idle (two
+ *   minutes without input or agent work), power and heat (desktop, else the
+ *   Battery API);
  * - activity: working and waiting agents across every computer, and a
  *   `turn-done` pulse whenever a thread stops working.
  *
@@ -54,6 +55,7 @@ import {
 import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
+import { useInputBusy } from "./inputBusy";
 import {
   readThemeState,
   setBackdropStatus,
@@ -65,8 +67,6 @@ import {
 const ZONE_MIN_INTERVAL_MS = 100;
 /** Remeasure once more after this, for layout that moves by transition (the list's slide). */
 const ZONE_SETTLE_MS = 300;
-/** Input this recent counts as busy; the runtime adds its own 400 ms hold. */
-const BUSY_QUIET_MS = 150;
 const IDLE_AFTER_MS = 2 * 60 * 1000;
 const IDLE_CHECK_MS = 15_000;
 
@@ -312,46 +312,8 @@ function useWindowFocused(): boolean {
   );
 }
 
-/** Raw busy: input or layout work within the last moment, or a reply streaming in the open thread. */
-function useBusy(): boolean {
-  const [inputBusy, setInputBusy] = useState(false);
-  useEffect(() => {
-    let quiet: ReturnType<typeof setTimeout> | null = null;
-    let busy = false;
-    const mark = () => {
-      if (!busy) {
-        busy = true;
-        setInputBusy(true);
-      }
-      if (quiet !== null) clearTimeout(quiet);
-      quiet = setTimeout(() => {
-        quiet = null;
-        busy = false;
-        setInputBusy(false);
-      }, BUSY_QUIET_MS);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      // Dragging: a divider, the list's edge, a selection.
-      if (event.buttons !== 0) mark();
-    };
-    const options = { capture: true, passive: true } as const;
-    document.addEventListener("scroll", mark, options);
-    document.addEventListener("wheel", mark, options);
-    document.addEventListener("keydown", mark, options);
-    document.addEventListener("input", mark, options);
-    document.addEventListener("pointermove", onPointerMove, options);
-    window.addEventListener("resize", mark);
-    return () => {
-      if (quiet !== null) clearTimeout(quiet);
-      document.removeEventListener("scroll", mark, options);
-      document.removeEventListener("wheel", mark, options);
-      document.removeEventListener("keydown", mark, options);
-      document.removeEventListener("input", mark, options);
-      document.removeEventListener("pointermove", onPointerMove, options);
-      window.removeEventListener("resize", mark);
-    };
-  }, []);
-
+/** A reply is streaming into the open thread. The art keeps moving, slower, so the text stays smooth. */
+function useReplyStreaming(): boolean {
   const openThreadKey = useMatches({
     select: (matches) => {
       const leaf = matches.at(-1);
@@ -372,7 +334,7 @@ function useBusy(): boolean {
       ? false
       : selectThreadByRef(state, openThreadRef)?.messages.at(-1)?.streaming === true,
   );
-  return inputBusy || streaming;
+  return streaming;
 }
 
 function useIdle(working: number): boolean {
@@ -462,7 +424,8 @@ function useBackdropConditions(input: {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const documentVisible = useDocumentVisible();
   const focused = useWindowFocused();
-  const busy = useBusy();
+  const busy = useInputBusy();
+  const streaming = useReplyStreaming();
   const idle = useIdle(input.working);
   const power = usePowerState();
   const motion =
@@ -476,8 +439,18 @@ function useBackdropConditions(input: {
   const visible = documentVisible && input.artShown;
   const { slowdown } = input;
   return useMemo(
-    () => ({ motion, visible, busy, idle, focused, power: power.power, thermal, slowdown }),
-    [motion, visible, busy, idle, focused, power.power, thermal, slowdown],
+    () => ({
+      motion,
+      visible,
+      busy,
+      streaming,
+      idle,
+      focused,
+      power: power.power,
+      thermal,
+      slowdown,
+    }),
+    [motion, visible, busy, streaming, idle, focused, power.power, thermal, slowdown],
   );
 }
 

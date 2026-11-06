@@ -35,7 +35,8 @@
  *   most 2, at most 4 megapixels); a 2d context arrives scaled so the art
  *   draws in CSS px. Draw the whole frame each time.
  * - info: `{ t, dt, frame, cols, rows, width, height, state, palette }`.
- *   `t` is seconds of art time; `cols` and `rows` the drawing target's size
+ *   `t` is seconds of art time (it runs at half speed while a reply streams
+ *   in, `dt` with it); `cols` and `rows` the drawing target's size
  *   in its own units (cells, buffer pixels, or canvas pixels); `width` and
  *   `height` the window in CSS px; `state` `{ working, waiting, pulse,
  *   sincePulse }`: agents working and waiting across every computer, `pulse`

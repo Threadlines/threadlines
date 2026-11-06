@@ -5,12 +5,14 @@
  * reference art, so each one follows the art rules: calm motion, a seamless
  * loop, its palette taken from the picture, livelier while agents work
  * (`state.working`), a short flourish after a finished turn
- * (`state.sincePulse`), and far under the frame budget.
+ * (`state.sincePulse`), and far under the frame budget. Motion adds up
+ * speed × `dt` each frame and eases toward the working look, so nothing
+ * jumps when agents start or stop.
  */
 
 /** An ASCII night sky: two aurora curtains ripple above a mountain line, stars twinkle. */
 export const AURORA_ART = String.raw`// Aurora: an ASCII night sky. Glyph indices: 0 " " 1 "." 2 "·" 3 ":" 4 ";" 5 "+" 6 "=" 7 "x" 8 "X" 9 "%" 10 "#" 11 "^" 12 "A" 13 "*" 14 "-" 15 "/" 16 "\"
-let cols = 0, rows = 0, noise, ground, edge1, edge2, rays1, rays2, calm, boost;
+let cols = 0, rows = 0, noise, ground, edge1, edge2, rays1, rays2, calm, boost, phase = -1, busy = 0;
 const GREEN = [92, 255, 190], TEAL = [64, 214, 220], VIOLET = [150, 120, 255], PINK = [240, 140, 210];
 function hash(a, b) { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); }
 function mixInto(out, o, a, b, k) { out[o] = a[0] + (b[0] - a[0]) * k; out[o + 1] = a[1] + (b[1] - a[1]) * k; out[o + 2] = a[2] + (b[2] - a[2]) * k; }
@@ -43,16 +45,18 @@ threadlines.backdrop({
     }
   },
   draw(grid, info) {
-    const t = info.t + 40, state = info.state;
-    // Agents at work quicken the rays; a finished turn sends a bright wave along the curtains.
-    const speed = state.working > 0 ? 1.8 : 1;
+    const t = info.t + 40, dt = info.dt, state = info.state;
+    // Agents at work quicken the rays, easing in and out; a finished turn sends a bright wave along the curtains.
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    if (phase < 0) phase = t;
+    phase += dt * (1 + 0.8 * busy);
     const front = state.sincePulse * 0.6 - 0.1;
     for (let i = 0; i < cols; i++) {
       const x = i / cols;
       edge1[i] = 0.34 + 0.07 * Math.sin(x * 4.6 + 1.2 + t * 0.045) + 0.03 * Math.sin(x * 15 - t * 0.1);
       edge2[i] = 0.52 + 0.05 * Math.sin(x * 3.7 + 3.1 - t * 0.04) + 0.025 * Math.sin(x * 12 + 1 + t * 0.08);
-      const r1 = 0.5 + 0.5 * Math.sin(x * 88 + Math.sin(x * 7 + t * 0.21) * 5 + t * 0.35 * speed);
-      const r2 = 0.5 + 0.5 * Math.sin(x * 61 + 2 + Math.sin(x * 5 - t * 0.17) * 4 - t * 0.3 * speed);
+      const r1 = 0.5 + 0.5 * Math.sin(x * 88 + Math.sin(x * 7 + t * 0.21) * 5 + phase * 0.35);
+      const r2 = 0.5 + 0.5 * Math.sin(x * 61 + 2 + Math.sin(x * 5 - t * 0.17) * 4 - phase * 0.3);
       rays1[i] = (0.45 + 0.55 * r1) * (0.62 + 0.38 * Math.sin(x * 9 + t * 0.07));
       rays2[i] = (0.4 + 0.6 * r2) * (0.6 + 0.4 * Math.sin(x * 6 + 2 - t * 0.06));
       const d = x - front;
@@ -111,7 +115,7 @@ threadlines.backdrop({
 
 /** ASCII snow drifting over two stands of pines, a pale winter sky behind. */
 export const SNOWFIELD_ART = String.raw`// Snowfield: ASCII snow over pines. Glyph indices: 0 " " 1 "." 2 "·" 3 "*" 4 "+" 5 "'" 6 "^" 7 "A" 8 "|" 9 "~" 10 "/" 11 "\" 12 "_"
-let cols = 0, rows = 0, baseGlyph, baseFg, baseBg, flakes, count = 0, groundTop = 0;
+let cols = 0, rows = 0, baseGlyph, baseFg, baseBg, flakes, count = 0, groundTop = 0, busy = 0;
 function hash(a, b) { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); }
 
 function paint(k, glyph, fg, alpha, bg, bgAlpha) {
@@ -176,11 +180,13 @@ threadlines.backdrop({
   draw(grid, info) {
     const t = info.t, dt = Math.min(0.2, info.dt), state = info.state;
     grid.glyph.set(baseGlyph); grid.fg.set(baseFg); grid.bg.set(baseBg);
-    // Heavier, quicker snow while agents work; a finished turn sends a sparkling gust.
-    const fall = state.working > 0 ? 1.7 : 1;
+    // Heavier, quicker snow while agents work, easing in and out; a finished turn sends a sparkling gust.
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    const fall = 1 + 0.7 * busy;
     const gust = state.pulse;
     const glyph = grid.glyph, fg = grid.fg;
-    const visible = state.working > 0 ? count : Math.round(count * 0.65);
+    // The extra flakes fade in a band at a time rather than all at once.
+    const calmCount = Math.round(count * 0.65), extra = count - calmCount, band = Math.max(1, extra * 0.25);
     for (let f = 0; f < count; f++) {
       const p = f * 5, size = flakes[p + 4];
       flakes[p + 1] += flakes[p + 2] * dt * fall * (1 + gust);
@@ -188,12 +194,13 @@ threadlines.backdrop({
       if (flakes[p + 1] >= groundTop) { flakes[p + 1] -= groundTop; flakes[p] = hash(f, t) * cols; }
       if (flakes[p] >= cols) flakes[p] -= cols;
       if (flakes[p] < 0) flakes[p] += cols;
-      if (f >= visible) continue;
+      const fade = f < calmCount ? 1 : Math.min(1, (busy * (extra + band) - (f - calmCount)) / band);
+      if (fade <= 0) continue;
       const i = Math.floor(flakes[p]), j = Math.floor(flakes[p + 1]);
       const k = j * cols + i, o = k * 4;
       if (baseGlyph[k] >= 0 && baseBg[o + 3] > 0) continue;
       glyph[k] = gust > 0.4 && size > 0.5 ? 3 : size > 0.85 ? 3 : size > 0.45 ? 2 : 1;
-      fg[o] = 112; fg[o + 1] = 138; fg[o + 2] = 170; fg[o + 3] = 110 + 120 * size;
+      fg[o] = 112; fg[o + 1] = 138; fg[o + 2] = 170; fg[o + 3] = (110 + 120 * size) * fade;
     }
   },
 });
@@ -201,7 +208,7 @@ threadlines.backdrop({
 
 /** Painted dunes under a low sun; wind combs streaks of sand across them. */
 export const DUNES_ART = String.raw`// Dunes: painted dunes and wind, drawn small and scaled up smoothly.
-let W = 0, H = 0, sky, ramps, ridges, grain;
+let W = 0, H = 0, sky, ramps, ridges, grain, drift = -1, busy = 0, blow = 0;
 const LAYERS = [
   { base: 0.52, amp: 0.045, lit: [242, 206, 166], shade: [226, 178, 134], speed: 0.004 },
   { base: 0.62, amp: 0.055, lit: [236, 189, 144], shade: [214, 156, 108], speed: 0.008 },
@@ -251,7 +258,7 @@ threadlines.backdrop({
     ridges = LAYERS.map(() => new Float32Array(W + 2));
   },
   draw(pixels, info) {
-    const t = info.t + 40, state = info.state;
+    const t = info.t + 40, dt = info.dt, state = info.state;
     const u32 = pixels.u32, data = pixels.data;
     u32.set(sky);
     for (let n = 0; n < LAYERS.length; n++) {
@@ -285,15 +292,19 @@ threadlines.backdrop({
         limit = top;
       }
     }
-    // Wind: soft streaks combing across the dunes. Stronger while agents work; a gust after a finished turn.
-    const wind = state.working > 0 ? 1.6 : 1;
-    const gust = state.pulse;
-    const streaks = (state.working > 0 ? 34 : 22) + Math.round(gust * 16);
-    for (let s = 0; s < streaks; s++) {
+    // Wind: soft streaks combing across the dunes. Stronger while agents work, easing in and out;
+    // a gust that blows up over a moment after a finished turn. The wind's distance adds up frame
+    // by frame, so a change of speed never moves a streak, and extra streaks fade in.
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    blow += (state.pulse - blow) * Math.min(1, dt * 4);
+    if (drift < 0) drift = t;
+    drift += dt * (1 + 0.6 * busy) * (1 + blow * 2.5);
+    const level = 22 + 12 * busy + 16 * blow;
+    for (let s = 0; s < level; s++) {
       const y0 = H * (0.16 + 0.72 * hash(s, 3)), length = (34 + 60 * hash(s, 5)) * W / 360;
-      const travel = W + length * 2, pace = (10 + 16 * hash(s, 7)) * wind * (1 + gust * 2.5);
-      const x0 = ((hash(s, 9) * travel + t * pace) % travel) - length;
-      const alpha = (0.22 + 0.25 * hash(s, 4)) * (1 + gust * 0.8);
+      const travel = W + length * 2, pace = 10 + 16 * hash(s, 7);
+      const x0 = ((hash(s, 9) * travel + drift * pace) % travel) - length;
+      const alpha = (0.22 + 0.25 * hash(s, 4)) * (1 + blow * 0.8) * Math.min(1, level - s);
       const lift = 2 + 3 * hash(s, 2);
       for (let step = 0; step < length; step++) {
         const x = Math.round(x0 + step);
@@ -415,7 +426,7 @@ threadlines.backdrop({
 
 /** Slow sparks rising from a bed of embers in the dark. */
 export const EMBER_ART = String.raw`// Ember: slow sparks rising off a bed of embers.
-let W = 0, H = 0, base, sparks, bed, lastPulse = 1e9;
+let W = 0, H = 0, base, sparks, bed, lastPulse = 1e9, busy = 0;
 const CALM = 100, BUSY = 160, BURST = 40;
 function hash(a, b) { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); }
 function heatColor(h) {
@@ -479,9 +490,9 @@ threadlines.backdrop({
       for (let n = BUSY; n < BUSY + BURST; n++) spawn(sparks[n], true);
     }
     lastPulse = state.sincePulse;
-    // Sparks rise, sway and cool; more of them, a little faster, while agents work.
-    const active = state.working > 0 ? BUSY : CALM;
-    const lift = state.working > 0 ? 1.4 : 1;
+    // Sparks rise, sway and cool; more of them, a little faster, while agents work. The extra sparks fade in and out.
+    busy += ((state.working > 0 ? 1 : 0) - busy) * Math.min(1, dt * 1.5);
+    const lift = 1 + 0.4 * busy;
     for (let n = 0; n < sparks.length; n++) {
       const s = sparks[n];
       if (!s.on) continue;
@@ -492,9 +503,10 @@ threadlines.backdrop({
         if (n < BUSY) spawn(s, false);
         else { s.on = false; continue; }
       }
-      if (n >= active && n < BUSY) continue;
+      const fade = n < CALM || n >= BUSY ? 1 : Math.min(1, (busy * (BUSY - CALM + 12) - (n - CALM)) / 12);
+      if (fade <= 0) continue;
       const color = heatColor(Math.max(0, s.heat));
-      const x = s.x | 0, y = s.y | 0, glow = Math.min(1, s.heat * 1.4);
+      const x = s.x | 0, y = s.y | 0, glow = Math.min(1, s.heat * 1.4) * fade;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         const px = x + dx, py = y + dy;
         if (px < 0 || px >= W || py < 0 || py >= H) continue;
