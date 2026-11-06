@@ -354,7 +354,14 @@ under 0.1 ms). The design leans on that:
   limit drops, the art goes still until it recovers.
 - **Nothing runs unseen.** Hidden, minimized or fully covered windows, a
   full-window panel or Settings page over the art, and 2 idle minutes all
-  terminate the worker.
+  terminate the worker. When the art resumes, a new worker starts the art's
+  own state over (`setup` reruns), so the frame keeps a copy of the picture
+  on screen and dissolves it into the restarted art over 500 ms instead of
+  snapping. A theme's first frame (switching themes, turning Motion back on,
+  which remounts the frame) fades the same way from the theme's still, which
+  the app shows until then: `init` carries it, and the art waits up to 300 ms
+  for it to decode. A fade holds while the art is held or paused. The copy
+  (one full-window texture) lives only for the fade.
 - **An energy label.** The runtime keeps a running average of work per second
   (frame cost times frame rate). Appearance shows each theme's label on this
   computer (Light, Medium, Heavy) next to its thumbnail, and `preview_theme`

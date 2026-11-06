@@ -45,8 +45,9 @@
  *   theme's colors by token name. Grid mode adds `cell` (CSS px), canvas
  *   mode `scale` (canvas pixels per CSS px).
  * - `setup(info)` runs before the first draw, when the window size changes,
- *   and when the art resumes after a pause (a new worker each time). It also
- *   gets the drawing target, second.
+ *   and when the art resumes after a pause (a new worker each time, its state
+ *   fresh; the frame fades the last picture into it). It also gets the
+ *   drawing target, second.
  */
 import type {
   BackdropArtDefinition,
