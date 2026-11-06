@@ -230,8 +230,10 @@ it:
 **Frosting and tint happen in the frame.** The frame draws with WebGL2: the
 grid as one instanced draw call over a glyph atlas built once, pixels as one
 nearest-neighbor texture, canvas bitmaps as one texture. The app posts calm
-zones (hard rectangles for the frame, list and composer; feathered shapes for
-the reading column and the new-thread patch) whenever layout changes. The
+zones (hard rectangles for the frame, list and composer, the composer's
+rounded like its outline so no square corner of tint shows past it;
+feathered shapes for the reading column and the new-thread patch) whenever
+layout changes. The
 frame blurs a quarter-resolution copy in a two-pass shader, masks it to the
 zones and adds the tint, all on the GPU. The tint is set **patch by patch**,
 8 × 8 CSS px at a time, as the higher of the zone's floor and what readability

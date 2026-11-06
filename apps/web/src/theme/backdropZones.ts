@@ -3,8 +3,9 @@
  * "Where the art shows" and "Frosting and tint happen in the frame"),
  * measured from the live layout in window CSS px.
  *
- * - Hard rectangles: the title row, the rail, the thread list, the composer,
- *   and any opaque panel beside the chat (right panel, browser, terminal).
+ * - Hard rectangles: the title row, the rail, the thread list, the composer
+ *   (rounded like its outline), and any opaque panel beside the chat (right
+ *   panel, browser, terminal).
  * - The reading column: the composer's width plus a margin, the full height
  *   of the chat column, feathered outside a core that covers the messages.
  * - The new-thread screen: a soft patch around the heading, the composer
@@ -82,6 +83,40 @@ function visibleBox(element: Element | null, bounds: Box): Box | null {
   const rect = element.getBoundingClientRect();
   if (rect.width < 1 || rect.height < 1) return null;
   return clip(toBox(rect), bounds);
+}
+
+type CornerRadii = [number, number, number, number];
+
+/**
+ * A surface's box with its corner radii (top left, top right, bottom right,
+ * bottom left), so its zone rounds the way it does. Square where something
+ * clips it.
+ */
+function surfaceBox(
+  element: Element | null,
+  bounds: Box,
+): { readonly box: Box; readonly radii: CornerRadii | null } | null {
+  const box = visibleBox(element, bounds);
+  if (!box || !element) return null;
+  const whole = toBox(element.getBoundingClientRect());
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+  if (
+    !style ||
+    box.left !== whole.left ||
+    box.top !== whole.top ||
+    box.right !== whole.right ||
+    box.bottom !== whole.bottom
+  ) {
+    return { box, radii: null };
+  }
+  const radius = (value: string) => Number.parseFloat(value) || 0;
+  const radii: CornerRadii = [
+    radius(style.borderTopLeftRadius),
+    radius(style.borderTopRightRadius),
+    radius(style.borderBottomRightRadius),
+    radius(style.borderBottomLeftRadius),
+  ];
+  return { box, radii: radii.some((value) => value > 0) ? radii : null };
 }
 
 /**
@@ -176,13 +211,33 @@ export function measureBackdropZones(
   };
   // A hard zone reaches one px past its box: the 1px borders between
   // neighbors (the panel's edge beside the rail) frost with them instead of
-  // letting a line of crisp art through.
-  const hard = (id: string, box: Box | null, tint: number, tintColor: string) => {
+  // letting a line of crisp art through. Rounded corners grow with it.
+  const hard = (
+    id: string,
+    box: Box | null,
+    tint: number,
+    tintColor: string,
+    radii: CornerRadii | null = null,
+  ) => {
     if (!box) return;
     const inner = toRect(box);
     if (inner.w < 1 || inner.h < 1) return;
     const rect = { x: inner.x - 1, y: inner.y - 1, w: inner.w + 2, h: inner.h + 2 };
-    zones.push({ id, edge: "hard", shape: "rect", rect, core: rect, tint, tintColor });
+    const zone: BackdropZone = {
+      id,
+      edge: "hard",
+      shape: "rect",
+      rect,
+      core: rect,
+      tint,
+      tintColor,
+    };
+    const out = (radius: number) => (radius > 0 ? radius + 1 : 0);
+    zones.push(
+      radii
+        ? { ...zone, radii: [out(radii[0]), out(radii[1]), out(radii[2]), out(radii[3])] }
+        : zone,
+    );
   };
 
   hard(
@@ -289,7 +344,17 @@ export function measureBackdropZones(
       });
     }
   }
-  if (composerBox) hard("composer", composerBox, floors.composer, color("card"));
+  // The composer's own outline, rounded as it is; things stacked above it
+  // (the theme picker, the goal bar) have their own surfaces.
+  const composerFrame = surfaceBox(
+    composerForm?.querySelector("[data-chat-composer-frame]") ?? null,
+    panel,
+  );
+  if (composerFrame) {
+    hard("composer", composerFrame.box, floors.composer, color("card"), composerFrame.radii);
+  } else if (composerBox) {
+    hard("composer", composerBox, floors.composer, color("card"));
+  }
   // The chat's own header, where there is no title row to hold it (phones).
   hard(
     "header",

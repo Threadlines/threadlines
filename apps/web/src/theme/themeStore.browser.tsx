@@ -319,7 +319,7 @@ describe("backdrop zones", () => {
     }
   });
 
-  it("frosts the frame, list and composer hard, and the reading column soft around the messages", async () => {
+  it("frosts the frame, list and composer hard (the composer rounded like its outline), and the reading column soft around the messages", async () => {
     const at = (left: number, top: number, width: number, height: number) =>
       ({ position: "absolute", left, top, width, height }) as const;
     const screen = await render(
@@ -335,7 +335,13 @@ describe("backdrop zones", () => {
           <div data-chat-view="" style={at(250, 0, 702, 600)}>
             <div data-chat-column="" style={{ position: "absolute", inset: 0 }}>
               <div data-timeline-root="" style={at(151, 0, 400, 500)} />
-              <form data-chat-composer-form="" style={at(151, 510, 400, 80)} />
+              <form data-chat-composer-form="" style={at(151, 510, 400, 80)}>
+                {/* Something stacked above the composer's outline, which has its own surface. */}
+                <div
+                  data-chat-composer-frame=""
+                  style={{ ...at(0, 20, 400, 60), borderRadius: "13px 13px 13px 0" }}
+                />
+              </form>
             </div>
           </div>
         </div>
@@ -372,9 +378,11 @@ describe("backdrop zones", () => {
         tint: 0.5,
         tintColor: "#0a1029",
       });
+      // The composer's outline, not the whole form; its rounded corners grow a px with it.
       expect(byId.composer).toMatchObject({
         edge: "hard",
-        rect: { x: 448, y: 547, w: 402, h: 82 },
+        rect: { x: 448, y: 567, w: 402, h: 62 },
+        radii: [14, 14, 14, 0],
         tint: 0.8,
       });
     } finally {

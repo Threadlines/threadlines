@@ -314,6 +314,34 @@ describe("backdrop frame", () => {
     expectReadable((await mounted.probe()).worst.column);
   });
 
+  it("rounds a hard zone's corners like the surface over it, leaving the corners to the art", async () => {
+    mounted = await mountFrame();
+    // White glass over black art: a square zone is white edge to edge; a
+    // rounded one (the composer's outline) leaves its corners black.
+    const hardZone = (id: string, x: number, radii?: BackdropZone["radii"]): BackdropZone => ({
+      id,
+      edge: "hard",
+      shape: "rect",
+      rect: { x, y: 100, w: 200, h: 120 },
+      core: { x, y: 100, w: 200, h: 120 },
+      ...(radii ? { radii } : {}),
+      tint: 1,
+      tintColor: "#ffffff",
+    });
+    mounted.start(
+      "canvas",
+      `threadlines.backdrop({ mode: "canvas", context: "2d",
+        draw(ctx, info) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, info.width, info.height); } });`,
+      [hardZone("square", 100), hardZone("round", 450, [24, 24, 24, 24])],
+    );
+    mounted.post({ type: "test:capture-shown", on: true });
+    await mounted.framesAbove(4);
+    const { worst } = await mounted.probe();
+    expect(worst.square?.low).toBeGreaterThan(0.9);
+    expect(worst.round?.high).toBeGreaterThan(0.9);
+    expect(worst.round?.low).toBeLessThan(0.05);
+  });
+
   it("keeps column text readable where a tint passes, fails, then passes again", async () => {
     mounted = await mountFrame();
     // Black text under green glass: red art passes with no tint, fails as

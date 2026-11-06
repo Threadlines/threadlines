@@ -3753,7 +3753,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           />
         </div>
       ) : null}
+      {/* The composer's outline: the theme art's frosted patch follows it (backdropZones.ts). */}
       <div
+        data-chat-composer-frame=""
         className={cn(
           "group rounded-[13px] p-px transition-[background-color,box-shadow] duration-200",
           interactionMode === "plan" && "plan-mode-frame",

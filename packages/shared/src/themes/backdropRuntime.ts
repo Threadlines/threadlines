@@ -148,6 +148,8 @@ export function backdropFrameRuntime(
     ellipse: boolean;
     rect: Rect;
     core: Rect;
+    /** A hard rectangle's corners: top left, top right, bottom right, bottom left. */
+    radii: [number, number, number, number];
     tint: number;
     color: Rgb;
   }
@@ -229,12 +231,28 @@ export function backdropFrameRuntime(
       const core = readRect(raw.core);
       if (!rect || !core || !isNum(raw.tint, 0, 1)) return null;
       if (typeof raw.tintColor !== "string" || !HEX.test(raw.tintColor)) return null;
+      let radii: [number, number, number, number] = [0, 0, 0, 0];
+      if (raw.radii !== undefined) {
+        const value = raw.radii;
+        if (!Array.isArray(value) || value.length !== 4) return null;
+        const [topLeft, topRight, bottomRight, bottomLeft] = value as unknown[];
+        if (
+          !isNum(topLeft, 0, 10_000) ||
+          !isNum(topRight, 0, 10_000) ||
+          !isNum(bottomRight, 0, 10_000) ||
+          !isNum(bottomLeft, 0, 10_000)
+        ) {
+          return null;
+        }
+        radii = [topLeft, topRight, bottomRight, bottomLeft];
+      }
       out.push({
         id: raw.id,
         soft: raw.edge === "soft",
         ellipse: raw.shape === "ellipse",
         rect,
         core,
+        radii,
         tint: raw.tint,
         color: hexToRgb(raw.tintColor),
       });
@@ -541,11 +559,22 @@ uniform int uZoneCount;
 uniform vec4 uRect[24];
 uniform vec4 uCore[24];
 uniform vec4 uZone[24];
+uniform vec4 uRadii[24];
 uniform vec3 uTint[24];
 uniform float uChannel[24];
 out vec4 outColor;
 bool inside(vec2 p, vec4 r) {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w;
+}
+// Signed distance in CSS px from the rectangle r with corner radii k
+// (top left, top right, bottom right, bottom left): negative inside.
+float roundedDistance(vec2 p, vec4 r, vec4 k) {
+  vec2 halfSize = r.zw * 0.5;
+  vec2 q = p - (r.xy + halfSize);
+  float radius = q.x < 0.0 ? (q.y < 0.0 ? k.x : k.w) : (q.y < 0.0 ? k.y : k.z);
+  radius = min(radius, min(halfSize.x, halfSize.y));
+  vec2 d = abs(q) - halfSize + radius;
+  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
 }
 void main() {
   vec2 frag = gl_FragCoord.xy;
@@ -565,10 +594,10 @@ void main() {
     vec4 c = uCore[i];
     vec4 z = uZone[i];
     float mi;
-    if (z.x < 0.5) {
-      vec2 lo = (css - r.xy) * uDpr;
-      vec2 hi = (r.xy + r.zw - css) * uDpr;
-      mi = clamp(min(min(lo.x, lo.y), min(hi.x, hi.y)) + 0.5, 0.0, 1.0);
+    bool hard = z.x < 0.5;
+    if (hard) {
+      // Its edge antialiased over a device px, its corners rounded like its surface.
+      mi = clamp(0.5 - roundedDistance(css, r, uRadii[i]) * uDpr, 0.0, 1.0);
     } else if (inside(css, c)) {
       mi = 1.0;
     } else if (z.y < 0.5) {
@@ -587,9 +616,10 @@ void main() {
     float k = uChannel[i];
     float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
     float full = max(z.z, need);
-    if (inside(css, c)) {
+    if (hard ? mi >= 0.5 : inside(css, c)) {
       // Text can be here: a core's own color at its full tint, never another
-      // zone's color at a strength worked out for a different one.
+      // zone's color at a strength worked out for a different one. (A hard
+      // zone's core is its own shape.)
       inCore = true;
       if (full > coreAlpha) { coreAlpha = full; coreColor = uTint[i]; }
     } else if (full * mi > tintAlpha) {
@@ -1696,6 +1726,7 @@ void main() {
     const rects = new Float32Array(24 * 4);
     const cores = new Float32Array(24 * 4);
     const params = new Float32Array(24 * 4);
+    const radii = new Float32Array(24 * 4);
     const tints = new Float32Array(24 * 3);
     const channelOf = new Float32Array(24).fill(-1);
     zones.slice(0, count).forEach((zone, index) => {
@@ -1718,6 +1749,7 @@ void main() {
         edge = Math.min(edge, 0.95);
       }
       params.set([zone.soft ? 1 : 0, zone.ellipse ? 1 : 0, zone.tint, edge], index * 4);
+      radii.set(zone.radii, index * 4);
       tints.set([zone.color.r, zone.color.g, zone.color.b], index * 3);
       channelOf[index] = zoneChannels[index] ?? -1;
     });
@@ -1725,6 +1757,7 @@ void main() {
     gl.uniform4fv(gpu.composite.uniform("uRect[0]"), rects);
     gl.uniform4fv(gpu.composite.uniform("uCore[0]"), cores);
     gl.uniform4fv(gpu.composite.uniform("uZone[0]"), params);
+    gl.uniform4fv(gpu.composite.uniform("uRadii[0]"), radii);
     gl.uniform3fv(gpu.composite.uniform("uTint[0]"), tints);
     gl.uniform1fv(gpu.composite.uniform("uChannel[0]"), channelOf);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

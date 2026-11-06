@@ -273,6 +273,9 @@ export const BackdropRect = Schema.Struct({
 });
 export type BackdropRect = typeof BackdropRect.Type;
 
+/** A corner radius in CSS px, like `border-radius`. */
+const BackdropCornerRadius = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 10_000 }));
+
 /**
  * Where the art is frosted. `core` holds all the text the app can draw in
  * the zone and gets the full tint; a `soft` zone feathers outside its core.
@@ -284,6 +287,18 @@ export const BackdropZone = Schema.Struct({
   shape: Schema.Literals(["rect", "ellipse"]),
   rect: BackdropRect,
   core: BackdropRect,
+  /**
+   * A hard rectangle's rounded corners (top left, top right, bottom right,
+   * bottom left), so it matches the surface it sits under. Square without.
+   */
+  radii: Schema.optional(
+    Schema.Tuple([
+      BackdropCornerRadius,
+      BackdropCornerRadius,
+      BackdropCornerRadius,
+      BackdropCornerRadius,
+    ]),
+  ),
   tint: UnitInterval,
   /** The tint color, normally the theme's background. */
   tintColor: ThemeColor,
