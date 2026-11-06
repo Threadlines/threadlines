@@ -366,6 +366,40 @@ describe("clients and the sign-in page", () => {
     }
   });
 
+  it("takes a native app's own scheme, as Cursor registers it, and never a web or script one", async () => {
+    const { env } = edgeEnv();
+    // What the Cursor app and its CLI send to /register, word for word.
+    const cursor = await register(env, {
+      redirect_uris: [
+        "http://localhost:8787/callback",
+        "cursor://anysphere.cursor-mcp/oauth/callback",
+        "https://www.cursor.com/agents/mcp/oauth/callback",
+      ],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      client_name: "Cursor",
+    });
+    expect(cursor.status).toBe(201);
+    const { client_id } = (await cursor.json()) as { client_id: string };
+    const page = await route(
+      new Request(
+        authorizeUrl({ client_id, redirect_uri: "cursor://anysphere.cursor-mcp/oauth/callback" }),
+      ),
+      env,
+    );
+    expect(page.status).toBe(200);
+    for (const redirect_uri of [
+      "javascript:alert(1)//x",
+      "data:text/html,hi",
+      "file:///etc/passwd",
+      "intent://x#Intent;end",
+      "ws://127.0.0.1/cb",
+    ]) {
+      expect((await register(env, { redirect_uris: [redirect_uri] })).status).toBe(400);
+    }
+  });
+
   it("signs in a CIMD client that can be public, whatever it prefers, and no other", async () => {
     const { env, created } = edgeEnv();
     const signIn = (clientId: string, details: Record<string, unknown>) =>

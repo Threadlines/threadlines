@@ -194,7 +194,10 @@ assistant's webhook ◀──────────── https, signed alerts
   - `client_id` is a relay-signed blob (name, redirect URIs, software id),
     signed with `ASSISTANT_CLIENT_KEY`.
   - The name is the client's own claim, and the dialog says so.
-- **Redirect URIs:** https only, no userinfo or fragment, exact match.
+- **Redirect URIs:** https, loopback http on any port (RFC 8252 7.3), or a native
+  app's own scheme (RFC 8252 7.1, such as the Cursor app's `cursor://`); never a web,
+  document or script scheme. No userinfo or fragment, exact match otherwise. (Nov 5:
+  the Cursor app and CLI register all three kinds at once, and https-only refused them.)
 
 ### Authorize: the app's code typed into the page
 

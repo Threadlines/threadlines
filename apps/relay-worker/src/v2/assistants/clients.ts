@@ -81,16 +81,21 @@ export function clientIdentity(
   const redirect = new URL(redirectUri);
   return {
     kind: "registered",
-    host: redirect.host,
+    // An app's own scheme may have no host (com.example.app:/callback): then the scheme says who.
+    host: redirect.host || redirect.protocol.slice(0, -1),
     known: isKnownAssistantHost(redirect.hostname),
   };
 }
 
 /**
- * A return address as registered, or null. https only, exact (kept as sent,
- * compared as sent), no userinfo or fragment, printable ASCII, at most 512
- * characters. Loopback http (127.0.0.1, [::1], localhost) when allowed: the
- * door allows it, as the MCP spec says, for native clients.
+ * A return address as registered, or null: exact (kept as sent, compared as
+ * sent), no userinfo or fragment, printable ASCII, at most 512 characters.
+ * - https, with a host;
+ * - loopback http (127.0.0.1, [::1], localhost) when allowed: the door allows
+ *   it, as the MCP spec says, for native clients;
+ * - a native app's own scheme (RFC 8252, section 7.1), such as the Cursor
+ *   app's `cursor://anysphere.cursor-mcp/oauth/callback`: only an app on the
+ *   user's computer receives it. Web, document and script schemes never pass.
  */
 export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
@@ -102,10 +107,45 @@ export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): st
   } catch {
     return null;
   }
-  if (url.username || url.password || !url.hostname) return null;
-  if (url.protocol === "https:") return value;
-  if (url.protocol === "http:" && allowLoopbackHttp && isLoopbackHost(url.hostname)) return value;
-  return null;
+  if (url.username || url.password) return null;
+  if (url.protocol === "https:") return url.hostname ? value : null;
+  if (url.protocol === "http:") {
+    return allowLoopbackHttp && isLoopbackHost(url.hostname) ? value : null;
+  }
+  return isAppScheme(url.protocol) ? value : null;
+}
+
+/** Schemes a browser or system handles itself (web, documents, scripts, other apps' launchers): never an app's return address. */
+const NOT_APP_SCHEMES = new Set([
+  "about",
+  "blob",
+  "chrome",
+  "chrome-extension",
+  "content",
+  "data",
+  "file",
+  "filesystem",
+  "ftp",
+  "intent",
+  "javascript",
+  "jar",
+  "mailto",
+  "moz-extension",
+  "ms-appx",
+  "ms-appx-web",
+  "resource",
+  "safari-extension",
+  "sms",
+  "tel",
+  "view-source",
+  "vbscript",
+  "ws",
+  "wss",
+]);
+
+function isAppScheme(protocol: string): boolean {
+  const scheme = protocol.slice(0, -1).toLowerCase();
+  return /^[a-z][a-z0-9+.-]*$/u.test(scheme) && !NOT_APP_SCHEMES.has(scheme);
 }
 
 /** A client's name as shown: no control or formatting characters, spaces collapsed, 60 characters. */
@@ -161,7 +201,7 @@ export function parseRegistration(body: unknown, allowLoopbackHttp: boolean): Re
         ok: false,
         error: "invalid_redirect_uri",
         description:
-          "Redirect URIs must be https, at most 512 characters, with no user info or fragment.",
+          "Redirect URIs must be https, loopback http or an app's own scheme, at most 512 characters, with no user info or fragment.",
       };
     }
     if (!redirectUris.includes(checked)) redirectUris.push(checked);
@@ -402,7 +442,7 @@ async function resolveMetadataDocument(
     if (redirectUris.length === CIMD_MAX_KEPT_REDIRECTS) break;
   }
   if (redirectUris.length === 0) {
-    return refused("This assistant's client details have no https return address.");
+    return refused("This assistant's client details have no return address Threadlines can use.");
   }
   const client: AssistantClient = {
     clientId,
