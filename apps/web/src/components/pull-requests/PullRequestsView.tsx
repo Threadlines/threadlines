@@ -53,6 +53,7 @@ import {
   PullRequestSortMenu,
 } from "./PullRequestFilters";
 import { PullRequestTabStrip, pullRequestTabButtonId } from "./PullRequestTabStrip";
+import { glassPage } from "../../theme/glassPage";
 import {
   pullRequestTabId,
   usePullRequestTabsStore,
@@ -600,6 +601,7 @@ export function PullRequestsView({
             column beside it; narrow windows have no room for both, so there the
             detail stands in for the list until it is closed. */}
         <div
+          {...glassPage.content}
           className={cn(
             "min-h-0 min-w-0 flex-1 overflow-y-auto",
             selectedReference &&
@@ -607,6 +609,7 @@ export function PullRequestsView({
           )}
         >
           <div
+            {...glassPage.column}
             className={cn(
               // A container, so the rows can drop their least useful facts by
               // the width they actually have: a phone, or the column beside
@@ -726,6 +729,7 @@ export function PullRequestsView({
             />
             <div
               id={DETAIL_PANEL_ID}
+              {...glassPage.content}
               role="tabpanel"
               className="min-h-0 min-w-0 flex-1"
               {...(activeTabId ? { "aria-labelledby": pullRequestTabButtonId(activeTabId) } : {})}

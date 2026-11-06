@@ -4,7 +4,8 @@
  *
  * - The floors are the theme's `glass`, with the reading column's moved by
  *   the user's "Art in threads": None makes it opaque, Some keeps the
- *   theme's, Full halves it.
+ *   theme's, Full halves it. Pages (Settings, Usage...) keep the theme's own
+ *   column floor: the setting is about threads.
  * - While the backdrop frame runs, it paints every zone's tint over the art
  *   itself (raising it for readability), so the app's own surfaces are clear
  *   and alpha never compounds.
@@ -22,6 +23,8 @@ export interface GlassFloors {
   readonly list: number;
   readonly column: number;
   readonly composer: number;
+  /** A page's column (glassPage.ts): the theme's own, whatever "Art in threads" says. */
+  readonly page: number;
 }
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -46,6 +49,7 @@ export function glassFloors(glass: ThemeGlass, artInThreads: ThemeArtInThreads):
     list: clamp01(glass.list),
     column,
     composer: Math.max(clamp01(glass.composer), column),
+    page: clamp01(glass.column),
   };
 }
 
@@ -61,9 +65,9 @@ export function cssGlassTints(
   status: ThemeBackdropStatus | null,
   tooHeavy: boolean,
 ): GlassFloors {
-  if (status === null) return { frame: 1, list: 1, column: 1, composer: 1 };
+  if (status === null) return { frame: 1, list: 1, column: 1, composer: 1, page: 1 };
   if (status.kind === "running" && !tooHeavy) {
-    return { frame: 0, list: 0, column: 0, composer: 0 };
+    return { frame: 0, list: 0, column: 0, composer: 0, page: 0 };
   }
   const minimum = status.kind === "running" ? 1 : clamp01(status.minimumTint);
   return {
@@ -71,6 +75,7 @@ export function cssGlassTints(
     list: Math.max(floors.list, minimum),
     column: Math.max(floors.column, minimum),
     composer: Math.max(floors.composer, minimum),
+    page: Math.max(floors.page, minimum),
   };
 }
 
@@ -83,5 +88,6 @@ export function glassTintCss(tints: GlassFloors): string {
     `--glass-list: ${percent(tints.list)};`,
     `--glass-column: ${percent(tints.column)};`,
     `--glass-composer: ${percent(tints.composer)};`,
+    `--glass-page: ${percent(tints.page)};`,
   ].join(" ");
 }

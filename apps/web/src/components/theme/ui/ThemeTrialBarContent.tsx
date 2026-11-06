@@ -57,7 +57,7 @@ function useSecondsLeft(trial: ThemeTrial | null): number {
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [trial]);
-  return trial === null ? 0 : Math.max(0, Math.ceil((trial.expiresAt - now) / 1000));
+  return trial?.expiresAt == null ? 0 : Math.max(0, Math.ceil((trial.expiresAt - now) / 1000));
 }
 
 function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
@@ -81,7 +81,7 @@ function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13.5px] leading-5 font-medium">Keep {trial.name}?</div>
         <div className="text-[12px] leading-4 text-muted-foreground" aria-live="polite">
-          Switches back in {secondsLeft}s
+          {trial.expiresAt === null ? "Trying it" : `Switches back in ${secondsLeft}s`}
         </div>
       </div>
       <Button size="sm" variant="outline" onClick={() => endThemeTrial(trial.id)}>

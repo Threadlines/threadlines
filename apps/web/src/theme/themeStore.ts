@@ -468,6 +468,11 @@ export function endThemeTrial(id: string): void {
   getCore().endThemeTrial(id);
 }
 
+/** Holds the trial's countdown while the /theme picker shows it; letting go starts it over. */
+export function holdThemeTrial(id: string, held: boolean): void {
+  getCore().holdThemeTrial(id, held);
+}
+
 /** Commits a choice directly: built-ins, and themes this device kept before. */
 export function chooseTheme(choice: ThemeChoice, manifest?: ThemeManifest): void {
   const known =

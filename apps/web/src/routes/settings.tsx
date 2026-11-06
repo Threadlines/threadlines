@@ -36,6 +36,7 @@ import { usePlaceArrival } from "../hooks/usePlaceArrival";
 import { resolveShortcutCommand } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { useServerKeybindings } from "../rpc/serverState";
+import { glassPage } from "../theme/glassPage";
 
 function isEditableElementTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -157,12 +158,12 @@ function SettingsContentLayout() {
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate md:h-auto">
           {/* Clear under a theme with art: the page's column is glass (index.css). */}
           <div
-            data-glass-page-shell=""
+            {...glassPage.shell}
             className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground"
           >
             {!isElectron && (
               <header
-                data-glass-page-header=""
+                {...glassPage.header}
                 className={cn(
                   "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 md:hidden",
                 )}

@@ -13,6 +13,7 @@ import {
   rgbToOklch,
 } from "./color.ts";
 import { measureThemeContrast } from "./contrast.ts";
+import { cssFontFamilyList } from "./fontFamilies.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
 import { BUILTIN_THEME_TOKENS } from "./builtinTokens.ts";
@@ -226,6 +227,15 @@ describe("readability check", () => {
       floor: 0.3,
     });
     expect(narrow).toBe(0.3);
+  });
+});
+
+describe("theme fonts", () => {
+  it("writes a system font's family list as CSS: names quoted, generics bare, unsafe names dropped", () => {
+    expect(cssFontFamilyList('ui-monospace, "SF Mono", Menlo, monospace')).toBe(
+      'ui-monospace, "SF Mono", "Menlo", monospace',
+    );
+    expect(cssFontFamilyList('Evil"; } body { color: red')).toBeNull();
   });
 });
 

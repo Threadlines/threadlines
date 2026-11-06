@@ -52,6 +52,7 @@ import {
   sameBackdropZones,
 } from "./backdropZones";
 import { cssGlassTints, glassFloors, glassTintCss } from "./glass";
+import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
 import {
   readThemeState,
@@ -174,9 +175,10 @@ const MEASURED_SELECTORS = [
   "[data-glass-surface]",
   "[data-draft-hero]",
   "[data-empty-home]",
-  "[data-glass-page-content]",
-  "[data-glass-page-header]",
-  "[data-glass-page-column]",
+  GLASS_PAGE_SELECTOR.content,
+  GLASS_PAGE_SELECTOR.column,
+  GLASS_PAGE_SELECTOR.header,
+
   "[data-chat-right-panel]",
   '[data-testid="browser-panel"]',
   ".thread-terminal-drawer",

@@ -5,6 +5,7 @@
  * faces load from their bytes (themeFontFaces.ts).
  */
 import type { ThemeFont, ThemeFonts } from "@threadlines/contracts";
+import { cssFontFamilyList } from "@threadlines/shared/themeFontFamilies";
 
 /** index.css's `--font-sans` and `--font-mono`. */
 export const DEFAULT_SANS_STACK =
@@ -13,14 +14,6 @@ export const DEFAULT_MONO_STACK =
   '"Cascadia Mono Variable", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
 export type ThemeFontSlot = "ui" | "mono";
-
-/** A family name as it may appear quoted in CSS: no quotes, escapes or rule breakers. */
-export function cleanFontFamily(family: string): string {
-  return family
-    .replace(/["'\\;{}<>]/g, "")
-    .trim()
-    .slice(0, 80);
-}
 
 /** The name an embedded font is registered under, unique per theme and slot. */
 export function embeddedFontFamily(hash: string | null, slot: ThemeFontSlot): string {
@@ -32,7 +25,10 @@ function usableFont(font: ThemeFont | undefined): font is ThemeFont {
   return font.source === "system" || (font.data !== undefined && font.data.length > 0);
 }
 
-/** The family the slot's CSS names first, or null to keep the app's own. */
+/**
+ * The families the slot's CSS names first, as a CSS list (quoted names,
+ * bare generics), or null to keep the app's own.
+ */
 export function themeFontFamily(
   fonts: ThemeFonts | undefined,
   slot: ThemeFontSlot,
@@ -40,7 +36,9 @@ export function themeFontFamily(
 ): string | null {
   const font = fonts?.[slot];
   if (!usableFont(font)) return null;
-  return font.source === "system" ? cleanFontFamily(font.family) : embeddedFontFamily(hash, slot);
+  return font.source === "system"
+    ? cssFontFamilyList(font.family)
+    : `"${embeddedFontFamily(hash, slot)}"`;
 }
 
 /** The full stack for a slot: the theme's family, then the app's own. */
@@ -51,5 +49,5 @@ export function themeFontStack(
 ): string {
   const fallback = slot === "ui" ? DEFAULT_SANS_STACK : DEFAULT_MONO_STACK;
   const family = themeFontFamily(fonts, slot, hash);
-  return family ? `"${family}", ${fallback}` : fallback;
+  return family ? `${family}, ${fallback}` : fallback;
 }

@@ -79,6 +79,10 @@
       "types": "./src/themes/tokens.ts",
       "import": "./src/themes/tokens.ts"
     },
+    "./themeFontFamilies": {
+      "types": "./src/themes/fontFamilies.ts",
+      "import": "./src/themes/fontFamilies.ts"
+    },
     "./themeTokenNames": {
       "types": "./src/themes/tokenNames.ts",
       "import": "./src/themes/tokenNames.ts"

@@ -9,8 +9,13 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
-import { cn } from "~/lib/utils";
-import { endThemeTrial, useActiveTheme, useThemeChoice, useThemeTrial } from "~/theme/themeStore";
+import {
+  endThemeTrial,
+  holdThemeTrial,
+  useActiveTheme,
+  useThemeChoice,
+  useThemeTrial,
+} from "~/theme/themeStore";
 import {
   sameThemeChoice,
   switchToTheme,
@@ -29,8 +34,9 @@ export function ThemePickerStrip({
   readonly onNewTheme: () => void;
 }) {
   const { builtins, starters, library } = useThemeTiles();
+  // Your own first, as in Settings.
   const tiles = useMemo(
-    () => [...builtins, ...starters, ...library],
+    () => [...library, ...builtins, ...starters],
     [builtins, library, starters],
   );
   const committed = useThemeChoice();
@@ -57,11 +63,23 @@ export function ThemePickerStrip({
     };
   }, []);
 
+  // A preview doesn't count down while the strip shows it (Esc and ✕ are
+  // its way back); one still running when the strip closes starts counting.
+  const latestTrialId = useRef<string | null>(null);
   useEffect(() => {
+    latestTrialId.current = trial?.id ?? null;
     if (trial !== null && trial.id !== trialBeforeOpening.current) {
       previewTrialIds.current.add(trial.id);
+      holdThemeTrial(trial.id, true);
     }
   }, [trial]);
+  useEffect(
+    () => () => {
+      const id = latestTrialId.current;
+      if (id !== null && previewTrialIds.current.has(id)) holdThemeTrial(id, false);
+    },
+    [],
+  );
 
   useEffect(() => {
     rootRef.current
@@ -124,6 +142,19 @@ export function ThemePickerStrip({
         <Button
           type="button"
           variant="ghost"
+          size="xs"
+          tooltip="Ask an agent to make one"
+          onClick={() => {
+            back();
+            onNewTheme();
+          }}
+        >
+          <PlusIcon aria-hidden />
+          New theme
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
           size="icon-xs"
           aria-label="Close themes"
           tooltip="Close (Esc)"
@@ -144,25 +175,6 @@ export function ThemePickerStrip({
             onSelect={() => (index === highlighted && trial !== null ? keep(tile) : preview(index))}
           />
         ))}
-        <button
-          type="button"
-          onClick={() => {
-            back();
-            onNewTheme();
-          }}
-          title="New theme · ask an agent to make one"
-          className={cn(
-            "flex w-[92px] shrink-0 snap-start flex-col gap-1 rounded-[var(--app-radius-large)] p-0.5 text-left outline-none",
-            "focus-visible:ring-2 focus-visible:ring-ring",
-          )}
-        >
-          <div className="grid aspect-[16/9] w-full place-items-center rounded-[var(--app-radius-control)] border border-dashed border-border text-muted-foreground">
-            <PlusIcon className="size-3.5" aria-hidden />
-          </div>
-          <div className="px-0.5 text-[11.5px] leading-[14px] font-medium text-foreground">
-            New theme
-          </div>
-        </button>
       </div>
     </div>
   );

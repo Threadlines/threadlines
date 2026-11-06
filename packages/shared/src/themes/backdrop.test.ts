@@ -65,8 +65,8 @@ describe("backdrop frame document", () => {
       `<meta http-equiv="Content-Security-Policy" content="${BACKDROP_FRAME_CONTENT_SECURITY_POLICY}">`,
     );
     expect(BACKDROP_FRAME_CONTENT_SECURITY_POLICY).toMatch(/^default-src 'none';/);
-    // One script element: the runtime's.
-    expect(html.match(/<script>/g)).toHaveLength(1);
+    // One script element, in any case and with any attributes: the runtime's.
+    expect(html.match(/<script\b/gi)).toHaveLength(1);
     expect(html).toContain("RTCPeerConnection");
     expect(html).toContain('"testHooks":false');
     expect(buildBackdropFrameDocument({ testHooks: true })).toContain('"testHooks":true');

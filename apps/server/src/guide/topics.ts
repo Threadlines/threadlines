@@ -14,6 +14,7 @@ import { THEME_FILE_EXTENSION } from "@threadlines/contracts";
 import {
   THEME_ART_CONTRACT_GUIDE,
   THEME_ART_RULES_GUIDE,
+  THEME_DESIGN_GUIDE,
   THEME_FORMAT_GUIDE,
 } from "../themes/themeGuide.ts";
 
@@ -368,13 +369,15 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
     ],
     body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. Each device picks its own theme in {place:general.appearance}; a theme kept once is in this computer's library on every device.
 
-An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar above the message box, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too. The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. In /theme, New theme puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it; sending it asks the agent for one.
+An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar at the top of the window, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too (while the /theme picker is open, a preview waits for its ✕ or Esc instead). The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. New theme, in /theme or in Settings, puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it (Settings opens a general chat for it); sending it asks the agent for one. In Settings, the options on a theme's picture rename it, duplicate it to change a copy, export a file to share, copy the request it was made from, or delete it; starters can be duplicated and exported.
 
 ${THEME_FORMAT_GUIDE}
 
 ${THEME_ART_CONTRACT_GUIDE}
 
 ${THEME_ART_RULES_GUIDE}
+
+${THEME_DESIGN_GUIDE}
 
 The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. Text stays readable whatever the art draws: the frame raises the glass tint under text as needed. Appearance also has {place:general.themeArtInThreads} (how much art shows behind a thread) and {place:general.themeMotion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:general.theme}.`,
   },

@@ -2687,7 +2687,7 @@ const ANSWER_COPY_CLASS = `flex items-center ${ANSWER_ACTION_REVEAL_CLASS}`;
  * than the button), and a tap on the time or the device glyph stays there.
  */
 const USER_MESSAGE_TIME_CLASS =
-  "relative flex items-center gap-1 text-right text-xs tracking-tight tabular-nums text-muted-foreground/50";
+  "relative flex items-center gap-1 text-right text-xs tracking-tight tabular-nums text-muted-foreground";
 
 /**
  * Beside the time on a message the user sent from a phone or a tablet, the
@@ -3007,7 +3007,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   const outcome = (quoted: boolean) =>
     description.outcomeNote !== null && message.sideTurnId === undefined ? (
       <p
-        className={cn("mt-1 text-xs leading-4 text-muted-foreground/70", quoted && "pl-3")}
+        className={cn("mt-1 text-xs leading-4 text-muted-foreground", quoted && "pl-3")}
         data-room-request-outcome={message.requestOutcome}
       >
         {description.outcomeNote}
@@ -3022,7 +3022,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
         data-room-agent-message="reply-echo"
         title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
       >
-        <p className="flex min-w-0 items-center gap-1 text-xs leading-5 text-muted-foreground/70">
+        <p className="flex min-w-0 items-center gap-1 text-xs leading-5 text-muted-foreground">
           <ReplyIcon aria-hidden className="size-3 shrink-0" />
           <span className="min-w-0 truncate">Sent to {description.to} as its reply</span>
         </p>
@@ -3202,7 +3202,7 @@ function ThreadMessageTimelineRow({
       </div>
       {message.requestOutcome === "cancelled" ? (
         <p
-          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground/70"
+          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
           data-thread-message-outcome="cancelled"
         >
           {isReport ? "Not read: its delivery was cancelled first" : "Taken back before it ran"}
@@ -3302,7 +3302,7 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
           <p className="text-sm text-muted-foreground" data-chat-find-body="">
             {message.invite.reason}
           </p>
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/70">
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground">
             <span className="min-w-0 truncate">
               {message.invite.billing.label}
               {message.invite.billing.perUse ? " · billed per use" : ""}
@@ -3326,7 +3326,7 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
       ) : null}
       {description.outcomeNote !== null ? (
         <p
-          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground/70"
+          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
           data-room-request-outcome={message.requestOutcome}
         >
           {description.outcomeNote}
@@ -3771,15 +3771,13 @@ function AssistantTurnFooter({
   parts.push({
     key: "time",
     node: (
-      <span className="shrink-0 text-muted-foreground/40">
-        {formatTimestamp(row.message.createdAt, timestampFormat)}
-      </span>
+      <span className="shrink-0">{formatTimestamp(row.message.createdAt, timestampFormat)}</span>
     ),
   });
 
   return (
     <div
-      className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground/60 tabular-nums"
+      className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground tabular-nums"
       data-turn-footer="true"
     >
       {parts.map((part, index) => (

@@ -130,7 +130,7 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
   const preview: ThemeWorkshopShape["preview"] = (manifest) =>
     Effect.gen(function* () {
       const art = manifest.backdrop !== undefined;
-      const [thread, fresh] = yield* previews.captureViewports({
+      const [thread, fresh, settings] = yield* previews.captureViewports({
         width: THEME_SPECIMEN_WIDTH,
         height: THEME_SPECIMEN_HEIGHT,
         shots: [
@@ -150,18 +150,25 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
             waitMs: art ? STILL_RUN_MS : 0,
             readAttributes: [THEME_SPECIMEN_ATTRIBUTES.failure],
           },
+          {
+            document: specimen(manifest, "settings"),
+            waitMs: art ? STILL_RUN_MS : 0,
+            readAttributes: [THEME_SPECIMEN_ATTRIBUTES.failure],
+          },
         ],
       });
+      const shotsTaken = [thread, fresh, settings];
       const attribute = (name: string) =>
-        [thread, fresh].map((shot) => shot?.attributes[name]).find((value) => value != null);
+        shotsTaken.map((shot) => shot?.attributes[name]).find((value) => value != null);
       return {
         shots: [
           { layout: "thread" as const, png: thread?.png ?? "" },
           { layout: "new-thread" as const, png: fresh?.png ?? "" },
+          { layout: "settings" as const, png: settings?.png ?? "" },
         ].filter((shot) => shot.png.length > 0),
         stats: Option.getOrNull(decodeStats(attribute(THEME_SPECIMEN_ATTRIBUTES.stats))),
         failure: Option.getOrNull(decodeFailure(attribute(THEME_SPECIMEN_ATTRIBUTES.failure))),
-        consoleMessages: [...(thread?.consoleMessages ?? []), ...(fresh?.consoleMessages ?? [])],
+        consoleMessages: shotsTaken.flatMap((shot) => shot?.consoleMessages ?? []),
       };
     });
 

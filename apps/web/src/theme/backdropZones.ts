@@ -13,8 +13,9 @@
  *   and the line under it, and one around each line of text under them.
  * - The home screen with no thread open: a soft patch around each block of
  *   its text (the heading, line and buttons; the links under them).
- * - A settings page: its column, the full height of the page, feathered
- *   outside like the reading column.
+ * - Any other page (Settings, Usage, Scheduled...): each content area's
+ *   column, the full height of the area, feathered outside like the reading
+ *   column (glassPage.ts marks them); an unmarked page frosted whole.
  *
  * Every zone's core holds all the text the app can draw there, so the
  * feather never thins the tint under text.
@@ -24,6 +25,7 @@ import { composite, formatHex, parseColor } from "@threadlines/shared/themeColor
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
 import type { GlassFloors } from "./glass";
+import { GLASS_PAGE_SELECTOR } from "./glassPage";
 
 /** How far the reading column's frost reaches past the composer on each side. */
 export const COLUMN_MARGIN_PX = 48;
@@ -259,17 +261,13 @@ export function measureBackdropZones(
 
   // The thread list slides out inside the work panel, which clips it.
   const panel = visibleBox(root.querySelector('[data-slot="app-panel"]'), screen) ?? screen;
-  hard(
-    "list",
-    visibleBox(
-      root.querySelector(
-        '[data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-inner"]',
-      ),
-      panel,
+  const listBox = visibleBox(
+    root.querySelector(
+      '[data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-inner"]',
     ),
-    floors.list,
-    color("sidebar"),
+    panel,
   );
+  hard("list", listBox, floors.list, color("sidebar"));
 
   const chatView = root.querySelector("[data-chat-view]");
   const column = chatView?.querySelector("[data-chat-column]") ?? null;
@@ -405,40 +403,57 @@ export function measureBackdropZones(
     );
   }
 
-  // A settings page: its column frosted the full height of the page, a
-  // margin wider on each side, like the reading column; its own header
-  // (narrow windows and phones) hard, like the chat's.
-  const pageContent =
-    chatView || emptyHome ? null : root.querySelector("[data-glass-page-content]");
-  if (pageContent) {
-    hard(
-      "page-header",
-      visibleBox(root.querySelector("[data-glass-page-header]"), panel),
-      floors.column,
-      color("background"),
-    );
-  }
-  const pageBox = visibleBox(pageContent, panel);
-  if (pageContent && pageBox) {
-    const column = visibleBox(pageContent.querySelector("[data-glass-page-column]"), pageBox);
-    const core = column && clip({ ...column, top: pageBox.top, bottom: pageBox.bottom }, pageBox);
-    const rect = core && clip(grow(core, COLUMN_MARGIN_PX, 0), pageBox);
-    if (core && rect) {
+  // Any other page (Settings, Usage, Scheduled...): each content area's
+  // column frosted the full height of the area, a margin wider on each side,
+  // like the reading column; an area without a column frosted whole; title
+  // rows hard, like the chat's header (glassPage.ts). A page that marks
+  // nothing is frosted whole beside the thread list, so the art never shows
+  // raw behind its text.
+  let pageShown = false;
+  if (!chatView && !emptyHome) {
+    const soft = (id: string, core: Box, rect: Box) =>
       zones.push({
-        id: "page",
+        id,
         edge: "soft",
         shape: "rect",
         rect: toRect(rect),
         core: toRect(core),
-        tint: floors.column,
+        tint: floors.page,
         tintColor: color("background"),
       });
+    [...root.querySelectorAll(GLASS_PAGE_SELECTOR.header)].forEach((header, index) =>
+      hard(
+        index === 0 ? "page-header" : `page-header-${index}`,
+        visibleBox(header, panel),
+        floors.page,
+        color("background"),
+      ),
+    );
+    [...root.querySelectorAll(GLASS_PAGE_SELECTOR.content)].forEach((content, index) => {
+      const area = visibleBox(content, panel);
+      if (!area) return;
+      const column = visibleBox(content.querySelector(GLASS_PAGE_SELECTOR.column), area);
+      const core = column ? clip({ ...column, top: area.top, bottom: area.bottom }, area) : area;
+      const rect = core && clip(grow(core, COLUMN_MARGIN_PX, 0), area);
+      if (!core || !rect) return;
+      soft(index === 0 ? "page" : `page-${index}`, core, rect);
+      pageShown = true;
+    });
+    if (!pageShown) {
+      const beside =
+        listBox && listBox.right < panel.right
+          ? clip({ ...panel, left: Math.max(panel.left, listBox.right) }, panel)
+          : panel;
+      if (beside) {
+        soft("page", beside, beside);
+        pageShown = true;
+      }
     }
   }
 
   return {
     zones: zones.slice(0, BACKDROP_MAX_ZONES),
-    artShown: chatView !== null || homeBox !== null || pageBox !== null,
+    artShown: chatView !== null || homeBox !== null || pageShown,
   };
 }
 

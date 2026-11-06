@@ -19,6 +19,13 @@ const round = (value: number, digits: number) => {
   return Math.round(value * scale) / scale;
 };
 
+/** What each preview screenshot shows, as the report names it. */
+const SHOT_NAMES = {
+  thread: "a thread",
+  "new-thread": "the new-thread screen",
+  settings: "a Settings page (every page that isn't a chat looks like it)",
+} as const;
+
 /** What `preview_theme` says beside its screenshots. */
 export function themePreviewText(input: {
   readonly manifest: ThemeManifest;
@@ -59,7 +66,7 @@ export function themePreviewText(input: {
       : `Console:\n${report.consoleMessages.map((entry) => `[${entry.level}] ${entry.text}`).join("\n")}`,
   );
   lines.push(
-    `Screenshots: ${report.shots.map((shot) => (shot.layout === "thread" ? "a thread" : "the new-thread screen")).join(", then ")}, at 1440×900.`,
+    `Screenshots: ${report.shots.map((shot) => SHOT_NAMES[shot.layout]).join(", then ")}, at 1440×900.`,
   );
   return lines.join("\n");
 }

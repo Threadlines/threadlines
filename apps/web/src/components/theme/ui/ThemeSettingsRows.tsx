@@ -6,9 +6,10 @@
  */
 import type { ThemeArtInThreads, ThemeMotion } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
-import { EllipsisIcon, UploadIcon } from "lucide-react";
+import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
+import { useGeneralChats } from "~/components/chats/useGeneralChats";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import {
@@ -58,6 +59,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../../ui/
 import { SegmentedControl, SegmentedControlItem } from "../../ui/segmented-control";
 import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsRow } from "../../settings/settingsLayout";
+import { NEW_THEME_PROMPT } from "./NewThemeHint";
 import { ThemeTileView } from "./ThemeTileView";
 
 const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
@@ -68,7 +70,7 @@ const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
     }),
   );
 
-const ENERGY_WORDS = { light: "Light", medium: "Medium", heavy: "Heavy" } as const;
+const ENERGY_WORDS = { light: "a light", medium: "a medium", heavy: "a heavy" } as const;
 
 /** One line about the running theme's art: its cost here, or why it isn't moving. */
 function ArtStatusLine() {
@@ -78,7 +80,7 @@ function ArtStatusLine() {
   if (status.kind === "running") {
     return (
       <span>
-        Live art: {ENERGY_WORDS[status.energy]} on this computer
+        Live art is on, {ENERGY_WORDS[status.energy]} load on this computer
         {status.throttled ? ", slowed down to save power" : ""}.
       </span>
     );
@@ -216,7 +218,12 @@ function RenameDialog({
   );
 }
 
-function LibraryTileMenu({
+/**
+ * A starter's or your theme's options: Duplicate (a copy in your themes, to
+ * change), Export file and Copy prompt for both; Rename and Delete for your
+ * own. Built-ins have none.
+ */
+function ThemeTileMenu({
   tile,
   inUse,
   onRename,
@@ -228,8 +235,18 @@ function LibraryTileMenu({
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
-  const library = tile.library;
-  if (!library) return null;
+  if (tile.group === "builtin") return null;
+  const library = tile.library ?? null;
+  const duplicate = () => {
+    const name = `${tile.name} copy`.slice(0, 60);
+    const saving = library
+      ? duplicateLibraryTheme(library, name)
+      : loadTileManifest(tile).then((manifest) => {
+          if (!manifest) throw new Error("The theme couldn't be read.");
+          return saveThemeToLibrary(manifest, name);
+        });
+    void saving.catch(failed("Couldn't duplicate the theme"));
+  };
   return (
     <Menu>
       <MenuTrigger
@@ -245,16 +262,8 @@ function LibraryTileMenu({
         }
       />
       <MenuPopup align="end">
-        <MenuItem onClick={onRename}>Rename</MenuItem>
-        <MenuItem
-          onClick={() =>
-            void duplicateLibraryTheme(library, `${tile.name} copy`.slice(0, 60)).catch(
-              failed("Couldn't duplicate the theme"),
-            )
-          }
-        >
-          Duplicate
-        </MenuItem>
+        {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
+        <MenuItem onClick={duplicate}>Duplicate</MenuItem>
         <MenuItem
           onClick={() =>
             void loadTileManifest(tile)
@@ -280,10 +289,14 @@ function LibraryTileMenu({
         >
           Copy prompt
         </MenuItem>
-        <MenuSeparator />
-        <MenuItem variant="destructive" onClick={onDelete}>
-          {inUse ? "Delete…" : "Delete"}
-        </MenuItem>
+        {library ? (
+          <>
+            <MenuSeparator />
+            <MenuItem variant="destructive" onClick={onDelete}>
+              {inUse ? "Delete…" : "Delete"}
+            </MenuItem>
+          </>
+        ) : null}
       </MenuPopup>
     </Menu>
   );
@@ -296,6 +309,8 @@ export function ThemeRow() {
   const active = useActiveTheme();
   const unavailable = useThemeUnavailable();
   const fileInput = useRef<HTMLInputElement>(null);
+  // New theme opens a general chat that starts the request (NewThemeHint.tsx).
+  const { startChat } = useGeneralChats();
   const [renaming, setRenaming] = useState<ThemeTile | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ThemeTile | null>(null);
   const pick = (tile: ThemeTile) => {
@@ -319,8 +334,8 @@ export function ThemeRow() {
                 onSelect={() => pick(tile)}
                 className="w-full"
               />
-              {tile.group === "library" ? (
-                <LibraryTileMenu
+              {tile.group !== "builtin" ? (
+                <ThemeTileMenu
                   tile={tile}
                   inUse={sameThemeChoice(tile.choice, committed)}
                   onRename={() => setRenaming(tile)}
@@ -371,6 +386,15 @@ export function ThemeRow() {
               if (file) void importThemeFile(file);
             }}
           />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={startChat === null}
+            onClick={() => startChat?.(NEW_THEME_PROMPT)}
+          >
+            <PlusIcon aria-hidden />
+            New theme
+          </Button>
           <Button size="sm" variant="outline" onClick={() => fileInput.current?.click()}>
             <UploadIcon aria-hidden />
             Import theme file
@@ -382,14 +406,16 @@ export function ThemeRow() {
         <div className="px-1 text-[12px] text-muted-foreground">
           <ArtStatusLine />
         </div>
+        {/* Your own first; until there are any, a line on making one closes the gallery. */}
+        {section("Your themes", library)}
         {section("Built in", builtins)}
         {section("Starters", starters)}
-        {section("Your themes", library) ?? (
+        {library.length === 0 ? (
           <p className="px-1 text-[12.5px] text-muted-foreground">
-            Ask any agent to make you a theme, or type /theme in a chat. Themes you keep show up
-            here on every device.
+            New theme asks an agent to make one from a few words, and you try it before you keep it.
+            Themes you keep show up here on every device.
           </p>
-        )}
+        ) : null}
       </div>
       {renaming ? <RenameDialog tile={renaming} onClose={() => setRenaming(null)} /> : null}
       <AlertDialog

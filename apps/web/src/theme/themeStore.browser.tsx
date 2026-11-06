@@ -103,6 +103,20 @@ describe("theme store, applied", () => {
     expect(builtinSnapshot()).toEqual(before);
   });
 
+  it("names a system font list in the theme's CSS as a list, not one family", async () => {
+    const dark = startThemeTrial({
+      choice: unsaved(HASH_A, "Phosphor-like"),
+      manifest: darkTheme("#e7ecff", {
+        fonts: { ui: { family: 'ui-monospace, "SF Mono", Menlo, monospace', source: "system" } },
+      }),
+    });
+    await vi.waitFor(() => expect(root().getAttribute("data-theme-version")).toBe(HASH_A));
+    expect(token("font-sans").startsWith('ui-monospace, "SF Mono", "Menlo", monospace,')).toBe(
+      true,
+    );
+    endThemeTrial(dark.id);
+  });
+
   it("draws glass only for a theme with art: clear canvas layers, tinted surfaces, opaque sticky headers, no fades", async () => {
     const screen = await render(
       <div data-slot="sidebar-wrapper" className="bg-frame">
@@ -343,7 +357,7 @@ describe("backdrop zones", () => {
       const tokens = resolveThemeTokens(darkTheme("#e7ecff"));
       const floors = glassFloors(
         { frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 },
-        "some",
+        "none",
       );
       const { zones, artShown } = measureBackdropZones(
         document,
@@ -358,6 +372,7 @@ describe("backdrop zones", () => {
         core: { x: 409, y: 78, w: 480, h: 560 },
         // ...frosted a margin wider on each side.
         rect: { x: 361, y: 78, w: 576, h: 560 },
+        // "Art in threads" is about threads: a page keeps the theme's own floor.
         tint: 0.5,
         tintColor: "#0a1029",
       });
@@ -365,6 +380,39 @@ describe("backdrop zones", () => {
         edge: "hard",
         rect: { x: 297, y: 37, w: 704, h: 42 },
         tint: 0.5,
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("frosts a page that marks nothing whole beside the thread list, so the art never shows raw behind it", async () => {
+    const at = (left: number, top: number, width: number, height: number) =>
+      ({ position: "absolute", left, top, width, height }) as const;
+    const screen = await render(
+      <div style={{ position: "fixed", inset: 0 }}>
+        <div data-slot="app-panel" style={{ ...at(48, 38, 952, 600), overflow: "hidden" }}>
+          <div data-slot="sidebar">
+            <div data-slot="sidebar-container">
+              <div data-slot="sidebar-inner" style={at(0, 0, 250, 600)} />
+            </div>
+          </div>
+          <div style={at(250, 0, 702, 600)}>Usage</div>
+        </div>
+      </div>,
+    );
+    try {
+      const { zones, artShown } = measureBackdropZones(
+        document,
+        { width: window.innerWidth, height: window.innerHeight },
+        resolveThemeTokens(darkTheme("#e7ecff")),
+        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, "some"),
+      );
+      expect(artShown).toBe(true);
+      expect(zones.find((zone) => zone.id === "page")).toMatchObject({
+        edge: "soft",
+        core: { x: 298, y: 38, w: 702, h: 600 },
+        rect: { x: 298, y: 38, w: 702, h: 600 },
       });
     } finally {
       await screen.unmount();

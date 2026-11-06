@@ -52,6 +52,7 @@ import { LinkRequestRow } from "./LinkRequestRow";
 import { ProjectSetupsGroup } from "./ProjectSetupsGroup";
 import { useFleetLabels } from "./useFleetLabels";
 import { LinkSettingsControls, WorksWithGroup } from "./WorksWithGroup";
+import { glassPage } from "../../theme/glassPage";
 
 function joinNames(names: readonly string[]): string {
   if (names.length <= 1) return names.join("");
@@ -354,6 +355,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
       <div
         className="flex h-full min-h-0 w-full flex-col bg-background"
         data-testid="fleet-computer-view"
+        {...glassPage.shell}
       >
         <PageTitlebar label="Fleet" />
         <div className="mx-auto w-full max-w-[720px] px-4 pt-8 sm:px-8">
@@ -445,6 +447,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
     <div
       className="flex h-full min-h-0 w-full min-w-0 flex-col bg-background"
       data-testid="fleet-computer-view"
+      {...glassPage.shell}
     >
       <PageTitlebar label={entry.label}>
         {naming ? (
@@ -459,8 +462,11 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           </button>
         ) : null}
       </PageTitlebar>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-7 px-4 pt-5 pb-12 sm:px-8 sm:pt-8">
+      <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+        <div
+          className="mx-auto flex w-full max-w-[720px] flex-col gap-7 px-4 pt-5 pb-12 sm:px-8 sm:pt-8"
+          {...glassPage.column}
+        >
           <header className="space-y-1 px-1">
             <h1 className="hidden text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground md:block">
               {entry.label}

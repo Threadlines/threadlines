@@ -155,6 +155,25 @@ describe("theme store", () => {
     expect(storage.values.get(THEME_STORAGE_KEY)).toBeUndefined();
   });
 
+  it("holds a trial's countdown while the picker shows it, and starts it over when let go", () => {
+    const { env, fire } = makeEnv({});
+    const store = createThemeStoreCore(env);
+    const trial = store.startThemeTrial({
+      choice: library(HASH_A, "Aurora"),
+      manifest: manifest("Aurora"),
+    });
+    store.holdThemeTrial(trial.id, true);
+    expect(store.getState().trial?.expiresAt).toBeNull();
+    // The countdown it had would have ended it by now; held, it doesn't.
+    fire(0);
+    expect(store.getState().trial?.id).toBe(trial.id);
+
+    store.holdThemeTrial(trial.id, false);
+    expect(store.getState().trial?.expiresAt).toBe(1_000 + THEME_TRIAL_MS);
+    fire(1);
+    expect(store.getState().trial).toBeNull();
+  });
+
   it("commits a kept trial, remembers its hash, and ignores an ended trial's id", () => {
     const { env, storage } = makeEnv({});
     const store = createThemeStoreCore(env);

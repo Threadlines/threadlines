@@ -6,6 +6,7 @@ import { cn } from "../lib/utils";
 import { SidebarOpenTrigger } from "./ui/sidebar";
 import { HeaderEdgeFade } from "./HeaderEdgeFade";
 import { TitleBarContent } from "./sidebar/titleBarSlot";
+import { glassPage } from "../theme/glassPage";
 
 /**
  * The top of a full-page surface (General chats, Pull requests, Usage,
@@ -65,7 +66,10 @@ function NarrowPageStrip({
       return null;
     }
     return (
-      <header className="relative z-10 flex shrink-0 items-center gap-2 pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] md:hidden">
+      <header
+        {...glassPage.header}
+        className="relative z-10 flex shrink-0 items-center gap-2 pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] md:hidden"
+      >
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {label ? (
           <span className="min-w-0 truncate text-sm font-medium text-foreground">{label}</span>
@@ -77,6 +81,7 @@ function NarrowPageStrip({
   }
   return (
     <div
+      {...glassPage.header}
       className={cn(
         "drag-region relative flex shrink-0 items-center gap-2 px-5",
         ELECTRON_HEADER_HEIGHT_CLASS,

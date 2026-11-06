@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { type SettingsSectionPath, settingsNavItemForPath } from "./settingsNavigation";
+import { glassPage } from "../../theme/glassPage";
 
 /**
  * The quiet filled block that settings sections and lists of like items sit in
@@ -298,11 +299,11 @@ export function SettingsPageContainer({
 }) {
   return (
     <div
-      data-glass-page-content=""
+      {...glassPage.content}
       className="flex-1 overflow-y-auto px-4 pt-5 pb-8 sm:px-8 sm:pt-8 sm:pb-12"
     >
       <div
-        data-glass-page-column=""
+        {...glassPage.column}
         className={cn(
           "mx-auto flex w-full flex-col gap-7",
           wide ? "max-w-[960px]" : "max-w-[720px]",

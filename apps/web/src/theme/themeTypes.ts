@@ -42,8 +42,8 @@ export interface ThemeTrial {
   readonly id: string;
   readonly choice: ThemeChoice;
   readonly name: string;
-  /** Epoch ms when the trial ends by itself. */
-  readonly expiresAt: number;
+  /** Epoch ms when the trial ends by itself; null while held (the /theme picker shows it). */
+  readonly expiresAt: number | null;
   /** The theme to save to the library on Keep (offers and imports); null for a built-in trial. */
   readonly manifest: ThemeManifest | null;
 }

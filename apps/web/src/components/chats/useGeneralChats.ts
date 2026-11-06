@@ -48,8 +48,11 @@ function resolveChatGroup(activityAt: string, nowMs: number): ChatGroupId {
  */
 export function useGeneralChats(): {
   readonly chats: readonly SidebarThreadSummary[];
-  /** Null while no computer has a General Chats project to start one in. */
-  readonly startChat: (() => void) | null;
+  /**
+   * Null while no computer has a General Chats project to start one in.
+   * `initialPrompt` opens the chat with words to finish.
+   */
+  readonly startChat: ((initialPrompt?: string) => void) | null;
 } {
   const { handleNewThread } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
@@ -85,11 +88,14 @@ export function useGeneralChats(): {
     );
   }, [projects, threads]);
 
-  const startChatInProject = useCallback(() => {
-    if (generalChatsProjectRef) {
-      void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
-    }
-  }, [generalChatsProjectRef, handleNewThread]);
+  const startChatInProject = useCallback(
+    (initialPrompt?: string) => {
+      if (generalChatsProjectRef) {
+        void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef, initialPrompt);
+      }
+    },
+    [generalChatsProjectRef, handleNewThread],
+  );
 
   return {
     chats,

@@ -555,15 +555,17 @@ html[data-glass][data-glass-page="art"] [data-glass-page-shell],
 html[data-glass] [data-chat-view] {
   background-color: transparent;
 }
-/* The reading column, the chat's own header, the home screen and a settings
-   page: clear while the frame frosts them, tinted to the floor when only the
-   still shows. */
+/* The reading column, the chat's own header and the home screen: clear while
+   the frame frosts them, tinted to the floor when only the still shows. */
 html[data-glass] [data-chat-column],
 html[data-glass][data-glass-page="art"] [data-empty-home],
-html[data-glass][data-glass-page="art"] [data-glass-page-content],
-html[data-glass][data-glass-page="art"] [data-glass-page-header],
 html[data-glass] [data-chat-view] > header {
   background-color: color-mix(in srgb, var(--background) var(--glass-column, 100%), transparent);
+}
+/* Pages (Settings, Usage...), the same way at their own floor (glassPage.ts). */
+html[data-glass][data-glass-page="art"] [data-glass-page-content],
+html[data-glass][data-glass-page="art"] [data-glass-page-header] {
+  background-color: color-mix(in srgb, var(--background) var(--glass-page, 100%), transparent);
 }
 /* The composer and the panels it opens above itself (the theme picker, the
    new-theme hint): glass like it, each over its own rounded patch. */

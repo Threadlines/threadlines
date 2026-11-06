@@ -243,6 +243,11 @@ export interface ThemeStoreCore {
   }) => ThemeTrial;
   readonly commitThemeTrial: (id: string, choice?: ThemeChoice) => void;
   readonly endThemeTrial: (id: string) => void;
+  /**
+   * Holds the trial's countdown while something else shows it (the /theme
+   * picker, which has its own way back); letting go starts it over.
+   */
+  readonly holdThemeTrial: (id: string, held: boolean) => void;
   readonly hasKeptTheme: (hash: string) => boolean;
   /** Another window wrote `key` (a `storage` event). */
   readonly handleStorageChange: (key: string | null) => void;
@@ -479,6 +484,17 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     cancelTrialTimer = null;
   };
 
+  /** The trial's countdown: it ends the trial with `id` only (never a later one). */
+  const startTrialCountdown = (id: string) => {
+    clearTrialTimer();
+    cancelTrialTimer = env.setTimer(() => {
+      if (state.trial?.id === id) {
+        cancelTrialTimer = null;
+        update({ trial: null, trialTheme: null });
+      }
+    }, THEME_TRIAL_MS);
+  };
+
   /** Makes `choice` this device's theme, in storage and in this window. */
   const commit = (choice: ThemeChoice, manifest: ThemeManifest | null | undefined) => {
     commitSequence += 1;
@@ -537,12 +553,7 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
         expiresAt: env.now() + THEME_TRIAL_MS,
         manifest: choice.kind === "builtin" ? null : manifest,
       };
-      cancelTrialTimer = env.setTimer(() => {
-        if (state.trial?.id === trial.id) {
-          cancelTrialTimer = null;
-          update({ trial: null, trialTheme: null });
-        }
-      }, THEME_TRIAL_MS);
+      startTrialCountdown(trial.id);
       update({ trial, trialTheme: theme });
       if (content && !theme) {
         // The token code is on its way: the trial shows when it lands, or
@@ -572,6 +583,17 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
       if (state.trial?.id !== id) return;
       clearTrialTimer();
       update({ trial: null, trialTheme: null });
+    },
+    holdThemeTrial: (id, held) => {
+      const trial = state.trial;
+      if (!trial || trial.id !== id || (trial.expiresAt === null) === held) return;
+      if (held) {
+        clearTrialTimer();
+        update({ trial: { ...trial, expiresAt: null } });
+      } else {
+        update({ trial: { ...trial, expiresAt: env.now() + THEME_TRIAL_MS } });
+        startTrialCountdown(id);
+      }
     },
     hasKeptTheme: (hash) => readKeptThemeHashes(env.storage).includes(hash),
     handleStorageChange: (key) => {

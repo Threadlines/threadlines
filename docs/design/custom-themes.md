@@ -75,8 +75,11 @@ thumbnail, the name, "dark · live art", and **Try it**.
 
 **Trying.** Every first application of a custom theme on a device is a
 trial, wherever it starts (the chat row, the `/theme` strip, the Settings
-gallery, an agent's `settings_change`, an imported file). A bar docks above
-the composer: "Keep Aurora? Keep · Undo · switches back in 15s". Keep commits
+gallery, an agent's `settings_change`, an imported file). A bar floats at
+the top of the window: "Keep Aurora? Keep · Undo · switches back in 15s".
+While the `/theme` picker shows a preview, the countdown waits (the picker's
+✕ and Esc are its way back) and starts over if the picker closes another way.
+Keep commits
 it as this device's theme and saves it to the library. Undo, Esc, the
 countdown, reloading, or closing the window all leave the committed theme in
 place. The bar and its buttons render with the built-in tokens, not the
@@ -98,7 +101,10 @@ theme this device already kept skips the trial.
   switch, and a later Undo is the user's own change.
 
 **Library actions** (row menu in Settings): Rename, Duplicate, Export file,
-Copy prompt, Delete. Starters are read-only (Duplicate to change one).
+Copy prompt, Delete. Starters are read-only: their menu has Duplicate (a copy
+in your themes, to change), Export file and Copy prompt. Your themes come
+first in the gallery and the picker; New theme sits in the Theme row and in
+the picker's header.
 
 **Escape hatches.** Command palette "Use default theme", desktop View menu
 "Reset theme", and `?theme=default` on web bypass the saved choice. Settings
@@ -115,9 +121,12 @@ Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. "Art in threads" moves the column's tint
 floor: None (opaque column), Some (default), Full (light tint). Readability
-can always raise a tint. Settings pages work like a thread: the page's column
-is frosted and tinted the full height of the page, and the art shows around
-it. The composer and the panels it opens above itself (the theme picker, the
+can always raise a tint. Settings and every other page (Usage, Scheduled,
+Pull requests, General chats, Fleet) work like a thread: each marks its
+scrolling area and column (`glassPage.ts`), the column is frosted and tinted
+the full height of the page at the theme's own column floor ("Art in threads"
+is about threads), and the art shows beside it. A page that marks nothing is
+frosted whole, so art never shows raw behind its text. The composer and the panels it opens above itself (the theme picker, the
 new-theme hint) are glass too, each over a patch rounded like its outline.
 
 Opaque in glass mode: popovers, menus, dialogs, toasts, the diff, browser,

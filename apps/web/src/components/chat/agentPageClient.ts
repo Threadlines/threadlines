@@ -83,8 +83,8 @@ function agentPageThemeFonts(theme: ActiveTheme): {
   const mono = family("mono");
   return {
     fonts: {
-      sans: sans ? `"${sans}", ${AGENT_PAGE_DEFAULT_FONTS.sans}` : AGENT_PAGE_DEFAULT_FONTS.sans,
-      mono: mono ? `"${mono}", ${AGENT_PAGE_DEFAULT_FONTS.mono}` : AGENT_PAGE_DEFAULT_FONTS.mono,
+      sans: sans ? `${sans}, ${AGENT_PAGE_DEFAULT_FONTS.sans}` : AGENT_PAGE_DEFAULT_FONTS.sans,
+      mono: mono ? `${mono}, ${AGENT_PAGE_DEFAULT_FONTS.mono}` : AGENT_PAGE_DEFAULT_FONTS.mono,
     },
     fontFaces: themeFontFaceCss(fonts, theme.hash),
   };

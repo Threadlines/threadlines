@@ -1256,10 +1256,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
   const [isThemePickerOpen, setIsThemePickerOpen] = useState(false);
-  const [isNewThemeHintOpen, setIsNewThemeHintOpen] = useState(false);
-  // The hint goes once its sentence is sent or cleared.
-  const showNewThemeHint = isNewThemeHintOpen && prompt.startsWith(NEW_THEME_PROMPT.trimEnd());
-  if (isNewThemeHintOpen && !showNewThemeHint) setIsNewThemeHintOpen(false);
+  // The new-theme hint shows while the draft starts with its sentence (New
+  // theme in /theme or in Settings put it there), until its ✕; it goes once
+  // the sentence is sent or cleared, and a new sentence brings it back.
+  const [newThemeHintDismissed, setNewThemeHintDismissed] = useState(false);
+  const draftAsksForTheme = prompt.startsWith(NEW_THEME_PROMPT.trimEnd());
+  const showNewThemeHint = draftAsksForTheme && !newThemeHintDismissed;
+  if (newThemeHintDismissed && !draftAsksForTheme) setNewThemeHintDismissed(false);
   const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
   // Commands this thread will act on: the built-ins plus whatever the selected
   // provider reports. The editor tints the leading token so typed-past-the-menu
@@ -3751,7 +3754,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             }}
             onNewTheme={() => {
               fillComposerPrompt(NEW_THEME_PROMPT);
-              setIsNewThemeHintOpen(true);
+              setNewThemeHintDismissed(false);
             }}
           />
         </div>
@@ -3764,7 +3767,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           <NewThemeHint
             onPickIdea={fillComposerPrompt}
             onClose={() => {
-              setIsNewThemeHintOpen(false);
+              setNewThemeHintDismissed(true);
               composerEditorRef.current?.focusAtEnd();
             }}
           />

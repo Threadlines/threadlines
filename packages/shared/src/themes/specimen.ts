@@ -17,9 +17,10 @@ import type { ThemeFont, ThemeManifest } from "@threadlines/contracts";
 import { BACKDROP_FRAME_SANDBOX, buildBackdropFrameDocument } from "./backdropFrame.ts";
 import { color } from "./color.ts";
 import { glassTextColors } from "./contrast.ts";
+import { cssFontFamilyList } from "./fontFamilies.ts";
 import { resolveThemeTokens, type ThemeTokens, themeTokensCss } from "./tokens.ts";
 
-export type ThemeSpecimenLayout = "thread" | "new-thread";
+export type ThemeSpecimenLayout = "thread" | "new-thread" | "settings";
 
 /** How the specimen shows a theme's art: running, its captured still, or not at all. */
 export type ThemeSpecimenArt = "live" | "still" | "none";
@@ -38,17 +39,6 @@ export const THEME_SPECIMEN_ATTRIBUTES = {
 
 const STILL_DATA_URL = /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/;
 const BASE64 = /^[A-Za-z0-9+/]+=*$/;
-const GENERIC_FAMILIES = new Set([
-  "serif",
-  "sans-serif",
-  "monospace",
-  "system-ui",
-  "ui-sans-serif",
-  "ui-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "cursive",
-]);
 const SANS_FALLBACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
 const MONO_FALLBACK = `ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 
@@ -64,15 +54,6 @@ const scriptJson = (value: unknown) =>
     .replace(/</g, "\\u003c")
     .replace(/\u2028|\u2029/g, " ");
 
-/** A font family list from a manifest, quoted and stripped to safe characters. */
-const familyList = (family: string) =>
-  family
-    .split(",")
-    .map((name) => name.replace(/["'\\]/g, "").trim())
-    .filter((name) => /^[\w .-]+$/.test(name))
-    .map((name) => (GENERIC_FAMILIES.has(name) ? name : `"${name}"`))
-    .join(", ");
-
 /** The `@font-face` rule (embedded fonts only) and the stack for one font slot. */
 const fontFor = (font: ThemeFont | undefined, slot: "ui" | "mono", fallback: string) => {
   if (font === undefined) return { face: "", stack: fallback };
@@ -80,7 +61,7 @@ const fontFor = (font: ThemeFont | undefined, slot: "ui" | "mono", fallback: str
   const face = embedded
     ? `@font-face{font-family:"tl-theme-${slot}";src:url(data:font/woff2;base64,${font.data}) format("woff2");font-weight:${font.weight ?? 400};}`
     : "";
-  const named = familyList(font.family);
+  const named = cssFontFamilyList(font.family) ?? "";
   const stack = [embedded ? `"tl-theme-${slot}"` : "", named, fallback]
     .filter((part) => part.length > 0)
     .join(", ");
@@ -176,7 +157,25 @@ a{color:var(--primary-readable);text-decoration:none}
 .fresh .stack{width:min(720px,100% - 48px);display:flex;flex-direction:column;align-items:center;gap:12px}
 .fresh h1{margin:0 0 6px;font-size:22px;font-weight:600}
 .fresh .under{color:var(--muted-foreground)}
-.fresh .links{display:flex;gap:18px;color:var(--muted-foreground);font-size:12.5px}`;
+.fresh .links{display:flex;gap:18px;color:var(--muted-foreground);font-size:12.5px}
+.page{width:min(720px,100% - 48px);height:100%;display:flex;flex-direction:column;gap:14px;padding:26px 0 20px}
+.page h1{margin:0;font-size:22px;font-weight:600}
+.page .lede{margin:-8px 0 4px;color:var(--muted-foreground)}
+.page h2{margin:6px 0 -6px;font-size:15px;font-weight:600}
+.group{background:var(--group);box-shadow:inset 0 0 0 1px var(--group-ring);border-radius:12px}
+.set{display:flex;align-items:center;gap:16px;padding:11px 14px}
+.set+.set{box-shadow:inset 0 1px 0 var(--group-divider)}
+.set .what{flex:1;min-width:0}
+.set .what b{display:block;font-weight:500}
+.set .what span{color:var(--group-muted-foreground);font-size:12.5px}
+.seg{display:flex;padding:2px;border-radius:8px;background:var(--segmented-track);font-size:12px}
+.seg span{padding:3px 10px;border-radius:6px;color:var(--muted-foreground)}
+.seg .on{background:var(--control);color:var(--foreground)}
+.switch{width:30px;height:18px;border-radius:9px;background:var(--switch-off);position:relative}
+.switch.on{background:var(--primary)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.switch.on::after{left:14px}
+.btn{padding:4px 10px;border-radius:7px;background:var(--control);font-size:12.5px}`;
 };
 
 const THREADS = [
@@ -215,6 +214,24 @@ const threadMarkup = (name: string) => `<main class="main">
 <div class="warn">⚠ The art goes still on battery when it gets heavy.</div>
 <div class="meta">Worked for 2m 14s · 3 files changed</div></div>
 ${composer("Ask for a change…")}
+</div></div></main>`;
+
+const settingsMarkup = (name: string) => `<main class="main">
+<div class="scroll"><div class="page" data-zone="column">
+<h1>General</h1>
+<p class="lede">How Threadlines looks, how chats show, and this computer.</p>
+<h2>Appearance</h2>
+<div class="group">
+<div class="set"><div class="what"><b>Theme</b><span>${name}, kept on this device</span></div><span class="btn">New theme</span></div>
+<div class="set"><div class="what"><b>Art in threads</b><span>How much of the art shows behind a thread.</span></div><div class="seg"><span>None</span><span class="on">Some</span><span>Full</span></div></div>
+<div class="set"><div class="what"><b>Motion</b><span>Live art, or a still picture of it.</span></div><div class="seg"><span class="on">Live</span><span>Still</span></div></div>
+</div>
+<h2>Chats</h2>
+<div class="group">
+<div class="set"><div class="what"><b>Stream replies</b><span>Show replies as they're written.</span></div><div class="switch on"></div></div>
+<div class="set"><div class="what"><b>Timestamps</b><span>12-hour clock, like 3:42 PM.</span></div><div class="switch"></div></div>
+<div class="set"><div class="what"><b>Wrap long code lines</b><span>Instead of scrolling sideways.</span></div><div class="switch on"></div></div>
+</div>
 </div></div></main>`;
 
 const newThreadMarkup =
@@ -332,7 +349,11 @@ export function buildThemeSpecimenDocument(input: {
     manifest: input.manifest,
     art: input.art ?? "live",
     body: `<div class="app" style="min-width:${Math.round(input.width)}px">${frameMarkup(name)}${
-      input.layout === "thread" ? threadMarkup(name) : newThreadMarkup()
+      input.layout === "thread"
+        ? threadMarkup(name)
+        : input.layout === "settings"
+          ? settingsMarkup(name)
+          : newThreadMarkup()
     }</div>`,
   });
 }
