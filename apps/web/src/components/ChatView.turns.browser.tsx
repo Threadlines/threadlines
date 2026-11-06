@@ -306,7 +306,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 320 },
     { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 300 },
   ])(
-    "keeps one composer row with the add menu and the settings button ($name)",
+    "keeps wrapped settings and message actions contained ($name)",
     async ({ viewport, composerWidth }) => {
       const mounted = await mountChatView({
         viewport,
@@ -357,12 +357,12 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
             const rightRect = rightActions.getBoundingClientRect();
             const addRect = addButton.getBoundingClientRect();
 
-            const leftCenter = (leftRect.top + leftRect.bottom) / 2;
-            const rightCenter = (rightRect.top + rightRect.bottom) / 2;
-            expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
+            expect(
+              leftRect.right <= rightRect.left + 0.5 || leftRect.bottom <= rightRect.top + 0.5,
+            ).toBe(true);
             expect(addRect.left).toBeGreaterThanOrEqual(leftRect.left - 0.5);
             expect(addRect.right).toBeLessThanOrEqual(leftRect.right + 0.5);
-            expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
+            expect(leftRect.left).toBeGreaterThanOrEqual(footerRect.left - 0.5);
             expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
             expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
             expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
@@ -377,7 +377,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     },
   );
 
-  it("drops the settings button's effort before the model name when the row narrows, and brings it back", async () => {
+  it("keeps shared settings reachable when the row narrows and expands", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
@@ -395,8 +395,8 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         "Unable to find provider model picker.",
       );
       const effort = await waitForElement(
-        () => modelButton.querySelector<HTMLElement>('[data-model-picker-trigger-effort="true"]'),
-        "Unable to find the settings button's effort.",
+        () => footer.querySelector<HTMLElement>('button[aria-label^="Effort:"]') ?? null,
+        "Unable to find the footer effort control.",
       );
       await vi.waitFor(() => {
         expect(effort.textContent).toContain("Medium");
@@ -405,12 +405,13 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
 
       await setVisibleComposerFormWidth(380);
       await vi.waitFor(() => {
-        expect(getComputedStyle(effort).display).toBe("none");
+        expect(getComputedStyle(effort).display).not.toBe("none");
+        expect(effort.getBoundingClientRect().width).toBeGreaterThan(0);
         expect(modelButton.textContent).toContain("GPT-5");
         expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
       });
 
-      // The way back: room returns, so does the effort.
+      // The same control remains available when room returns.
       await setVisibleComposerFormWidth(900);
       await vi.waitFor(() => {
         expect(getComputedStyle(effort).display).not.toBe("none");
@@ -420,13 +421,12 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
-  it("changes effort from the meter in the settings and stays open for more changes", async () => {
+  it("uses the shared settings in the model panel and restores focus on Escape", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
       configureFixture: withEffortModel,
     });
-
     try {
       await waitForServerConfigToApply();
       const footer = await waitForElement(
@@ -437,47 +437,141 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find provider model picker.",
       );
-      const buttonEffort = () =>
-        modelButton.querySelector<HTMLElement>('[data-model-picker-trigger-effort="true"]')
-          ?.textContent;
-      await vi.waitFor(() => expect(buttonEffort()).toContain("Medium"));
-
       modelButton.click();
-      const meter = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-effort-meter="true"]'),
-        "Unable to find the effort meter.",
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-model-picker-settings="true"]'),
+        "Unable to find model settings.",
       );
-      const level = (id: string) =>
-        meter.querySelector<HTMLButtonElement>(`[data-effort-level="${id}"]`)!;
-      expect(level("medium").getAttribute("aria-checked")).toBe("true");
-
-      level("high").click();
+      const effort = await waitForElement(
+        () => panel.querySelector<HTMLButtonElement>('button[aria-label="Effort: Medium"]'),
+        "Unable to find shared effort settings.",
+      );
+      effort.click();
+      await page.getByRole("menuitemradio", { name: "High", exact: true }).click();
       await vi.waitFor(() => {
-        expect(buttonEffort()).toContain("High");
-        expect(level("high").getAttribute("aria-checked")).toBe("true");
+        expect(footer.querySelector('button[aria-label="Effort: High"]')).not.toBeNull();
+        expect(panel.querySelector('button[aria-label="Effort: High"]')).not.toBeNull();
       });
-      // Still open: the model list and the rest of the settings are right there.
-      expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
-
-      // The arrow keys step one level at a time, and focus follows. The key
-      // goes to the level itself: on a busy CI runner something in the picker
-      // can take focus back to its search field, and a key sent to whatever
-      // has focus lands there instead.
-      let mediumFocused = false;
-      level("medium").addEventListener(
-        "focus",
-        () => {
-          mediumFocused = true;
-        },
-        { once: true },
+      const high = panel.querySelector<HTMLButtonElement>('button[aria-label="Effort: High"]')!;
+      high.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      const selected = await waitForElement(
+        () => document.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]'),
+        "Unable to find selected effort.",
       );
-      level("high").dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
-      );
+      selected.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+      selected.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await vi.waitFor(() => {
-        expect(buttonEffort()).toContain("Medium");
-        expect(mediumFocused).toBe(true);
+        expect(document.activeElement).toBe(high);
+        expect(document.querySelector('[role="menuitemradio"][aria-checked="true"]')).toBeNull();
+        expect(high.textContent).toContain("High");
+        expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sets effort and speed from the footer menus while keeping the draft and other options", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "Review the settings page.");
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+      configureFixture: (nextFixture) => {
+        withEffortModel(nextFixture);
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: nextFixture.serverConfig.providers.map((provider) => ({
+            ...provider,
+            models: provider.models.map((model) => ({
+              ...model,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select",
+                    options: [
+                      { id: "low", label: "Low" },
+                      { id: "medium", label: "Medium", isDefault: true },
+                      { id: "high", label: "High" },
+                      { id: "xhigh", label: "Extra High" },
+                      { id: "max", label: "Max" },
+                      { id: "ultra", label: "Ultra" },
+                    ],
+                  },
+                  { id: "fastMode", label: "Fast Mode", type: "boolean" },
+                ],
+              }),
+            })),
+          })),
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await page.getByRole("button", { name: "Effort: Medium", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Ultra", exact: true }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Effort: Ultra", exact: true }))
+        .toBeVisible();
+      const themeRoot = document.documentElement;
+      const wasDark = themeRoot.classList.contains("dark");
+      const ultra = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Effort: Ultra"]',
+      )!;
+      ultra.click();
+      const menu = await waitForElement(
+        () => document.querySelector<HTMLElement>(".ai-settings-menu"),
+        "Unable to find shared effort menu.",
+      );
+      try {
+        themeRoot.classList.remove("dark");
+        const lightBackground = getComputedStyle(menu).backgroundColor;
+        await page.screenshot({ path: "__screenshots__/shared-ai-footer-light-menu.png" });
+        themeRoot.classList.add("dark");
+        await vi.waitFor(() =>
+          expect(getComputedStyle(menu).backgroundColor).not.toBe(lightBackground),
+        );
+        const bounds = menu.getBoundingClientRect();
+        expect(bounds.left).toBeGreaterThanOrEqual(0);
+        expect(bounds.top).toBeGreaterThanOrEqual(0);
+        expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
+        expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+        expect(menu.querySelectorAll(".ai-settings-bars")).toHaveLength(6);
+        await page.screenshot({ path: "__screenshots__/shared-ai-footer-dark-menu.png" });
+      } finally {
+        themeRoot.classList.toggle("dark", wasDark);
+        menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      }
+      await page.getByRole("button", { name: "Fast Mode: Normal", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Fast", exact: true }).click();
+      const savedOptions = () =>
+        useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.modelSelectionByProvider[
+          ProviderInstanceId.make("codex")
+        ]?.options;
+      await vi.waitFor(() => {
+        expect(savedOptions()).toEqual(
+          expect.arrayContaining([
+            { id: "reasoningEffort", value: "ultra" },
+            { id: "fastMode", value: true },
+          ]),
+        );
+      });
+      // Both choices are reversible and preserve one another.
+      await page.getByRole("button", { name: "Effort: Ultra", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Low", exact: true }).click();
+      await page.getByRole("button", { name: "Fast Mode: Fast", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Normal", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(savedOptions()).toEqual(
+          expect.arrayContaining([
+            { id: "reasoningEffort", value: "low" },
+            { id: "fastMode", value: false },
+          ]),
+        );
+      });
+      await waitForComposerText("Review the settings page.");
     } finally {
       await mounted.cleanup();
     }

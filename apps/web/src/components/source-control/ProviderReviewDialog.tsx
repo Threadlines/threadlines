@@ -132,7 +132,6 @@ export const ProviderReviewDialog = memo(function ProviderReviewDialog({
                   models={activeProviderEntry.models}
                   model={modelSelection.model}
                   modelOptions={modelSelection.options}
-                  triggerVariant="outline"
                   triggerClassName="w-full max-w-none justify-start"
                   onModelOptionsChange={(options) => {
                     onModelSelectionChange(

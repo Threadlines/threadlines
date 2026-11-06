@@ -154,7 +154,6 @@ export function ModelSelectionControl({
           model={selection.model}
           modelOptions={selection.options}
           {...(omitOptionIds ? { omitOptionIds } : {})}
-          triggerVariant={variant}
           triggerClassName={triggerClassName}
           onModelOptionsChange={(nextOptions) => {
             onSelectionChange(

@@ -1320,6 +1320,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // Narrower: the idle agent drops before the name gets short; the one at
       // work stays.
       await mounted.setViewport({ ...PHONE_VIEWPORT, width: 345 });
+      await mounted.setComposerWidth(210);
       await vi.waitFor(
         () => {
           expectRowFits();
@@ -1330,6 +1331,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       );
 
       await mounted.setViewport({ ...PHONE_VIEWPORT, width: 335 });
+      await mounted.setComposerWidth(200);
       await vi.waitFor(
         () => {
           expectRowFits();

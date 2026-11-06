@@ -37,7 +37,7 @@ The sliders button beside the project picker at the top of the sidebar groups th
 
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
 
-The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort, Build or Plan mode, and the access level.
+The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer. The footer also has separate effort, Build or Plan, access and speed controls when the agent offers them. On phones the settings wrap so every choice stays reachable, and the same controls also appear in the model button's panel.
 
 While an agent works, the arrow beside the send button picks how a message goes: Steer now adds it to the reply in progress, Send when done holds it for the next one, and the choice sticks. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
 
@@ -51,7 +51,7 @@ When a thread is done it wraps up and moves to the Wrapped shelf at the bottom o
     id: "access-levels",
     title: "Access levels",
     keywords: ["access", "permissions", "approval", "sandbox", "full access", "auto", "supervised"],
-    body: `Each thread runs at an access level, picked under the model button in the composer:
+    body: `Each thread runs at an access level, picked in the composer footer or under its model button:
 
 - Supervised: asks before commands and file changes.
 - Auto-accept edits: edits run without asking; other actions ask.

@@ -27,11 +27,7 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@threadlines/contracts";
-import {
-  createModelSelection,
-  getProviderOptionCurrentLabel,
-  normalizeModelSlug,
-} from "@threadlines/shared/model";
+import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import {
   memo,
   type ReactNode,
@@ -114,7 +110,8 @@ import {
   ComposerPromptEditor,
 } from "../ComposerPromptEditor";
 import { type ComposerPromptSuggestionDisplay } from "./ComposerPromptSuggestion";
-import { type ModelPickerTriggerSummary, ProviderModelPicker } from "./ProviderModelPicker";
+import { ProviderModelPicker } from "./ProviderModelPicker";
+import { ComposerFooter } from "./composer-footer/ComposerFooter";
 import { ModelPickerSettings, type ModelPickerTraitsTarget } from "./ModelPickerSettings";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { useComposerMenuRoom } from "./useComposerMenuRoom";
@@ -205,12 +202,7 @@ import { getPickerModelName } from "./providerIconUtils";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
-import {
-  getTraitsSectionVisibility,
-  getTraitSwitchControls,
-  isFastModeControl,
-  shouldRenderTraitsControls,
-} from "./traitControls";
+import { shouldRenderTraitsControls } from "./traitControls";
 import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
@@ -1621,9 +1613,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Provider traits UI
   // ------------------------------------------------------------------
-  const ownWorkflowRunning = (activeThread?.workflowRuns ?? []).some(
-    (run) => run.status === "running" && run.owner.participantId === null,
-  );
   // The thread's own agent keeps its options in the composer draft, sticky
   // for its next turn.
   const ownTraitsTarget: ModelPickerTraitsTarget | null =
@@ -1646,10 +1635,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             draftId,
           }
         : null;
-  // In a room, only while the thread's own agent is the one working; and
-  // while a workflow the thread's own agent started is still going, since
-  // that is Ultracode's work too after the turn has ended.
-  const ownTraitsWorking = (hasActiveTurn && roomWorkingId == null) || ownWorkflowRunning;
   // An added agent keeps its own reasoning and the like. Picking them here
   // holds them until the next turn for that agent, which carries them.
   const addressedRoomAgent =
@@ -1686,9 +1671,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : ownTraitsTarget !== null && shouldRenderTraitsControls(ownTraitsTarget)
       ? ownTraitsTarget
       : null;
-  const settingsTraitsWorking = addressingRoomAgent
-    ? (roomAgentTraitsProps?.working ?? false)
-    : ownTraitsWorking;
 
   // The access level is the thread's, and each agent runs it at what its own
   // agent and model offer, so the controls describe the agent the next message
@@ -1722,31 +1704,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderModels,
     selectedProviderStatus,
   ]);
-
-  // What the settings button says besides the model: the effort, and the
-  // settings worth seeing because they are not the usual.
-  const settingsTraits = settingsTraitsTarget
-    ? getTraitsSectionVisibility({
-        provider: settingsTraitsTarget.provider,
-        models: settingsTraitsTarget.models,
-        model: settingsTraitsTarget.model,
-        modelOptions: settingsTraitsTarget.modelOptions,
-      })
-    : null;
-  const settingsTriggerSummary: ModelPickerTriggerSummary = {
-    effort: settingsTraits?.reasoningDescriptor
-      ? (getProviderOptionCurrentLabel(settingsTraits.reasoningDescriptor) ?? null)
-      : null,
-    ultracode: settingsTraits?.ultracodeEnabled ?? false,
-    fastMode: settingsTraits
-      ? getTraitSwitchControls(settingsTraits.descriptors).some(
-          (control) => isFastModeControl(control) && control.checked,
-        )
-      : false,
-    plan: interactionMode === "plan",
-    fullAccess: accessLevel.shown === "full-access",
-    working: settingsTraitsWorking,
-  };
 
   // The settings panel's Mode and Access rows. They keep focus in the panel,
   // so several settings can change in one visit.
@@ -4260,65 +4217,63 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   {approvalSendButton ?? sideStopButton}
                 </div>
               ) : (
-                <div
-                  data-chat-composer-footer="true"
-                  className="flex min-w-0 flex-nowrap items-center justify-between gap-x-1.5 overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3"
-                >
-                  <div
-                    data-chat-composer-actions="left"
-                    data-model-fallback-chip={
-                      activeModelFallback && activeFallbackModelDisplayName ? "true" : undefined
-                    }
-                    // The settings button's effort, and a room's faded agent
-                    // icons, drop out when this row leaves too little room for
-                    // the model name (container queries in ProviderModelPicker).
-                    className="group/composer-left @container/composer-left -m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                  >
-                    <input
-                      ref={imageFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <input
-                      ref={cameraFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <input
-                      ref={attachmentFileInputRef}
-                      type="file"
-                      accept={ALL_ATTACHMENT_ACCEPT}
-                      multiple
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <ComposerAddMenu
-                      isMobileViewport={isMobileViewport}
-                      disabled={attachmentsDisabled}
-                      disabledReason={attachmentsDisabledReason}
-                      canReferenceProjectFiles={canReferenceWorkspaceFiles}
-                      onAttachFiles={openAttachmentFilePicker}
-                      onAddPhotos={openImageFilePicker}
-                      onTakePhoto={openCameraPicker}
-                      onReferenceProjectFile={referenceProjectFile}
-                      stash={stashProps}
-                      open={isAddMenuOpen}
-                      onOpenChange={setIsAddMenuOpen}
-                      stashListOpen={isStashListOpen}
-                      onStashListOpenChange={setIsStashListOpen}
-                    />
+                <ComposerFooter
+                  traits={settingsTraitsTarget}
+                  mode={settingsModeControl}
+                  access={settingsAccessControl}
+                  primaryActionsRef={observeComposerFooterReserve}
+                  compactPrimaryActions={isComposerPrimaryActionsCompact}
+                  hasModelNotice={!!(activeModelFallback && activeFallbackModelDisplayName)}
+                  attachments={
+                    <>
+                      <input
+                        ref={imageFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <input
+                        ref={cameraFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <input
+                        ref={attachmentFileInputRef}
+                        type="file"
+                        accept={ALL_ATTACHMENT_ACCEPT}
+                        multiple
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <ComposerAddMenu
+                        isMobileViewport={isMobileViewport}
+                        disabled={attachmentsDisabled}
+                        disabledReason={attachmentsDisabledReason}
+                        canReferenceProjectFiles={canReferenceWorkspaceFiles}
+                        onAttachFiles={openAttachmentFilePicker}
+                        onAddPhotos={openImageFilePicker}
+                        onTakePhoto={openCameraPicker}
+                        onReferenceProjectFile={referenceProjectFile}
+                        stash={stashProps}
+                        open={isAddMenuOpen}
+                        onOpenChange={setIsAddMenuOpen}
+                        stashListOpen={isStashListOpen}
+                        onStashListOpenChange={setIsStashListOpen}
+                      />
+                    </>
+                  }
+                  modelPicker={
                     <ProviderModelPicker
                       compact={isMobileViewport}
                       // In a room the button names who the message goes to,
@@ -4334,7 +4289,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       providerSettingsShown={isAppBackendEnvironment(environmentId)}
                       side="top"
                       open={isComposerModelPickerOpen}
-                      summary={settingsTriggerSummary}
                       settings={
                         <ModelPickerSettings
                           traits={settingsTraitsTarget}
@@ -4361,46 +4315,41 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       }}
                       onInstanceModelChange={onProviderModelSelect}
                     />
-                    {activeModelFallback && activeFallbackModelDisplayName ? (
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <span
-                              data-chat-model-fallback-chip="true"
-                              className={cn(
-                                "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
-                                isMobileViewport ? "max-w-36" : "max-w-52",
-                              )}
-                            />
-                          }
-                        >
-                          <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
-                          <span className="min-w-0 truncate">
-                            {isMobileViewport
-                              ? activeFallbackModelDisplayName
-                              : `Fallback: ${activeFallbackModelDisplayName}`}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipPopup
-                          side="top"
-                          className="max-w-72 whitespace-normal leading-tight"
-                        >
-                          {activeModelFallback.detail ??
-                            `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
-                        </TooltipPopup>
-                      </Tooltip>
-                    ) : null}
-                  </div>
-
-                  {/* Right side: dictation, the context ring, send / stop */}
-                  <div
-                    ref={observeComposerFooterReserve}
-                    data-chat-composer-actions="right"
-                    data-chat-composer-primary-actions-compact={
-                      isComposerPrimaryActionsCompact ? "true" : "false"
-                    }
-                    className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-1.5 sm:gap-2"
-                  >
+                  }
+                  modelNotice={
+                    <>
+                      {activeModelFallback && activeFallbackModelDisplayName ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <span
+                                data-chat-model-fallback-chip="true"
+                                className={cn(
+                                  "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
+                                  isMobileViewport ? "max-w-36" : "max-w-52",
+                                )}
+                              />
+                            }
+                          >
+                            <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
+                            <span className="min-w-0 truncate">
+                              {isMobileViewport
+                                ? activeFallbackModelDisplayName
+                                : `Fallback: ${activeFallbackModelDisplayName}`}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipPopup
+                            side="top"
+                            className="max-w-72 whitespace-normal leading-tight"
+                          >
+                            {activeModelFallback.detail ??
+                              `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
+                          </TooltipPopup>
+                        </Tooltip>
+                      ) : null}
+                    </>
+                  }
+                  dictation={
                     <ComposerDictationControl
                       environmentId={environmentId}
                       disabled={dictationDisabledReason !== null}
@@ -4408,7 +4357,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       isMobileViewport={isMobileViewport}
                       dictation={dictation}
                     />
-
+                  }
+                  primaryActions={
                     <ComposerFooterPrimaryActions
                       compact={isComposerPrimaryActionsCompact}
                       activeContextWindow={activeContextWindow}
@@ -4459,8 +4409,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         meterShowsSlotHolder ? contextCompactDisabledReason : undefined
                       }
                     />
-                  </div>
-                </div>
+                  }
+                />
               )}
             </>
           )}

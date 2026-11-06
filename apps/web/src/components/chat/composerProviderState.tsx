@@ -1,8 +1,6 @@
 import {
   type ProviderDriverKind,
-  type ProviderInstanceId,
   type ProviderOptionSelection,
-  type ScopedThreadRef,
   type ServerProviderModel,
 } from "@threadlines/contracts";
 import {
@@ -11,12 +9,8 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@threadlines/shared/model";
-import type { ReactNode } from "react";
 
-import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
-import { shouldRenderTraitsControls } from "./traitControls";
-import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -39,19 +33,6 @@ export type ComposerProviderState = {
   modelPickerIconClassName?: string;
 };
 
-type TraitsRenderInput = {
-  provider: ProviderDriverKind;
-  instanceId?: ProviderInstanceId;
-  threadRef?: ScopedThreadRef;
-  draftId?: DraftId;
-  model: string;
-  models: ReadonlyArray<ServerProviderModel>;
-  modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
-  iconOnly?: boolean;
-  /** Claude is working on this thread, which lets an active Ultracode glint. */
-  working?: boolean;
-};
-
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const { provider, model, models, modelOptions } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
@@ -72,46 +53,4 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
     contextWindowLabel: getProviderOptionCurrentLabel(contextWindowDescriptor) ?? null,
   };
-}
-
-function renderTraitsControl(
-  Component: typeof TraitsMenuContent | typeof TraitsPicker,
-  input: TraitsRenderInput,
-): ReactNode {
-  const {
-    provider,
-    instanceId,
-    threadRef,
-    draftId,
-    model,
-    models,
-    modelOptions,
-    iconOnly,
-    working,
-  } = input;
-  const hasTarget = threadRef !== undefined || draftId !== undefined;
-  if (!hasTarget || !shouldRenderTraitsControls({ provider, models, model, modelOptions })) {
-    return null;
-  }
-  return (
-    <Component
-      provider={provider}
-      {...(instanceId ? { instanceId } : {})}
-      models={models}
-      {...(threadRef ? { threadRef } : {})}
-      {...(draftId ? { draftId } : {})}
-      model={model}
-      modelOptions={modelOptions}
-      {...(iconOnly !== undefined ? { iconOnly } : {})}
-      {...(working !== undefined ? { working } : {})}
-    />
-  );
-}
-
-export function renderProviderTraitsMenuContent(input: TraitsRenderInput): ReactNode {
-  return renderTraitsControl(TraitsMenuContent, input);
-}
-
-export function renderProviderTraitsPicker(input: TraitsRenderInput): ReactNode {
-  return renderTraitsControl(TraitsPicker, input);
 }

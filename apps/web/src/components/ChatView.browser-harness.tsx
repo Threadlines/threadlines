@@ -2844,9 +2844,11 @@ export async function waitForButtonContainingText(text: string): Promise<HTMLBut
 export async function waitForSelectItemContainingText(text: string): Promise<HTMLElement> {
   return waitForElement(
     () =>
-      Array.from(document.querySelectorAll<HTMLElement>('[data-slot="select-item"]')).find((item) =>
-        item.textContent?.includes(text),
-      ) ?? null,
+      Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-slot="select-item"], .ai-settings-menu [role="menuitemradio"]',
+        ),
+      ).find((item) => item.textContent?.includes(text)) ?? null,
     `Unable to find select item containing "${text}".`,
   );
 }
@@ -2973,19 +2975,16 @@ export async function dragRightPanelFarWider(): Promise<void> {
 }
 
 /**
- * Waits for the composer's mode: Plan shows on its settings button, Build
- * (the usual) does not.
+ * Waits for the composer's shared mode control, which wraps in a narrow pane.
  */
 export async function waitForComposerInteractionMode(expected: "Build" | "Plan"): Promise<void> {
   await vi.waitFor(
     () => {
       const button = document.querySelector<HTMLButtonElement>(
-        '[data-chat-provider-model-picker="true"]',
+        '[data-chat-composer-footer="true"] button[aria-label^="Mode:"]',
       );
       expect(button).not.toBeNull();
-      expect(button!.querySelector('[data-model-picker-trigger-plan="true"]') !== null).toBe(
-        expected === "Plan",
-      );
+      expect(button!.getAttribute("aria-label")).toBe(`Mode: ${expected}`);
     },
     { timeout: 8_000, interval: 16 },
   );

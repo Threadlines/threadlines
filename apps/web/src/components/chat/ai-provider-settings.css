@@ -1,0 +1,24 @@
+.threadlines-ai-settings .ai-settings {
+  min-width: 0;
+  --ai-settings-foreground: var(--foreground);
+  --ai-settings-muted: var(--muted-foreground);
+  --ai-settings-border: var(--border);
+  --ai-settings-background: transparent;
+  --ai-settings-menu-background: var(--popover);
+  --ai-settings-hover: var(--accent);
+  --ai-settings-checked: color-mix(in oklab, var(--primary) 35%, var(--popover));
+  --ai-settings-accent: var(--primary-graph);
+  --ai-settings-ultra: var(--color-violet-600);
+  --ai-settings-font-size: 13.5px;
+}
+.dark .threadlines-ai-settings .ai-settings {
+  --ai-settings-ultra: var(--color-violet-400);
+}
+
+.threadlines-ai-settings .ai-settings-model > div {
+  min-width: 0;
+  max-width: 100%;
+}
+.composer-footer-controls > .threadlines-ai-settings > .ai-settings {
+  flex: 1;
+}

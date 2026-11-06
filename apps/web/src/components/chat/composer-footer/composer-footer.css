@@ -1,0 +1,90 @@
+/* The shared AI settings control owns its toolbar and portalled menus. */
+.composer-footer-container {
+  container-type: inline-size;
+  container-name: composer-footer;
+  padding: 0 12px 12px;
+}
+.composer-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xl);
+  background: color-mix(in oklab, var(--card) 65%, var(--background));
+}
+.composer-footer-controls {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.composer-footer-section {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+.composer-footer-controls > .threadlines-ai-settings {
+  flex: 1;
+  min-width: 0;
+}
+.composer-footer-controls > .threadlines-ai-settings::before,
+.composer-footer-voice::before {
+  content: "";
+  flex: 0 0 1px;
+  height: 23px;
+  margin: 0 7px;
+  background: var(--border);
+}
+.composer-footer-controls > .threadlines-ai-settings {
+  display: flex;
+  align-items: center;
+}
+.threadlines-ai-settings [data-chat-provider-model-picker] {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  height: 30px;
+  gap: 9px;
+  padding-inline: 9px;
+  border-radius: var(--radius-lg);
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--foreground);
+}
+.composer-footer-actions,
+.composer-footer-voice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.composer-footer-actions {
+  margin-inline-start: auto;
+}
+@media (width < 640px) {
+  .composer-footer-container {
+    padding: 0 9px 10px;
+  }
+  .composer-footer {
+    padding-inline: 0;
+  }
+  .composer-footer-voice::before {
+    display: none;
+  }
+}
+@container composer-footer (max-width: 520px) {
+  .composer-footer {
+    flex-wrap: wrap;
+  }
+  .composer-footer-controls {
+    flex-basis: 100%;
+  }
+  .composer-footer-actions {
+    margin-inline-start: auto;
+  }
+}

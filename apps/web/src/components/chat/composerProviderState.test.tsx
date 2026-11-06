@@ -5,11 +5,7 @@ import {
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@threadlines/contracts";
-import {
-  getComposerProviderState,
-  renderProviderTraitsMenuContent,
-  renderProviderTraitsPicker,
-} from "./composerProviderState";
+import { getComposerProviderState } from "./composerProviderState";
 
 // Everything in composerProviderState is now data-driven by the model's
 // optionDescriptors, so these tests use a single synthetic provider/model and
@@ -210,22 +206,5 @@ describe("getComposerProviderState", () => {
       modelOptionsForDispatch: selections(["effort", "ultracode"]),
       contextWindowLabel: null,
     });
-  });
-});
-
-describe("provider traits render guards", () => {
-  it("returns null when no thread target is provided", () => {
-    const models = modelWith([
-      selectDescriptor("effort", [{ id: "high", label: "High", isDefault: true }]),
-    ]);
-    const args = {
-      provider: PROVIDER,
-      model: MODEL,
-      models,
-      modelOptions: undefined,
-    };
-
-    expect(renderProviderTraitsPicker(args)).toBeNull();
-    expect(renderProviderTraitsMenuContent(args)).toBeNull();
   });
 });
