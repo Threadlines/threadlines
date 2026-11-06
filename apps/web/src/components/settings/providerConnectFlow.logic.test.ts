@@ -314,21 +314,4 @@ describe("provider connect flow state", () => {
     expect(shouldAutoExpandTerminal({ status: "failed", runningForMs: 0 })).toBe(true);
     expect(shouldAutoExpandTerminal({ status: "succeeded", runningForMs: 60_000 })).toBe(false);
   });
-
-  it("uses token wording for the setup-token flow", () => {
-    const succeeded: ProviderConnectFlowState = {
-      ...initialProviderConnectFlowState,
-      status: "succeeded",
-    };
-    expect(
-      providerConnectStatusLine({
-        flow: "claude-setup-token",
-        state: succeeded,
-        displayName: "Claude",
-      }),
-    ).toBe("Token saved");
-    expect(
-      providerConnectStatusLine({ flow: "login", state: succeeded, displayName: "Claude" }),
-    ).toBe("Signed in");
-  });
 });

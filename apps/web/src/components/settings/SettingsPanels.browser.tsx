@@ -2695,12 +2695,6 @@ describe("GeneralSettingsPanel observability", () => {
     await openProviderDetails("Claude");
     await expect.element(page.getByText("Chat configured")).toBeVisible();
     await expect.element(page.getByText("Usage verified")).toBeVisible();
-    const advancedTokenLabel = page.getByText("Advanced: headless chat token");
-    await expect.element(advancedTokenLabel).toBeVisible();
-    const advancedTokenToggle = advancedTokenLabel.element().closest("summary");
-    if (!advancedTokenToggle) throw new Error("Claude details panel did not render");
-    await page.elementLocator(advancedTokenToggle).click();
-    await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
   it("says a Claude row is signed out of usage and opens its sign-in from there", async () => {

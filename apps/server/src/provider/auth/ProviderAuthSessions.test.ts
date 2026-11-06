@@ -174,96 +174,6 @@ const outputOf = (events: ReadonlyArray<ProviderAuthEvent>) =>
     .trimEnd();
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSessions", (it) => {
-  it.effect("captures a setup token split across chunks, saves it, and masks the broadcast", () =>
-    Effect.gen(function* () {
-      const harness = yield* createSessions();
-      yield* harness.subscribeTo(CLAUDE_INSTANCE);
-      yield* harness.sessions.start({
-        instanceId: CLAUDE_INSTANCE,
-        flow: "claude-setup-token",
-      });
-
-      const process = harness.ptyAdapter.processes[0]!;
-      process.emitData("Your token: sk-ant-oat01-ABCD");
-      process.emitData("EFGH1234\nDone.\n");
-
-      yield* waitFor(harness.getRefreshed.pipe(Effect.map((refreshed) => refreshed.length === 1)));
-
-      const events = yield* harness.getEvents;
-      const output = outputOf(events);
-      expect(output).not.toContain("sk-ant-oat01-");
-      expect(output).toContain("••• captured");
-      expect(statusesOf(events)).toEqual(["idle", "starting", "running", "succeeded"]);
-
-      const settings = yield* harness.settings.getSettings;
-      const environment = settings.providerInstances[CLAUDE_INSTANCE]?.environment ?? [];
-      expect(environment).toEqual([
-        {
-          name: "CLAUDE_CODE_OAUTH_TOKEN",
-          value: "sk-ant-oat01-ABCDEFGH1234",
-          sensitive: true,
-          valueRedacted: false,
-        },
-      ]);
-
-      // A second capture must not re-save or double-refresh.
-      process.emitExit(0);
-      const refreshed = yield* harness.getRefreshed;
-      assert.deepStrictEqual(refreshed, [String(CLAUDE_INSTANCE)]);
-    }).pipe(Effect.provide(settingsLayer)),
-  );
-
-  it.effect("spawns the setup-token pty too wide for the CLI to wrap the token", () =>
-    Effect.gen(function* () {
-      const harness = yield* createSessions();
-      yield* harness.subscribeTo(CLAUDE_INSTANCE);
-      yield* harness.sessions.start({
-        instanceId: CLAUDE_INSTANCE,
-        flow: "claude-setup-token",
-        cols: 100,
-        rows: 20,
-      });
-
-      // The CLI hard-wraps output at the PTY width. A token wider than the
-      // requested viewport must still arrive on one line, or capture would
-      // save a truncated (dead) credential and leak the tail past the mask.
-      const spawnInput = harness.ptyAdapter.spawnInputs[0]!;
-      expect(spawnInput.cols).toBeGreaterThanOrEqual(256);
-
-      // Resizing (e.g. the browser terminal fitting itself) must not shrink
-      // it back down mid-run.
-      yield* harness.sessions.resize({ instanceId: CLAUDE_INSTANCE, cols: 80, rows: 20 });
-      const token = `sk-ant-oat01-${"A".repeat(90)}zbk`;
-      const process = harness.ptyAdapter.processes[0]!;
-      process.emitData(`Your OAuth token (valid for 1 year):\n\n${token}\n\nStore it.\n`);
-
-      yield* waitFor(harness.getRefreshed.pipe(Effect.map((refreshed) => refreshed.length === 1)));
-      const settings = yield* harness.settings.getSettings;
-      const environment = settings.providerInstances[CLAUDE_INSTANCE]?.environment ?? [];
-      expect(environment[0]?.value).toBe(token);
-      expect(outputOf(yield* harness.getEvents)).not.toContain("zbk");
-    }).pipe(Effect.provide(settingsLayer)),
-  );
-
-  it.effect("fails a setup-token run that never prints a token", () =>
-    Effect.gen(function* () {
-      const harness = yield* createSessions();
-      yield* harness.subscribeTo(CLAUDE_INSTANCE);
-      yield* harness.sessions.start({
-        instanceId: CLAUDE_INSTANCE,
-        flow: "claude-setup-token",
-      });
-
-      harness.ptyAdapter.processes[0]!.emitExit(1);
-
-      yield* waitFor(
-        harness.getEvents.pipe(Effect.map((events) => statusesOf(events).includes("failed"))),
-      );
-      const refreshed = yield* harness.getRefreshed;
-      assert.deepStrictEqual(refreshed, []);
-    }).pipe(Effect.provide(settingsLayer)),
-  );
-
   it.effect("re-probes the provider when a login flow exits cleanly", () =>
     Effect.gen(function* () {
       const harness = yield* createSessions();
@@ -435,13 +345,16 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
       }).pipe(Effect.provide(settingsLayer)),
   );
 
-  it.effect("rejects a setup-token flow on a driver that has no such command", () =>
+  it.effect("refuses the retired setup-token flow before starting anything, even for Claude", () =>
     Effect.gen(function* () {
       const harness = yield* createSessions();
-      const error = yield* Effect.flip(
-        harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "claude-setup-token" }),
-      );
-      expect(error).toMatchObject({ _tag: "ProviderAuthError", reason: "unsupportedFlow" });
+      for (const instanceId of [CLAUDE_INSTANCE, CODEX_INSTANCE]) {
+        const error = yield* Effect.flip(
+          harness.sessions.start({ instanceId, flow: "claude-setup-token" }),
+        );
+        expect(error).toMatchObject({ _tag: "ProviderAuthError", reason: "unsupportedFlow" });
+      }
+      assert.deepStrictEqual(harness.ptyAdapter.spawnInputs, []);
     }).pipe(Effect.provide(settingsLayer)),
   );
 

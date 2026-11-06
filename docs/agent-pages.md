@@ -68,8 +68,9 @@ page's Share menu on claude.ai. Publishing the file again updates the page
 already in the chat.
 
 - It needs Claude signed in with a claude.ai account (Pro, Max, Team or
-  Enterprise). An API key cannot publish. A saved long-lived token is untested
-  and, by Anthropic's notes on those tokens, not expected to.
+  Enterprise). An API key cannot publish. A long-lived token set in the
+  environment is untested and, by Anthropic's notes on those tokens, not
+  expected to.
 - Turning the setting on applies to Claude sessions that start afterwards.
   Turning it off also refuses the next publish of a session already running.
 - The copy in the chat is the file as Threadlines read it a moment after

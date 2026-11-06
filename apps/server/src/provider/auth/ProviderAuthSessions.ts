@@ -17,9 +17,9 @@
  *   - A run says whether its command or agent opens the sign-in page itself
  *     (`opensPageItself`), so the client that started it knows whether to
  *     open the page too.
- *   - `claude setup-token` output is scanned for the long-lived OAuth token.
- *     On a match the token is stored as a sensitive instance environment
- *     variable and *masked before fanout*, so no client ever receives it.
+ *   - Claude signs in only through `claude auth login`, Anthropic's own flow.
+ *     Threadlines never mints or saves a Claude token; an older client asking
+ *     for `claude-setup-token` gets `unsupportedFlow` before anything starts.
  *
  * @module provider/auth/ProviderAuthSessions
  */
@@ -36,7 +36,6 @@ import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
   type ProviderInstanceEnvironmentVariable,
-  type ServerSettings,
 } from "@threadlines/contracts";
 import {
   buildProviderAuthCommand,
@@ -44,7 +43,6 @@ import {
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   SELF_OPENING_SIGN_IN_DRIVERS,
-  upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 import { randomUUID } from "node:crypto";
 import * as NodePath from "node:path";
@@ -79,112 +77,11 @@ import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegis
 
 const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 26;
-const DEFAULT_PARTIAL_FLUSH_DELAY_MS = 75;
 const DEFAULT_SCROLLBACK_CHARS = 64_000;
 /** How long a flow waits for its instance to pick up a just-saved setting. */
 const REBUILD_WAIT_INTERVAL_MS = 200;
 const REBUILD_WAIT_ATTEMPTS = 50;
-const CAPTURE_BUFFER_CHARS = 8_192;
-
-/**
- * The setup-token PTY is spawned much wider than any real token and never
- * resized: the CLI hard-wraps its output at the PTY width, and a token
- * wrapped onto a second line would be captured truncated and leak its tail
- * past the mask. At this width the token always arrives on one line; the
- * client's xterm still soft-wraps long lines for display.
- */
-const SETUP_TOKEN_PTY_COLS = 512;
-
-/** Placeholder swapped in for a captured token before any fanout. */
-export const CAPTURED_TOKEN_MASK = "••• captured";
-
-const TOKEN_PREFIX = "sk-ant-oat01-";
-const TOKEN_BODY_CHAR = /[A-Za-z0-9_-]/;
-const TOKEN_PATTERN = /sk-ant-oat01-[A-Za-z0-9_-]+/;
-const TOKEN_PATTERN_GLOBAL = /sk-ant-oat01-[A-Za-z0-9_-]+/g;
-
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-
-/**
- * Index at which a trailing "this could still grow into a token" run starts,
- * or `value.length` when the tail is safe to flush.
- *
- * PTY data arrives in arbitrary chunks, so a token can straddle two events.
- * Holding the candidate tail back until it is terminated is what makes the
- * masking reliable — we never emit half a token and then the other half.
- */
-export function trailingTokenCandidateIndex(value: string): number {
-  const scanStart = Math.max(0, value.length - (TOKEN_PREFIX.length + 512));
-  for (let index = scanStart; index < value.length; index += 1) {
-    const tail = value.slice(index);
-    if (tail.length <= TOKEN_PREFIX.length) {
-      if (TOKEN_PREFIX.startsWith(tail)) {
-        return index;
-      }
-      continue;
-    }
-    if (!tail.startsWith(TOKEN_PREFIX)) {
-      continue;
-    }
-    const body = tail.slice(TOKEN_PREFIX.length);
-    if ([...body].every((character) => TOKEN_BODY_CHAR.test(character))) {
-      return index;
-    }
-  }
-  return value.length;
-}
-
-/**
- * Split buffered PTY output into the part that is safe to broadcast and the
- * part that must stay buffered.
- *
- * `mode`:
- *   - `"line"` — a data chunk just arrived: flush whole lines only.
- *   - `"partial"` — the stream went quiet: flush the partial line too, minus
- *     any trailing token candidate (interactive prompts have no trailing
- *     newline, so without this they would never appear).
- *   - `"final"` — the process exited: nothing more can arrive, flush it all.
- */
-export function splitProviderAuthOutput(
-  buffer: string,
-  mode: "line" | "partial" | "final",
-): { readonly flush: string; readonly pending: string } {
-  if (mode === "final") {
-    return { flush: buffer, pending: "" };
-  }
-  const lineEnd = buffer.lastIndexOf("\n") + 1;
-  if (mode === "line") {
-    return { flush: buffer.slice(0, lineEnd), pending: buffer.slice(lineEnd) };
-  }
-  const rest = buffer.slice(lineEnd);
-  const candidateStart = trailingTokenCandidateIndex(rest);
-  return {
-    flush: buffer.slice(0, lineEnd + candidateStart),
-    pending: rest.slice(candidateStart),
-  };
-}
-
-/**
- * Find a complete token in the raw capture stream.
- *
- * The match must be *terminated* — followed by at least one more character,
- * or the process exited — because a match at the very end of the stream may
- * still grow in the next chunk, and saving a truncated token means saving a
- * dead credential. Newlines are valid terminators only because the
- * setup-token PTY is spawned too wide (`SETUP_TOKEN_PTY_COLS`) for the CLI
- * to ever wrap the token across lines.
- */
-export function findClaudeOAuthToken(value: string, options?: { final?: boolean }): string | null {
-  const match = value.match(TOKEN_PATTERN);
-  if (!match) return null;
-  const endIndex = (match.index ?? 0) + match[0].length;
-  if (endIndex >= value.length && options?.final !== true) return null;
-  return match[0];
-}
-
-export function maskClaudeOAuthTokens(value: string): string {
-  return value.replace(TOKEN_PATTERN_GLOBAL, CAPTURED_TOKEN_MASK);
-}
 
 export interface ProviderAuthSessionsShape {
   /**
@@ -224,7 +121,6 @@ export interface ProviderAuthSessionsOptions {
   ) => Effect.Effect<ProviderInstanceAuthFlows | undefined>;
   readonly homeDir?: string;
   readonly env?: NodeJS.ProcessEnv;
-  readonly partialFlushDelayMs?: number;
   readonly scrollbackChars?: number;
 }
 
@@ -295,14 +191,10 @@ interface SessionState {
   unsubscribeExit: (() => void) | null;
   buffer: string;
   scrollback: string;
-  /** Raw output kept solely for token capture; independent of flush timing. */
-  captureBuffer: string;
   /** The loopback redirects of the sign-in pages this run printed. */
   readonly printedRedirects: PrintedRedirects;
   /** The `state`s of the redirects this run already replayed: each goes once. */
   readonly replayedRedirectStates: Set<string>;
-  flushFiber: Fiber.Fiber<void, never> | null;
-  tokenCaptured: boolean;
 }
 
 function readConfigString(config: unknown, key: string): string {
@@ -357,7 +249,6 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
   const runFork = Effect.runForkWith(context);
   const baseEnv = options.env ?? process.env;
   const homeDir = options.homeDir ?? baseEnv.HOME ?? baseEnv.USERPROFILE ?? process.cwd();
-  const partialFlushDelayMs = options.partialFlushDelayMs ?? DEFAULT_PARTIAL_FLUSH_DELAY_MS;
   const scrollbackChars = options.scrollbackChars ?? DEFAULT_SCROLLBACK_CHARS;
 
   const sessions = new Map<string, SessionState>();
@@ -398,105 +289,17 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       yield* publish(instanceId, { type: "output", instanceId, createdAt, data });
     });
 
-  /**
-   * Persist a captured token into the instance's environment through the
-   * same settings path the manual paste flow uses, so the value lands in the
-   * secret store as a sensitive variable rather than in settings.json.
-   */
-  const persistCapturedToken = (instanceId: ProviderInstanceId, token: string) =>
-    Effect.gen(function* () {
-      const settings = yield* options.settings.getSettings;
-      const instance = deriveProviderInstanceConfigMap(settings)[instanceId];
-      if (!instance) {
-        return yield* Effect.fail(
-          new ProviderAuthError({ instanceId: String(instanceId), reason: "unknownInstance" }),
-        );
-      }
-      const nextInstance: ProviderInstanceConfig = {
-        ...instance,
-        environment: upsertClaudeLongLivedOAuthTokenEnvironment(instance.environment ?? [], token),
-      };
-      yield* options.settings.updateSettings({
-        providerInstances: {
-          ...settings.providerInstances,
-          [instanceId]: nextInstance,
-        } as ServerSettings["providerInstances"],
-      });
-    }).pipe(
-      Effect.catchTag("ServerSettingsError", (cause) =>
-        Effect.fail(
-          new ProviderAuthError({
-            instanceId: String(instanceId),
-            reason: "settingsFailed",
-            detail: cause.message,
-          }),
-        ),
-      ),
-    );
-
   const finishSuccess = (instanceId: ProviderInstanceId, session: SessionState) =>
     Effect.gen(function* () {
       yield* options.refreshInstance(instanceId);
       yield* publishStatus(instanceId, session, "succeeded");
     });
 
-  const captureToken = (instanceId: ProviderInstanceId, session: SessionState, token: string) =>
+  const flushOutput = (instanceId: ProviderInstanceId, session: SessionState) =>
     Effect.gen(function* () {
-      session.tokenCaptured = true;
-      const persisted = yield* persistCapturedToken(instanceId, token).pipe(Effect.result);
-      if (persisted._tag === "Failure") {
-        session.detail = persisted.failure.message;
-        yield* publishStatus(instanceId, session, "failed");
-        return;
-      }
-      yield* finishSuccess(instanceId, session);
-    });
-
-  const flushOutput = (
-    instanceId: ProviderInstanceId,
-    session: SessionState,
-    mode: "line" | "partial" | "final",
-  ) =>
-    Effect.gen(function* () {
-      if (session.flow !== "claude-setup-token") {
-        const data = session.buffer;
-        session.buffer = "";
-        yield* emitOutput(instanceId, session, data);
-        return;
-      }
-
-      const { flush, pending } = splitProviderAuthOutput(session.buffer, mode);
-      session.buffer = pending;
-      if (flush.length === 0) return;
-      yield* emitOutput(instanceId, session, maskClaudeOAuthTokens(flush));
-    });
-
-  /** Scan the raw capture stream; runs on every chunk and once on exit. */
-  const tryCaptureToken = (
-    instanceId: ProviderInstanceId,
-    session: SessionState,
-    options: { readonly final: boolean },
-  ) =>
-    Effect.gen(function* () {
-      if (session.flow !== "claude-setup-token" || session.tokenCaptured) return;
-      const token = findClaudeOAuthToken(session.captureBuffer, options);
-      if (token) {
-        yield* captureToken(instanceId, session, token);
-      }
-    });
-
-  const schedulePartialFlush = (instanceId: ProviderInstanceId, session: SessionState) =>
-    Effect.gen(function* () {
-      if (session.flushFiber) {
-        yield* Fiber.interrupt(session.flushFiber).pipe(Effect.ignore);
-        session.flushFiber = null;
-      }
-      const fiber = runFork(
-        Effect.sleep(partialFlushDelayMs).pipe(
-          Effect.andThen(flushOutput(instanceId, session, "partial")),
-        ),
-      );
-      session.flushFiber = fiber;
+      const data = session.buffer;
+      session.buffer = "";
+      yield* emitOutput(instanceId, session, data);
     });
 
   const disposeProcess = (session: SessionState) =>
@@ -594,28 +397,15 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
 
   const handleExit = (instanceId: ProviderInstanceId, session: SessionState, exitCode: number) =>
     Effect.gen(function* () {
-      if (session.flushFiber) {
-        yield* Fiber.interrupt(session.flushFiber).pipe(Effect.ignore);
-        session.flushFiber = null;
-      }
       session.exitCode = exitCode;
-      yield* flushOutput(instanceId, session, "final");
-      yield* tryCaptureToken(instanceId, session, { final: true });
+      yield* flushOutput(instanceId, session);
       yield* disposeProcess(session);
       session.scrollback = "";
-      session.captureBuffer = "";
       // Before the status: the instance reopens itself, so the re-probe a
       // success triggers can start it.
       yield* finishTerminal(session, exitCode);
 
       if (session.status === "succeeded" || session.status === "failed") {
-        return;
-      }
-      if (session.flow === "claude-setup-token") {
-        session.detail = session.tokenCaptured
-          ? null
-          : "The command finished without printing a token.";
-        yield* publishStatus(instanceId, session, session.tokenCaptured ? "succeeded" : "failed");
         return;
       }
       if (exitCode === 0) {
@@ -630,15 +420,10 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     Effect.gen(function* () {
       const session = sessions.get(String(instanceId));
       if (!session) return;
-      if (session.flushFiber) {
-        yield* Fiber.interrupt(session.flushFiber).pipe(Effect.ignore);
-        session.flushFiber = null;
-      }
       const process = session.process;
       yield* disposeProcess(session);
       session.buffer = "";
       session.scrollback = "";
-      session.captureBuffer = "";
       if (process) {
         yield* Effect.sync(() => process.kill()).pipe(Effect.ignore);
       }
@@ -679,11 +464,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         unsubscribeExit: null,
         buffer: "",
         scrollback: "",
-        captureBuffer: "",
         printedRedirects: new PrintedRedirects(),
         replayedRedirectStates: new Set(),
-        flushFiber: null,
-        tokenCaptured: false,
       };
       sessions.set(key, session);
       const current = () => sessions.get(key) === session;
@@ -999,11 +781,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           unsubscribeExit: null,
           buffer: "",
           scrollback: "",
-          captureBuffer: "",
           printedRedirects: new PrintedRedirects(),
           replayedRedirectStates: new Set(),
-          flushFiber: null,
-          tokenCaptured: false,
         };
         sessions.set(String(instanceId), session);
 
@@ -1028,10 +807,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             shell: command.file,
             args: [...command.args],
             cwd: homeDir,
-            cols:
-              input.flow === "claude-setup-token"
-                ? SETUP_TOKEN_PTY_COLS
-                : (input.cols ?? DEFAULT_COLS),
+            cols: input.cols ?? DEFAULT_COLS,
             rows: input.rows ?? DEFAULT_ROWS,
             env: spawnEnv,
           })
@@ -1058,14 +834,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             Effect.gen(function* () {
               if (sessions.get(String(instanceId)) !== session) return;
               session.buffer += data;
-              session.captureBuffer = `${session.captureBuffer}${data}`.slice(
-                -CAPTURE_BUFFER_CHARS,
-              );
-              yield* flushOutput(instanceId, session, "line");
-              yield* tryCaptureToken(instanceId, session, { final: false });
-              if (session.buffer.length > 0) {
-                yield* schedulePartialFlush(instanceId, session);
-              }
+              yield* flushOutput(instanceId, session);
             }),
           );
         });
@@ -1155,10 +924,6 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         const instanceId = ProviderInstanceId.make(input.instanceId);
         if (sessions.get(String(instanceId))?.surface === "browser") return;
         const process = yield* requireRunning(instanceId);
-        const session = sessions.get(String(instanceId));
-        // The setup-token PTY stays at its extra-wide spawn size: resizing it
-        // down would make the CLI re-wrap output and could split the token.
-        if (session?.flow === "claude-setup-token") return;
         yield* Effect.sync(() => process.resize(input.cols, input.rows));
       }),
     stop: (input) =>
