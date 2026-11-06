@@ -1716,6 +1716,8 @@ export function mapToRuntimeEvents(
             ...(payload && "isBlocking" in payload && typeof payload.isBlocking === "boolean"
               ? { isBlocking: payload.isBlocking }
               : {}),
+            // Codex reads any text as an answer.
+            canLeaveUnanswered: true,
           },
         },
       ];
@@ -2286,7 +2288,12 @@ export function mapToRuntimeEvents(
             eventId: EventId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             requestId: RuntimeRequestId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             type: "user-input.requested",
-            payload: { questions, isBlocking: false, responseMode: "message" },
+            payload: {
+              questions,
+              isBlocking: false,
+              responseMode: "message",
+              canLeaveUnanswered: true,
+            },
           },
         ];
       }

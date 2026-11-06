@@ -1,8 +1,23 @@
-import type { UserInputQuestion } from "@threadlines/contracts";
+import type {
+  UserInputQuestion,
+  UserInputUnanswered,
+  UserInputUnansweredReason,
+} from "@threadlines/contracts";
 
 export interface PendingUserInputDraftAnswer {
   selectedOptionLabels?: string[];
   customAnswer?: string;
+  /** The user skipped the question; choosing or typing an answer undoes it. */
+  skipped?: boolean;
+}
+
+/** The draft of a skipped question. */
+export const SKIPPED_PENDING_USER_INPUT_DRAFT: PendingUserInputDraftAnswer = { skipped: true };
+
+/** What a question card sends: the answers, and the questions left unanswered. */
+export interface PendingUserInputResponse {
+  readonly answers: Record<string, string | string[]>;
+  readonly unanswered: UserInputUnanswered;
 }
 
 export interface PendingUserInputProgress {
@@ -98,21 +113,50 @@ export function togglePendingUserInputOptionSelection(
   };
 }
 
-export function buildPendingUserInputAnswers(
+/**
+ * The response for every question: answered ones carry their answer, skipped
+ * ones say so, and with `rest` (the card closed, or a chat reply) every other
+ * question goes unanswered that way. Null while a question has none of these.
+ */
+export function buildPendingUserInputResponse(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-): Record<string, string | string[]> | null {
+  rest?: Exclude<UserInputUnansweredReason, "skipped">,
+): PendingUserInputResponse | null {
   const answers: Record<string, string | string[]> = {};
-
+  const unanswered: Record<string, UserInputUnansweredReason> = {};
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (!answer) {
+    const draft = draftAnswers[question.id];
+    const answer = resolvePendingUserInputAnswer(question, draft);
+    if (answer) {
+      answers[question.id] = answer;
+    } else if (draft?.skipped === true) {
+      unanswered[question.id] = "skipped";
+    } else if (rest !== undefined) {
+      unanswered[question.id] = rest;
+    } else {
       return null;
     }
-    answers[question.id] = answer;
   }
+  return { answers, unanswered };
+}
 
-  return answers;
+/**
+ * The response a chat reply sends: answers and skips given on the card stay,
+ * and the reply answers every other question. When the card left none open,
+ * the reply answers the last question in place of its card answer.
+ */
+export function chatReplyResponse(
+  questions: ReadonlyArray<UserInputQuestion>,
+  draftAnswers: Record<string, PendingUserInputDraftAnswer>,
+): PendingUserInputResponse | null {
+  const response = buildPendingUserInputResponse(questions, draftAnswers, "replied_in_chat");
+  if (!response) return null;
+  if (Object.values(response.unanswered).includes("replied_in_chat")) return response;
+  const last = questions.at(-1);
+  if (!last) return null;
+  const { [last.id]: _replaced, ...answers } = response.answers;
+  return { answers, unanswered: { ...response.unanswered, [last.id]: "replied_in_chat" } };
 }
 
 export function countAnsweredPendingUserInputQuestions(
@@ -162,7 +206,7 @@ export function derivePendingUserInputProgress(
     usingCustomAnswer: customAnswer.trim().length > 0,
     answeredQuestionCount,
     isLastQuestion,
-    isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
-    canAdvance: Boolean(resolvedAnswer),
+    isComplete: buildPendingUserInputResponse(questions, draftAnswers) !== null,
+    canAdvance: Boolean(resolvedAnswer) || activeDraft?.skipped === true,
   };
 }

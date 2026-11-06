@@ -184,6 +184,41 @@ describe("ComposerPendingUserInputPanel", () => {
     expect(document.querySelector("[data-composer-question-nonblocking='true']")).toBeNull();
   });
 
+  it("offers Skip, Close and Reply in chat only for questions the agent can be told about", async () => {
+    const onSkip = vi.fn();
+    const onClose = vi.fn();
+    const onReplyInChat = vi.fn();
+    const panel = (canLeaveUnanswered: boolean) => (
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[{ ...makePendingUserInput(), canLeaveUnanswered }]}
+        respondingRequestIds={[]}
+        answers={{}}
+        questionIndex={0}
+        isAgentRunning
+        onToggleOption={vi.fn()}
+        onPrevious={vi.fn()}
+        onCustomAnswerChange={vi.fn()}
+        onAdvance={vi.fn()}
+        onSkip={onSkip}
+        onClose={onClose}
+        onReplyInChat={onReplyInChat}
+      />
+    );
+    const screen = await render(panel(true));
+    await page.getByRole("button", { name: "Skip", exact: true }).click();
+    await page.getByRole("button", { name: "Close questions", exact: true }).click();
+    await page.getByRole("button", { name: "Reply in chat", exact: true }).click();
+    expect([onSkip, onClose, onReplyInChat].map((handler) => handler.mock.calls.length)).toEqual([
+      1, 1, 1,
+    ]);
+
+    // A yes/no confirmation or a pick-one choice must be answered.
+    screen.rerender(panel(false));
+    await expect.element(page.getByRole("button", { name: "Submit answer" })).toBeVisible();
+    expect(page.getByRole("button", { name: "Skip", exact: true }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Close questions" }).elements()).toHaveLength(0);
+  });
+
   it("collapses to a compact summary row and re-expands", async () => {
     const onToggleOption = vi.fn();
     const screen = await render(

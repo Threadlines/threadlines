@@ -63,6 +63,7 @@ const ClaudeCredentialsPayload = Schema.Struct({
       accessToken: Schema.optional(Schema.String),
       refreshToken: Schema.optional(Schema.NullOr(Schema.String)),
       expiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
+      refreshTokenExpiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
     }),
   ),
 });
@@ -610,6 +611,12 @@ export interface ClaudeOAuthCredential {
   readonly expiresAt?: number;
   /** Whether the store holds a refresh token; without one the CLI cannot renew. */
   readonly renewable: boolean;
+  /**
+   * When the sign-in itself ends (epoch ms): the refresh token's own end,
+   * which Claude Code 2.1.318+ saves at sign-in and renewals never move.
+   * Absent when the store records none, or one Claude Code would ignore.
+   */
+  readonly signInEndsAt?: number;
 }
 
 function normalizeCredentialString(value: string | undefined): string | undefined {
@@ -637,11 +644,69 @@ export function extractClaudeOAuthCredential(
     return undefined;
   }
   const expiresAt = credentials?.claudeAiOauth?.expiresAt;
+  const renewable =
+    normalizeCredentialString(credentials?.claudeAiOauth?.refreshToken ?? undefined) !== undefined;
+  const signInEndsAt = claudeSignInEndsAt({
+    renewable,
+    expiresAt,
+    refreshTokenExpiresAt: credentials?.claudeAiOauth?.refreshTokenExpiresAt,
+  });
   return {
     ...(typeof expiresAt === "number" && Number.isFinite(expiresAt) ? { expiresAt } : {}),
-    renewable:
-      normalizeCredentialString(credentials?.claudeAiOauth?.refreshToken ?? undefined) !==
-      undefined,
+    renewable,
+    ...(signInEndsAt !== undefined ? { signInEndsAt } : {}),
+  };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Claude Code reads a sign-in end more than ten years out as bad data. */
+const CLAUDE_SIGN_IN_END_HORIZON_MS = 3_650 * DAY_MS;
+/**
+ * How far before its saved end a sign-in may already have ended. Claude Code
+ * says "ends between (end - 3 days) and end", and ignores the saved end once
+ * the access token outlives it by more than this.
+ */
+export const CLAUDE_SIGN_IN_END_UNCERTAINTY_MS = 3 * DAY_MS;
+
+/**
+ * The saved end of a Claude sign-in, read as Claude Code 2.1.318 reads it:
+ * only for a renewable sign-in, and not when the access token already runs
+ * well past it (an end saved by an older login that renewals carried along).
+ */
+function claudeSignInEndsAt(input: {
+  readonly renewable: boolean;
+  readonly expiresAt: number | null | undefined;
+  readonly refreshTokenExpiresAt: number | null | undefined;
+}): number | undefined {
+  const end = input.refreshTokenExpiresAt;
+  if (!input.renewable || typeof end !== "number" || !Number.isFinite(end) || end <= 0) {
+    return undefined;
+  }
+  if (
+    typeof input.expiresAt === "number" &&
+    input.expiresAt > end + CLAUDE_SIGN_IN_END_UNCERTAINTY_MS
+  ) {
+    return undefined;
+  }
+  return end;
+}
+
+/**
+ * The window a stored sign-in ends in, for the provider snapshot: undefined
+ * when there is no sign-in or no usable end, and `"unknown"` when the store
+ * could not be read this time (the caller keeps what it knew).
+ */
+export function claudeSignInEndsWindow(
+  stored: ClaudeStoredSignIn,
+  nowMs: number,
+): { readonly earliest: string; readonly latest: string } | "unknown" | undefined {
+  if (stored._tag === "Unreadable") return "unknown";
+  if (stored._tag === "Absent") return undefined;
+  const end = stored.credential.signInEndsAt;
+  if (end === undefined || end > nowMs + CLAUDE_SIGN_IN_END_HORIZON_MS) return undefined;
+  return {
+    earliest: new Date(end - CLAUDE_SIGN_IN_END_UNCERTAINTY_MS).toISOString(),
+    latest: new Date(end).toISOString(),
   };
 }
 

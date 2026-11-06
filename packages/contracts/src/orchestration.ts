@@ -200,6 +200,32 @@ export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
+/**
+ * How a question was left without an answer: the user skipped it, closed the
+ * card, or answered in the chat instead. Only for a question asked with
+ * `canLeaveUnanswered` (UserInputRequestedPayload).
+ */
+export const UserInputUnansweredReason = Schema.Literals([
+  "skipped",
+  "dismissed",
+  "replied_in_chat",
+]);
+export type UserInputUnansweredReason = typeof UserInputUnansweredReason.Type;
+/** Question id to how it went unanswered. */
+export const UserInputUnanswered = Schema.Record(Schema.String, UserInputUnansweredReason);
+export type UserInputUnanswered = typeof UserInputUnanswered.Type;
+
+/**
+ * The longest chat reply that answers questions. Claude takes up to 32,768
+ * characters per answer; this leaves room for the words around the reply.
+ */
+export const USER_INPUT_CHAT_REPLY_MAX_CHARS = 30_000;
+/** What the user wrote in the chat instead of answering the questions. Text only. */
+export const UserInputChatReply = Schema.Struct({
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(USER_INPUT_CHAT_REPLY_MAX_CHARS)),
+});
+export type UserInputChatReply = typeof UserInputChatReply.Type;
+
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_SKILLS = 32;
@@ -3504,7 +3530,12 @@ const ClientThreadUserInputRespondCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   requestId: ApprovalRequestId,
+  /** The questions the user answered; any left out are in `unanswered`. */
   answers: ProviderUserInputAnswers,
+  /** Questions left without an answer, and how. */
+  unanswered: Schema.optional(UserInputUnanswered),
+  /** With `replied_in_chat`: the message that answers them. */
+  reply: Schema.optional(UserInputChatReply),
   createdAt: IsoDateTime,
 });
 
@@ -5424,6 +5455,10 @@ export const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  /** See ThreadUserInputRespondCommand.unanswered. */
+  unanswered: Schema.optional(UserInputUnanswered),
+  /** See ThreadUserInputRespondCommand.reply. */
+  reply: Schema.optional(UserInputChatReply),
   /** See ThreadUserInputRespondCommand.sentFrom. */
   sentFrom: Schema.optional(MessageSentFrom),
   /** See ThreadUserInputRespondCommand.fromOutside. */
