@@ -80,10 +80,9 @@ export const BACKDROP_FRAME_CONTENT_SECURITY_POLICY =
  *   theme's maximum or `batteryFps` on battery, halved per throttle step,
  *   and never below `minFps` (the app's watchdog expects a new frame within
  *   3 seconds while the art runs).
- * - The art holds while the app is busy (input) and resumes `busyResumeMs`
- *   after. While a reply streams into the open thread it keeps moving, at
- *   most `streamingFps`, its time easing to `streamingPace` of the clock
- *   over about `paceEaseMs` (and back after).
+ * - The art holds while the app is busy (the window resizing, a divider
+ *   dragged) and resumes `busyResumeMs` after. Typing, scrolling and a reply
+ *   streaming in don't hold or slow it.
  * - After a pause the art restarts in a new worker, its own state fresh: the
  *   picture on screen dissolves into the restarted art over `resumeFadeMs`.
  *   A theme's first frame fades the same way from its still (what the app
@@ -112,9 +111,6 @@ export const BACKDROP_RUNTIME_TIMING: BackdropRuntimeTiming = {
   batteryFps: 20,
   burstMs: 2_000,
   busyResumeMs: 400,
-  streamingFps: 12,
-  streamingPace: 0.5,
-  paceEaseMs: 600,
   resumeFadeMs: 500,
   stillWaitMs: 1_000,
   budgetWindowMs: 5_000,

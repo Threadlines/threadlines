@@ -9,10 +9,9 @@
  *   remeasured when it changes, at most every 100 ms;
  * - conditions: motion (the Motion setting, Reduce Motion, the desktop
  *   watchdog), visibility (the window, and whether a chat is on screen),
- *   busy (scrolling, typing, resizing, dragging: the art holds), streaming
- *   (a reply streaming into the open thread: the art slows), idle (two
- *   minutes without input or agent work), power and heat (desktop, else the
- *   Battery API);
+ *   busy (resizing the window, dragging a divider: the art holds), idle
+ *   (two minutes without input or agent work), power and heat (desktop, else
+ *   the Battery API);
  * - activity: working and waiting agents across every computer, and a
  *   `turn-done` pulse whenever a thread stops working.
  *
@@ -23,14 +22,10 @@ import type {
   BackdropActivity,
   BackdropConditions,
   DesktopPowerState,
-  EnvironmentId,
   ThemeBase,
   ThemeManifest,
-  ThreadId,
 } from "@threadlines/contracts";
-import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
-import { useMatches } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 
@@ -43,10 +38,8 @@ import { useSettings } from "../hooks/useSettings";
 import {
   selectRunningSidebarThreadsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
-  selectThreadByRef,
   useStore,
 } from "../store";
-import { resolveThreadRouteRef } from "../threadRoutes";
 import {
   measureBackdropZones,
   type MeasuredBackdropLayout,
@@ -55,7 +48,7 @@ import {
 import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
-import { useInputBusy } from "./inputBusy";
+import { useLayoutBusy } from "./layoutBusy";
 import {
   readThemeState,
   setBackdropStatus,
@@ -312,31 +305,6 @@ function useWindowFocused(): boolean {
   );
 }
 
-/** A reply is streaming into the open thread. The art keeps moving, slower, so the text stays smooth. */
-function useReplyStreaming(): boolean {
-  const openThreadKey = useMatches({
-    select: (matches) => {
-      const leaf = matches.at(-1);
-      if (leaf?.routeId !== "/_chat/$environmentId/$threadId") return null;
-      const ref = resolveThreadRouteRef(leaf.params);
-      return ref ? `${ref.environmentId}\u0000${ref.threadId}` : null;
-    },
-  });
-  const openThreadRef = useMemo(() => {
-    if (openThreadKey === null) return null;
-    const [environmentId, threadId] = openThreadKey.split("\u0000");
-    return environmentId && threadId
-      ? scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId)
-      : null;
-  }, [openThreadKey]);
-  const streaming = useStore((state) =>
-    openThreadRef === null
-      ? false
-      : selectThreadByRef(state, openThreadRef)?.messages.at(-1)?.streaming === true,
-  );
-  return streaming;
-}
-
 function useIdle(working: number): boolean {
   const [idle, setIdle] = useState(false);
   const lastInputRef = useRef(0);
@@ -424,8 +392,7 @@ function useBackdropConditions(input: {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const documentVisible = useDocumentVisible();
   const focused = useWindowFocused();
-  const busy = useInputBusy();
-  const streaming = useReplyStreaming();
+  const busy = useLayoutBusy();
   const idle = useIdle(input.working);
   const power = usePowerState();
   const motion =
@@ -443,14 +410,13 @@ function useBackdropConditions(input: {
       motion,
       visible,
       busy,
-      streaming,
       idle,
       focused,
       power: power.power,
       thermal,
       slowdown,
     }),
-    [motion, visible, busy, streaming, idle, focused, power.power, thermal, slowdown],
+    [motion, visible, busy, idle, focused, power.power, thermal, slowdown],
   );
 }
 

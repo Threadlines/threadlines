@@ -35,7 +35,6 @@ const LIVE = {
   motion: "live",
   visible: true,
   busy: false,
-  streaming: false,
   idle: false,
   focused: false,
   power: "ac",
@@ -434,24 +433,6 @@ describe("backdrop frame", () => {
     // After it, busy holds the art.
     await sleep(300);
     expect((await mounted.probe()).drawnFrames).toBe(1);
-  });
-
-  it("keeps the art moving while a reply streams in, at half speed and a lower rate", async () => {
-    mounted = await mountFrame();
-    mounted.start("grid", GRID_ART, [COLUMN]);
-    // In front, the art would run at its own 24 fps and full speed.
-    mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true, streaming: true } });
-    await mounted.framesAbove(2);
-    // Past the ease, art time runs at about half the clock's.
-    await sleep(1_000);
-    const before = await mounted.probe();
-    const startedAt = performance.now();
-    await sleep(1_500);
-    const after = await mounted.probe();
-    const seconds = (performance.now() - startedAt) / 1000;
-    expect(after.drawnFrames).toBeGreaterThan(before.drawnFrames);
-    expect((after.t - before.t) / seconds).toBeLessThan(0.75);
-    expect(after.drawnFrames - before.drawnFrames).toBeLessThan(seconds * 16);
   });
 
   it("runs at a quarter of its rate when the CPU watchdog has slowed it twice, and says it is throttled", async () => {
