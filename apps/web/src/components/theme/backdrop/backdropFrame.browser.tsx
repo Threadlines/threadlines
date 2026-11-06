@@ -25,6 +25,7 @@ interface Probe {
   t: number;
   staleDropped: number;
   fading: boolean;
+  state: "running" | "hold" | "paused";
 }
 
 const tokens = BUILTIN_THEME_TOKENS.dark;
@@ -245,8 +246,9 @@ describe("backdrop frame", () => {
     mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
     await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     const paused = await mounted.probe();
-    // Long enough to see the middle of it on a slow machine.
-    mounted.post({ type: "test:fade-ms", ms: 3_000 });
+    // A minute-long fade: however slow the machine, the checks below land in
+    // its first part. The test ends it on purpose further down.
+    mounted.post({ type: "test:fade-ms", ms: 60_000 });
     mounted.post({ type: "test:capture-shown", on: true });
     mounted.post({ type: "conditions", conditions: LIVE });
 
@@ -256,10 +258,12 @@ describe("backdrop frame", () => {
     // The restarted art is black; the white from before the pause still shows over it.
     expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
 
-    // Held still mid-fade (the user types), the fade holds too: past its
-    // 3 seconds it is still going.
+    // Held still mid-fade (the user drags a divider), the fade holds too:
+    // even cut short to end at once, it waits for the art to run again.
     mounted.post({ type: "conditions", conditions: { ...LIVE, busy: true } });
-    await sleep(3_500);
+    await vi.waitFor(async () => expect((await mounted!.probe()).state).toBe("hold"));
+    mounted.post({ type: "test:fade-ms", ms: 1 });
+    await sleep(500);
     expect((await mounted.probe()).fading).toBe(true);
 
     mounted.post({ type: "conditions", conditions: LIVE });
@@ -278,7 +282,7 @@ describe("backdrop frame", () => {
     const context = white.getContext("2d")!;
     context.fillStyle = "#fff";
     context.fillRect(0, 0, white.width, white.height);
-    mounted.post({ type: "test:fade-ms", ms: 3_000 });
+    mounted.post({ type: "test:fade-ms", ms: 60_000 });
     mounted.post({ type: "test:capture-shown", on: true });
     // The art paints black; its still is white.
     mounted.start(
@@ -298,6 +302,7 @@ describe("backdrop frame", () => {
     const first = await mounted.framesAbove(0);
     expect(first.fading).toBe(true);
     expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
+    mounted.post({ type: "test:fade-ms", ms: 1 });
     await vi.waitFor(async () => expect((await mounted!.probe()).fading).toBe(false), {
       timeout: 6_000,
       interval: 100,
@@ -325,11 +330,13 @@ describe("backdrop frame", () => {
 
   it("counts work the art defers past its frame, and slows art that hides it there", async () => {
     mounted = await mountFrame();
-    // Each frame looks free, but queues 12 ms of work to run right after its reply.
+    // Each frame looks free, but queues 30 ms of work to run right after its
+    // reply: over the 60 ms a second budget even when a busy machine (CI)
+    // manages only a few frames a second.
     mounted.start(
       "grid",
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
-        draw() { Promise.resolve().then(() => { const end = performance.now() + 12; while (performance.now() < end) {} }); } });`,
+        draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
     );
     await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
       timeout: 12_000,

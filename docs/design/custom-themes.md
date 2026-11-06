@@ -365,9 +365,10 @@ under 0.1 ms). The design leans on that:
   on screen and dissolves it into the restarted art over 500 ms instead of
   snapping. A theme's first frame (switching themes, turning Motion back on,
   which remounts the frame) fades the same way from the theme's still, which
-  the app shows until then: `init` carries it, and the art waits up to 300 ms
-  for it to decode. A fade holds while the art is held or paused. The copy
-  (one full-window texture) lives only for the fade.
+  the app shows until then: `init` carries it, and the art waits up to a
+  second for it to decode (the still shows meanwhile). A fade holds while
+  the art is held or paused. The copy (one full-window texture) lives only
+  for the fade.
 - **An energy label.** The runtime keeps a running average of work per second
   (frame cost times frame rate). Appearance shows each theme's label on this
   computer (Light, Medium, Heavy) next to its thumbnail, and `preview_theme`
