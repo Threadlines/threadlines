@@ -367,7 +367,7 @@ describe("clients and the sign-in page", () => {
   });
 
   it("takes a native app's own scheme, as Cursor registers it, and never a web or script one", async () => {
-    const { env } = edgeEnv();
+    const { env, created } = edgeEnv();
     // What the Cursor app and its CLI send to /register, word for word.
     const cursor = await register(env, {
       redirect_uris: [
@@ -389,12 +389,48 @@ describe("clients and the sign-in page", () => {
       env,
     );
     expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Sign-in returns to cursor://anysphere.cursor-mcp");
+
+    // A reverse-domain scheme with no host and no name still signs in, named for its scheme.
+    const bare = (await (
+      await register(env, { redirect_uris: ["com.example.app:/cb"] })
+    ).json()) as { client_id: string; client_name: string };
+    expect(bare.client_name).toBe("com.example.app:");
+    expect(
+      (
+        await route(
+          new Request(
+            authorizeUrl({ client_id: bare.client_id, redirect_uri: "com.example.app:/cb" }),
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+
+    // An app scheme naming a known assistant's domain is never taken as that assistant.
+    const spoof = (await (
+      await register(env, { redirect_uris: ["com.evil.app://claude.ai/cb"], client_name: "Claude" })
+    ).json()) as { client_id: string };
+    await route(
+      new Request(
+        authorizeUrl({ client_id: spoof.client_id, redirect_uri: "com.evil.app://claude.ai/cb" }),
+      ),
+      env,
+    );
+    expect(created.at(-1)).toMatchObject({
+      identity: { kind: "registered", host: "com.evil.app://claude.ai", known: false },
+    });
+
     for (const redirect_uri of [
       "javascript:alert(1)//x",
       "data:text/html,hi",
       "file:///etc/passwd",
       "intent://x#Intent;end",
       "ws://127.0.0.1/cb",
+      "microsoft-edge:http://evil.test/cb",
+      "googlechrome://evil.test/cb",
+      "web+evil.app://cb",
+      "someapp://cb",
     ]) {
       expect((await register(env, { redirect_uris: [redirect_uri] })).status).toBe(400);
     }

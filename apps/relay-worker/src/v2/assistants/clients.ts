@@ -79,12 +79,20 @@ export function clientIdentity(
     return { kind: "cimd", host: client.cimdHost, known: isKnownAssistantHost(client.cimdHost) };
   }
   const redirect = new URL(redirectUri);
+  const web = redirect.protocol === "https:" || redirect.protocol === "http:";
   return {
     kind: "registered",
-    // An app's own scheme may have no host (com.example.app:/callback): then the scheme says who.
-    host: redirect.host || redirect.protocol.slice(0, -1),
-    known: isKnownAssistantHost(redirect.hostname),
+    host: returnAddressLabel(redirect),
+    // An app's own scheme proves nothing about a domain (cursor://claude.ai is anyone's), so it's never known.
+    known: web && isKnownAssistantHost(redirect.hostname),
   };
+}
+
+/** Where a sign-in returns, as people read it: a web address's host, or an app's whole scheme and host (`cursor://anysphere.cursor-mcp`). */
+export function returnAddressLabel(redirect: URL): string {
+  if (redirect.protocol === "https:" || redirect.protocol === "http:") return redirect.host;
+  const scheme = redirect.protocol.slice(0, -1).toLowerCase();
+  return redirect.host ? `${scheme}://${redirect.host}` : `${scheme}:`;
 }
 
 /**
@@ -93,9 +101,11 @@ export function clientIdentity(
  * - https, with a host;
  * - loopback http (127.0.0.1, [::1], localhost) when allowed: the door allows
  *   it, as the MCP spec says, for native clients;
- * - a native app's own scheme (RFC 8252, section 7.1), such as the Cursor
- *   app's `cursor://anysphere.cursor-mcp/oauth/callback`: only an app on the
- *   user's computer receives it. Web, document and script schemes never pass.
+ * - a native app's own scheme (RFC 8252, section 7.1): a reverse-domain one
+ *   (`com.example.app:/callback`), as section 8.4 recommends, or a known app's
+ *   dotless one (the Cursor app's `cursor://anysphere.cursor-mcp/oauth/callback`).
+ *   Browser launchers, website-registered handlers (`web+…`), and web, document
+ *   and script schemes never pass: they could hand the code to any website.
  */
 export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
@@ -115,7 +125,10 @@ export function checkRedirectUri(value: unknown, allowLoopbackHttp: boolean): st
   return isAppScheme(url.protocol) ? value : null;
 }
 
-/** Schemes a browser or system handles itself (web, documents, scripts, other apps' launchers): never an app's return address. */
+/** Dotless schemes of native apps known to sign in here; any other app scheme must be reverse-domain. */
+const KNOWN_APP_SCHEMES = new Set(["cursor"]);
+
+/** Schemes a browser or system handles itself (web, documents, scripts, launchers): never an app's return address, dotted or not. */
 const NOT_APP_SCHEMES = new Set([
   "about",
   "blob",
@@ -145,7 +158,9 @@ const NOT_APP_SCHEMES = new Set([
 
 function isAppScheme(protocol: string): boolean {
   const scheme = protocol.slice(0, -1).toLowerCase();
-  return /^[a-z][a-z0-9+.-]*$/u.test(scheme) && !NOT_APP_SCHEMES.has(scheme);
+  if (!/^[a-z][a-z0-9+.-]*$/u.test(scheme)) return false;
+  if (scheme.startsWith("web+") || NOT_APP_SCHEMES.has(scheme)) return false;
+  return scheme.includes(".") || KNOWN_APP_SCHEMES.has(scheme);
 }
 
 /** A client's name as shown: no control or formatting characters, spaces collapsed, 60 characters. */
@@ -225,7 +240,10 @@ export function parseRegistration(body: unknown, allowLoopbackHttp: boolean): Re
   ) {
     return metadataError("software_id must be a short printable string.");
   }
-  const name = cleanClientName(metadata.client_name) ?? new URL(redirectUris[0]!).host;
+  const name =
+    cleanClientName(metadata.client_name) ??
+    cleanClientName(returnAddressLabel(new URL(redirectUris[0]!))) ??
+    "Unnamed assistant";
   return {
     ok: true,
     registration: {
