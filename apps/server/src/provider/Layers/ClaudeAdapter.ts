@@ -245,6 +245,7 @@ import {
 } from "../Drivers/ClaudeWorkflowRuns.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
+  type ClaudeLaunchTarget,
   claudeModelSupportsAutoRuntimeMode,
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -838,6 +839,14 @@ export interface ClaudeAdapterLiveOptions {
    */
   readonly installedCliVersion?: Effect.Effect<string | undefined>;
   /**
+   * Asks the Claude Code a session is about to start for its version: the
+   * executable, folder and environment handed to the SDK. What the session
+   * asks of the CLI at start (claudeGuardFailure) holds for its whole life,
+   * so it may not trust a provider check that predates an update or a
+   * downgrade, or that looked `claude` up another way.
+   */
+  readonly readLaunchVersion?: (launch: ClaudeLaunchTarget) => Effect.Effect<string | undefined>;
+  /**
    * Whether Claude keeps suggesting the next message while it warns that
    * usage runs fast (Settings › Threads). Read like the workflow size.
    * Absent: Claude's own rule, which skips them then.
@@ -1020,7 +1029,18 @@ export function lockDownClaudeQueryOptions(
       behavior: "deny",
       message: `A side answer is read-only (${toolName}).`,
     }),
-    hooks: { PreToolUse: [{ hooks: [sideAnswerToolGuard(allowedTools)] }] },
+    // The same Claude Code runs it, so its guard fails closed exactly when the
+    // session's own guards do (claudeGuardFailure).
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [sideAnswerToolGuard(allowedTools)],
+          ...(base.hooks?.PreToolUse?.some((matcher) => matcher.onFailure === "block")
+            ? { onFailure: "block" as const }
+            : {}),
+        },
+      ],
+    },
   };
 }
 
@@ -2684,6 +2704,25 @@ function supportsClaudeAppendOnly(cliVersion: string | undefined): boolean {
     cliVersion === undefined ||
     compareSemverVersions(cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0
   );
+}
+
+/** The oldest Claude Code that honours `onFailure` on hook matchers. */
+const MINIMUM_CLAUDE_HOOK_ON_FAILURE_VERSION = "2.1.317";
+
+/**
+ * How a guard hook (a PreToolUse hook that denies a tool) ends when it fails.
+ * A guard whose own lookup fails would otherwise let the tool run: a side
+ * answer could write, Claude's Artifact tool could publish with artifacts
+ * switched off. So it blocks, but only on a Claude Code known to honour that:
+ * the SDK refuses to start a session that asks for it on an older one. Unlike
+ * the checks above, an unknown version is not taken to be current; it keeps
+ * the old behaviour, where the tool runs.
+ */
+function claudeGuardFailure(cliVersion: string | undefined): { readonly onFailure?: "block" } {
+  return cliVersion !== undefined &&
+    compareSemverVersions(cliVersion, MINIMUM_CLAUDE_HOOK_ON_FAILURE_VERSION) >= 0
+    ? { onFailure: "block" }
+    : {};
 }
 
 /** A finished workflow's output file holds every agent's final entry and the
@@ -9125,6 +9164,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Claude's own Artifact tool, which uploads a page to claude.ai. Only
       // beside agent pages: the chat shows the local copy of each publish.
       const artifacts = input.artifacts === true && agentPages;
+      // The setting decides, whatever the environment Threadlines was
+      // started in says: on asks for the tool, off refuses it.
+      // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+      const sdkEnvironment = {
+        ...withUsualCommandLookup(claudeEnvironment),
+        ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
+      };
+      // Asked of the very binary, folder and environment the SDK gets below.
+      const guardFailure = claudeGuardFailure(
+        options?.readLaunchVersion !== undefined
+          ? yield* options.readLaunchVersion({
+              executable: claudeBinaryPath,
+              cwd: input.cwd,
+              environment: sdkEnvironment,
+            })
+          : undefined,
+      );
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
       const credential =
@@ -9295,19 +9351,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           Stop: [{ hooks: [reportCheckBacks] }],
           UserPromptSubmit: [{ hooks: [noticeCheckBackFire] }],
           PreToolUse: [
-            { matcher: CLAUDE_SELF_SCHEDULING_TOOL_MATCHER, hooks: [outsideWorkGuard] },
+            {
+              matcher: CLAUDE_SELF_SCHEDULING_TOOL_MATCHER,
+              hooks: [outsideWorkGuard],
+              ...guardFailure,
+            },
             ...(artifacts
-              ? [{ matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"), hooks: [artifactSwitchGuard] }]
+              ? [
+                  {
+                    matcher: CLAUDE_ARTIFACT_TOOL_NAMES.join("|"),
+                    hooks: [artifactSwitchGuard],
+                    ...guardFailure,
+                  },
+                ]
               : []),
           ],
         },
-        // The setting decides, whatever the environment Threadlines was
-        // started in says: on asks for the tool, off refuses it.
-        // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
-        env: {
-          ...withUsualCommandLookup(claudeEnvironment),
-          ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
-        },
+        env: sdkEnvironment,
         ...(input.cwd || pageAssets !== undefined
           ? {
               additionalDirectories: [

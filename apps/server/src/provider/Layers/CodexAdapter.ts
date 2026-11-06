@@ -190,7 +190,7 @@ function codexUserInputText(
         case "localImage":
           return `[Image attachment: ${part.path}]`;
         case "audio":
-          return `[Audio attachment: ${part.url}]`;
+          return `[Audio attachment: ${"url" in part ? part.url : part.fileId}]`;
         case "localAudio":
           return `[Audio attachment: ${part.path}]`;
         case "skill":
@@ -420,7 +420,7 @@ function mapCodexStoredItem(
       return codexToolEntry({
         name: "image_generation",
         summary: item.revisedPrompt ?? item.status,
-        outputPreview: item.result || item.savedPath || undefined,
+        outputPreview: ("result" in item ? item.result : undefined) || item.savedPath || undefined,
       });
     case "enteredReviewMode":
       return { role: "system", text: item.review, toolUses: [] };
@@ -598,7 +598,12 @@ export function codexFailureCategory(info: unknown): ProviderFailureCategory | u
         return "rate_limit";
       case "serverOverloaded":
       case "flexUnavailable":
+      // Capacity the account's policy allows is used up; Codex retries it
+      // like an overload and says to try again later.
+      case "policyCapacityUnavailable":
         return "overloaded";
+      case "modelNotFound":
+        return "model_unavailable";
       case "internalServerError":
         return "server_error";
       case "unauthorized":

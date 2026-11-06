@@ -40,6 +40,7 @@ import {
   claudeChatAndUsageAccountsDiffer,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
+  readClaudeLaunchVersion,
   readClaudeNormalAuthEmail,
   readClaudeUsageBreakdown,
   refreshClaudeOAuthCredential,
@@ -445,6 +446,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         installedCliVersion: snapshot.getSnapshot.pipe(
           Effect.map((provider) => provider.version ?? undefined),
         ),
+        readLaunchVersion: (launch) =>
+          readClaudeLaunchVersion(launch).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          ),
         // Read live as well. Unreadable settings leave Claude's own rule.
         suggestionsWhenUsageRunsFast: serverSettings.getSettings.pipe(
           Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),

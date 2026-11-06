@@ -93,8 +93,11 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
   if (!account) return undefined;
   if (account.type === "apiKey") return "OpenAI API Key";
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
+  if (account.type === "gcp") return "Google Cloud Vertex AI";
   if (account.type !== "chatgpt") return undefined;
 
+  // Codex adds plans faster than we label them (the type is an open string),
+  // so a plan we don't know yet still reads as a ChatGPT subscription.
   switch (account.planType) {
     case "free":
       return "ChatGPT Free Subscription";
@@ -123,11 +126,8 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
     case "edu_plus":
     case "edu_pro":
       return "ChatGPT Edu Subscription";
-    case "unknown":
-      return "ChatGPT Subscription";
     default:
-      account.planType satisfies never;
-      return undefined;
+      return "ChatGPT Subscription";
   }
 }
 

@@ -3933,15 +3933,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 { id: "ultracode", label: "Ultracode" },
               ],
             );
-            const fastModeDescriptor = opus48.capabilities.optionDescriptors?.find(
-              (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+            // Anthropic retired Fast Mode on Opus 4.8 (Nov 30 2026); a fast
+            // request errors, so the option is gone.
+            assert.isUndefined(
+              opus48.capabilities.optionDescriptors?.find(
+                (descriptor) => descriptor.id === "fastMode",
+              ),
             );
-            assert.deepStrictEqual(fastModeDescriptor, {
-              id: "fastMode",
-              label: "Fast Mode",
-              description: "Faster responses, higher cost. Usage credits, not subscription usage.",
-              type: "boolean",
-            });
             const contextDescriptor = opus48.capabilities.optionDescriptors?.find(
               (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
             );

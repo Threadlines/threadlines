@@ -324,11 +324,9 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.opus48,
         }),
         CLAUDE_ULTRACODE_OPTION,
-        buildBooleanOptionDescriptor({
-          id: "fastMode",
-          label: "Fast Mode",
-          description: CLAUDE_FAST_MODE_DESCRIPTION,
-        }),
+        // No Fast Mode: Anthropic retired it on Opus 4.8 on Nov 30 2026, after
+        // which a fast request errors instead of running at normal speed.
+        // Without the option a saved Fast Mode choice is no longer sent.
         buildSelectOptionDescriptor({
           id: "contextWindow",
           label: "Context Window",
@@ -1495,6 +1493,46 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   );
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
+
+/** `claude --version` answers in milliseconds; a session start waits no longer than this. */
+const CLAUDE_LAUNCH_VERSION_TIMEOUT_MS = 5_000;
+
+/** What the SDK is handed to start Claude: the executable, its folder, its environment. */
+export interface ClaudeLaunchTarget {
+  readonly executable: string;
+  readonly cwd: string | undefined;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+/**
+ * The version of the Claude Code a session is about to start, asked of that
+ * very launch target now: spawned directly, as the SDK spawns it, rather than
+ * through the provider check's own command lookup. Undefined when it doesn't
+ * answer in time or prints nothing readable. `--version` never touches the
+ * sign-in, so stopping it is safe; one that ignores the stop is killed a
+ * second later, so a session start never waits on it for long.
+ */
+export const readClaudeLaunchVersion = (launch: ClaudeLaunchTarget) =>
+  spawnAndCollect(
+    launch.executable,
+    ChildProcess.make(
+      launch.executable,
+      ["--version"],
+      hideWindowsConsole({
+        env: launch.environment,
+        ...(launch.cwd !== undefined ? { cwd: launch.cwd } : {}),
+        forceKillAfter: "1 second",
+      }),
+    ),
+  ).pipe(
+    Effect.timeoutOption(CLAUDE_LAUNCH_VERSION_TIMEOUT_MS),
+    Effect.map((result) =>
+      Option.isSome(result) && result.value.code === 0
+        ? (parseGenericCliVersion(`${result.value.stdout}\n${result.value.stderr}`) ?? undefined)
+        : undefined,
+    ),
+    Effect.orElseSucceed(() => undefined),
+  );
 
 /**
  * Copy of `environment` without any token/API-key overrides, so a spawned CLI

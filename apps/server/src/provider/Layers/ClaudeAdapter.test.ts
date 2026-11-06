@@ -81,6 +81,7 @@ import {
   publishedArtifactFromToolResult,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
+import type { ClaudeLaunchTarget } from "./ClaudeProvider.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 /**
@@ -385,6 +386,7 @@ function makeHarness(config?: {
   readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
   readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
   readonly installedCliVersion?: string;
+  readonly readLaunchVersion?: ClaudeAdapterLiveOptions["readLaunchVersion"];
   readonly suggestionsWhenUsageRunsFast?: ClaudeAdapterLiveOptions["suggestionsWhenUsageRunsFast"];
 }) {
   const query = new FakeClaudeQuery();
@@ -420,6 +422,7 @@ function makeHarness(config?: {
     ...(config?.installedCliVersion
       ? { installedCliVersion: Effect.succeed(config.installedCliVersion) }
       : {}),
+    ...(config?.readLaunchVersion ? { readLaunchVersion: config.readLaunchVersion } : {}),
     ...(config?.suggestionsWhenUsageRunsFast
       ? { suggestionsWhenUsageRunsFast: config.suggestionsWhenUsageRunsFast }
       : {}),
@@ -10024,6 +10027,56 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it.effect("fails its tool guards closed only on a Claude Code that honours it", () => {
+    // Asking an older Claude Code to block stops the SDK from starting the
+    // session at all, so those (and an unknown version) keep the old guards.
+    // The version is the launched binary's own, not the provider's last check.
+    const guardFailures = (launchCliVersion: string | undefined, lockdown?: "side-review") => {
+      const asked: Array<ClaudeLaunchTarget> = [];
+      // The provider's last check says current; only the binary's own answer counts.
+      const harness = makeHarness({
+        installedCliVersion: "2.1.318",
+        readLaunchVersion: (launch) => {
+          asked.push(launch);
+          return Effect.succeed(launchCliVersion);
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: "/tmp/project",
+          ...(lockdown ? { lockdown } : {}),
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()!.options;
+        // Asked of what the SDK launches: the same binary, found the same way.
+        assert.deepEqual(
+          asked.map((launch) => [launch.executable, launch.cwd, launch.environment.PATH]),
+          [[options.pathToClaudeCodeExecutable, options.cwd, options.env?.PATH]],
+        );
+        const hooks = options.hooks;
+        assert.deepEqual(
+          hooks?.PostToolUse?.map((matcher) => matcher.onFailure),
+          lockdown ? undefined : [undefined, undefined],
+        );
+        return (hooks?.PreToolUse ?? []).map((matcher) => matcher.onFailure);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.orDie,
+      );
+    };
+    return Effect.gen(function* () {
+      assert.deepEqual(yield* guardFailures(undefined), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.316"), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.317"), ["block"]);
+      assert.deepEqual(yield* guardFailures("2.1.316", "side-review"), [undefined]);
+      assert.deepEqual(yield* guardFailures("2.1.318", "side-review"), ["block"]);
+    });
   });
 
   it.effect("refuses its own check-backs and goals while outside work marks the agent", () => {
