@@ -294,6 +294,39 @@ Only files inside the project's folder are listed. A file an agent saved elsewhe
 In the Diff tab, a changed picture shows its Before and After side by side instead of a file name.`,
   },
   {
+    id: "source-control",
+    title: "The Source tab and Git",
+    keywords: [
+      "git",
+      "source control",
+      "source tab",
+      "side panel",
+      "header",
+      "down arrow",
+      "uncommitted",
+      "commit",
+      "push",
+      "pull",
+      "behind",
+      "remote",
+      "branch",
+      "merge",
+      "stash",
+      "changes",
+      "graph",
+      "fetch",
+    ],
+    body: `The panel button at the right of the chat header opens a side panel, and so does Cmd+D, or Ctrl+D on Windows and Linux. Its Source tab is where you work with Git in the thread's checkout. {place:sourceControl.openPanelByDefault} opens it as you enter a thread.
+
+Beside that button the header shows uncommitted lines added and removed, and ↓ with how many commits the branch is behind its remote. Click the counts to open the Source tab. Right-click the ↓ count, or hold it on a touch screen, to pull without opening the panel. A narrow header hides the counts.
+
+The Source tab lists staged and unstaged changes; click a file for its diff. The main button commits and pushes, writing the message unless you pick Write message from its menu first. With nothing to commit, it only pushes. The same menu has Commit only, Push only, Stash changes, View stashes and Review changes with Codex. Below it are Pull, New PR or Open PR, and the branch menu for creating, switching and merging branches. Graph shows the history. Right-click a commit to copy it, tag it or open it on the site that hosts the repository.
+
+Pull only fast-forwards, so it never merges or rebases. With uncommitted changes it asks to stash them, pull, and put them back. If the remote branch was force-pushed or recreated, Pull offers to back up your branch before taking the remote's. Pull and the Source tab's buttons wait while another Git action changes the checkout. In a project inside a bigger repository, the Source tab asks before it changes anything.
+
+The ↓ count is only as fresh as the last fetch, and {place:sourceControl.fetchInterval} sets how often that runs. Commit and pull request text follow {place:sourceControl.writingStyle} and {place:sourceControl.writerModel}. GitHub sign-ins are in {place:sourceControl.providers}, and {place:pullRequests} lists your pull requests across projects.`,
+  },
+  {
     id: "pages-and-command-requests",
     title: "Agent pages and command requests",
     keywords: ["page", "chart", "diagram", "mockup", "run command", "card", "artifact"],
