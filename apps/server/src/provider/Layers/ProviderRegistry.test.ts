@@ -40,6 +40,7 @@ import {
   checkCodexProviderStatus,
   parseCodexModelListResponse,
   type CodexAppServerProviderSnapshot,
+  type CodexWorkspaceMemory,
 } from "./CodexProvider.ts";
 import {
   carryClaudeUsageAcrossChecks,
@@ -384,6 +385,79 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               shortDescription: "Debug failing GitHub Actions checks",
             },
           ]);
+        }),
+      );
+
+      it.effect("reports the workspaces of the ChatGPT login in use", () =>
+        Effect.gen(function* () {
+          const workspaceMemory: CodexWorkspaceMemory = {};
+          const check = (snapshot: CodexAppServerProviderSnapshot) =>
+            checkCodexProviderStatus(
+              defaultCodexSettings,
+              () => Effect.succeed(snapshot),
+              process.env,
+              workspaceMemory,
+            );
+          const status = yield* check(
+            makeCodexProbeSnapshot({
+              accountSessions: {
+                activeSessionId: "session-work",
+                sessions: [
+                  {
+                    sessionId: "session-home",
+                    isActive: false,
+                    lastUsedAt: 1,
+                    selectedWorkspaceAccountId: "acct-home",
+                    workspaces: [{ accountId: "acct-home", kind: "personal" }],
+                  },
+                  {
+                    sessionId: "session-work",
+                    isActive: true,
+                    lastUsedAt: 2,
+                    selectedWorkspaceAccountId: "acct-acme",
+                    workspaces: [
+                      { accountId: "acct-personal", kind: "personal", name: null },
+                      { accountId: "acct-acme", kind: "workspace", name: " Acme " },
+                    ],
+                  },
+                ],
+              },
+            }),
+          );
+          assert.deepStrictEqual(status.auth.workspaces, [
+            { id: "acct-personal", kind: "personal", current: false },
+            { id: "acct-acme", name: "Acme", kind: "workspace", current: true },
+          ]);
+
+          // A check that couldn't read them keeps the list, with the workspace
+          // Codex says is selected now.
+          const slow = yield* check(
+            makeCodexProbeSnapshot({
+              account: {
+                ...makeCodexProbeSnapshot().account,
+                workspaceRouting: {
+                  chatgptAccountId: "acct-personal",
+                  backendOrigin: "https://chatgpt.com",
+                  accountRoutingOverride: "NO_CONSTRAINT",
+                },
+              },
+            }),
+          );
+          assert.deepStrictEqual(slow.auth.workspaces, [
+            { id: "acct-personal", kind: "personal", current: true },
+            { id: "acct-acme", name: "Acme", kind: "workspace", current: false },
+          ]);
+
+          // Another account's check doesn't get them.
+          const other = yield* check(
+            makeCodexProbeSnapshot({
+              account: {
+                account: { type: "chatgpt", email: "other@example.com", planType: "pro" },
+                requiresOpenaiAuth: false,
+              },
+            }),
+          );
+          assert.strictEqual(other.auth.workspaces, undefined);
         }),
       );
 

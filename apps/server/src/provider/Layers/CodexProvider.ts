@@ -28,6 +28,7 @@ import type {
   ModelUpgradeInfo,
   ServerProviderModel,
   ServerProviderSkill,
+  ServerProviderWorkspace,
 } from "@threadlines/contracts";
 import { RUNTIME_MODES, ServerSettingsError } from "@threadlines/contracts";
 
@@ -58,6 +59,8 @@ const CODEX_PROVIDER_TIMEOUT_MESSAGE =
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  /** The ChatGPT logins Codex holds and their workspaces (`accountSession/list`). */
+  readonly accountSessions?: CodexSchema.V2AccountSessionsResponse;
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly tokenUsage?: CodexSchema.V2GetAccountTokenUsageResponse;
   readonly version: string | undefined;
@@ -766,7 +769,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models, rateLimits, tokenUsage] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits, tokenUsage, accountSessions] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
@@ -774,12 +777,16 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       requestAllCodexModels(client),
       client.request("account/rateLimits/read", null).pipe(Effect.orElseSucceed(() => undefined)),
       client.request("account/usage/read", {}).pipe(Effect.orElseSucceed(() => undefined)),
+      accountResponse.account?.type === "chatgpt"
+        ? readCodexAccountSessions(client)
+        : Effect.succeed(undefined),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
+    ...(accountSessions ? { accountSessions } : {}),
     ...(rateLimits ? { rateLimits } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
     version,
@@ -787,6 +794,97 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
   } satisfies CodexAppServerProviderSnapshot;
 });
+
+/**
+ * How long the status check waits for the workspace list. Its names come from
+ * OpenAI's servers; a slow answer only hides the switcher, never the check.
+ */
+const CODEX_ACCOUNT_SESSIONS_TIMEOUT = Duration.seconds(8);
+
+/**
+ * The ChatGPT logins Codex holds, with their workspaces' names and kinds
+ * (refreshed from OpenAI: without it only the selected workspace's id is
+ * known). Undefined from a Codex without it (before 0.167), on a failure, or
+ * when it doesn't answer in time.
+ */
+export const readCodexAccountSessions = (client: CodexClient.CodexAppServerClientShape) =>
+  client.request("accountSession/list", { refreshWorkspaceMetadata: true }).pipe(
+    Effect.timeoutOption(CODEX_ACCOUNT_SESSIONS_TIMEOUT),
+    Effect.map(Option.getOrUndefined),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * The workspaces of the login in use, for the snapshot: the active session's,
+ * with the one it has selected marked current. None when there is no active
+ * login or it lists no workspace.
+ */
+export function codexWorkspacesFromSessions(
+  sessions: CodexSchema.V2AccountSessionsResponse | undefined,
+): ReadonlyArray<ServerProviderWorkspace> | undefined {
+  const active = sessions?.sessions.find(
+    (session) => session.isActive || session.sessionId === sessions.activeSessionId,
+  );
+  if (!active || active.workspaces.length === 0) return undefined;
+  return active.workspaces.flatMap((workspace) => {
+    const id = workspace.accountId.trim();
+    if (!id) return [];
+    const name = workspace.name?.trim();
+    const kind = workspace.kind?.trim();
+    return [
+      {
+        id,
+        ...(name ? { name } : {}),
+        ...(kind ? { kind } : {}),
+        current: id === active.selectedWorkspaceAccountId,
+      },
+    ];
+  });
+}
+
+/**
+ * The last workspace list a status check read, for the checks that can't read
+ * one (OpenAI slow to answer): the Workspace setting, and a switch it is
+ * running, stay put instead of blinking out. One per Codex instance; a check
+ * that finds another account, or none, forgets it.
+ */
+export interface CodexWorkspaceMemory {
+  last?:
+    | {
+        readonly email: string;
+        readonly workspaces: ReadonlyArray<ServerProviderWorkspace>;
+      }
+    | undefined;
+}
+
+/**
+ * The workspaces for a check: the ones it read, else the remembered ones of
+ * the same account, re-marked with the workspace Codex says is selected now.
+ */
+function codexWorkspacesForCheck(
+  account: CodexAppServerProviderSnapshot["account"],
+  read: ReadonlyArray<ServerProviderWorkspace> | undefined,
+  memory: CodexWorkspaceMemory | undefined,
+): ReadonlyArray<ServerProviderWorkspace> | undefined {
+  if (account.account?.type !== "chatgpt") {
+    if (memory) memory.last = undefined;
+    return undefined;
+  }
+  const email = account.account.email ?? "";
+  if (read) {
+    if (memory) memory.last = { email, workspaces: read };
+    return read;
+  }
+  const last = memory?.last;
+  if (!last || last.email !== email) {
+    if (memory) memory.last = undefined;
+    return undefined;
+  }
+  const selectedId = account.workspaceRouting?.chatgptAccountId;
+  return selectedId
+    ? last.workspaces.map((workspace) => ({ ...workspace, current: workspace.id === selectedId }))
+    : last.workspaces;
+}
 
 export const consumeCodexRateLimitResetCredit = Effect.fn("consumeCodexRateLimitResetCredit")(
   function* (input: {
@@ -871,18 +969,28 @@ const makePendingCodexProvider = (
     });
   });
 
-function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]): {
+function accountProbeStatus(
+  account: CodexAppServerProviderSnapshot["account"],
+  accountSessions: CodexAppServerProviderSnapshot["accountSessions"],
+  workspaceMemory: CodexWorkspaceMemory | undefined,
+): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
   readonly message?: string;
 } {
   const authLabel = codexAccountAuthLabel(account.account);
   const authEmail = codexAccountEmail(account.account);
+  const workspaces = codexWorkspacesForCheck(
+    account,
+    account.account?.type === "chatgpt" ? codexWorkspacesFromSessions(accountSessions) : undefined,
+    workspaceMemory,
+  );
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
     ...(account.account?.type ? { type: account.account?.type } : {}),
     ...(authLabel ? { label: authLabel } : {}),
     ...(authEmail ? { email: authEmail } : {}),
+    ...(workspaces ? { workspaces } : {}),
   } satisfies ServerProvider["auth"];
 
   if (account.account) {
@@ -914,6 +1022,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
   > = probeCodexAppServerProvider,
   environment: NodeJS.ProcessEnv = process.env,
+  /** The instance's last workspace list, kept through checks that can't read one. */
+  workspaceMemory?: CodexWorkspaceMemory,
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -978,7 +1088,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
-  const accountStatus = accountProbeStatus(snapshot.account);
+  const accountStatus = accountProbeStatus(
+    snapshot.account,
+    snapshot.accountSessions,
+    workspaceMemory,
+  );
   const accountUsage = normalizeCodexAccountUsage(
     snapshot.rateLimits,
     snapshot.tokenUsage,

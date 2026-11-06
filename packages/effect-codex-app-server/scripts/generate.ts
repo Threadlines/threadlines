@@ -34,6 +34,7 @@ const COMPONENT_REF_PREFIX = "#/components/schemas/";
  */
 const OPEN_ENUM_DEFINITIONS: ReadonlySet<string> = new Set([
   "AccountRoutingOverride",
+  "AccountSessionWorkspaceKind",
   "AppTemplateUnavailableReason",
   "AuthMode",
   "CyberAccessProgram",

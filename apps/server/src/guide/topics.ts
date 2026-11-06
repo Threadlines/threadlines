@@ -190,6 +190,8 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
       "usage limit",
       "rate limit",
       "continue at reset",
+      "workspace",
+      "chatgpt",
     ],
     body: `{place:settings.providers} lists the agents this computer can run (Claude, Codex, Cursor, OpenCode, Pi and others), in use and not in use. Each card has its account and sign-in, its models, how it appears (name and color), and how it launches (command and environment variables).
 
@@ -198,6 +200,8 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
 How much of each plan you've used is on {place:usage}.
 
 A Claude sign-in made with Claude's own sign-in (not an API key or a long-lived token) ends on a date that renewing doesn't move: up to 3 days before the date Claude saved. From 10 days before, the Claude row in Settings and the notice above the message box say when, with Sign in again; signing in again sets a new date. The notice's X hides it until the next sign-in.
+
+When a Codex ChatGPT sign-in belongs to more than one workspace (a personal one and a company's, say), the Codex row shows the one in use, and its Account & Sign-in has Workspace: pick another and Switch. Switching first stops that Codex's running chats and holds new ones until it's done. A workspace behind company sign-on opens a sign-in page; Cancel keeps the current workspace. A chat whose data the old workspace keeps in another region may not continue after a switch; start a new thread for it. It needs Codex 0.167 or later.
 
 If Codex's sign-in goes stale in a chat before it has started on your message, Threadlines restarts Codex and sends the message again, once, with a note in the chat. If that fails too, the chat asks you to sign in.
 

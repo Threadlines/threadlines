@@ -47,6 +47,8 @@ import {
 
 import { ProviderApiKeyBillingSwitch } from "./ProviderApiKeyBilling";
 import { ProviderDataSharingSwitch } from "./ProviderDataSharing";
+import { ProviderWorkspaceSwitch } from "./ProviderWorkspaceSwitch";
+import { currentWorkspaceName } from "./providerWorkspaces.logic";
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
@@ -870,6 +872,14 @@ function ProviderAccountSignInSection(props: {
           />
         )}
 
+        {props.liveProvider?.enabled !== false && props.liveProvider ? (
+          <ProviderWorkspaceSwitch
+            instanceId={props.instanceId}
+            displayName={props.displayName}
+            provider={props.liveProvider}
+          />
+        ) : null}
+
         {signOut && props.liveProvider?.auth.status === "authenticated" ? (
           <ProviderConnectFlow
             instanceId={props.instanceId}
@@ -1350,6 +1360,8 @@ export function ProviderInstanceCard({
   const authenticatedDetail = hasAuthenticatedEmail
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
+  // Which workspace it uses, where the sign-in has more than one.
+  const workspaceName = hasAuthenticatedEmail ? currentWorkspaceName(liveProvider?.auth) : null;
   const signInEndsWarning = useSignInEndsWarning(liveProvider);
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const providerInstallView = deriveProviderInstallView(liveProvider);
@@ -1652,6 +1664,7 @@ export function ProviderInstanceCard({
       <span className="inline-flex min-w-0 items-center gap-x-1">
         <ProviderAuthEmail email={authEmail} />
         {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
+        {workspaceName ? <span className="truncate">· {workspaceName}</span> : null}
         <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         {signInEndsWarning ? (
           <span className="text-warning">· {signInEndsShortText(signInEndsWarning)}</span>
