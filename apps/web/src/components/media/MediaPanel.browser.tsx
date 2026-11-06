@@ -64,7 +64,11 @@ const THREAD_MEDIA = [
   mediaEntry({ relativePath: "shots/sidebar.png", change: "modified" }),
   mediaEntry({ relativePath: "docs/brief.pdf", mediaKind: "document", size: 2048 }),
   mediaEntry({ relativePath: "media/demo.mp4", mediaKind: "video", size: 4096 }),
+  mediaEntry({ relativePath: "shots/logo.svg" }),
 ];
+/** An SVG that carries a script, as a hostile repository might. */
+const SCRIPTED_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="#36c"/><script>window.top.pwned = true</script></svg>';
 /** One page that says "Hello PDF". */
 const TINY_PDF = [
   "%PDF-1.4",
@@ -101,21 +105,29 @@ function installApi() {
   const readFile = vi.fn(async (input: { readonly relativePath: string }) =>
     input.relativePath === "shots/gone.png"
       ? { kind: "missing" as const, relativePath: input.relativePath }
-      : input.relativePath.endsWith(".pdf")
+      : input.relativePath.endsWith(".svg")
         ? {
-            kind: "document" as const,
-            relativePath: input.relativePath,
-            mimeType: "application/pdf",
-            base64: btoa(TINY_PDF),
-            size: TINY_PDF.length,
-          }
-        : {
             kind: "image" as const,
             relativePath: input.relativePath,
-            mimeType: "image/png",
-            base64: PIXEL_PNG,
-            size: 68,
-          },
+            mimeType: "image/svg+xml",
+            base64: btoa(SCRIPTED_SVG),
+            size: SCRIPTED_SVG.length,
+          }
+        : input.relativePath.endsWith(".pdf")
+          ? {
+              kind: "document" as const,
+              relativePath: input.relativePath,
+              mimeType: "application/pdf",
+              base64: btoa(TINY_PDF),
+              size: TINY_PDF.length,
+            }
+          : {
+              kind: "image" as const,
+              relativePath: input.relativePath,
+              mimeType: "image/png",
+              base64: PIXEL_PNG,
+              size: 68,
+            },
   );
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
     orchestration: { listProjectMedia, getTurnFile },
@@ -175,6 +187,16 @@ describe("MediaPanel", () => {
       );
       expect(image?.src.startsWith("blob:")).toBe(true);
     });
+    // An SVG's tile holds pixels only, never its markup (which may carry
+    // scripts) behind one of the app's own blob URLs.
+    let svgTile: HTMLImageElement | null = null;
+    await vi.waitFor(() => {
+      svgTile = document.querySelector<HTMLImageElement>('[data-media-tile="shots/logo.svg"] img');
+      expect(svgTile?.src.startsWith("blob:")).toBe(true);
+    });
+    const svgBlob = await (await fetch(svgTile!.src)).blob();
+    expect(svgBlob.type).toBe("image/webp");
+    expect(await svgBlob.text()).not.toContain("<script");
     // A file gone by the time its picture is read says so, and nothing else breaks.
     await expect.element(page.getByText("No longer on disk")).toBeVisible();
     // A PDF's tile shows its first page, read as a document.

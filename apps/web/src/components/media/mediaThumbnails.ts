@@ -149,6 +149,32 @@ async function encodeCanvas(
   return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
 }
 
+/** An SVG drawn THUMBNAIL_WIDTH wide as WebP pixels, or null when it can't be drawn. */
+async function rasterizeSvg(dataUrl: string): Promise<Blob | null> {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = dataUrl;
+  try {
+    await image.decode();
+  } catch {
+    return null;
+  }
+  // An SVG without a size of its own reports none; give it a tile's.
+  const naturalWidth = image.naturalWidth || THUMBNAIL_WIDTH;
+  const naturalHeight = image.naturalHeight || Math.round(THUMBNAIL_WIDTH * 0.75);
+  const scale = THUMBNAIL_WIDTH / naturalWidth;
+  const width = THUMBNAIL_WIDTH;
+  const height = Math.max(1, Math.round(naturalHeight * scale));
+  try {
+    return await encodeCanvas(width, height, (context) =>
+      context.drawImage(image, 0, 0, width, height),
+    );
+  } catch {
+    // A canvas the browser considers tainted can't be read back.
+    return null;
+  }
+}
+
 /** The file as a tile-sized picture, or why there is none. */
 async function shrink(result: ReadResult): Promise<Outcome> {
   if (result.kind === "missing") {
@@ -186,8 +212,16 @@ async function shrink(result: ReadResult): Promise<Outcome> {
     refs: 0,
   });
   if (result.mimeType === "image/svg+xml") {
-    // Drawn by the browser at any size; there is nothing to shrink.
-    return bytes.byteLength > MAX_SVG_BYTES ? "unavailable" : keep(source);
+    if (bytes.byteLength > MAX_SVG_BYTES) {
+      return "unavailable";
+    }
+    // Drawn to pixels and kept only as pixels. An SVG can carry scripts: the
+    // markup itself must never sit behind one of the app's own blob URLs,
+    // where opening the thumbnail as a page (a browser's own image menu
+    // allows it) would run them as the app. It is loaded from a data URL,
+    // which no page can be opened on.
+    const blob = await rasterizeSvg(`data:image/svg+xml;base64,${result.base64}`);
+    return blob ? keep(blob) : "unavailable";
   }
   let bitmap: ImageBitmap;
   try {
