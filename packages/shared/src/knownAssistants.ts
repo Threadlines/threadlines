@@ -53,6 +53,9 @@ const BY_NAME: ReadonlyArray<readonly [RegExp, KnownAssistant]> = [
 
 /** Which known assistant a sign-in is, by the site it returns to (or its checked site); null: none. */
 export function assistantOfSignInHost(host: string): KnownAssistant | null {
+  // An app's return address (`cursor://anysphere.cursor-mcp/`, `com.example.app:`) names no site,
+  // whatever host it carries: only a site's own host, with or without a port, counts.
+  if (/\/|:(?!\d+$)/u.test(host)) return null;
   const bare = host.toLowerCase().replace(/:\d+$/u, "");
   return BY_HOST.find(([site]) => bare === site || bare.endsWith(`.${site}`))?.[1] ?? null;
 }

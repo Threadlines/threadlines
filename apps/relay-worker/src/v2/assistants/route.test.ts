@@ -366,6 +366,82 @@ describe("clients and the sign-in page", () => {
     }
   });
 
+  it("takes a native app's own scheme, as Cursor registers it, and never a web or script one", async () => {
+    const { env, created } = edgeEnv();
+    // What the Cursor app and its CLI send to /register, word for word.
+    const cursor = await register(env, {
+      redirect_uris: [
+        "http://localhost:8787/callback",
+        "cursor://anysphere.cursor-mcp/oauth/callback",
+        "https://www.cursor.com/agents/mcp/oauth/callback",
+      ],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      client_name: "Cursor",
+    });
+    expect(cursor.status).toBe(201);
+    const { client_id } = (await cursor.json()) as { client_id: string };
+    const page = await route(
+      new Request(
+        authorizeUrl({ client_id, redirect_uri: "cursor://anysphere.cursor-mcp/oauth/callback" }),
+      ),
+      env,
+    );
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Sign-in returns to cursor://anysphere.cursor-mcp/");
+
+    // A reverse-domain scheme with no host and no name still signs in, named for its scheme.
+    const bare = (await (
+      await register(env, { redirect_uris: ["com.example.app:/cb"] })
+    ).json()) as { client_id: string; client_name: string };
+    expect(bare.client_name).toBe("com.example.app:");
+    expect(
+      (
+        await route(
+          new Request(
+            authorizeUrl({ client_id: bare.client_id, redirect_uri: "com.example.app:/cb" }),
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+
+    // An app scheme naming a known assistant's domain is never taken as that assistant.
+    const spoof = (await (
+      await register(env, {
+        redirect_uris: ["com.evil.app://x.claude.ai/cb"],
+        client_name: "Claude",
+      })
+    ).json()) as { client_id: string };
+    await route(
+      new Request(
+        authorizeUrl({ client_id: spoof.client_id, redirect_uri: "com.evil.app://x.claude.ai/cb" }),
+      ),
+      env,
+    );
+    expect(created.at(-1)).toMatchObject({
+      identity: { kind: "registered", host: "com.evil.app://x.claude.ai/", known: false },
+    });
+
+    for (const redirect_uri of [
+      "javascript:alert(1)//x",
+      "data:text/html,hi",
+      "file:///etc/passwd",
+      "intent://x#Intent;end",
+      "ws://127.0.0.1/cb",
+      "microsoft-edge:http://evil.test/cb",
+      "googlechrome://evil.test/cb",
+      "web+evil.app://cb",
+      "x-apple.systempreferences:com.apple.preference.security",
+      "com.apple.reminderkitstore:/cb",
+      "microsoft.windows.camera.picker:/callback",
+      "someapp://cb",
+    ]) {
+      expect((await register(env, { redirect_uris: [redirect_uri] })).status).toBe(400);
+    }
+  });
+
   it("signs in a CIMD client that can be public, whatever it prefers, and no other", async () => {
     const { env, created } = edgeEnv();
     const signIn = (clientId: string, details: Record<string, unknown>) =>
