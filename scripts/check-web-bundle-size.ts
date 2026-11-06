@@ -42,7 +42,13 @@ const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // drawer, the computer-link contracts), after its dialogs, the sign-in
 // terminal and the pages' sidebar lists moved behind lazy() boundaries.
 // Budget leaves ~10% headroom. Raise deliberately, never reactively.
-const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 905_000;
+// Raised to 912 KB (2026-11-06, Will's OK) for custom themes (#827): every
+// window loads the theme store that applies the saved theme before first
+// paint, the theme contracts and the guide's theme places, about 14 KB with
+// everything else (color math, art, library, picker) behind lazy()
+// boundaries. CI's build reads about 1.6 KB above a local one (905,480 B in
+// CI for a commit measured at 903,835 B here); main measured ~890 KB here.
+const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 912_000;
 
 const entryBudgetBytes = Number(
   process.env.THREADLINES_WEB_ENTRY_GZIP_BUDGET_BYTES ?? DEFAULT_ENTRY_GZIP_BUDGET_BYTES,

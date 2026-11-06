@@ -243,6 +243,33 @@ describe.runIf(REAL_BROWSER)("PagePreview in the real browser", () => {
   );
 
   it.live(
+    "captures a fixed viewport, scaled, once the page has run and marked itself",
+    () =>
+      Effect.gen(function* () {
+        const pagePreview = yield* realPagePreview;
+        const [shot] = yield* pagePreview.captureViewports({
+          width: 640,
+          height: 400,
+          scale: 0.5,
+          shots: [
+            {
+              // Fills the viewport, and says it's done a moment after loading.
+              document:
+                '<!doctype html><html><body style="margin:0"><div style="height:100vh;background:#3355ff"></div><script>setTimeout(() => document.documentElement.setAttribute("data-done", innerWidth + "x" + innerHeight), 300);</script></body></html>',
+              waitMs: 0,
+              waitFor: { anyOf: ["data-done"], maxMs: 3_000 },
+              readAttributes: ["data-done", "data-missing"],
+            },
+          ],
+        });
+        const png = Buffer.from(shot?.png ?? "", "base64");
+        expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([320, 200]);
+        expect(shot?.attributes).toEqual({ "data-done": "640x400", "data-missing": null });
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    REAL_BROWSER_TIMEOUT,
+  );
+
+  it.live(
     "keeps the page off this machine, its network, and its files",
     () =>
       Effect.gen(function* () {

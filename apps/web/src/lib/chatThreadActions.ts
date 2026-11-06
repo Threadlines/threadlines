@@ -113,12 +113,19 @@ export function resolveThreadActionProjectRef(
 }
 
 /** General Chats never seed branch/worktree context; they always run in
-    per-thread scratch directories in local mode. */
+    per-thread scratch directories in local mode. `initialPrompt` opens the
+    draft with words to finish (New theme). */
 export async function startNewGeneralChatThread(
   handleNewThread: NewThreadHandler,
   generalChatsRef: ScopedProjectRef,
+  initialPrompt?: string,
 ): Promise<void> {
-  await handleNewThread(generalChatsRef, { branch: null, worktreePath: null, envMode: "local" });
+  await handleNewThread(generalChatsRef, {
+    branch: null,
+    worktreePath: null,
+    envMode: "local",
+    ...(initialPrompt ? { initialPrompt } : {}),
+  });
 }
 
 export async function startNewThreadInProjectFromContext(

@@ -29,7 +29,7 @@ import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/di
 
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
-import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { useCodeThemeName } from "../../theme/codeTheme";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { applyEditSeedToEditor } from "./FileViewerOverlay.logic";
 import { flushFileEdits, queueFileEdit } from "./fileEditorSaveCoordinator";
@@ -61,6 +61,7 @@ export function FileEditorPane({
 }) {
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
+  const codeThemeName = useCodeThemeName();
   const latestContentsRef = useRef(initialContents);
   const handleChangeRef = useRef<(contents: string) => void>(() => undefined);
   const handleAttachRef = useRef<(attached: Editor<"file">) => void>(() => undefined);
@@ -137,13 +138,13 @@ export function FileEditorPane({
     () => ({
       disableFileHeader: true,
       overflow: wordWrap ? ("wrap" as const) : ("scroll" as const),
-      theme: resolveDiffThemeName(resolvedTheme),
+      theme: codeThemeName,
       themeType: resolvedTheme,
       // Diff-panel tones only: the view mode's selection/hover affordances
       // don't apply while an editor is attached (pierre disables them).
       unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
     }),
-    [resolvedTheme, wordWrap],
+    [codeThemeName, resolvedTheme, wordWrap],
   );
 
   return (

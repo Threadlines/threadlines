@@ -2066,7 +2066,7 @@ export default function Sidebar() {
             <ThreadHoverCardProvider>
               {/* Outside the scroll container: search and compose are chrome, and
                 chrome does not scroll away. The list clips beneath the rule. */}
-              <SidebarGroup className="shrink-0 bg-sidebar px-3 pt-3 pb-1">
+              <SidebarGroup data-sidebar-chrome className="shrink-0 bg-sidebar px-3 pt-3 pb-1">
                 <CommandDialogTrigger
                   render={
                     <button
@@ -2093,7 +2093,7 @@ export default function Sidebar() {
               <div ref={inboxColumnRef} className="relative flex min-h-0 flex-1 flex-col">
                 <span
                   aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
+                  className="glass-fade pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
                 {/* The live list takes what the shelf leaves. The undo bar
                   floats over its foot, so it never covers the shelf. */}
@@ -2375,7 +2375,7 @@ export default function Sidebar() {
                   {wrappedRows.length > 0 ? (
                     <span
                       aria-hidden="true"
-                      className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
+                      className="glass-fade pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
                     />
                   ) : null}
                   {swipeUndo ? (

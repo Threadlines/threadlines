@@ -35,13 +35,63 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- First paint in the device's theme. Built-ins as always; a custom theme
+         (a JSON choice, see src/theme/themeChoice.ts) paints from the small
+         record the theme store keeps for it: its base, opaque surface and
+         tokens. `?theme=default` skips the saved choice for this load. -->
     <script>
       (() => {
         const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#161616";
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+        const paintCustomTheme = (raw) => {
+          if (!raw || raw.charAt(0) !== "{") return false;
+          const choice = JSON.parse(raw);
+          const record = JSON.parse(
+            window.localStorage.getItem("threadlines:theme-paint") || "null",
+          );
+          if (!choice || !record || record.v !== 1 || typeof record.tokens !== "object")
+            return false;
+          const key =
+            choice.kind === "starter"
+              ? "starter:" + choice.id
+              : choice.kind === "library"
+                ? "library:" + choice.entryId + ":" + choice.hash
+                : choice.kind === "unsaved"
+                  ? "unsaved:" + choice.hash
+                  : null;
+          if (key === null || record.key !== key) return false;
+          const safe = (value) => /^[#a-zA-Z0-9(). ,%/-]+$/.test(String(value));
+          let declarations = "";
+          for (const name in record.tokens) {
+            if (/^[a-z0-9-]+$/.test(name) && safe(record.tokens[name])) {
+              declarations += "--" + name + ":" + record.tokens[name] + ";";
+            }
+          }
+          if (!safe(record.surface) || !safe(record.tokens.foreground)) return false;
+          const root = document.documentElement;
+          const style = document.createElement("style");
+          style.id = "tl-theme";
+          style.textContent =
+            "html:root[data-theme]{" +
+            declarations +
+            "}html:root[data-theme] body{background:" +
+            record.surface +
+            ";color:" +
+            record.tokens.foreground +
+            "}";
+          document.head.append(style);
+          root.setAttribute("data-theme", "custom");
+          root.setAttribute("data-theme-version", record.hash || "pending");
+          root.classList.toggle("dark", record.base === "dark");
+          root.style.backgroundColor = record.surface;
+          themeColorMeta?.setAttribute("content", record.surface);
+          return true;
+        };
         try {
           const storedThreadlinesTheme = window.localStorage.getItem("threadlines:theme");
+          const bypass = new URLSearchParams(window.location.search).get("theme") === "default";
+          if (!bypass && paintCustomTheme(storedThreadlinesTheme)) return;
           const storedLegacyTheme = window.localStorage.getItem("t3code:theme");
           const storedTheme =
             storedThreadlinesTheme === "light" ||

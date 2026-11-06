@@ -69,7 +69,8 @@ function useNewThreadState() {
         continueActiveCheckout?: boolean;
         replace?: boolean;
         /** Words the draft opens with, for surfaces that hand work over. Only
-         *  ever written into a draft with nothing of the user's in it. */
+         *  ever written into a draft with nothing of the user's in it. A
+         *  trailing space is kept, for a sentence the user finishes. */
         initialPrompt?: string;
         /** The thread the draft must become, for a caller that already named it
          *  to the server (the checkout dialog starts the worktree's setup script
@@ -86,9 +87,9 @@ function useNewThreadState() {
         setLogicalProjectDraftThreadId,
         setPrompt,
       } = useComposerDraftStore.getState();
-      const initialPrompt = options?.initialPrompt?.trim() ?? "";
+      const initialPrompt = options?.initialPrompt?.trimStart() ?? "";
       const writeInitialPrompt = (draftId: DraftId) => {
-        if (initialPrompt.length > 0) {
+        if (initialPrompt.trim().length > 0) {
           setPrompt(draftId, initialPrompt);
         }
       };

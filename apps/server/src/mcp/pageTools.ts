@@ -16,13 +16,20 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
+import { THEME_PREVIEW_TOOL_NAME, THEME_SHOW_TOOL_NAME } from "./themeTools.ts";
+
 /** How the tools are namespaced to a provider: `mcp__threadlines_pages__show_page`. */
 export const PAGES_MCP_SERVER_NAME = "threadlines_pages";
 
-/** The page tools as Claude names them, for its allow list. */
+/**
+ * The endpoint's tools as Claude names them, for its allow list: the page
+ * tools and the theme tools beside them, none of which asks.
+ */
 export const CLAUDE_PAGE_TOOL_IDS = [
   `mcp__${PAGES_MCP_SERVER_NAME}__${AGENT_PAGE_SHOW_TOOL_NAME}`,
   `mcp__${PAGES_MCP_SERVER_NAME}__${AGENT_PAGE_PREVIEW_TOOL_NAME}`,
+  `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_SHOW_TOOL_NAME}`,
+  `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_PREVIEW_TOOL_NAME}`,
 ] as const;
 
 // The page itself: show_page and preview_page each take exactly one.
@@ -131,6 +138,7 @@ export function buildAgentPageInstructions(input: {
   const prefix = input.toolPrefix ?? `mcp__${PAGES_MCP_SERVER_NAME}__`;
   return `<threadlines_pages>
 When a chart, table, diagram, image collage, UI mockup or written document would say more than prose, show it as a page with \`${prefix}${AGENT_PAGE_SHOW_TOOL_NAME}\` (check it first with \`${prefix}${AGENT_PAGE_PREVIEW_TOOL_NAME}\`); it appears in the chat above your reply. Do not write HTML files for the user to open instead.${input.rival !== undefined ? ` ${input.rival}` : ""} Local images for a page go in ${input.assetsDir}; reference them there by absolute path.
+When the user wants Threadlines itself to look different (a theme: colors, fonts, live art behind the app), make it with \`${prefix}${THEME_PREVIEW_TOOL_NAME}\` and offer it with \`${prefix}${THEME_SHOW_TOOL_NAME}\`; theme files go in the same folder.
 </threadlines_pages>`;
 }
 

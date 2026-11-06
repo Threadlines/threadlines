@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { modelChangesProblem } from "../settingsChanges/modelChoices.ts";
+import { themeChangesProblem } from "../settingsChanges/themeChoices.ts";
 import { dispatchOutcome } from "../threads/threadOperations.ts";
 import { latchCallerTurn } from "./callerTurn.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
@@ -40,6 +41,11 @@ export interface SettingsChangeToolDeps {
   readonly settings: Effect.Effect<ServerSettings | undefined>;
   /** This computer's providers, for the models a model setting can take. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
+  /**
+   * The names of the themes in this computer's library, for what the theme
+   * setting can take besides the built-ins and starters. Absent: none.
+   */
+  readonly themeNames?: Effect.Effect<ReadonlyArray<string>>;
 }
 
 const ASKED =
@@ -104,6 +110,11 @@ export function makeSettingsChangeToolHandler(deps: SettingsChangeToolDeps) {
       }
       if (checked.edits.some(({ edit }) => edit.control.kind === "model")) {
         const problem = modelChangesProblem(checked.edits, stored, yield* deps.providers);
+        if (problem !== null) return { outcome: "refused" as const, detail: problem };
+      }
+      if (checked.edits.some(({ edit }) => edit.control.kind === "theme")) {
+        const names = deps.themeNames === undefined ? [] : yield* deps.themeNames;
+        const problem = themeChangesProblem(checked.edits, names);
         if (problem !== null) return { outcome: "refused" as const, detail: problem };
       }
       // Computer changes already in place are left off the card.

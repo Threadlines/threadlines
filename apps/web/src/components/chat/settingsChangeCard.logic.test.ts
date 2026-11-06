@@ -114,8 +114,9 @@ describe("checkDeviceChanges", () => {
     expect(
       checkDeviceChanges({ changes: [{ place: "general.newerSwitch", value: true }] }, DESKTOP),
     ).toEqual({ kind: "update" });
+    // Themes go by name (any library's), so the value a theme row can't take is a non-name.
     expect(
-      checkDeviceChanges({ changes: [{ place: "general.theme", value: "sepia" }] }, DESKTOP),
+      checkDeviceChanges({ changes: [{ place: "general.theme", value: true }] }, DESKTOP),
     ).toEqual({ kind: "update" });
   });
 

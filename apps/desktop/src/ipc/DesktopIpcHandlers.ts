@@ -49,6 +49,8 @@ import {
   setMenuActionsListening,
   setTaskbarStatus,
   setTheme,
+  getPowerState,
+  setBackdropActive,
   showContextMenu,
 } from "./methods/window.ts";
 import {
@@ -154,6 +156,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(confirm);
   yield* ipc.handle(captureScreenshot);
   yield* ipc.handle(setTheme);
+  yield* ipc.handle(getPowerState);
+  yield* ipc.handle(setBackdropActive);
   yield* ipc.handle(setTaskbarStatus);
   yield* ipc.handle(getBackgroundOptions);
   yield* ipc.handle(setBackgroundOptions);

@@ -179,16 +179,38 @@ const HOST_SCRIPT = `(() => {
 
 const escapeAttribute = (text: string) => text.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
 
-/** The host page for a document: the document in a sandboxed frame as wide as the viewport. */
-const hostPage = (document: string) =>
-  `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;overflow:hidden;background:transparent}iframe{display:block;border:0;width:100%;height:${INITIAL_FRAME_HEIGHT}px}</style><script>${HOST_SCRIPT}</script></head><body><iframe sandbox="allow-scripts allow-forms" srcdoc="${escapeAttribute(document)}"></iframe></body></html>`;
+/**
+ * The host page for a document: the document in a sandboxed frame as wide as
+ * the viewport, `frameHeight` tall to begin with.
+ */
+const hostPage = (document: string, frameHeight: number) =>
+  `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;overflow:hidden;background:transparent}iframe{display:block;border:0;width:100%;height:${frameHeight}px}</style><script>${HOST_SCRIPT}</script></head><body><iframe sandbox="allow-scripts allow-forms" srcdoc="${escapeAttribute(document)}"></iframe></body></html>`;
 
 /**
  * A host page as the base64 bytes `HOST_URL` serves, encoded once however
  * often it loads. Node's encoder, since pages run to megabytes.
  */
-const hostBody = (document: string) =>
-  Buffer.from(Buffer.from(hostPage(document), "utf8").toString("base64"), "latin1");
+const hostBody = (document: string, frameHeight: number = INITIAL_FRAME_HEIGHT) =>
+  Buffer.from(Buffer.from(hostPage(document, frameHeight), "utf8").toString("base64"), "latin1");
+
+/**
+ * Waits in the page's frame until its root element has one of `names`, or
+ * `maxMs` have passed. Runs in the preview's own world, which sees the DOM
+ * but none of the page's scripts.
+ */
+const waitForAttributeExpression = (names: ReadonlyArray<string>, maxMs: number) =>
+  `(async () => {
+    const names = ${JSON.stringify(names)};
+    const deadline = performance.now() + ${Math.max(0, Math.round(maxMs))};
+    while (!names.some((name) => document.documentElement.hasAttribute(name)) && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return true;
+  })()`;
+
+/** The page's root element attributes `names`, null where missing. */
+const readAttributesExpression = (names: ReadonlyArray<string>) =>
+  `Object.fromEntries(${JSON.stringify(names)}.map((name) => [name, document.documentElement.getAttribute(name)]))`;
 
 /** Resolves in the page's frame once it has loaded, its fonts are in, and two frames have painted. */
 const settleExpression = (nonce: string) =>
@@ -401,6 +423,7 @@ const Evaluated = Schema.Struct({
   ),
 });
 const Settled = Schema.Unknown;
+const Attributes = Schema.Record(Schema.String, Schema.NullOr(Schema.String));
 const SizeReport = Schema.Struct({ height: Schema.Finite, reported: Schema.Boolean });
 const FrameRect = Schema.Struct({
   x: Schema.Finite,
@@ -786,8 +809,14 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       ),
     );
 
-  /** A fresh host page at `width`; each `load` navigates it and settles the page in it. */
-  const openPage = Effect.fnUntraced(function* (width: number) {
+  /**
+   * A fresh host page at `width` (in a viewport `viewportHeight` tall); each
+   * `load` navigates it and settles the page in it.
+   */
+  const openPage = Effect.fnUntraced(function* (
+    width: number,
+    viewportHeight: number = VIEWPORT_HEIGHT,
+  ) {
     const { targetId } = yield* send(
       "Target.createTarget",
       { url: "about:blank" },
@@ -850,7 +879,7 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
         Ignored,
         sessionId,
       );
-    yield* setViewport(VIEWPORT_HEIGHT);
+    yield* setViewport(viewportHeight);
 
     /** The page's frame: a session of its own when it runs out of process, else the host's. */
     const pageFrame = Effect.gen(function* () {
@@ -866,8 +895,12 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       return { sessionId, frameId };
     });
 
-    /** Loads a host page from `hostBody`, so callers loading it often encode it once. */
-    const load = Effect.fnUntraced(function* (body: Uint8Array) {
+    /**
+     * Navigates to a host page from `hostBody` and waits for its frame to
+     * load. Returns ways to run code in the frame, in a world of the
+     * preview's own, so nothing here shows up in the page's scripts.
+     */
+    const navigate = Effect.fnUntraced(function* (body: Uint8Array) {
       const loaded = yield* Deferred.make<void, BrowserFailure>();
       page.body = body;
       page.loaded = loaded;
@@ -878,17 +911,26 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       // The host's load waits for the frame's.
       yield* Deferred.await(loaded);
       const frame = yield* pageFrame;
-      // A world of its own, so nothing here shows up in the page's scripts.
       const { executionContextId } = yield* send(
         "Page.createIsolatedWorld",
         { frameId: frame.frameId, worldName: "threadlines-preview" },
         IsolatedWorld,
         frame.sessionId,
       );
+      const inFrame = <A>(expression: string, value: Schema.Decoder<A>) =>
+        evaluate(expression, value, frame.sessionId, executionContextId);
+      /** Resolves once the page has loaded, its fonts are in, and two frames have painted. */
+      const settle = (nonce: string) => inFrame(settleExpression(nonce), Settled);
+      return { settle, inFrame };
+    });
+
+    /** Loads a host page from `hostBody`, so callers loading it often encode it once. */
+    const load = Effect.fnUntraced(function* (body: Uint8Array) {
+      const { settle } = yield* navigate(body);
       /** Waits for the page to settle, then reads the last height it reported. */
       const settleAndRead = Effect.gen(function* () {
         const nonce = crypto.randomUUID();
-        yield* evaluate(settleExpression(nonce), Settled, frame.sessionId, executionContextId);
+        yield* settle(nonce);
         return yield* evaluate(
           `window.__threadlinesPreview.read(${JSON.stringify(nonce)}, ${SIZE_QUIET_MS}, ${FIRST_SIZE_WAIT_MS})`,
           SizeReport,
@@ -963,7 +1005,49 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       ),
     );
 
-    return { load, consoleMessages, close };
+    /**
+     * Loads a host page whose frame fills the viewport and captures the
+     * viewport as it is, with no height fitting: once the page settles it
+     * runs `waitMs`, then up to `waitFor.maxMs` more until its root element
+     * has one of those attributes, reads `readAttributes`, and shoots at
+     * `scale`.
+     */
+    const shoot = Effect.fnUntraced(function* (
+      body: Uint8Array,
+      options: {
+        readonly height: number;
+        readonly scale: number;
+        readonly waitMs: number;
+        readonly waitFor: ViewportShotRequest["waitFor"];
+        readonly readAttributes: ReadonlyArray<string>;
+      },
+    ) {
+      const { settle, inFrame } = yield* navigate(body);
+      yield* settle(crypto.randomUUID());
+      if (options.waitMs > 0) yield* Effect.sleep(options.waitMs);
+      if (options.waitFor !== undefined && options.waitFor.anyOf.length > 0) {
+        yield* inFrame(
+          waitForAttributeExpression(options.waitFor.anyOf, options.waitFor.maxMs),
+          Settled,
+        );
+      }
+      const attributes =
+        options.readAttributes.length === 0
+          ? {}
+          : yield* inFrame(readAttributesExpression(options.readAttributes), Attributes);
+      const { data } = yield* send(
+        "Page.captureScreenshot",
+        {
+          format: "png",
+          clip: { x: 0, y: 0, width, height: options.height, scale: options.scale },
+        },
+        Schema.Struct({ data: Schema.String }),
+        sessionId,
+      );
+      return { png: data, attributes };
+    });
+
+    return { load, shoot, consoleMessages, close };
   });
 
   return { openPage };
@@ -1016,6 +1100,60 @@ export const capturePage = Effect.fn("headlessChrome.capturePage")(function* (in
   const loaded = yield* page.load(hostBody(input.document));
   const captured = yield* loaded.capture;
   return { ...captured, consoleMessages: page.consoleMessages() } satisfies PageCapture;
+}, Effect.scoped);
+
+/** One document to capture at a fixed viewport, and how long to let it run first. */
+export interface ViewportShotRequest {
+  readonly document: string;
+  /** How long to let the page run once it settles. */
+  readonly waitMs: number;
+  /** Then up to `maxMs` more, until the root element has one of these attributes. */
+  readonly waitFor?: { readonly anyOf: ReadonlyArray<string>; readonly maxMs: number } | undefined;
+  /** Root element attributes to read before the shot. */
+  readonly readAttributes?: ReadonlyArray<string> | undefined;
+}
+
+export interface ViewportShot {
+  /** Base64 PNG of the whole viewport, `width × scale` by `height × scale` pixels. */
+  readonly png: string;
+  readonly attributes: Readonly<Record<string, string | null>>;
+  readonly consoleMessages: ReadonlyArray<ConsoleMessage>;
+}
+
+/**
+ * Loads each document in turn in a viewport of `width` × `height` CSS px,
+ * its frame filling the viewport from the start, and captures exactly that
+ * viewport (no height fitting) at `scale`. One browser for all of them.
+ */
+export const captureViewports = Effect.fn("headlessChrome.captureViewports")(function* (input: {
+  readonly executable: string;
+  readonly width: number;
+  readonly height: number;
+  readonly scale: number;
+  readonly shots: ReadonlyArray<ViewportShotRequest>;
+}) {
+  const browser = yield* startBrowser(input.executable);
+  return yield* Effect.forEach(input.shots, (shot) =>
+    browser.openPage(input.width, input.height).pipe(
+      Effect.flatMap((page) =>
+        page
+          .shoot(hostBody(shot.document, input.height), {
+            height: input.height,
+            scale: input.scale,
+            waitMs: shot.waitMs,
+            waitFor: shot.waitFor,
+            readAttributes: shot.readAttributes ?? [],
+          })
+          .pipe(
+            Effect.map((captured): ViewportShot => ({
+              ...captured,
+              consoleMessages: page.consoleMessages(),
+            })),
+            Effect.ensuring(page.close),
+          ),
+      ),
+    ),
+  );
 }, Effect.scoped);
 
 /**

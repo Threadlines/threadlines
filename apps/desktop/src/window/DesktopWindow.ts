@@ -3,6 +3,7 @@ import type {
   DesktopPreviewOpenTab,
   DesktopPreviewPopup,
   DesktopPreviewSiteAllowed,
+  DesktopThemeColors,
 } from "@threadlines/contracts";
 import { PREVIEW_PROFILE_SCOPE_PREFERENCE } from "@threadlines/shared/preview";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
@@ -38,6 +39,8 @@ import * as ElectronSpelling from "../electron/ElectronSpelling.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
+import * as DesktopThemeAppearance from "./DesktopThemeAppearance.ts";
+import { windowAppearanceColors } from "./DesktopThemeAppearance.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { isPreviewPartition } from "../preview/previewPartitions.ts";
@@ -60,8 +63,6 @@ import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
  */
 const TITLEBAR_HEIGHT = 38;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
-const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
-const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
 /**
  * The first window, on a machine that has never opened one.
  *
@@ -102,6 +103,8 @@ export const OPEN_REPORT_PROBLEM_MENU_ACTION = "open-report-problem";
 export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
 export const NAVIGATE_BACK_MENU_ACTION = "navigate-back";
 export const NAVIGATE_FORWARD_MENU_ACTION = "navigate-forward";
+/** View › Reset Theme: the app chooses the built-in System theme (theme/ThemeBackdropLayer.tsx). */
+export const RESET_THEME_MENU_ACTION = "reset-theme";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -290,12 +293,9 @@ function getIconOption(
   });
 }
 
-function getInitialWindowBackgroundColor(shouldUseDarkColors: boolean): string {
-  return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
-}
-
+/** The title row options; the symbol color is the window colors\x27 (DesktopThemeAppearance). */
 function getWindowTitleBarOptions(
-  shouldUseDarkColors: boolean,
+  colors: DesktopThemeColors,
   marketingCaptureMode = false,
 ): WindowTitleBarOptions {
   if (marketingCaptureMode) {
@@ -316,7 +316,7 @@ function getWindowTitleBarOptions(
     titleBarOverlay: {
       color: TITLEBAR_COLOR,
       height: TITLEBAR_HEIGHT,
-      symbolColor: shouldUseDarkColors ? TITLEBAR_DARK_SYMBOL_COLOR : TITLEBAR_LIGHT_SYMBOL_COLOR,
+      symbolColor: colors.titleBarSymbol,
     },
   };
 }
@@ -457,9 +457,14 @@ function savePersistedMainWindowState(
   });
 }
 
-function syncWindowAppearance(
+/**
+ * Puts the window\x27s own colors on it: a custom theme\x27s when the app set one,
+ * else the built-in ones for the OS\x27s look. Runs on every native appearance
+ * change, so a custom theme\x27s colors survive the OS flipping light and dark.
+ */
+export function syncWindowAppearance(
   window: Electron.BrowserWindow,
-  shouldUseDarkColors: boolean,
+  colors: DesktopThemeColors,
   marketingCaptureMode: boolean,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
@@ -467,8 +472,8 @@ function syncWindowAppearance(
       return;
     }
 
-    window.setBackgroundColor(getInitialWindowBackgroundColor(shouldUseDarkColors));
-    const { titleBarOverlay } = getWindowTitleBarOptions(shouldUseDarkColors, marketingCaptureMode);
+    window.setBackgroundColor(colors.windowBackground);
+    const { titleBarOverlay } = getWindowTitleBarOptions(colors, marketingCaptureMode);
     if (typeof titleBarOverlay === "object") {
       window.setTitleBarOverlay(titleBarOverlay);
     }
@@ -530,6 +535,7 @@ const make = Effect.gen(function* () {
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronSpelling = yield* ElectronSpelling.ElectronSpelling;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
+  const themeAppearance = yield* DesktopThemeAppearance.DesktopThemeAppearance;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
@@ -570,7 +576,10 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<Electron.BrowserWindow, DesktopWindowError> {
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths);
-    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+    const windowColors = windowAppearanceColors(
+      yield* electronTheme.shouldUseDarkColors,
+      yield* themeAppearance.colors,
+    );
     const windowStatePath = environment.path.join(
       environment.stateDir,
       MAIN_WINDOW_STATE_FILE_NAME,
@@ -595,10 +604,10 @@ const make = Effect.gen(function* () {
       minHeight: MIN_MAIN_WINDOW_HEIGHT,
       show: false,
       autoHideMenuBar: true,
-      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
+      backgroundColor: windowColors.windowBackground,
       ...iconOption,
       title: environment.displayName,
-      ...getWindowTitleBarOptions(shouldUseDarkColors, environment.marketingCaptureMode),
+      ...getWindowTitleBarOptions(windowColors, environment.marketingCaptureMode),
       ...(environment.marketingCaptureMode
         ? {
             frame: false,
@@ -1566,6 +1575,14 @@ const make = Effect.gen(function* () {
         yield* openWindowsScreenClip(electronShell);
         return;
       }
+      if (action === RESET_THEME_MENU_ACTION) {
+        // Its own channel, heard by the app root as soon as it loads: the
+        // escape hatch must work even where the shell never subscribes to
+        // menu actions (a theme that breaks the page), and must not count as
+        // the shell listening.
+        yield* electronWindow.sendAll(IpcChannels.RESET_THEME_CHANNEL);
+        return;
+      }
 
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* electronWindow.focusedMainOrFirst;
@@ -1607,9 +1624,12 @@ const make = Effect.gen(function* () {
     resolveQuitConfirmation,
     repeatQuitConfirmation,
     syncAppearance: Effect.gen(function* () {
-      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      const colors = windowAppearanceColors(
+        yield* electronTheme.shouldUseDarkColors,
+        yield* themeAppearance.colors,
+      );
       yield* electronWindow.syncAllAppearance((window) =>
-        syncWindowAppearance(window, shouldUseDarkColors, environment.marketingCaptureMode),
+        syncWindowAppearance(window, colors, environment.marketingCaptureMode),
       );
     }).pipe(Effect.withSpan("desktop.window.syncAppearance")),
   });

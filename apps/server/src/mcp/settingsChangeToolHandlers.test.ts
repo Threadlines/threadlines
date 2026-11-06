@@ -82,7 +82,7 @@ const providers: ReadonlyArray<ServerProvider> = [
 ];
 
 /** The tool over an engine that keeps receipts by command id and records requests as the decider would. */
-function harness(settings: Partial<ServerSettings> = {}) {
+function harness(settings: Partial<ServerSettings> = {}, themeNames: ReadonlyArray<string> = []) {
   let thread = makeThread();
   const dispatched: OrchestrationCommand[] = [];
   const receipts = new Set<string>();
@@ -117,6 +117,7 @@ function harness(settings: Partial<ServerSettings> = {}) {
       ...settings,
     }),
     providers: Effect.succeed(providers),
+    themeNames: Effect.succeed(themeNames),
   });
   return { handler, dispatched, thread: () => thread };
 }
@@ -151,6 +152,22 @@ describe("settings_change", () => {
         { place: "general.theme", value: "light" },
       ],
     });
+  });
+
+  it("switches to a theme by name only when this computer has one by that name", async () => {
+    const { handler, dispatched } = harness({}, ["Night Sky"]);
+    for (const value of ["night sky", "Aurora", "system"]) {
+      const asked = await Effect.runPromise(
+        handler(mainCaller(), { changes: [{ place: "general.theme", value }] }),
+      );
+      expect(asked.outcome).toBe("asked_user");
+    }
+    const refused = await Effect.runPromise(
+      handler(mainCaller(), { changes: [{ place: "general.theme", value: "Sepia" }] }),
+    );
+    expect(refused).toMatchObject({ outcome: "refused" });
+    expect(refused.detail).toContain('"Night Sky"');
+    expect(dispatched).toHaveLength(3);
   });
 
   it("makes one card for a retried call", async () => {

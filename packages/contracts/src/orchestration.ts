@@ -1039,7 +1039,12 @@ export const OrchestrationProposedPlan = Schema.Struct({
 });
 export type OrchestrationProposedPlan = typeof OrchestrationProposedPlan.Type;
 
-export const AgentPageKind = Schema.Literals(["html", "markdown"]);
+/**
+ * What a page holds. `theme`: a theme an agent offered with `show_theme`
+ * (docs/design/custom-themes.md); its stored version is the theme file, and
+ * the chat shows it as a theme row with Try it, not as a framed page.
+ */
+export const AgentPageKind = Schema.Literals(["html", "markdown", "theme"]);
 export type AgentPageKind = typeof AgentPageKind.Type;
 
 /** `[width, contentHeight]` pairs the server measured a page at, ascending by width. */

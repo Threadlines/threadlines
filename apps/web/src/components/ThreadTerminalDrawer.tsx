@@ -44,7 +44,7 @@ import {
   openUrlInBrowserPanel,
   readLinkOpenTarget,
 } from "./browser/openInBrowserPanel";
-import { createXtermSurface, terminalThemeFromApp } from "./terminal/xtermSurface";
+import { createXtermSurface, followTerminalTheme } from "./terminal/xtermSurface";
 import { TerminalFindBar } from "./terminal/TerminalFindBar";
 import { TerminalNotice } from "./terminal/TerminalNotice";
 import { TerminalPortNotice } from "./terminal/TerminalPortNotice";
@@ -1129,21 +1129,10 @@ export function TerminalViewport({
     mount.addEventListener("pointerdown", handlePointerDown);
     mount.addEventListener("contextmenu", handleLinkContextMenu);
 
-    const themeObserver = new MutationObserver(() => {
-      const activeTerminal = terminalRef.current;
-      if (!activeTerminal) return;
-      activeTerminal.options.theme = terminalThemeFromApp(containerRef.current);
-      activeTerminal.refresh(0, activeTerminal.rows - 1);
-    });
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "style"],
-    });
-
     // The terminal follows its box, whatever changed it: the drawer's
     // height, the window, the app sidebar, a notice above it, a split.
     let fitFrame: number | null = null;
-    const resizeObserver = new ResizeObserver(() => {
+    const scheduleFit = () => {
       if (fitFrame !== null) return;
       fitFrame = window.requestAnimationFrame(() => {
         fitFrame = null;
@@ -1155,8 +1144,17 @@ export function TerminalViewport({
         if (wasAtBottom) activeTerminal.scrollToBottom();
         sendSize(false);
       });
-    });
+    };
+    const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(mount);
+
+    // The theme store says when the theme changes (a same-base switch
+    // included); a new font changes the cell size, so the terminal refits.
+    const stopFollowingTheme = followTerminalTheme({
+      terminal,
+      themeSource: () => containerRef.current,
+      onFontChange: scheduleFit,
+    });
 
     const unsubscribeBuffer = subscribeTerminalBuffer(environmentId, threadId, terminalId, () =>
       applyPendingEntries(),
@@ -1182,7 +1180,7 @@ export function TerminalViewport({
       mount.removeEventListener("pointerdown", handlePointerDown);
       mount.removeEventListener("contextmenu", handleLinkContextMenu);
       hoveredLinkRef.current = null;
-      themeObserver.disconnect();
+      stopFollowingTheme();
       setSelectionAction(null);
       setSearchAddon(null);
       selectionActionOpenRef.current = false;

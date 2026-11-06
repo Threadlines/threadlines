@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { type SettingsSectionPath, settingsNavItemForPath } from "./settingsNavigation";
+import { glassPage } from "../../theme/glassPage";
 
 /**
  * The quiet filled block that settings sections and lists of like items sit in
@@ -284,7 +285,8 @@ export function SettingResetButton({ label, onClick }: { label: string; onClick:
 /**
  * The scrolling page every settings tab renders into: a 720px column, or 960px
  * for pages built around wide lists (Plugins & Skills, Instructions,
- * Keybindings).
+ * Keybindings). Under a theme with art it is glass: the art shows around the
+ * column, frosted behind it (backdropZones.ts reads the two markers).
  */
 export function SettingsPageContainer({
   children,
@@ -296,8 +298,12 @@ export function SettingsPageContainer({
   className?: string;
 }) {
   return (
-    <div className="flex-1 overflow-y-auto px-4 pt-5 pb-8 sm:px-8 sm:pt-8 sm:pb-12">
+    <div
+      {...glassPage.content}
+      className="flex-1 overflow-y-auto px-4 pt-5 pb-8 sm:px-8 sm:pt-8 sm:pb-12"
+    >
       <div
+        {...glassPage.column}
         className={cn(
           "mx-auto flex w-full flex-col gap-7",
           wide ? "max-w-[960px]" : "max-w-[720px]",

@@ -57,6 +57,7 @@ import { makeGuideToolHandler } from "./guideToolHandlers.ts";
 import { GuideToolkit } from "./guideTools.ts";
 import { offeredModels } from "../settingsChanges/modelChoices.ts";
 import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
+import { ThemeLibrary } from "../themes/ThemeLibrary.ts";
 import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
 import { makeAlertAssistantsToolHandler } from "./alertAssistantsToolHandlers.ts";
 import { AlertAssistantsToolkit } from "./alertAssistantsTools.ts";
@@ -377,11 +378,20 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           )
         : Effect.succeed(undefined),
     });
+    const themeLibrary = yield* Effect.serviceOption(ThemeLibrary);
     const settingsChange = makeSettingsChangeToolHandler({
       engine,
       readThread,
       settings: settings.readStored.pipe(Effect.orElseSucceed(() => undefined)),
       providers: providers.getProviders,
+      themeNames: Option.isSome(themeLibrary)
+        ? themeLibrary.value.snapshot.pipe(
+            Effect.map(({ entries }) =>
+              entries.filter((entry) => !entry.deleted).map((entry) => entry.name),
+            ),
+            Effect.orElseSucceed(() => []),
+          )
+        : Effect.succeed([]),
     });
     const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
     const alertAssistants = makeAlertAssistantsToolHandler({

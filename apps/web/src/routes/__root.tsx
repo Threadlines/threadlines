@@ -122,6 +122,10 @@ import {
 import { selectBusyTerminals, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
+import { ThemeRuntime, useDesktopThemeEvents } from "../theme/ThemeRuntime";
+import { lazyWithPreload } from "../lib/lazyWithPreload";
+import { OptionalChunk } from "../lib/OptionalChunk";
+import { ThemeTrialBar } from "../components/theme/ui/ThemeTrialBar";
 import {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
@@ -155,6 +159,11 @@ import {
   STALE_BUILD_RECHECK_MS,
   type StaleBuildRecovery,
 } from "../staleBuild";
+
+// The theme library's sync across computers: after first paint, never at startup.
+const ThemeLibrarySyncLazy = lazyWithPreload(() =>
+  import("../themeLibrary/themeLibraryState").then((module) => module.ThemeLibrarySync),
+);
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -210,6 +219,7 @@ function RootRouteView() {
     select: (matches) => (matches[0]?._notFound ? undefined : matches[1]?.routeId),
   });
   const { authGateState } = Route.useRouteContext();
+  useDesktopThemeEvents();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
   useEffect(() => {
@@ -246,6 +256,8 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
+        {/* A theme's live art behind the window, and the desktop's theme events. */}
+        <ThemeRuntime />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
@@ -253,6 +265,13 @@ function RootRouteView() {
         <PushAlertsRuntime />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
+        {primaryEnvironmentAuthenticated ? (
+          <OptionalChunk>
+            <ThemeLibrarySyncLazy.Component />
+          </OptionalChunk>
+        ) : null}
+        {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
+        <ThemeTrialBar />
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
         <SshPasswordPromptDialog />

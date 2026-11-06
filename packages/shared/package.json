@@ -71,6 +71,58 @@
       "types": "./src/agentPages.ts",
       "import": "./src/agentPages.ts"
     },
+    "./themeColor": {
+      "types": "./src/themes/color.ts",
+      "import": "./src/themes/color.ts"
+    },
+    "./themeTokens": {
+      "types": "./src/themes/tokens.ts",
+      "import": "./src/themes/tokens.ts"
+    },
+    "./themeFontFamilies": {
+      "types": "./src/themes/fontFamilies.ts",
+      "import": "./src/themes/fontFamilies.ts"
+    },
+    "./themeTokenNames": {
+      "types": "./src/themes/tokenNames.ts",
+      "import": "./src/themes/tokenNames.ts"
+    },
+    "./themeContrast": {
+      "types": "./src/themes/contrast.ts",
+      "import": "./src/themes/contrast.ts"
+    },
+    "./themeManifest": {
+      "types": "./src/themes/manifest.ts",
+      "import": "./src/themes/manifest.ts"
+    },
+    "./themeLibrary": {
+      "types": "./src/themes/library.ts",
+      "import": "./src/themes/library.ts"
+    },
+    "./themeBackdropFrame": {
+      "types": "./src/themes/backdropFrame.ts",
+      "import": "./src/themes/backdropFrame.ts"
+    },
+    "./themeStarters": {
+      "types": "./src/themes/starters.ts",
+      "import": "./src/themes/starters.ts"
+    },
+    "./themeBuiltinTokens": {
+      "types": "./src/themes/builtinTokens.ts",
+      "import": "./src/themes/builtinTokens.ts"
+    },
+    "./themeManifestHash": {
+      "types": "./src/themes/manifestHash.ts",
+      "import": "./src/themes/manifestHash.ts"
+    },
+    "./themeStarterSummaries": {
+      "types": "./src/themes/starterSummaries.ts",
+      "import": "./src/themes/starterSummaries.ts"
+    },
+    "./themeSpecimen": {
+      "types": "./src/themes/specimen.ts",
+      "import": "./src/themes/specimen.ts"
+    },
     "./desktopIdentity": {
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"

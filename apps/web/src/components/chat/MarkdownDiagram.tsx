@@ -12,6 +12,7 @@ import { memo, type ReactNode, useState } from "react";
 import { useCachedRender } from "../../hooks/useCachedRender";
 import { fnv1a32 } from "../../lib/diffRendering";
 import { LRUCache } from "../../lib/lruCache";
+import { useActiveTheme } from "../../theme/themeStore";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
@@ -72,9 +73,11 @@ export const MarkdownDiagram = memo(function MarkdownDiagram({
   const [showCode, setShowCode] = useState(false);
   const [fullSize, setFullSize] = useState(false);
   const source = code.trimEnd();
+  // A drawing holds the theme's font, so each theme draws its own.
+  const themeKey = useActiveTheme().hash ?? "builtin";
   const result = useCachedRender({
     cache: drawnDiagramCache,
-    key: pending || source.length === 0 ? null : source,
+    key: pending || source.length === 0 ? null : `${themeKey}\u0000${source}`,
     draw: () => drawDiagram(source),
     sizeOf: (value) => (value.kind === "drawn" ? value.diagram.svg.length * 2 : 64),
   });

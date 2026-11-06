@@ -67,6 +67,7 @@ import {
   WsCoreRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
+  WsThemesRpcGroup,
   WsOwnerRequiredError,
   OutsideAgentError,
 } from "@threadlines/contracts";
@@ -172,6 +173,7 @@ import { OtherComputers } from "./outsideAgents/OtherComputers.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
+import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -668,6 +670,35 @@ const makeOutsideAgentsRpcLayer = (role: "owner" | "client") =>
     }),
   );
 
+/**
+ * The theme library (docs/design/custom-themes.md): its own RPC group and
+ * layer (WsThemesRpcGroup), like the outside agents', merged in
+ * makeWsRpcLayer. Open to every paired device, as scheduled tasks are: each
+ * device picks its own theme from this computer's library.
+ */
+const ThemesRpcLayer = WsThemesRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const themes = yield* ThemeLibrary;
+    const aggregate = { "rpc.aggregate": "themes" } as const;
+    return WsThemesRpcGroup.of({
+      [WS_METHODS.themesSubscribe]: (_input) =>
+        observeRpcStream(WS_METHODS.themesSubscribe, themes.changes, aggregate),
+      [WS_METHODS.themesRead]: (input) =>
+        observeRpcEffect(WS_METHODS.themesRead, themes.read(input), aggregate),
+      [WS_METHODS.themesSave]: (input) =>
+        observeRpcEffect(WS_METHODS.themesSave, themes.save(input), aggregate),
+      [WS_METHODS.themesRename]: (input) =>
+        observeRpcEffect(WS_METHODS.themesRename, themes.rename(input), aggregate),
+      [WS_METHODS.themesDelete]: (input) =>
+        observeRpcEffect(WS_METHODS.themesDelete, themes.delete(input), aggregate),
+      [WS_METHODS.themesRestore]: (input) =>
+        observeRpcEffect(WS_METHODS.themesRestore, themes.restore(input), aggregate),
+      [WS_METHODS.themesMerge]: (input) =>
+        observeRpcEffect(WS_METHODS.themesMerge, themes.merge(input), aggregate),
+    });
+  }),
+);
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -683,6 +714,7 @@ const makeWsRpcLayer = (
   Layer.mergeAll(
     makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace),
     makeOutsideAgentsRpcLayer(currentSession.role),
+    ThemesRpcLayer,
   );
 
 const makeCoreRpcLayer = (

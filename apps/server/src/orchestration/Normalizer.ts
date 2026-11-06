@@ -306,12 +306,16 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
               ? { eventSequence: activity.eventSequence }
               : {}),
           })),
-        // Agent pages stay in the thread that showed them; the fork is told
-        // they existed, so its agent does not speak of a page nobody sees.
+        // Agent pages (and offered themes) stay in the thread that showed
+        // them; the fork is told they existed, so its agent does not speak
+        // of a page nobody sees.
         ...(sourceThread.pages ?? [])
           .map((page) => ({
             kind: "tool" as const,
-            text: `Showed a page titled "${page.title}" (it stays in the original thread).`,
+            text:
+              page.kind === "theme"
+                ? `Offered a theme named "${page.title}" (it stays in the original thread).`
+                : `Showed a page titled "${page.title}" (it stays in the original thread).`,
             createdAt: page.createdAt,
             ...(page.placementSequence !== undefined
               ? { eventSequence: page.placementSequence }

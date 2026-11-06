@@ -9,9 +9,11 @@
  * registry, and each endpoint would list the other's tools.
  *
  * The same bearer credentials as `/mcp` (McpSessionRegistry); a credential
- * reaches this endpoint only if it carries the `pages` grant. Both tools are
- * registered by hand: `preview_page` answers with an MCP image block, which a
- * toolkit cannot produce, and `show_page` keeps the same shape beside it.
+ * reaches this endpoint only if it carries the `pages` grant. The theme
+ * tools (`preview_theme`, `show_theme`, docs/design/custom-themes.md) live
+ * here too, under the same grant. Every tool is registered by hand: the
+ * previews answer with MCP image blocks, which a toolkit cannot produce, and
+ * the show tools keep the same shape beside them.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -36,6 +38,12 @@ import {
   ShowPageParameters,
   ShowPageTool,
 } from "./pageTools.ts";
+import {
+  PreviewThemeParameters,
+  PreviewThemeTool,
+  ShowThemeParameters,
+  ShowThemeTool,
+} from "./themeTools.ts";
 
 /** Which runtime a page tool call came from: the full credential scope. */
 export class McpPagesInvocation extends Context.Service<McpPagesInvocation, McpInvocationScope>()(
@@ -66,7 +74,13 @@ const AuthenticationLive = HttpRouter.middleware<{
   provides: McpPagesInvocation;
 }>()(authenticate).layer;
 
-const describe = (tool: typeof ShowPageTool | typeof PreviewPageTool) =>
+const describe = (
+  tool:
+    | typeof ShowPageTool
+    | typeof PreviewPageTool
+    | typeof ShowThemeTool
+    | typeof PreviewThemeTool,
+) =>
   new McpSchema.Tool({
     name: tool.name,
     description: Tool.getDescription(tool),
@@ -160,6 +174,58 @@ const registerPageTools = Effect.fn("McpPagesServer.registerPageTools")(function
               ],
             });
           }),
+          Effect.catch((error) => Effect.succeed(invalidInput(error))),
+        ),
+      ),
+  });
+
+  // Themes (docs/design/custom-themes.md): offered as pages of kind `theme`.
+  const decodeShowTheme = Schema.decodeUnknownEffect(ShowThemeParameters);
+  const decodePreviewTheme = Schema.decodeUnknownEffect(PreviewThemeParameters);
+
+  yield* server.addTool({
+    tool: describe(ShowThemeTool),
+    annotations: ShowThemeTool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) =>
+        decodeShowTheme(payload).pipe(
+          Effect.flatMap((input) => pages.showTheme(callerOf(fiber), input)),
+          Effect.map((outcome) =>
+            outcome.outcome === "shown"
+              ? textResult(
+                  `${outcome.message} pageId: ${outcome.pageId} (version ${outcome.version}); pass it as pageId to update this theme.`,
+                  false,
+                  { ...outcome },
+                )
+              : textResult(outcome.detail, true, { ...outcome }),
+          ),
+          Effect.catch((error) => Effect.succeed(invalidInput(error))),
+        ),
+      ),
+  });
+
+  yield* server.addTool({
+    tool: describe(PreviewThemeTool),
+    annotations: PreviewThemeTool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) =>
+        decodePreviewTheme(payload).pipe(
+          Effect.flatMap((input) => pages.previewTheme(callerOf(fiber), input)),
+          Effect.map((outcome) =>
+            outcome.outcome === "previewed"
+              ? new McpSchema.CallToolResult({
+                  isError: false,
+                  content: [
+                    { type: "text", text: outcome.text },
+                    ...outcome.shots.map((shot) => ({
+                      type: "image" as const,
+                      data: new Uint8Array(Buffer.from(shot.png, "base64")),
+                      mimeType: "image/png",
+                    })),
+                  ],
+                })
+              : textResult(outcome.detail, true, { ...outcome }),
+          ),
           Effect.catch((error) => Effect.succeed(invalidInput(error))),
         ),
       ),

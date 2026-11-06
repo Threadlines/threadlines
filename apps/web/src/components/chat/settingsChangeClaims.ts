@@ -19,13 +19,13 @@ import type {
   SettingsChangeRequestId,
 } from "@threadlines/contracts";
 import { scopedThreadKey } from "@threadlines/client-runtime";
-import { THEME_LABELS } from "@threadlines/shared/appPlaces";
 import { isOpenSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { type CheckedEdit, composeClientPatch } from "@threadlines/shared/settingsEdits";
 
 import { readEnvironmentConnection } from "~/environments/runtime";
 import { updateClientSettingsAndPersist } from "~/hooks/useSettings";
-import { setThemePreference, type Theme } from "~/hooks/useTheme";
+import { switchToTheme, themeTileByName } from "~/themeLibrary/themeCatalog";
+import { currentLibraryThemes } from "~/themeLibrary/themeLibraryState";
 import { randomUUID } from "~/lib/utils";
 import {
   setPushAlertKind,
@@ -76,9 +76,6 @@ function showNotice(notice: SettingsChangeNotice): void {
   });
 }
 
-const isTheme = (value: unknown): value is Theme =>
-  typeof value === "string" && Object.hasOwn(THEME_LABELS, value);
-
 /** A save that failed, in words for the agent's note. */
 function failureDetail(error: unknown): string {
   const reason = describeUnknownError(error).trim();
@@ -110,8 +107,11 @@ async function makeDeviceChanges(
     if (!(edit.lands === "device" && "store" in edit)) continue;
     try {
       if (edit.store === "theme") {
-        if (!isTheme(value)) throw new Error(`"${String(value)}" isn't a theme`);
-        setThemePreference(value);
+        const tile =
+          typeof value === "string" ? themeTileByName(value, currentLibraryThemes()) : null;
+        if (tile === null) throw new Error(`there's no theme called "${String(value)}" here`);
+        // A theme new to this device starts its trial: the user keeps it on the bar.
+        await switchToTheme(tile);
       } else {
         // Another window may have turned them off since Change was pressed.
         const alerts = usePushAlertsStore.getState();

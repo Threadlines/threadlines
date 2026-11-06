@@ -36,11 +36,8 @@ import { resolvePathLinkTarget } from "../terminal-links";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useTheme } from "../hooks/useTheme";
-import {
-  buildFileDiffRenderKey,
-  getRenderablePatch,
-  resolveDiffThemeName,
-} from "../lib/diffRendering";
+import { buildFileDiffRenderKey, getRenderablePatch } from "../lib/diffRendering";
+import { useCodeThemeName } from "../theme/codeTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -250,6 +247,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
+  const codeThemeName = useCodeThemeName();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
@@ -1650,7 +1648,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                   {displayedFiles.map((fileDiff) => {
                     const filePath = resolveFileDiffPath(fileDiff);
                     const fileKey = buildFileDiffRenderKey(fileDiff);
-                    const themedFileKey = `${fileKey}:${resolvedTheme}`;
+                    const themedFileKey = `${fileKey}:${codeThemeName}`;
                     const collapsed = collapsedDiffFileKeys.has(fileKey);
                     const previewFileDiff =
                       diffChangesOnly && !collapsed ? previewFileByPath.get(filePath) : undefined;
@@ -1720,7 +1718,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
                             diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",
                             lineDiffType: "none",
                             overflow: diffWordWrap ? "wrap" : "scroll",
-                            theme: resolveDiffThemeName(resolvedTheme),
+                            theme: codeThemeName,
                             themeType: resolvedTheme as DiffThemeType,
                             unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                           }}

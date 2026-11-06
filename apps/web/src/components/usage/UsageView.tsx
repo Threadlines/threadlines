@@ -41,6 +41,7 @@ import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
 import { TooltipWrapper } from "../ui/tooltip";
+import { glassPage } from "../../theme/glassPage";
 import {
   assignUsageModelSlots,
   buildUsageLimitHabitLines,
@@ -88,9 +89,9 @@ import {
 } from "./usageView.logic";
 
 const SECTION_LABEL_CLASS =
-  "font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55 select-none";
+  "font-mono text-[10px] uppercase tracking-wider text-muted-foreground select-none";
 const COLUMN_LABEL_CLASS =
-  "font-mono text-[10px] uppercase tracking-wider text-muted-foreground/40 select-none";
+  "font-mono text-[10px] uppercase tracking-wider text-muted-foreground select-none";
 const NUMBER_CLASS = "font-mono tabular-nums";
 const HERO_GRID_CLASS =
   "mt-7 grid grid-cols-1 gap-8 @4xl:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]";
@@ -101,7 +102,7 @@ const USAGE_STAT_CELL_CLASS =
 const USAGE_STAT_LABEL_CLASS = "min-w-0 whitespace-nowrap text-[9px] @4xl:text-[10px]";
 const USAGE_STAT_VALUE_CLASS = "shrink-0 text-base leading-tight text-foreground @4xl:text-[20px]";
 const USAGE_STAT_CONTEXT_CLASS =
-  "col-span-2 min-w-0 [overflow-wrap:anywhere] text-[11px] leading-snug text-muted-foreground/55 @xl:col-auto @4xl:text-xs";
+  "col-span-2 min-w-0 [overflow-wrap:anywhere] text-[11px] leading-snug text-muted-foreground @xl:col-auto @4xl:text-xs";
 /**
  * Columns appear as the pane widens: name, tokens and share on a phone, then
  * cost, then the full set. Container queries, because the pane shares the
@@ -232,8 +233,15 @@ export function UsageView() {
       <PageTitlebar label="Usage" />
       {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
           (like Settings); the reading column centers inside it. */}
-      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="usage-scroll">
-        <div className="@container mx-auto flex min-h-full w-full max-w-[1200px] flex-col px-6 py-8">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        data-testid="usage-scroll"
+        {...glassPage.content}
+      >
+        <div
+          className="@container mx-auto flex min-h-full w-full max-w-[1200px] flex-col px-6 py-8"
+          {...glassPage.column}
+        >
           {/* The window picker changes every section, so it sits with the
               page title rather than with any one of them. */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -242,7 +250,7 @@ export function UsageView() {
               <h1 className="hidden text-lg font-medium tracking-tight md:block">Usage</h1>
               {view ? (
                 <span
-                  className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground/55")}
+                  className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground")}
                   data-testid="usage-date-range"
                 >
                   {view.rangeLabel}
@@ -269,18 +277,18 @@ export function UsageView() {
           <UsagePlanLimits nowMs={nowMs} selectedWindow={selectedWindow} />
 
           {!hasTargets ? (
-            <p className="mt-10 text-sm text-muted-foreground/60">
+            <p className="mt-10 text-sm text-muted-foreground">
               No computers are connected, so there is nothing to report yet.
             </p>
           ) : usageQuery.isError ? (
-            <p className="mt-10 text-sm text-muted-foreground/60">Usage could not be read.</p>
+            <p className="mt-10 text-sm text-muted-foreground">Usage could not be read.</p>
           ) : !scan || !view || !chart ? (
             <UsageLoadingSkeleton selectedWindow={selectedWindow} />
           ) : (
             <>
               {hourlyMissingNote ? (
                 <p
-                  className="mt-6 text-xs text-muted-foreground/70"
+                  className="mt-6 text-xs text-muted-foreground"
                   data-testid="usage-hourly-missing"
                 >
                   {hourlyMissingNote}
@@ -321,14 +329,14 @@ export function UsageView() {
                   ))}
                 </div>
                 {scan.merged.duplicateSources.length > 0 ? (
-                  <p className="mt-2 text-xs text-muted-foreground/50">
+                  <p className="mt-2 text-xs text-muted-foreground">
                     Counted once: {scan.merged.duplicateSources.join(", ")} is the same folder
                     another computer already reported.
                   </p>
                 ) : null}
               </section>
 
-              <p className="mt-8 border-t border-border/50 pt-3 text-xs text-muted-foreground/55">
+              <p className="mt-8 border-t border-border/50 pt-3 text-xs text-muted-foreground">
                 {formatCostQualityFootnote(scan.merged.costQuality)}
               </p>
             </>
@@ -365,7 +373,7 @@ function UsageWindowControls({
               disabled ? "cursor-default" : "cursor-pointer",
               option === selected
                 ? "text-foreground"
-                : cn("text-muted-foreground/55", !disabled && "hover:text-foreground"),
+                : cn("text-muted-foreground", !disabled && "hover:text-foreground"),
             )}
             data-testid={`usage-window-${option}`}
             disabled={disabled}
@@ -379,7 +387,7 @@ function UsageWindowControls({
         type="button"
         aria-label="Refresh usage"
         className={cn(
-          "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground/80 transition-colors focus-ring",
+          "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors focus-ring",
           disabled ? "cursor-default" : "cursor-pointer hover:bg-muted hover:text-foreground",
         )}
         data-testid="usage-refresh"
@@ -447,7 +455,7 @@ function UsagePlanLimits({
                       <span
                         className={cn(
                           NUMBER_CLASS,
-                          "min-w-0 flex-1 truncate text-right text-muted-foreground/60",
+                          "min-w-0 flex-1 truncate text-right text-muted-foreground",
                         )}
                       >
                         {meter.detail}
@@ -545,7 +553,7 @@ function UsageHero({
       </span>
       {/* Cache reads are the agent re-reading its own context each turn; the
           rest tracks the work far better, so it gets its own line. */}
-      <p className="mt-2.5 text-xs text-muted-foreground/60" data-testid="usage-new-tokens">
+      <p className="mt-2.5 text-xs text-muted-foreground" data-testid="usage-new-tokens">
         {formatTokensCompact(breakdown.totalTokens - breakdown.cachedInputTokens)} new tokens, not
         counting cache reads
       </p>
@@ -585,13 +593,13 @@ function UsageHero({
         })}
       </div>
 
-      <p className="mt-6 text-xs text-muted-foreground/60">
+      <p className="mt-6 text-xs text-muted-foreground">
         <span className={cn(NUMBER_CLASS, "text-foreground/85")} data-testid="usage-total-cost">
           {formatUsd(breakdown.costUsd)}*
         </span>{" "}
         API-equivalent cost
       </p>
-      <p className="mt-1 text-xs text-muted-foreground/45">
+      <p className="mt-1 text-xs text-muted-foreground">
         * if billed at full API rates. Subscription plans bill separately.
       </p>
     </div>
@@ -625,11 +633,11 @@ function UsageShareRow({
         {icon}
         <span className="min-w-0 truncate">
           {label}
-          {hint ? <span className="text-muted-foreground/45"> · {hint}</span> : null}
+          {hint ? <span className="text-muted-foreground"> · {hint}</span> : null}
         </span>
       </span>
       <span className={cn(NUMBER_CLASS, "text-right text-xs text-foreground/90")}>{value}</span>
-      <span className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground/55")}>
+      <span className={cn(NUMBER_CLASS, "text-right text-xs text-muted-foreground")}>
         {formatPercent(share, shareDigits(share))}
       </span>
       <div className="col-span-3 h-[3px] bg-border/40">
@@ -681,7 +689,7 @@ function UsageSegmented<Option extends string>({
                   ? "text-foreground"
                   : reason !== null
                     ? "text-muted-foreground/30"
-                    : cn("text-muted-foreground/55", !disabled && "hover:text-foreground"),
+                    : cn("text-muted-foreground", !disabled && "hover:text-foreground"),
               )}
               data-testid={`${testIdPrefix}-${option}`}
               disabled={optionDisabled}
@@ -804,7 +812,7 @@ function UsageChart({
         {chart.series.map((series) => (
           <span
             key={series.key}
-            className="flex items-center gap-1.5 text-[11px] text-muted-foreground/70"
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
             data-testid="usage-chart-legend-item"
           >
             <span
@@ -819,7 +827,7 @@ function UsageChart({
             exists while the chart counts tokens. Pushed right, it stays
             right-aligned even when the legend wraps it onto its own line. */}
         {metric === "tokens" ? (
-          <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground">
+          <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
             <Checkbox
               checked={includeCacheReads}
               className="size-3.5 sm:size-3.5"
@@ -842,7 +850,7 @@ function UsageChart({
             <span
               className={cn(
                 NUMBER_CLASS,
-                "absolute left-0 bottom-0.5 text-[10px] text-muted-foreground/45",
+                "absolute left-0 bottom-0.5 text-[10px] text-muted-foreground",
               )}
             >
               {gridline.label}
@@ -937,7 +945,7 @@ function UsageChart({
             }
             data-testid="usage-chart-card"
           >
-            <p className="text-xs text-muted-foreground/70">{hoveredColumn.label}</p>
+            <p className="text-xs text-muted-foreground">{hoveredColumn.label}</p>
             {hoveredColumn.entries.length > 0 ? (
               <div className="mt-1.5 flex flex-col gap-1">
                 {hoveredColumn.entries.map((entry) => (
@@ -954,10 +962,7 @@ function UsageChart({
                       {entry.valueLabel}
                     </span>
                     <span
-                      className={cn(
-                        NUMBER_CLASS,
-                        "w-9 shrink-0 text-right text-muted-foreground/55",
-                      )}
+                      className={cn(NUMBER_CLASS, "w-9 shrink-0 text-right text-muted-foreground")}
                     >
                       {entry.shareLabel}
                     </span>
@@ -965,23 +970,23 @@ function UsageChart({
                 ))}
               </div>
             ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground/55">No activity</p>
+              <p className="mt-1.5 text-xs text-muted-foreground">No activity</p>
             )}
             <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/60 pt-1.5 text-xs">
-              <span className="flex-1 text-muted-foreground/70">Total</span>
+              <span className="flex-1 text-muted-foreground">Total</span>
               <span className={cn(NUMBER_CLASS, "text-foreground")}>
                 {hoveredColumn.totalLabel}
               </span>
             </div>
             {hoveredColumn.comparisonLabel ? (
-              <p className="mt-1 text-[11px] text-muted-foreground/55">
+              <p className="mt-1 text-[11px] text-muted-foreground">
                 {hoveredColumn.comparisonLabel}
               </p>
             ) : null}
           </div>
         ) : null}
         {chart.isEmpty ? (
-          <p className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground/50">
+          <p className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
             No recorded activity in this window.
           </p>
         ) : null}
@@ -1027,9 +1032,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
     <section className="mt-8">
       <h2 className={SECTION_LABEL_CLASS}>Models</h2>
       {rows.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground/55">
-          No recorded activity in this window.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">No recorded activity in this window.</p>
       ) : (
         <>
           <UsageModelsHeader />
@@ -1067,7 +1070,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
                     <span
                       className={cn(
                         NUMBER_CLASS,
-                        "ml-auto w-10 shrink-0 text-right text-xs text-muted-foreground/55",
+                        "ml-auto w-10 shrink-0 text-right text-xs text-muted-foreground",
                       )}
                     >
                       {formatPercent(row.tokenShare, shareDigits(row.tokenShare))}
@@ -1076,7 +1079,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
                   <span
                     className={cn(
                       NUMBER_CLASS,
-                      "hidden text-right text-xs text-muted-foreground/70 @4xl:block",
+                      "hidden text-right text-xs text-muted-foreground @4xl:block",
                     )}
                   >
                     {formatTokensCompact(row.outputTokens)}
@@ -1084,7 +1087,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
                   <span
                     className={cn(
                       NUMBER_CLASS,
-                      "hidden text-right text-xs text-muted-foreground/70 @4xl:block",
+                      "hidden text-right text-xs text-muted-foreground @4xl:block",
                     )}
                   >
                     {formatPercent(row.cacheHitShare, 0)}
@@ -1092,7 +1095,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
                   <span
                     className={cn(
                       NUMBER_CLASS,
-                      "hidden text-right text-xs text-muted-foreground/70 @4xl:block",
+                      "hidden text-right text-xs text-muted-foreground @4xl:block",
                     )}
                   >
                     {formatCount(row.records)}
@@ -1109,7 +1112,7 @@ function UsageModelsSection({ rows }: { readonly rows: readonly UsageModelRow[] 
                   <span
                     className={cn(
                       NUMBER_CLASS,
-                      "hidden text-right text-xs text-muted-foreground/60 @xl:block",
+                      "hidden text-right text-xs text-muted-foreground @xl:block",
                     )}
                   >
                     {formatUsd(row.costUsd)}
@@ -1164,9 +1167,7 @@ function UsagePeriodsSection({
         {usageListTitle(unit)} · {formatCount(rows.length)} active
       </h2>
       {rows.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground/55">
-          No recorded activity in this window.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">No recorded activity in this window.</p>
       ) : (
         <>
           <UsagePeriodsHeader unit={unit} />
@@ -1186,7 +1187,7 @@ function UsagePeriodsSection({
                       <ChevronRightIcon
                         aria-hidden
                         className={cn(
-                          "size-3 shrink-0 text-muted-foreground/50 transition-transform",
+                          "size-3 shrink-0 text-muted-foreground transition-transform",
                           open && "rotate-90",
                         )}
                       />
@@ -1217,10 +1218,10 @@ function UsagePeriodsSection({
                             className="size-2 shrink-0 rounded-[2px]"
                             style={{ backgroundColor: topModel.color }}
                           />
-                          <span className="min-w-0 truncate text-muted-foreground/80">
+                          <span className="min-w-0 truncate text-muted-foreground">
                             {topModel.model}
                           </span>
-                          <span className={cn(NUMBER_CLASS, "shrink-0 text-muted-foreground/50")}>
+                          <span className={cn(NUMBER_CLASS, "shrink-0 text-muted-foreground")}>
                             {formatPercent(topModel.share, 0)}
                           </span>
                         </>
@@ -1229,7 +1230,7 @@ function UsagePeriodsSection({
                     <span
                       className={cn(
                         NUMBER_CLASS,
-                        "hidden text-right text-xs text-muted-foreground/70 @4xl:block",
+                        "hidden text-right text-xs text-muted-foreground @4xl:block",
                       )}
                     >
                       {formatCount(row.records)}
@@ -1237,7 +1238,7 @@ function UsagePeriodsSection({
                     <span
                       className={cn(
                         NUMBER_CLASS,
-                        "hidden text-right text-xs text-muted-foreground/60 @xl:block",
+                        "hidden text-right text-xs text-muted-foreground @xl:block",
                       )}
                     >
                       {formatUsd(row.costUsd)}
@@ -1252,7 +1253,7 @@ function UsagePeriodsSection({
                           data-testid="usage-period-model"
                         >
                           <span />
-                          <span className={cn(NUMBER_CLASS, "text-right text-muted-foreground/70")}>
+                          <span className={cn(NUMBER_CLASS, "text-right text-muted-foreground")}>
                             {formatTokens(model.totalTokens)}
                           </span>
                           <span className="flex min-w-0 items-center gap-1.5">
@@ -1261,22 +1262,19 @@ function UsagePeriodsSection({
                               className="size-2 shrink-0 rounded-[2px]"
                               style={{ backgroundColor: model.color }}
                             />
-                            <span className="min-w-0 truncate text-muted-foreground/80">
+                            <span className="min-w-0 truncate text-muted-foreground">
                               {model.model}
                             </span>
                           </span>
                           <span
-                            className={cn(
-                              NUMBER_CLASS,
-                              "hidden text-muted-foreground/50 @4xl:block",
-                            )}
+                            className={cn(NUMBER_CLASS, "hidden text-muted-foreground @4xl:block")}
                           >
                             {formatPercent(model.share, 0)} of the {unit}
                           </span>
                           <span
                             className={cn(
                               NUMBER_CLASS,
-                              "hidden text-right text-muted-foreground/55 @4xl:block",
+                              "hidden text-right text-muted-foreground @4xl:block",
                             )}
                           >
                             {formatCount(model.records)}
@@ -1284,7 +1282,7 @@ function UsagePeriodsSection({
                           <span
                             className={cn(
                               NUMBER_CLASS,
-                              "hidden text-right text-muted-foreground/50 @xl:block",
+                              "hidden text-right text-muted-foreground @xl:block",
                             )}
                           >
                             {formatUsd(model.costUsd)}
@@ -1300,7 +1298,7 @@ function UsagePeriodsSection({
           {rows.length > PERIOD_ROW_LIMIT ? (
             <button
               type="button"
-              className="mt-1.5 cursor-pointer text-xs text-muted-foreground/70 transition-colors hover:text-foreground"
+              className="mt-1.5 cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground"
               data-testid="usage-periods-show-all"
               onClick={() => setShowAll((current) => !current)}
             >
@@ -1323,27 +1321,27 @@ function UsageMachineRowView({ machine }: { readonly machine: UsageMachineRow })
         <span
           className={cn(
             "shrink-0 font-mono text-[10px] uppercase tracking-wider",
-            machine.state === "reporting" ? "text-muted-foreground/45" : "text-warning",
+            machine.state === "reporting" ? "text-muted-foreground" : "text-warning",
           )}
         >
           {USAGE_MACHINE_STATE_LABELS[machine.state]}
         </span>
       </span>
       {machine.detail ? (
-        <span className="text-xs text-muted-foreground/50">{machine.detail}</span>
+        <span className="text-xs text-muted-foreground">{machine.detail}</span>
       ) : null}
       {machine.sources.map((source) => (
         <span
           key={`${source.fingerprint.provider}:${source.fingerprint.resolvedHomePath}`}
-          className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground/55"
+          className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground"
         >
-          <span className="w-[4.5rem] shrink-0 text-muted-foreground/45">
+          <span className="w-[4.5rem] shrink-0 text-muted-foreground">
             {USAGE_PROVIDER_SHORT_LABELS[source.fingerprint.provider]}
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
             {source.fingerprint.resolvedHomePath}
           </span>
-          <span className={cn(NUMBER_CLASS, "shrink-0 text-[11px] text-muted-foreground/40")}>
+          <span className={cn(NUMBER_CLASS, "shrink-0 text-[11px] text-muted-foreground")}>
             {source.status === "missing"
               ? "not found"
               : source.status === "failed"
@@ -1426,7 +1424,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
               );
             })}
           </div>
-          <div className="mt-6 flex items-center gap-1.5 text-xs text-muted-foreground/60">
+          <div className="mt-6 flex items-center gap-1.5 text-xs text-muted-foreground">
             <Skeleton className="h-3 w-14 rounded-full" />
             API-equivalent cost
           </div>
@@ -1491,7 +1489,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
             </span>
             {USAGE_PROVIDER_SKELETON_ORDER.map((provider) => (
               <span key={provider} className="flex min-w-0 items-baseline gap-2">
-                <span className="w-[4.5rem] shrink-0 text-xs text-muted-foreground/45">
+                <span className="w-[4.5rem] shrink-0 text-xs text-muted-foreground">
                   {USAGE_PROVIDER_SHORT_LABELS[provider]}
                 </span>
                 <Skeleton className="h-3 flex-1 rounded-full" />
@@ -1541,15 +1539,13 @@ function UsageChartSkeleton({ unit }: { readonly unit: UsagePeriodUnit }) {
         />
       </div>
       <div className="mt-1.5 flex justify-between gap-2 pl-11">
-        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground/35")}>
+        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground")}>
           window start
         </span>
-        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground/35")}>
+        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground")}>
           midpoint
         </span>
-        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground/35")}>
-          today
-        </span>
+        <span className={cn(SECTION_LABEL_CLASS, "text-[10px] text-muted-foreground")}>today</span>
       </div>
     </div>
   );

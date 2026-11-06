@@ -8,6 +8,8 @@ import {
   type OrchestrationAgentPage,
   type OrchestrationCommand,
   type OrchestrationThread,
+  THEME_FILE_FORMAT,
+  type ThemeManifest,
   ThreadId,
   ThreadParticipantId,
   TurnId,
@@ -26,6 +28,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { AgentPages, layer as AgentPagesLayer } from "./AgentPages.ts";
 import * as PagePreview from "./preview/PagePreview.ts";
 
@@ -76,6 +79,8 @@ const makeLayer = (options: {
   readonly enabled?: boolean;
   /** Each document handed to the preview browser. */
   readonly previewed?: Array<string>;
+  /** Each document measured for its height. */
+  readonly measured?: Array<string>;
 }) =>
   AgentPagesLayer.pipe(
     Layer.provide(
@@ -86,6 +91,7 @@ const makeLayer = (options: {
             const thread = reads[Math.min(readCount++, reads.length - 1)]!;
             return Effect.succeed(Option.some(thread));
           },
+          getThreadShellById: () => Effect.succeed(Option.some({} as never)),
         }),
         Layer.mock(OrchestrationEngineService)({
           dispatch: (command) =>
@@ -94,10 +100,25 @@ const makeLayer = (options: {
               return { sequence: options.dispatched.length };
             }),
         }),
-        Layer.mock(ProjectionThreadPageRepository)({}),
+        // Every stored version reads back as the kind its publish recorded.
+        Layer.mock(ProjectionThreadPageRepository)({
+          getVersion: () =>
+            Effect.sync(() => {
+              const published = options.dispatched.findLast(
+                (command) => command.type === "thread.page.publish",
+              );
+              return published?.type === "thread.page.publish"
+                ? ({ kind: published.page.kind } as never)
+                : undefined;
+            }),
+        }),
         ServerSettingsService.layerTest({ enableAgentPages: options.enabled ?? true }),
         Layer.mock(PagePreview.PagePreview)({
-          measure: () => Effect.succeed(Option.none()),
+          measure: ({ document }) =>
+            Effect.sync(() => {
+              options.measured?.push(document);
+              return Option.none();
+            }),
           preview: ({ document, width }) =>
             Effect.sync(() => {
               options.previewed?.push(document);
@@ -105,6 +126,11 @@ const makeLayer = (options: {
             }),
         }),
         ServerConfig.layerTest(process.cwd(), { prefix: "tl-agent-pages-test-" }),
+        // Fonts are already embedded and a still is "captured": no network, no browser.
+        Layer.mock(ThemeWorkshop)({
+          embedFonts: (manifest) => Effect.succeed(manifest),
+          withStill: (manifest) => Effect.succeed({ manifest }),
+        }),
       ),
     ),
     Layer.provide(NodeServices.layer),
@@ -361,6 +387,126 @@ it.layer(NodeServices.layer)("AgentPages.adopt", (it) => {
         Effect.provide(
           makeLayer({
             thread: threadWith({ participantId: null, activeTurnId: TURN }, { latestTurnId: TURN }),
+            dispatched,
+          }),
+        ),
+      );
+    },
+  );
+});
+
+it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
+  const aurora: ThemeManifest = {
+    format: THEME_FILE_FORMAT,
+    name: "Aurora",
+    base: "dark",
+    colors: {
+      background: "#0a1029",
+      foreground: "#e7ecff",
+      mutedForeground: "#a3aed2",
+      accent: "#2fd6b0",
+      accentForeground: "#03231c",
+    },
+  };
+
+  it.effect(
+    "shows a theme as a page of kind theme whose stored version is the theme, without measuring",
+    () => {
+      const dispatched: Array<OrchestrationCommand> = [];
+      const measured: Array<string> = [];
+      return Effect.gen(function* () {
+        const pages = yield* AgentPages;
+        const outcome = yield* pages.showTheme(caller(), { theme: aurora });
+        assert.strictEqual(outcome.outcome, "shown");
+        const command = dispatched[0];
+        if (command?.type !== "thread.page.publish") return assert.fail("no publish");
+        assert.strictEqual(command.page.kind, "theme");
+        assert.strictEqual(command.page.title, "Aurora");
+        assert.strictEqual(command.page.turnId, TURN);
+        assert.strictEqual(command.page.height, 72);
+        assert.strictEqual(command.page.heights, undefined);
+        assert.deepStrictEqual(measured, []);
+        // Clients read the stored version back as the theme itself.
+        const read = yield* pages.read({
+          threadId: THREAD,
+          pageId: command.page.pageId,
+          versionId: command.page.versionId,
+        });
+        assert.strictEqual(read.kind, "theme");
+        assert.deepStrictEqual(JSON.parse(read.content), {
+          ...aurora,
+          createdBy: { kind: "agent", threadId: THREAD },
+        });
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            thread: threadWith({ participantId: null, activeTurnId: TURN }),
+            dispatched,
+            measured,
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect("shows a theme again in its turn as the next version of the same row", () => {
+    const dispatched: Array<OrchestrationCommand> = [];
+    const shown = {
+      pageId: "33333333-3333-4333-8333-333333333333",
+      version: 1,
+      kind: "theme",
+      turnId: TURN,
+    } as const;
+    return Effect.gen(function* () {
+      const pages = yield* AgentPages;
+      const outcome = yield* pages.showTheme(caller(), {
+        theme: { ...aurora, name: "Aurora II" },
+        pageId: shown.pageId,
+      });
+      assert.strictEqual(outcome.outcome, "shown");
+      const command = dispatched[0];
+      if (command?.type !== "thread.page.publish") return assert.fail("no publish");
+      assert.strictEqual<string>(command.page.pageId, shown.pageId);
+      assert.strictEqual(command.page.version, 2);
+      assert.strictEqual(command.page.turnId, TURN);
+      assert.strictEqual(command.page.title, "Aurora II");
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          thread: threadWith(
+            { participantId: null, activeTurnId: TURN },
+            { pages: [shown as Partial<OrchestrationAgentPage>] },
+          ),
+          dispatched,
+        }),
+      ),
+    );
+  });
+
+  it.effect(
+    "refuses a theme that fails the readability checks, and a page id that isn't a theme",
+    () => {
+      const dispatched: Array<OrchestrationCommand> = [];
+      const page = { pageId: "44444444-4444-4444-8444-444444444444", version: 1, kind: "html" };
+      return Effect.gen(function* () {
+        const pages = yield* AgentPages;
+        const unreadable = yield* pages.showTheme(caller(), {
+          theme: { ...aurora, colors: { ...aurora.colors, mutedForeground: "#11182f" } },
+        });
+        assert.strictEqual(unreadable.outcome, "refused");
+        if (unreadable.outcome === "refused") assert.include(unreadable.detail, "muted-foreground");
+        const notATheme = yield* pages.showTheme(caller(), { theme: aurora, pageId: page.pageId });
+        assert.strictEqual(notATheme.outcome, "refused");
+        const both = yield* pages.showTheme(caller(), { theme: aurora, path: "/tmp/a.json" });
+        assert.strictEqual(both.outcome, "refused");
+        assert.strictEqual(dispatched.length, 0);
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            thread: threadWith(
+              { participantId: null, activeTurnId: TURN },
+              { pages: [page as Partial<OrchestrationAgentPage>] },
+            ),
             dispatched,
           }),
         ),

@@ -17,6 +17,7 @@ import {
   RoomAgentRole,
 } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import { ThemeArtInThreads, ThemeMotion } from "./themes.ts";
 import { ClaudeWorkflowSize } from "./workflow.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -288,6 +289,12 @@ export const ClientSettingsSchema = Schema.Struct({
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  // How much of a theme's live art shows inside threads: the reading
+  // column's tint floor (docs/design/custom-themes.md). Only themes with a
+  // backdrop use it. Kept on this device, like the theme choice itself.
+  themeArtInThreads: ThemeArtInThreads.pipe(Schema.withDecodingDefault(Effect.succeed("some"))),
+  // Live: a theme's art moves (within its pause rules). Still: one frame.
+  themeMotion: ThemeMotion.pipe(Schema.withDecodingDefault(Effect.succeed("live"))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -1332,5 +1339,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   sourceControlPanelDefaultOpen: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  themeArtInThreads: Schema.optionalKey(ThemeArtInThreads),
+  themeMotion: Schema.optionalKey(ThemeMotion),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

@@ -29,6 +29,7 @@ import { ThreadHoverCard, ThreadHoverCardProvider } from "./sidebar/ThreadHoverC
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { Button } from "./ui/button";
 import type { SidebarThreadSummary } from "../types";
+import { glassPage } from "../theme/glassPage";
 
 /**
  * The General Chats page. On a wide screen the chats are listed beside the
@@ -47,9 +48,12 @@ function StartGeneralChat() {
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
       <PageTitlebar label="General chats" />
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center">
+      <div
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center"
+        {...glassPage.content}
+      >
         <MessagesSquareIcon aria-hidden="true" className="size-6 text-muted-foreground" />
-        <div className="flex max-w-sm flex-col gap-1">
+        <div className="flex max-w-sm flex-col gap-1" {...glassPage.column}>
           <h1 className="text-[15px] leading-5 font-semibold text-foreground">
             {chats.length === 0 ? "No general chats yet" : "Pick a chat, or start one"}
           </h1>
@@ -108,8 +112,11 @@ function GeneralChatsPage() {
         </PageTitlebar>
         {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
             (like Settings); the reading column centers inside it. */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-6">
+        <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+          <div
+            className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-6"
+            {...glassPage.column}
+          >
             <p className="text-sm text-muted-foreground/70">
               Conversations that aren&apos;t tied to a project.
             </p>

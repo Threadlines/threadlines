@@ -65,6 +65,18 @@ import {
   ScheduledTaskUpdateInput,
 } from "./scheduledTasks.ts";
 import {
+  ThemeContent,
+  ThemeEntryIdInput,
+  ThemeEntrySummary,
+  ThemeError,
+  ThemeLibrarySnapshot,
+  ThemeMergeInput,
+  ThemeReadInput,
+  ThemeRenameInput,
+  ThemeSaveInput,
+  ThemesSubscribeInput,
+} from "./themes.ts";
+import {
   SettingsChangeAnswer,
   SettingsChangeError,
   SettingsChangeReportDeviceInput,
@@ -724,6 +736,14 @@ export const WS_METHODS = {
   scheduledTasksTestWebhook: "scheduledTasks.testWebhook",
   scheduledTasksRunWithWebhookEvent: "scheduledTasks.runWithWebhookEvent",
   scheduledTasksDismissWebhookAddressChange: "scheduledTasks.dismissWebhookAddressChange",
+  // Custom themes (docs/design/custom-themes.md): this computer's theme library.
+  themesSubscribe: "themes.subscribe",
+  themesRead: "themes.read",
+  themesSave: "themes.save",
+  themesRename: "themes.rename",
+  themesDelete: "themes.delete",
+  themesRestore: "themes.restore",
+  themesMerge: "themes.merge",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -2493,7 +2513,70 @@ export const WsOutsideAgentsRpcGroup = RpcGroup.make(
   WsOutsideAgentsAlertTargetSecretRpc,
 );
 
-/** Everything else the WebSocket serves; with the outside agents' group, WsRpcGroup. */
+/** This computer's theme library: snapshots of every entry, tombstones included. */
+export const WsThemesSubscribeRpc = Rpc.make(WS_METHODS.themesSubscribe, {
+  payload: ThemesSubscribeInput,
+  success: ThemeLibrarySnapshot,
+  error: ThemeError,
+  stream: true,
+});
+
+/** One theme's content by hash, from any entry that holds it (tombstoned ones too). */
+export const WsThemesReadRpc = Rpc.make(WS_METHODS.themesRead, {
+  payload: ThemeReadInput,
+  success: ThemeContent,
+  error: ThemeError,
+});
+
+/** Saves a theme as a new entry: validated, fonts embedded, entry id minted by the server. */
+export const WsThemesSaveRpc = Rpc.make(WS_METHODS.themesSave, {
+  payload: ThemeSaveInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
+export const WsThemesRenameRpc = Rpc.make(WS_METHODS.themesRename, {
+  payload: ThemeRenameInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
+/** Tombstones an entry; its content stays while any entry or device cache may need it. */
+export const WsThemesDeleteRpc = Rpc.make(WS_METHODS.themesDelete, {
+  payload: ThemeEntryIdInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
+export const WsThemesRestoreRpc = Rpc.make(WS_METHODS.themesRestore, {
+  payload: ThemeEntryIdInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
+/** Reconciliation from another computer: keeps whichever copy wins the revision order. */
+export const WsThemesMergeRpc = Rpc.make(WS_METHODS.themesMerge, {
+  payload: ThemeMergeInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
+/**
+ * The theme library. A group of its own, merged into WsRpcGroup, for the same
+ * reason as the outside agents' group: the main group sits near TypeScript's
+ * cap on type work per statement.
+ */
+export const WsThemesRpcGroup = RpcGroup.make(
+  WsThemesSubscribeRpc,
+  WsThemesReadRpc,
+  WsThemesSaveRpc,
+  WsThemesRenameRpc,
+  WsThemesDeleteRpc,
+  WsThemesRestoreRpc,
+  WsThemesMergeRpc,
+);
+
+/** Everything else the WebSocket serves; with the outside agents' and themes' groups, WsRpcGroup. */
 export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2724,4 +2807,4 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationSubscribeThreadRpc,
 );
 
-export const WsRpcGroup = WsCoreRpcGroup.merge(WsOutsideAgentsRpcGroup);
+export const WsRpcGroup = WsCoreRpcGroup.merge(WsOutsideAgentsRpcGroup, WsThemesRpcGroup);

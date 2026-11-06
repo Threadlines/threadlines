@@ -4,8 +4,8 @@ import {
   DesktopCaptureScreenshotInputSchema,
   DesktopCaptureScreenshotResultSchema,
   DesktopEnvironmentBootstrapSchema,
+  DesktopPowerStateSchema,
   DesktopTaskbarStatusInputSchema,
-  DesktopThemeSchema,
   PickFolderOptionsSchema,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -19,11 +19,12 @@ import * as DesktopScreenCapture from "../../screenCapture/DesktopScreenCapture.
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../../electron/ElectronMenu.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
-import * as ElectronTheme from "../../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
 import * as DesktopStatusIndicator from "../../window/DesktopStatusIndicator.ts";
+import * as DesktopBackdropMonitor from "../../window/DesktopBackdropMonitor.ts";
+import * as DesktopThemeAppearance from "../../window/DesktopThemeAppearance.ts";
 import * as DesktopWindow from "../../window/DesktopWindow.ts";
 
 const ContextMenuPosition = Schema.Struct({
@@ -119,13 +120,20 @@ export const captureScreenshot = makeIpcMethod({
   }),
 });
 
+/**
+ * The app\x27s theme for the window: the native preference, and a custom
+ * theme\x27s window colors, applied at once (a same-base switch changes no
+ * native setting, so nothing else would repaint the window).
+ */
 export const setTheme = makeIpcMethod({
   channel: IpcChannels.SET_THEME_CHANNEL,
-  payload: DesktopThemeSchema,
+  payload: DesktopThemeAppearance.DesktopThemeAppearancePayload,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.window.setTheme")(function* (theme) {
-    const electronTheme = yield* ElectronTheme.ElectronTheme;
-    yield* electronTheme.setSource(theme);
+  handler: Effect.fn("desktop.ipc.window.setTheme")(function* (payload) {
+    const themeAppearance = yield* DesktopThemeAppearance.DesktopThemeAppearance;
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* themeAppearance.set(DesktopThemeAppearance.normalizeThemeAppearance(payload));
+    yield* desktopWindow.syncAppearance;
   }),
 });
 
@@ -202,5 +210,26 @@ export const openExternal = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
     return yield* shell.openExternal(url);
+  }),
+});
+
+export const getPowerState = makeIpcMethod({
+  channel: IpcChannels.GET_POWER_STATE_CHANNEL,
+  payload: Schema.Void,
+  result: DesktopPowerStateSchema,
+  handler: Effect.fn("desktop.ipc.window.getPowerState")(function* () {
+    const monitor = yield* DesktopBackdropMonitor.DesktopBackdropMonitor;
+    return yield* monitor.powerState;
+  }),
+});
+
+/** The app shows a theme's live art, or stopped: the CPU watchdog runs only meanwhile. */
+export const setBackdropActive = makeIpcMethod({
+  channel: IpcChannels.SET_BACKDROP_ACTIVE_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setBackdropActive")(function* (active) {
+    const monitor = yield* DesktopBackdropMonitor.DesktopBackdropMonitor;
+    yield* monitor.setBackdropActive(active);
   }),
 });

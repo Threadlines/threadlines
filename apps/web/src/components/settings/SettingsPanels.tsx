@@ -26,7 +26,6 @@ import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/server
 import {
   OPEN_LINKS_IN_LABELS,
   placeById,
-  THEME_LABELS,
   TIMESTAMP_FORMAT_LABELS,
 } from "@threadlines/shared/appPlaces";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
@@ -44,7 +43,7 @@ import {
 } from "../ProviderRateLimitResetCredit";
 import { isElectron } from "../../env";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
-import { useTheme } from "../../hooks/useTheme";
+import { chooseTheme, useThemeChoice } from "../../theme/themeStore";
 import { PushAlertsSettingsSection } from "../../pushAlerts/PushAlertsSettings";
 import { updateSettingsAndPersist, useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -94,6 +93,7 @@ import {
 } from "../ui/number-field";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { ThemeArtInThreadsRow, ThemeMotionRow, ThemeRow } from "../theme/ui/ThemeSettingsRows";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -178,13 +178,6 @@ import {
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
-
-// The catalog's labels (appPlaces), so an agent's settings change card words
-// each value the way these rows do.
-const THEME_OPTIONS = (["system", "light", "dark"] as const).map((value) => ({
-  value,
-  label: THEME_LABELS[value],
-}));
 
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
@@ -402,7 +395,8 @@ export function UpdateTrackRow() {
 }
 
 export function useSettingsRestore(onRestored?: () => void) {
-  const { theme, setTheme } = useTheme();
+  const themeChoice = useThemeChoice();
+  const themeIsDefault = themeChoice.kind === "builtin" && themeChoice.id === "system";
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
 
@@ -427,7 +421,11 @@ export function useSettingsRestore(onRestored?: () => void) {
 
   const changedSettingLabels = useMemo(
     () => [
-      ...(theme !== "system" ? ["Theme"] : []),
+      ...(!themeIsDefault ? ["Theme"] : []),
+      ...(settings.themeArtInThreads !== DEFAULT_UNIFIED_SETTINGS.themeArtInThreads
+        ? ["Art in threads"]
+        : []),
+      ...(settings.themeMotion !== DEFAULT_UNIFIED_SETTINGS.themeMotion ? ["Motion"] : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -583,8 +581,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sourceControlPanelDefaultOpen,
       settings.usageAnalyticsEnabled,
       settings.sidebarThreadPreviewCount,
+      settings.themeArtInThreads,
+      settings.themeMotion,
       settings.timestampFormat,
-      theme,
+      themeIsDefault,
     ],
   );
 
@@ -596,8 +596,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     );
     if (!confirmed) return;
 
-    setTheme("system");
+    chooseTheme({ kind: "builtin", id: "system" });
     updateSettings({
+      themeArtInThreads: DEFAULT_UNIFIED_SETTINGS.themeArtInThreads,
+      themeMotion: DEFAULT_UNIFIED_SETTINGS.themeMotion,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       diffChangesOnly: DEFAULT_UNIFIED_SETTINGS.diffChangesOnly,
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
@@ -645,7 +647,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sourceControlWriterModelSelection: DEFAULT_UNIFIED_SETTINGS.sourceControlWriterModelSelection,
     });
     onRestored?.();
-  }, [changedSettingLabels, onRestored, setTheme, settings, updateSettings]);
+  }, [changedSettingLabels, onRestored, settings, updateSettings]);
 
   return {
     changedSettingLabels,
@@ -1126,42 +1128,7 @@ function UnifiedSwitchRow({
   );
 }
 
-export function ThemeRow() {
-  const { theme, setTheme } = useTheme();
-  return (
-    <SettingsRow
-      place="general.theme"
-      resetAction={
-        theme !== "system" ? (
-          <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-        ) : null
-      }
-      control={
-        <Select
-          value={theme}
-          onValueChange={(value) => {
-            if (value === "system" || value === "light" || value === "dark") {
-              setTheme(value);
-            }
-          }}
-        >
-          <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-            <SelectValue>
-              {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            {THEME_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-      }
-    />
-  );
-}
+export { ThemeArtInThreadsRow, ThemeMotionRow, ThemeRow };
 
 export function TimeFormatRow() {
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
@@ -1335,6 +1302,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <PushAlertsSettingsSection />
         <SettingsSection place="general.appearance">
           <ThemeRow />
+          <ThemeArtInThreadsRow />
+          <ThemeMotionRow />
           <TimeFormatRow />
         </SettingsSection>
 

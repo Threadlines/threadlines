@@ -103,6 +103,7 @@ import {
 } from "./relay/RelayDeviceRepository.ts";
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
+import { ThemeLibrary, type ThemeLibraryShape } from "./themes/ThemeLibrary.ts";
 import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
@@ -543,6 +544,7 @@ const buildAppUnderTest = (options?: {
     relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
     computerLinks?: Partial<ComputerLinksShape>;
     scheduledTasks?: Partial<ScheduledTasksShape>;
+    themeLibrary?: Partial<ThemeLibraryShape>;
     linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     projectMedia?: Partial<ProjectMediaShape>;
@@ -866,6 +868,10 @@ const buildAppUnderTest = (options?: {
             snapshot: Effect.succeed({ tasks: [], requests: [], timeZone: "UTC" }),
             changes: Stream.make({ tasks: [], requests: [], timeZone: "UTC" }),
             ...options?.layers?.scheduledTasks,
+          }),
+          Layer.mock(ThemeLibrary)({
+            changes: Stream.make({ entries: [] }),
+            ...options?.layers?.themeLibrary,
           }),
           Layer.mock(LinkRequests)({
             pending: Effect.succeed([]),
@@ -2364,6 +2370,57 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(ownerInvite.code, "482913");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves the theme library to every paired device, phones included", () =>
+    Effect.gen(function* () {
+      const entry = {
+        entryId: "entry-1",
+        name: "Aurora",
+        hash: "a".repeat(64),
+        revision: 1,
+        revisedBy: "env-test",
+        deleted: false,
+        createdAt: "2026-11-05T10:00:00.000Z",
+        updatedAt: "2026-11-05T10:00:00.000Z",
+        base: "dark",
+        background: "#0a1029",
+        foreground: "#e7ecff",
+        accent: "#2fd6b0",
+        backdropMode: null,
+        thumbnail: null,
+      } as const;
+      yield* buildAppUnderTest({
+        config: { host: "0.0.0.0" },
+        layers: {
+          themeLibrary: {
+            changes: Stream.make({ entries: [entry] }),
+            rename: (input) => Effect.succeed({ ...entry, name: input.name, revision: 2 }),
+          },
+        },
+      });
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: ownerCookie },
+      });
+      const pairingBody = (yield* pairingResponse.json) as { readonly credential: string };
+      const deviceCookie = yield* getAuthenticatedSessionCookieHeader(pairingBody.credential);
+      const deviceWsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        deviceCookie,
+      );
+
+      const { snapshot, renamed } = yield* Effect.scoped(
+        withWsRpcClient(deviceWsUrl, (client) =>
+          Effect.all({
+            snapshot: Stream.runHead(client[WS_METHODS.themesSubscribe]({})),
+            renamed: client[WS_METHODS.themesRename]({ entryId: "entry-1", name: "Borealis" }),
+          }),
+        ),
+      );
+      assert.deepEqual(Option.getOrUndefined(snapshot)?.entries, [entry]);
+      assert.equal(renamed.name, "Borealis");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

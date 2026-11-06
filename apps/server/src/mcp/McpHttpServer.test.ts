@@ -27,7 +27,10 @@ import { ROOM_TOOL_NAMES } from "./roomToolAccess.ts";
 import { ConnectToolkit } from "../outsideAgents/connectTools.ts";
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
 import { AskUserToRunTool } from "./commandTools.ts";
-import { PreviewPageTool, ShowPageTool } from "./pageTools.ts";
+import { AgentPages } from "../pages/AgentPages.ts";
+import * as McpPagesServer from "./McpPagesServer.ts";
+import { CLAUDE_PAGE_TOOL_IDS, PreviewPageTool, ShowPageTool } from "./pageTools.ts";
+import { PreviewThemeTool, ShowThemeTool } from "./themeTools.ts";
 import { RoomToolkit } from "./roomTools.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
 import { ThreadToolkit } from "./threadTools.ts";
@@ -577,6 +580,57 @@ describe("MCP endpoints", () => {
     expect(text).toContain("50%");
   });
 
+  it("pre-allows for Claude every tool the pages endpoint lists, and previews a theme in pictures", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64");
+    const { listed, preview } = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            McpPagesServer.layer.pipe(
+              Layer.provide(
+                Layer.mock(AgentPages)({
+                  assetsDirOf: () => null,
+                  previewTheme: () =>
+                    Effect.succeed({
+                      outcome: "previewed",
+                      text: "Checks: every readability check passes.",
+                      shots: [
+                        { layout: "thread", png },
+                        { layout: "new-thread", png },
+                      ],
+                    }),
+                }),
+              ),
+            ),
+          );
+          const credential = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: false,
+            room: false,
+            pages: true,
+          });
+          const url = `${base}/mcp/pages`;
+          const listed = yield* Effect.promise(() => listTools(url, credential.token));
+          const preview = yield* Effect.promise(() =>
+            callTool(url, credential.token, "preview_theme", { theme: {} }),
+          );
+          yield* mcpSessionRegistry.revoke(THREAD, credential.generation);
+          return { listed, preview };
+        }),
+      ).pipe(onLoopback),
+    );
+
+    const tools = "tools" in listed ? listed.tools : [];
+    expect(tools).toContain("show_theme");
+    expect(tools).toContain("preview_theme");
+    // A tool Claude must ask about would stop every page and theme mid-turn.
+    expect(tools.map((name) => `mcp__threadlines_pages__${name}`).toSorted()).toEqual(
+      [...CLAUDE_PAGE_TOOL_IDS].toSorted(),
+    );
+    expect(preview.isError).toBe(false);
+    expect(preview.content.map((block) => block.type)).toEqual(["text", "image", "image"]);
+  });
+
   /**
    * Room asks wait minutes for an answer inside a tool call, and a request is
    * stopped only when its last waiter leaves. That needs the HTTP server to
@@ -661,6 +715,8 @@ describe("tool input schemas", () => {
       AskUserToRunTool,
       ShowPageTool,
       PreviewPageTool,
+      ShowThemeTool,
+      PreviewThemeTool,
     ];
     for (const tool of tools) {
       expect(Tool.getJsonSchema(tool).type, tool.name).toBe("object");

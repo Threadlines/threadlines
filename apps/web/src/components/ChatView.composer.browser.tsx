@@ -17,6 +17,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useRoomRecipientStore } from "../rooms";
 import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
+import { readThemeState } from "../theme/themeStore";
 import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import {
@@ -1384,6 +1385,51 @@ describe("ChatView (full app): composer", () => {
         expect(searchInput).not.toBeNull();
         expect(document.activeElement).toBe(searchInput);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes /theme from its ✕, and New theme starts a request with ideas to finish it", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-theme-command-target" as MessageId,
+        targetText: "theme command thread",
+      }),
+    });
+    const editorText = () => page.getByTestId("composer-editor").element().textContent ?? "";
+
+    try {
+      await waitForComposerEditor();
+      await page.getByTestId("composer-editor").fill("/them");
+      await (await waitForComposerMenuItem("slash:theme")).click();
+      const picker = page.getByRole("listbox", { name: "Themes" });
+      await expect.element(picker).toBeVisible();
+      // Preview the next theme with the arrows, then Enter on the ✕: it
+      // closes and puts the old theme back, never keeps the preview.
+      const committedBefore = readThemeState().committed;
+      await vi.waitFor(() => expect(document.activeElement).toBe(picker.element()));
+      await userEvent.keyboard("{ArrowRight}");
+      await vi.waitFor(() => expect(readThemeState().trial).not.toBeNull());
+      page.getByRole("button", { name: "Close themes" }).element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(picker).not.toBeInTheDocument();
+      expect(readThemeState().trial).toBeNull();
+      expect(readThemeState().committed).toEqual(committedBefore);
+
+      await page.getByTestId("composer-editor").fill("/them");
+      await (await waitForComposerMenuItem("slash:theme")).click();
+      await page.getByRole("button", { name: "New theme", exact: true }).click();
+      // The sentence lands in the message box (and stays), with how it works above it.
+      await vi.waitFor(() =>
+        expect(editorText()).toContain("Make me a Threadlines theme that feels like"),
+      );
+      await expect
+        .element(page.getByText("Finish the sentence below and send it.", { exact: false }))
+        .toBeVisible();
+      await page.getByRole("button", { name: "a rainy night in Tokyo" }).click();
+      await vi.waitFor(() => expect(editorText()).toContain("feels like a rainy night in Tokyo."));
     } finally {
       await mounted.cleanup();
     }

@@ -64,6 +64,8 @@ import * as DesktopBackground from "./app/DesktopBackground.ts";
 import { runAppImageCommandIfAsked } from "./cliCommand/appImageCommand.ts";
 import * as DesktopCliCommand from "./cliCommand/DesktopCliCommand.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
+import * as DesktopBackdropMonitor from "./window/DesktopBackdropMonitor.ts";
+import * as DesktopThemeAppearance from "./window/DesktopThemeAppearance.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopStartupFailurePrompt from "./window/DesktopStartupFailurePrompt.ts";
 import * as DesktopStatusIndicator from "./window/DesktopStatusIndicator.ts";
@@ -301,6 +303,10 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
 // automation that owns the navigation guards sit beneath it rather than beside
 // the IPC handlers.
 const desktopWindowLayer = DesktopWindow.layer.pipe(
+  // The window opens in the theme's colors and keeps them through native
+  // appearance changes; the art's power and CPU watch sits beside it.
+  Layer.provideMerge(DesktopThemeAppearance.layer),
+  Layer.provideMerge(DesktopBackdropMonitor.layer),
   Layer.provideMerge(PreviewSession.layer),
   Layer.provideMerge(PreviewAutomation.layer),
   // Beneath the window and the automation, which both ask whose a page is.

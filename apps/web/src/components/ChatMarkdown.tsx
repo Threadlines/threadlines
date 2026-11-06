@@ -67,6 +67,7 @@ import {
 } from "../lib/codeHighlight";
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
+import { useCodeThemeName } from "../theme/codeTheme";
 import {
   fileLinkMetaForPath,
   isAbsoluteInlineFilePath,
@@ -1470,7 +1471,7 @@ function ChatMarkdownDocument({
     () => (environmentId && threadId ? { environmentId, threadId } : null),
     [environmentId, threadId],
   );
-  const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const diffThemeName = useCodeThemeName();
   // While a search hit is being highlighted in this document the reader is
   // hunting for literal text, and a chip both drops the highlight and shortens
   // the path -- the matched characters could leave the page entirely. So the
@@ -1648,9 +1649,10 @@ function ChatMarkdown({
   const { resolvedTheme } = useTheme();
   // Boots the highlighting worker and its theme while the page is idle, so the
   // first code block of a session is not also the one that loads Shiki.
+  const codeThemeName = useCodeThemeName();
   useEffect(() => {
-    warmCodeHighlighter(resolveDiffThemeName(resolvedTheme));
-  }, [resolvedTheme]);
+    warmCodeHighlighter(codeThemeName);
+  }, [codeThemeName]);
   const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
   const segments = canRenderVisualizations
     ? parseCodexInlineVisualizations(text, { isStreaming })

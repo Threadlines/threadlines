@@ -225,6 +225,8 @@ interface CodexSessionBrowserFlow {
   readonly providerInstanceId: ProviderInstanceId;
 }
 
+const THEME_ITEM_CLASSES = { item: ITEM_ICON_CLASS, addon: ADDON_ICON_CLASS } as const;
+
 function externalSessionSourceLabel(source: ProviderExternalThreadCandidate["source"]): string {
   switch (source) {
     case "cli":

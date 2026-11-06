@@ -36,6 +36,7 @@ import {
 } from "./scheduled.logic";
 import { ScheduledTaskDetail } from "./ScheduledTaskDetail";
 import { ScheduledTaskForm } from "./ScheduledTaskForm";
+import { glassPage } from "../../theme/glassPage";
 import {
   useAgentLabels,
   useProjectNames,
@@ -313,10 +314,14 @@ export function ScheduledView() {
     <div
       className="flex h-full min-h-0 w-full min-w-0 flex-col bg-background"
       data-testid="scheduled-view"
+      {...glassPage.shell}
     >
       <PageTitlebar label="Scheduled" />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[760px] flex-col px-4 pt-5 pb-12 sm:px-8 sm:pt-8">
+      <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+        <div
+          className="mx-auto flex w-full max-w-[760px] flex-col px-4 pt-5 pb-12 sm:px-8 sm:pt-8"
+          {...glassPage.column}
+        >
           {body}
         </div>
       </div>

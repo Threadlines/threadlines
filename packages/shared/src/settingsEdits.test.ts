@@ -36,6 +36,8 @@ const valuesOf = (control: EditControl): ReadonlyArray<EditValue> => {
         "gateway/vendor/model-with-a-slash",
         ...(control.noneLabel !== undefined ? [NO_MODEL] : []),
       ];
+    case "theme":
+      return ["system", "dark", "Aurora"];
   }
 };
 

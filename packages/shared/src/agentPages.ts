@@ -15,7 +15,11 @@
  * https://github.com/modelcontextprotocol/ext-apps), so the same host can one
  * day drive MCP apps as well.
  */
-import type { AgentPagePublication, OrchestrationAgentPage } from "@threadlines/contracts";
+import {
+  type AgentPagePublication,
+  type OrchestrationAgentPage,
+  THEME_FILE_EXTENSION,
+} from "@threadlines/contracts";
 
 export const AGENT_PAGE_SHOW_TOOL_NAME = "show_page";
 export const AGENT_PAGE_PREVIEW_TOOL_NAME = "preview_page";
@@ -35,7 +39,7 @@ export const AGENT_PAGE_MAX_BYTES = 16 * 1024 * 1024;
 /** One local image before inlining. */
 export const AGENT_PAGE_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
-export type AgentPageKind = "html" | "markdown";
+export type AgentPageKind = "html" | "markdown" | "theme";
 
 /**
  * Frame widths the server measures a page at, from phones to a wide window.
@@ -135,6 +139,7 @@ export function agentPageFileName(title: string, kind: AgentPageKind): string {
     .trim()
     .slice(0, 120)
     .trim();
+  if (kind === "theme") return `${name || "Theme"}${THEME_FILE_EXTENSION}`;
   return `${name || "Page"}.${kind === "markdown" ? "md" : "html"}`;
 }
 
@@ -246,6 +251,12 @@ export type AgentPageAppearance = "light" | "dark";
 export interface AgentPageTheme {
   readonly appearance: AgentPageAppearance;
   readonly variables: Readonly<Record<string, string>>;
+  /**
+   * `@font-face` rules for the host theme's own fonts, as data URLs (a custom
+   * theme's embedded fonts; the page's policy allows `font-src data:`), so
+   * `--font-sans` and `--font-mono` can name them.
+   */
+  readonly fontFaces?: string;
 }
 
 /**
@@ -406,6 +417,7 @@ export function agentPageTheme(
       "--font-sans": fonts.sans,
       "--font-mono": fonts.mono,
     },
+    ...(theme.fontFaces ? { fontFaces: theme.fontFaces } : {}),
   };
 }
 
@@ -413,6 +425,11 @@ export function agentPageTheme(
 // end the rule, the declaration, or the element gets through.
 const VARIABLE_NAME = /^--[a-z0-9-]+$/;
 const cleanVariableValue = (value: string) => value.replace(/[;{}<>\\]/g, "");
+
+/** A theme's `@font-face` rules as they may stand in a `<style>` element: nothing that ends it. */
+export function agentPageFontFaceRules(theme: AgentPageTheme): string {
+  return (theme.fontFaces ?? "").replace(/[<>\\]/g, "");
+}
 
 /** A theme as the `:root` rule a page's theme `<style>` holds. */
 export function agentPageThemeRule(theme: AgentPageTheme): string {
@@ -578,7 +595,11 @@ export function agentPageThemeMessage(theme: AgentPageTheme) {
   return {
     jsonrpc: "2.0",
     method: HOST_CONTEXT_CHANGED_METHOD,
-    params: { theme: theme.appearance, styles: { variables: theme.variables } },
+    params: {
+      theme: theme.appearance,
+      // `css.fonts` is MCP Apps' place for a host's font rules.
+      styles: { variables: theme.variables, css: { fonts: agentPageFontFaceRules(theme) } },
+    },
   } as const;
 }
 
