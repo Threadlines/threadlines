@@ -2076,7 +2076,7 @@ describe("CheckpointReactor", () => {
         requestId: SettingsChangeRequestId.make("settings-ask-2"),
         participantId: null,
         turnId: asTurnId("turn-2"),
-        changes: [{ place: "general.theme", value: "light" }],
+        changes: [{ place: "appearance.theme", value: "light" }],
         createdAt,
       }),
     );

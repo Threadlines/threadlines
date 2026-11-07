@@ -15,7 +15,7 @@ const ended = (
   turnId: TurnId.make("turn-1"),
   changes: [
     { place: "general.streamReplies", value: false, from: true },
-    { place: "general.theme", value: "light" },
+    { place: "appearance.theme", value: "light" },
   ],
   status: "changed",
   claim: { claimId: "claim-a", deviceLabel: "iPhone" },
@@ -26,14 +26,16 @@ const ended = (
 
 describe("the agent's note about its settings change", () => {
   it("says what changed where, and what the device reported", () => {
-    expect(settingsChangeNote(ended({ device: { applied: ["general.theme"], failed: [] } }))).toBe(
-      "The user accepted your settings change. On this computer: Settings › General › Chat & diffs › Stream replies is now Off. On iPhone: Settings › General › Appearance › Theme is now Light.",
+    expect(
+      settingsChangeNote(ended({ device: { applied: ["appearance.theme"], failed: [] } })),
+    ).toBe(
+      "The user accepted your settings change. On this computer: Settings › General › Chat & diffs › Stream replies is now Off. On iPhone: Settings › Appearance › Themes › Theme is now Light.",
     );
   });
 
   it("doesn't claim a device change the app never confirmed", () => {
     expect(settingsChangeNote(ended({}))).toContain(
-      "Their app on iPhone didn't confirm the change there (Settings › General › Appearance › Theme to Light).",
+      "Their app on iPhone didn't confirm the change there (Settings › Appearance › Themes › Theme to Light).",
     );
   });
 

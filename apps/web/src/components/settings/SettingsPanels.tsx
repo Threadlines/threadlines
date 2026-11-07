@@ -95,7 +95,6 @@ import {
 } from "../ui/number-field";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { ThemeGlassRow, ThemeMotionRow, ThemeRow } from "../theme/ui/ThemeSettingsRows";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -1129,8 +1128,6 @@ function UnifiedSwitchRow({
   );
 }
 
-export { ThemeGlassRow, ThemeMotionRow, ThemeRow };
-
 export function TimeFormatRow() {
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
   const { updateSettings } = useUpdateSettings();
@@ -1287,9 +1284,9 @@ export function PhoneSettingsRow() {
 }
 
 /**
- * Settings › General: how the app looks, chat and diff display, dictation,
- * this computer, privacy and version. How threads start and end lives on the
- * Threads page. On a phone, settings stored with the paired computer sit under
+ * Settings › General: alerts, chat and diff display, the terminal, dictation,
+ * this computer, privacy and version. Themes live on the Appearance page, how
+ * threads start and end on the Threads page. On a phone, settings stored with the paired computer sit under
  * "This Computer"; the rest are stored in the phone's browser. Rows a surface
  * doesn't draw are left out through `ShownPlace`, which the settings search
  * asks too.
@@ -1301,16 +1298,10 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
       <SettingsPageContainer>
         <SettingsPageHeader section="/settings/general" />
         <PushAlertsSettingsSection />
-        <SettingsSection place="general.appearance">
-          <ThemeRow />
-          <ThemeGlassRow />
-          <ThemeMotionRow />
-          <TimeFormatRow />
-        </SettingsSection>
-
         <SettingsSection place="general.chatAndDiffs">
           {/* On a phone this one is the paired computer's: it sits under This Computer. */}
           {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <TimeFormatRow />
           <ChangedFilesInChatRow />
           <ShownPlace place="general.agentsPanel">
             <AgentsPanelRow />

@@ -509,7 +509,7 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
           requestId,
           participantId: null,
           turnId: "turn-1",
-          changes: [{ place: "general.theme", value: "light" }],
+          changes: [{ place: "appearance.theme", value: "light" }],
           status,
           createdAt: "2026-10-23T12:00:00.000Z",
           noted: false,

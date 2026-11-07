@@ -80,7 +80,7 @@ describe("settings change state", () => {
         settledAt: at(4),
       }),
     ).toBe(state);
-    const device = { applied: ["general.theme"], failed: [] };
+    const device = { applied: ["appearance.theme"], failed: [] };
     state = settingsChangeStateOn.deviceReported(state, {
       threadId,
       requestId,

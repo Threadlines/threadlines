@@ -40,7 +40,7 @@ export const SettingsChangeTool = Tool.make(SETTINGS_CHANGE_TOOL_NAME, {
     changes: Schema.Array(
       Schema.Struct({
         place: Schema.String.annotate({
-          description: `The setting's place id from ${GUIDE_TOOL_NAME} (its link is threadlines-place:<id>), e.g. "general.theme".`,
+          description: `The setting's place id from ${GUIDE_TOOL_NAME} (its link is threadlines-place:<id>), e.g. "appearance.theme".`,
         }),
         value: Schema.Union([Schema.Boolean, Schema.String, Schema.Number]).annotate({
           description:

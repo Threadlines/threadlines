@@ -38,7 +38,7 @@ const waiting = (
 });
 
 const STREAM_OFF = { place: "general.streamReplies", value: false, from: true } as const;
-const THEME_LIGHT = { place: "general.theme", value: "light" } as const;
+const THEME_LIGHT = { place: "appearance.theme", value: "light" } as const;
 
 /** Codex, since switched to an API key: billed per use by the time the user answers. */
 const PROVIDERS = [

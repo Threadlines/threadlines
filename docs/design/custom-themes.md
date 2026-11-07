@@ -95,11 +95,16 @@ theme this device already kept skips the trial.
   beside the strip's title. The keys work without labels; the buttons'
   tooltips name them.
 - Command palette: "Change theme…" submenu, and "Use default theme".
-- Settings › General › Appearance: the gallery, "Glass" (a slider, Solid to
-  Clear, the theme's own in the middle), "Motion" (Live, Still), "Import
-  theme file…".
+- Settings › Appearance, its own page since November 2026 (it had been a
+  section of General, where the gallery filled the first screen): one Themes
+  section with New theme and Import theme file on its title line; Glass (a
+  slider, Solid to Clear, the theme's own in the middle) and Motion (Live,
+  Still) side by side in one group, a compact form of their rows (the
+  settings search still draws them as full rows); a line on the art's cost;
+  then the gallery under plain filters (All, Yours, Starters, Built in), yours
+  first. A Showcase of shared themes would join it later as a second view.
 - An agent asked to "switch to Meadow" uses `settings_change` on
-  `general.theme`, whose choices become dynamic (System, Light, Dark and the
+  `appearance.theme`, whose choices become dynamic (System, Light, Dark and the
   library's names, checked like `model`). Accepting the card starts the same
   trial when the theme is new to this device; the device result reports the
   switch, and a later Undo is the user's own change.
@@ -637,7 +642,7 @@ are code, even walled off. Separate PR after the app feature, per Will's
 - Reverse states: Undo and countdown, delete in use (asks), deleted elsewhere
   (keeps, says so), art too heavy (notice, Try again), art failed (still,
   says so), revert of the turn that offered it, missing cache.
-- App guide: places for each new row, the `themes` topic, `general.theme`
+- App guide: places for each new row, the `themes` topic, `appearance.theme`
   choices made dynamic.
 
 ## What the prototypes proved

@@ -101,6 +101,7 @@ import {
   openConnectComputerDialog,
 } from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
+import { AppearanceSettingsPanel } from "./AppearanceSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { usePlaceArrival } from "../../hooks/usePlaceArrival";
 import { SidebarProvider } from "../ui/sidebar";
@@ -6746,6 +6747,15 @@ describe("Settings search", () => {
         }),
         createRoute({
           getParentRoute: () => rootRoute,
+          path: "/settings/appearance",
+          component: () => (
+            <SettingsPage>
+              <AppearanceSettingsPanel />
+            </SettingsPage>
+          ),
+        }),
+        createRoute({
+          getParentRoute: () => rootRoute,
           path: "/settings/archived",
           component: () => <div>Archives page</div>,
         }),
@@ -6804,6 +6814,20 @@ describe("Settings search", () => {
       ).not.toBeNull();
     });
     expect(document.querySelector('[data-testid="settings-search-results"]')).toBeNull();
+
+    // An address saved before themes left General goes on to Appearance, and arrives.
+    await router.navigate({ to: "/settings/general", hash: "place=general.theme&n=99" });
+    await vi.waitFor(() => {
+      expect(router.state.location.pathname).toBe("/settings/appearance");
+      expect(
+        document.querySelector('[data-place="appearance.theme"] > .place-arrival-overlay'),
+      ).not.toBeNull();
+    });
+    // Leaving it through the menu stays left.
+    await menuButton("General").click();
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/settings/general"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(router.state.location.pathname).toBe("/settings/general");
   });
 });
 
@@ -6870,6 +6894,7 @@ describe("Settings search rows", () => {
 
     for (const [page, Panel] of [
       ["settings.general", GeneralSettingsPanel],
+      ["settings.appearance", AppearanceSettingsPanel],
       ["settings.threads", ThreadsSettingsPanel],
       ["settings.sourceControl", SourceControlSettingsPanel],
     ] as const) {
