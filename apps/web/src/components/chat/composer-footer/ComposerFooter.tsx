@@ -37,6 +37,7 @@ export const ComposerFooter = memo(function ComposerFooter({
             {props.attachments}
           </div>
           <AiProviderSettings
+            compact
             traits={props.traits}
             mode={props.mode}
             access={props.access}

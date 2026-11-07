@@ -22,7 +22,17 @@ type Props = Pick<ModelPickerSettingsProps, "traits" | "mode"> & {
   modelPicker?: ReactNode;
   placement?: "top" | "bottom" | "auto";
   modelSlot?: HTMLElement;
+  /** Compact chat summary; the full editor remains in the model picker. */
+  compact?: boolean;
 };
+
+function effortTone(value: string): AiSettingsControl["tone"] {
+  const level = value.toLowerCase().replace(/[\s_-]/g, "");
+  if (level === "extrahigh" || level === "xhigh") return "xhigh";
+  if (level === "ultracode" || level === "ultra") return "ultra";
+  if (level === "low" || level === "medium" || level === "high" || level === "max") return level;
+  return undefined;
+}
 
 /** Threadlines owns descriptors and persistence; the shared DOM control owns its UI. */
 export const AiProviderSettings = memo(function AiProviderSettings(props: Props) {
@@ -65,41 +75,52 @@ function SettingsWithTraits(props: Props & { target: ModelPickerTraitsTarget }) 
       value,
       bars: reasoningDescriptor.options.findIndex((option) => option.id === value) + 1,
       barCount: reasoningDescriptor.options.length,
-      ...(/ultra/i.test(value) ? { tone: "ultra" as const } : {}),
+      iconOnly: props.compact ? "auto" : false,
+      tone: effortTone(value),
       options: reasoningDescriptor.options.map((option, index) => ({
         value: option.id,
         label: option.label,
         description: option.description,
         bars: index + 1,
         barCount: reasoningDescriptor.options.length,
-        ...(/ultra/i.test(option.id) ? { tone: "ultra" as const } : {}),
+        tone: effortTone(option.id),
       })),
       onChange: (next) => {
         if (typeof next === "string") setValue(reasoningDescriptor.id, next);
       },
     });
   }
-  for (const descriptor of otherSelectDescriptors)
+  for (const descriptor of otherSelectDescriptors) {
+    const value = getDescriptorStringValue(descriptor) ?? "";
+    if (props.compact && (descriptor.id !== "serviceTier" || !/fast|priority/i.test(value)))
+      continue;
+    const icon = descriptor.id === "serviceTier" ? "speed" : "settings";
     controls.push({
       id: descriptor.id,
       label: descriptor.label,
-      value: getDescriptorStringValue(descriptor) ?? "",
-      icon: descriptor.id === "serviceTier" ? "speed" : "settings",
+      value,
+      iconOnly: props.compact,
+      icon,
       options: descriptor.options.map((option) => ({
         value: option.id,
         label: option.label,
         description: option.description,
+        icon,
       })),
       onChange: (next) => {
         if (typeof next === "string") setValue(descriptor.id, next);
       },
     });
-  for (const control of getTraitSwitchControls(descriptors))
+  }
+  for (const control of getTraitSwitchControls(descriptors)) {
+    if (props.compact && (!isFastModeControl(control) || !control.checked)) continue;
+    const icon = isFastModeControl(control) ? "speed" : "settings";
     controls.push({
       id: control.descriptor.id,
       label: control.label,
       value: control.checked,
-      icon: isFastModeControl(control) ? "speed" : "settings",
+      icon,
+      iconOnly: props.compact,
       ...(control.descriptor.id === "ultracode" && control.checked
         ? { tone: "ultra" as const }
         : {}),
@@ -107,12 +128,14 @@ function SettingsWithTraits(props: Props & { target: ModelPickerTraitsTarget }) 
         value: checked,
         label: getSwitchControlLabel({ ...control, checked }),
         description: control.description,
+        icon,
         ...(control.descriptor.id === "ultracode" && checked ? { tone: "ultra" as const } : {}),
       })),
       onChange: (next) => {
         if (typeof next === "boolean") setValue(control.descriptor.id, control.nextValue(next));
       },
     });
+  }
   return <SettingsView {...props} traitControls={controls} />;
 }
 
@@ -123,22 +146,26 @@ function SettingsView({
   modelPicker,
   modelSlot,
   placement = "top",
+  compact = false,
 }: Props & { traitControls: AiSettingsControl[] }) {
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<ReturnType<typeof createAiSettings> | null>(null);
   const controls = [...traitControls];
   const effortIndex = controls.findIndex((control) => control.label === "Effort");
-  const chatControls: AiSettingsControl[] = [];
+  const modeControls: AiSettingsControl[] = [];
+  const accessControls: AiSettingsControl[] = [];
   if (mode)
-    chatControls.push({
+    modeControls.push({
       id: "threadlines-mode",
       label: "Mode",
       value: mode.value,
-      icon: "mode",
+      icon: mode.value === "plan" ? "plan" : "build",
+      iconOnly: compact,
       options: interactionModeOptions.map((option) => ({
         value: option.mode,
         label: option.label,
         description: option.description,
+        icon: option.mode === "plan" ? "plan" : "build",
       })),
       onChange: (value) => {
         const option = interactionModeOptions.find((entry) => entry.mode === value);
@@ -149,7 +176,7 @@ function SettingsView({
     const current =
       access.options.find((option) => option.mode === access.value) ??
       runtimeModeConfig[access.value];
-    chatControls.push({
+    accessControls.push({
       id: "threadlines-access",
       label: "Access level",
       value: access.value,
@@ -162,6 +189,7 @@ function SettingsView({
         label: option.label,
         description: option.disabledReason ?? option.description,
         disabled: option.disabled === true,
+        icon: "access",
       })),
       onChange: (value) => {
         const option = access.options.find((entry) => entry.mode === value);
@@ -169,7 +197,9 @@ function SettingsView({
       },
     });
   }
-  controls.splice(effortIndex + 1, 0, ...chatControls);
+  controls.splice(effortIndex + 1, 0, ...accessControls);
+  if (compact) controls.push(...modeControls);
+  else controls.splice(effortIndex + 1, 0, ...modeControls);
   const config = {
     label: "AI settings",
     layout: "wrap" as const,

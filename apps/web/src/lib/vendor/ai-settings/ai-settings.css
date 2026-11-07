@@ -8,6 +8,11 @@
   --ai-settings-hover: #eff0f3;
   --ai-settings-checked: #e8e4f5;
   --ai-settings-accent: #5d62cb;
+  --ai-settings-low: #38bdf8;
+  --ai-settings-medium: #3b82f6;
+  --ai-settings-high: #1d4ed8;
+  --ai-settings-xhigh: #f97316;
+  --ai-settings-max: #ef4444;
   --ai-settings-ultra: #7c3aed;
   --ai-settings-font-size: 13.5px;
   display: flex;
@@ -28,6 +33,11 @@
   --ai-settings-hover: #34353e;
   --ai-settings-checked: #3f365d;
   --ai-settings-accent: #a6a8ff;
+  --ai-settings-low: #7dd3fc;
+  --ai-settings-medium: #60a5fa;
+  --ai-settings-high: #2563eb;
+  --ai-settings-xhigh: #fb923c;
+  --ai-settings-max: #f87171;
   --ai-settings-ultra: #c4a0ff;
 }
 .ai-settings[data-layout='inline'] { flex-wrap: nowrap; overflow-x: auto; }
@@ -93,3 +103,14 @@
   .ai-settings .ai-settings-trigger, .ai-settings .ai-settings-model > button { min-height: 44px; gap: 5px; padding-inline: 6px; }
   .ai-settings-menu .ai-settings-option { min-height: 44px; }
 }
+
+/* Compact summaries keep their accessible value and complete choice menu. */
+.ai-settings .ai-settings-trigger[data-presentation='icon'] { gap: 0; min-width: 30px; }
+.ai-settings-bars[data-tone='low'] { color: var(--ai-settings-low); }
+.ai-settings-bars[data-tone='medium'] { color: var(--ai-settings-medium); }
+.ai-settings-bars[data-tone='high'] { color: var(--ai-settings-high); }
+.ai-settings-bars[data-tone='xhigh'] { color: var(--ai-settings-xhigh); }
+.ai-settings-bars[data-tone='max'] { color: var(--ai-settings-max); }
+.ai-settings-bars[data-tone='ultra'] { color: var(--ai-settings-ultra); }
+
+.ai-settings-value[hidden] { display: none; }

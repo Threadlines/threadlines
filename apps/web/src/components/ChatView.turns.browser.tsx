@@ -377,7 +377,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     },
   );
 
-  it("keeps shared settings reachable when the row narrows and expands", async () => {
+  it("fits the effort label to the actual toolbar content and restores it when space returns", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
@@ -398,13 +398,37 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         () => footer.querySelector<HTMLElement>('button[aria-label^="Effort:"]') ?? null,
         "Unable to find the footer effort control.",
       );
+      const label = () => effort.querySelector<HTMLElement>(".ai-settings-value")!;
       await vi.waitFor(() => {
-        expect(effort.textContent).toContain("Medium");
+        expect(effort.getAttribute("aria-label")).toBe("Effort: Medium");
+        expect(label().getBoundingClientRect().width).toBeGreaterThan(0);
         expect(getComputedStyle(effort).display).not.toBe("none");
       });
 
+      // Choose a nearly full row from its actual unused space. At this same
+      // width a longer access value should fold effort, and a shorter one restore it.
+      const toolbar = effort.closest<HTMLElement>(".ai-settings")!;
+      const form = footer.closest<HTMLElement>("[data-chat-composer-form]")!;
+      const last = toolbar.querySelector<HTMLElement>(".ai-settings-section:last-child")!;
+      const unused = toolbar.getBoundingClientRect().right - last.getBoundingClientRect().right;
+      await setVisibleComposerFormWidth(Math.ceil(form.getBoundingClientRect().width - unused + 2));
+      await vi.waitFor(() => expect(label().getBoundingClientRect().width).toBeGreaterThan(0));
+      const fixedWidth = form.getBoundingClientRect().width;
+      await page.getByRole("button", { name: "Access level: Full access", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Auto-accept edits", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(label().getClientRects()).toHaveLength(0);
+        expect(form.getBoundingClientRect().width).toBe(fixedWidth);
+      });
+      await page
+        .getByRole("button", { name: "Access level: Auto-accept edits", exact: true })
+        .click();
+      await page.getByRole("menuitemradio", { name: "Full access", exact: true }).click();
+      await vi.waitFor(() => expect(label().getBoundingClientRect().width).toBeGreaterThan(0));
+
       await setVisibleComposerFormWidth(380);
       await vi.waitFor(() => {
+        expect(label().getClientRects()).toHaveLength(0);
         expect(getComputedStyle(effort).display).not.toBe("none");
         expect(effort.getBoundingClientRect().width).toBeGreaterThan(0);
         expect(modelButton.textContent).toContain("GPT-5");
@@ -414,6 +438,7 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       // The same control remains available when room returns.
       await setVisibleComposerFormWidth(900);
       await vi.waitFor(() => {
+        expect(label().getBoundingClientRect().width).toBeGreaterThan(0);
         expect(getComputedStyle(effort).display).not.toBe("none");
       });
     } finally {
@@ -421,12 +446,13 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
-  it("uses the shared settings in the model panel and restores focus on Escape", async () => {
+  it("changes effort from the meter in the settings and stays open for more changes", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: fixture.snapshot,
       configureFixture: withEffortModel,
     });
+
     try {
       await waitForServerConfigToApply();
       const footer = await waitForElement(
@@ -437,35 +463,49 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find provider model picker.",
       );
+      const buttonEffort = () =>
+        footer
+          .querySelector<HTMLElement>('button[aria-label^="Effort:"]')
+          ?.getAttribute("aria-label");
+      await vi.waitFor(() => expect(buttonEffort()).toContain("Medium"));
+
       modelButton.click();
-      const panel = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-model-picker-settings="true"]'),
-        "Unable to find model settings.",
+      const meter = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-effort-meter="true"]'),
+        "Unable to find the effort meter.",
       );
-      const effort = await waitForElement(
-        () => panel.querySelector<HTMLButtonElement>('button[aria-label="Effort: Medium"]'),
-        "Unable to find shared effort settings.",
-      );
-      effort.click();
-      await page.getByRole("menuitemradio", { name: "High", exact: true }).click();
+      const level = (id: string) =>
+        meter.querySelector<HTMLButtonElement>(`[data-effort-level="${id}"]`)!;
+      expect(level("medium").getAttribute("aria-checked")).toBe("true");
+
+      level("high").click();
       await vi.waitFor(() => {
-        expect(footer.querySelector('button[aria-label="Effort: High"]')).not.toBeNull();
-        expect(panel.querySelector('button[aria-label="Effort: High"]')).not.toBeNull();
+        expect(buttonEffort()).toContain("High");
+        expect(level("high").getAttribute("aria-checked")).toBe("true");
       });
-      const high = panel.querySelector<HTMLButtonElement>('button[aria-label="Effort: High"]')!;
-      high.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-      const selected = await waitForElement(
-        () => document.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]'),
-        "Unable to find selected effort.",
+      // Still open: the model list and the rest of the settings are right there.
+      expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
+
+      // The arrow keys step one level at a time, and focus follows. The key
+      // goes to the level itself: on a busy CI runner something in the picker
+      // can take focus back to its search field, and a key sent to whatever
+      // has focus lands there instead.
+      let mediumFocused = false;
+      level("medium").addEventListener(
+        "focus",
+        () => {
+          mediumFocused = true;
+        },
+        { once: true },
       );
-      selected.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
-      selected.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      level("high").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
       await vi.waitFor(() => {
-        expect(document.activeElement).toBe(high);
-        expect(document.querySelector('[role="menuitemradio"][aria-checked="true"]')).toBeNull();
-        expect(high.textContent).toContain("High");
-        expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
+        expect(buttonEffort()).toContain("Medium");
+        expect(mediumFocused).toBe(true);
       });
+      await page.screenshot({ path: "__screenshots__/restored-model-picker.png" });
     } finally {
       await mounted.cleanup();
     }
@@ -538,14 +578,45 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
         expect(bounds.top).toBeGreaterThanOrEqual(0);
         expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
         expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
-        expect(menu.querySelectorAll(".ai-settings-bars")).toHaveLength(6);
+        const bars = [...menu.querySelectorAll<HTMLElement>(".ai-settings-bars")];
+        expect(bars).toHaveLength(6);
+        expect(new Set(bars.map((bar) => getComputedStyle(bar).color)).size).toBe(6);
+        expect(
+          ultra.querySelector<HTMLElement>(".ai-settings-value")!.getBoundingClientRect().width,
+        ).toBeGreaterThan(0);
         await page.screenshot({ path: "__screenshots__/shared-ai-footer-dark-menu.png" });
       } finally {
         themeRoot.classList.toggle("dark", wasDark);
         menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       }
-      await page.getByRole("button", { name: "Fast Mode: Normal", exact: true }).click();
-      await page.getByRole("menuitemradio", { name: "Fast", exact: true }).click();
+      expect(
+        page.getByRole("button", { name: "Fast Mode: Normal", exact: true }).elements(),
+      ).toHaveLength(0);
+      const modelButton = document.querySelector<HTMLButtonElement>(
+        '[data-chat-composer-footer="true"] [data-chat-provider-model-picker="true"]',
+      )!;
+      modelButton.click();
+      await page.getByRole("switch", { name: "Fast Mode", exact: true }).click();
+      await userEvent.keyboard("{Escape}");
+      const fastButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-chat-composer-footer="true"] button[aria-label="Fast Mode: Fast"]',
+          ),
+        "Fast icon should appear when enabled.",
+      );
+      expect(fastButton.textContent).toBe("");
+      const shortcutGroup = fastButton.closest('[role="group"]')!;
+      const shortcutLabels = () =>
+        [...shortcutGroup.querySelectorAll('button[aria-haspopup="menu"]')].map((button) =>
+          button.getAttribute("aria-label"),
+        );
+      expect(shortcutLabels()).toEqual([
+        "Effort: Ultra",
+        "Access level: Full access",
+        "Fast Mode: Fast",
+        "Mode: Build",
+      ]);
       const savedOptions = () =>
         useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.modelSelectionByProvider[
           ProviderInstanceId.make("codex")
@@ -571,6 +642,58 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
           ]),
         );
       });
+      expect(
+        page.getByRole("button", { name: "Fast Mode: Normal", exact: true }).elements(),
+      ).toHaveLength(0);
+      expect(document.activeElement).toBe(modelButton);
+      const fullAccess = page.getByRole("button", {
+        name: "Access level: Full access",
+        exact: true,
+      });
+      await expect.element(fullAccess).toHaveTextContent("Full access");
+      await fullAccess.click();
+      for (const item of document.querySelectorAll('.ai-settings-menu [role="menuitemradio"]')) {
+        expect(item.querySelector("svg")).not.toBeNull();
+      }
+      await page.getByRole("menuitemradio", { name: "Supervised", exact: true }).click();
+      const supervised = page.getByRole("button", {
+        name: "Access level: Supervised",
+        exact: true,
+      });
+      await expect.element(supervised).toHaveTextContent("Supervised");
+      await supervised.click();
+      await page.getByRole("menuitemradio", { name: "Full access", exact: true }).click();
+      await expect.element(fullAccess).toHaveTextContent("Full access");
+      const build = document.querySelector<HTMLButtonElement>('button[aria-label="Mode: Build"]')!;
+      expect(build.textContent).toBe("");
+      const buildGlyph = build.querySelector("path")?.getAttribute("d");
+      build.click();
+      const buildChoice = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '.ai-settings-menu [role="menuitemradio"][aria-label="Build"]',
+          ),
+        "Build choice should have its toolbar icon.",
+      );
+      const planChoice = document.querySelector<HTMLElement>(
+        '.ai-settings-menu [role="menuitemradio"][aria-label="Plan"]',
+      )!;
+      expect(buildChoice.querySelector("path")?.getAttribute("d")).toBe(buildGlyph);
+      const planGlyph = planChoice.querySelector("path")?.getAttribute("d");
+      expect(planGlyph).toBeTruthy();
+      expect(planGlyph).not.toBe(buildGlyph);
+      await page.getByRole("menuitemradio", { name: "Plan", exact: true }).click();
+      const plan = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Mode: Plan"]'),
+        "Plan icon should follow the selected mode.",
+      );
+      expect(plan.textContent).toBe("");
+      expect(plan.querySelector("path")?.getAttribute("d")).toBe(planGlyph);
+      expect(shortcutLabels()).toEqual(["Effort: Low", "Access level: Full access", "Mode: Plan"]);
+      const footer = findVisibleComposerFooter()!;
+      await page.screenshot({ element: footer, path: "__screenshots__/icon-only-plan-appbar.png" });
+      plan.click();
+      await page.getByRole("menuitemradio", { name: "Build", exact: true }).click();
       await waitForComposerText("Review the settings page.");
     } finally {
       await mounted.cleanup();

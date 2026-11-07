@@ -8,10 +8,20 @@
   --ai-settings-hover: var(--accent);
   --ai-settings-checked: color-mix(in oklab, var(--primary) 35%, var(--popover));
   --ai-settings-accent: var(--primary-graph);
+  --ai-settings-low: var(--color-sky-400);
+  --ai-settings-medium: var(--color-blue-500);
+  --ai-settings-high: var(--color-blue-700);
+  --ai-settings-xhigh: var(--color-orange-500);
+  --ai-settings-max: var(--color-red-500);
   --ai-settings-ultra: var(--color-violet-600);
   --ai-settings-font-size: 13.5px;
 }
 .dark .threadlines-ai-settings .ai-settings {
+  --ai-settings-low: var(--color-sky-300);
+  --ai-settings-medium: var(--color-blue-400);
+  --ai-settings-high: var(--color-blue-600);
+  --ai-settings-xhigh: var(--color-orange-400);
+  --ai-settings-max: var(--color-red-400);
   --ai-settings-ultra: var(--color-violet-400);
 }
 

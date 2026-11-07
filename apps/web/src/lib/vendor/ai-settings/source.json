@@ -2,20 +2,20 @@
   "schemaVersion": 1,
   "owner": "app-core",
   "source": "packages/ui/src/ai-settings",
-  "sourceDigest": "193b0cb0256c92ba6ae478b8e92f7cbe709b4650d770a429b258ec83a78fed81",
-  "sourceCommit": "9b85633eb85da0f514147750806f5118a24e857e",
+  "sourceDigest": "3d0d3554fef18a20205e82622001cf03844187c6194d9657db961f8adc13ae7a",
+  "sourceCommit": null,
   "files": {
     "ai-settings.js": {
       "path": "apps/web/src/lib/vendor/ai-settings/ai-settings.js",
-      "sha256": "3a01596375770a06a68f26a2d8ea5cdfd854c9c2d3f782eacec4d6ca4e174816"
+      "sha256": "040f30bb88024f7866e5ecf585e5455d32609ed4846a34374325869233b5785a"
     },
     "ai-settings.d.ts": {
       "path": "apps/web/src/lib/vendor/ai-settings/ai-settings.d.ts",
-      "sha256": "b89224e666c3223906055f2d23d041245852da0179277f90ea69e50d8d120427"
+      "sha256": "85c6027f58c4857258ad0e054db27c58867f898bfcd38eba2a7bddd5ed10a28e"
     },
     "ai-settings.css": {
       "path": "apps/web/src/lib/vendor/ai-settings/ai-settings.css",
-      "sha256": "16f0ee9033659a036854b5f338826b69a8932400bfd4f1520c9c5044677893f7"
+      "sha256": "b7929c4f61ffeef7c3e84c712f32aa1769a5bd0afc4e8da5bdffc18ab1f5a78b"
     }
   }
 }

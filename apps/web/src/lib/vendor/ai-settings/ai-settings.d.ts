@@ -1,5 +1,5 @@
 export type AiSettingsValue = string | boolean | number | null;
-export type AiSettingsIcon = 'mode' | 'access' | 'speed' | 'settings';
+export type AiSettingsIcon = 'mode' | 'build' | 'plan' | 'access' | 'speed' | 'settings';
 export interface AiSettingsOption {
   value: AiSettingsValue;
   label: string;
@@ -7,10 +7,12 @@ export interface AiSettingsOption {
   disabled?: boolean | undefined;
   bars?: number | undefined;
   barCount?: number | undefined;
-  tone?: 'ultra' | undefined;
+  tone?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | undefined;
   icon?: AiSettingsIcon | undefined;
 }
 export interface AiSettingsControl {
+  /** True hides the value; auto shows it only when the measured row fits. Neither adds a chevron. */
+  iconOnly?: boolean | 'auto' | undefined;
   id: string;
   label: string;
   value: AiSettingsValue;
@@ -19,7 +21,7 @@ export interface AiSettingsControl {
   title?: string | undefined;
   bars?: number | undefined;
   barCount?: number | undefined;
-  tone?: 'ultra' | undefined;
+  tone?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | undefined;
   icon?: AiSettingsIcon | undefined;
   onChange(value: AiSettingsValue): unknown;
 }
