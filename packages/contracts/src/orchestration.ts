@@ -52,6 +52,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getTurnFile: "orchestration.getTurnFile",
   listProjectMedia: "orchestration.listProjectMedia",
+  getProjectMediaPreview: "orchestration.getProjectMediaPreview",
   getRevertPlan: "orchestration.getRevertPlan",
   searchThreads: "orchestration.searchThreads",
   getTurnActivities: "orchestration.getTurnActivities",
@@ -6321,35 +6322,53 @@ export const OrchestrationMediaKind = Schema.Literals(["picture", "video", "audi
 export type OrchestrationMediaKind = typeof OrchestrationMediaKind.Type;
 
 /**
- * A picture, video, sound or document one thread's turns created or changed,
- * folded over the thread's turns: the latest turn that touched it, and whether
- * the thread created it. Files the thread later deleted, and files outside the
- * thread's folder, are not listed.
+ * A small reference to media stored with a message or tool result. The listing
+ * does not carry inline image bytes; previews fetch them only when needed.
  */
+export const OrchestrationMediaSource = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("attachment"), attachment: ChatAttachment }),
+  Schema.Struct({ kind: Schema.Literal("activity"), activityId: EventId, imageId: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("message"), messageId: MessageId, index: NonNegativeInt }),
+]);
+export type OrchestrationMediaSource = typeof OrchestrationMediaSource.Type;
+
 export const OrchestrationProjectMediaEntry = Schema.Struct({
+  source: Schema.optionalKey(OrchestrationMediaSource),
   threadId: ThreadId,
   threadTitle: Schema.String,
-  /** The thread's folder: its worktree, or the project's. */
+  /** Folder containing the file; the thread's folder for stored chat media. */
   cwd: TrimmedNonEmptyString,
-  /** Inside `cwd`, for reading the file as it is now. */
+  /** Path inside `cwd`, or the display name for a stored chat source. */
   relativePath: TrimmedNonEmptyString,
-  /** As the turn's patch names it (repository-root-relative), for getTurnFile. */
+  /** Repository-root-relative for checkpoint files; unused for chat media. */
   repositoryPath: TrimmedNonEmptyString,
   mediaKind: OrchestrationMediaKind,
   /** `added` when the thread created the file. Turns recorded before new files
-   *  were told apart read as `modified`. */
-  change: Schema.Literals(["added", "modified"]),
-  turnId: TurnId,
-  checkpointTurnCount: PositiveInt,
+   *  were told apart read as `modified`. Chat media reads as `referenced`. */
+  change: Schema.Literals(["added", "modified", "referenced"]),
+  turnId: Schema.NullOr(TurnId),
+  checkpointTurnCount: Schema.NullOr(PositiveInt),
   changedAt: IsoDateTime,
-  /** The reply of the turn that last changed it, to jump to in the chat. */
+  /** The message that shared it, or the reply of the turn that changed it. */
   assistantMessageId: Schema.NullOr(MessageId),
-  /** Bytes on disk when listed. Files no longer on disk are not listed. */
+  /** Bytes when known; zero for inline/remote images whose size is unknown. */
   size: NonNegativeInt,
-  /** Changes whenever the file on disk does, size or not; opaque. */
+  /** Changes whenever the file or its stored source does; opaque. */
   version: TrimmedNonEmptyString,
 });
 export type OrchestrationProjectMediaEntry = typeof OrchestrationProjectMediaEntry.Type;
+
+export const OrchestrationGetProjectMediaPreviewInput = Schema.Struct({
+  threadId: ThreadId,
+  source: OrchestrationMediaSource,
+});
+export type OrchestrationGetProjectMediaPreviewInput =
+  typeof OrchestrationGetProjectMediaPreviewInput.Type;
+export const OrchestrationGetProjectMediaPreviewResult = Schema.Struct({
+  url: Schema.NullOr(Schema.String),
+});
+export type OrchestrationGetProjectMediaPreviewResult =
+  typeof OrchestrationGetProjectMediaPreviewResult.Type;
 
 export const OrchestrationListProjectMediaInput = Schema.Struct({
   projectId: ProjectId,
@@ -6508,6 +6527,10 @@ export const OrchestrationRpcSchemas = {
   getTurnFile: {
     input: OrchestrationGetTurnFileInput,
     output: OrchestrationGetTurnFileResult,
+  },
+  getProjectMediaPreview: {
+    input: OrchestrationGetProjectMediaPreviewInput,
+    output: OrchestrationGetProjectMediaPreviewResult,
   },
   listProjectMedia: {
     input: OrchestrationListProjectMediaInput,

@@ -1356,6 +1356,20 @@ const makeCoreRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getProjectMediaPreview]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getProjectMediaPreview,
+            projectMedia.getProjectMediaPreview(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationListProjectMediaError({
+                    message: "Failed to load this media preview",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.listProjectMedia]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.listProjectMedia,

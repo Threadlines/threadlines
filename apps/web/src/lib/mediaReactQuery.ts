@@ -7,11 +7,44 @@ import type {
   EnvironmentId,
   ProjectId,
   ProjectRevisionFileResult,
+  OrchestrationProjectMediaEntry,
   ThreadId,
 } from "@threadlines/contracts";
 import { queryOptions } from "@tanstack/react-query";
 
 import { ensureEnvironmentApi } from "~/environmentApi";
+
+/** Reads through the same transport as chat, including saved environments. */
+export async function readMediaEntry(
+  environmentId: EnvironmentId,
+  entry: OrchestrationProjectMediaEntry,
+) {
+  const api = ensureEnvironmentApi(environmentId);
+  if (!entry.source) {
+    return api.projects.readFile({
+      cwd: entry.cwd,
+      relativePath: entry.relativePath,
+      ...(entry.mediaKind === "document" ? { documents: true } : {}),
+    });
+  }
+  if (entry.source.kind === "attachment") {
+    const file = await api.attachments.read({ attachmentId: entry.source.attachment.id });
+    return {
+      kind: entry.mediaKind === "picture" ? ("image" as const) : ("document" as const),
+      relativePath: entry.relativePath,
+      mimeType: file.mimeType,
+      base64: file.base64,
+      size: entry.size,
+    };
+  }
+  const preview = await api.orchestration.getProjectMediaPreview({
+    threadId: entry.threadId,
+    source: entry.source,
+  });
+  return preview.url
+    ? { kind: "preview" as const, url: preview.url, size: entry.size }
+    : { kind: "missing" as const, relativePath: entry.relativePath };
+}
 
 export const mediaQueryKeys = {
   all: ["media"] as const,

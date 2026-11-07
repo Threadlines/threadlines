@@ -2,6 +2,8 @@ import "../../index.css";
 
 import {
   EnvironmentId,
+  EventId,
+  MessageId,
   type EnvironmentApi,
   type OrchestrationProjectMediaEntry,
   ProjectId,
@@ -90,9 +92,11 @@ const OTHER_THREAD_MEDIA = [
   }),
 ];
 
-function installApi() {
+function installApi(extra: ReadonlyArray<OrchestrationProjectMediaEntry> = []) {
   const listProjectMedia = vi.fn(async (input: { readonly threadId?: ThreadId }) => ({
-    entries: input.threadId ? THREAD_MEDIA : [...THREAD_MEDIA, ...OTHER_THREAD_MEDIA],
+    entries: input.threadId
+      ? [...THREAD_MEDIA, ...extra]
+      : [...THREAD_MEDIA, ...extra, ...OTHER_THREAD_MEDIA],
     truncated: false,
   }));
   const getTurnFile = vi.fn(async (input: { readonly path: string }) => ({
@@ -130,7 +134,14 @@ function installApi() {
             },
   );
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
-    orchestration: { listProjectMedia, getTurnFile },
+    orchestration: {
+      listProjectMedia,
+      getTurnFile,
+      getProjectMediaPreview: async () => ({ url: `data:image/png;base64,${PIXEL_PNG}` }),
+    },
+    attachments: {
+      read: async () => ({ attachmentId: "uploaded", mimeType: "image/png", base64: PIXEL_PNG }),
+    },
     projects: { readFile },
   } as unknown as EnvironmentApi);
   return { listProjectMedia, getTurnFile, readFile };
@@ -168,6 +179,57 @@ describe("MediaPanel", () => {
     resetMediaThumbnailsForTests();
     __resetEnvironmentApiOverridesForTests();
     await resetTestPage();
+  });
+
+  it("previews uploaded, linked and tool images without treating them as workspace files", async () => {
+    const api = installApi([
+      mediaEntry({
+        relativePath: "uploaded.png",
+        change: "referenced",
+        checkpointTurnCount: null,
+        source: {
+          kind: "attachment",
+          attachment: {
+            type: "image",
+            id: "uploaded",
+            name: "uploaded.png",
+            mimeType: "image/png",
+            sizeBytes: 68,
+          },
+        },
+      }),
+      mediaEntry({
+        relativePath: "tool.png",
+        change: "referenced",
+        checkpointTurnCount: null,
+        source: { kind: "activity", activityId: EventId.make("screenshot"), imageId: "tool-image" },
+      }),
+      mediaEntry({
+        relativePath: "linked.png",
+        change: "referenced",
+        checkpointTurnCount: null,
+        source: { kind: "message", messageId: MessageId.make("reply"), index: 0 },
+      }),
+    ]);
+    await renderPanel();
+    for (const name of ["uploaded.png", "tool.png", "linked.png"]) {
+      await vi.waitFor(() => {
+        const image = document.querySelector<HTMLImageElement>(`[data-media-tile="${name}"] img`);
+        expect(image?.src.startsWith("blob:")).toBe(true);
+      });
+      await page.getByRole("button", { name: `Preview ${name}` }).click();
+      const viewer = page.getByRole("dialog", { name: "Expanded image preview" });
+      await expect.element(viewer.getByRole("img", { name })).toBeVisible();
+      await expect
+        .element(viewer.getByRole("button", { name: "Before", exact: true }))
+        .not.toBeInTheDocument();
+      closeExpandedImagePreview();
+    }
+    expect(
+      api.readFile.mock.calls.every(
+        ([input]) => !["uploaded.png", "tool.png", "linked.png"].includes(input.relativePath),
+      ),
+    ).toBe(true);
   });
 
   it("lists this thread's pictures and files, then every thread's", async () => {

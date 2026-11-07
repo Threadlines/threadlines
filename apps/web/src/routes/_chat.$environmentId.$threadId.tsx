@@ -663,7 +663,7 @@ function ChatThreadRouteView() {
   // The thread's media, for the launcher's Media row: the same listing the
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.
-  const mediaTurnsRevision = turnSummariesRevision(serverThread?.turnDiffSummaries ?? null);
+  const mediaTurnsRevision = `${turnSummariesRevision(serverThread?.turnDiffSummaries ?? null)}:${serverThread?.messages.length ?? 0}:${serverThread?.activities.length ?? 0}:${serverThread?.latestTurn?.completedAt ?? ""}`;
   const launcherMediaListing = useQuery(
     projectMediaQueryOptions({
       environmentId: threadRef?.environmentId ?? null,

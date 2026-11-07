@@ -479,6 +479,10 @@
       "types": "./src/knownAssistants.ts",
       "import": "./src/knownAssistants.ts"
     },
+    "./chatMedia": {
+      "types": "./src/chatMedia.ts",
+      "import": "./src/chatMedia.ts"
+    },
     "./media": {
       "types": "./src/media.ts",
       "import": "./src/media.ts"
