@@ -48,6 +48,7 @@ import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { SleepInhibitor } from "./power/Services/SleepInhibitor.ts";
+import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import {
   formatHeadlessServeOutput,
   issueHeadlessServeAccessInfo,
@@ -140,6 +141,7 @@ export const makeCommandGate = Effect.gen(function* () {
 export const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const themeLibrary = yield* ThemeLibrary;
 
   const { threadCount, projectCount } = yield* projectionSnapshotQuery.getCounts().pipe(
     Effect.catch((cause) =>
@@ -154,9 +156,20 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
     ),
   );
 
+  // Themes kept in this computer's library, deleted ones left out.
+  const savedThemeCount = yield* themeLibrary.snapshot.pipe(
+    Effect.map(({ entries }) => entries.filter((entry) => !entry.deleted).length),
+    Effect.catch((cause) =>
+      Effect.logWarning("failed to count saved themes for telemetry", { cause }).pipe(
+        Effect.as(null),
+      ),
+    ),
+  );
+
   yield* analytics.record("server.boot.heartbeat", {
     threadCount,
     projectCount,
+    savedThemeCount,
   });
 });
 

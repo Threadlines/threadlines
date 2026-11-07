@@ -28,6 +28,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { AgentPages, layer as AgentPagesLayer } from "./AgentPages.ts";
 import * as PagePreview from "./preview/PagePreview.ts";
@@ -72,6 +73,8 @@ const threadWith = (
   }) as unknown as OrchestrationThread;
 
 let readCount = 0;
+/** What the pages counted, as PostHog would get it. */
+const recordedEvents: Array<{ event: string; properties: unknown }> = [];
 const makeLayer = (options: {
   /** The thread each read sees, in order; the last one repeats. */
   readonly thread: OrchestrationThread | ReadonlyArray<OrchestrationThread>;
@@ -130,6 +133,11 @@ const makeLayer = (options: {
         Layer.mock(ThemeWorkshop)({
           embedFonts: (manifest) => Effect.succeed(manifest),
           withStill: (manifest) => Effect.succeed({ manifest }),
+        }),
+        Layer.succeed(AnalyticsService, {
+          record: (event, properties) =>
+            Effect.sync(() => recordedEvents.push({ event, properties })),
+          flush: Effect.void,
         }),
       ),
     ),
@@ -416,8 +424,21 @@ it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
       const measured: Array<string> = [];
       return Effect.gen(function* () {
         const pages = yield* AgentPages;
+        recordedEvents.length = 0;
         const outcome = yield* pages.showTheme(caller(), { theme: aurora });
         assert.strictEqual(outcome.outcome, "shown");
+        assert.deepStrictEqual(recordedEvents, [
+          {
+            event: "theme.offered",
+            properties: {
+              origin: "agent",
+              base: "dark",
+              art: "none",
+              customFonts: false,
+              revised: false,
+            },
+          },
+        ]);
         const command = dispatched[0];
         if (command?.type !== "thread.page.publish") return assert.fail("no publish");
         assert.strictEqual(command.page.kind, "theme");

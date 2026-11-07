@@ -70,7 +70,18 @@ Threadlines sends product and reliability events such as:
   tool and how it answered (started, busy, refused and so on). Never the
   agent's name, a project or a thread's content;
 - thread rollback and delete events;
-- basic counts such as project count, thread count, attachment count, and active session count.
+- themes: when an agent shows one in a chat (and whether it's a new version of
+  one it showed before); when one is kept in this computer's theme library,
+  and whether the same theme was already kept there (a Duplicate); and when
+  one is deleted from it. Each says where the theme came from (made by an
+  agent, imported from a file, a copy of a starter, made by hand, or unknown
+  for a theme file that doesn't say), whether
+  it's light or dark, the kind of live art it has (grid, pixels or canvas) or
+  none, and whether it sets its own fonts. Never a theme's name, prompt,
+  colors, art, fonts or the thread it came from. A theme another computer
+  kept, arriving with its library, is counted there, not again here;
+- basic counts such as project count, thread count, how many themes are kept
+  in the theme library, attachment count, and active session count.
 
 Each event includes basic environment properties such as operating system, CPU
 architecture, Threadlines version, and whether the runtime is the desktop app or
