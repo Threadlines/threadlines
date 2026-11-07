@@ -1,11 +1,11 @@
 /**
- * The Media tab: the pictures, videos, sounds and documents agents created or
- * changed, for this thread or the whole project. Pictures show as a grid of
+ * The Media tab: media shared in chat and files agents created or changed,
+ * for this thread or the whole project. Pictures show as a grid of
  * thumbnails; the rest as rows. A picture opens in the app's image viewer
  * (with Before/After when the thread changed one that was there), anything
  * else in the file viewer, and every file has the shared right-click menu.
  *
- * The server lists the files (from the turn summaries it already keeps) and
+ * The server lists media from existing summaries, messages and tool results;
  * the panel only shapes them: see mediaPanel.logic.ts.
  */
 import type {
@@ -35,7 +35,13 @@ import { selectSidebarThreadsForProjectRef, useStore } from "../../store";
 import { openFileInActiveViewer } from "../../fileViewerStore";
 import { formatBytes } from "../../lib/formatBytes";
 import { isImageFilePath } from "../../lib/imageFilePaths";
-import { projectMediaQueryOptions, revisionFileDataUrl } from "../../lib/mediaReactQuery";
+import {
+  projectMediaQueryOptions,
+  readMediaEntry,
+  revisionFileDataUrl,
+} from "../../lib/mediaReactQuery";
+import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
+import { FilePreviewDialog, type FilePreviewRequest } from "../chat/FilePreviewDialog";
 import { cn } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import { resolvePathLinkTarget } from "../../terminal-links";
@@ -113,6 +119,10 @@ function absolutePath(entry: MediaEntry): string {
 }
 
 function describeChange(entry: MediaEntry, includeThread: boolean): string {
+  if (entry.change === "referenced")
+    return includeThread
+      ? `Shared in chat · ${entry.threadTitle.trim() || "Untitled thread"}`
+      : "Shared in chat";
   const verb = entry.change === "added" ? "Added" : "Changed";
   const thread = entry.threadTitle.trim() || "Untitled thread";
   return includeThread
@@ -126,6 +136,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
   const [sort, setSort] = useState<MediaSort>("newest");
   const [groupBy, setGroupBy] = useState<MediaGroupBy>("type");
   const [query, setQuery] = useState("");
+  const [previewedFile, setPreviewedFile] = useState<FilePreviewRequest | null>(null);
 
   // Every thread's view follows the project's threads: a turn finishing in
   // any of them changes this. A turn can finish a moment before its files are
@@ -135,7 +146,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
       ? selectSidebarThreadsForProjectRef(state, scopeProjectRef(environmentId, projectId))
           .map(
             (thread) =>
-              `${thread.id}:${thread.latestTurn?.turnId ?? ""}:${thread.latestTurn?.completedAt ?? ""}`,
+              `${thread.id}:${thread.latestTurn?.turnId ?? ""}:${thread.latestTurn?.completedAt ?? ""}:${thread.latestUserMessageAt ?? ""}`,
           )
           .join("|")
       : "",
@@ -147,7 +158,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
       threadId: scope === "thread" ? threadId : null,
       revision: scope === "thread" ? turnsRevision : `${turnsRevision}|${projectRevision}`,
       enabled: visible,
-      ...(scope === "project" ? { refetchInterval: PROJECT_REFRESH_MS } : {}),
+      refetchInterval: PROJECT_REFRESH_MS,
     }),
   );
   const entries = listing.data?.entries;
@@ -169,7 +180,8 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
     () =>
       groups.flatMap((group) =>
         group.tiles.filter(
-          (entry) => entry.mediaKind === "picture" && isImageFilePath(entry.relativePath),
+          (entry) =>
+            entry.mediaKind === "picture" && (entry.source || isImageFilePath(entry.relativePath)),
         ),
       ),
     [groups],
@@ -181,11 +193,13 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
   // fifty of them must not leave fifty in memory.
   const readCurrent = useCallback(
     (entry: MediaEntry) =>
-      ensureEnvironmentApi(environmentId)
-        .projects.readFile({ cwd: entry.cwd, relativePath: entry.relativePath })
-        .then((result) =>
-          result.kind === "image" ? `data:${result.mimeType};base64,${result.base64}` : null,
-        ),
+      readMediaEntry(environmentId, entry).then((result) =>
+        result.kind === "preview"
+          ? result.url
+          : result.kind === "image"
+            ? `data:${result.mimeType};base64,${result.base64}`
+            : null,
+      ),
     [environmentId],
   );
 
@@ -203,19 +217,21 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           name: mediaFileName(picture),
           detail: describeChange(picture, true),
           load: () => readCurrent(picture),
-          ...(picture.change === "modified"
+          ...(picture.change === "modified" && picture.checkpointTurnCount !== null
             ? {
                 before: {
                   // As it was before this thread first touched it.
                   load: () =>
-                    ensureEnvironmentApi(environmentId)
-                      .orchestration.getTurnFile({
-                        threadId: picture.threadId,
-                        range: { kind: "thread", toTurnCount: picture.checkpointTurnCount },
-                        side: "before",
-                        path: picture.repositoryPath,
-                      })
-                      .then(revisionFileDataUrl),
+                    picture.checkpointTurnCount === null
+                      ? Promise.resolve(null)
+                      : ensureEnvironmentApi(environmentId)
+                          .orchestration.getTurnFile({
+                            threadId: picture.threadId,
+                            range: { kind: "thread", toTurnCount: picture.checkpointTurnCount },
+                            side: "before",
+                            path: picture.repositoryPath,
+                          })
+                          .then(revisionFileDataUrl),
                 },
               }
             : {}),
@@ -231,13 +247,22 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
 
   const openEntry = useCallback(
     (entry: MediaEntry) => {
-      if (entry.mediaKind === "picture" && isImageFilePath(entry.relativePath)) {
+      if (entry.mediaKind === "picture" && (entry.source || isImageFilePath(entry.relativePath))) {
         openPicture(entry);
+        return;
+      }
+      if (entry.source?.kind === "attachment" && entry.source.attachment.type === "file") {
+        const attachment = entry.source.attachment;
+        setPreviewedFile({
+          name: attachment.name,
+          kind: attachment.kind,
+          loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: attachment.id }),
+        });
         return;
       }
       openInFileViewer(entry);
     },
-    [openInFileViewer, openPicture],
+    [environmentId, openInFileViewer, openPicture],
   );
 
   const showContextMenu = useCallback(
@@ -255,19 +280,22 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
       const launchers = readFileActionLaunchers(environmentId);
       const otherThread = entry.threadId !== threadId;
       const openItems: Array<{ id: MediaMenuAction; label: string }> = [
-        ...(entry.mediaKind === "picture" && isImageFilePath(entry.relativePath)
+        ...(entry.mediaKind === "picture" && (entry.source || isImageFilePath(entry.relativePath))
           ? [{ id: "preview" as const, label: "Preview" }]
           : []),
-        { id: "open-viewer", label: "Open in file viewer" },
+        { id: "open-viewer", label: entry.source ? "Open preview" : "Open in file viewer" },
         {
           id: "go-to-turn",
-          label: otherThread
-            ? `Go to turn ${entry.checkpointTurnCount} in "${entry.threadTitle.trim() || "Untitled thread"}"`
-            : `Go to turn ${entry.checkpointTurnCount} in chat`,
+          label:
+            entry.change === "referenced"
+              ? "Go to message in chat"
+              : otherThread
+                ? `Go to turn ${entry.checkpointTurnCount} in "${entry.threadTitle.trim() || "Untitled thread"}"`
+                : `Go to turn ${entry.checkpointTurnCount} in chat`,
         },
       ];
       const clicked = await api.contextMenu.show(
-        fileActionMenuItems(target, launchers, openItems),
+        entry.source ? openItems : fileActionMenuItems(target, launchers, openItems),
         position,
       );
       if (runFileAction(clicked, target, launchers)) {
@@ -278,7 +306,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           openPicture(entry);
           return;
         case "open-viewer":
-          openInFileViewer(entry);
+          openEntry(entry);
           return;
         case "go-to-turn":
           onGoToTurn(entry);
@@ -287,7 +315,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           return;
       }
     },
-    [environmentId, onGoToTurn, openInFileViewer, openPicture, threadId],
+    [environmentId, onGoToTurn, openEntry, openPicture, threadId],
   );
 
   const onEntryContextMenu = useCallback(
@@ -453,15 +481,19 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
         {entries !== undefined ? (
           <p className="mx-3 mt-4 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
             {listing.data?.truncated ? "Showing the newest 2,000 files. " : ""}
-            Files saved outside the project's folder, or in folders git ignores, don't show here.
+            Media shared in chat and files created or changed by agents.
           </p>
         ) : null}
       </div>
+      {previewedFile && (
+        <FilePreviewDialog request={previewedFile} onClose={() => setPreviewedFile(null)} />
+      )}
     </div>
   );
 });
 
 function ChangeBadge(props: { readonly change: MediaEntry["change"] }) {
+  if (props.change === "referenced") return null;
   const label = props.change === "added" ? "Added by this thread" : "Changed by this thread";
   return (
     <TooltipWrapper tooltip={label}>
@@ -488,7 +520,7 @@ function EntryMeta(props: { readonly entry: MediaEntry; readonly showThread: boo
       <span className="min-w-0 truncate">
         {showThread
           ? entry.threadTitle.trim() || "Untitled thread"
-          : `Turn ${entry.checkpointTurnCount} · ${formatRelativeTimeLabel(entry.changedAt)}`}
+          : `${entry.change === "referenced" ? "Shared" : `Turn ${entry.checkpointTurnCount}`} · ${formatRelativeTimeLabel(entry.changedAt)}`}
       </span>
     </span>
   );
@@ -512,19 +544,12 @@ function tileSource(entry: MediaEntry, environmentId: EnvironmentId) {
   }
   const isPdf = entry.mediaKind === "document";
   const tooBig = entry.size > (isPdf ? MAX_DOCUMENT_PREVIEW_BYTES : MAX_PREVIEW_BYTES);
-  const previewable = !tooBig && (isPdf || isImageFilePath(entry.relativePath));
+  const previewable = !tooBig && (entry.source || isPdf || isImageFilePath(entry.relativePath));
   return {
     kind: isPdf ? ("pdf" as const) : ("picture" as const),
     // The version changes with every write, so a rewritten file reads again.
-    key: previewable
-      ? `media|${environmentId}|${entry.cwd}|${entry.relativePath}|${entry.version}`
-      : null,
-    read: () =>
-      ensureEnvironmentApi(environmentId).projects.readFile({
-        cwd: entry.cwd,
-        relativePath: entry.relativePath,
-        ...(isPdf ? { documents: true } : {}),
-      }),
+    key: previewable ? `media|${environmentId}|${mediaEntryKey(entry)}|${entry.version}` : null,
+    read: () => readMediaEntry(environmentId, entry),
     tooBig,
   };
 }

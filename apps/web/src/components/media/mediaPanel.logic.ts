@@ -78,7 +78,8 @@ export function mediaFolder(entry: Pick<MediaEntry, "relativePath">): string {
 }
 
 /** One identity per file on disk: two threads that share a checkout list it once. */
-export function mediaEntryKey(entry: Pick<MediaEntry, "cwd" | "relativePath">): string {
+export function mediaEntryKey(entry: Pick<MediaEntry, "cwd" | "relativePath" | "source">): string {
+  if (entry.source) return JSON.stringify(entry.source);
   return `${entry.cwd}\u0000${entry.relativePath}`;
 }
 

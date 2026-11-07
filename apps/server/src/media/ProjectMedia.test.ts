@@ -236,6 +236,128 @@ layer("ProjectMedia", (it) => {
     }),
   );
 
+  it.effect("includes chat media without checkpoints and loads inline images only on request", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, default_model_selection_json, scripts_json, created_at, updated_at)
+        VALUES ('conversation-media', 'Chat', ${projectFolder}, NULL, '[]',
+          '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z')`;
+      yield* insertThread({
+        threadId: "chat-media-a",
+        projectId: "conversation-media",
+        title: "Screenshots",
+        turns: [[{ path: "app/hero.png", kind: "modified" }]],
+      });
+      yield* insertThread({
+        threadId: "chat-media-b",
+        projectId: "conversation-media",
+        title: "Other chat",
+        turns: [],
+      });
+      const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+      const remote = "https://example.com/picture.png?a=1&b=2";
+      const text = [
+        `![outside](<${NodePath.join(outsideFolder, "private.png")}> )`,
+        "[Existing picture](hero.png)",
+        `![remote](${remote})`,
+        `![inline](data:image/png;base64,${imageData})`,
+        "~~~md",
+        "![example](b.png)",
+        "~~~",
+      ].join("\n");
+      const attachments = [
+        {
+          type: "image",
+          id: "uploaded-shot",
+          name: "upload.png",
+          mimeType: "image/png",
+          sizeBytes: 20,
+        },
+        {
+          type: "file",
+          kind: "pdf",
+          id: "uploaded-pdf",
+          name: "brief.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 50,
+        },
+      ];
+      for (const thread of ["chat-media-a", "chat-media-b"]) {
+        yield* sql`INSERT INTO projection_thread_messages
+          (message_id, thread_id, turn_id, role, text, attachments_json, is_streaming, created_at, updated_at)
+          VALUES (${thread + "-message"}, ${thread}, NULL, 'user', ${thread === "chat-media-a" ? text : ""},
+            ${JSON.stringify(thread === "chat-media-a" ? attachments : [{ ...attachments[0], id: "other-upload", name: "other.png" }])},
+            0, '2026-03-01T00:02:00.000Z', '2026-03-01T00:02:00.000Z')`;
+      }
+      yield* sql`INSERT INTO projection_thread_activities
+        (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+        VALUES ('chat-screenshot', 'chat-media-a', NULL, 'info', 'tool.completed', 'Screenshot',
+          ${JSON.stringify({
+            itemType: "dynamic_tool_call",
+            data: {
+              item: { id: "capture" },
+              result: {
+                content: [
+                  {
+                    type: "image",
+                    source: { type: "base64", media_type: "image/png", data: imageData },
+                  },
+                ],
+              },
+            },
+          })}, '2026-03-01T00:03:00.000Z')`;
+      const media = yield* ProjectMedia;
+      const result = yield* media.listProjectMedia({
+        projectId: ProjectId.make("conversation-media"),
+        threadId: ThreadId.make("chat-media-a"),
+      });
+      assert.deepEqual(result.entries.map((entry) => entry.relativePath).toSorted(), [
+        "brief.pdf",
+        "capture.png",
+        "hero.png",
+        "image-3.png",
+        "image-4.png",
+        "private.png",
+        "upload.png",
+      ]);
+      assert.isFalse(JSON.stringify(result).includes(imageData));
+      const hero = result.entries.find((entry) => entry.relativePath === "hero.png");
+      assert.strictEqual(hero?.change, "modified");
+      const previewUrls: Array<string | null> = [];
+      for (const entry of result.entries) {
+        if (entry.source && entry.source.kind !== "attachment") {
+          previewUrls.push(
+            (yield* media.getProjectMediaPreview({
+              threadId: entry.threadId,
+              source: entry.source,
+            })).url,
+          );
+        }
+      }
+      assert.deepEqual(
+        previewUrls.toSorted(),
+        [
+          remote,
+          `data:image/png;base64,${imageData}`,
+          `data:image/png;base64,${imageData}`,
+        ].toSorted(),
+      );
+      const all = yield* media.listProjectMedia({
+        projectId: ProjectId.make("conversation-media"),
+      });
+      assert.strictEqual(all.entries.length, result.entries.length + 1);
+      const inline = result.entries.find((entry) => entry.source?.kind === "activity")!;
+      assert.deepEqual(
+        yield* media.getProjectMediaPreview({
+          threadId: ThreadId.make("chat-media-b"),
+          source: inline.source!,
+        }),
+        { url: null },
+      );
+    }),
+  );
+
   it.effect("keeps uncommitted reads inside the repository", () =>
     Effect.gen(function* () {
       const media = yield* ProjectMedia;

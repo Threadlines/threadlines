@@ -175,6 +175,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       getTurnDiff: rpcClient.orchestration.getTurnDiff,
       getFullThreadDiff: rpcClient.orchestration.getFullThreadDiff,
       getTurnFile: rpcClient.orchestration.getTurnFile,
+      getProjectMediaPreview: rpcClient.orchestration.getProjectMediaPreview,
       listProjectMedia: rpcClient.orchestration.listProjectMedia,
       getRevertPlan: rpcClient.orchestration.getRevertPlan,
       searchThreads: rpcClient.orchestration.searchThreads,

@@ -2,23 +2,31 @@
  * ProjectMedia - what the Media tab lists, and the uncommitted side of a
  * picture's Before/After in the Diff tab.
  *
- * The listing reads the turn summaries the projection already keeps
- * (`projection_turns.checkpoint_files_json`): no table of its own, so nothing
- * to backfill or keep in step. Summaries name files repository-root-relative,
- * while the client reads files inside the thread's folder, so every entry is
- * translated here and files outside the folder (or gone from disk) are left
- * out. Timed on a real history (527 threads, ~4,800 turns): ~150 ms cold.
+ * Reads existing turn summaries, messages and tool results, with no new table
+ * or backfill. Checkpoint files stay inside the thread's folder; explicit chat
+ * references can also name files elsewhere, as the conversation renderer does.
+ * Stored screenshots are listed as small references and read only on demand.
  *
  * @module ProjectMedia
  */
 import {
+  ChatAttachmentListLenient,
+  EventId,
+  MessageId,
+  type OrchestrationGetProjectMediaPreviewInput,
+  type OrchestrationGetProjectMediaPreviewResult,
+  type OrchestrationMediaSource,
   type OrchestrationListProjectMediaInput,
   type OrchestrationListProjectMediaResult,
   OrchestrationProjectMediaEntry,
   type ProjectRevisionFileResult,
   type VcsReadRepositoryFileInput,
 } from "@threadlines/contracts";
-import { ALL_MEDIA_EXTENSIONS } from "@threadlines/shared/media";
+import { ALL_MEDIA_EXTENSIONS, classifyMediaPath } from "@threadlines/shared/media";
+import { extractMessageMedia, extractWorkLogImages } from "@threadlines/shared/chatMedia";
+import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -52,6 +60,9 @@ export class ProjectMediaError extends Schema.TaggedError<ProjectMediaError>()(
 ) {}
 
 export interface ProjectMediaShape {
+  readonly getProjectMediaPreview: (
+    input: OrchestrationGetProjectMediaPreviewInput,
+  ) => Effect.Effect<OrchestrationGetProjectMediaPreviewResult, ProjectMediaError>;
   readonly listProjectMedia: (
     input: OrchestrationListProjectMediaInput,
   ) => Effect.Effect<OrchestrationListProjectMediaResult, ProjectMediaError>;
@@ -87,6 +98,20 @@ const ListRequest = Schema.Struct({
   threadId: Schema.NullOr(Schema.String),
 });
 
+const ConversationMediaRow = Schema.Struct({
+  threadId: Schema.String,
+  threadTitle: Schema.String,
+  cwd: Schema.String,
+  turnId: Schema.NullOr(Schema.String),
+  checkpointTurnCount: Schema.NullOr(Schema.Number),
+  assistantMessageId: Schema.NullOr(Schema.String),
+  changedAt: Schema.String,
+  id: Schema.String,
+  kind: Schema.Literals(["message", "activity"]),
+  content: Schema.String,
+  attachments: Schema.NullOr(Schema.String),
+});
+
 // A turn whose summary names no media file at all is skipped before its JSON
 // is unpacked; `LIKE` is case-blind for ASCII, so `.PNG` matches too. The
 // precise test (path or old name) is the fold's, on what is left.
@@ -96,6 +121,7 @@ const MEDIA_SUMMARY_FILTER = ALL_MEDIA_EXTENSIONS.map(
 const MEDIA_SUMMARY_PATTERNS = ALL_MEDIA_EXTENSIONS.map((extension) => `%.${extension}"%`);
 
 const decodeEntries = Schema.decodeUnknownEffect(Schema.Array(OrchestrationProjectMediaEntry));
+const decodeAttachments = Schema.decodeUnknownEffect(ChatAttachmentListLenient);
 
 function isSafeRepositoryPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
@@ -105,6 +131,15 @@ function isSafeRepositoryPath(path: string): boolean {
     !/^[A-Za-z]:/u.test(normalized) &&
     !normalized.split("/").some((segment) => segment === "..")
   );
+}
+
+/** Inline images expose their size without copying or decoding their bytes. */
+function previewSize(url: string | undefined): number {
+  if (!url?.startsWith("data:image/")) return 0;
+  const comma = url.indexOf(",");
+  if (comma === -1) return 0;
+  const padding = url.endsWith("==") ? 2 : url.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(((url.length - comma - 1) * 3) / 4) - padding);
 }
 
 /** Whether `candidate` is `root` or inside it, both already real paths. */
@@ -153,6 +188,176 @@ const make = Effect.gen(function* () {
         [projectId, ...(threadId === null ? [] : [threadId]), ...MEDIA_SUMMARY_PATTERNS],
       ),
   });
+
+  const listConversationRows = SqlSchema.findAll({
+    Request: ListRequest,
+    Result: ConversationMediaRow,
+    execute: ({ projectId, threadId }) =>
+      sql.unsafe(
+        `
+      SELECT threads.thread_id AS "threadId", threads.title AS "threadTitle",
+        COALESCE(threads.effective_cwd, threads.worktree_path, projects.workspace_root) AS cwd,
+        media.turn_id AS "turnId", turns.checkpoint_turn_count AS "checkpointTurnCount",
+        CASE WHEN media.kind = 'message' THEN media.id ELSE turns.assistant_message_id END AS "assistantMessageId",
+        media.created_at AS "changedAt", media.id, media.kind, media.content, media.attachments
+      FROM projection_threads AS threads
+      INNER JOIN projection_projects AS projects ON projects.project_id = threads.project_id
+      INNER JOIN (
+        SELECT thread_id, turn_id, message_id AS id, 'message' AS kind,
+          text AS content, attachments_json AS attachments, created_at
+        FROM projection_thread_messages
+        WHERE text LIKE '%.%' OR text LIKE '%![%' OR attachments_json IS NOT NULL
+        UNION ALL
+        SELECT thread_id, turn_id, activity_id AS id, 'activity' AS kind,
+          payload_json AS content, NULL AS attachments, created_at
+        FROM projection_thread_activities
+        WHERE payload_json LIKE '%image%' OR payload_json LIKE '%savedPath%'
+          OR payload_json LIKE '%saved_path%'
+          ${ALL_MEDIA_EXTENSIONS.map((extension) => `OR payload_json LIKE '%.${extension}%'`).join(" ")}
+      ) AS media ON media.thread_id = threads.thread_id
+      LEFT JOIN projection_turns AS turns ON turns.thread_id = media.thread_id AND turns.turn_id = media.turn_id
+      WHERE threads.project_id = ? AND threads.deleted_at IS NULL
+        ${threadId === null ? "" : "AND threads.thread_id = ?"}
+      ORDER BY media.created_at DESC
+    `,
+        [projectId, ...(threadId === null ? [] : [threadId])],
+      ),
+  });
+
+  const listConversationMedia = Effect.fn("ProjectMedia.listConversationMedia")(function* (
+    input: typeof ListRequest.Type,
+  ) {
+    const rows = yield* listConversationRows(input);
+    const entries: unknown[] = [];
+    for (const row of rows) {
+      const contentVersion = createHash("sha256").update(row.content).digest("hex");
+      const add = Effect.fn(function* (
+        rawPath: string,
+        source?: OrchestrationMediaSource,
+        size = 0,
+        image = false,
+      ) {
+        let cwd = row.cwd;
+        let relativePath = rawPath;
+        let version = contentVersion;
+        if (!source) {
+          // An explicit chat reference may point outside the checkout, just
+          // like the image already shown by the conversation renderer.
+          const parsed = yield* Effect.try(() =>
+            rawPath.startsWith("file:") ? fileURLToPath(rawPath) : decodeURIComponent(rawPath),
+          ).pipe(Effect.orElseSucceed(() => rawPath));
+          let file = parsed;
+          file = file.replace(/:\d+(?::\d+)?$/u, "").split(/[?#]/u)[0] ?? file;
+          if (/^~[\\/]/u.test(file)) file = path.join(homedir(), file.slice(2));
+          const absolute = path.resolve(row.cwd, file);
+          const stat = yield* fileSystem.stat(absolute).pipe(Effect.option);
+          if (stat._tag === "None" || stat.value.type !== "File") return;
+          cwd = path.dirname(absolute);
+          relativePath = path.basename(absolute);
+          size = Number(stat.value.size);
+          version = fileVersionOf(stat.value);
+        }
+        const mediaKind = image
+          ? "picture"
+          : source?.kind === "attachment"
+            ? "document"
+            : classifyMediaPath(relativePath);
+        if (mediaKind === null) return;
+        entries.push({
+          threadId: row.threadId,
+          threadTitle: row.threadTitle,
+          cwd,
+          relativePath,
+          repositoryPath: relativePath,
+          mediaKind,
+          change: "referenced",
+          turnId: row.turnId,
+          checkpointTurnCount: row.checkpointTurnCount,
+          assistantMessageId: row.assistantMessageId,
+          changedAt: row.changedAt,
+          size,
+          version,
+          ...(source ? { source } : {}),
+        });
+      });
+      if (row.kind === "message") {
+        const attachments = yield* decodeAttachments(
+          row.attachments ? JSON.parse(row.attachments) : [],
+        );
+        for (const attachment of attachments) {
+          yield* add(
+            attachment.name,
+            { kind: "attachment", attachment },
+            attachment.sizeBytes,
+            attachment.type === "image",
+          );
+        }
+        for (const [index, ref] of extractMessageMedia(row.content).entries()) {
+          const remote = /^(?:https?:|data:image\/|blob:)/iu.test(ref.path);
+          yield* add(
+            remote ? `image-${index + 1}.png` : ref.path,
+            remote ? { kind: "message", messageId: MessageId.make(row.id), index } : undefined,
+            remote ? previewSize(ref.path) : 0,
+            ref.image,
+          );
+        }
+      } else {
+        const payload: unknown = JSON.parse(row.content);
+        const images = extractWorkLogImages(
+          payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null,
+        );
+        for (const image of images) {
+          yield* add(
+            image.path ?? image.name,
+            image.previewUrl
+              ? { kind: "activity", activityId: EventId.make(row.id), imageId: image.id }
+              : undefined,
+            previewSize(image.previewUrl),
+            true,
+          );
+        }
+      }
+    }
+    return entries;
+  });
+
+  // Inline bytes stay in their original message/activity until a tile needs
+  // them. The listing carries only a small reference, even for screenshots.
+  const getProjectMediaPreview: ProjectMediaShape["getProjectMediaPreview"] = Effect.fn(
+    "ProjectMedia.getProjectMediaPreview",
+  )(
+    function* (input) {
+      const source = input.source;
+      if (source.kind === "attachment") return { url: null };
+      const rows =
+        source.kind === "activity"
+          ? yield* sql<{
+              content: string;
+            }>`SELECT payload_json AS content FROM projection_thread_activities
+          WHERE thread_id = ${input.threadId} AND activity_id = ${source.activityId}`
+          : yield* sql<{ content: string }>`SELECT text AS content FROM projection_thread_messages
+          WHERE thread_id = ${input.threadId} AND message_id = ${source.messageId}`;
+      const content = rows[0]?.content;
+      if (!content) return { url: null };
+      if (source.kind === "message") {
+        const ref = extractMessageMedia(content)[source.index];
+        return { url: ref && /^(?:https?:|data:image\/|blob:)/iu.test(ref.path) ? ref.path : null };
+      }
+      const payload: unknown = JSON.parse(content);
+      const images = extractWorkLogImages(
+        payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null,
+      );
+      return { url: images.find((image) => image.id === source.imageId)?.previewUrl ?? null };
+    },
+    Effect.mapError(
+      (cause) =>
+        new ProjectMediaError({
+          operation: "ProjectMedia.getProjectMediaPreview",
+          detail: "Could not load this media preview.",
+          cause,
+        }),
+    ),
+  );
 
   /**
    * Where a folder sits in its repository ("" at its root), so summary paths
@@ -248,13 +453,26 @@ const make = Effect.gen(function* () {
 
       // Two threads sharing a checkout can both have changed one file; it is
       // listed once, under the latest change.
-      const newestFirst = located
-        .filter((entry) => entry !== null)
-        .toSorted((left, right) => right.changedAt.localeCompare(left.changedAt));
+      const conversation = yield* listConversationMedia({
+        projectId: input.projectId,
+        threadId: input.threadId ?? null,
+      });
+      // Prefer checkpoint metadata for a file that is also linked in chat,
+      // so referencing a changed picture keeps its Before/After controls.
+      const newestFirst = (yield* decodeEntries([
+        ...located.filter((entry) => entry !== null),
+        ...conversation,
+      ])).toSorted(
+        (left, right) =>
+          Number(left.change === "referenced") - Number(right.change === "referenced") ||
+          right.changedAt.localeCompare(left.changedAt),
+      );
       const seen = new Set<string>();
       const entries: unknown[] = [];
       for (const entry of newestFirst) {
-        const key = path.join(entry.cwd, entry.relativePath);
+        const key = entry.source
+          ? JSON.stringify(entry.source)
+          : path.join(entry.cwd, entry.relativePath);
         if (seen.has(key)) {
           continue;
         }
@@ -263,7 +481,10 @@ const make = Effect.gen(function* () {
       }
       // The rows carry plain strings; decoding brands them, and a row the
       // projection holds in some unexpected shape fails here, loudly.
-      const decoded = yield* decodeEntries(entries.slice(0, PROJECT_MEDIA_MAX_ENTRIES));
+      const sorted = (yield* decodeEntries(entries)).toSorted((left, right) =>
+        right.changedAt.localeCompare(left.changedAt),
+      );
+      const decoded = sorted.slice(0, PROJECT_MEDIA_MAX_ENTRIES);
       return {
         entries: decoded,
         truncated: entries.length > PROJECT_MEDIA_MAX_ENTRIES,
@@ -333,7 +554,11 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return { listProjectMedia, readRepositoryFile } satisfies ProjectMediaShape;
+  return {
+    listProjectMedia,
+    getProjectMediaPreview,
+    readRepositoryFile,
+  } satisfies ProjectMediaShape;
 });
 
 export const ProjectMediaLive = Layer.effect(ProjectMedia, make);

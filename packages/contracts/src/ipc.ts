@@ -245,6 +245,8 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetTurnFileInput,
   OrchestrationGetTurnFileResult,
+  OrchestrationGetProjectMediaPreviewInput,
+  OrchestrationGetProjectMediaPreviewResult,
   OrchestrationListProjectMediaInput,
   OrchestrationListProjectMediaResult,
   OrchestrationGetRevertPlanInput,
@@ -2103,6 +2105,9 @@ export interface EnvironmentApi {
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     getTurnFile: (input: OrchestrationGetTurnFileInput) => Promise<OrchestrationGetTurnFileResult>;
+    getProjectMediaPreview: (
+      input: OrchestrationGetProjectMediaPreviewInput,
+    ) => Promise<OrchestrationGetProjectMediaPreviewResult>;
     listProjectMedia: (
       input: OrchestrationListProjectMediaInput,
     ) => Promise<OrchestrationListProjectMediaResult>;

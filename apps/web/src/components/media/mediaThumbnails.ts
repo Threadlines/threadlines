@@ -41,7 +41,10 @@ export interface MediaThumbnail {
   readonly size?: number | undefined;
 }
 
-type ReadResult = ProjectReadFileResult | ProjectRevisionFileResult;
+type ReadResult =
+  | ProjectReadFileResult
+  | ProjectRevisionFileResult
+  | { readonly kind: "preview"; readonly url: string; readonly size: number };
 
 interface CachedThumbnail {
   readonly url: string;
@@ -177,6 +180,30 @@ async function rasterizeSvg(dataUrl: string): Promise<Blob | null> {
 
 /** The file as a tile-sized picture, or why there is none. */
 async function shrink(result: ReadResult): Promise<Outcome> {
+  if (result.kind === "preview") {
+    const data = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/iu.exec(result.url);
+    if (data) {
+      return shrink({
+        kind: "image",
+        relativePath: "preview",
+        mimeType: data[1]!,
+        base64: data[2]!,
+        size: result.size,
+      });
+    }
+    // Remote images load just as they do in chat; their origin may not allow
+    // a canvas read. Keep their address rather than downloading a second copy.
+    return /^https?:/iu.test(result.url)
+      ? {
+          url: result.url,
+          bytes: 0,
+          width: undefined,
+          height: undefined,
+          size: result.size,
+          refs: 0,
+        }
+      : "unavailable";
+  }
   if (result.kind === "missing") {
     return "missing";
   }

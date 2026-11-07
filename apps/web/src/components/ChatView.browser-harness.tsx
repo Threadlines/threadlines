@@ -431,6 +431,7 @@ export function createMockEnvironmentApi(input: {
           kind: "missing",
           relativePath: request.path,
         })) as EnvironmentApi["orchestration"]["getTurnFile"]),
+      getProjectMediaPreview: async () => ({ url: null }),
       listProjectMedia:
         input.listProjectMedia ??
         ((async () => ({
