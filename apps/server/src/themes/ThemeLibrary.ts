@@ -12,6 +12,10 @@
  *
  * Content stays while any entry names it, tombstones included; nothing here
  * deletes content yet (a device may still use a theme deleted elsewhere).
+ *
+ * A save and a delete made here are counted (`theme.saved`, `theme.deleted`,
+ * docs/telemetry.md); an entry merged from another computer is not, since
+ * that computer counted it.
  */
 import { randomUUID } from "node:crypto";
 
@@ -41,6 +45,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { themeAnalyticsProperties } from "../telemetry/AnalyticsProperties.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { ThemeLibraryRepository } from "./ThemeLibraryRepository.ts";
 import { themeProblems, ThemeWorkshop } from "./ThemeWorkshop.ts";
 
@@ -73,6 +79,7 @@ const make = Effect.gen(function* () {
   const repo = yield* ThemeLibraryRepository;
   const workshop = yield* ThemeWorkshop;
   const environment = yield* ServerEnvironment;
+  const analytics = yield* AnalyticsService;
   const scope = yield* Effect.scope;
   const writes = yield* Semaphore.make(1);
   const changed = yield* PubSub.sliding<void>(1);
@@ -157,8 +164,12 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const manifest = yield* workshop.prepare(input.manifest);
       const hash = yield* hashOf(manifest);
-      return yield* write(
+      const { summary, copy } = yield* write(
         Effect.gen(function* () {
+          // Another entry in use names the same content: a Duplicate, or a theme kept twice.
+          const copy = (yield* repo.listEntries.pipe(stored)).some(
+            (entry) => entry.hash === hash && !entry.deleted,
+          );
           yield* storeContent(hash, manifest);
           const now = yield* nowIso;
           const entry: ThemeEntry = {
@@ -171,9 +182,11 @@ const make = Effect.gen(function* () {
             updatedAt: now,
           };
           yield* repo.putEntry(entry).pipe(stored);
-          return yield* summaryOf(entry.entryId);
+          return { summary: yield* summaryOf(entry.entryId), copy };
         }),
       );
+      yield* analytics.record("theme.saved", { ...themeAnalyticsProperties(manifest), copy });
+      return summary;
     });
 
   /** Changes one entry at a new revision; `change` returns null to leave it as it is. */
@@ -216,7 +229,24 @@ const make = Effect.gen(function* () {
     );
 
   const remove: ThemeLibraryShape["delete"] = (input) =>
-    revise(input.entryId, (entry) => Effect.succeed(entry.deleted ? null : { deleted: true }));
+    Effect.gen(function* () {
+      const removed: { hash: string | null } = { hash: null };
+      const summary = yield* revise(input.entryId, (entry) => {
+        if (entry.deleted) return Effect.succeed(null);
+        removed.hash = entry.hash;
+        return Effect.succeed({ deleted: true });
+      });
+      if (removed.hash !== null) {
+        const content = yield* repo
+          .getContent(removed.hash)
+          .pipe(Effect.catch(() => Effect.succeed(Option.none())));
+        yield* analytics.record(
+          "theme.deleted",
+          Option.isSome(content) ? themeAnalyticsProperties(content.value.manifest) : {},
+        );
+      }
+      return summary;
+    });
 
   const restore: ThemeLibraryShape["restore"] = (input) =>
     revise(input.entryId, (entry) => Effect.succeed(entry.deleted ? { deleted: false } : null));
